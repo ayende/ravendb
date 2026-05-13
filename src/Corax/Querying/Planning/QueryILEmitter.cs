@@ -19,110 +19,8 @@ public static class QueryIlEmitter
 {
     public delegate void CompiledExecuteDelegate(CompiledQueryMatch ctx);
 
-    // CompiledQueryMatch fields (accessed by emitted IL)
-    private static readonly FieldInfo CtxBitmaps = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Bitmaps));
-    private static readonly FieldInfo CtxTermSources = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.PostingSources));
-    private static readonly FieldInfo CtxLimit = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Limit));
-
-    // Timing helpers
-    private static readonly MethodInfo GetTimestamp =
-        typeof(Stopwatch).GetMethod(nameof(Stopwatch.GetTimestamp))!;
-    private static readonly MethodInfo RecordTiming =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordTiming))!;
-    private static readonly MethodInfo RecordResultCount =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordResultCount))!;
-    private static readonly MethodInfo RunEntryScanMethod =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RunEntryScan))!;
-
-    // IQueryMatch
-    private static readonly MethodInfo MatchCountGetter = typeof(IQueryMatch).GetProperty(nameof(IQueryMatch.Count))!.GetGetMethod()!;
-
-    // RoaringBitmap — methods called directly by emitted IL
-    private static readonly MethodInfo AndWith =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndWith),
-            [typeof(RoaringBitmap).MakeByRefType()])!;
-    private static readonly MethodInfo OrWith =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.OrWith),
-            [typeof(RoaringBitmap).MakeByRefType()])!;
-    private static readonly MethodInfo LazyOrWith =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.LazyOrWith),
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
-            [typeof(RoaringBitmap).MakeByRefType()])!;
-    private static readonly MethodInfo AndNotWith =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndNotWith),
-            [typeof(RoaringBitmap).MakeByRefType()])!;
-    private static readonly MethodInfo Clear =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Clear), Type.EmptyTypes)!;
-    private static readonly MethodInfo IsEmptyGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.IsEmpty))!.GetGetMethod()!;
-    private static readonly MethodInfo CountGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.Count))!.GetGetMethod()!;
-    private static readonly MethodInfo RepairAfterLazy =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.RepairAfterLazy), Type.EmptyTypes)!;
-    private static readonly MethodInfo SwapContents =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.SwapContents),
-            [typeof(RoaringBitmap).MakeByRefType()])!;
-
-    // CancellationToken
-    private static readonly MethodInfo ThrowIfCancelled = typeof(CancellationToken).GetMethod(nameof(CancellationToken.ThrowIfCancellationRequested))!;
-
     // Span<long>
     private static readonly ConstructorInfo SpanCtor = typeof(Span<long>).GetConstructor([typeof(void*), typeof(int)])!;
-    // IndexSearcher — for entry scan
-    private static readonly MethodInfo GetEntryTermsReader =
-        typeof(IndexSearcher).GetMethod(nameof(IndexSearcher.GetEntryTermsReader),
-            [typeof(long), typeof(Page).MakeByRefType(), typeof(CompactKey)])!;
-
-    // CompiledQueryMatch typed parameter arrays
-    private static readonly FieldInfo CtxResolvedMatches =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ResolvedMatches));
-    private static readonly FieldInfo CtxInRangeCounts =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.InRangeCounts));
-    private static readonly FieldInfo CtxTermsProviders =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.TermsProviders));
-    private static readonly FieldInfo CtxEntryScanTakenAtOp =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanTakenAtOp));
-    private static readonly FieldInfo CtxToken =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Token));
-
-    // CompactKey.Decoded() → ReadOnlySpan<byte>
-    private static readonly MethodInfo CompactKeyDecoded =
-        typeof(CompactKey).GetMethod(nameof(CompactKey.Decoded), Type.EmptyTypes)!;
-
-    // Ctx-based entry points — take ref CompiledQueryMatch, IL just pushes ldarg.0 + int constants
-    private static readonly MethodInfo CtxFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromPostingSource))!;
-    private static readonly MethodInfo CtxFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromTreeScan))!;
-    private static readonly MethodInfo CtxFillFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromMatch))!;
-    private static readonly MethodInfo CtxOrFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromPostingSource))!;
-    private static readonly MethodInfo CtxOrFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromTreeScan))!;
-    private static readonly MethodInfo CtxOrFillFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromMatch))!;
-    private static readonly MethodInfo CtxAndFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromPostingSource))!;
-    private static readonly MethodInfo CtxAndFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromTreeScan))!;
-    private static readonly MethodInfo CtxAndFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndFromMatch))!;
-    private static readonly MethodInfo CtxAndNotFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromPostingSource))!;
-    private static readonly MethodInfo CtxAndNotFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromTreeScan))!;
-    private static readonly MethodInfo CtxAndNotFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromMatch))!;
-
-    // Slice.AsReadOnlySpan() is used by EmitSliceComparison to load parameter values.
-    // With arrays, we use ldelema to get ref Slice, then call AsReadOnlySpan.
-
-    // MemoryExtensions.SequenceCompareTo<byte>(ReadOnlySpan<byte>, ReadOnlySpan<byte>)
-    private static readonly MethodInfo SequenceCompareTo =
-        typeof(MemoryExtensions).GetMethods()
-            .First(m => m.Name == nameof(MemoryExtensions.SequenceCompareTo) && m.IsGenericMethod
-                && m.GetParameters().Length == 2)
-            .MakeGenericMethod(typeof(byte));
-
-    // MemoryExtensions.SequenceEqual<byte>(ReadOnlySpan<byte>, ReadOnlySpan<byte>)
-    private static readonly MethodInfo SequenceEqual =
-        typeof(MemoryExtensions).GetMethods()
-            .First(m => m.Name == nameof(MemoryExtensions.SequenceEqual) && m.IsGenericMethod
-                && m.GetParameters().Length == 2)
-            .MakeGenericMethod(typeof(byte));
-
-    // Entry-scan cost heuristics — called from emitted IL so thresholds stay in one place
-    private static readonly MethodInfo ShouldSwitchToEntryScan =
-        typeof(QueryPrimitives).GetMethod(
-            nameof(QueryPrimitives.ShouldSwitchToEntryScan),
-            [typeof(long), typeof(long)])!;
 
     public static CompiledExecuteDelegate EmitDelegate(QueryExecution plan, out string explainSource, bool emitTimings = true)
     {
@@ -187,13 +85,13 @@ public static class QueryIlEmitter
             {
                 MatchDispatch.PostingList => (
                     $"ctx.TermSources[{op.ParamIndex}]",
-                    CtxFillFromPostingSource, CtxAndFromPostingSource, CtxOrFillFromPostingSource, CtxAndNotFromPostingSource),
+                    IlEmitterShared.CtxFillFromPostingSource, IlEmitterShared.CtxAndFromPostingSource, IlEmitterShared.CtxOrFillFromPostingSource, IlEmitterShared.CtxAndNotFromPostingSource),
                 MatchDispatch.TreeScan => (
                     $"ctx.TermsProviders[{op.ParamIndex}]",
-                    CtxFillFromTreeScan, CtxAndFromTreeScan, CtxOrFillFromTreeScan, CtxAndNotFromTreeScan),
+                    IlEmitterShared.CtxFillFromTreeScan, IlEmitterShared.CtxAndFromTreeScan, IlEmitterShared.CtxOrFillFromTreeScan, IlEmitterShared.CtxAndNotFromTreeScan),
                 _ => (
                     $"ctx.ResolvedMatches[{op.ParamIndex}]",
-                    CtxFillFromMatch, CtxAndFromMatch, (MethodInfo)CtxOrFillFromMatch, CtxAndNotFromMatch)
+                    IlEmitterShared.CtxFillFromMatch, IlEmitterShared.CtxAndFromMatch, (MethodInfo)IlEmitterShared.CtxOrFillFromMatch, IlEmitterShared.CtxAndNotFromMatch)
             };
 
             switch (op.Kind)
@@ -216,7 +114,7 @@ public static class QueryIlEmitter
                     if (!op.SkipEarlyExit)
                     {
                         EmitLoadBitmapRef(il, 0);
-                        il.Emit(OpCodes.Call, IsEmptyGetter);
+                        il.Emit(OpCodes.Call, IlEmitterShared.IsEmptyGetter);
                         il.Emit(OpCodes.Brtrue, doneLabel);
                         explain.AppendLine("if (bitmap[0].IsEmpty) return;");
                     }
@@ -233,7 +131,7 @@ public static class QueryIlEmitter
                     if (op.BitmapLocal == 0)
                     {
                         EmitLoadBitmapRef(il, 0);
-                        il.Emit(OpCodes.Call, CountGetter);
+                        il.Emit(OpCodes.Call, IlEmitterShared.CountGetter);
                         il.Emit(OpCodes.Conv_I8);
                         EmitLoadLimit(il);
                         il.Emit(OpCodes.Bge, doneLabel);
@@ -243,21 +141,21 @@ public static class QueryIlEmitter
 
                 case PlanOpKind.ClearBitmap:
                     EmitLoadBitmapRef(il, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, Clear);
+                    il.Emit(OpCodes.Call, IlEmitterShared.Clear);
                     explain.AppendLine($"bitmap[{op.BitmapLocal}].Clear();");
                     break;
 
                 case PlanOpKind.AndBitmaps:
                     EmitLoadBitmapRef(il, op.BitmapLocal);
                     EmitLoadBitmapRef(il, op.ParamIndex2);
-                    il.Emit(OpCodes.Call, AndWith);
+                    il.Emit(OpCodes.Call, IlEmitterShared.AndWith);
                     explain.AppendLine($"bitmap[{op.BitmapLocal}].AndWith(bitmap[{op.ParamIndex2}]);");
                     break;
 
                 case PlanOpKind.AndNotBitmaps:
                     EmitLoadBitmapRef(il, op.BitmapLocal);
                     EmitLoadBitmapRef(il, op.ParamIndex2);
-                    il.Emit(OpCodes.Call, AndNotWith);
+                    il.Emit(OpCodes.Call, IlEmitterShared.AndNotWith);
                     explain.AppendLine($"bitmap[{op.BitmapLocal}].AndNotWith(bitmap[{op.ParamIndex2}]);");
                     break;
 
@@ -267,7 +165,7 @@ public static class QueryIlEmitter
                     // before the done label fixes all lazy cardinalities in one pass.
                     EmitLoadBitmapRef(il, op.BitmapLocal);
                     EmitLoadBitmapRef(il, op.ParamIndex2);
-                    il.Emit(OpCodes.Call, LazyOrWith);
+                    il.Emit(OpCodes.Call, IlEmitterShared.LazyOrWith);
                     needsLazyRepair = true;
                     explain.AppendLine($"bitmap[{op.BitmapLocal}].LazyOrWith(bitmap[{op.ParamIndex2}]);");
                     // Skip Count-based limit check — Count is unreliable with lazy cardinality.
@@ -277,13 +175,13 @@ public static class QueryIlEmitter
                 case PlanOpKind.SwapBitmaps:
                     EmitLoadBitmapRef(il, op.BitmapLocal);
                     EmitLoadBitmapRef(il, op.ParamIndex2);
-                    il.Emit(OpCodes.Call, SwapContents);
+                    il.Emit(OpCodes.Call, IlEmitterShared.SwapContents);
                     explain.AppendLine($"Swap(bitmap[{op.BitmapLocal}], bitmap[{op.ParamIndex2}]);");
                     break;
 
                 case PlanOpKind.CheckEmpty:
                     EmitLoadBitmapRef(il, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, IsEmptyGetter);
+                    il.Emit(OpCodes.Call, IlEmitterShared.IsEmptyGetter);
                     il.Emit(OpCodes.Brtrue, doneLabel);
                     explain.AppendLine($"if (bitmap[{op.BitmapLocal}].IsEmpty) return;");
                     break;
@@ -298,7 +196,7 @@ public static class QueryIlEmitter
 
                 case PlanOpKind.RepairAfterLazy:
                     EmitLoadBitmapRef(il, 0);
-                    il.Emit(OpCodes.Call, RepairAfterLazy);
+                    il.Emit(OpCodes.Call, IlEmitterShared.RepairAfterLazy);
                     explain.AppendLine("bitmap[0].RepairAfterLazy();");
                     break;
 
@@ -308,13 +206,13 @@ public static class QueryIlEmitter
                     entryScanOpIndex = i;
 
                     EmitLoadBitmapRef(il, 0);
-                    il.Emit(OpCodes.Call, CountGetter);
+                    il.Emit(OpCodes.Call, IlEmitterShared.CountGetter);
                     il.Emit(OpCodes.Conv_I8);
                     EmitLoadMatch(il, op.ParamIndex);
-                    il.Emit(OpCodes.Callvirt, MatchCountGetter);
-                    il.Emit(OpCodes.Call, ShouldSwitchToEntryScan);
+                    il.Emit(OpCodes.Callvirt, IlEmitterShared.MatchCountGetter);
+                    il.Emit(OpCodes.Call, IlEmitterShared.ShouldSwitchToEntryScan);
                     il.Emit(OpCodes.Brtrue, entryScanLabel);
-                    explain.AppendLine($"if (ShouldSwitchToEntryScan(bitmap[0].Count, {src}.Count)) goto EntryScan;");
+                    explain.AppendLine($"if (IlEmitterShared.ShouldSwitchToEntryScan(bitmap[0].Count, {src}.Count)) goto EntryScan;");
                     break;
                 }
 
@@ -333,7 +231,7 @@ public static class QueryIlEmitter
                     // endVar = start + ctx.InRangeCounts[rangeIdx]
                     il.Emit(OpCodes.Ldc_I4, start);
                     il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldfld, CtxInRangeCounts);
+                    il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxInRangeCounts);
                     IlEmitterShared.EmitLdcI4(il, rangeIdx);
                     il.Emit(OpCodes.Ldelem_I4);
                     il.Emit(OpCodes.Add);
@@ -377,7 +275,7 @@ public static class QueryIlEmitter
                     // endVar = start + ctx.InRangeCounts[rangeIdx]
                     il.Emit(OpCodes.Ldc_I4, start);
                     il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldfld, CtxInRangeCounts);
+                    il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxInRangeCounts);
                     IlEmitterShared.EmitLdcI4(il, rangeIdx);
                     il.Emit(OpCodes.Ldelem_I4);
                     il.Emit(OpCodes.Add);
@@ -397,7 +295,7 @@ public static class QueryIlEmitter
                     if (!op.SkipEarlyExit)
                     {
                         EmitLoadBitmapRef(il, 0);
-                        il.Emit(OpCodes.Call, IsEmptyGetter);
+                        il.Emit(OpCodes.Call, IlEmitterShared.IsEmptyGetter);
                         il.Emit(OpCodes.Brtrue, doneLabel);
                     }
 
@@ -431,7 +329,7 @@ public static class QueryIlEmitter
         {
             // Fix lazy cardinalities from LazyOrWith before the bitmap is read.
             EmitLoadBitmapRef(il, 0);
-            il.Emit(OpCodes.Call, RepairAfterLazy);
+            il.Emit(OpCodes.Call, IlEmitterShared.RepairAfterLazy);
             explain.AppendLine("bitmap[0].RepairAfterLazy();");
         }
         il.Emit(OpCodes.Ret);
@@ -443,21 +341,21 @@ public static class QueryIlEmitter
             // Record which op triggered the entry scan
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldc_I4, entryScanOpIndex);
-            il.Emit(OpCodes.Stfld, CtxEntryScanTakenAtOp);
+            il.Emit(OpCodes.Stfld, IlEmitterShared.CtxEntryScanTakenAtOp);
 
             // Call CompiledQueryHelper.RunEntryScan(ctx, ref bitmap[0], ref bitmap[1]).
             // Predicate dispatch lives in ctx.CompiledEntryPredicate (IL-emitted per plan).
             il.Emit(OpCodes.Ldarg_0);                  // ctx
             EmitLoadBitmapRef(il, 0);                   // ref bitmap[0]
             EmitLoadBitmapRef(il, 1);                   // ref bitmap[1]
-            il.Emit(OpCodes.Call, RunEntryScanMethod);
+            il.Emit(OpCodes.Call, IlEmitterShared.RunEntryScanMethod);
 
             // Swap bitmap[0] and bitmap[1], clear bitmap[1]
             EmitLoadBitmapRef(il, 0);
             EmitLoadBitmapRef(il, 1);
-            il.Emit(OpCodes.Call, SwapContents);
+            il.Emit(OpCodes.Call, IlEmitterShared.SwapContents);
             EmitLoadBitmapRef(il, 1);
-            il.Emit(OpCodes.Call, Clear);
+            il.Emit(OpCodes.Call, IlEmitterShared.Clear);
             il.Emit(OpCodes.Ret);
         }
         else
@@ -476,7 +374,7 @@ public static class QueryIlEmitter
     private static void EmitLoadBitmapRef(ILGenerator il, int slot)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, CtxBitmaps);  // RoaringBitmap[]
+        il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxBitmaps);  // RoaringBitmap[]
         IlEmitterShared.EmitLdcI4(il, slot);
         il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap)); // ref RoaringBitmap
     }
@@ -484,7 +382,7 @@ public static class QueryIlEmitter
     private static void EmitLoadMatch(ILGenerator il, int index)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, CtxResolvedMatches); // IQueryMatch[]
+        il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxResolvedMatches); // IQueryMatch[]
         IlEmitterShared.EmitLdcI4(il, index);
         il.Emit(OpCodes.Ldelem_Ref);                  // IQueryMatch
     }
@@ -492,34 +390,34 @@ public static class QueryIlEmitter
     private static void EmitLoadLimit(ILGenerator il)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, CtxLimit);
+        il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxLimit);
     }
 
     /// <summary>Emit: startTick = Stopwatch.GetTimestamp()</summary>
     private static void EmitTimingStart(ILGenerator il, LocalBuilder startTickLocal)
     {
-        il.Emit(OpCodes.Call, GetTimestamp);
+        il.Emit(OpCodes.Call, IlEmitterShared.GetTimestamp);
         il.Emit(OpCodes.Stloc, startTickLocal);
     }
 
-    /// <summary>Emit: RecordTiming(ref ctx, opIndex, startTick); RecordResultCount(ref ctx, opIndex);</summary>
+    /// <summary>Emit: IlEmitterShared.RecordTiming(ref ctx, opIndex, startTick); IlEmitterShared.RecordResultCount(ref ctx, opIndex);</summary>
     private static void EmitTimingEnd(ILGenerator il, int opIndex, LocalBuilder startTickLocal)
     {
         il.Emit(OpCodes.Ldarg_0);         // ref ctx
         IlEmitterShared.EmitLdcI4(il, opIndex);           // opIndex
         il.Emit(OpCodes.Ldloc, startTickLocal); // startTick
-        il.Emit(OpCodes.Call, RecordTiming);
+        il.Emit(OpCodes.Call, IlEmitterShared.RecordTiming);
 
         il.Emit(OpCodes.Ldarg_0);
         IlEmitterShared.EmitLdcI4(il, opIndex);
-        il.Emit(OpCodes.Call, RecordResultCount);
+        il.Emit(OpCodes.Call, IlEmitterShared.RecordResultCount);
     }
 
     private static void EmitCancellationCheck(ILGenerator il)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldflda, CtxToken);
-        il.Emit(OpCodes.Call, ThrowIfCancelled);
+        il.Emit(OpCodes.Ldflda, IlEmitterShared.CtxToken);
+        il.Emit(OpCodes.Call, IlEmitterShared.ThrowIfCancelled);
     }
 
     /// <summary>Emit array-length validation hints at the start of the delegate.
@@ -575,7 +473,7 @@ public static class QueryIlEmitter
         if (maxBitmapSlot >= 0)
         {
             il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, CtxBitmaps);
+            il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxBitmaps);
             IlEmitterShared.EmitLdcI4(il, maxBitmapSlot);
             il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap));
             il.Emit(OpCodes.Pop);
@@ -585,7 +483,7 @@ public static class QueryIlEmitter
         if (maxMatchIndex >= 0)
         {
             il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, CtxResolvedMatches);
+            il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxResolvedMatches);
             IlEmitterShared.EmitLdcI4(il, maxMatchIndex);
             il.Emit(OpCodes.Ldelem_Ref);
             il.Emit(OpCodes.Pop);
@@ -595,7 +493,7 @@ public static class QueryIlEmitter
         if (maxTermSourceIndex >= 0)
         {
             il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, CtxTermSources);
+            il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxTermSources);
             IlEmitterShared.EmitLdcI4(il, maxTermSourceIndex);
             il.Emit(OpCodes.Ldelema, typeof(PostingSource));
             il.Emit(OpCodes.Pop);
@@ -605,7 +503,7 @@ public static class QueryIlEmitter
         if (maxTermsProviderIndex >= 0)
         {
             il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, CtxTermsProviders);
+            il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxTermsProviders);
             IlEmitterShared.EmitLdcI4(il, maxTermsProviderIndex);
             il.Emit(OpCodes.Ldelem_Ref);
             il.Emit(OpCodes.Pop);

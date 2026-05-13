@@ -27,60 +27,6 @@ public static class ResidualScanIlEmitter
     private const BindingFlags AnyInstance =
         BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
 
-    // IPredicateEvaluationContext interface property getters
-    private static readonly MethodInfo CtxLongParams =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualLongParams)).GetGetMethod();
-    private static readonly MethodInfo CtxDoubleParams =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualDoubleParams)).GetGetMethod();
-    private static readonly MethodInfo CtxSliceParams =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualSliceParams)).GetGetMethod();
-    private static readonly MethodInfo CtxFieldRootPages =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualFieldRootPages)).GetGetMethod();
-
-    // EntryTermsReader members
-    private static readonly MethodInfo ReaderReset =
-        typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset));
-    private static readonly MethodInfo ReaderFindNext =
-        typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.FindNext));
-    private static readonly FieldInfo ReaderCurrentLong =
-        typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentLong));
-    private static readonly FieldInfo ReaderCurrentDouble =
-        typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.CurrentDouble));
-    private static readonly FieldInfo ReaderCurrent =
-        typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.Current));
-
-    private static readonly MethodInfo CompactKeyDecoded =
-        typeof(CompactKey).GetMethod(nameof(CompactKey.Decoded), Type.EmptyTypes);
-
-    private static readonly MethodInfo SliceAsReadOnlySpan =
-        typeof(Slice).GetMethod(nameof(Slice.AsReadOnlySpan));
-
-    private static readonly MethodInfo SliceStartsWithHelper =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.SliceStartsWith));
-    private static readonly MethodInfo SliceEndsWithHelper =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.SliceEndsWith));
-
-    private static readonly MethodInfo CheckFieldTermStartsWith =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermStartsWith));
-    private static readonly MethodInfo CheckFieldTermEndsWith =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermEndsWith));
-
-    private static readonly MethodInfo SpanByteSequenceEqual = typeof(System.MemoryExtensions)
-        .GetMethods(BindingFlags.Public | BindingFlags.Static)
-        .First(m => m.Name == nameof(System.MemoryExtensions.SequenceEqual)
-                    && m.IsGenericMethodDefinition
-                    && m.GetParameters().Length == 2
-                    && m.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == typeof(ReadOnlySpan<>)
-                    && m.GetParameters()[1].ParameterType.GetGenericTypeDefinition() == typeof(ReadOnlySpan<>))
-        .MakeGenericMethod(typeof(byte));
-
-    private static readonly MethodInfo SpanByteSequenceCompareTo = typeof(System.MemoryExtensions)
-        .GetMethods(BindingFlags.Public | BindingFlags.Static)
-        .First(m => m.Name == nameof(System.MemoryExtensions.SequenceCompareTo)
-                    && m.IsGenericMethodDefinition
-                    && m.GetParameters().Length == 2)
-        .MakeGenericMethod(typeof(byte));
-
     /// <summary>Emit a residual-scan delegate that evaluates <paramref name="predicates"/>
     /// against each reader in the batch. Passing entry IDs and (optionally) original indexes
     /// are compacted to the front of their spans. Returns the count of survivors.
@@ -273,15 +219,15 @@ public static class ResidualScanIlEmitter
         var foundLabel = il.DefineLabel();
 
         il.Emit(OpCodes.Ldloc, readerRefLocal);
-        il.Emit(OpCodes.Call, ReaderReset);
+        il.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);
 
         // FindNext(ctx.ResidualFieldRootPages[rootIdx])
         il.Emit(OpCodes.Ldloc, readerRefLocal);
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Callvirt, CtxFieldRootPages);
+        il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
         IlEmitterShared.EmitLdcI4(il, rootIdx);
         il.Emit(OpCodes.Ldelem_I8);
-        il.Emit(OpCodes.Call, ReaderFindNext);
+        il.Emit(OpCodes.Call, IlEmitterShared.ReaderFindNext);
 
         switch (pred.CompareOp)
         {
@@ -324,18 +270,18 @@ public static class ResidualScanIlEmitter
                 // Multi-value: iterate ALL terms for the field (DirectScanMatch semantics)
                 il.Emit(OpCodes.Ldloc, readerRefLocal);
                 il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Callvirt, CtxFieldRootPages);
+                il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
                 IlEmitterShared.EmitLdcI4(il, rootIdx);
                 il.Emit(OpCodes.Ldelem_I8);
                 EmitLoadSliceSpan(il, pred.ParamIndex);
-                il.Emit(OpCodes.Call, CheckFieldTermStartsWith);
+                il.Emit(OpCodes.Call, IlEmitterShared.CheckFieldTermStartsWith);
             }
             else
             {
                 // Single-term: compare against current decoded term (CompiledQueryMatch semantics)
                 EmitLoadReaderDecodedSlice(il, readerRefLocal);
                 EmitLoadSliceSpan(il, pred.ParamIndex);
-                il.Emit(OpCodes.Call, SliceStartsWithHelper);
+                il.Emit(OpCodes.Call, IlEmitterShared.SliceStartsWithHelper);
             }
             return;
         }
@@ -346,17 +292,17 @@ public static class ResidualScanIlEmitter
             {
                 il.Emit(OpCodes.Ldloc, readerRefLocal);
                 il.Emit(OpCodes.Ldarg_0);
-                il.Emit(OpCodes.Callvirt, CtxFieldRootPages);
+                il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
                 IlEmitterShared.EmitLdcI4(il, rootIdx);
                 il.Emit(OpCodes.Ldelem_I8);
                 EmitLoadSliceSpan(il, pred.ParamIndex);
-                il.Emit(OpCodes.Call, CheckFieldTermEndsWith);
+                il.Emit(OpCodes.Call, IlEmitterShared.CheckFieldTermEndsWith);
             }
             else
             {
                 EmitLoadReaderDecodedSlice(il, readerRefLocal);
                 EmitLoadSliceSpan(il, pred.ParamIndex);
-                il.Emit(OpCodes.Call, SliceEndsWithHelper);
+                il.Emit(OpCodes.Call, IlEmitterShared.SliceEndsWithHelper);
             }
             return;
         }
@@ -421,12 +367,12 @@ public static class ResidualScanIlEmitter
                     var done = il.DefineLabel();
                     EmitLoadReaderDecodedSlice(il, readerRefLocal);
                     EmitLoadSliceSpan(il, pred.ParamIndex);
-                    il.Emit(OpCodes.Call, SpanByteSequenceCompareTo);
+                    il.Emit(OpCodes.Call, IlEmitterShared.SequenceCompareTo);
                     il.Emit(OpCodes.Ldc_I4_0);
                     il.Emit(OpCodes.Blt, fail);
                     EmitLoadReaderDecodedSlice(il, readerRefLocal);
                     EmitLoadSliceSpan(il, pred.ParamIndex2);
-                    il.Emit(OpCodes.Call, SpanByteSequenceCompareTo);
+                    il.Emit(OpCodes.Call, IlEmitterShared.SequenceCompareTo);
                     il.Emit(OpCodes.Ldc_I4_0);
                     il.Emit(OpCodes.Bgt, fail);
                     il.Emit(OpCodes.Ldc_I4_1);
@@ -440,12 +386,12 @@ public static class ResidualScanIlEmitter
                 {
                     EmitLoadReaderDecodedSlice(il, readerRefLocal);
                     EmitLoadSliceSpan(il, pred.ParamIndex);
-                    il.Emit(OpCodes.Call, SpanByteSequenceEqual);
+                    il.Emit(OpCodes.Call, IlEmitterShared.SequenceEqual);
                     break;
                 }
                 EmitLoadReaderDecodedSlice(il, readerRefLocal);
                 EmitLoadSliceSpan(il, pred.ParamIndex);
-                il.Emit(OpCodes.Call, SpanByteSequenceCompareTo);
+                il.Emit(OpCodes.Call, IlEmitterShared.SequenceCompareTo);
                 il.Emit(OpCodes.Ldc_I4_0);
                 EmitNumericCompareOp(il, pred.CompareOp);
                 break;
@@ -492,26 +438,26 @@ public static class ResidualScanIlEmitter
     private static void EmitLoadReaderCurrentLong(ILGenerator il, LocalBuilder readerRefLocal)
     {
         il.Emit(OpCodes.Ldloc, readerRefLocal);
-        il.Emit(OpCodes.Ldfld, ReaderCurrentLong);
+        il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderCurrentLong);
     }
 
     private static void EmitLoadReaderCurrentDouble(ILGenerator il, LocalBuilder readerRefLocal)
     {
         il.Emit(OpCodes.Ldloc, readerRefLocal);
-        il.Emit(OpCodes.Ldfld, ReaderCurrentDouble);
+        il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderCurrentDouble);
     }
 
     private static void EmitLoadReaderDecodedSlice(ILGenerator il, LocalBuilder readerRefLocal)
     {
         il.Emit(OpCodes.Ldloc, readerRefLocal);
-        il.Emit(OpCodes.Ldfld, ReaderCurrent);
-        il.Emit(OpCodes.Callvirt, CompactKeyDecoded);
+        il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderCurrent);
+        il.Emit(OpCodes.Callvirt, IlEmitterShared.CompactKeyDecoded);
     }
 
     private static void EmitLoadLongParam(ILGenerator il, int index)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Callvirt, CtxLongParams);
+        il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxLongParams);
         IlEmitterShared.EmitLdcI4(il, index);
         il.Emit(OpCodes.Ldelem_I8);
     }
@@ -519,7 +465,7 @@ public static class ResidualScanIlEmitter
     private static void EmitLoadDoubleParam(ILGenerator il, int index)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Callvirt, CtxDoubleParams);
+        il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxDoubleParams);
         IlEmitterShared.EmitLdcI4(il, index);
         il.Emit(OpCodes.Ldelem_R8);
     }
@@ -527,10 +473,10 @@ public static class ResidualScanIlEmitter
     private static void EmitLoadSliceSpan(ILGenerator il, int paramIndex)
     {
         il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Callvirt, CtxSliceParams);
+        il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxSliceParams);
         IlEmitterShared.EmitLdcI4(il, paramIndex);
         il.Emit(OpCodes.Ldelema, typeof(Slice));
-        il.Emit(OpCodes.Call, SliceAsReadOnlySpan);
+        il.Emit(OpCodes.Call, IlEmitterShared.SliceAsReadOnlySpan);
     }
 
 }
