@@ -477,7 +477,7 @@ public class CompiledQueryTests : RavenTestBase
 
         Indexes.WaitForIndexing(store);
 
-        // ORDER BY score() should fall back to old path and work correctly
+        // ORDER BY score() works via the bitmap path
         using (var session = store.OpenAsyncSession())
         {
             var results = await session.Advanced.AsyncRawQuery<TestDoc>(
