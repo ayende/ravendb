@@ -162,6 +162,7 @@ public partial class Hnsw
             long newVectorCount = 0;
             int index = 0;
             float distance = float.NaN;
+            long filterCount = filter.Count;
             while (index < matches.Length && _returnedCandidates < _vectorsSearcher.NumberOfCandidates)
             {
                 if (_currentNode >= indexes.Count)
@@ -169,7 +170,7 @@ public partial class Hnsw
                     // Double the difference between accepted and searched number of candidates.
                     _vectorsSearcher.IncreaseNumberOfCandidates(_vectorsSearcher.NumberOfCandidates - _returnedCandidates);
 
-                    if (_vectorsSearcher.ShouldContinueSearch(filter.Count) == false)
+                    if (_vectorsSearcher.ShouldContinueSearch(filterCount) == false)
                     {
                         break;
                     }

@@ -26,6 +26,8 @@ internal static partial class QueryPlanBuilder
         if (executedMatch is CompiledQueryMatch compiled)
         {
             compiled.GetTelemetry(out timings, out resultCounts, out entryScanAt);
+            // Note: entry-scan tracking is not yet plumbed at this stage.
+            // Count is the final result count, not entries scanned.
             scannedEntries = compiled.Count;
         }
 

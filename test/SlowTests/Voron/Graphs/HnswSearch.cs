@@ -54,7 +54,7 @@ public class HnswSearch(ITestOutputHelper output) : StorageTest(output)
                 numberOfCandidates: totalEntries, qV.ToArray(), minimumSimilarity: 0f, hasFilterMatch: true);
             try
             {
-                var filterBitmap = new RoaringBitmap(Allocator);
+                using var filterBitmap = new RoaringBitmap(Allocator);
                 for (int i = 1; i <= totalEntries; i++)
                     filterBitmap.Add(i);
 
@@ -112,7 +112,7 @@ public class HnswSearch(ITestOutputHelper output) : StorageTest(output)
                 numberOfCandidates: 100, qV.ToArray(), minimumSimilarity: 0f, hasFilterMatch: true);
             try
             {
-                var filterBitmap = new RoaringBitmap(Allocator);
+                using var filterBitmap = new RoaringBitmap(Allocator);
                 for (int i = 1; i <= entriesWithSameVector; i++)
                     filterBitmap.Add(i);
 
