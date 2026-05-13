@@ -28,8 +28,8 @@ public static class QueryPrimitives
     internal const int FillBufferSize = 4096;
 
     // ── IL entry points ──────────────────────────────────────────────
-    // Called from DynamicMethod IL. Take ref CompiledQueryMatch so the
-    // emitter just pushes ldarg.0 + int constants — no per-field ldfld chains.
+    // Called from DynamicMethod IL. Take CompiledQueryMatch by value (ref type)
+    // so the emitter just pushes ldarg.0 + int constants — no per-field ldfld chains.
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
