@@ -5,6 +5,7 @@ using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
 using Voron.Data.RoaringBitmaps;
+using Voron.Data.RoaringBitmaps;
 using Sparrow.Server;
 using Voron;
 using Voron.Impl;
@@ -29,7 +30,7 @@ public class CompiledQueryMatch(
     ByteStringContext allocator,
     bool wantTimings,
     CancellationToken token)
-    : IBitmapQueryMatch, IDisposable
+    : IBitmapQueryMatch, IPredicateEvaluationContext, IDisposable
 {
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
         wantTimings ? compiledPlan.CompiledTimedDelegate : compiledPlan.CompiledDelegate;
@@ -38,7 +39,7 @@ public class CompiledQueryMatch(
     /// CompiledPlan; the predicate-walk + value-type/op dispatch is baked into this
     /// delegate's IL at plan-compile time. Null when the plan has no entry-scan
     /// predicates (in which case the entry-scan path is unreachable).</summary>
-    public readonly EntryScanIlEmitter.CompiledEntryPredicate CompiledEntryPredicate = compiledPlan.CompiledEntryPredicate;
+    public readonly ResidualScanIlEmitter.ResidualScanPredicate CompiledEntryPredicate = compiledPlan.CompiledEntryPredicate;
 
     /// <summary>Sort seek hint — set by the plan builder when WHERE field matches ORDER BY field.
     /// Null when no hint applies.</summary>
@@ -63,6 +64,11 @@ public class CompiledQueryMatch(
     public double[] ScanDoubleParams;
     public Slice[] ScanSliceParams;
     public long[] ScanFieldRootPages;
+
+    long[] IPredicateEvaluationContext.ResidualLongParams => ScanLongParams;
+    double[] IPredicateEvaluationContext.ResidualDoubleParams => ScanDoubleParams;
+    Slice[] IPredicateEvaluationContext.ResidualSliceParams => ScanSliceParams;
+    long[] IPredicateEvaluationContext.ResidualFieldRootPages => ScanFieldRootPages;
 
     // Entry scan telemetry (populated by IL/C# entry scan when it triggers)
     public long EntryScanEntriesScanned;

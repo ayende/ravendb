@@ -14,7 +14,7 @@ namespace Corax.Querying.Planning;
 /// Helper methods called by emitted IL for timing, result tracking, and
 /// the entry-scan iteration loop. The per-entry predicate evaluation is
 /// no longer in this file — it's emitted as specialized IL by
-/// <see cref="EntryScanIlEmitter"/> and reached via
+/// <see cref="ResidualScanIlEmitter"/> and reached via
 /// <c>CompiledQueryMatch.CompiledEntryPredicate</c>.
 /// </summary>
 public static class CompiledQueryHelper
@@ -35,7 +35,7 @@ public static class CompiledQueryHelper
             resultCounts[opIndex] = ctx.Bitmaps[0].Count;
     }
 
-    // ── Slice helpers retained for DirectScanIlEmitter / EntryScanIlEmitter callees ──
+    // ── Slice helpers retained for ResidualScanIlEmitter callees ──
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool SliceStartsWith(ReadOnlySpan<byte> actual, ReadOnlySpan<byte> prefix)
@@ -123,7 +123,7 @@ public static class CompiledQueryHelper
                 if (validCount == 0)
                     continue;
 
-                int passed = predicate(ctx, readers.AsSpan(0, validCount), buffer[..validCount]);
+                int passed = predicate(ctx, readers.AsSpan(0, validCount), buffer[..validCount], Span<int>.Empty);
                 ctx.EntryScanEntriesPassed += passed;
                 for (int i = 0; i < passed; i++)
                     targetBitmap.Add(buffer[i]);

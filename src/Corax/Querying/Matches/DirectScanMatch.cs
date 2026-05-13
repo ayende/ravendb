@@ -24,17 +24,8 @@ namespace Corax.Querying.Matches;
 /// access, then predicates are checked in that order. A parallel index array tracks
 /// original positions so results are emitted in field-value (sort) order.
 /// </summary>
-public sealed class DirectScanMatch : IQueryMatch, IDisposable
+public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, IDisposable
 {
-    /// <summary>Compiled residual-predicate evaluator. Walks the readers/entryIds spans,
-    /// compacts surviving (entryId, originalIndex) pairs to the front of both spans, and
-    /// returns the count of survivors. Per-predicate logic is specialized at emit time.</summary>
-    public delegate int CompiledResidualScan(
-        DirectScanMatch self,
-        Span<EntryTermsReader> readers,
-        Span<long> entryIds,
-        Span<int> originalIndexes);
-
     private readonly IndexSearcher _searcher;
     private readonly LowLevelTransaction _llt;
     private readonly IQueryMatch _drivingMatch;  // TermsProviderMatch or similar that walks the driving tree
@@ -43,11 +34,11 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
 
     // Residual predicate checking
     private readonly ScanPredicateInfo[] _residualPredicates;
-    private readonly long[] _longParams;
-    private readonly double[] _doubleParams;
-    private readonly Slice[] _sliceParams;
-    private readonly long[] _fieldRootPages;
-    private readonly CompiledResidualScan _compiledResidualScan;
+    internal readonly long[] ScanLongParams;
+    internal readonly double[] ScanDoubleParams;
+    internal readonly Slice[] ScanSliceParams;
+    internal readonly long[] ScanFieldRootPages;
+    private readonly ResidualScanIlEmitter.ResidualScanPredicate _compiledResidualScan;
 
     // Dedup for multi-value fields
     private RoaringBitmap _emittedBitmap;
@@ -83,15 +74,15 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
         _llt = searcher.Transaction.LowLevelTransaction;
         _drivingMatch = drivingMatch;
         _residualPredicates = residualPredicates;
-        _longParams = longParams;
-        _doubleParams = doubleParams;
-        _sliceParams = sliceParams;
-        _fieldRootPages = fieldRootPages;
+        ScanLongParams = longParams;
+        ScanDoubleParams = doubleParams;
+        ScanSliceParams = sliceParams;
+        ScanFieldRootPages = fieldRootPages;
         _take = take;
         _allocator = searcher.Allocator;
         _emittedBitmap = new RoaringBitmap(_allocator);
         _compiledResidualScan = residualPredicates is { Length: > 0 }
-            ? DirectScanIlEmitter.EmitResidualScanDelegate(residualPredicates)
+            ? ResidualScanIlEmitter.EmitDelegate(residualPredicates, multiValueStartsWith: true)
             : null;
     }
 
@@ -269,4 +260,9 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
         _emittedBitmap.Dispose();
         (_drivingMatch as IDisposable)?.Dispose();
     }
+
+    long[] IPredicateEvaluationContext.ResidualLongParams => ScanLongParams;
+    double[] IPredicateEvaluationContext.ResidualDoubleParams => ScanDoubleParams;
+    Slice[] IPredicateEvaluationContext.ResidualSliceParams => ScanSliceParams;
+    long[] IPredicateEvaluationContext.ResidualFieldRootPages => ScanFieldRootPages;
 }
