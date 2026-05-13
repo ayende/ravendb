@@ -161,12 +161,12 @@ public static class QueryIlEmitter
         int entryScanOpIndex = -1;
 
         // stackalloc long[FillBufferSize]
-        EmitLdcI4(il, QueryPrimitives.FillBufferSize);
+        IlEmitterShared.EmitLdcI4(il, QueryPrimitives.FillBufferSize);
         il.Emit(OpCodes.Conv_U);
         il.Emit(OpCodes.Sizeof, typeof(long));
         il.Emit(OpCodes.Mul_Ovf_Un);
         il.Emit(OpCodes.Localloc);
-        EmitLdcI4(il, QueryPrimitives.FillBufferSize);
+        IlEmitterShared.EmitLdcI4(il, QueryPrimitives.FillBufferSize);
         il.Emit(OpCodes.Newobj, SpanCtor);
         il.Emit(OpCodes.Stloc, bufferLocal);
 
@@ -334,7 +334,7 @@ public static class QueryIlEmitter
                     il.Emit(OpCodes.Ldc_I4, start);
                     il.Emit(OpCodes.Ldarg_0);
                     il.Emit(OpCodes.Ldfld, CtxInRangeCounts);
-                    EmitLdcI4(il, rangeIdx);
+                    IlEmitterShared.EmitLdcI4(il, rangeIdx);
                     il.Emit(OpCodes.Ldelem_I4);
                     il.Emit(OpCodes.Add);
                     il.Emit(OpCodes.Stloc, endVar);
@@ -378,7 +378,7 @@ public static class QueryIlEmitter
                     il.Emit(OpCodes.Ldc_I4, start);
                     il.Emit(OpCodes.Ldarg_0);
                     il.Emit(OpCodes.Ldfld, CtxInRangeCounts);
-                    EmitLdcI4(il, rangeIdx);
+                    IlEmitterShared.EmitLdcI4(il, rangeIdx);
                     il.Emit(OpCodes.Ldelem_I4);
                     il.Emit(OpCodes.Add);
                     il.Emit(OpCodes.Stloc, endVar);
@@ -477,7 +477,7 @@ public static class QueryIlEmitter
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldfld, CtxBitmaps);  // RoaringBitmap[]
-        EmitLdcI4(il, slot);
+        IlEmitterShared.EmitLdcI4(il, slot);
         il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap)); // ref RoaringBitmap
     }
 
@@ -485,7 +485,7 @@ public static class QueryIlEmitter
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Ldfld, CtxResolvedMatches); // IQueryMatch[]
-        EmitLdcI4(il, index);
+        IlEmitterShared.EmitLdcI4(il, index);
         il.Emit(OpCodes.Ldelem_Ref);                  // IQueryMatch
     }
 
@@ -506,12 +506,12 @@ public static class QueryIlEmitter
     private static void EmitTimingEnd(ILGenerator il, int opIndex, LocalBuilder startTickLocal)
     {
         il.Emit(OpCodes.Ldarg_0);         // ref ctx
-        EmitLdcI4(il, opIndex);           // opIndex
+        IlEmitterShared.EmitLdcI4(il, opIndex);           // opIndex
         il.Emit(OpCodes.Ldloc, startTickLocal); // startTick
         il.Emit(OpCodes.Call, RecordTiming);
 
         il.Emit(OpCodes.Ldarg_0);
-        EmitLdcI4(il, opIndex);
+        IlEmitterShared.EmitLdcI4(il, opIndex);
         il.Emit(OpCodes.Call, RecordResultCount);
     }
 
@@ -576,7 +576,7 @@ public static class QueryIlEmitter
         {
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldfld, CtxBitmaps);
-            EmitLdcI4(il, maxBitmapSlot);
+            IlEmitterShared.EmitLdcI4(il, maxBitmapSlot);
             il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap));
             il.Emit(OpCodes.Pop);
         }
@@ -586,7 +586,7 @@ public static class QueryIlEmitter
         {
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldfld, CtxResolvedMatches);
-            EmitLdcI4(il, maxMatchIndex);
+            IlEmitterShared.EmitLdcI4(il, maxMatchIndex);
             il.Emit(OpCodes.Ldelem_Ref);
             il.Emit(OpCodes.Pop);
         }
@@ -596,7 +596,7 @@ public static class QueryIlEmitter
         {
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldfld, CtxTermSources);
-            EmitLdcI4(il, maxTermSourceIndex);
+            IlEmitterShared.EmitLdcI4(il, maxTermSourceIndex);
             il.Emit(OpCodes.Ldelema, typeof(PostingSource));
             il.Emit(OpCodes.Pop);
         }
@@ -606,31 +606,9 @@ public static class QueryIlEmitter
         {
             il.Emit(OpCodes.Ldarg_0);
             il.Emit(OpCodes.Ldfld, CtxTermsProviders);
-            EmitLdcI4(il, maxTermsProviderIndex);
+            IlEmitterShared.EmitLdcI4(il, maxTermsProviderIndex);
             il.Emit(OpCodes.Ldelem_Ref);
             il.Emit(OpCodes.Pop);
-        }
-    }
-
-    private static void EmitLdcI4(ILGenerator il, int value)
-    {
-        switch (value)
-        {
-            case 0: il.Emit(OpCodes.Ldc_I4_0); break;
-            case 1: il.Emit(OpCodes.Ldc_I4_1); break;
-            case 2: il.Emit(OpCodes.Ldc_I4_2); break;
-            case 3: il.Emit(OpCodes.Ldc_I4_3); break;
-            case 4: il.Emit(OpCodes.Ldc_I4_4); break;
-            case 5: il.Emit(OpCodes.Ldc_I4_5); break;
-            case 6: il.Emit(OpCodes.Ldc_I4_6); break;
-            case 7: il.Emit(OpCodes.Ldc_I4_7); break;
-            case 8: il.Emit(OpCodes.Ldc_I4_8); break;
-            default:
-                if (value is >= -128 and <= 127)
-                    il.Emit(OpCodes.Ldc_I4_S, (sbyte)value);
-                else
-                    il.Emit(OpCodes.Ldc_I4, value);
-                break;
         }
     }
 

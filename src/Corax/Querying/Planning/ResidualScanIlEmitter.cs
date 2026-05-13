@@ -86,11 +86,34 @@ public static class ResidualScanIlEmitter
     /// are compacted to the front of their spans. Returns the count of survivors.
     /// When <paramref name="multiValueStartsWith"/> is true, StartsWith/EndsWith compare
     /// against ALL field terms (DirectScanMatch semantics); when false, they compare against
-    /// the current decoded term only (CompiledQueryMatch semantics).</summary>
+    /// the current decoded term only (CompiledQueryMatch semantics).
+    /// <paramref name="explainSource"/> receives a human-readable pseudocode description
+    /// of the predicates, matching the format used by <see cref="QueryILEmitter.EmitDelegate"/>.</summary>
+    /// <summary>Emit without generating explain text (convenience overload).</summary>
     public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, bool multiValueStartsWith = false)
     {
+        return EmitDelegate(predicates, out _, multiValueStartsWith);
+    }
+
+    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string explainSource, bool multiValueStartsWith = false)
+    {
         if (predicates == null || predicates.Length == 0)
+        {
+            explainSource = "// No residual predicates";
             return null;
+        }
+
+        var sb = new System.Text.StringBuilder();
+        sb.AppendLine("// Entry scan — residual predicate evaluation (emitted IL).");
+        for (int p = 0; p < predicates.Length; p++)
+        {
+            ref readonly var pred = ref predicates[p];
+            sb.Append($"//   [{p}] Field '{pred.FieldName}' {pred.ValueType} {pred.CompareOp}");
+            if (pred.SubPredicates != null)
+                sb.Append($" ({pred.Group} group, {pred.SubPredicates.Length} branches)");
+            sb.AppendLine($" at rootPage=[rootIdx]");
+        }
+        explainSource = sb.ToString();
 
         var dm = new DynamicMethod(
             "ResidualScan",
@@ -256,7 +279,7 @@ public static class ResidualScanIlEmitter
         il.Emit(OpCodes.Ldloc, readerRefLocal);
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Callvirt, CtxFieldRootPages);
-        EmitLdcI4(il, rootIdx);
+        IlEmitterShared.EmitLdcI4(il, rootIdx);
         il.Emit(OpCodes.Ldelem_I8);
         il.Emit(OpCodes.Call, ReaderFindNext);
 
@@ -302,7 +325,7 @@ public static class ResidualScanIlEmitter
                 il.Emit(OpCodes.Ldloc, readerRefLocal);
                 il.Emit(OpCodes.Ldarg_0);
                 il.Emit(OpCodes.Callvirt, CtxFieldRootPages);
-                EmitLdcI4(il, rootIdx);
+                IlEmitterShared.EmitLdcI4(il, rootIdx);
                 il.Emit(OpCodes.Ldelem_I8);
                 EmitLoadSliceSpan(il, pred.ParamIndex);
                 il.Emit(OpCodes.Call, CheckFieldTermStartsWith);
@@ -324,7 +347,7 @@ public static class ResidualScanIlEmitter
                 il.Emit(OpCodes.Ldloc, readerRefLocal);
                 il.Emit(OpCodes.Ldarg_0);
                 il.Emit(OpCodes.Callvirt, CtxFieldRootPages);
-                EmitLdcI4(il, rootIdx);
+                IlEmitterShared.EmitLdcI4(il, rootIdx);
                 il.Emit(OpCodes.Ldelem_I8);
                 EmitLoadSliceSpan(il, pred.ParamIndex);
                 il.Emit(OpCodes.Call, CheckFieldTermEndsWith);
@@ -489,7 +512,7 @@ public static class ResidualScanIlEmitter
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Callvirt, CtxLongParams);
-        EmitLdcI4(il, index);
+        IlEmitterShared.EmitLdcI4(il, index);
         il.Emit(OpCodes.Ldelem_I8);
     }
 
@@ -497,7 +520,7 @@ public static class ResidualScanIlEmitter
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Callvirt, CtxDoubleParams);
-        EmitLdcI4(il, index);
+        IlEmitterShared.EmitLdcI4(il, index);
         il.Emit(OpCodes.Ldelem_R8);
     }
 
@@ -505,30 +528,9 @@ public static class ResidualScanIlEmitter
     {
         il.Emit(OpCodes.Ldarg_0);
         il.Emit(OpCodes.Callvirt, CtxSliceParams);
-        EmitLdcI4(il, paramIndex);
+        IlEmitterShared.EmitLdcI4(il, paramIndex);
         il.Emit(OpCodes.Ldelema, typeof(Slice));
         il.Emit(OpCodes.Call, SliceAsReadOnlySpan);
     }
 
-    private static void EmitLdcI4(ILGenerator il, int value)
-    {
-        switch (value)
-        {
-            case 0: il.Emit(OpCodes.Ldc_I4_0); break;
-            case 1: il.Emit(OpCodes.Ldc_I4_1); break;
-            case 2: il.Emit(OpCodes.Ldc_I4_2); break;
-            case 3: il.Emit(OpCodes.Ldc_I4_3); break;
-            case 4: il.Emit(OpCodes.Ldc_I4_4); break;
-            case 5: il.Emit(OpCodes.Ldc_I4_5); break;
-            case 6: il.Emit(OpCodes.Ldc_I4_6); break;
-            case 7: il.Emit(OpCodes.Ldc_I4_7); break;
-            case 8: il.Emit(OpCodes.Ldc_I4_8); break;
-            default:
-                if (value is >= -128 and <= 127)
-                    il.Emit(OpCodes.Ldc_I4_S, (sbyte)value);
-                else
-                    il.Emit(OpCodes.Ldc_I4, value);
-                break;
-        }
-    }
 }
