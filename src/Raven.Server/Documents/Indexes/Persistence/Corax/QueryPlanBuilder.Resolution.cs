@@ -283,7 +283,6 @@ internal static partial class QueryPlanBuilder
 
         var compiledMatch = new CompiledQueryMatch(
             compiledPlan, plan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches, termSources, termsProviders,
-            longParams, doubleParams, sliceParams, fieldRootPages,
             indexSearcher, planParams.Allocator, wantTimings, token)
         {
             InRangeCounts = plan.InRangeCounts,

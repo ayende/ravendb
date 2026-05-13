@@ -22,10 +22,6 @@ public class CompiledQueryMatch(
     IQueryMatch[] resolvedMatches,
     PostingSource[] postingSources,
     ITermsProvider[] termsProviders,
-    long[] longParams,
-    double[] doubleParams,
-    Slice[] sliceParams,
-    long[] fieldRootPages,
     IndexSearcher searcher,
     ByteStringContext allocator,
     bool wantTimings,
@@ -35,22 +31,12 @@ public class CompiledQueryMatch(
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
         wantTimings ? compiledPlan.CompiledTimedDelegate : compiledPlan.CompiledDelegate;
 
-    /// <summary>Per-entry predicate evaluator for the entry-scan path. Set from the
-    /// CompiledPlan; the predicate-walk + value-type/op dispatch is baked into this
-    /// delegate's IL at plan-compile time. Null when the plan has no entry-scan
-    /// predicates (in which case the entry-scan path is unreachable).</summary>
     public readonly ResidualScanIlEmitter.ResidualScanPredicate CompiledEntryPredicate = compiledPlan.CompiledEntryPredicate;
 
-    /// <summary>Sort seek hint — set by the plan builder when WHERE field matches ORDER BY field.
-    /// Null when no hint applies.</summary>
     public SortHint SortHint;
     public readonly IQueryMatch[] ResolvedMatches = resolvedMatches;
     public readonly PostingSource[] PostingSources = postingSources;
     public readonly ITermsProvider[] TermsProviders = termsProviders;
-    public readonly long[] LongParams = longParams;
-    public readonly double[] DoubleParams = doubleParams;
-    public readonly Slice[] SliceParams = sliceParams;
-    public readonly long[] FieldRootPages = fieldRootPages;
 
     /// <summary>Per-execution term counts for OrRange/AndRange ops. Each range op
     /// stores its index into this array instead of a hardcoded count in the IL.

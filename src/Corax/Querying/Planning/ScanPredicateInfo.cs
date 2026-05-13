@@ -9,8 +9,9 @@ public enum GroupKind : byte
 }
 
 /// <summary>One entry-scan predicate. Numeric predicates emit an IL-inlined compare
-/// against ctx.LongParams[ParamIndex] / DoubleParams[...]; slice predicates emit
-/// an inline byte-sequence comparison. Between uses both ParamIndex slots.
+/// against ctx.ResidualLongParams[ParamIndex] / ResidualDoubleParams[...];
+/// slice predicates emit an inline byte-sequence comparison. Between uses both
+/// ParamIndex slots.
 /// SubPredicates field is non-null for OR-group and AND-group predicates;
 /// <see cref="Group"/> picks which.</summary>
 public struct ScanPredicateInfo
