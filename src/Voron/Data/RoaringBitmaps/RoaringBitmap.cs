@@ -620,12 +620,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 LazyOrContainerInPlace(ref left, ref leftType, ref right, rightType);
                 break;
             }
-            case (_, ContainerType.Range):
+            case (ContainerType.Bitmap, ContainerType.Range):
             {
-                // At this point left is Bitmap (Array/ArrayUnsorted handled above, Range handled earlier).
                 // Materialize the range into a stack buffer and bitwise-OR in place — safe because
                 // (Bitmap, Bitmap) does not steal the right-hand buffer.
-                Debug.Assert(leftType is ContainerType.Bitmap, "Only Bitmap should reach the (_, Range) wildcard; Array/ArrayUnsorted cases handled above.");
                 ulong* stackBitmap = stackalloc ulong[BitmapContainerSizeInUInt64];
                 ContainerEntry temp2 = MaterializeRangeIntoBuffer(ref right, stackBitmap);
                 LazyOrContainerInPlace(ref left, ref leftType, ref temp2, ContainerType.Bitmap);

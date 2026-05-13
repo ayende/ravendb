@@ -9,6 +9,12 @@ public sealed class CompiledPlan
     /// first `include timings()` request. Null until then.</summary>
     public QueryIlEmitter.CompiledExecuteDelegate CompiledTimedDelegate { get; set; }
 
+    /// <summary>IL-emitted per-entry predicate evaluator used by the entry-scan path.
+    /// Bakes in the ScanPredicateInfo[] structure (value types, compare ops, AND/OR
+    /// sub-groups, fieldRootPages indexing) so the per-entry hot path has no switches.
+    /// Null when the plan has no entry-scan predicates.</summary>
+    public EntryScanIlEmitter.CompiledEntryPredicate CompiledEntryPredicate { get; init; }
+
     /* A single query may be represented by different compiled plans, because the shape
      * of the data is different. Consider `WHERE Tag = $tag and Published = $published`.
      * If $tag is a popular term, and $published is true, that usually means that we

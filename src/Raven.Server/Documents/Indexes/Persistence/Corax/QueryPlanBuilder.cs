@@ -1819,13 +1819,13 @@ internal static partial class QueryPlanBuilder
                     if (subPred == null) return null;
                     branches.Add(subPred.Value);
                 }
-                // SubPredicates for AND group — RunEntryScan checks ALL must pass
                 return new ScanPredicateInfo
                 {
                     FieldName = clause.FieldName ?? clause.AndSubClauses[0].FieldName,
                     ValueType = ScanValueType.Long,
                     CompareOp = ScanCompareOp.Equal,
-                    SubPredicates = branches.ToArray()
+                    SubPredicates = branches.ToArray(),
+                    Group = GroupKind.And
                 };
             }
 
@@ -1858,7 +1858,8 @@ internal static partial class QueryPlanBuilder
                 return new ScanPredicateInfo
                 {
                     FieldName = clause.OrSubClauses[0].FieldName,
-                    SubPredicates = branches.ToArray()
+                    SubPredicates = branches.ToArray(),
+                    Group = GroupKind.Or
                 };
             }
         }

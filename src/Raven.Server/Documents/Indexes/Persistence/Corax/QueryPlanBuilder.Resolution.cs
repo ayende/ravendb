@@ -266,6 +266,7 @@ internal static partial class QueryPlanBuilder
             {
                 CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, emitTimings: false),
                 CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
+                CompiledEntryPredicate = EntryScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos),
                 ExplainSource = explainText,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
@@ -869,7 +870,6 @@ internal static partial class QueryPlanBuilder
         return matches;
     }
 
-    /// <summary>Resolve a range clause with explicit forward/backward direction for DirectScanMatch.</summary>
     private static IQueryMatch ResolveRangeClauseWithDirection(ClauseInfo clause, ClauseExecution exec,
         IndexSearcher indexSearcher, QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams, bool forward)
     {
@@ -3025,7 +3025,7 @@ internal static partial class QueryPlanBuilder
 
             if (seekValue != null)
             {
-                match.SetSortHint(clause.FieldName, seekValue, inclusive);
+                match.SortHint = new SortHint(clause.FieldName, seekValue, inclusive);
                 return;
             }
         }

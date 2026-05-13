@@ -11,6 +11,9 @@ using Voron.Impl;
 
 namespace Corax.Querying.Matches;
 
+/// <summary>Sort seek hint — value to seek to in the sort field, plus whether the bound is inclusive.</summary>
+public sealed record SortHint(string FieldName, object Value, bool Inclusive);
+
 public class CompiledQueryMatch(
     CompiledPlan compiledPlan,
     int bitmapCount,
@@ -31,25 +34,15 @@ public class CompiledQueryMatch(
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
         wantTimings ? compiledPlan.CompiledTimedDelegate : compiledPlan.CompiledDelegate;
 
-    // Sort seek hint — set by the plan builder when WHERE field matches ORDER BY field
-    private string _seekFieldName;
-    private object _seekValue;
-    private bool _seekInclusive;
+    /// <summary>Per-entry predicate evaluator for the entry-scan path. Set from the
+    /// CompiledPlan; the predicate-walk + value-type/op dispatch is baked into this
+    /// delegate's IL at plan-compile time. Null when the plan has no entry-scan
+    /// predicates (in which case the entry-scan path is unreachable).</summary>
+    public readonly EntryScanIlEmitter.CompiledEntryPredicate CompiledEntryPredicate = compiledPlan.CompiledEntryPredicate;
 
-    public void SetSortHint(string fieldName, object value, bool inclusive)
-    {
-        _seekFieldName = fieldName;
-        _seekValue = value;
-        _seekInclusive = inclusive;
-    }
-
-    public bool TryGetSortHint(out string fieldName, out object value, out bool inclusive)
-    {
-        fieldName = _seekFieldName;
-        value = _seekValue;
-        inclusive = _seekInclusive;
-        return _seekFieldName != null;
-    }
+    /// <summary>Sort seek hint — set by the plan builder when WHERE field matches ORDER BY field.
+    /// Null when no hint applies.</summary>
+    public SortHint SortHint;
     public readonly IQueryMatch[] ResolvedMatches = resolvedMatches;
     public readonly PostingSource[] PostingSources = postingSources;
     public readonly ITermsProvider[] TermsProviders = termsProviders;
@@ -193,7 +186,6 @@ public class CompiledQueryMatch(
         }
     }
 
-    /// <summary>Get execution telemetry for external inspection graph builders.</summary>
     public void GetTelemetry(out long[] timings, out long[] resultCounts, out int entryScanTakenAtOp)
     {
         timings = Timings;

@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -25,6 +26,15 @@ namespace Corax.Querying.Matches;
 /// </summary>
 public sealed class DirectScanMatch : IQueryMatch, IDisposable
 {
+    /// <summary>Compiled residual-predicate evaluator. Walks the readers/entryIds spans,
+    /// compacts surviving (entryId, originalIndex) pairs to the front of both spans, and
+    /// returns the count of survivors. Per-predicate logic is specialized at emit time.</summary>
+    public delegate int CompiledResidualScan(
+        DirectScanMatch self,
+        Span<EntryTermsReader> readers,
+        Span<long> entryIds,
+        Span<int> originalIndexes);
+
     private readonly IndexSearcher _searcher;
     private readonly LowLevelTransaction _llt;
     private readonly IQueryMatch _drivingMatch;  // TermsProviderMatch or similar that walks the driving tree
@@ -37,6 +47,7 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
     private readonly double[] _doubleParams;
     private readonly Slice[] _sliceParams;
     private readonly long[] _fieldRootPages;
+    private readonly CompiledResidualScan _compiledResidualScan;
 
     // Dedup for multi-value fields
     private RoaringBitmap _emittedBitmap;
@@ -79,6 +90,9 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
         _take = take;
         _allocator = searcher.Allocator;
         _emittedBitmap = new RoaringBitmap(_allocator);
+        _compiledResidualScan = residualPredicates is { Length: > 0 }
+            ? DirectScanIlEmitter.EmitResidualScanDelegate(residualPredicates)
+            : null;
     }
 
     public long Count => _totalMatched;
@@ -127,67 +141,72 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
             }
             else
             {
-                // Sort batch by entry ID for page locality, track original indices
+                // Sort batch by entry ID for page locality, track original indices.
+                // sortedIds gets the sorted entry IDs; indices[i] maps back to the
+                // original position in batch (field-value sort order).
+                Span<long> sortedIds = stackalloc long[read];
+                batch.Slice(0, read).CopyTo(sortedIds);
                 for (int i = 0; i < read; i++)
                     indices[i] = i;
+                sortedIds.Sort(indices.Slice(0, read));
 
-                // Simple insertion sort (batch is small, ~256 entries)
-                for (int i = 1; i < read; i++)
-                {
-                    int key = indices[i];
-                    long keyVal = batch[key];
-                    int j = i - 1;
-                    while (j >= 0 && batch[indices[j]] > keyVal)
-                    {
-                        indices[j + 1] = indices[j];
-                        j--;
-                    }
-                    indices[j + 1] = key;
-                }
-
-                // Batch-resolve entry IDs to container locations for sequential page access.
-                // Sort by entry ID first (already done via indices), resolve, then Container.GetAll.
                 passed.Slice(0, read).Clear();
 
                 long t1 = Stopwatch.GetTimestamp();
 
-                // Build sorted entry ID array for batch resolution
-                Span<long> sortedIds = stackalloc long[read];
-                for (int s = 0; s < read; s++)
-                    sortedIds[s] = batch[indices[s]];
-
-                // Batch resolve to container locations
+                // Batch resolve to container locations for sequential page access
                 Span<long> containerLocs = stackalloc long[read];
                 _searcher.ResolveEntryLocations(sortedIds, containerLocs);
 
-                // Batch fetch entry data via Container.GetAll (sequential page access)
                 Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[read];
                 Container.GetAll(_llt, containerLocs, spans, -1, _llt.PageLocator);
 
-                // Initialize special term markers (needed for EntryTermsReader)
                 _searcher.InitializeSpecialTermsMarkers();
 
-                for (int s = 0; s < read; s++)
+                // Pack readers/entryIds/origIndexes for entries that have valid locations
+                // and are not already emitted. Invalid/dedup entries are counted but skipped.
+                var readersArr = ArrayPool<EntryTermsReader>.Shared.Rent(read);
+                Span<long> packedIds = stackalloc long[read];
+                Span<int> packedOrigIdx = stackalloc int[read];
+                int packed = 0;
+                try
                 {
-                    int origIdx = indices[s];
-                    long entryId = batch[origIdx];
-
-                    if (_emittedBitmap.Contains(entryId))
-                        continue; // dedup
-
-                    if (containerLocs[s] == -1 || spans[s].Address == null)
+                    for (int s = 0; s < read; s++)
                     {
-                        _entriesRejected++;
-                        continue;
+                        int origIdx = indices[s];
+                        long entryId = batch[origIdx];
+
+                        if (_emittedBitmap.Contains(entryId))
+                            continue; // dedup — silently drop
+
+                        if (containerLocs[s] == -1 || spans[s].Address == null)
+                        {
+                            _entriesRejected++;
+                            continue;
+                        }
+
+                        readersArr[packed] = new EntryTermsReader(_llt,
+                            _searcher.NullTermsMarkers, _searcher.NonExistingTermsMarkers,
+                            spans[s].Address, spans[s].Length, _searcher.DictionaryId, _searcher.VectorFieldsMarkers, null);
+                        packedIds[packed] = entryId;
+                        packedOrigIdx[packed] = origIdx;
+                        packed++;
                     }
 
-                    var reader = new EntryTermsReader(_llt,
-                        _searcher.NullTermsMarkers, _searcher.NonExistingTermsMarkers,
-                        spans[s].Address, spans[s].Length, _searcher.DictionaryId, _searcher.VectorFieldsMarkers, null);
-                    if (CheckAllPredicates(ref reader))
-                        passed[origIdx] = true;
-                    else
-                        _entriesRejected++;
+                    int matched = _compiledResidualScan(this,
+                        readersArr.AsSpan(0, packed),
+                        packedIds[..packed],
+                        packedOrigIdx[..packed]);
+
+                    _entriesRejected += packed - matched;
+
+                    // Mark which original positions survived. Iterate batch in sort order to emit.
+                    for (int k = 0; k < matched; k++)
+                        passed[packedOrigIdx[k]] = true;
+                }
+                finally
+                {
+                    ArrayPool<EntryTermsReader>.Shared.Return(readersArr, clearArray: true);
                 }
                 _entryScanTicks += Stopwatch.GetTimestamp() - t1;
 
@@ -210,53 +229,6 @@ public sealed class DirectScanMatch : IQueryMatch, IDisposable
 
         _totalMatched += count;
         return count;
-    }
-
-    private bool CheckAllPredicates(ref EntryTermsReader reader)
-    {
-        for (int p = 0; p < _residualPredicates.Length; p++)
-        {
-            ref readonly var pred = ref _residualPredicates[p];
-            reader.Reset();
-
-            if (reader.FindNext(_fieldRootPages[pred.ParamIndex]) == false)
-            {
-                // Field not found in this entry
-                if (pred.CompareOp == ScanCompareOp.NotEqual)
-                    continue; // NOT having the field satisfies NotEquals
-                return false; // All other ops fail when field is missing
-            }
-
-            if (EvaluatePredicate(ref reader, in pred) == false)
-                return false;
-        }
-        return true;
-    }
-
-    private bool EvaluatePredicate(ref EntryTermsReader reader, in ScanPredicateInfo pred)
-    {
-        // StartsWith/EndsWith need to iterate all terms for the field (multi-value support)
-        if (pred.CompareOp == ScanCompareOp.StartsWith)
-            return CompiledQueryHelper.CheckFieldTermStartsWith(ref reader, _fieldRootPages[pred.ParamIndex], _sliceParams[pred.ParamIndex].AsReadOnlySpan());
-        if (pred.CompareOp == ScanCompareOp.EndsWith)
-            return CompiledQueryHelper.CheckFieldTermEndsWith(ref reader, _fieldRootPages[pred.ParamIndex], _sliceParams[pred.ParamIndex].AsReadOnlySpan());
-
-        return pred.ValueType switch
-        {
-            ScanValueType.Long when pred.CompareOp == ScanCompareOp.Between =>
-                CompiledQueryHelper.CompareLongBetween(reader.CurrentLong, _longParams[pred.ParamIndex], _longParams[pred.ParamIndex2]),
-            ScanValueType.Long =>
-                CompiledQueryHelper.CompareLong(reader.CurrentLong, _longParams[pred.ParamIndex], pred.CompareOp),
-            ScanValueType.Double when pred.CompareOp == ScanCompareOp.Between =>
-                CompiledQueryHelper.CompareDoubleBetween(reader.CurrentDouble, _doubleParams[pred.ParamIndex], _doubleParams[pred.ParamIndex2]),
-            ScanValueType.Double =>
-                CompiledQueryHelper.CompareDouble(reader.CurrentDouble, _doubleParams[pred.ParamIndex], pred.CompareOp),
-            ScanValueType.Slice when pred.CompareOp == ScanCompareOp.Between =>
-                CompiledQueryHelper.CompareSliceBetween(reader.Current.Decoded(), _sliceParams[pred.ParamIndex].AsReadOnlySpan(), _sliceParams[pred.ParamIndex2].AsReadOnlySpan()),
-            ScanValueType.Slice =>
-                CompiledQueryHelper.CompareSlice(reader.Current.Decoded(), _sliceParams[pred.ParamIndex].AsReadOnlySpan(), pred.CompareOp),
-            _ => false
-        };
     }
 
     public int AndWith(Span<long> buffer, int matches) => throw new NotSupportedException("DirectScanMatch produces final sorted results");

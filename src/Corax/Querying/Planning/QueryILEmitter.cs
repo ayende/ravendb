@@ -485,21 +485,11 @@ public static class QueryIlEmitter
             il.Emit(OpCodes.Ldc_I4, entryScanOpIndex);
             il.Emit(OpCodes.Stfld, CtxEntryScanTakenAtOp);
 
-            // Call CompiledQueryHelper.RunEntryScan(ctx, ref bitmap[0], ref bitmap[1],
-            //   ctx.ScanPredicateInfos, ctx.ScanLongParams, ctx.ScanDoubleParams, ctx.ScanSliceParams, ctx.ScanFieldRootPages)
+            // Call CompiledQueryHelper.RunEntryScan(ctx, ref bitmap[0], ref bitmap[1]).
+            // Predicate dispatch lives in ctx.CompiledEntryPredicate (IL-emitted per plan).
             il.Emit(OpCodes.Ldarg_0);                  // ctx
             EmitLoadBitmapRef(il, 0);                   // ref bitmap[0]
             EmitLoadBitmapRef(il, 1);                   // ref bitmap[1]
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ScanPredicateInfos))!);
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ScanLongParams))!);
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ScanDoubleParams))!);
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ScanSliceParams))!);
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ScanFieldRootPages))!);
             il.Emit(OpCodes.Call, RunEntryScanMethod);
 
             // Swap bitmap[0] and bitmap[1], clear bitmap[1]

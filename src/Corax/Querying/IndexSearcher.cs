@@ -160,8 +160,6 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         FieldCache = new FieldsCache(_transaction, _fieldsTree);
     }
     
-    /// <summary>Special term markers and dictionary ID exposed for batch EntryTermsReader construction
-    /// in DirectScanMatch (avoids per-entry GetEntryTermsReader overhead).</summary>
     public HashSet<long> NullTermsMarkers { get { InitializeSpecialTermsMarkers(); return _nullTermsMarkers; } }
     public HashSet<long> NonExistingTermsMarkers { get { InitializeSpecialTermsMarkers(); return _nonExistingTermsMarkers; } }
     public long[] VectorFieldsMarkers { get { InitializeSpecialTermsMarkers(); return _vectorFieldsMarkers; } }
