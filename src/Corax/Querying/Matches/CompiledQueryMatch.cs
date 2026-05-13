@@ -5,7 +5,6 @@ using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
 using Voron.Data.RoaringBitmaps;
-using Voron.Data.RoaringBitmaps;
 using Sparrow.Server;
 using Voron;
 using Voron.Impl;

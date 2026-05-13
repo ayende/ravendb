@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
+using Corax.Querying.Primitives;
 using Sparrow;
 using Sparrow.Server;
 using Voron;
@@ -105,6 +106,11 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
         Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         Span<int> indices = stackalloc int[QueryPrimitives.EntryScanBatchSize];
         Span<bool> passed = stackalloc bool[QueryPrimitives.EntryScanBatchSize];
+        Span<long> sortedIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+        Span<long> containerLocs = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+        Span<UnmanagedSpan> containerSpans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
+        Span<long> packedIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+        Span<int> packedOrigIdx = stackalloc int[QueryPrimitives.EntryScanBatchSize];
 
         while (count < remaining)
         {
@@ -133,27 +139,27 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
             }
             else
             {
-                Span<long> sortedIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-                batch[..read].CopyTo(sortedIds);
+                var sorted = sortedIds[..read];
+                batch[..read].CopyTo(sorted);
                 for (int j = 0; j < read; j++)
                     indices[j] = j;
-                sortedIds.Sort(indices[..read]);
+                sorted.Sort(indices[..read]);
 
                 passed[..read].Clear();
 
                 long t1 = Stopwatch.GetTimestamp();
 
-                Span<long> containerLocs = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-                _searcher.ResolveEntryLocations(sortedIds, containerLocs[..read]);
+                var locs = containerLocs[..read];
+                _searcher.ResolveEntryLocations(sorted, locs);
 
-                Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
-                Container.GetAll(_llt, containerLocs[..read], spans, -1, _llt.PageLocator);
+                var spans = containerSpans[..read];
+                Container.GetAll(_llt, locs, spans, -1, _llt.PageLocator);
 
                 _searcher.InitializeSpecialTermsMarkers();
 
                 var readersArr = ArrayPool<EntryTermsReader>.Shared.Rent(read);
-                Span<long> packedIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-                Span<int> packedOrigIdx = stackalloc int[QueryPrimitives.EntryScanBatchSize];
+                var pIds = packedIds[..read];
+                var pIdxs = packedOrigIdx[..read];
                 int packed = 0;
                 try
                 {
@@ -165,7 +171,7 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
                         if (_emittedBitmap.Contains(entryId))
                             continue; // dedup — silently drop
 
-                        if (containerLocs[s] == -1 || spans[s].Address == null)
+                        if (locs[s] == -1 || spans[s].Address == null)
                         {
                             _entriesRejected++;
                             continue;
@@ -174,22 +180,21 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
                         readersArr[packed] = new EntryTermsReader(_llt,
                             _searcher.NullTermsMarkers, _searcher.NonExistingTermsMarkers,
                             spans[s].Address, spans[s].Length, _searcher.DictionaryId, _searcher.VectorFieldsMarkers, null);
-                        packedIds[packed] = entryId;
-                        packedOrigIdx[packed] = origIdx;
+                        pIds[packed] = entryId;
+                        pIdxs[packed] = origIdx;
                         packed++;
                     }
 
                     int matched = _compiledResidualScan(this,
                         readersArr.AsSpan(0, packed),
-                        packedIds[..packed],
-                        packedOrigIdx[..packed],
+                        pIds,
+                        pIdxs,
                         _predicateCount);
 
                     _entriesRejected += packed - matched;
 
-                    // Mark which original positions survived. Iterate batch in sort order to emit.
                     for (int k = 0; k < matched; k++)
-                        passed[packedOrigIdx[k]] = true;
+                        passed[pIdxs[k]] = true;
                 }
                 finally
                 {
