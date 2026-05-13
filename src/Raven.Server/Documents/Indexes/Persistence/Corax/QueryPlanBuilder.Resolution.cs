@@ -2692,7 +2692,7 @@ internal static partial class QueryPlanBuilder
             fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
         }
 
-        if (residualArray != null && compiledPlan.CompiledDirectScanPredicate == null)
+        if (compiledPlan.CompiledDirectScanPredicate == null && residualArray != null)
             compiledPlan.CompiledDirectScanPredicate =
                 ResidualScanIlEmitter.EmitDelegate(residualArray, multiValueStartsWith: true);
 
@@ -2700,7 +2700,7 @@ internal static partial class QueryPlanBuilder
             indexSearcher, drivingMatch, residualArray,
             longParams, doubleParams, sliceParams, fieldRootPages,
             take: -1,
-            precompiledDelegate: compiledPlan.CompiledDirectScanPredicate)  // take is set by SortingMatch or the caller
+            precompiledDelegate: compiledPlan.CompiledDirectScanPredicate)
         {
             DrivingTreeName = compoundFieldName,
             DrivingClause = $"{field1Name} = '{field1ValueStr}'",
@@ -2911,7 +2911,7 @@ internal static partial class QueryPlanBuilder
             fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
         }
 
-        if (residualArray != null && compiledPlan.CompiledDirectScanPredicate == null)
+        if (compiledPlan.CompiledDirectScanPredicate == null && residualArray != null)
             compiledPlan.CompiledDirectScanPredicate =
                 ResidualScanIlEmitter.EmitDelegate(residualArray, multiValueStartsWith: true);
 

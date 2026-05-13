@@ -44,9 +44,6 @@ public static class IlEmitterShared
     public static readonly MethodInfo AndWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndWith),
             [typeof(RoaringBitmap).MakeByRefType()])!;
-    public static readonly MethodInfo OrWith =
-        typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.OrWith),
-            [typeof(RoaringBitmap).MakeByRefType()])!;
     public static readonly MethodInfo LazyOrWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.LazyOrWith),
             System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
@@ -68,9 +65,6 @@ public static class IlEmitterShared
     public static readonly MethodInfo ThrowIfCancelled = typeof(CancellationToken).GetMethod(nameof(CancellationToken.ThrowIfCancellationRequested))!;
 
     // IndexSearcher — for entry scan
-    public static readonly MethodInfo GetEntryTermsReader =
-        typeof(IndexSearcher).GetMethod(nameof(IndexSearcher.GetEntryTermsReader),
-            [typeof(long), typeof(Page).MakeByRefType(), typeof(CompactKey)])!;
 
     // CompiledQueryMatch typed parameter arrays
     public static readonly FieldInfo CtxResolvedMatches =

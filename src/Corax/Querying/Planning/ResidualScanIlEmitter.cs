@@ -24,8 +24,7 @@ public static class ResidualScanIlEmitter
         Span<long> entryIds,
         Span<int> originalIndexes);
 
-    private const BindingFlags AnyInstance =
-        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+
 
     /// <summary>Emit a residual-scan delegate that evaluates <paramref name="predicates"/>
     /// against each reader in the batch. Passing entry IDs and (optionally) original indexes
