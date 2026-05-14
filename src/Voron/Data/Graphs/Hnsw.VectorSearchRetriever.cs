@@ -171,15 +171,12 @@ public partial class Hnsw
                 if (_alreadySeen.Contains(matches[i]))
                     continue;
                 _alreadySeen.Add(matches[i]);
-                if (pos != i)
-                {
-                    matches[pos] = matches[i];
-                    distances[pos] = distances[i];
-                }
+                matches[pos] = matches[i];
+                distances[pos] = distances[i];
                 pos++;
             }
 
-            return pos;
+            return pos - index;
         }
 
         private int FillWithFilter(Span<long> matches, Span<float> distances, ref RoaringBitmap filter)
