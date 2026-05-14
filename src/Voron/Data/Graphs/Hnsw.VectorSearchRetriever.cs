@@ -5,9 +5,9 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Sparrow;
 using Sparrow.Server;
-using Sparrow.Server.Collections;
 using Voron.Data.Containers;
 using Voron.Data.PostingLists;
+using Voron.Data.RoaringBitmaps;
 using Voron.Global;
 using Voron.Util;
 using Voron.Util.PFor;
@@ -30,6 +30,7 @@ public partial class Hnsw
         private readonly IHnswSearcher _vectorsSearcher;
         private readonly Memory<byte> _vector;
         private IEnumerator<bool> _resultsEnumerator;
+        private RoaringBitmap _alreadySeen;
 
         public SimilarityMethod? SimilarityMethod => _searchState?.Options.SimilarityMethod;
         
@@ -48,6 +49,7 @@ public partial class Hnsw
             _searchState = searchState;
             _vectorsSearcher = vectorsSearcher;
             _vector = vector;
+            _alreadySeen = new (searchState.Llt.Allocator);
             _postingListResults = new(_searchState.Llt.Allocator);
             _pforDecoder = new(searchState.Llt.Allocator);
             _maximumDistance = searchState.MinimumSimilarityToDistance(minimumSimilarity);
@@ -62,15 +64,12 @@ public partial class Hnsw
         public void DistancesToScores(Span<float> distances) => _searchState.DistancesToScores(distances);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int Fill(Span<long> matches, Span<float> distances, GrowableBitArray? filter)
+        public int Fill(Span<long> matches, Span<float> distances, ref RoaringBitmap filter)
         {
-            if (filter != null)
-                return Fill(matches, distances, filter.Value);
-            
-            return Fill(matches, distances);
+            return FillWithFilter(matches, distances, ref filter);
         }
         
-        private int Fill(Span<long> matches, Span<float> distances)
+        public int Fill(Span<long> matches, Span<float> distances)
         {
             long newVectorCount = 0;
             if (_vectorsSearcher.TryGetCurrentCandidates(out var indexes) == false)
@@ -93,6 +92,8 @@ public partial class Hnsw
                         continue;
                     }
 
+                    total = FilterDuplicates(matches, distances, index, total);
+
                     distances.Slice(index, total).Fill(distance);
                     index += total;
                     continue;
@@ -100,11 +101,12 @@ public partial class Hnsw
 
                 if (_currentMatchesIndex < _postingListResults.Count)
                 {
-                    var copy = Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
-                    _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, copy);
-                    distances.Slice(index, copy).Fill(distance);
-                    index += copy;
-                    _currentMatchesIndex += copy;
+                    var amountRead = Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
+                    _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, amountRead);
+                    var dedupedAmount = FilterDuplicates(matches, distances, index, amountRead);
+                    distances.Slice(index, dedupedAmount).Fill(distance);
+                    index += dedupedAmount;
+                    _currentMatchesIndex += amountRead;
                     if (_currentMatchesIndex == _postingListResults.Count)
                     {
                         _currentMatchesIndex = 0;
@@ -134,9 +136,12 @@ public partial class Hnsw
                         _currentNode++;
                         continue;
                     case Constants.Graphs.VectorId.Single: // single item posting list
+                        _currentNode++;
+                        if(_alreadySeen.Contains(rawPostingListId))
+                            continue;
+                        _alreadySeen.Add(rawPostingListId);
                         distances[index] = distance;
                         matches[index++] = rawPostingListId;
-                        _currentNode++;
                         continue;
                     case Constants.Graphs.VectorId.SmallPostingList: // small posting list
                         Debug.Assert(_postingListResults.Count is 0 && _currentMatchesIndex is 0);
@@ -156,8 +161,25 @@ public partial class Hnsw
             Registration.InternalEntryIdToEntryId(matches.Slice(0, index));
             return index;
         }
-        
-        private int Fill(Span<long> matches, Span<float> distances, GrowableBitArray filter)
+
+        private int FilterDuplicates(Span<long> matches, Span<float> distances, int index, int total)
+        {
+            int pos = index;
+            int end = index + total;
+            for (int i = index; i < end; i++)
+            {
+                if (_alreadySeen.Contains(matches[i]))
+                    continue;
+                _alreadySeen.Add(matches[i]);
+                matches[pos] = matches[i];
+                distances[pos] = distances[i];
+                pos++;
+            }
+
+            return pos - index;
+        }
+
+        private int FillWithFilter(Span<long> matches, Span<float> distances, ref RoaringBitmap filter)
         {
             if (_vectorsSearcher.TryGetCurrentCandidates(out var indexes) == false)
                 return 0;
@@ -171,18 +193,18 @@ public partial class Hnsw
                 {
                     // Double the difference between accepted and searched number of candidates.
                     _vectorsSearcher.IncreaseNumberOfCandidates(_vectorsSearcher.NumberOfCandidates - _returnedCandidates);
-                    
+
                     if (_vectorsSearcher.ShouldContinueSearch(filter.Count) == false)
                     {
                         break;
                     }
-                    
+
                     if (_resultsEnumerator.MoveNext() == false)
                     {
-                        _resultsEnumerator = _vectorsSearcher.Search().GetEnumerator();    
+                        _resultsEnumerator = _vectorsSearcher.Search().GetEnumerator();
                         _resultsEnumerator.MoveNext();
                     }
-                    
+
                     // If we fetch more than once, we've no guarantee that the whole set of results are sorted by distances.
                     // We could explore not previously seen nodes that are closer to the query vector than the ones we've already seen.
                     IsSortedByDistance = false;
@@ -193,7 +215,7 @@ public partial class Hnsw
                         // so we end the search right here.
                         break;
                     }
-                    
+
                     // Reset the current node index
                     _currentNode = 0;
                 }
@@ -222,6 +244,10 @@ public partial class Hnsw
                         if (filter.Contains(matches[currentDocIdx]) == false)
                             continue;
 
+                        if (_alreadySeen.Contains(matches[currentDocIdx]))
+                            continue;
+                        _alreadySeen.Add(matches[currentDocIdx]);
+
                         _foundCandidateInCurrentSmallPostingList = true;
                         matches[index] = matches[currentDocIdx];
                         distances[index] = distance;
@@ -238,6 +264,10 @@ public partial class Hnsw
                     {
                         if (filter.Contains(_postingListResults[_currentMatchesIndex]) == false)
                             continue;
+
+                        if (_alreadySeen.Contains(_postingListResults[_currentMatchesIndex]))
+                            continue;
+                        _alreadySeen.Add(_postingListResults[_currentMatchesIndex]);
 
                         matches[index] = _postingListResults[_currentMatchesIndex];
                         distances[index] = distance;
@@ -260,10 +290,10 @@ public partial class Hnsw
                 var nodeIdx = indexes[_currentNode];
                 ref var node = ref _searchState.GetNodeByIndex(nodeIdx);
                 var rawPostingListId = node.PostingListId & Constants.Graphs.VectorId.ContainerType;
-                
+
                 distance = _searchState.QueryDistance(_vector.Span, nodeIdx, ref newVectorCount);
                 Debug.Assert(newVectorCount == 0, "newVectorCount == 0");
-                
+
                 if (distance > _maximumDistance)
                 {
                     _currentNode++;
@@ -280,6 +310,10 @@ public partial class Hnsw
                         var rawEntry = Registration.InternalEntryIdToEntryId(rawPostingListId);
                         if (filter.Contains(rawEntry) == false)
                             continue;
+
+                        if (_alreadySeen.Contains(rawEntry))
+                            continue;
+                        _alreadySeen.Add(rawEntry);
 
                         distances[index] = distance;
                         matches[index++] = rawEntry;
@@ -307,6 +341,7 @@ public partial class Hnsw
         
         public void Dispose()
         {
+            _alreadySeen.Dispose();
             _postingListResults.Dispose();
             _pforDecoder.Dispose();
             _resultsEnumerator?.Dispose();
