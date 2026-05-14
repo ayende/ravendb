@@ -101,6 +101,18 @@ public unsafe partial struct RoaringBitmap : IDisposable
     private const int ContainerValueMask = 0xFFFF;
     private const int LazyCardinality = -1;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static int ResolveCardinality(ref ContainerEntry entry)
+    {
+        int card = entry.Cardinality;
+        if (card == LazyCardinality)
+        {
+            card = BitmapContainerCardinality(entry.Data);
+            entry.Cardinality = card;
+        }
+        return card;
+    }
+
     private const int InitialArrayContainerSizeInBytes = 64; // 32 shorts — minimum for SIMD linear scan without scalar tail
     private const int SimdAlignment = 32; // Vector256 width in bytes
     private const int SimdLinearScanThreshold = 64; // below this, SIMD linear scan beats binary/quad search
@@ -933,12 +945,8 @@ public unsafe partial struct RoaringBitmap : IDisposable
             if (type == ContainerType.Free)
                 continue;
 
-            int card = entry.Cardinality;
-            if (card is LazyCardinality)
-            {
-                Debug.Assert(type is ContainerType.Bitmap);
-                entry.Cardinality = card = BitmapContainerCardinality(entry.Data);
-            }
+            Debug.Assert(type is ContainerType.Bitmap);
+            int card = ResolveCardinality(ref entry);
 
             if (type == ContainerType.ArrayUnsorted)
             {   // Sort-on-first-select for ArrayUnsorted
@@ -1210,12 +1218,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 ref ContainerEntry myEntry = ref _entries[mySlot];
                 ref ContainerEntry otherEntry = ref other._entries[otherSlot];
                 AndContainerInPlace(ref myEntry, ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
-                int card = myEntry.Cardinality;
-                if (card == LazyCardinality)
-                {
-                    card = BitmapContainerCardinality(myEntry.Data);
-                    myEntry.Cardinality = card;
-                }
+                int card = ResolveCardinality(ref myEntry);
                 if (card == 0)
                     DonateStorageThenFreeContainer(key, mySlot, ref other);
             }
@@ -1259,12 +1262,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 ref ContainerEntry myEntry = ref _entries[mySlot];
                 ref ContainerEntry otherEntry = ref other._entries[otherSlot];
                 AndContainerInPlace(ref myEntry, ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
-                int card = myEntry.Cardinality;
-                if (card == LazyCardinality)
-                {
-                    card = BitmapContainerCardinality(myEntry.Data);
-                    myEntry.Cardinality = card;
-                }
+                int card = ResolveCardinality(ref myEntry);
                 if (card == 0)
                     DonateStorageThenFreeContainer(key, mySlot, ref other);
                 else
