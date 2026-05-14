@@ -688,6 +688,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             }
                             else if (take > 0 && query.Metadata.IsDistinct == false
                                 && query.SkipStatistics
+                                && query.Metadata.Query.Filter == null
                                 && queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch compiledMatch)
                             {
                                 // No ORDER BY, no DISTINCT, and client doesn't need exact total —
