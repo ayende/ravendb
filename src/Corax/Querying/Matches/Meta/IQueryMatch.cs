@@ -15,23 +15,6 @@ public enum QueryCountConfidence : int
     High = 2,
 }
 
-public static class QueryConfidenceExtensions
-{
-    public static QueryCountConfidence Min(this QueryCountConfidence c1, QueryCountConfidence c2)
-    {
-        if (c1 < c2)
-            return c1;
-        return c2;
-    }
-
-    public static QueryCountConfidence Max(this QueryCountConfidence c1, QueryCountConfidence c2)
-    {
-        if (c1 > c2)
-            return c1;
-        return c2;
-    }
-}
-
 public interface IQueryMatch
 {
     long Count { get; }

@@ -2,33 +2,13 @@
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
-using System.Numerics;
 using System.Runtime.CompilerServices;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
-using Corax.Querying.Matches.SortingMatches.Meta;
 using Sparrow;
 
 namespace Corax.Querying.Matches
 {
-    public struct BoostingComparer : IMatchComparer
-    {
-        public MatchCompareFieldType FieldType => MatchCompareFieldType.Score;
-
-        public FieldMetadata Field => throw new NotSupportedException($"{nameof(Field)} is not supported for {nameof(BoostingComparer)}");
-
-        public int CompareNumerical<T>(T sx, T sy) where T : unmanaged, INumber<T>
-        {
-            return sy.CompareTo(sx);
-        }
-
-        public int CompareSequence(ReadOnlySpan<byte> sx, ReadOnlySpan<byte> sy)
-        {
-            throw new NotSupportedException($"{nameof(CompareSequence)} is not supported for {nameof(BoostingComparer)}");
-        }
-    }
-
-
     //We should set inner type via generic but since we don't do that in QueryBuilder (we use interfaces all the time) let's skip that. 
     //This should be fixed when we introduce something similar to IL ( RavenDB-19568)
     [DebuggerDisplay("{DebugView,nq}")]
