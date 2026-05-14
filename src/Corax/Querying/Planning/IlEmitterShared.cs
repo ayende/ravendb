@@ -193,7 +193,9 @@ public static class IlEmitterShared
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void InitializeIndices(Span<int> indices, int read)
     {
-        Debug.Assert(((read + 7) & ~7) <= indices.Length, "SIMD write past indices span");
+        if (((read + 7) & ~7) > indices.Length)
+            throw new ArgumentOutOfRangeException(nameof(read), $"SIMD store needs {(read + 7) & ~7} slots but span has {indices.Length}");
+
         ref int ptr = ref MemoryMarshal.GetReference(indices);
 
         var countVec = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);

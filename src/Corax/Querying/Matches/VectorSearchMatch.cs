@@ -46,6 +46,8 @@ public struct VectorSearchMatch : IQueryMatch
     private bool _returnedAllResults = false;
     private int _positionOnPersistedValues = 0;
     private bool _isEmpty;
+    private bool _emittedBitmapState;
+    private RoaringBitmap _emittedBitmap;
     
     
     /// <summary>
@@ -154,12 +156,35 @@ public struct VectorSearchMatch : IQueryMatch
     {
         if (_vectorRetrieverInitialized == false)
             InitializeVectorSearch();
-        
+
         if (_isEmpty)
             return 0;
-        
+
         if (CanStreamResults) // case when we do not care about scores.
-            return FillDiscardSimilarity(matches);
+        {
+            var read = FillDiscardSimilarity(matches);
+            if (read <= 1)
+                return read;
+
+            if (_emittedBitmapState == false)
+            {
+                _emittedBitmapState = true;
+                _emittedBitmap = new RoaringBitmap(_indexSearcher.Allocator);
+            }
+
+            int writeIdx = 0;
+            for (int i = 0; i < read; i++)
+            {
+                var docId = matches[i];
+                if (_emittedBitmap.Contains(docId))
+                    continue;
+                _emittedBitmap.Add(docId);
+                if (writeIdx != i)
+                    matches[writeIdx] = matches[i];
+                writeIdx++;
+            }
+            return writeIdx;
+        }
 
         if (_resultsPersisted == false)
             FillAndPersistResults();
@@ -196,26 +221,34 @@ public struct VectorSearchMatch : IQueryMatch
     {
         if (_returnedAllResults || _isEmpty)
             return 0;
-        
+
         if (_distances.Capacity < sizeof(float) * matches.Length)
             CreateDistanceBuffer(matches.Length);
 
         var distancesBuffer = _distances.GetSpace();
-        
-        var read = _hasFilterResults ? _vectorSearchRetriever.Fill(matches, distancesBuffer, ref _filterResults) : _vectorSearchRetriever.Fill(matches, distancesBuffer);
-        
-        if (read == 0)
+
+        int read;
+        while (true)
         {
-            _returnedAllResults = true;
-            _distances.Dispose();
-            _distances = default;
-            Dispose();
-            return 0;
+            read = _hasFilterResults
+                ? _vectorSearchRetriever.Fill(matches, distancesBuffer, ref _filterResults)
+                : _vectorSearchRetriever.Fill(matches, distancesBuffer);
+
+            if (read == 0)
+            {
+                _returnedAllResults = true;
+                _distances.Dispose();
+                _distances = default;
+                Dispose();
+                return 0;
+            }
+
+            read = Sorting.SortAndMinOnDuplicates(matches[..read], distancesBuffer[..read]);
+            distancesBuffer[..read].Sort(matches[..read]);
+
+            if (read > 0)
+                return read;
         }
-        
-        read = Sorting.SortAndMinOnDuplicates(matches[..read], distancesBuffer[..read]);
-        distancesBuffer[..read].Sort(matches[..read]);
-        return read;
     }
 
     private void CreateDistanceBuffer(int length)
@@ -357,6 +390,8 @@ public struct VectorSearchMatch : IQueryMatch
 
     private void Dispose()
     {
+        if (_emittedBitmapState)
+            _emittedBitmap.Dispose();
         if (_scanningQuery)
             _nodesIdsToScan.Dispose();
         if (_hasFilterResults && _ownsFilterResults)
