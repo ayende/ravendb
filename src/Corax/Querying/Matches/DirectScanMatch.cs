@@ -19,8 +19,8 @@ namespace Corax.Querying.Matches;
 /// <summary>
 /// Walks a driving tree in sort order, optionally checking residual predicates per entry
 /// via stored field reads. Two subclasses handle the residual/no-residual cases:
-/// <see cref="DirectScanNoResidualMatch"/> (simple pass-through) and
-/// <see cref="DirectScanResidualMatch"/> (evaluates compiled predicate delegate).
+/// <see cref="DirectScanSimpleMatch"/> (simple pass-through) and
+/// <see cref="DirectScanFilteredMatch"/> (evaluates compiled predicate delegate).
 /// </summary>
 public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
 {
@@ -31,7 +31,6 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
     protected long TotalMatched;
 
     protected RoaringBitmap EmittedBitmap;
-    protected readonly ByteStringContext Allocator;
 
     protected long TreeEntriesScanned;
     protected long EntriesPassedFilter;
@@ -53,8 +52,8 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
         Llt = searcher.Transaction.LowLevelTransaction;
         DrivingMatch = drivingMatch;
         Take = take;
-        Allocator = searcher.Allocator;
-        EmittedBitmap = new RoaringBitmap(Allocator);
+        ByteStringContext allocator = searcher.Allocator;
+        EmittedBitmap = new RoaringBitmap(allocator);
     }
 
     public long Count => TotalMatched;
@@ -102,11 +101,8 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
 }
 
 /// <summary>DirectScan with no residual predicates — simple dedup + pass-through.</summary>
-public sealed class DirectScanNoResidualMatch : DirectScanMatchBase
+public sealed class DirectScanSimpleMatch(IndexSearcher searcher, IQueryMatch drivingMatch, int take) : DirectScanMatchBase(searcher, drivingMatch, take)
 {
-    public DirectScanNoResidualMatch(IndexSearcher searcher, IQueryMatch drivingMatch, int take)
-        : base(searcher, drivingMatch, take) { }
-
     [SkipLocalsInit]
     public override unsafe int Fill(Span<long> matches)
     {
@@ -161,32 +157,17 @@ public sealed class DirectScanNoResidualMatch : DirectScanMatchBase
 /// evaluating ALL baked-in predicates — re-evaluating the driving-clause
 /// predicates is harmless since the tree scan already matched them.
 /// </summary>
-public sealed class DirectScanResidualMatch : DirectScanMatchBase, IPredicateEvaluationContext
+public sealed class DirectScanFilteredMatch(
+    IndexSearcher searcher,
+    IQueryMatch drivingMatch,
+    long[] longParams,
+    double[] doubleParams,
+    Slice[] sliceParams,
+    long[] fieldRootPages,
+    int take,
+    ResidualScanIlEmitter.ResidualScanPredicate precompiledDelegate)
+    : DirectScanMatchBase(searcher, drivingMatch, take), IPredicateEvaluationContext
 {
-    internal readonly long[] ScanLongParams;
-    internal readonly double[] ScanDoubleParams;
-    internal readonly Slice[] ScanSliceParams;
-    internal readonly long[] ScanFieldRootPages;
-    private readonly ResidualScanIlEmitter.ResidualScanPredicate _compiledResidualScan;
-
-    public DirectScanResidualMatch(
-        IndexSearcher searcher,
-        IQueryMatch drivingMatch,
-        long[] longParams,
-        double[] doubleParams,
-        Slice[] sliceParams,
-        long[] fieldRootPages,
-        int take,
-        ResidualScanIlEmitter.ResidualScanPredicate precompiledDelegate)
-        : base(searcher, drivingMatch, take)
-    {
-        ScanLongParams = longParams;
-        ScanDoubleParams = doubleParams;
-        ScanSliceParams = sliceParams;
-        ScanFieldRootPages = fieldRootPages;
-        _compiledResidualScan = precompiledDelegate;
-    }
-
     [SkipLocalsInit]
     public override unsafe int Fill(Span<long> matches)
     {
@@ -264,7 +245,7 @@ public sealed class DirectScanResidualMatch : DirectScanMatchBase, IPredicateEva
                     packed++;
                 }
 
-                int matched = _compiledResidualScan(this,
+                int matched = precompiledDelegate(this,
                     readersArr.AsSpan(0, packed),
                     packedIds[..packed],
                     packedOrigIdx[..packed]);
@@ -299,8 +280,8 @@ public sealed class DirectScanResidualMatch : DirectScanMatchBase, IPredicateEva
         return count;
     }
 
-    long[] IPredicateEvaluationContext.ResidualLongParams => ScanLongParams;
-    double[] IPredicateEvaluationContext.ResidualDoubleParams => ScanDoubleParams;
-    Slice[] IPredicateEvaluationContext.ResidualSliceParams => ScanSliceParams;
-    long[] IPredicateEvaluationContext.ResidualFieldRootPages => ScanFieldRootPages;
+    long[] IPredicateEvaluationContext.ResidualLongParams => longParams;
+    double[] IPredicateEvaluationContext.ResidualDoubleParams => doubleParams;
+    Slice[] IPredicateEvaluationContext.ResidualSliceParams => sliceParams;
+    long[] IPredicateEvaluationContext.ResidualFieldRootPages => fieldRootPages;
 }

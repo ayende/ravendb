@@ -2693,12 +2693,12 @@ internal static partial class QueryPlanBuilder
         }
 
         global::Corax.Querying.Matches.DirectScanMatchBase directScan = residualArray != null
-            ? new global::Corax.Querying.Matches.DirectScanResidualMatch(
+            ? new global::Corax.Querying.Matches.DirectScanFilteredMatch(
                 indexSearcher, drivingMatch,
                 longParams, doubleParams, sliceParams, fieldRootPages,
                 take: -1,
                 precompiledDelegate: compiledPlan.CompiledEntryPredicate)
-            : new global::Corax.Querying.Matches.DirectScanNoResidualMatch(
+            : new global::Corax.Querying.Matches.DirectScanSimpleMatch(
                 indexSearcher, drivingMatch, take: -1);
         directScan.DrivingTreeName = compoundFieldName;
         directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
@@ -2910,12 +2910,12 @@ internal static partial class QueryPlanBuilder
 
         var ds = residualArray != null
             ? (global::Corax.Querying.Matches.DirectScanMatchBase)
-                new global::Corax.Querying.Matches.DirectScanResidualMatch(
+                new global::Corax.Querying.Matches.DirectScanFilteredMatch(
                     indexSearcher, drivingMatch,
                     longParams, doubleParams, sliceParams, fieldRootPages,
                     take: -1,
                     precompiledDelegate: compiledPlan.CompiledEntryPredicate)
-            : new global::Corax.Querying.Matches.DirectScanNoResidualMatch(
+            : new global::Corax.Querying.Matches.DirectScanSimpleMatch(
                 indexSearcher, drivingMatch, take: -1);
         ds.DrivingTreeName = sortFieldName;
         ds.DrivingClause = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
