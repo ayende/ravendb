@@ -40,7 +40,6 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
     internal readonly Slice[] ScanSliceParams;
     internal readonly long[] ScanFieldRootPages;
     private readonly ResidualScanIlEmitter.ResidualScanPredicate _compiledResidualScan;
-    private readonly int _predicateCount;
 
     // Dedup for multi-value fields
     private RoaringBitmap _emittedBitmap;
@@ -71,8 +70,7 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
         Slice[] sliceParams,
         long[] fieldRootPages,
         int take,
-        ResidualScanIlEmitter.ResidualScanPredicate precompiledDelegate,
-        int predicateCount)
+        ResidualScanIlEmitter.ResidualScanPredicate precompiledDelegate)
     {
         _searcher = searcher;
         _llt = searcher.Transaction.LowLevelTransaction;
@@ -85,7 +83,6 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
         _take = take;
         _allocator = searcher.Allocator;
         _emittedBitmap = new RoaringBitmap(_allocator);
-        _predicateCount = predicateCount;
         _compiledResidualScan = precompiledDelegate;
     }
 
@@ -187,9 +184,8 @@ public sealed class DirectScanMatch : IQueryMatch, IPredicateEvaluationContext, 
 
                     int matched = _compiledResidualScan(this,
                         readersArr.AsSpan(0, packed),
-                        pIds,
-                        pIdxs,
-                        _predicateCount);
+                        packedIds[..packed],
+                        packedOrigIdx[..packed]);
 
                     _entriesRejected += packed - matched;
 
