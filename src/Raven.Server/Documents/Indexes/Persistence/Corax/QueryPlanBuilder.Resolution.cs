@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -259,8 +260,8 @@ internal static partial class QueryPlanBuilder
         {
             compiledPlan = new CompiledPlan
             {
-                CompiledDelegate = EmitDelegate(plan, out var explainText),
-                CompiledTimedDelegate = EmitTimedDelegate(plan),
+                CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, emitTimings: false),
+                CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
                 CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanExplain),
 
                 ExplainSource = explainText + "\n" + scanExplain,
@@ -316,12 +317,6 @@ internal static partial class QueryPlanBuilder
 
         return result;
     }
-
-    private static QueryIlEmitter.CompiledExecuteDelegate EmitDelegate(QueryExecution plan, out string explainSource) =>
-        QueryIlEmitter.EmitDelegate(plan, out explainSource, emitTimings: false);
-
-    private static QueryIlEmitter.CompiledExecuteDelegate EmitTimedDelegate(QueryExecution plan) =>
-        QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true);
 
     /// <summary>
     /// Build a query match from a sub-expression (e.g. the inner BinaryExpression
@@ -469,7 +464,7 @@ internal static partial class QueryPlanBuilder
             _ => boostType switch
             {
                 ParamValueType.Long => (long)boostVal,
-                _ when float.TryParse(boostVal.ToString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float parsed) => parsed,
+                _ when float.TryParse(boostVal.ToString(), NumberStyles.Float, CultureInfo.InvariantCulture, out float parsed) => parsed,
                 _ => 1f
             }
         };
@@ -1530,7 +1525,7 @@ internal static partial class QueryPlanBuilder
                 clauseIdx++;
             }
 
-            ClauseInfo matchingClause = clauses != null && clauseIdx < clauses.Count ? clauses[clauseIdx] : null;
+            ClauseInfo matchingClause = clauseIdx < clauses.Count ? clauses[clauseIdx] : null;
             ClauseExecution matchingExec = execs != null && clauseIdx < execs.Length ? execs[clauseIdx] : null;
             clauseIdx++;
             ExtractParamsFromPredicate(pred, matchingClause, matchingExec, indexSearcher, plan, longs, doubles, slices, roots);
@@ -2225,7 +2220,7 @@ internal static partial class QueryPlanBuilder
 
                 // Build composite key
                 int totalLen = field1Bytes.Length + field2Bytes.Length + 1;
-                if (totalLen > global::Corax.Constants.Terms.MaxLength) continue;
+                if (totalLen > Constants.Terms.MaxLength) continue;
 
                 var compositeKey = new byte[totalLen];
                 field1Bytes.CopyTo(compositeKey, 0);
@@ -2446,7 +2441,7 @@ internal static partial class QueryPlanBuilder
         // Build the prefix bytes for field1's value.
         // String: analyzed via field1's analyzer. Numeric: Bits.SwapBytes big-endian encoding.
         Voron.Slice analyzedPrefix;
-        string field1ValueStr = null;
+        string field1ValueStr;
         switch (packed.ValueType)
         {
             case PackedParam.TypeString:
@@ -2470,7 +2465,7 @@ internal static partial class QueryPlanBuilder
             case PackedParam.TypeDouble:
             {
                 double dblVal = plan.DoubleValues[packed.Param1];
-                field1ValueStr = dblVal.ToString();
+                field1ValueStr = dblVal.ToString(CultureInfo.InvariantCulture);
                 long sortable = Sparrow.Binary.Bits.DoubleToSortableLong(dblVal);
                 var bytes = new byte[sizeof(long)];
                 System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(bytes, Sparrow.Binary.Bits.SwapBytes(sortable));
@@ -2570,57 +2565,57 @@ internal static partial class QueryPlanBuilder
                 else
                 {
 
-                // Build low and high composite keys
-                int prefixLen = analyzedPrefix.Size;
-                int field2Len = field2Bytes.Length;
-                int keyLen = prefixLen + field2Len + 1; // +1 for field1 length byte
-                int highField2Len = field2HighBytes?.Length ?? field2Len;
-                int highKeyLen = prefixLen + highField2Len + 1;
+                    // Build low and high composite keys
+                    int prefixLen = analyzedPrefix.Size;
+                    int field2Len = field2Bytes.Length;
+                    int keyLen = prefixLen + field2Len + 1; // +1 for field1 length byte
+                    int highField2Len = field2HighBytes?.Length ?? field2Len;
+                    int highKeyLen = prefixLen + highField2Len + 1;
 
-                // Check total key length against max
-                if (keyLen > global::Corax.Constants.Terms.MaxLength || highKeyLen > global::Corax.Constants.Terms.MaxLength)
-                {
-                    drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
-                        isNegated: false, forward: orderByFields[0].Ascending, validatePostfixLen: true);
-                    goto DrivingMatchReady;
-                }
+                    // Check total key length against max
+                    if (keyLen > Constants.Terms.MaxLength || highKeyLen > Constants.Terms.MaxLength)
+                    {
+                        drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
+                            isNegated: false, forward: orderByFields[0].Ascending, validatePostfixLen: true);
+                        goto DrivingMatchReady;
+                    }
 
-                byte[] lowKeyBytes = new byte[keyLen];
-                byte[] highKeyBytes = new byte[highKeyLen];
+                    byte[] lowKeyBytes = new byte[keyLen];
+                    byte[] highKeyBytes = new byte[highKeyLen];
 
-                analyzedPrefix.CopyTo(lowKeyBytes);
-                analyzedPrefix.CopyTo(highKeyBytes);
+                    analyzedPrefix.CopyTo(lowKeyBytes);
+                    analyzedPrefix.CopyTo(highKeyBytes);
 
-                // Low key: either the field2 bound or min value (0x00s)
-                // High key: either the field2 bound or max value (0xFFs)
-                bool isGt = field2Clause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual;
-                if (isGt || field2Clause.ClauseType == ClauseType.Between)
-                {
-                    field2Bytes.CopyTo(lowKeyBytes.AsSpan(prefixLen));
-                }
-                // else: low = field1 prefix + 0x00s (already zeroed)
+                    // Low key: either the field2 bound or min value (0x00s)
+                    // High key: either the field2 bound or max value (0xFFs)
+                    bool isGt = field2Clause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual;
+                    if (isGt || field2Clause.ClauseType == ClauseType.Between)
+                    {
+                        field2Bytes.CopyTo(lowKeyBytes.AsSpan(prefixLen));
+                    }
+                    // else: low = field1 prefix + 0x00s (already zeroed)
 
-                if (field2Clause.ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual || field2Clause.ClauseType == ClauseType.Between)
-                {
-                    var highBytes = field2HighBytes ?? field2Bytes;
-                    highBytes.CopyTo(highKeyBytes.AsSpan(prefixLen));
-                }
-                else
-                {
-                    // GT/GTE: high = field1 prefix + 0xFF...FF
-                    highKeyBytes.AsSpan(prefixLen, highField2Len).Fill(0xFF);
-                }
+                    if (field2Clause.ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual || field2Clause.ClauseType == ClauseType.Between)
+                    {
+                        var highBytes = field2HighBytes ?? field2Bytes;
+                        highBytes.CopyTo(highKeyBytes.AsSpan(prefixLen));
+                    }
+                    else
+                    {
+                        // GT/GTE: high = field1 prefix + 0xFF...FF
+                        highKeyBytes.AsSpan(prefixLen, highField2Len).Fill(0xFF);
+                    }
 
-                // Trailing field1 length byte
-                lowKeyBytes[^1] = (byte)prefixLen;
-                highKeyBytes[^1] = (byte)prefixLen;
+                    // Trailing field1 length byte
+                    lowKeyBytes[^1] = (byte)prefixLen;
+                    highKeyBytes[^1] = (byte)prefixLen;
 
-                Voron.Slice.From(allocator, lowKeyBytes, out var lowSlice);
-                Voron.Slice.From(allocator, highKeyBytes, out var highSlice);
+                    Voron.Slice.From(allocator, lowKeyBytes, out var lowSlice);
+                    Voron.Slice.From(allocator, highKeyBytes, out var highSlice);
 
-                drivingMatch = indexSearcher.RangeBuilder<global::Corax.Querying.Matches.Meta.Range.Inclusive, global::Corax.Querying.Matches.Meta.Range.Inclusive>(
-                    compoundFieldMeta, lowSlice, highSlice,
-                    forward: orderByFields[0].Ascending, default);
+                    drivingMatch = indexSearcher.RangeBuilder<global::Corax.Querying.Matches.Meta.Range.Inclusive, global::Corax.Querying.Matches.Meta.Range.Inclusive>(
+                        compoundFieldMeta, lowSlice, highSlice,
+                        forward: orderByFields[0].Ascending, CancellationToken.None);
                 }
             }
         }
@@ -2816,7 +2811,7 @@ internal static partial class QueryPlanBuilder
         if (provider == null)
             return false; // range match didn't produce a TermsProviderMatch (e.g., empty field)
 
-        var drivingMatch = new global::Corax.Querying.Matches.SortedDrivingMatch(
+        var drivingMatch = new SortedDrivingMatch(
             provider, ((TermsProviderMatch)rangeMatch).Llt, planParams.Allocator);
 
         // Extract residual scan parameters
@@ -2886,7 +2881,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>If the first clause is a range predicate on the same field as the first
     /// ORDER BY field, set a seek hint on the CompiledQueryMatch so SortedIndexReader
     /// can skip walking irrelevant tree terms.</summary>
-    public static void TrySetSortSeekHint(global::Corax.Querying.Matches.CompiledQueryMatch match,
+    public static void TrySetSortSeekHint(CompiledQueryMatch match,
         QueryExecution plan, OrderMetadata[] orderByFields)
     {
         if (orderByFields == null || orderByFields.Length == 0)
@@ -2929,7 +2924,7 @@ internal static partial class QueryPlanBuilder
             {
                 seekValue = packed.ValueType switch
                 {
-                    PackedParam.TypeLong => (object)plan.LongValues[packed.Param1],
+                    PackedParam.TypeLong => plan.LongValues[packed.Param1],
                     PackedParam.TypeDouble => plan.DoubleValues[packed.Param1],
                     PackedParam.TypeString => plan.StringValues[packed.Param1],
                     _ => null
@@ -2940,7 +2935,7 @@ internal static partial class QueryPlanBuilder
             {
                 seekValue = packed.ValueType switch
                 {
-                    PackedParam.TypeLong => (object)plan.LongValues[packed.Param1],
+                    PackedParam.TypeLong => plan.LongValues[packed.Param1],
                     PackedParam.TypeDouble => plan.DoubleValues[packed.Param1],
                     PackedParam.TypeString => plan.StringValues[packed.Param1],
                     _ => null
@@ -2953,7 +2948,7 @@ internal static partial class QueryPlanBuilder
                 int idx = ascending ? packed.Param1 : packed.Param2;
                 seekValue = packed.ValueType switch
                 {
-                    PackedParam.TypeLong => (object)plan.LongValues[idx],
+                    PackedParam.TypeLong => plan.LongValues[idx],
                     PackedParam.TypeDouble => plan.DoubleValues[idx],
                     PackedParam.TypeString => plan.StringValues[idx],
                     _ => null
@@ -3257,18 +3252,18 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Create the appropriate DirectScan match based on whether residual predicates exist.</summary>
-    private static global::Corax.Querying.Matches.DirectScanMatchBase BuildDirectScan(
+    private static DirectScanMatchBase BuildDirectScan(
         IndexSearcher searcher, IQueryMatch drivingMatch,
         long[] longParams, double[] doubleParams, Voron.Slice[] sliceParams, long[] fieldRootPages,
-        global::Corax.Querying.Planning.ResidualScanIlEmitter.ResidualScanPredicate residualDelegate,
+        ResidualScanIlEmitter.ResidualScanPredicate residualDelegate,
         ScanPredicateInfo[]? residualArray)
     {
-        if (residualArray != null)
-            return new global::Corax.Querying.Matches.DirectScanFilteredMatch(
-                searcher, drivingMatch, longParams, doubleParams, sliceParams, fieldRootPages,
-                take: -1, precompiledDelegate: residualDelegate);
-        return new global::Corax.Querying.Matches.DirectScanSimpleMatch(
-            searcher, drivingMatch, take: -1);
+        if (residualArray == null) 
+            return new DirectScanSimpleMatch(searcher, drivingMatch, take: -1);
+        
+        return new DirectScanFilteredMatch(
+            searcher, drivingMatch, longParams, doubleParams, sliceParams, fieldRootPages,
+            take: -1, precompiledDelegate: residualDelegate);
     }
 
     /// <summary>Singleton no-op ITermsProvider for TreeScan slots where the field doesn't exist.
