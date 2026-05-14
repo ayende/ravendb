@@ -3302,12 +3302,12 @@ internal static partial class QueryPlanBuilder
         global::Corax.Querying.Planning.ResidualScanIlEmitter.ResidualScanPredicate residualDelegate,
         ScanPredicateInfo[]? residualArray)
     {
-        return residualArray != null
-            ? new global::Corax.Querying.Matches.DirectScanFilteredMatch(
+        if (residualArray != null)
+            return new global::Corax.Querying.Matches.DirectScanFilteredMatch(
                 searcher, drivingMatch, longParams, doubleParams, sliceParams, fieldRootPages,
-                take: -1, precompiledDelegate: residualDelegate)
-            : new global::Corax.Querying.Matches.DirectScanSimpleMatch(
-                searcher, drivingMatch, take: -1);
+                take: -1, precompiledDelegate: residualDelegate);
+        return new global::Corax.Querying.Matches.DirectScanSimpleMatch(
+            searcher, drivingMatch, take: -1);
     }
 
     /// <summary>Singleton no-op ITermsProvider for TreeScan slots where the field doesn't exist.

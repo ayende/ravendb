@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -185,6 +184,7 @@ public sealed class DirectScanFilteredMatch(
         Span<UnmanagedSpan> containerSpans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
         Span<long> packedIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         Span<int> packedOrigIdx = stackalloc int[QueryPrimitives.EntryScanBatchSize];
+        var readersArr = new EntryTermsReader[QueryPrimitives.EntryScanBatchSize];
 
         while (count < remaining)
         {
@@ -217,48 +217,40 @@ public sealed class DirectScanFilteredMatch(
 
             Searcher.InitializeSpecialTermsMarkers();
 
-            var readersArr = ArrayPool<EntryTermsReader>.Shared.Rent(read);
             var pIds = packedIds[..read];
             var pIdxs = packedOrigIdx[..read];
             int packed = 0;
-            try
+            for (int s = 0; s < read; s++)
             {
-                for (int s = 0; s < read; s++)
+                int origIdx = indices[s];
+                long entryId = batch[origIdx];
+
+                if (EmittedBitmap.Contains(entryId))
+                    continue;
+
+                if (locs[s] == -1 || spans[s].Address == null)
                 {
-                    int origIdx = indices[s];
-                    long entryId = batch[origIdx];
-
-                    if (EmittedBitmap.Contains(entryId))
-                        continue;
-
-                    if (locs[s] == -1 || spans[s].Address == null)
-                    {
-                        EntriesRejected++;
-                        continue;
-                    }
-
-                    readersArr[packed] = new EntryTermsReader(Llt,
-                        Searcher.NullTermsMarkers, Searcher.NonExistingTermsMarkers,
-                        spans[s].Address, spans[s].Length, Searcher.DictionaryId, Searcher.VectorFieldsMarkers, null);
-                    pIds[packed] = entryId;
-                    pIdxs[packed] = origIdx;
-                    packed++;
+                    EntriesRejected++;
+                    continue;
                 }
 
-                int matched = precompiledDelegate(this,
-                    readersArr.AsSpan(0, packed),
-                    packedIds[..packed],
-                    packedOrigIdx[..packed]);
-
-                EntriesRejected += packed - matched;
-
-                for (int k = 0; k < matched; k++)
-                    passed[pIdxs[k]] = true;
+                readersArr[packed] = new EntryTermsReader(Llt,
+                    Searcher.NullTermsMarkers, Searcher.NonExistingTermsMarkers,
+                    spans[s].Address, spans[s].Length, Searcher.DictionaryId, Searcher.VectorFieldsMarkers, null);
+                pIds[packed] = entryId;
+                pIdxs[packed] = origIdx;
+                packed++;
             }
-            finally
-            {
-                ArrayPool<EntryTermsReader>.Shared.Return(readersArr, clearArray: true);
-            }
+
+            int matched = precompiledDelegate(this,
+                readersArr.AsSpan(0, packed),
+                packedIds[..packed],
+                packedOrigIdx[..packed]);
+
+            EntriesRejected += packed - matched;
+
+            for (int k = 0; k < matched; k++)
+                passed[pIdxs[k]] = true;
             EntryScanTicks += Stopwatch.GetTimestamp() - t1;
 
             // Emit in original sort-field order, not container-location order.

@@ -152,6 +152,28 @@ public static class IlEmitterShared
     public static readonly MethodInfo CheckFieldTermEndsWith =
         typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermEndsWith));
 
+    // Span<byte>.StartsWith / .EndsWith — for direct emit use
+    public static readonly MethodInfo SpanStartsWith = typeof(MemoryExtensions)
+        .GetMethods(BindingFlags.Public | BindingFlags.Static)
+        .First(m => m.Name == nameof(MemoryExtensions.StartsWith)
+                    && m.IsGenericMethodDefinition
+                    && m.GetParameters().Length == 2)
+        .MakeGenericMethod(typeof(byte));
+    public static readonly MethodInfo SpanEndsWith = typeof(MemoryExtensions)
+        .GetMethods(BindingFlags.Public | BindingFlags.Static)
+        .First(m => m.Name == nameof(MemoryExtensions.EndsWith)
+                    && m.IsGenericMethodDefinition
+                    && m.GetParameters().Length == 2)
+        .MakeGenericMethod(typeof(byte));
+
+    // Span<byte>.IndexOf
+    public static readonly MethodInfo SpanIndexOf = typeof(MemoryExtensions)
+        .GetMethods(BindingFlags.Public | BindingFlags.Static)
+        .First(m => m.Name == nameof(MemoryExtensions.IndexOf)
+                    && m.IsGenericMethodDefinition
+                    && m.GetParameters().Length == 2)
+        .MakeGenericMethod(typeof(byte));
+
     /// <summary>Emit the most compact Ldc_I4 opcode for the given value.</summary>
     public static void EmitLdcI4(ILGenerator il, int value)
     {

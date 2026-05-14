@@ -22,17 +22,13 @@ public static class CompiledQueryHelper
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void RecordTiming(CompiledQueryMatch ctx, int opIndex, long startTick)
     {
-        var timings = ctx.Timings;
-        if (opIndex < timings.Length)
-            timings[opIndex] = Stopwatch.GetTimestamp() - startTick;
+        ctx.Timings[opIndex] = Stopwatch.GetTimestamp() - startTick;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void RecordResultCount(CompiledQueryMatch ctx, int opIndex)
     {
-        var resultCounts = ctx.ResultCounts;
-        if (opIndex < resultCounts.Length)
-            resultCounts[opIndex] = ctx.Bitmaps[0].Count;
+        ctx.ResultCounts[opIndex] = ctx.Bitmaps[0].Count;
     }
 
     /// <summary>Check StartsWith/EndsWith against ALL terms for a field (multi-value support).
