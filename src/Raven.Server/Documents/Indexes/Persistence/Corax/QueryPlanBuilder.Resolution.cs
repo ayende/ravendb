@@ -2692,21 +2692,22 @@ internal static partial class QueryPlanBuilder
             fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
         }
 
-        var directScan = new global::Corax.Querying.Matches.DirectScanMatch(
-            indexSearcher, drivingMatch, residualArray,
-            longParams, doubleParams, sliceParams, fieldRootPages,
-            take: -1,
-            precompiledDelegate: compiledPlan.CompiledEntryPredicate)
-        {
-            DrivingTreeName = compoundFieldName,
-            DrivingClause = $"{field1Name} = '{field1ValueStr}'",
-            SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)",
-            Direction = orderByFields[0].Ascending ? "Forward" : "Backward",
-            ResidualDescription = residualArray != null
-                ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
-                : null,
-            Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})"
-        };
+        global::Corax.Querying.Matches.DirectScanMatchBase directScan = residualArray != null
+            ? new global::Corax.Querying.Matches.DirectScanResidualMatch(
+                indexSearcher, drivingMatch,
+                longParams, doubleParams, sliceParams, fieldRootPages,
+                take: -1,
+                precompiledDelegate: compiledPlan.CompiledEntryPredicate)
+            : new global::Corax.Querying.Matches.DirectScanNoResidualMatch(
+                indexSearcher, drivingMatch, take: -1);
+        directScan.DrivingTreeName = compoundFieldName;
+        directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
+        directScan.SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)";
+        directScan.Direction = orderByFields[0].Ascending ? "Forward" : "Backward";
+        directScan.ResidualDescription = residualArray != null
+            ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
+            : null;
+        directScan.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
 
         compoundMatch = directScan;
         return true;
@@ -2907,20 +2908,23 @@ internal static partial class QueryPlanBuilder
             fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
         }
 
-        directMatch = new global::Corax.Querying.Matches.DirectScanMatch(
-            indexSearcher, drivingMatch, residualArray,
-            longParams, doubleParams, sliceParams, fieldRootPages,
-            take: -1,
-            precompiledDelegate: compiledPlan.CompiledEntryPredicate)
-        {
-            DrivingTreeName = sortFieldName,
-            DrivingClause = $"{drivingClause.FieldName} {drivingClause.ClauseType}",
-            Direction = orderByFields[0].Ascending ? "Forward" : "Backward",
-            ResidualDescription = residualArray != null
-                ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
-                : null,
-            Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})"
-        };
+        var ds = residualArray != null
+            ? (global::Corax.Querying.Matches.DirectScanMatchBase)
+                new global::Corax.Querying.Matches.DirectScanResidualMatch(
+                    indexSearcher, drivingMatch,
+                    longParams, doubleParams, sliceParams, fieldRootPages,
+                    take: -1,
+                    precompiledDelegate: compiledPlan.CompiledEntryPredicate)
+            : new global::Corax.Querying.Matches.DirectScanNoResidualMatch(
+                indexSearcher, drivingMatch, take: -1);
+        ds.DrivingTreeName = sortFieldName;
+        ds.DrivingClause = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
+        ds.Direction = orderByFields[0].Ascending ? "Forward" : "Backward";
+        ds.ResidualDescription = residualArray != null
+            ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
+            : null;
+        ds.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
+        directMatch = ds;
         return true;
     }
 
