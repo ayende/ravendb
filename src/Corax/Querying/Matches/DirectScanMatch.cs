@@ -188,101 +188,102 @@ public sealed class DirectScanFilteredMatch(
         var readersArr = ArrayPool<EntryTermsReader>.Shared.Rent(QueryPrimitives.EntryScanBatchSize);
         try
         {
-        while (count < remaining)
-        {
-            long t0 = Stopwatch.GetTimestamp();
-            int read = DrivingMatch.Fill(batch[..batchSize]);
-            TreeScanTicks += Stopwatch.GetTimestamp() - t0;
-
-            if (read == 0)
+            while (count < remaining)
             {
-                StoppedReason ??= "TreeExhausted";
-                break;
-            }
-            TreeEntriesScanned += read;
+                long t0 = Stopwatch.GetTimestamp();
+                int read = DrivingMatch.Fill(batch[..batchSize]);
+                TreeScanTicks += Stopwatch.GetTimestamp() - t0;
 
-            var sorted = sortedIds[..read];
-            batch[..read].CopyTo(sorted);
-            IlEmitterShared.InitializeIndices(indices, read);
-            sorted.Sort(indices[..read]);
-
-            passed[..read].Clear();
-
-            long t1 = Stopwatch.GetTimestamp();
-
-            var locs = containerLocs[..read];
-            Searcher.ResolveEntryLocations(sorted, locs);
-
-            var spans = containerSpans[..read];
-            Container.GetAll(Llt, locs, spans, -1, Llt.PageLocator);
-
-            Searcher.InitializeSpecialTermsMarkers();
-
-            var pIds = packedIds[..read];
-            var pIdxs = packedOrigIdx[..read];
-            int packed = 0;
-            for (int s = 0; s < read; s++)
-            {
-                int origIdx = indices[s];
-                long entryId = batch[origIdx];
-
-                if (EmittedBitmap.Contains(entryId))
-                    continue;
-
-                if (locs[s] == -1 || spans[s].Address == null)
+                if (read == 0)
                 {
-                    EntriesRejected++;
-                    continue;
+                    StoppedReason ??= "TreeExhausted";
+                    break;
                 }
 
-                readersArr[packed] = new EntryTermsReader(Llt,
-                    Searcher.NullTermsMarkers, Searcher.NonExistingTermsMarkers,
-                    spans[s].Address, spans[s].Length, Searcher.DictionaryId, Searcher.VectorFieldsMarkers, null);
-                pIds[packed] = entryId;
-                pIdxs[packed] = origIdx;
-                packed++;
-            }
+                TreeEntriesScanned += read;
 
-            int matched = precompiledDelegate(this,
-                readersArr.AsSpan(0, packed),
-                packedIds[..packed],
-                packedOrigIdx[..packed]);
+                var sorted = sortedIds[..read];
+                batch[..read].CopyTo(sorted);
+                IlEmitterShared.InitializeIndices(indices, read);
+                sorted.Sort(indices[..read]);
 
-            EntriesRejected += packed - matched;
+                passed[..read].Clear();
 
-            for (int k = 0; k < matched; k++)
-                passed[pIdxs[k]] = true;
-            EntryScanTicks += Stopwatch.GetTimestamp() - t1;
+                long t1 = Stopwatch.GetTimestamp();
 
-            // Emit in original sort-field order, not container-location order.
-            // The delegate compacted survivors in the order of sortedIds (page-order
-            // for sequential I/O). pIdxs[] holds each survivor's original sort-field
-            // position, but iterating pIdxs[] would emit results in page order, not
-            // sort order. Instead, scan the original batch (which is in sort-field
-            // order) and emit only the positions that passed.
-            for (int i = 0; i < read && count < remaining; i++)
-            {
-                if (passed[i])
+                var locs = containerLocs[..read];
+                Searcher.ResolveEntryLocations(sorted, locs);
+
+                var spans = containerSpans[..read];
+                Container.GetAll(Llt, locs, spans, -1, Llt.PageLocator);
+
+                Searcher.InitializeSpecialTermsMarkers();
+
+                var pIds = packedIds[..read];
+                var pIdxs = packedOrigIdx[..read];
+                int packed = 0;
+                for (int s = 0; s < read; s++)
                 {
-                    long id = batch[i];
-                    EmittedBitmap.Add(id);
-                    EntriesPassedFilter++;
-                    matches[count++] = id;
+                    int origIdx = indices[s];
+                    long entryId = batch[origIdx];
+
+                    if (EmittedBitmap.Contains(entryId))
+                        continue;
+
+                    if (locs[s] == -1 || spans[s].Address == null)
+                    {
+                        EntriesRejected++;
+                        continue;
+                    }
+
+                    readersArr[packed] = new EntryTermsReader(Llt,
+                        Searcher.NullTermsMarkers, Searcher.NonExistingTermsMarkers,
+                        spans[s].Address, spans[s].Length, Searcher.DictionaryId, Searcher.VectorFieldsMarkers, null);
+                    pIds[packed] = entryId;
+                    pIdxs[packed] = origIdx;
+                    packed++;
+                }
+
+                int matched = precompiledDelegate(this,
+                    readersArr.AsSpan(0, packed),
+                    packedIds[..packed],
+                    packedOrigIdx[..packed]);
+
+                EntriesRejected += packed - matched;
+
+                for (int k = 0; k < matched; k++)
+                    passed[pIdxs[k]] = true;
+                EntryScanTicks += Stopwatch.GetTimestamp() - t1;
+
+                // Emit in original sort-field order, not container-location order.
+                // The delegate compacted survivors in the order of sortedIds (page-order
+                // for sequential I/O). pIdxs[] holds each survivor's original sort-field
+                // position, but iterating pIdxs[] would emit results in page order, not
+                // sort order. Instead, scan the original batch (which is in sort-field
+                // order) and emit only the positions that passed.
+                for (int i = 0; i < read && count < remaining; i++)
+                {
+                    if (passed[i])
+                    {
+                        long id = batch[i];
+                        EmittedBitmap.Add(id);
+                        EntriesPassedFilter++;
+                        matches[count++] = id;
+                    }
                 }
             }
+
+            if (Take > 0 && TotalMatched + count >= Take)
+                StoppedReason ??= $"_take({Take})";
+
+            TotalMatched += count;
+            return count;
         }
-
-        if (Take > 0 && TotalMatched + count >= Take)
-            StoppedReason ??= $"_take({Take})";
-
-        TotalMatched += count;
-        return count;
+        finally
+        {
+            ArrayPool<EntryTermsReader>.Shared.Return(readersArr);
+        }
     }
-    finally
-    {
-        ArrayPool<EntryTermsReader>.Shared.Return(readersArr);
-    }
-}
 
     long[] IPredicateEvaluationContext.ResidualLongParams => longParams;
     double[] IPredicateEvaluationContext.ResidualDoubleParams => doubleParams;
