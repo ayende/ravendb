@@ -105,7 +105,7 @@ public partial class Hnsw
                     _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, amountRead);
                     var dedupedAmount = FilterDuplicates(matches, distances, index, amountRead);
                     distances.Slice(index, dedupedAmount).Fill(distance);
-                    index += amountRead; // note: we use the read amount, not the (potentially smaller) deduped amount
+                    index += dedupedAmount;
                     _currentMatchesIndex += amountRead;
                     if (_currentMatchesIndex == _postingListResults.Count)
                     {
@@ -165,16 +165,18 @@ public partial class Hnsw
         private int FilterDuplicates(Span<long> matches, Span<float> distances, int index, int total)
         {
             int pos = index;
-            for (int i = index; i < total; i++)
+            int end = index + total;
+            for (int i = index; i < end; i++)
             {
                 if (_alreadySeen.Contains(matches[i]))
-                {
-                    pos++;
                     continue;
-                }
                 _alreadySeen.Add(matches[i]);
-                distances[pos] = distances[i];
-                matches[pos++] = matches[i];
+                if (pos != i)
+                {
+                    matches[pos] = matches[i];
+                    distances[pos] = distances[i];
+                }
+                pos++;
             }
 
             return pos;
@@ -245,6 +247,10 @@ public partial class Hnsw
                         if (filter.Contains(matches[currentDocIdx]) == false)
                             continue;
 
+                        if (_alreadySeen.Contains(matches[currentDocIdx]))
+                            continue;
+                        _alreadySeen.Add(matches[currentDocIdx]);
+
                         _foundCandidateInCurrentSmallPostingList = true;
                         matches[index] = matches[currentDocIdx];
                         distances[index] = distance;
@@ -261,6 +267,10 @@ public partial class Hnsw
                     {
                         if (filter.Contains(_postingListResults[_currentMatchesIndex]) == false)
                             continue;
+
+                        if (_alreadySeen.Contains(_postingListResults[_currentMatchesIndex]))
+                            continue;
+                        _alreadySeen.Add(_postingListResults[_currentMatchesIndex]);
 
                         matches[index] = _postingListResults[_currentMatchesIndex];
                         distances[index] = distance;
@@ -303,6 +313,10 @@ public partial class Hnsw
                         var rawEntry = Registration.InternalEntryIdToEntryId(rawPostingListId);
                         if (filter.Contains(rawEntry) == false)
                             continue;
+
+                        if (_alreadySeen.Contains(rawEntry))
+                            continue;
+                        _alreadySeen.Add(rawEntry);
 
                         distances[index] = distance;
                         matches[index++] = rawEntry;
