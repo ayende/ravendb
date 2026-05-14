@@ -45,9 +45,6 @@ public class RavenDB_23656(ITestOutputHelper output) : RavenTestBase(output)
                 v => v.ByEmbedding(new sbyte[] { 106, 127, -102, -103, 25, 63 }))
             .ToArray();
 
-        // The document has two sbyte[] vectors, both match. In the current implementation
-        // the two matching vector entries produce distinct values even though they belong
-        // to the same document, so the result set contains two entries.
         Assert.Equal(1, result.Length);
 
         //query with different dimension size
