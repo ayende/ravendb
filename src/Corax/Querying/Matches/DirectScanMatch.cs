@@ -3,8 +3,6 @@ using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
 using Corax.Querying.Primitives;
@@ -170,23 +168,6 @@ public sealed class DirectScanFilteredMatch(
     ResidualScanIlEmitter.ResidualScanPredicate precompiledDelegate)
     : DirectScanMatchBase(searcher, drivingMatch, take), IPredicateEvaluationContext
 {
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void InitializeIndices(Span<int> indices, int read)
-    {
-        ref int ptr = ref MemoryMarshal.GetReference(indices);
-
-        var countVec = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
-        var increment = Vector256.Create(8);
-
-        int j = 0;
-        while (j < read)
-        {
-            countVec.StoreUnsafe(ref Unsafe.Add(ref ptr, j));
-            countVec += increment;
-            j += 8;
-        }
-    }
-
     [SkipLocalsInit]
     public override unsafe int Fill(Span<long> matches)
     {
@@ -222,7 +203,7 @@ public sealed class DirectScanFilteredMatch(
 
             var sorted = sortedIds[..read];
             batch[..read].CopyTo(sorted);
-            InitializeIndices(indices, read);
+            IlEmitterShared.InitializeIndices(indices, read);
             sorted.Sort(indices[..read]);
 
             passed[..read].Clear();
