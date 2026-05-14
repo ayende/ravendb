@@ -84,11 +84,11 @@ public static class ResidualScanIlEmitter
         var origIdxLengthLocal = il.DeclareLocal(typeof(int));
 
         il.Emit(OpCodes.Ldarga_S, (byte)2);
-        il.Emit(OpCodes.Call, typeof(Span<long>).GetMethod("get_Length"));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanLongLength);
         il.Emit(OpCodes.Stloc, lengthLocal);
 
         il.Emit(OpCodes.Ldarga_S, (byte)3);
-        il.Emit(OpCodes.Call, typeof(Span<int>).GetMethod("get_Length"));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntLength);
         il.Emit(OpCodes.Stloc, origIdxLengthLocal);
 
         il.Emit(OpCodes.Ldc_I4_0);
@@ -108,7 +108,7 @@ public static class ResidualScanIlEmitter
 
         il.Emit(OpCodes.Ldarga_S, (byte)1);
         il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Call, typeof(Span<EntryTermsReader>).GetMethod("get_Item", [typeof(int)]));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanEntryTermsReaderGetItem);
         il.Emit(OpCodes.Stloc, readerRefLocal);
 
         int rootIdx = 0;
@@ -120,16 +120,16 @@ public static class ResidualScanIlEmitter
         // All passed: entryIds[writeIdx] = entryIds[i]
         il.Emit(OpCodes.Ldarga_S, (byte)2);
         il.Emit(OpCodes.Ldloc, writeIdxLocal);
-        il.Emit(OpCodes.Call, typeof(Span<long>).GetMethod("get_Item", [typeof(int)]));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanLongGetItem);
         il.Emit(OpCodes.Ldarga_S, (byte)2);
         il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Call, typeof(Span<long>).GetMethod("get_Item", [typeof(int)]));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanLongGetItem);
         il.Emit(OpCodes.Ldind_I8);
         il.Emit(OpCodes.Stind_I8);
 
         // originalIndexes compaction (only if span is non-empty — caller decides)
         il.Emit(OpCodes.Ldarga_S, (byte)3);
-        il.Emit(OpCodes.Call, typeof(Span<int>).GetMethod("get_Length"));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntLength);
         var noOrigIdx = il.DefineLabel();
         il.Emit(OpCodes.Ldc_I4_0);
         il.Emit(OpCodes.Ceq);
@@ -138,10 +138,10 @@ public static class ResidualScanIlEmitter
         // originalIndexes[writeIdx] = originalIndexes[i]
         il.Emit(OpCodes.Ldarga_S, (byte)3);
         il.Emit(OpCodes.Ldloc, writeIdxLocal);
-        il.Emit(OpCodes.Call, typeof(Span<int>).GetMethod("get_Item", [typeof(int)]));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntGetItem);
         il.Emit(OpCodes.Ldarga_S, (byte)3);
         il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Call, typeof(Span<int>).GetMethod("get_Item", [typeof(int)]));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntGetItem);
         il.Emit(OpCodes.Ldind_I4);
         il.Emit(OpCodes.Stind_I4);
 

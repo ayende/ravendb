@@ -144,6 +144,18 @@ public static class IlEmitterShared
     public static readonly FieldInfo ReaderCurrent =
         typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.Current));
 
+    // Span<T> reflection handles (used by emitted IL for array access/length in the delegate)
+    public static readonly MethodInfo SpanLongLength =
+        typeof(Span<long>).GetMethod("get_Length")!;
+    public static readonly MethodInfo SpanIntLength =
+        typeof(Span<int>).GetMethod("get_Length")!;
+    public static readonly MethodInfo SpanLongGetItem =
+        typeof(Span<long>).GetMethod("get_Item", [typeof(int)])!;
+    public static readonly MethodInfo SpanIntGetItem =
+        typeof(Span<int>).GetMethod("get_Item", [typeof(int)])!;
+    public static readonly MethodInfo SpanEntryTermsReaderGetItem =
+        typeof(Span<EntryTermsReader>).GetMethod("get_Item", [typeof(int)])!;
+
     public static readonly MethodInfo SliceAsReadOnlySpan =
         typeof(Slice).GetMethod(nameof(Slice.AsReadOnlySpan));
 
