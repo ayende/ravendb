@@ -687,8 +687,6 @@ internal static partial class QueryPlanBuilder
                 return (null, ParamValueType.Null);
             var (val, valType) = ResolveParameterValue(value);
             return (val, ToParamValueType(valType));
-
-            return (null, ParamValueType.Null);
         }
 
         if (binding.LiteralType != ParamValueType.Parameter)
@@ -1375,9 +1373,6 @@ internal static partial class QueryPlanBuilder
                     break;
             }
         }
-
-        if (plan.AllNegated)
-            matchIdx++; // AllEntries slot — no provider needed
 
         return providers;
     }
@@ -2812,44 +2807,6 @@ internal static partial class QueryPlanBuilder
 
         // Build the range match to extract the ITermsProvider (TermsProviderMatch wraps it)
         var rangeMatch = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
-
-        // Extract seek value for the tree walk start position
-        var packed2 = drivingExec.PackedParamValue;
-        object seekValue = null;
-        if (packed2.IsNone == false)
-        {
-            if (forward && drivingClause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual)
-            {
-                seekValue = packed2.ValueType switch
-                {
-                    PackedParam.TypeLong => (object)plan.LongValues[packed2.Param1],
-                    PackedParam.TypeDouble => plan.DoubleValues[packed2.Param1],
-                    PackedParam.TypeString => plan.StringValues[packed2.Param1],
-                    _ => null
-                };
-            }
-            else if (forward == false && drivingClause.ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual)
-            {
-                seekValue = packed2.ValueType switch
-                {
-                    PackedParam.TypeLong => (object)plan.LongValues[packed2.Param1],
-                    PackedParam.TypeDouble => plan.DoubleValues[packed2.Param1],
-                    PackedParam.TypeString => plan.StringValues[packed2.Param1],
-                    _ => null
-                };
-            }
-            else if (drivingClause.ClauseType == ClauseType.Between)
-            {
-                int idx = forward ? packed2.Param1 : packed2.Param2;
-                seekValue = packed2.ValueType switch
-                {
-                    PackedParam.TypeLong => (object)plan.LongValues[idx],
-                    PackedParam.TypeDouble => plan.DoubleValues[idx],
-                    PackedParam.TypeString => plan.StringValues[idx],
-                    _ => null
-                };
-            }
-        }
 
         // Extract the ITermsProvider from the range match (TermsProviderMatch wraps it).
         // SortedDrivingMatch walks the provider directly in term order.
