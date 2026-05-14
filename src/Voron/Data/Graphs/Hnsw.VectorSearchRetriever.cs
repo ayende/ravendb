@@ -30,6 +30,7 @@ public partial class Hnsw
         private readonly IHnswSearcher _vectorsSearcher;
         private readonly Memory<byte> _vector;
         private IEnumerator<bool> _resultsEnumerator;
+        private RoaringBitmap _alreadySeen;
 
         public SimilarityMethod? SimilarityMethod => _searchState?.Options.SimilarityMethod;
         
@@ -48,6 +49,7 @@ public partial class Hnsw
             _searchState = searchState;
             _vectorsSearcher = vectorsSearcher;
             _vector = vector;
+            _alreadySeen = new (searchState.Llt.Allocator);
             _postingListResults = new(_searchState.Llt.Allocator);
             _pforDecoder = new(searchState.Llt.Allocator);
             _maximumDistance = searchState.MinimumSimilarityToDistance(minimumSimilarity);
@@ -90,6 +92,8 @@ public partial class Hnsw
                         continue;
                     }
 
+                    total = FilterDuplicates(matches, distances, index, total);
+
                     distances.Slice(index, total).Fill(distance);
                     index += total;
                     continue;
@@ -97,11 +101,12 @@ public partial class Hnsw
 
                 if (_currentMatchesIndex < _postingListResults.Count)
                 {
-                    var copy = Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
-                    _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, copy);
-                    distances.Slice(index, copy).Fill(distance);
-                    index += copy;
-                    _currentMatchesIndex += copy;
+                    var amountRead = Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
+                    _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, amountRead);
+                    var dedupedAmount = FilterDuplicates(matches, distances, index, amountRead);
+                    distances.Slice(index, dedupedAmount).Fill(distance);
+                    index += amountRead; // note: we use the read amount, not the (potentially smaller) deduped amount
+                    _currentMatchesIndex += amountRead;
                     if (_currentMatchesIndex == _postingListResults.Count)
                     {
                         _currentMatchesIndex = 0;
@@ -131,9 +136,12 @@ public partial class Hnsw
                         _currentNode++;
                         continue;
                     case Constants.Graphs.VectorId.Single: // single item posting list
+                        _currentNode++;
+                        if(_alreadySeen.Contains(rawPostingListId))
+                            continue;
+                        _alreadySeen.Add(rawPostingListId);
                         distances[index] = distance;
                         matches[index++] = rawPostingListId;
-                        _currentNode++;
                         continue;
                     case Constants.Graphs.VectorId.SmallPostingList: // small posting list
                         Debug.Assert(_postingListResults.Count is 0 && _currentMatchesIndex is 0);
@@ -153,7 +161,25 @@ public partial class Hnsw
             Registration.InternalEntryIdToEntryId(matches.Slice(0, index));
             return index;
         }
-        
+
+        private int FilterDuplicates(Span<long> matches, Span<float> distances, int index, int total)
+        {
+            int pos = index;
+            for (int i = index; i < total; i++)
+            {
+                if (_alreadySeen.Contains(matches[i]))
+                {
+                    pos++;
+                    continue;
+                }
+                _alreadySeen.Add(matches[i]);
+                distances[pos] = distances[i];
+                matches[pos++] = matches[i];
+            }
+
+            return pos;
+        }
+
         private int FillWithFilter(Span<long> matches, Span<float> distances, ref RoaringBitmap filter)
         {
             if (_vectorsSearcher.TryGetCurrentCandidates(out var indexes) == false)
@@ -304,6 +330,7 @@ public partial class Hnsw
         
         public void Dispose()
         {
+            _alreadySeen.Dispose();
             _postingListResults.Dispose();
             _pforDecoder.Dispose();
             _resultsEnumerator?.Dispose();
