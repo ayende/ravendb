@@ -3139,7 +3139,15 @@ internal static partial class QueryPlanBuilder
             case 0:
                 return match;
             case 1:
+            {
+                if (orderMetadata[0].FieldType == MatchCompareFieldType.Score && orderMetadata[0].HasBoost)
+                {
+                    var skip = match.AttemptToSkipSorting();
+                    if (skip is SkipSortingResult.ResultsNativelySorted or SkipSortingResult.WillSkipSorting)
+                        return match;
+                }
                 return indexSearcher.OrderBy(match, orderMetadata[0], builderParameters.Index.Configuration.NullFirst, take, builderParameters.Token);
+            }
             default:
                 return indexSearcher.OrderBy(match, orderMetadata, builderParameters.Index.Configuration.NullFirst, take, builderParameters.Token);
         }

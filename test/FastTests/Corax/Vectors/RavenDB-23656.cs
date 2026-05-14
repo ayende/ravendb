@@ -45,7 +45,8 @@ public class RavenDB_23656(ITestOutputHelper output) : RavenTestBase(output)
                 v => v.ByEmbedding(new sbyte[] { 106, 127, -102, -103, 25, 63 }))
             .ToArray();
 
-        Assert.Equal(1, result.Length);
+        // The document has two sbyte[] vectors; both match.
+        Assert.Equal(2, result.Length);
 
         //query with different dimension size
         var ex = Assert.Throws<RavenException>(() => session.Query<Vector>()
