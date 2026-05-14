@@ -259,12 +259,12 @@ internal static partial class QueryPlanBuilder
         {
             compiledPlan = new CompiledPlan
             {
+                // ── IL delegates: emitted at plan-build time, cached forever ──
                 CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, emitTimings: false),
                 CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
                 CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanExplain),
 
-                // Explain: concatenate the plan-execution IL pseudocode with the
-                // residual-scan predicate pseudocode into a single EXPLAIN output.
+                // ── Cache key + explain (per-plan, not per-ordering) ──
                 ExplainSource = explainText + scanExplain,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
