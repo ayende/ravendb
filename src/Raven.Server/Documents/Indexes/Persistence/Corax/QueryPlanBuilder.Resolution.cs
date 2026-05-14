@@ -262,7 +262,6 @@ internal static partial class QueryPlanBuilder
                 CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, emitTimings: false),
                 CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
                 CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanExplain),
-                CompiledDirectScanPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos),
                 ExplainSource = explainText + scanExplain,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
@@ -2697,7 +2696,7 @@ internal static partial class QueryPlanBuilder
             indexSearcher, drivingMatch, residualArray,
             longParams, doubleParams, sliceParams, fieldRootPages,
             take: -1,
-            precompiledDelegate: compiledPlan.CompiledDirectScanPredicate,
+            precompiledDelegate: compiledPlan.CompiledEntryPredicate,
             predicateCount: residualArray?.Length ?? 0)
         {
             DrivingTreeName = compoundFieldName,
@@ -2913,7 +2912,7 @@ internal static partial class QueryPlanBuilder
             indexSearcher, drivingMatch, residualArray,
             longParams, doubleParams, sliceParams, fieldRootPages,
             take: -1,
-            precompiledDelegate: compiledPlan.CompiledDirectScanPredicate,
+            precompiledDelegate: compiledPlan.CompiledEntryPredicate,
             predicateCount: residualArray?.Length ?? 0)
         {
             DrivingTreeName = sortFieldName,
