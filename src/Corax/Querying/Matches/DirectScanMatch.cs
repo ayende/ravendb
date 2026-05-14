@@ -261,6 +261,12 @@ public sealed class DirectScanFilteredMatch(
             }
             EntryScanTicks += Stopwatch.GetTimestamp() - t1;
 
+            // Emit in original sort-field order, not container-location order.
+            // The delegate compacted survivors in the order of sortedIds (page-order
+            // for sequential I/O). pIdxs[] holds each survivor's original sort-field
+            // position, but iterating pIdxs[] would emit results in page order, not
+            // sort order. Instead, scan the original batch (which is in sort-field
+            // order) and emit only the positions that passed.
             for (int i = 0; i < read && count < remaining; i++)
             {
                 if (passed[i])
