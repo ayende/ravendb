@@ -3,6 +3,9 @@ using System.Diagnostics;
 using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
 using System.Threading;
 using Corax.Querying;
 using Corax.Querying.Matches;
@@ -144,6 +147,18 @@ public static class IlEmitterShared
     public static readonly FieldInfo ReaderCurrent =
         typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.Current));
 
+    // Span<T> reflection handles (used by emitted IL for array access/length in the delegate)
+    public static readonly MethodInfo SpanLongLength =
+        typeof(Span<long>).GetMethod("get_Length")!;
+    public static readonly MethodInfo SpanIntLength =
+        typeof(Span<int>).GetMethod("get_Length")!;
+    public static readonly MethodInfo SpanLongGetItem =
+        typeof(Span<long>).GetMethod("get_Item", [typeof(int)])!;
+    public static readonly MethodInfo SpanIntGetItem =
+        typeof(Span<int>).GetMethod("get_Item", [typeof(int)])!;
+    public static readonly MethodInfo SpanEntryTermsReaderGetItem =
+        typeof(Span<EntryTermsReader>).GetMethod("get_Item", [typeof(int)])!;
+
     public static readonly MethodInfo SliceAsReadOnlySpan =
         typeof(Slice).GetMethod(nameof(Slice.AsReadOnlySpan));
 
@@ -172,6 +187,24 @@ public static class IlEmitterShared
                 else
                     il.Emit(OpCodes.Ldc_I4, value);
                 break;
+        }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void InitializeIndices(Span<int> indices, int read)
+    {
+        Debug.Assert(((read + 7) & ~7) <= indices.Length, "SIMD write past indices span");
+        ref int ptr = ref MemoryMarshal.GetReference(indices);
+
+        var countVec = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
+        var increment = Vector256.Create(8);
+
+        int j = 0;
+        while (j < read)
+        {
+            countVec.StoreUnsafe(ref Unsafe.Add(ref ptr, j));
+            countVec += increment;
+            j += 8;
         }
     }
 }

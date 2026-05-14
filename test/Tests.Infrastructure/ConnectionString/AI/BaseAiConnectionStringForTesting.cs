@@ -44,7 +44,7 @@ public abstract class BaseAiConnectorForTesting<T, TConfig> : IAiConnectorForTes
     {
         foreach (var envVar in RequiredEnvironmentVariables)
         {
-            if (Environment.GetEnvironmentVariable(envVar) == null)
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(envVar)))
             {
                 environmentVariableName = envVar;
                 return true;
@@ -59,7 +59,19 @@ public abstract class BaseAiConnectorForTesting<T, TConfig> : IAiConnectorForTes
 
     protected BaseAiConnectorForTesting()
     {
-        _aiIntegrationConfiguration = GetAiConfiguration();
+        try
+        {
+            _aiIntegrationConfiguration = GetAiConfiguration();
+        }
+        catch (Exception)
+        {
+            // Connector construction may fail when env vars are missing
+            // (e.g. AzureOpenAiSettings throws on null deploymentName).
+            // Leave _aiIntegrationConfiguration as default — the skip logic
+            // in RavenAiIntegrationAttribute.HasSkipReason will skip the test
+            // based on MissingRequiredEnvVariables().
+            _aiIntegrationConfiguration = new TConfig();
+        }
         CanConnect = new Lazy<bool>(IsConnectionAllowed);
     }
 
@@ -94,14 +106,25 @@ public abstract class BaseAiConnectorForTesting<T, TConfig> : IAiConnectorForTes
 
     public TConfig GetAiConfiguration()
     {
-        var connectionString = GetAiConnectionString();
-
-        return new TConfig
+        try
         {
-            Name = AiIntegrationTaskName,
-            ConnectionStringName = ConnectionStringName,
-            Connection = connectionString
-        };
+            var connectionString = GetAiConnectionString();
+
+            return new TConfig
+            {
+                Name = AiIntegrationTaskName,
+                ConnectionStringName = ConnectionStringName,
+                Connection = connectionString
+            };
+        }
+        catch (Exception)
+        {
+            // When env vars are missing, CreateAiConnectionStringImpl may throw
+            // (e.g. AzureOpenAiSettings null deploymentName). Return a stub config
+            // so the test data row can be built — the test will be skipped by
+            // HasSkipReason based on MissingRequiredEnvVariables.
+            return new TConfig { Name = AiIntegrationTaskName, ConnectionStringName = ConnectionStringName };
+        }
     }
 
     private bool IsConnectionAllowed()

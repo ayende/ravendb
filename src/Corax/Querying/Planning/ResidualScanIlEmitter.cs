@@ -15,9 +15,22 @@ namespace Corax.Querying.Planning;
 /// delegate works against <see cref="IPredicateEvaluationContext"/>, which both
 /// context types implement. Per-predicate value type, compare op, AND/OR sub-groups,
 /// and fieldRootPages indexing are baked into IL at emit time.
+///
+/// The delegate ALWAYS evaluates ALL predicates baked into the IL, regardless of
+/// which path calls it. In the direct-scan case, the driving-clause predicates
+/// (already satisfied by the tree scan) are re-evaluated — this is redundant but
+/// harmless, and it eliminates the need for a separate delegate-per-path or a
+/// runtime predicate-count parameter. The extra cost is negligible: a handful
+/// of FindNext + compare operations per entry against already-cached stored fields.
 /// </summary>
 public static class ResidualScanIlEmitter
 {
+    /// <summary>Evaluates all baked-in scan predicates against each entry reader.
+    /// Passing entries are compacted to the front of <paramref name="entryIds"/>.
+    /// Both the entry-scan path (CompiledQueryMatch) and the direct-scan path
+    /// (DirectScanMatch) use the same delegate — the direct-scan path re-evaluates
+    /// driving-clause predicates that the tree scan already satisfied, which is
+    /// harmless — a few extra FindNext + compare operations per entry.</summary>
     public delegate int ResidualScanPredicate(
         IPredicateEvaluationContext ctx,
         Span<EntryTermsReader> readers,
@@ -29,17 +42,9 @@ public static class ResidualScanIlEmitter
     /// <summary>Emit a residual-scan delegate that evaluates <paramref name="predicates"/>
     /// against each reader in the batch. Passing entry IDs and (optionally) original indexes
     /// are compacted to the front of their spans. Returns the count of survivors.
-    /// When <paramref name="multiValueStartsWith"/> is true, StartsWith/EndsWith compare
-    /// against ALL field terms (DirectScanMatch semantics); when false, they compare against
-    /// the current decoded term only (CompiledQueryMatch semantics).
+    /// The emitted IL always evaluates ALL predicates against every entry.
     /// <paramref name="explainSource"/> receives a human-readable pseudocode description
     /// of the predicates, matching the format used by <see cref="QueryILEmitter.EmitDelegate"/>.</summary>
-    /// <summary>Emit without generating explain text (convenience overload).</summary>
-    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates)
-    {
-        return EmitDelegate(predicates, out _);
-    }
-
     public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string explainSource)
     {
         if (predicates == null || predicates.Length == 0)
@@ -79,11 +84,11 @@ public static class ResidualScanIlEmitter
         var origIdxLengthLocal = il.DeclareLocal(typeof(int));
 
         il.Emit(OpCodes.Ldarga_S, (byte)2);
-        il.Emit(OpCodes.Call, typeof(Span<long>).GetMethod("get_Length"));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanLongLength);
         il.Emit(OpCodes.Stloc, lengthLocal);
 
         il.Emit(OpCodes.Ldarga_S, (byte)3);
-        il.Emit(OpCodes.Call, typeof(Span<int>).GetMethod("get_Length"));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntLength);
         il.Emit(OpCodes.Stloc, origIdxLengthLocal);
 
         il.Emit(OpCodes.Ldc_I4_0);
@@ -103,7 +108,7 @@ public static class ResidualScanIlEmitter
 
         il.Emit(OpCodes.Ldarga_S, (byte)1);
         il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Call, typeof(Span<EntryTermsReader>).GetMethod("get_Item", [typeof(int)]));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanEntryTermsReaderGetItem);
         il.Emit(OpCodes.Stloc, readerRefLocal);
 
         int rootIdx = 0;
@@ -115,16 +120,16 @@ public static class ResidualScanIlEmitter
         // All passed: entryIds[writeIdx] = entryIds[i]
         il.Emit(OpCodes.Ldarga_S, (byte)2);
         il.Emit(OpCodes.Ldloc, writeIdxLocal);
-        il.Emit(OpCodes.Call, typeof(Span<long>).GetMethod("get_Item", [typeof(int)]));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanLongGetItem);
         il.Emit(OpCodes.Ldarga_S, (byte)2);
         il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Call, typeof(Span<long>).GetMethod("get_Item", [typeof(int)]));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanLongGetItem);
         il.Emit(OpCodes.Ldind_I8);
         il.Emit(OpCodes.Stind_I8);
 
         // originalIndexes compaction (only if span is non-empty — caller decides)
         il.Emit(OpCodes.Ldarga_S, (byte)3);
-        il.Emit(OpCodes.Call, typeof(Span<int>).GetMethod("get_Length"));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntLength);
         var noOrigIdx = il.DefineLabel();
         il.Emit(OpCodes.Ldc_I4_0);
         il.Emit(OpCodes.Ceq);
@@ -133,10 +138,10 @@ public static class ResidualScanIlEmitter
         // originalIndexes[writeIdx] = originalIndexes[i]
         il.Emit(OpCodes.Ldarga_S, (byte)3);
         il.Emit(OpCodes.Ldloc, writeIdxLocal);
-        il.Emit(OpCodes.Call, typeof(Span<int>).GetMethod("get_Item", [typeof(int)]));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntGetItem);
         il.Emit(OpCodes.Ldarga_S, (byte)3);
         il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Call, typeof(Span<int>).GetMethod("get_Item", [typeof(int)]));
+        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntGetItem);
         il.Emit(OpCodes.Ldind_I4);
         il.Emit(OpCodes.Stind_I4);
 
