@@ -30,7 +30,7 @@ public static class ResidualScanIlEmitter
     /// Both the entry-scan path (CompiledQueryMatch) and the direct-scan path
     /// (DirectScanMatch) use the same delegate — the direct-scan path re-evaluates
     /// driving-clause predicates that the tree scan already satisfied, which is
-    /// harmless and avoids needing separate delegates or a predicate-count limit.</summary>
+    /// harmless — a few extra FindNext + compare operations per entry.</summary>
     public delegate int ResidualScanPredicate(
         IPredicateEvaluationContext ctx,
         Span<EntryTermsReader> readers,
@@ -42,10 +42,9 @@ public static class ResidualScanIlEmitter
     /// <summary>Emit a residual-scan delegate that evaluates <paramref name="predicates"/>
     /// against each reader in the batch. Passing entry IDs and (optionally) original indexes
     /// are compacted to the front of their spans. Returns the count of survivors.
-    /// The emitted IL always evaluates ALL predicates — no runtime predicate count.
+    /// The emitted IL always evaluates ALL predicates against every entry.
     /// <paramref name="explainSource"/> receives a human-readable pseudocode description
     /// of the predicates, matching the format used by <see cref="QueryILEmitter.EmitDelegate"/>.</summary>
-    /// <summary>Emit without generating explain text (convenience overload).</summary>
     public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates)
     {
         return EmitDelegate(predicates, out _);

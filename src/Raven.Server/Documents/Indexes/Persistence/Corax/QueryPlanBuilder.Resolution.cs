@@ -262,6 +262,9 @@ internal static partial class QueryPlanBuilder
                 CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, emitTimings: false),
                 CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
                 CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanExplain),
+
+                // Explain: concatenate the plan-execution IL pseudocode with the
+                // residual-scan predicate pseudocode into a single EXPLAIN output.
                 ExplainSource = explainText + scanExplain,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
@@ -2692,14 +2695,9 @@ internal static partial class QueryPlanBuilder
             fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
         }
 
-        global::Corax.Querying.Matches.DirectScanMatchBase directScan = residualArray != null
-            ? new global::Corax.Querying.Matches.DirectScanFilteredMatch(
-                indexSearcher, drivingMatch,
-                longParams, doubleParams, sliceParams, fieldRootPages,
-                take: -1,
-                precompiledDelegate: compiledPlan.CompiledEntryPredicate)
-            : new global::Corax.Querying.Matches.DirectScanSimpleMatch(
-                indexSearcher, drivingMatch, take: -1);
+        var directScan = BuildDirectScan(
+            indexSearcher, drivingMatch, longParams, doubleParams, sliceParams, fieldRootPages,
+            compiledPlan.CompiledEntryPredicate, residualArray);
         directScan.DrivingTreeName = compoundFieldName;
         directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
         directScan.SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)";
@@ -2908,15 +2906,9 @@ internal static partial class QueryPlanBuilder
             fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
         }
 
-        var ds = residualArray != null
-            ? (global::Corax.Querying.Matches.DirectScanMatchBase)
-                new global::Corax.Querying.Matches.DirectScanFilteredMatch(
-                    indexSearcher, drivingMatch,
-                    longParams, doubleParams, sliceParams, fieldRootPages,
-                    take: -1,
-                    precompiledDelegate: compiledPlan.CompiledEntryPredicate)
-            : new global::Corax.Querying.Matches.DirectScanSimpleMatch(
-                indexSearcher, drivingMatch, take: -1);
+        var ds = BuildDirectScan(
+            indexSearcher, drivingMatch, longParams, doubleParams, sliceParams, fieldRootPages,
+            compiledPlan.CompiledEntryPredicate, residualArray);
         ds.DrivingTreeName = sortFieldName;
         ds.DrivingClause = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
         ds.Direction = orderByFields[0].Ascending ? "Forward" : "Backward";
@@ -3301,6 +3293,21 @@ internal static partial class QueryPlanBuilder
 
         if (value.Length - lastStart > 0)
             yield return value.Substring(lastStart, value.Length - lastStart);
+    }
+
+    /// <summary>Create the appropriate DirectScan match based on whether residual predicates exist.</summary>
+    private static global::Corax.Querying.Matches.DirectScanMatchBase BuildDirectScan(
+        IndexSearcher searcher, IQueryMatch drivingMatch,
+        long[] longParams, double[] doubleParams, Voron.Slice[] sliceParams, long[] fieldRootPages,
+        global::Corax.Querying.Planning.ResidualScanIlEmitter.ResidualScanPredicate residualDelegate,
+        ScanPredicateInfo[]? residualArray)
+    {
+        return residualArray != null
+            ? new global::Corax.Querying.Matches.DirectScanFilteredMatch(
+                searcher, drivingMatch, longParams, doubleParams, sliceParams, fieldRootPages,
+                take: -1, precompiledDelegate: residualDelegate)
+            : new global::Corax.Querying.Matches.DirectScanSimpleMatch(
+                searcher, drivingMatch, take: -1);
     }
 
     /// <summary>Singleton no-op ITermsProvider for TreeScan slots where the field doesn't exist.
