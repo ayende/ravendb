@@ -22,8 +22,7 @@ public static class ResidualScanIlEmitter
         IPredicateEvaluationContext ctx,
         Span<EntryTermsReader> readers,
         Span<long> entryIds,
-        Span<int> originalIndexes,
-        int predicateCount);
+        Span<int> originalIndexes);
 
 
 
@@ -64,7 +63,7 @@ public static class ResidualScanIlEmitter
         var dm = new DynamicMethod(
             "ResidualScan",
             typeof(int),
-            [typeof(IPredicateEvaluationContext), typeof(Span<EntryTermsReader>), typeof(Span<long>), typeof(Span<int>), typeof(int)],
+            [typeof(IPredicateEvaluationContext), typeof(Span<EntryTermsReader>), typeof(Span<long>), typeof(Span<int>)],
             typeof(IPredicateEvaluationContext).Module,
             skipVisibility: true)
         {
@@ -110,17 +109,7 @@ public static class ResidualScanIlEmitter
         int rootIdx = 0;
         for (int p = 0; p < predicates.Length; p++)
         {
-            // Runtime predicate-count guard: only evaluate when predicateCount > p.
-            // Enables a single emitted delegate to serve both entry-scan (all predicates)
-            // and direct-scan (residual subset) paths.
-            var skip = il.DefineLabel();
-            il.Emit(OpCodes.Ldarg_S, (byte)4);
-            IlEmitterShared.EmitLdcI4(il, p);
-            il.Emit(OpCodes.Ble, skip);
-
             EmitPredicate(il, in predicates[p], failLabel, ref rootIdx, readerRefLocal);
-
-            il.MarkLabel(skip);
         }
 
         // All passed: entryIds[writeIdx] = entryIds[i]

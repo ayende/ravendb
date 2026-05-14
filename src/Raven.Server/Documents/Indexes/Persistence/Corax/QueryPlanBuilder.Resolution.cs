@@ -2696,8 +2696,7 @@ internal static partial class QueryPlanBuilder
             indexSearcher, drivingMatch, residualArray,
             longParams, doubleParams, sliceParams, fieldRootPages,
             take: -1,
-            precompiledDelegate: compiledPlan.CompiledEntryPredicate,
-            predicateCount: residualArray?.Length ?? 0)
+            precompiledDelegate: compiledPlan.CompiledEntryPredicate)
         {
             DrivingTreeName = compoundFieldName,
             DrivingClause = $"{field1Name} = '{field1ValueStr}'",
@@ -2912,8 +2911,7 @@ internal static partial class QueryPlanBuilder
             indexSearcher, drivingMatch, residualArray,
             longParams, doubleParams, sliceParams, fieldRootPages,
             take: -1,
-            precompiledDelegate: compiledPlan.CompiledEntryPredicate,
-            predicateCount: residualArray?.Length ?? 0)
+            precompiledDelegate: compiledPlan.CompiledEntryPredicate)
         {
             DrivingTreeName = sortFieldName,
             DrivingClause = $"{drivingClause.FieldName} {drivingClause.ClauseType}",
