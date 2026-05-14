@@ -259,13 +259,11 @@ internal static partial class QueryPlanBuilder
         {
             compiledPlan = new CompiledPlan
             {
-                // ── IL delegates: emitted at plan-build time, cached forever ──
-                CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, emitTimings: false),
-                CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
+                CompiledDelegate = EmitDelegate(plan, out var explainText),
+                CompiledTimedDelegate = EmitTimedDelegate(plan),
                 CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanExplain),
 
-                // ── Cache key + explain (per-plan, not per-ordering) ──
-                ExplainSource = explainText + scanExplain,
+                ExplainSource = explainText + "\n" + scanExplain,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
                 FullKinds = plan.FullKinds,
@@ -318,6 +316,12 @@ internal static partial class QueryPlanBuilder
 
         return result;
     }
+
+    private static QueryIlEmitter.CompiledExecuteDelegate EmitDelegate(QueryExecution plan, out string explainSource) =>
+        QueryIlEmitter.EmitDelegate(plan, out explainSource, emitTimings: false);
+
+    private static QueryIlEmitter.CompiledExecuteDelegate EmitTimedDelegate(QueryExecution plan) =>
+        QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true);
 
     /// <summary>
     /// Build a query match from a sub-expression (e.g. the inner BinaryExpression

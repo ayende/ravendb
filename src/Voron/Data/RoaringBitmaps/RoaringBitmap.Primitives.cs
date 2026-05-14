@@ -346,9 +346,8 @@ public unsafe partial struct RoaringBitmap
                 return found < cardinality;
             }
         }
-        else // AdvInstructionSet.IsAcceleratedVector128 verified by caller
+        else if (AdvInstructionSet.IsAcceleratedVector128)
         {
-            Debug.Assert(AdvInstructionSet.IsAcceleratedVector128, "Already verified by caller");
             int vecCount = (cardinality + Vector128<ushort>.Count - 1) / Vector128<ushort>.Count;
             Vector128<ushort> needle = Vector128.Create(value);
             for (int v = 0; v < vecCount; v++)
@@ -359,6 +358,14 @@ public unsafe partial struct RoaringBitmap
                 
                 int found = BitOperations.TrailingZeroCount(hasMatch) + v * Vector128<ushort>.Count;
                 return found < cardinality;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < cardinality; i++)
+            {
+                if (arr[i] == value)
+                    return true;
             }
         }
 

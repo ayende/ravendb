@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -184,8 +185,9 @@ public sealed class DirectScanFilteredMatch(
         Span<UnmanagedSpan> containerSpans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
         Span<long> packedIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         Span<int> packedOrigIdx = stackalloc int[QueryPrimitives.EntryScanBatchSize];
-        var readersArr = new EntryTermsReader[QueryPrimitives.EntryScanBatchSize];
-
+        var readersArr = ArrayPool<EntryTermsReader>.Shared.Rent(QueryPrimitives.EntryScanBatchSize);
+        try
+        {
         while (count < remaining)
         {
             long t0 = Stopwatch.GetTimestamp();
@@ -277,6 +279,11 @@ public sealed class DirectScanFilteredMatch(
         TotalMatched += count;
         return count;
     }
+    finally
+    {
+        ArrayPool<EntryTermsReader>.Shared.Return(readersArr);
+    }
+}
 
     long[] IPredicateEvaluationContext.ResidualLongParams => longParams;
     double[] IPredicateEvaluationContext.ResidualDoubleParams => doubleParams;

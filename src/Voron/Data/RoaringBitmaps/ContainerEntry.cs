@@ -24,7 +24,7 @@ public unsafe struct ContainerEntry
     public int Cardinality;
 
     /// <summary>
-    /// Container key (value >> 16). Allows walking entries without index direction.
+    /// Container key (value >> 16). Allows walking entries without index indirection.
     /// The key allows us to have ~140 T entries in the bitmap (2^47), big enough
     /// </summary>
     public uint Key;

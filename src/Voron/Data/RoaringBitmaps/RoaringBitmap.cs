@@ -1210,7 +1210,13 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 ref ContainerEntry myEntry = ref _entries[mySlot];
                 ref ContainerEntry otherEntry = ref other._entries[otherSlot];
                 AndContainerInPlace(ref myEntry, ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
-                if (myEntry.Cardinality == 0)
+                int card = myEntry.Cardinality;
+                if (card == LazyCardinality)
+                {
+                    card = BitmapContainerCardinality(myEntry.Data);
+                    myEntry.Cardinality = card;
+                }
+                if (card == 0)
                     DonateStorageThenFreeContainer(key, mySlot, ref other);
             }
         }
@@ -1226,6 +1232,12 @@ public unsafe partial struct RoaringBitmap : IDisposable
     public void AndWithLimited(scoped ref RoaringBitmap other, long limit)
     {
         AssertNotConsumed();
+        if (limit <= 0)
+        {
+            Clear();
+            MarkConsumed(ref other);
+            return;
+        }
         int* myIdx = _index.RawItems;
         int myLen = _index.Count;
         long accumulated = 0;
@@ -1688,11 +1700,11 @@ public unsafe partial struct RoaringBitmap : IDisposable
         int neededBytes = totalCount * sizeof(ushort);
         Debug.Assert(neededBytes <= BitmapContainerSizeInBytes, "Total count exceeds maximum for array container");
         int leftCardinality = left.Cardinality;
-        left.Cardinality = totalCount;
         if (neededBytes > right.Storage.Length)
         {
             EnsureArrayCapacity(ref left, totalCount);
             Unsafe.CopyBlockUnaligned(left.ArrayData + leftCardinality, right.ArrayData, (uint)(right.Cardinality * sizeof(ushort)));
+            left.Cardinality = totalCount;
             return;
         }
         // Right buffer fits both — prepend left's values into right, then take ownership.
@@ -1701,6 +1713,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
             _ctx.Release(ref left.Storage);
         left.Storage = right.Storage;
         left.Data = right.Data;
+        left.Cardinality = totalCount;
         right = default;
     }
 
@@ -1858,6 +1871,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
             _ctx.Release(ref freeNode);
             freeNode = nextNode;
         }
+        _nextFreeStorage = default;
 
         if (_types.IsValid)
             _types.Dispose(_ctx);

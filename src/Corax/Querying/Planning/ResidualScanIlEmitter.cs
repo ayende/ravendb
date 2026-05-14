@@ -45,11 +45,6 @@ public static class ResidualScanIlEmitter
     /// The emitted IL always evaluates ALL predicates against every entry.
     /// <paramref name="explainSource"/> receives a human-readable pseudocode description
     /// of the predicates, matching the format used by <see cref="QueryILEmitter.EmitDelegate"/>.</summary>
-    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates)
-    {
-        return EmitDelegate(predicates, out _);
-    }
-
     public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string explainSource)
     {
         if (predicates == null || predicates.Length == 0)

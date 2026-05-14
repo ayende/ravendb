@@ -430,7 +430,7 @@ public static class QueryPrimitives
                 }
 
             case Planning.PostingSourceKind.SmallPostingList:
-                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap);
+                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap, limit);
                 bitmap.AndWith(ref tempBitmap);
                 return;
 
