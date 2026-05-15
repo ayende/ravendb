@@ -731,7 +731,7 @@ internal static partial class QueryPlanBuilder
                 ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 for (int wi = beforeCount; wi < clauses.Count; wi++)
                     clauses[wi].WhenCondition = (queryParams) =>
-                        QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(conditionExpr, queryParams);
+                        QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(conditionExpr, metadata.Query, metadata, queryParams);
                 break;
             }
 

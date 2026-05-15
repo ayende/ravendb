@@ -891,6 +891,28 @@ internal static partial class QueryPlanBuilder
         };
     }
 
+    /// <summary>
+    /// Converts an Equals clause into a bounded BetweenQuery(low == high == value)
+    /// with the proper sort-direction iterator, matching the way <see cref="ResolveRangeClauseWithDirection"/>
+    /// handles ranges but adapted for exact-match clauses that don't have a natural direction.
+    /// </summary>
+    private static IQueryMatch ResolveEqualsClauseWithDirection(ClauseInfo clause, ClauseExecution exec,
+        IndexSearcher indexSearcher, QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams, bool forward)
+    {
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+        var packed = exec.PackedParamValue;
+
+        return packed.ValueType switch
+        {
+            PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, plan.LongValues[packed.Param1], plan.LongValues[packed.Param1],
+                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, forward: forward),
+            PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, plan.DoubleValues[packed.Param1], plan.DoubleValues[packed.Param1],
+                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, forward: forward),
+            _ => indexSearcher.BetweenQuery(fieldMeta, plan.StringValues[packed.Param1], plan.StringValues[packed.Param1],
+                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, forward: forward)
+        };
+    }
+
     private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
         QueryExecution plan, PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
@@ -1831,7 +1853,7 @@ internal static partial class QueryPlanBuilder
 
         (VectorValue? SingleVector, VectorValue[] MultiVector) transformedEmbeddings = (null, null);
         int numberOfDimensions;
-        if (VectorHelpers.TryRetrieveEtlTaskName(builderParameters, fieldName, out embeddingsGenerationTaskIdentifier))
+        if (VectorHelpers.TryRetrieveEmbeddingsGenerationTaskIdentifier(builderParameters, fieldName, out embeddingsGenerationTaskIdentifier))
         {
             var vectorOptions = VectorHelpers.GetExplicitVectorOptions(builderParameters, fieldName, out indexField);
             transformedEmbeddings = VectorHelpers.GetEmbeddingsForQueryParameter(builderParameters, valueType, value, embeddingsGenerationTaskIdentifier, vectorOptions, fieldName);
@@ -1941,7 +1963,7 @@ internal static partial class QueryPlanBuilder
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public static bool TryRetrieveEtlTaskName(QueryBuilderParameters builderParameters, in string fieldName, out string embeddingsGenerationTaskIdentifier)
+        public static bool TryRetrieveEmbeddingsGenerationTaskIdentifier(QueryBuilderParameters builderParameters, in string fieldName, out string embeddingsGenerationTaskIdentifier)
         {
             var existsInPersistence =
                 builderParameters.Index.IndexFieldsPersistence.TryReadEmbeddingsGenerationTaskIdentifier(fieldName, out embeddingsGenerationTaskIdentifier);
@@ -2719,22 +2741,26 @@ internal static partial class QueryPlanBuilder
 
         if (orderByFields == null || orderByFields.Length != 1)
             return false;
-        if (plan.Clauses == null || plan.Clauses.Count == 0 || plan.AllNegated)
-            return false;
+
+        var indexSearcher = planParams.IndexSearcher;
+        string sortFieldName = orderByFields[0].Field.FieldName.ToString();
+        bool forward = orderByFields[0].Ascending;
 
         var clauses = plan.Clauses;
         var execs = plan.Executions;
-        var indexSearcher = planParams.IndexSearcher;
-        string sortFieldName = orderByFields[0].Field.FieldName.ToString();
 
-        // Find a range clause on the sort field
+        if (clauses == null || clauses.Count == 0 || plan.AllNegated)
+            return false;
+
+        // ── Find a range or equals clause on the sort field ──
         int drivingIdx = -1;
         for (int i = 0; i < clauses.Count; i++)
         {
             if (clauses[i].FieldName != sortFieldName)
                 continue;
             if (clauses[i].ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between))
+                or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between
+                or ClauseType.Equals))
                 continue;
             if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
                 continue;
@@ -2745,30 +2771,53 @@ internal static partial class QueryPlanBuilder
         if (drivingIdx == -1)
             return false;
 
-        // SortedDrivingMatch walks the ITermsProvider directly — the provider enforces
-        // range bounds and the entries come out in term order (field-value sort order).
-        // No bitmap phase needed.
-
         var drivingPacked = execs[drivingIdx].PackedParamValue;
         if (drivingPacked.IsNone)
             return false;
 
-        // Check residual eligibility
-        int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
-        var residualPreds = new List<ScanPredicateInfo>();
-        for (int i = 0; i < clauses.Count; i++)
+        var drivingClause = clauses[drivingIdx];
+        var drivingExec = execs[drivingIdx];
+        TermsProviderMatch resolvedMatch;
+
+        // Build the range/equals match to extract the ITermsProvider
+        if (drivingClause.ClauseType == ClauseType.Equals)
         {
-            if (i == drivingIdx) continue;
-            if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
+            var match = ResolveEqualsClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+            if (match is not TermsProviderMatch tpmE)
                 return false;
-            var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
-            if (pred == null)
+            resolvedMatch = tpmE;
+        }
+        else
+        {
+            var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+            if (match is not TermsProviderMatch tpmR)
                 return false;
-            residualPreds.Add(pred.Value);
+            resolvedMatch = tpmR;
         }
 
-        // Cost check
-        long drivingCardinality = execs[drivingIdx].Cardinality > 0 ? execs[drivingIdx].Cardinality : indexSearcher.NumberOfEntries;
+        ITermsProvider provider = resolvedMatch.Provider;
+        Voron.Impl.LowLevelTransaction llt = resolvedMatch.Llt;
+        long drivingCardinality = drivingExec.Cardinality > 0 ? drivingExec.Cardinality : indexSearcher.NumberOfEntries;
+        string drivingClauseDescription = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
+
+        // ── Residual predicates ──
+        int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
+        var residualPreds = new List<ScanPredicateInfo>();
+        if (clauses != null)
+        {
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (i == drivingIdx) continue;
+                if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
+                    return false;
+                var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
+                if (pred == null)
+                    return false;
+                residualPreds.Add(pred.Value);
+            }
+        }
+
+        // ── Cost check ──
         long bitmapCost = 0;
         for (int i = 0; i < clauses.Count; i++)
             bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
@@ -2794,34 +2843,17 @@ internal static partial class QueryPlanBuilder
         if (directCost >= bitmapCost || entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             return false;
 
-        // Create the driving match: SortedDrivingMatch walks the ITermsProvider directly.
-        // The provider enforces range bounds; entries come out in term order (sort order).
-        var drivingClause = clauses[drivingIdx];
-        var drivingExec = execs[drivingIdx];
-        bool forward = orderByFields[0].Ascending;
+        // ── Create the driving match ──
+        var drivingMatch = new SortedDrivingMatch(provider, llt, planParams.Allocator);
 
-        // Build the range match to extract the ITermsProvider (TermsProviderMatch wraps it)
-        var rangeMatch = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
-
-        // Extract the ITermsProvider from the range match (TermsProviderMatch wraps it).
-        // SortedDrivingMatch walks the provider directly in term order.
-        ITermsProvider provider = null;
-        if (rangeMatch is TermsProviderMatch tpm)
-            provider = tpm.Provider;
-        if (provider == null)
-            return false; // range match didn't produce a TermsProviderMatch (e.g., empty field)
-
-        var drivingMatch = new SortedDrivingMatch(
-            provider, ((TermsProviderMatch)rangeMatch).Llt, planParams.Allocator);
-
-        // Extract residual scan parameters
+        // ── Residual scan parameters ──
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
         long[] longParams = null;
         double[] doubleParams = null;
         Voron.Slice[] sliceParams = null;
         long[] fieldRootPages = null;
 
-        if (residualArray != null)
+        if (residualArray != null && clauses != null)
         {
             var longs = new List<long>();
             var doubles = new List<double>();
@@ -2866,7 +2898,7 @@ internal static partial class QueryPlanBuilder
             indexSearcher, drivingMatch, longParams, doubleParams, sliceParams, fieldRootPages,
             compiledPlan.CompiledEntryPredicate, residualArray);
         ds.DrivingTreeName = sortFieldName;
-        ds.DrivingClause = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
+        ds.DrivingClause = drivingClauseDescription;
         ds.Direction = orderByFields[0].Ascending ? "Forward" : "Backward";
         ds.ResidualDescription = residualArray != null
             ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
@@ -3005,6 +3037,15 @@ internal static partial class QueryPlanBuilder
 
         foreach (var field in orderByFields)
         {
+            var nullsSortMode = (field.NullsOrdering, field.Ascending) switch
+            {
+                (NullsOrderingType.First, Ascending: true) => NullsSortMode.NullsSmallest,
+                (NullsOrderingType.First, Ascending: false) => NullsSortMode.NullsLargest,
+                (NullsOrderingType.Last, Ascending: true) => NullsSortMode.NullsLargest,
+                (NullsOrderingType.Last, Ascending: false) => NullsSortMode.NullsSmallest,
+                _ => (NullsSortMode?)null
+            };
+
             if (field.OrderingType == OrderByFieldType.Random)
             {
                 var seed = field.Arguments is { Length: > 0 } ?
@@ -3078,7 +3119,7 @@ internal static partial class QueryPlanBuilder
                 sortArray[sortIndex++] = new OrderMetadata(fieldMetadata, field.Ascending, MatchCompareFieldType.Spatial, point, roundTo,
                     spatialField.Units is SpatialUnits.Kilometers
                         ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
-                        : global::Corax.Utils.Spatial.SpatialUnits.Miles, fieldIsEmpty);
+                        : global::Corax.Utils.Spatial.SpatialUnits.Miles, fieldIsEmpty, nullsSortMode);
                 continue;
             }
 
@@ -3095,17 +3136,17 @@ internal static partial class QueryPlanBuilder
                 case OrderByFieldType.Custom:
                     throw new NotSupportedInCoraxException($"{nameof(Corax)} doesn't support Custom OrderBy.");
                 case OrderByFieldType.AlphaNumeric:
-                    sortArray[sortIndex++] = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Alphanumeric, fieldIsEmpty);
+                    sortArray[sortIndex++] = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Alphanumeric, fieldIsEmpty, nullsSortMode);
                     continue;
                 case OrderByFieldType.Long:
-                    temporaryOrder = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Integer, fieldIsEmpty);
+                    temporaryOrder = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Integer, fieldIsEmpty, nullsSortMode);
                     break;
                 case OrderByFieldType.Double:
-                    temporaryOrder = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Floating, fieldIsEmpty);
+                    temporaryOrder = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Floating, fieldIsEmpty, nullsSortMode);
                     break;
             }
 
-            sortArray[sortIndex++] = temporaryOrder ?? new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Sequence, fieldIsEmpty);
+            sortArray[sortIndex++] = temporaryOrder ?? new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Sequence, fieldIsEmpty, nullsSortMode);
         }
 
         return sortArray[0..sortIndex];
@@ -3139,9 +3180,9 @@ internal static partial class QueryPlanBuilder
             case 0:
                 return match;
             case 1:
-                return indexSearcher.OrderBy(match, orderMetadata[0], builderParameters.Index.Configuration.NullFirst, take, builderParameters.Token);
+                return indexSearcher.OrderBy(match, orderMetadata[0], builderParameters.Index.Configuration.NullsSortMode, take, builderParameters.Token);
             default:
-                return indexSearcher.OrderBy(match, orderMetadata, builderParameters.Index.Configuration.NullFirst, take, builderParameters.Token);
+                return indexSearcher.OrderBy(match, orderMetadata, builderParameters.Index.Configuration.NullsSortMode, take, builderParameters.Token);
         }
     }
 
@@ -3163,7 +3204,7 @@ internal static partial class QueryPlanBuilder
             if (orderByFields[i].OrderingType == OrderByFieldType.Score)
             {
                 var meta = new OrderMetadata(true, MatchCompareFieldType.Score, orderByFields[i].Ascending);
-                return indexSearcher.OrderBy(match, meta, nullFirst: false, take: takeInt, token: token);
+                return indexSearcher.OrderBy(match, meta, NullsSortMode.NullsLargest, take: takeInt, token: token);
             }
         }
 
