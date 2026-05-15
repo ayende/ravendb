@@ -2748,61 +2748,84 @@ internal static partial class QueryPlanBuilder
 
         var clauses = plan.Clauses;
         var execs = plan.Executions;
+        bool isFullScan = clauses == null || clauses.Count == 0;
 
-        if (clauses == null || clauses.Count == 0 || plan.AllNegated)
+        if (isFullScan && plan.AllNegated)
             return false;
 
-        // ── Find a range or equals clause on the sort field ──
+        ITermsProvider provider;
+        Voron.Impl.LowLevelTransaction llt;
+        long drivingCardinality;
+        string drivingClauseDescription;
         int drivingIdx = -1;
-        for (int i = 0; i < clauses.Count; i++)
+
+        if (isFullScan)
         {
-            if (clauses[i].FieldName != sortFieldName)
-                continue;
-            if (clauses[i].ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between
-                or ClauseType.Equals))
-                continue;
-            if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
-                continue;
-            drivingIdx = i;
-            break;
-        }
-
-        if (drivingIdx == -1)
-            return false;
-
-        var drivingPacked = execs[drivingIdx].PackedParamValue;
-        if (drivingPacked.IsNone)
-            return false;
-
-        var drivingClause = clauses[drivingIdx];
-        var drivingExec = execs[drivingIdx];
-        TermsProviderMatch resolvedMatch;
-
-        if (drivingClause.ClauseType == ClauseType.Equals)
-        {
-            var match = ResolveEqualsClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
-            if (match is not TermsProviderMatch tpmE)
+            // ── No WHERE at all, only ORDER BY ──
+            // Full field tree walk via ExistsQuery — covers all terms in sort order.
+            // Null/non-existing entries are handled by SortedDrivingMatch.
+            var fieldMeta = orderByFields[0].Field;
+            var fullScanMatch = indexSearcher.ExistsQuery(fieldMeta, forward: forward);
+            if (fullScanMatch is not TermsProviderMatch tpm)
                 return false;
-            resolvedMatch = tpmE;
+            provider = tpm.Provider;
+            llt = tpm.Llt;
+            drivingCardinality = 0; // not used (cost check skipped)
+            drivingClauseDescription = $"{sortFieldName} [all]";
         }
         else
         {
-            var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
-            if (match is not TermsProviderMatch tpmR)
-                return false;
-            resolvedMatch = tpmR;
-        }
+            // ── Find a range or equals clause on the sort field ──
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (clauses[i].FieldName != sortFieldName)
+                    continue;
+                if (clauses[i].ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+                    or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between
+                    or ClauseType.Equals))
+                    continue;
+                if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
+                    continue;
+                drivingIdx = i;
+                break;
+            }
 
-        ITermsProvider provider = resolvedMatch.Provider;
-        Voron.Impl.LowLevelTransaction llt = resolvedMatch.Llt;
-        long drivingCardinality = drivingExec.Cardinality > 0 ? drivingExec.Cardinality : indexSearcher.NumberOfEntries;
-        string drivingClauseDescription = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
+            if (drivingIdx == -1)
+                return false;
+
+            var drivingPacked = execs[drivingIdx].PackedParamValue;
+            if (drivingPacked.IsNone)
+                return false;
+
+            var drivingClause = clauses[drivingIdx];
+            var drivingExec = execs[drivingIdx];
+            TermsProviderMatch resolvedMatch;
+
+            if (drivingClause.ClauseType == ClauseType.Equals)
+            {
+                var match = ResolveEqualsClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+                if (match is not TermsProviderMatch tpmE)
+                    return false;
+                resolvedMatch = tpmE;
+            }
+            else
+            {
+                var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+                if (match is not TermsProviderMatch tpmR)
+                    return false;
+                resolvedMatch = tpmR;
+            }
+
+            provider = resolvedMatch.Provider;
+            llt = resolvedMatch.Llt;
+            drivingCardinality = drivingExec.Cardinality > 0 ? drivingExec.Cardinality : indexSearcher.NumberOfEntries;
+            drivingClauseDescription = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
+        }
 
         // ── Residual predicates ──
         int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
         var residualPreds = new List<ScanPredicateInfo>();
-        if (clauses != null)
+        if (isFullScan == false)
         {
             for (int i = 0; i < clauses.Count; i++)
             {
@@ -2816,31 +2839,34 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // ── Cost check ──
-        long bitmapCost = 0;
-        for (int i = 0; i < clauses.Count; i++)
-            bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
-
-        long entriesToScan = drivingCardinality;
-        if (residualPreds.Count > 0)
+        // ── Cost check (skip for full scan — always beneficial) ──
+        long entriesToScan = 0, bitmapCost = 0;
+        if (isFullScan == false)
         {
-            long minResidual = long.MaxValue;
             for (int i = 0; i < clauses.Count; i++)
-            {
-                if (i == drivingIdx) continue;
-                long c = execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
-                if (c < minResidual) minResidual = c;
-            }
-            if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
-            {
-                double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
-                if (passRate > 0) entriesToScan = (long)(drivingCardinality / passRate);
-            }
-        }
+                bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
 
-        long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier ? long.MaxValue : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
-        if (directCost >= bitmapCost || entriesToScan > QueryPrimitives.EntryScanCountThreshold)
-            return false;
+            entriesToScan = drivingCardinality;
+            if (residualPreds.Count > 0)
+            {
+                long minResidual = long.MaxValue;
+                for (int i = 0; i < clauses.Count; i++)
+                {
+                    if (i == drivingIdx) continue;
+                    long c = execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
+                    if (c < minResidual) minResidual = c;
+                }
+                if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
+                {
+                    double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
+                    if (passRate > 0) entriesToScan = (long)(drivingCardinality / passRate);
+                }
+            }
+
+            long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier ? long.MaxValue : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+            if (directCost >= bitmapCost || entriesToScan > QueryPrimitives.EntryScanCountThreshold)
+                return false;
+        }
 
         // ── Create the driving match ──
         bool nullFirst = (orderByFields[0].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
@@ -2904,7 +2930,9 @@ internal static partial class QueryPlanBuilder
         ds.ResidualDescription = residualArray != null
             ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
             : null;
-        ds.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
+        ds.Reason = isFullScan
+            ? "full index-only scan (no WHERE clause)"
+            : $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
         directMatch = ds;
         return true;
     }

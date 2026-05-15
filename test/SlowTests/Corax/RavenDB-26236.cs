@@ -677,14 +677,10 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertStreamingPlan(Options options, QueryTimings timings)
     {
-        // In the bitmap pipeline, SortingMatch with SortUsingIndexFromBitmap is the
-        // functional equivalent of v7.2's streaming optimization — both walk the
-        // index tree in sort order via SortedIndexReader and avoid full materialization.
-        // The "SortingMatch" type name is an implementation detail of the new pipeline.
         if (options.DatabaseMode == RavenDatabaseMode.Sharded)
             return;
         var root = (QueryInspectionNode)timings.QueryPlan;
-        Assert.NotEqual("SortResultsFromBitmap", root.Operation);
+        Assert.NotEqual("SortingMatch", root.Operation);
     }
 
     private static void AssertStringNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
