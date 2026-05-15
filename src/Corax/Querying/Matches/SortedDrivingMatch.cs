@@ -85,21 +85,22 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     [SkipLocalsInit]
     public int Fill(Span<long> matches)
     {
+        Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+
         if (_providerExhausted && _hasPendingLargeIterator == false && _hasSmallListReader == false)
         {
-            // After the provider is exhausted, drain null/non-existing if they appear last
+            // After the provider is exhausted, drain nulls if they appear last
             if (_nullFirst == false && _nullExhausted == false)
-                return DrainNullAndNonExisting(matches);
+                return DrainNullAndNonExisting(matches, entryBuffer);
             return 0;
         }
 
         int count = 0;
-        Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
 
-        // If nulls-first, drain null/non-existing iterators at the start of every Fill call.
+        // If nulls-first, drain null iterators at the start of every Fill call.
         if (_nullFirst && _nullExhausted == false)
         {
-            count += DrainNullAndNonExisting(matches);
+            count += DrainNullAndNonExisting(matches, entryBuffer);
             if (count >= matches.Length || _nullExhausted == false)
                 return count;
         }
@@ -122,6 +123,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
         // Walk the provider's posting list IDs
         Span<long> plIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+        Span<UnmanagedSpan> containerItems = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
         var pageLocator = _llt.PageLocator;
 
         int read;
@@ -135,8 +137,6 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             }
 
             // Batch-resolve SmallPostingList container items
-            Span<long> smallPlIds = stackalloc long[read];
-            Span<UnmanagedSpan> containerItems = stackalloc UnmanagedSpan[read];
             int smallCount = 0;
 
             for (int i = 0; i < read; i++)
@@ -146,12 +146,12 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
                 if (termType == TermIdMask.SmallPostingList)
                 {
-                    smallPlIds[smallCount++] = (long)EntryIdEncodings.GetContainerId(plId);
+                    entryBuffer[smallCount++] = (long)EntryIdEncodings.GetContainerId(plId);
                 }
             }
             if (smallCount > 0)
             {
-                Container.GetAll(_llt, smallPlIds.Slice(0, smallCount), containerItems.Slice(0, smallCount), long.MinValue, pageLocator);
+                Container.GetAll(_llt, entryBuffer.Slice(0, smallCount), containerItems.Slice(0, smallCount), long.MinValue, pageLocator);
             }
 
             int smallIdx = 0;
@@ -246,10 +246,9 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         return count;
     }
 
-    private int DrainNullAndNonExisting(Span<long> matches)
+    private int DrainNullAndNonExisting(Span<long> matches, Span<long> entryBuffer)
     {
         int count = 0;
-        Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
 
         // Drain null posting list — entries with explicit null value.
         if (_hasNullPostingList && _nullExhausted == false && count < matches.Length)
