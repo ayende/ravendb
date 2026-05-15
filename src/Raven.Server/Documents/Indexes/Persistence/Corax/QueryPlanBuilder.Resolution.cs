@@ -2865,9 +2865,11 @@ internal static partial class QueryPlanBuilder
         }
 
         // ── Create the driving match ──
-        bool nullFirst = (orderByFields[0].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
+        bool nullIsSmallest = (orderByFields[0].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
+        bool nullFirst = forward ? nullIsSmallest : !nullIsSmallest;
+        // drainNulls: only for range/equals providers; ExistsQuery includes nulls itself
         var drivingMatch = new SortedDrivingMatch(provider, llt, planParams.Allocator,
-            indexSearcher, orderByFields[0].Field, nullFirst);
+            indexSearcher, orderByFields[0].Field, nullFirst, drainNulls: isFullScan == false);
 
         // ── Residual scan parameters ──
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;

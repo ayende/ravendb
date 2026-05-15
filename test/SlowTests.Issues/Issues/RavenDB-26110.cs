@@ -48,7 +48,7 @@ public class RavenDB_26110(ITestOutputHelper output) : StorageTest(output)
         public bool IsBoosting => false;
         public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
-        public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.ResultsNativelySorted;
+
 
         public int Fill(Span<long> matches)
         {

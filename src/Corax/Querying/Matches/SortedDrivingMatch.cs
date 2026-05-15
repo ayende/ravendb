@@ -61,7 +61,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     private bool _nullExhausted;
 
     public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator,
-        Querying.IndexSearcher searcher, FieldMetadata field, bool nullFirst)
+        Querying.IndexSearcher searcher, FieldMetadata field, bool nullFirst, bool drainNulls = true)
     {
         _provider = provider;
         _llt = llt;
@@ -69,14 +69,22 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         _nullFirst = nullFirst;
         _emittedBitmap = new RoaringBitmap(allocator);
 
-        _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in field, out _nonExistingPostingListId);
-        _hasNullPostingList = searcher.TryGetPostingListForNull(in field, out _nullPostingListId);
-        _nonExistingExhausted = !_hasNonExistingPostingList;
-        _nullExhausted = !_hasNullPostingList;
-        if (_hasNonExistingPostingList)
-            InitPostingList(ref _nonExistingPostingList, ref _nonExistingIterator, _nonExistingPostingListId);
-        if (_hasNullPostingList)
-            InitPostingList(ref _nullPostingList, ref _nullIterator, _nullPostingListId);
+        if (drainNulls)
+        {
+            _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in field, out _nonExistingPostingListId);
+            _hasNullPostingList = searcher.TryGetPostingListForNull(in field, out _nullPostingListId);
+            _nonExistingExhausted = !_hasNonExistingPostingList;
+            _nullExhausted = !_hasNullPostingList;
+            if (_hasNonExistingPostingList)
+                InitPostingList(ref _nonExistingPostingList, ref _nonExistingIterator, _nonExistingPostingListId);
+            if (_hasNullPostingList)
+                InitPostingList(ref _nullPostingList, ref _nullIterator, _nullPostingListId);
+        }
+        else
+        {
+            _nonExistingExhausted = true;
+            _nullExhausted = true;
+        }
     }
 
     public long Count => -1;
@@ -291,7 +299,8 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
     private void InitPostingList(ref PostingList postingList, ref PostingList.Iterator iterator, long postingListId)
     {
-        var setStateSpan = Container.GetReadOnly(_llt, new ContainerEntryId(postingListId));
+        var containerEntryId = EntryIdEncodings.GetContainerId(postingListId);
+        var setStateSpan = Container.GetReadOnly(_llt, containerEntryId);
         ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
         postingList = new PostingList(_llt, Slices.Empty, in setState);
         iterator = postingList.Iterate();

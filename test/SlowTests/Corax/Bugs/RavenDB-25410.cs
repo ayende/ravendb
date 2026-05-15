@@ -109,7 +109,6 @@ public class RavenDB_25410(ITestOutputHelper output) : StorageTest(output)
         private int _count;
         private bool _fillExecuted;
         public long Count => 16;
-        public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.SortingIsRequired;
 
         public QueryCountConfidence Confidence => QueryCountConfidence.Low;
         public bool IsBoosting { get => true; }
