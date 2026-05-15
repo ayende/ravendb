@@ -47,17 +47,12 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     private FastPForBufferedReader _smallListReader;
     private bool _hasSmallListReader;
 
-    // Null and non-existing entry handling (mirrors SortedIndexReader pattern)
+    // Null entry handling (non-existing entries are never included when sorting by value)
     private readonly bool _nullFirst;
-    private readonly long _nonExistingPostingListId;
     private readonly long _nullPostingListId;
-    private PostingList _nonExistingPostingList;
     private PostingList _nullPostingList;
-    private PostingList.Iterator _nonExistingIterator;
     private PostingList.Iterator _nullIterator;
-    private bool _hasNonExistingPostingList;
     private bool _hasNullPostingList;
-    private bool _nonExistingExhausted;
     private bool _nullExhausted;
 
     public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator,
@@ -71,18 +66,13 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
         if (drainNulls)
         {
-            _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in field, out _nonExistingPostingListId);
             _hasNullPostingList = searcher.TryGetPostingListForNull(in field, out _nullPostingListId);
-            _nonExistingExhausted = !_hasNonExistingPostingList;
             _nullExhausted = !_hasNullPostingList;
-            if (_hasNonExistingPostingList)
-                InitPostingList(ref _nonExistingPostingList, ref _nonExistingIterator, _nonExistingPostingListId);
             if (_hasNullPostingList)
                 InitPostingList(ref _nullPostingList, ref _nullIterator, _nullPostingListId);
         }
         else
         {
-            _nonExistingExhausted = true;
             _nullExhausted = true;
         }
     }
@@ -98,7 +88,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         if (_providerExhausted && _hasPendingLargeIterator == false && _hasSmallListReader == false)
         {
             // After the provider is exhausted, drain null/non-existing if they appear last
-            if (_nullFirst == false && (_nonExistingExhausted == false || _nullExhausted == false))
+            if (_nullFirst == false && _nullExhausted == false)
                 return DrainNullAndNonExisting(matches);
             return 0;
         }
@@ -107,10 +97,10 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
 
         // If nulls-first, drain null/non-existing iterators at the start of every Fill call.
-        if (_nullFirst && (_nonExistingExhausted == false || _nullExhausted == false))
+        if (_nullFirst && _nullExhausted == false)
         {
             count += DrainNullAndNonExisting(matches);
-            if (count >= matches.Length || (_nonExistingExhausted == false || _nullExhausted == false))
+            if (count >= matches.Length || _nullExhausted == false)
                 return count;
         }
 
@@ -261,12 +251,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         int count = 0;
         Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
 
-        // Drain non-existing posting list first, then null.
-        if (_hasNonExistingPostingList && _nonExistingExhausted == false)
-        {
-            int drained = DrainIterator(matches, entryBuffer, ref _nonExistingIterator, ref _nonExistingExhausted);
-            count += drained;
-        }
+        // Drain null posting list — entries with explicit null value.
         if (_hasNullPostingList && _nullExhausted == false && count < matches.Length)
         {
             count += DrainIterator(matches.Slice(count), entryBuffer, ref _nullIterator, ref _nullExhausted);
