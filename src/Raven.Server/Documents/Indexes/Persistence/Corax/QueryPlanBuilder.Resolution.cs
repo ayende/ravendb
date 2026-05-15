@@ -891,28 +891,6 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    /// <summary>
-    /// Converts an Equals clause into a bounded BetweenQuery(low == high == value)
-    /// with the proper sort-direction iterator, matching the way <see cref="ResolveRangeClauseWithDirection"/>
-    /// handles ranges but adapted for exact-match clauses that don't have a natural direction.
-    /// </summary>
-    private static IQueryMatch ResolveEqualsClauseWithDirection(ClauseInfo clause, ClauseExecution exec,
-        IndexSearcher indexSearcher, QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams, bool forward)
-    {
-        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
-        var packed = exec.PackedParamValue;
-
-        return packed.ValueType switch
-        {
-            PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, plan.LongValues[packed.Param1], plan.LongValues[packed.Param1],
-                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, forward: forward),
-            PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, plan.DoubleValues[packed.Param1], plan.DoubleValues[packed.Param1],
-                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, forward: forward),
-            _ => indexSearcher.BetweenQuery(fieldMeta, plan.StringValues[packed.Param1], plan.StringValues[packed.Param1],
-                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, forward: forward)
-        };
-    }
-
     private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
         QueryExecution plan, PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
@@ -2781,8 +2759,7 @@ internal static partial class QueryPlanBuilder
                 if (clauses[i].FieldName != sortFieldName)
                     continue;
                 if (clauses[i].ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                    or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between
-                    or ClauseType.Equals))
+                    or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between))
                     continue;
                 if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
                     continue;
@@ -2799,25 +2776,13 @@ internal static partial class QueryPlanBuilder
 
             var drivingClause = clauses[drivingIdx];
             var drivingExec = execs[drivingIdx];
-            TermsProviderMatch resolvedMatch;
 
-            if (drivingClause.ClauseType == ClauseType.Equals)
-            {
-                var match = ResolveEqualsClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
-                if (match is not TermsProviderMatch tpmE)
-                    return false;
-                resolvedMatch = tpmE;
-            }
-            else
-            {
-                var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
-                if (match is not TermsProviderMatch tpmR)
-                    return false;
-                resolvedMatch = tpmR;
-            }
+            var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+            if (match is not TermsProviderMatch tpm)
+                return false;
 
-            provider = resolvedMatch.Provider;
-            llt = resolvedMatch.Llt;
+            provider = tpm.Provider;
+            llt = tpm.Llt;
             drivingCardinality = drivingExec.Cardinality > 0 ? drivingExec.Cardinality : indexSearcher.NumberOfEntries;
             drivingClauseDescription = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
         }
