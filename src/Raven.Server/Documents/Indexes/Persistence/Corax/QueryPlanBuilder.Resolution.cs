@@ -2760,6 +2760,10 @@ internal static partial class QueryPlanBuilder
             // ── No WHERE at all, only ORDER BY ──
             // Full field tree walk via ExistsQuery — covers all terms in sort order.
             // Null/non-existing entries are handled by SortedDrivingMatch.
+            // Only index-walkable field types qualify (Score, Random, Alphanumeric have no tree).
+            var sortFieldType = orderByFields[0].FieldType;
+            if (sortFieldType is not (MatchCompareFieldType.Sequence or MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
+                return false;
             var fieldMeta = orderByFields[0].Field;
             var fullScanMatch = indexSearcher.ExistsQuery(fieldMeta, forward: forward);
             if (fullScanMatch is not TermsProviderMatch tpm)
