@@ -2741,6 +2741,7 @@ internal static partial class QueryPlanBuilder
         var indexSearcher = planParams.IndexSearcher;
         string sortFieldName = orderByFields[0].Field.FieldName.ToString();
         bool forward = orderByFields[0].Ascending;
+        var sortFieldType = orderByFields[0].FieldType;
 
         var clauses = plan.Clauses;
         var execs = plan.Executions;
@@ -2758,14 +2759,20 @@ internal static partial class QueryPlanBuilder
         if (isFullScan)
         {
             // ── No WHERE at all, only ORDER BY ──
-            // Full field tree walk via ExistsQuery — covers all terms in sort order.
-            // Null/non-existing entries are handled by SortedDrivingMatch.
-            // Only index-walkable field types qualify (Score, Random, Alphanumeric have no tree).
-            var sortFieldType = orderByFields[0].FieldType;
+            // Full field tree walk — use BetweenQuery for numeric fields (correct numeric
+            // comparison) and ExistsQuery for string/sequence fields.
+            // ExistsQuery uses CompactKeyLookup byte comparison which doesn't match numeric order.
+            // Only index-walkable field types qualify.
             if (sortFieldType is not (MatchCompareFieldType.Sequence or MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
                 return false;
             var fieldMeta = orderByFields[0].Field;
-            var fullScanMatch = indexSearcher.ExistsQuery(fieldMeta, forward: forward);
+            IQueryMatch fullScanMatch;
+            if (sortFieldType == MatchCompareFieldType.Integer)
+                fullScanMatch = indexSearcher.BetweenQuery(fieldMeta, long.MinValue, long.MaxValue, forward: forward);
+            else if (sortFieldType == MatchCompareFieldType.Floating)
+                fullScanMatch = indexSearcher.BetweenQuery(fieldMeta, double.MinValue, double.MaxValue, forward: forward);
+            else
+                fullScanMatch = indexSearcher.ExistsQuery(fieldMeta, forward: forward);
             if (fullScanMatch is not TermsProviderMatch tpm)
                 return false;
             provider = tpm.Provider;
@@ -2871,9 +2878,11 @@ internal static partial class QueryPlanBuilder
         // ── Create the driving match ──
         bool nullIsSmallest = (orderByFields[0].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
         bool nullFirst = forward ? nullIsSmallest : !nullIsSmallest;
-        // drainNulls: only for range/equals providers; ExistsQuery includes nulls itself
+        // BetweenQuery does not include nulls; ExistsQuery does. Only drain nulls for types
+        // that use BetweenQuery (Integer, Floating) where the provider won't emit them.
+        bool drainNulls = isFullScan == false || sortFieldType is MatchCompareFieldType.Integer or MatchCompareFieldType.Floating;
         var drivingMatch = new SortedDrivingMatch(provider, llt, planParams.Allocator,
-            indexSearcher, orderByFields[0].Field, nullFirst, drainNulls: isFullScan == false);
+            indexSearcher, orderByFields[0].Field, nullFirst, drainNulls);
 
         // ── Residual scan parameters ──
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
