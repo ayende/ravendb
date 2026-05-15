@@ -891,6 +891,24 @@ internal static partial class QueryPlanBuilder
         };
     }
 
+    /// <summary>Converts an Equals clause into a BetweenQuery(low==high==value) so
+    /// it produces a TermsProviderMatch that SortedDrivingMatch can walk in sort order.</summary>
+    private static IQueryMatch ResolveEqualsClauseWithDirection(ClauseInfo clause, ClauseExecution exec,
+        IndexSearcher indexSearcher, QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams, bool forward)
+    {
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+        var packed = exec.PackedParamValue;
+        return packed.ValueType switch
+        {
+            PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, plan.LongValues[packed.Param1], plan.LongValues[packed.Param1],
+                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, forward: forward),
+            PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, plan.DoubleValues[packed.Param1], plan.DoubleValues[packed.Param1],
+                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, forward: forward),
+            _ => indexSearcher.BetweenQuery(fieldMeta, plan.StringValues[packed.Param1], plan.StringValues[packed.Param1],
+                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, forward: forward)
+        };
+    }
+
     private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
         QueryExecution plan, PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
     {
@@ -2778,9 +2796,21 @@ internal static partial class QueryPlanBuilder
             var drivingClause = clauses[drivingIdx];
             var drivingExec = execs[drivingIdx];
 
-            var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
-            if (match is not TermsProviderMatch tpm)
-                return false;
+            TermsProviderMatch tpm;
+            if (drivingClause.ClauseType == ClauseType.Equals)
+            {
+                var eqMatch = ResolveEqualsClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+                if (eqMatch is not TermsProviderMatch eq)
+                    return false;
+                tpm = eq;
+            }
+            else
+            {
+                var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+                if (match is not TermsProviderMatch m)
+                    return false;
+                tpm = m;
+            }
 
             provider = tpm.Provider;
             llt = tpm.Llt;
