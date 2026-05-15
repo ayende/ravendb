@@ -144,10 +144,22 @@ public partial class Hnsw
                         matches[index++] = rawPostingListId;
                         continue;
                     case Constants.Graphs.VectorId.SmallPostingList: // small posting list
+                        if (_alreadySeen.Contains(rawPostingListId))
+                        {
+                            _currentNode++;
+                            continue;
+                        }
+                        _alreadySeen.Add(rawPostingListId);
                         Debug.Assert(_postingListResults.Count is 0 && _currentMatchesIndex is 0);
                         _searchState.ReadPostingList(new ContainerEntryId(rawPostingListId), ref _postingListResults, ref _pforDecoder, out _);
                         continue;
                     case Constants.Graphs.VectorId.PostingList: // large posting list
+                        if (_alreadySeen.Contains(rawPostingListId))
+                        {
+                            _currentNode++;
+                            continue;
+                        }
+                        _alreadySeen.Add(rawPostingListId);
                         var setStateSpan = Container.GetReadOnly(_searchState.Llt, new(rawPostingListId));
                         ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
                         _postingList = new PostingList(_searchState.Llt, Slices.Empty, setState);
