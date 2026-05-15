@@ -1647,7 +1647,7 @@ namespace FastTests.Corax
                     bitmapMatch.BitmapState.Add(id);
 
                 var orderMeta = new OrderMetadata(seed);
-                var sortMatch = searcher.OrderBy(bitmapMatch, orderMeta, nullFirst: false);
+                var sortMatch = searcher.OrderBy(bitmapMatch, orderMeta, defaultNullsSortMode: NullsSortMode.NullsLargest);
                 var results = new List<long>();
                 Span<long> buf = stackalloc long[256];
                 int r;
@@ -1705,7 +1705,7 @@ namespace FastTests.Corax
                 bitmapMatch.BitmapState.Add(id);
 
             var orderMeta = new OrderMetadata(7);
-            var sortMatch = searcher.OrderBy(bitmapMatch, orderMeta, nullFirst: false, take: Take);
+            var sortMatch = searcher.OrderBy(bitmapMatch, orderMeta, defaultNullsSortMode: NullsSortMode.NullsLargest, take: Take);
             var results = new List<long>();
             Span<long> buf2 = stackalloc long[256];
             int read;

@@ -49,14 +49,16 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     public override SkipSortingResult AttemptToSkipSorting() => throw new NotSupportedException();
     
     public override DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
+
+    private bool NullIsSmallest => _nullFirst;
     
-    public SortingMatch(IndexSearcher searcher, in TInner inner, OrderMetadata orderMetadata, in CancellationToken cancellationToken, bool nullFirst, int take = -1)
+    public SortingMatch(IndexSearcher searcher, in TInner inner, OrderMetadata orderMetadata, in CancellationToken cancellationToken, NullsSortMode defaultNullsSortMode, int take = -1)
     {
         _searcher = searcher;
         _inner = inner;
         _orderMetadata = orderMetadata;
         _cancellationToken = cancellationToken;
-        _nullFirst = nullFirst;
+        _nullFirst = (_orderMetadata.NullsSortMode ?? defaultNullsSortMode) == NullsSortMode.NullsSmallest;
         _take = take;
         _alreadyReadIdx = 0;
         _results = new ContextBoundNativeList<long>(searcher.Allocator);

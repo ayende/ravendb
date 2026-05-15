@@ -46,12 +46,12 @@ public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
 
     public override SkipSortingResult AttemptToSkipSorting() => throw new NotSupportedException();
 
-    public SortingMultiMatch(IndexSearcher searcher, in TInner inner, OrderMetadata[] orderMetadata, bool nullFirst, int take = -1, in CancellationToken token = default)
+    public SortingMultiMatch(IndexSearcher searcher, in TInner inner, OrderMetadata[] orderMetadata, NullsSortMode defaultNullsSortMode, int take = -1, in CancellationToken token = default)
     {
         _searcher = searcher;
         _inner = inner;
         _orderMetadata = orderMetadata;
-        _nullFirst = nullFirst;
+        _nullFirst = defaultNullsSortMode == NullsSortMode.NullsSmallest;
         _take = take;
         _token = token;
         _alreadyReadIdx = 0;
@@ -95,6 +95,15 @@ public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
 
             return nextComparers;
         }
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool NullIsSmallest(int comparerId)
+    {
+        var perField = _orderMetadata[comparerId].NullsSortMode;
+        if (perField != null)
+            return perField.Value == NullsSortMode.NullsSmallest;
+        return _nullFirst;
     }
 
     public override void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer)
