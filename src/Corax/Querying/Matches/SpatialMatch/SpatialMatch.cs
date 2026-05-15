@@ -88,7 +88,6 @@ public sealed class SpatialMatch<TBoosting> : IQueryMatch
 
     public long Count => -1;
 
-    public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.WillSkipSorting;
     public QueryCountConfidence Confidence => QueryCountConfidence.Low;
     public bool IsBoosting => false;
 

@@ -28,7 +28,6 @@ namespace Corax.Querying.Matches
         
         public DuplicatesOccurrence DuplicatesOccurrenceStatus => _inner.DuplicatesOccurrenceStatus;
 
-        public SkipSortingResult AttemptToSkipSorting() => _inner.AttemptToSkipSorting();
 
         public QueryCountConfidence Confidence => _inner.Confidence;
 

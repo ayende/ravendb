@@ -159,7 +159,7 @@ public class CompiledQueryMatch(
     public int AndWith(Span<long> buffer, int matches)
     {
         if (!_executed) Execute();
-        // Cannot use AndWithSorted: callers (SortUsingIndexFromBitmap) pass entry IDs
+        // Cannot use AndWithSorted: callers (StreamAndIntersect) pass entry IDs
         // in sort-field order (e.g. alphabetical by Name), not in entry-ID order.
         int kept = 0;
         foreach(var cur in buffer[..matches])
@@ -225,7 +225,6 @@ public class CompiledQueryMatch(
         return new QueryInspectionNode("CompiledQuery", parameters: parameters, children: children);
     }
 
-    public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.ResultsNativelySorted;
 
     private void Execute()
     {

@@ -46,7 +46,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
 
     private SortingDataTransfer _sortingDataTransfer;
-    public override SkipSortingResult AttemptToSkipSorting() => throw new NotSupportedException();
     
     public override DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
@@ -163,18 +162,18 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 else if (typeof(TDirection) == typeof(NoIterationOptimization))
                 {
                     // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort
-                    SortResultsFromBitmap<TEntryComparer>(match, bitmapMatch);
+                    ExtractAndSort<TEntryComparer>(match, bitmapMatch);
                 }
                 else
                 {
                     // Index walk: intersect CompactTree batches with bitmap via AndWith
-                    SortUsingIndexFromBitmap<TEntryComparer, TDirection>(match, bitmapMatch);
+                    StreamAndIntersect<TEntryComparer, TDirection>(match, bitmapMatch);
                 }
             }
             else
             {
-                // Non-bitmap path (PostFilterMatch, VectorSearchMatch, etc.)
-                // Materialize all results by calling Fill repeatedly.
+                // DrainAndSort: Non-bitmap path (PostFilterMatch, VectorSearchMatch, etc.)
+                // Drain all results by calling Fill repeatedly, then heap sort.
                 var count = match._inner.Count;
                 int bufferSize = count is > 0 and < 1024 * 1024 ? (int)count : 4096;
                 var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
@@ -507,7 +506,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// with the bitmap via AndWith. Stops early once _take results are collected.
     /// Avoids full materialization by intersecting directly against the bitmap.
     /// </summary>
-    private static void SortUsingIndexFromBitmap<TEntryComparer, TDirection>(
+    private static void StreamAndIntersect<TEntryComparer, TDirection>(
         SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
         where TDirection : struct, ILookupIterator
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
@@ -627,7 +626,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// For sort types without an index to walk (score, spatial, alphanumeric, random),
     /// materialize all bitmap entries directly and heap sort.
     /// </summary>
-    private static void SortResultsFromBitmap<TEntryComparer>(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
+    private static void ExtractAndSort<TEntryComparer>(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
     {
         var allocator = match._searcher.Allocator;

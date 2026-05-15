@@ -79,5 +79,4 @@ public struct PostFilterMatch : IQueryMatch
         return new QueryInspectionNode(nameof(PostFilterMatch), children: children);
     }
 
-    public SkipSortingResult AttemptToSkipSorting() => _inner.AttemptToSkipSorting();
 }

@@ -344,12 +344,6 @@ public struct VectorSearchMatch : IQueryMatch
     
     public long Count { get; private set; }
 
-    public SkipSortingResult AttemptToSkipSorting()
-    {
-        return _singleVectorSearchDoNotSort 
-            ? SkipSortingResult.ResultsNativelySorted 
-            : SkipSortingResult.SortingIsRequired;
-    }
 
     public QueryCountConfidence Confidence => QueryCountConfidence.Low;
     

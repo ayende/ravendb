@@ -2759,7 +2759,8 @@ internal static partial class QueryPlanBuilder
                 if (clauses[i].FieldName != sortFieldName)
                     continue;
                 if (clauses[i].ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                    or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between))
+                    or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between
+                    or ClauseType.Equals))
                     continue;
                 if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
                     continue;

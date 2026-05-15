@@ -39,7 +39,6 @@ public abstract class SortingMatch : IQueryMatch
     public abstract DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
     public abstract long Count { get; }
     public abstract QueryCountConfidence Confidence { get; }
-    public abstract SkipSortingResult AttemptToSkipSorting();
     public abstract int Fill(Span<long> buffer);
     public abstract int AndWith(Span<long> buffer, int matches);
     public abstract void Score(Span<long> matches, Span<float> scores, float boostFactor);

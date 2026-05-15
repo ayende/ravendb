@@ -44,7 +44,6 @@ public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
     private int _alreadyReadIdx;
 
 
-    public override SkipSortingResult AttemptToSkipSorting() => throw new NotSupportedException();
 
     public SortingMultiMatch(IndexSearcher searcher, in TInner inner, OrderMetadata[] orderMetadata, NullsSortMode defaultNullsSortMode, int take = -1, in CancellationToken token = default)
     {

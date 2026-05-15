@@ -84,7 +84,6 @@ public sealed class TermsProviderMatch : IBitmapQueryMatch, IDisposable
 
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
-    public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.SortingIsRequired;
 
     public int Fill(Span<long> matches)
     {

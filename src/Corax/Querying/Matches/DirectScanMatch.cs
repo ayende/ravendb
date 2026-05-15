@@ -67,7 +67,6 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor) { }
 
-    public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.ResultsNativelySorted;
 
     public virtual QueryInspectionNode Inspect()
     {

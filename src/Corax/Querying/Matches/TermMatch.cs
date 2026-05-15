@@ -40,10 +40,6 @@ namespace Corax.Querying.Matches
         public string Term;
 #endif
 
-        public SkipSortingResult AttemptToSkipSorting()
-        {
-            return SkipSortingResult.ResultsNativelySorted;
-        }
 
         public QueryCountConfidence Confidence => QueryCountConfidence.High;
 

@@ -85,7 +85,6 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
     #region IQueryMatch methods
 
     public long Count => throw new NotSupportedException(IQueryMatchUsageException);
-    public SkipSortingResult AttemptToSkipSorting() => throw new NotSupportedException(IQueryMatchUsageException);
 
     public QueryCountConfidence Confidence { get => throw new NotSupportedException(IQueryMatchUsageException); }
     public bool IsBoosting { get; }

@@ -80,7 +80,6 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
         // No scoring for bitmap-only matches
     }
 
-    public SkipSortingResult AttemptToSkipSorting() => SkipSortingResult.SortingIsRequired;
 
     public QueryInspectionNode Inspect()
     {

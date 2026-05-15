@@ -19,12 +19,6 @@ public interface IQueryMatch
 {
     long Count { get; }
     
-    /// <summary>
-    /// This is called when the call is not interested in getting
-    /// the results in sorted order (may want to do its own sorting, etc)
-    /// The match will let the caller know whatever this is possible
-    /// </summary>
-    SkipSortingResult AttemptToSkipSorting();
         
     // The confidence of the query count.
     //  - High: We know exactly how many items there are.
@@ -73,13 +67,6 @@ public interface IBitmapQueryMatch : IQueryMatch
     /// </summary>
     [System.Diagnostics.CodeAnalysis.UnscopedRef]
     ref Voron.Data.RoaringBitmaps.RoaringBitmap BitmapState { get; }
-}
-
-public enum SkipSortingResult
-{
-    ResultsNativelySorted,
-    WillSkipSorting,
-    SortingIsRequired
 }
 
 public enum DuplicatesOccurrence

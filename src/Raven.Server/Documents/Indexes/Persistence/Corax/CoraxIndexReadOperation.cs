@@ -678,7 +678,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 else
                                 {
                                     // Set seek hint if WHERE field matches ORDER BY field (optimization for
-                                    // SortUsingIndexFromBitmap to skip walking irrelevant tree terms).
+                                    // StreamAndIntersect to skip walking irrelevant tree terms).
                                     if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
                                         QueryPlanBuilder.TrySetSortSeekHint(seekMatch, queryPlan, orderByFields);
 
