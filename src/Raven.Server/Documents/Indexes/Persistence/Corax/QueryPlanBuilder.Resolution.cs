@@ -2779,7 +2779,6 @@ internal static partial class QueryPlanBuilder
         var drivingExec = execs[drivingIdx];
         TermsProviderMatch resolvedMatch;
 
-        // Build the range/equals match to extract the ITermsProvider
         if (drivingClause.ClauseType == ClauseType.Equals)
         {
             var match = ResolveEqualsClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
@@ -2844,7 +2843,9 @@ internal static partial class QueryPlanBuilder
             return false;
 
         // ── Create the driving match ──
-        var drivingMatch = new SortedDrivingMatch(provider, llt, planParams.Allocator);
+        bool nullFirst = (orderByFields[0].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
+        var drivingMatch = new SortedDrivingMatch(provider, llt, planParams.Allocator,
+            indexSearcher, orderByFields[0].Field, nullFirst);
 
         // ── Residual scan parameters ──
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
