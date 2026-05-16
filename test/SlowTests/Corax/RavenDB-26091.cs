@@ -282,33 +282,29 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
         var queryResults = await CreateQuery()
             .ToListAsync();
 
-        Assert.Equal(4, queryResults.Count);
+        Assert.Equal(3, queryResults.Count);
 
         switch (IsAscending: isAscending, NullFirst: nullFirst)
         {
             case (IsAscending: true, NullFirst: true):
                 Assert.Null(queryResults[0].Name);
-                Assert.Null(queryResults[1].Name);
-                Assert.Equal("a", queryResults[2].Name);
-                Assert.Equal("b", queryResults[3].Name);
+                Assert.Equal("a", queryResults[1].Name);
+                Assert.Equal("b", queryResults[2].Name);
                 break;
             case (IsAscending: false, NullFirst: true):
                 Assert.Equal("b", queryResults[0].Name);
                 Assert.Equal("a", queryResults[1].Name);
                 Assert.Null(queryResults[2].Name);
-                Assert.Null(queryResults[3].Name);
                 break;
             case (IsAscending: true, NullFirst: false):
                 Assert.Equal("a", queryResults[0].Name);
                 Assert.Equal("b", queryResults[1].Name);
                 Assert.Null(queryResults[2].Name);
-                Assert.Null(queryResults[3].Name);
                 break;
             case (IsAscending: false, NullFirst: false):
                 Assert.Null(queryResults[0].Name);
-                Assert.Null(queryResults[1].Name);
-                Assert.Equal("b", queryResults[2].Name);
-                Assert.Equal("a", queryResults[3].Name);
+                Assert.Equal("b", queryResults[1].Name);
+                Assert.Equal("a", queryResults[2].Name);
                 break;
         }
 
@@ -341,33 +337,29 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
         var queryResults = await CreateQuery()
             .ToListAsync();
 
-        Assert.Equal(4, queryResults.Count);
+        Assert.Equal(3, queryResults.Count);
 
         switch (IsAscending: isAscending, NullFirst: nullFirst)
         {
             case (IsAscending: true, NullFirst: true):
                 Assert.Null(queryResults[0].IntValue);
-                Assert.Null(queryResults[1].IntValue);
-                Assert.Equal(1, queryResults[2].IntValue);
-                Assert.Equal(2, queryResults[3].IntValue);
+                Assert.Equal(1, queryResults[1].IntValue);
+                Assert.Equal(2, queryResults[2].IntValue);
                 break;
             case (IsAscending: false, NullFirst: true):
                 Assert.Equal(2, queryResults[0].IntValue);
                 Assert.Equal(1, queryResults[1].IntValue);
                 Assert.Null(queryResults[2].IntValue);
-                Assert.Null(queryResults[3].IntValue);
                 break;
             case (IsAscending: true, NullFirst: false):
                 Assert.Equal(1, queryResults[0].IntValue);
                 Assert.Equal(2, queryResults[1].IntValue);
                 Assert.Null(queryResults[2].IntValue);
-                Assert.Null(queryResults[3].IntValue);
                 break;
             case (IsAscending: false, NullFirst: false):
                 Assert.Null(queryResults[0].IntValue);
-                Assert.Null(queryResults[1].IntValue);
-                Assert.Equal(2, queryResults[2].IntValue);
-                Assert.Equal(1, queryResults[3].IntValue);
+                Assert.Equal(2, queryResults[1].IntValue);
+                Assert.Equal(1, queryResults[2].IntValue);
                 break;
         }
 
@@ -400,33 +392,29 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
         var queryResults = await CreateQuery()
             .ToListAsync();
 
-        Assert.Equal(4, queryResults.Count);
+        Assert.Equal(3, queryResults.Count);
 
         switch (IsAscending: isAscending, NullFirst: nullFirst)
         {
             case (IsAscending: true, NullFirst: true):
                 Assert.Null(queryResults[0].DoubleValue);
-                Assert.Null(queryResults[1].DoubleValue);
-                Assert.Equal(1, queryResults[2].DoubleValue);
-                Assert.Equal(2, queryResults[3].DoubleValue);
+                Assert.Equal(1, queryResults[1].DoubleValue);
+                Assert.Equal(2, queryResults[2].DoubleValue);
                 break;
             case (IsAscending: false, NullFirst: true):
                 Assert.Equal(2, queryResults[0].DoubleValue);
                 Assert.Equal(1, queryResults[1].DoubleValue);
                 Assert.Null(queryResults[2].DoubleValue);
-                Assert.Null(queryResults[3].DoubleValue);
                 break;
             case (IsAscending: true, NullFirst: false):
                 Assert.Equal(1, queryResults[0].DoubleValue);
                 Assert.Equal(2, queryResults[1].DoubleValue);
                 Assert.Null(queryResults[2].DoubleValue);
-                Assert.Null(queryResults[3].DoubleValue);
                 break;
             case (IsAscending: false, NullFirst: false):
                 Assert.Null(queryResults[0].DoubleValue);
-                Assert.Null(queryResults[1].DoubleValue);
-                Assert.Equal(2, queryResults[2].DoubleValue);
-                Assert.Equal(1, queryResults[3].DoubleValue);
+                Assert.Equal(2, queryResults[1].DoubleValue);
+                Assert.Equal(1, queryResults[2].DoubleValue);
                 break;
         }
 

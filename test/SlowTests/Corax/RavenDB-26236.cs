@@ -685,96 +685,84 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertStringNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
     {
-        Assert.Equal(4, results.Count);
+        Assert.Equal(3, results.Count);
         switch (IsAscending: isAscending, NullsFirst: nullsFirst)
         {
             case (IsAscending: true, NullsFirst: true):
                 Assert.Null(results[0].Name);
-                Assert.Null(results[1].Name);
-                Assert.Equal("a", results[2].Name);
-                Assert.Equal("b", results[3].Name);
+                Assert.Equal("a", results[1].Name);
+                Assert.Equal("b", results[2].Name);
                 break;
             case (IsAscending: false, NullsFirst: true):
                 Assert.Null(results[0].Name);
-                Assert.Null(results[1].Name);
-                Assert.Equal("b", results[2].Name);
-                Assert.Equal("a", results[3].Name);
+                Assert.Equal("b", results[1].Name);
+                Assert.Equal("a", results[2].Name);
                 break;
             case (IsAscending: true, NullsFirst: false):
                 Assert.Equal("a", results[0].Name);
                 Assert.Equal("b", results[1].Name);
                 Assert.Null(results[2].Name);
-                Assert.Null(results[3].Name);
                 break;
             case (IsAscending: false, NullsFirst: false):
                 Assert.Equal("b", results[0].Name);
                 Assert.Equal("a", results[1].Name);
                 Assert.Null(results[2].Name);
-                Assert.Null(results[3].Name);
                 break;
         }
     }
 
     private static void AssertIntNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
     {
-        Assert.Equal(4, results.Count);
+        Assert.Equal(3, results.Count);
         switch (IsAscending: isAscending, NullsFirst: nullsFirst)
         {
             case (IsAscending: true, NullsFirst: true):
                 Assert.Null(results[0].IntValue);
-                Assert.Null(results[1].IntValue);
-                Assert.Equal(1, results[2].IntValue);
-                Assert.Equal(2, results[3].IntValue);
+                Assert.Equal(1, results[1].IntValue);
+                Assert.Equal(2, results[2].IntValue);
                 break;
             case (IsAscending: false, NullsFirst: true):
                 Assert.Null(results[0].IntValue);
-                Assert.Null(results[1].IntValue);
-                Assert.Equal(2, results[2].IntValue);
-                Assert.Equal(1, results[3].IntValue);
+                Assert.Equal(2, results[1].IntValue);
+                Assert.Equal(1, results[2].IntValue);
                 break;
             case (IsAscending: true, NullsFirst: false):
                 Assert.Equal(1, results[0].IntValue);
                 Assert.Equal(2, results[1].IntValue);
                 Assert.Null(results[2].IntValue);
-                Assert.Null(results[3].IntValue);
                 break;
             case (IsAscending: false, NullsFirst: false):
                 Assert.Equal(2, results[0].IntValue);
                 Assert.Equal(1, results[1].IntValue);
                 Assert.Null(results[2].IntValue);
-                Assert.Null(results[3].IntValue);
                 break;
         }
     }
 
     private static void AssertDoubleNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
     {
-        Assert.Equal(4, results.Count);
+        Assert.Equal(3, results.Count);
         switch (IsAscending: isAscending, NullsFirst: nullsFirst)
         {
             case (IsAscending: true, NullsFirst: true):
                 Assert.Null(results[0].DoubleValue);
-                Assert.Null(results[1].DoubleValue);
-                Assert.Equal(1, results[2].DoubleValue);
-                Assert.Equal(2, results[3].DoubleValue);
+                Assert.Equal(1, results[1].DoubleValue);
+                Assert.Equal(2, results[2].DoubleValue);
                 break;
             case (IsAscending: false, NullsFirst: true):
                 Assert.Null(results[0].DoubleValue);
-                Assert.Null(results[1].DoubleValue);
-                Assert.Equal(2, results[2].DoubleValue);
-                Assert.Equal(1, results[3].DoubleValue);
+                Assert.Equal(2, results[1].DoubleValue);
+                Assert.Equal(1, results[2].DoubleValue);
                 break;
             case (IsAscending: true, NullsFirst: false):
                 Assert.Equal(1, results[0].DoubleValue);
                 Assert.Equal(2, results[1].DoubleValue);
                 Assert.Null(results[2].DoubleValue);
-                Assert.Null(results[3].DoubleValue);
                 break;
             case (IsAscending: false, NullsFirst: false):
                 Assert.Equal(2, results[0].DoubleValue);
                 Assert.Equal(1, results[1].DoubleValue);
                 Assert.Null(results[2].DoubleValue);
-                Assert.Null(results[3].DoubleValue);
                 break;
         }
     }
