@@ -490,6 +490,20 @@ internal static partial class QueryPlanBuilder
             default:
                 // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
                 var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters, builderParameters);
+                // startsWith/endsWith/search/regex require a String argument — reject Null (matches Lucene behavior).
+                if (value == null && clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith or ClauseType.Search or ClauseType.Regex)
+                {
+                    string methodName = clause.ClauseType switch
+                    {
+                        ClauseType.StartsWith => "startsWith",
+                        ClauseType.EndsWith => "endsWith",
+                        ClauseType.Search => "search",
+                        ClauseType.Regex => "regex",
+                        _ => clause.ClauseType.ToString()
+                    };
+                    throw new Raven.Client.Exceptions.InvalidQueryException(
+                        $"Method {methodName}() expects to get an argument of type String while it got Null");
+                }
                 exec.TermValueType = valueType;
                 exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
                 break;
