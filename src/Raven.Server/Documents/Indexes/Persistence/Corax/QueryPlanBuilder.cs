@@ -726,7 +726,7 @@ internal static partial class QueryPlanBuilder
                 // Clauses whose condition evaluates to false are eliminated in BuildAndCompile.
                 if (method.Arguments.Count != 2)
                     break;
-                var conditionExpr = (Raven.Server.Documents.Queries.AST.BinaryExpression)method.Arguments[0];
+                var conditionExpr = method.Arguments[0];
                 int beforeCount = clauses.Count;
                 ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
                 for (int wi = beforeCount; wi < clauses.Count; wi++)
