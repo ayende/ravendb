@@ -429,18 +429,26 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
         var queryResults = await session.Advanced.AsyncRawQuery<Document>(rql).Timings(out var timings).ToListAsync();
 
         AssertStreamingPlan(options, timings);
-        AssertStringNullsOrdering(queryResults, isAscending, nullsFirst);
+        AssertStringNullsOrderingExcludingMissing(queryResults, isAscending, nullsFirst);
     }
 
     [RavenTheory(RavenTestCategory.Corax)]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, true, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, true, false])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, false, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, false, false])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, true, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, true, false])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, true, true, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, true, true, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, true, false, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, true, false, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, false, true, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, false, true, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, false, false, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, false, false, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, true, true, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, true, true, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, true, false, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, true, false, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, true, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, true, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenStreamingSortingStringViaLinq(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
         using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
@@ -455,7 +463,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
             : baseQuery.OrderByDescending(x => x.Name, nulls, OrderingType.String);
 
         var queryResults = await ordered.ToListAsync();
-        AssertStringNullsOrdering(queryResults, isAscending, nullsFirst);
+        AssertStringNullsOrderingExcludingMissing(queryResults, isAscending, nullsFirst);
     }
 
     [RavenTheory(RavenTestCategory.Corax)]
@@ -483,7 +491,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
         var queryResults = await query.ToListAsync();
         AssertStreamingPlan(options, timings);
-        AssertStringNullsOrdering(queryResults, isAscending, nullsFirst);
+        AssertStringNullsOrderingExcludingMissing(queryResults, isAscending, nullsFirst);
     }
 
     [RavenTheory(RavenTestCategory.Corax)]
@@ -511,7 +519,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
         var queryResults = await query.ToListAsync();
         AssertStreamingPlan(options, timings);
-        AssertIntNullsOrdering(queryResults, isAscending, nullsFirst);
+        AssertIntNullsOrderingExcludingMissing(queryResults, isAscending, nullsFirst);
     }
 
     [RavenTheory(RavenTestCategory.Corax)]
@@ -539,7 +547,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
         var queryResults = await query.ToListAsync();
         AssertStreamingPlan(options, timings);
-        AssertDoubleNullsOrdering(queryResults, isAscending, nullsFirst);
+        AssertDoubleNullsOrderingExcludingMissing(queryResults, isAscending, nullsFirst);
     }
 
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
@@ -685,6 +693,38 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertStringNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
     {
+        Assert.Equal(4, results.Count);
+        switch (IsAscending: isAscending, NullsFirst: nullsFirst)
+        {
+            case (IsAscending: true, NullsFirst: true):
+                Assert.Null(results[0].Name);
+                Assert.Null(results[1].Name);
+                Assert.Equal("a", results[2].Name);
+                Assert.Equal("b", results[3].Name);
+                break;
+            case (IsAscending: false, NullsFirst: true):
+                Assert.Null(results[0].Name);
+                Assert.Null(results[1].Name);
+                Assert.Equal("b", results[2].Name);
+                Assert.Equal("a", results[3].Name);
+                break;
+            case (IsAscending: true, NullsFirst: false):
+                Assert.Equal("a", results[0].Name);
+                Assert.Equal("b", results[1].Name);
+                Assert.Null(results[2].Name);
+                Assert.Null(results[3].Name);
+                break;
+            case (IsAscending: false, NullsFirst: false):
+                Assert.Equal("b", results[0].Name);
+                Assert.Equal("a", results[1].Name);
+                Assert.Null(results[2].Name);
+                Assert.Null(results[3].Name);
+                break;
+        }
+    }
+
+    private static void AssertStringNullsOrderingExcludingMissing(List<Document> results, bool isAscending, bool nullsFirst)
+    {
         Assert.Equal(3, results.Count);
         switch (IsAscending: isAscending, NullsFirst: nullsFirst)
         {
@@ -713,6 +753,38 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertIntNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
     {
+        Assert.Equal(4, results.Count);
+        switch (IsAscending: isAscending, NullsFirst: nullsFirst)
+        {
+            case (IsAscending: true, NullsFirst: true):
+                Assert.Null(results[0].IntValue);
+                Assert.Null(results[1].IntValue);
+                Assert.Equal(1, results[2].IntValue);
+                Assert.Equal(2, results[3].IntValue);
+                break;
+            case (IsAscending: false, NullsFirst: true):
+                Assert.Null(results[0].IntValue);
+                Assert.Null(results[1].IntValue);
+                Assert.Equal(2, results[2].IntValue);
+                Assert.Equal(1, results[3].IntValue);
+                break;
+            case (IsAscending: true, NullsFirst: false):
+                Assert.Equal(1, results[0].IntValue);
+                Assert.Equal(2, results[1].IntValue);
+                Assert.Null(results[2].IntValue);
+                Assert.Null(results[3].IntValue);
+                break;
+            case (IsAscending: false, NullsFirst: false):
+                Assert.Equal(2, results[0].IntValue);
+                Assert.Equal(1, results[1].IntValue);
+                Assert.Null(results[2].IntValue);
+                Assert.Null(results[3].IntValue);
+                break;
+        }
+    }
+
+    private static void AssertIntNullsOrderingExcludingMissing(List<Document> results, bool isAscending, bool nullsFirst)
+    {
         Assert.Equal(3, results.Count);
         switch (IsAscending: isAscending, NullsFirst: nullsFirst)
         {
@@ -740,6 +812,38 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     }
 
     private static void AssertDoubleNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
+    {
+        Assert.Equal(4, results.Count);
+        switch (IsAscending: isAscending, NullsFirst: nullsFirst)
+        {
+            case (IsAscending: true, NullsFirst: true):
+                Assert.Null(results[0].DoubleValue);
+                Assert.Null(results[1].DoubleValue);
+                Assert.Equal(1, results[2].DoubleValue);
+                Assert.Equal(2, results[3].DoubleValue);
+                break;
+            case (IsAscending: false, NullsFirst: true):
+                Assert.Null(results[0].DoubleValue);
+                Assert.Null(results[1].DoubleValue);
+                Assert.Equal(2, results[2].DoubleValue);
+                Assert.Equal(1, results[3].DoubleValue);
+                break;
+            case (IsAscending: true, NullsFirst: false):
+                Assert.Equal(1, results[0].DoubleValue);
+                Assert.Equal(2, results[1].DoubleValue);
+                Assert.Null(results[2].DoubleValue);
+                Assert.Null(results[3].DoubleValue);
+                break;
+            case (IsAscending: false, NullsFirst: false):
+                Assert.Equal(2, results[0].DoubleValue);
+                Assert.Equal(1, results[1].DoubleValue);
+                Assert.Null(results[2].DoubleValue);
+                Assert.Null(results[3].DoubleValue);
+                break;
+        }
+    }
+
+    private static void AssertDoubleNullsOrderingExcludingMissing(List<Document> results, bool isAscending, bool nullsFirst)
     {
         Assert.Equal(3, results.Count);
         switch (IsAscending: isAscending, NullsFirst: nullsFirst)

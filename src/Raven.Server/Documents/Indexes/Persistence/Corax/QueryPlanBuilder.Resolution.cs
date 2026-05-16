@@ -2878,9 +2878,9 @@ internal static partial class QueryPlanBuilder
         // ── Create the driving match ──
         bool nullIsSmallest = (orderByFields[0].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
         bool nullFirst = forward ? nullIsSmallest : !nullIsSmallest;
-        // BetweenQuery does not include nulls; ExistsQuery does. Only drain nulls for types
-        // that use BetweenQuery (Integer, Floating) where the provider won't emit them.
-        bool drainNulls = isFullScan == false || sortFieldType is MatchCompareFieldType.Integer or MatchCompareFieldType.Floating;
+        // BetweenQuery and StartWithQuery don't include nulls in their term output,
+        // so SortedDrivingMatch must drain them itself (respecting nullFirst direction).
+        bool drainNulls = true;
         var drivingMatch = new SortedDrivingMatch(provider, llt, planParams.Allocator,
             indexSearcher, orderByFields[0].Field, nullFirst, drainNulls);
 
