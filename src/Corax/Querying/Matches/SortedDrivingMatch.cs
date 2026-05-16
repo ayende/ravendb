@@ -47,6 +47,18 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     private FastPForBufferedReader _smallListReader;
     private bool _hasSmallListReader;
 
+    // Persistent batch of posting-list IDs from the provider, resumed across Fill calls.
+    // The provider's iterator advances as a side effect of FillPostingListIds; if we read
+    // a batch and only partially process it before the caller's matches buffer fills, the
+    // unprocessed IDs would be lost. We keep the batch (and pre-resolved SmallPostingList
+    // container items) on the instance and track an index so the next Fill picks up where
+    // the previous one left off.
+    private long[] _plIdsBuffer;
+    private UnmanagedSpan[] _smallContainerItems;
+    private int _plIdsRead;
+    private int _plIdsIdx;
+    private int _smallItemsIdx;
+
     // Null entry handling (non-existing entries are never included when sorting by value)
     private readonly bool _nullFirst;
     private readonly long _nullPostingListId;
@@ -87,7 +99,8 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     {
         Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
 
-        if (_providerExhausted && _hasPendingLargeIterator == false && _hasSmallListReader == false)
+        bool hasPendingBatch = _plIdsIdx < _plIdsRead;
+        if (_providerExhausted && hasPendingBatch == false && _hasPendingLargeIterator == false && _hasSmallListReader == false)
         {
             // After the provider is exhausted, drain nulls if they appear last
             if (_nullFirst == false && _nullExhausted == false)
@@ -121,43 +134,61 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 return count;
         }
 
-        // Walk the provider's posting list IDs
-        Span<long> plIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-        Span<UnmanagedSpan> containerItems = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
+        // Lazily allocate the persistent plIds / containerItems buffers
+        _plIdsBuffer ??= new long[QueryPrimitives.EntryScanBatchSize];
+        _smallContainerItems ??= new UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
         var pageLocator = _llt.PageLocator;
 
-        int read;
-        while (count < matches.Length && !_providerExhausted)
+        while (count < matches.Length)
         {
-            read = _provider.FillPostingListIds(plIds);
-            if (read == 0)
+            // Refill the plIds batch from the provider if the current one is exhausted
+            if (_plIdsIdx >= _plIdsRead)
             {
-                _providerExhausted = true;
-                break;
-            }
-
-            // Batch-resolve SmallPostingList container items
-            int smallCount = 0;
-
-            for (int i = 0; i < read; i++)
-            {
-                long plId = plIds[i];
-                var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
-
-                if (termType == TermIdMask.SmallPostingList)
+                if (_providerExhausted)
+                    break;
+                _plIdsRead = _provider.FillPostingListIds(_plIdsBuffer);
+                if (_plIdsRead == 0)
                 {
-                    entryBuffer[smallCount++] = (long)EntryIdEncodings.GetContainerId(plId);
+                    _providerExhausted = true;
+                    break;
+                }
+                _plIdsIdx = 0;
+                _smallItemsIdx = 0;
+
+                // Batch-resolve SmallPostingList container items for this batch.
+                // Skip the null posting list ID (handled separately by _nullIterator) so the
+                // consumer-loop skip stays aligned with this prefetch.
+                int smallCount = 0;
+                for (int i = 0; i < _plIdsRead; i++)
+                {
+                    long plId = _plIdsBuffer[i];
+                    if (_hasNullPostingList && plId == _nullPostingListId)
+                        continue;
+                    var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
+                    if (termType == TermIdMask.SmallPostingList)
+                        entryBuffer[smallCount++] = (long)EntryIdEncodings.GetContainerId(plId);
+                }
+                if (smallCount > 0)
+                {
+                    Container.GetAll(_llt, entryBuffer.Slice(0, smallCount),
+                        _smallContainerItems.AsSpan(0, smallCount), long.MinValue, pageLocator);
                 }
             }
-            if (smallCount > 0)
-            {
-                Container.GetAll(_llt, entryBuffer.Slice(0, smallCount), containerItems.Slice(0, smallCount), long.MinValue, pageLocator);
-            }
 
-            int smallIdx = 0;
-            for (int i = 0; i < read && count < matches.Length; i++)
+            // Process plIds from current position; advance _plIdsIdx as each is consumed
+            while (_plIdsIdx < _plIdsRead && count < matches.Length)
             {
-                long plId = plIds[i];
+                long plId = _plIdsBuffer[_plIdsIdx];
+
+                // When we're draining nulls ourselves, skip the provider's null posting list ID — it
+                // would otherwise emit the null entries inline (at the start of the iteration), but we
+                // want them positioned by _nullFirst (start or end of the whole stream).
+                if (_hasNullPostingList && plId == _nullPostingListId)
+                {
+                    _plIdsIdx++;
+                    continue;
+                }
+
                 var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
 
                 switch (termType)
@@ -170,16 +201,18 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                             _emittedBitmap.Add(entryId);
                             matches[count++] = entryId;
                         }
+                        _plIdsIdx++;
                         break;
                     }
                     case TermIdMask.SmallPostingList:
                     {
-                        var item = containerItems[smallIdx++];
+                        var item = _smallContainerItems[_smallItemsIdx++];
                         _ = VariableSizeEncoding.Read<int>(item.Address, out var offset);
                         if (_smallListReader.WasInitialized == false)
                             _smallListReader = new FastPForBufferedReader(_llt.Allocator);
                         _smallListReader.Init(item.Address + offset, item.Length - offset);
                         _hasSmallListReader = true;
+                        _plIdsIdx++;
                         count += DrainSmallPostingList(matches.Slice(count), entryBuffer);
                         break;
                     }
@@ -190,9 +223,13 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                         _pendingPostingList = new PostingList(_llt, Slices.Empty, in setState);
                         _pendingLargeIterator = _pendingPostingList.Iterate();
                         _hasPendingLargeIterator = true;
+                        _plIdsIdx++;
                         count += DrainLargePostingList(matches.Slice(count), entryBuffer);
                         break;
                     }
+                    default:
+                        _plIdsIdx++;
+                        break;
                 }
             }
         }
@@ -205,11 +242,21 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         int count = 0;
         fixed (long* pBuffer = entryBuffer)
         {
-            int read;
-            while (count < matches.Length && (read = _smallListReader.Fill(pBuffer, entryBuffer.Length)) > 0)
+            while (count < matches.Length)
             {
+                // Cap request size to remaining matches slots, accounting for dedup the worst case
+                // is that every entry is new — so we can't request more than slots-left without risk
+                // of the iterator consuming entries we have nowhere to store.
+                int slotsLeft = matches.Length - count;
+                int requestSize = Math.Min(entryBuffer.Length, slotsLeft);
+                int read = _smallListReader.Fill(pBuffer, requestSize);
+                if (read <= 0)
+                {
+                    _hasSmallListReader = false; // exhausted
+                    break;
+                }
                 EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer, read);
-                for (int j = 0; j < read && count < matches.Length; j++)
+                for (int j = 0; j < read; j++)
                 {
                     long entryId = entryBuffer[j];
                     if (_emittedBitmap.Contains(entryId) == false)
@@ -220,20 +267,26 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 }
             }
         }
-        if (count < matches.Length)
-            _hasSmallListReader = false; // exhausted
         return count;
     }
 
     private int DrainLargePostingList(Span<long> matches, Span<long> entryBuffer)
     {
         int count = 0;
-        while (count < matches.Length && _pendingLargeIterator.Fill(entryBuffer, out int read) && read > 0)
+        while (count < matches.Length)
         {
-            EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer, read);
-            for (int j = 0; j < read && count < matches.Length; j++)
+            int slotsLeft = matches.Length - count;
+            int requestSize = Math.Min(entryBuffer.Length, slotsLeft);
+            var request = entryBuffer.Slice(0, requestSize);
+            if (_pendingLargeIterator.Fill(request, out int read) == false || read == 0)
             {
-                long entryId = entryBuffer[j];
+                _hasPendingLargeIterator = false; // exhausted
+                break;
+            }
+            EntryIdEncodings.DecodeAndDiscardFrequency(request, read);
+            for (int j = 0; j < read; j++)
+            {
+                long entryId = request[j];
                 if (_emittedBitmap.Contains(entryId) == false)
                 {
                     _emittedBitmap.Add(entryId);
@@ -241,8 +294,6 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 }
             }
         }
-        if (count < matches.Length)
-            _hasPendingLargeIterator = false; // exhausted
         return count;
     }
 
@@ -263,12 +314,20 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         ref PostingList.Iterator iterator, ref bool exhausted)
     {
         int count = 0;
-        while (count < matches.Length && iterator.Fill(entryBuffer, out int read) && read > 0)
+        while (count < matches.Length)
         {
-            EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer, read);
-            for (int j = 0; j < read && count < matches.Length; j++)
+            int slotsLeft = matches.Length - count;
+            int requestSize = Math.Min(entryBuffer.Length, slotsLeft);
+            var request = entryBuffer.Slice(0, requestSize);
+            if (iterator.Fill(request, out int read) == false || read == 0)
             {
-                long entryId = entryBuffer[j];
+                exhausted = true;
+                break;
+            }
+            EntryIdEncodings.DecodeAndDiscardFrequency(request, read);
+            for (int j = 0; j < read; j++)
+            {
+                long entryId = request[j];
                 if (_emittedBitmap.Contains(entryId) == false)
                 {
                     _emittedBitmap.Add(entryId);
@@ -276,8 +335,6 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 }
             }
         }
-        if (count < matches.Length)
-            exhausted = true;
         return count;
     }
 
