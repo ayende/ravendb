@@ -1124,10 +1124,14 @@ internal static partial class QueryPlanBuilder
             case ClauseType.Search:
             {
                 FieldMetadata searchMeta;
+                // For auto-indexes, search() wraps a non-id field as "search(FieldName)" to use
+                // the analyzed variant of that field. id() is the document key, which is not
+                // analyzed, so we must skip the wrapping — matches Lucene's HandleSearch.
+                bool isDocumentId = string.Equals(clause.FieldName, Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName, StringComparison.Ordinal);
                 if (builderParams != null)
                 {
                     string searchFieldName = clause.FieldName;
-                    if (builderParams.Metadata.IsDynamic)
+                    if (builderParams.Metadata.IsDynamic && isDocumentId == false)
                         searchFieldName = AutoIndexField.GetSearchAutoIndexFieldName(searchFieldName);
 
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
@@ -1139,7 +1143,7 @@ internal static partial class QueryPlanBuilder
                 else if (parameters is { Index: not null, IndexFieldsMapping: not null })
                 {
                     string searchFieldName = clause.FieldName;
-                    if (parameters.Metadata.IsDynamic)
+                    if (parameters.Metadata.IsDynamic && isDocumentId == false)
                         searchFieldName = AutoIndexField.GetSearchAutoIndexFieldName(searchFieldName);
 
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
