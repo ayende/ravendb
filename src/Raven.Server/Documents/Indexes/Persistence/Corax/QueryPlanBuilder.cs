@@ -938,11 +938,14 @@ internal static partial class QueryPlanBuilder
     private static string FormatValueFromPlanInternal(PackedParam packed, QueryExecution plan, int idx)
     {
         if (idx is PackedParam.NoParamValue) return null;
+        // An IN clause with all-null terms records InTermCount=0 and writes no values
+        // to the typed arrays, but the packed Param1 still points at the (empty) slot.
+        // Bounds-check before indexing — return null to indicate "no displayable value".
         return packed.ValueType switch
         {
-            PackedParam.TypeLong => plan.LongValues[idx].ToString(),
-            PackedParam.TypeDouble => plan.DoubleValues[idx].ToString(System.Globalization.CultureInfo.InvariantCulture),
-            _ => plan.StringValues[idx]
+            PackedParam.TypeLong => idx < (plan.LongValues?.Length ?? 0) ? plan.LongValues[idx].ToString() : null,
+            PackedParam.TypeDouble => idx < (plan.DoubleValues?.Length ?? 0) ? plan.DoubleValues[idx].ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+            _ => idx < (plan.StringValues?.Length ?? 0) ? plan.StringValues[idx] : null
         };
     }
 
