@@ -235,6 +235,23 @@ internal static partial class QueryPlanBuilder
         plan.DoubleValues = writer.GetDoubles();
         plan.StringValues = writer.GetStrings();
 
+        // Empty-IN short-circuit: EmitPlan returns Ops=[] for an AND chain containing
+        // an empty IN clause (e.g. `Names in ()`), and the resulting QueryExecution has
+        // the default OperandOrdering=0 and TypeSignature=0. That cache key collides
+        // with single-clause "default" plans (e.g. a one-term Equals after constant
+        // propagation), so a subsequent execution against the same queryText would
+        // receive the cached empty IL and produce zero results for a real query.
+        // Return an explicit empty match here without touching the cache. Bail only
+        // when there are no spatial/vector post-filters — those phases still need to
+        // run (AND with empty is empty for spatial, but vector with a null filter
+        // would otherwise return unfiltered top-K).
+        if (plan.Ops is { Length: 0 } && plan.IsAllEntries == false
+            && template.SpatialClauses == null && template.VectorClauses == null)
+        {
+            compiledPlanOut = null;
+            return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
+        }
+
         if (template.SpatialClauses != null || template.VectorClauses != null)
         {
             var spatialList = template.SpatialClauses != null ? new List<ClauseInfo>(template.SpatialClauses.Length) : null;
