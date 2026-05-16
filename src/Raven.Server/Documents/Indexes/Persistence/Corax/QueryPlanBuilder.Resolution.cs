@@ -64,11 +64,12 @@ internal static partial class QueryPlanBuilder
         var queryText = planParams.Metadata.Query.QueryText;
         var planCache = indexSearcher.PlanCache;
 
-        // Step 1: Get or build the clause template (structural, no values)
-        // Skip template cache when the query uses cmpxchg() — the resolved CmpXchg value
-        // is stored in the template's ParameterBinding and can change between executions.
-        var template = (planParams.Metadata.HasCmpXchg ? null : planCache.TryGetTemplate(queryText))
-                       ?? ParseTemplate(planParams);
+        // Step 1: Get or build the clause template (structural, no values).
+        // cmpxchg()/now()/today() are safe to cache: the template stores a DeferredExpression
+        // delegate on the binding, and ResolveBindingScalar invokes it per execution with the
+        // current builderParameters/queryParameters — the resolved value lives on ClauseExecution,
+        // not on the cached binding.
+        var template = planCache.TryGetTemplate(queryText) ?? ParseTemplate(planParams);
 
         // Step 2: Create per-execution state for each clause (template is immutable, not cloned)
         var clauses = new List<ClauseInfo>(template.Clauses.Length);
@@ -79,7 +80,30 @@ internal static partial class QueryPlanBuilder
             execList.Add(CreateExecution(cached));
         }
 
-        // Step 2b: Evaluate WHEN conditions and eliminate inactive clauses
+        // Step 2b: Evaluate WHEN conditions and eliminate inactive clauses.
+        //
+        // Track which WHEN-guarded clauses survived in a bitmask keyed by template
+        // position. Plans built from the same queryText but different WHEN-survival
+        // subsets can produce the same (OperandOrdering, TypeSignature) cache key —
+        // for example, [Attach==true, Number!=1] sorted with Attach first gives
+        // ordering=1, which collides with the single-clause [Attach==true] plan that
+        // arises when WHEN eliminates the NotEquals clause. We mix this survival mask
+        // into the cache key below so each survival pattern gets its own slot.
+        //
+        // We index by the loop counter (template position), not by ClauseInfo.OriginalIndex:
+        // negated/nested clauses (e.g. "not when(...)") carry the index from their local
+        // inner sub-list, not the outer template position. Iterating clauses in reverse
+        // and removing only later indices keeps `ci` aligned with the template position
+        // at the point of removal.
+        int whenSurvivalMask = 0;
+        bool templateHasWhen = false;
+        for (int ti = 0; ti < template.Clauses.Length; ti++)
+        {
+            if (template.Clauses[ti].WhenCondition == null)
+                continue;
+            templateHasWhen = true;
+            whenSurvivalMask |= 1 << (ti & 31);
+        }
         for (int ci = clauses.Count - 1; ci >= 0; ci--)
         {
             var whenCondition = clauses[ci].WhenCondition;
@@ -87,6 +111,7 @@ internal static partial class QueryPlanBuilder
                 continue;
             if (whenCondition(planParams.QueryParameters) == false)
             {
+                whenSurvivalMask &= ~(1 << (ci & 31));
                 clauses.RemoveAt(ci);
                 execList.RemoveAt(ci);
             }
@@ -193,8 +218,11 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // Step 6: Emit plan ops + attach spatial/vector post-filters
-        if (template.IsAllEntries && clauses.Count == 0)
+        // Step 6: Emit plan ops + attach spatial/vector post-filters.
+        // clauses.Count == 0 can happen either because the template is AllEntries (no WHERE)
+        // or because every WHERE clause was eliminated by a false WHEN condition — both reduce
+        // to "match all entries".
+        if (clauses.Count == 0)
         {
             plan = BuildAllEntriesPlan();
             plan.Executions = executions;
@@ -254,7 +282,22 @@ internal static partial class QueryPlanBuilder
             plan.OperandOrdering |= (1 << 30);
         }
 
-        // Step 8: Look up or compile the delegate for this ordering
+        // Step 8: Look up or compile the delegate for this ordering.
+        // When the template has WHEN clauses, prepend 4 bytes of the survival mask
+        // to FullKinds so plans with different surviving subsets get distinct cache slots
+        // — otherwise [Attach, Number!=1] (sorted, ord=1) collides with the 1-clause
+        // [Attach] survivor (also ord=1) since both share the same queryText.
+        if (templateHasWhen)
+        {
+            var existing = plan.FullKinds ?? Array.Empty<byte>();
+            var combined = new byte[4 + existing.Length];
+            combined[0] = (byte)(whenSurvivalMask & 0xFF);
+            combined[1] = (byte)((whenSurvivalMask >> 8) & 0xFF);
+            combined[2] = (byte)((whenSurvivalMask >> 16) & 0xFF);
+            combined[3] = (byte)((whenSurvivalMask >> 24) & 0xFF);
+            existing.CopyTo(combined, 4);
+            plan.FullKinds = combined;
+        }
         var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds);
         if (compiledPlan == null)
         {
