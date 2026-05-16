@@ -602,14 +602,20 @@ internal static partial class QueryPlanBuilder
         };
         // Only store non-null values in the typed array. Null terms are handled
         // separately via HasNullTerm — one null-term lookup covers all nulls.
+        //
+        // Skip values whose individual type can't be coerced to the dominant type.
+        // Example: IN(DateTime, "Shalom") on a DateTime-indexed field — the dominant
+        // type is Long (DateTime.Ticks); "Shalom" can never match a long-indexed term,
+        // so dropping it produces the correct empty/partial result (matches Lucene).
+        // Without this guard, Convert.ToInt64("Shalom") would throw FormatException.
         int nonNullCount = 0;
         for (int i = 0; i < resolvedValues.Count; i++)
         {
-            if (resolvedValues[i] != null)
-            {
-                writer.Add(resolvedValues[i], ToValueTokenType(dominantType));
-                nonNullCount++;
-            }
+            if (resolvedValues[i] == null) continue;
+            if (termTypes[i] != dominantType && IsTypeIncompatible(termTypes[i], dominantType))
+                continue;
+            writer.Add(resolvedValues[i], ToValueTokenType(dominantType));
+            nonNullCount++;
         }
 
         exec.PackedParamValue = new PackedParam(packedType, startIdx);
