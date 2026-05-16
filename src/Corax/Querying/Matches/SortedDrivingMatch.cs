@@ -53,8 +53,8 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     // unprocessed IDs would be lost. We keep the batch (and pre-resolved SmallPostingList
     // container items) on the instance and track an index so the next Fill picks up where
     // the previous one left off.
-    private long[] _plIdsBuffer;
-    private UnmanagedSpan[] _smallContainerItems;
+    private NativeList<long> _plIdsBuffer;
+    private NativeList<UnmanagedSpan> _smallContainerItems;
     private int _plIdsRead;
     private int _plIdsIdx;
     private int _smallItemsIdx;
@@ -135,8 +135,10 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         }
 
         // Lazily allocate the persistent plIds / containerItems buffers
-        _plIdsBuffer ??= new long[QueryPrimitives.EntryScanBatchSize];
-        _smallContainerItems ??= new UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
+        if (_plIdsBuffer.IsValid == false)
+            _plIdsBuffer.Initialize(_allocator, QueryPrimitives.EntryScanBatchSize);
+        if (_smallContainerItems.IsValid == false)
+            _smallContainerItems.Initialize(_allocator, QueryPrimitives.EntryScanBatchSize);
         var pageLocator = _llt.PageLocator;
 
         while (count < matches.Length)
@@ -146,7 +148,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             {
                 if (_providerExhausted)
                     break;
-                _plIdsRead = _provider.FillPostingListIds(_plIdsBuffer);
+                _plIdsRead = _provider.FillPostingListIds(new Span<long>(_plIdsBuffer.RawItems, _plIdsBuffer.Capacity));
                 if (_plIdsRead == 0)
                 {
                     _providerExhausted = true;
@@ -161,7 +163,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 int smallCount = 0;
                 for (int i = 0; i < _plIdsRead; i++)
                 {
-                    long plId = _plIdsBuffer[i];
+                    long plId = _plIdsBuffer.RawItems[i];
                     if (_hasNullPostingList && plId == _nullPostingListId)
                         continue;
                     var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
@@ -171,14 +173,14 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 if (smallCount > 0)
                 {
                     Container.GetAll(_llt, entryBuffer.Slice(0, smallCount),
-                        _smallContainerItems.AsSpan(0, smallCount), long.MinValue, pageLocator);
+                        new Span<UnmanagedSpan>(_smallContainerItems.RawItems, smallCount), long.MinValue, pageLocator);
                 }
             }
 
             // Process plIds from current position; advance _plIdsIdx as each is consumed
             while (_plIdsIdx < _plIdsRead && count < matches.Length)
             {
-                long plId = _plIdsBuffer[_plIdsIdx];
+                long plId = _plIdsBuffer.RawItems[_plIdsIdx];
 
                 // When we're draining nulls ourselves, skip the provider's null posting list ID — it
                 // would otherwise emit the null entries inline (at the start of the iteration), but we
@@ -206,7 +208,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                     }
                     case TermIdMask.SmallPostingList:
                     {
-                        var item = _smallContainerItems[_smallItemsIdx++];
+                        var item = _smallContainerItems.RawItems[_smallItemsIdx++];
                         _ = VariableSizeEncoding.Read<int>(item.Address, out var offset);
                         if (_smallListReader.WasInitialized == false)
                             _smallListReader = new FastPForBufferedReader(_llt.Allocator);
@@ -365,5 +367,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             _smallListReader.Dispose();
         _pendingPostingList?.Dispose();
         _emittedBitmap.Dispose();
+        _plIdsBuffer.Dispose(_allocator);
+        _smallContainerItems.Dispose(_allocator);
     }
 }
