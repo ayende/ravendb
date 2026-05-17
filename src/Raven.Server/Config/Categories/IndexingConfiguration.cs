@@ -612,6 +612,12 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Indexing.Corax.Static.ComplexFieldIndexingBehavior", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
         public CoraxComplexFieldIndexingBehavior CoraxStaticIndexComplexFieldIndexingBehavior { get; protected set; }
 
+        [Description("Suppress the validation that rejects Corax compound fields whose first source field uses a tokenizing or user-custom analyzer. When set to true, the validation logs a warning instead of failing index creation. Compound fields that are not compatible with the configured analyzer will still not be populated at indexing time.")]
+        [DefaultValue(false)]
+        [IndexUpdateType(IndexUpdateType.Reset)]
+        [ConfigurationEntry("Indexing.Corax.IgnoreInvalidTokenizedCompoundFields", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public bool CoraxIgnoreInvalidTokenizedCompoundFields { get; set; }
+
         [Description("Interval of saving elapsed time from last query in an idle index")]
         [DefaultValue(10)]
         [MinValue(1)]
