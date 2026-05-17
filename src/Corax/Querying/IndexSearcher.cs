@@ -9,7 +9,7 @@ using Corax.Mappings;
 using Corax.Pipeline;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
-using Corax.Querying.Matches.TermProviders;
+using Corax.Querying.Matches.TermsProviders;
 using Corax.Utils;
 using Sparrow;
 using Sparrow.Server;
@@ -108,10 +108,20 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private long _dictionaryId;
     private Lookup<Int64LookupKey> _entryIdToLocation;
     public FieldsCache FieldCache;
+    /// <summary>Query plan cache. Initialized to a new instance by default.
+    /// Set externally to share compiled plans across IndexSearcher instances
+    /// (e.g., per-index-instance lifetime via CoraxIndexPersistence).</summary>
+    public Planning.PlanCache PlanCache { get; set; } = new();
     private bool _nullPostingListsTreeLoaded;
     private bool _nonExistingPostingListsTreeLoaded;
 
-    public long MaxMemoizationSizeInBytes = 128 * 1024 * 1024;
+    public long MaxFacetQueryFilterSizeInBytes = 128 * 1024 * 1024;
+    [Obsolete("Use MaxFacetQueryFilterSizeInBytes instead")]
+    public long MaxMemoizationSizeInBytes
+    {
+        get => MaxFacetQueryFilterSizeInBytes;
+        set => MaxFacetQueryFilterSizeInBytes = value;
+    }
 
     public bool DocumentsAreBoosted => GetDocumentBoostTree().NumberOfEntries > 0;
 
@@ -158,6 +168,18 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         FieldCache = new FieldsCache(_transaction, _fieldsTree);
     }
     
+    public HashSet<long> NullTermsMarkers { get { InitializeSpecialTermsMarkers(); return _nullTermsMarkers; } }
+    public HashSet<long> NonExistingTermsMarkers { get { InitializeSpecialTermsMarkers(); return _nonExistingTermsMarkers; } }
+    public long[] VectorFieldsMarkers { get { InitializeSpecialTermsMarkers(); return _vectorFieldsMarkers; } }
+    public long DictionaryId => _dictionaryId;
+
+    /// <summary>Batch-resolve entry IDs to container locations. Entry IDs should be sorted
+    /// for best B-tree page locality. Unresolvable entries get -1.</summary>
+    public void ResolveEntryLocations(ReadOnlySpan<long> entryIds, Span<long> containerLocations)
+    {
+        _entryIdToLocation.GetFor(entryIds, containerLocations, -1);
+    }
+
     public EntryTermsReader GetEntryTermsReader(long id, ref Page p, CompactKey key = null)
     {
         if (_entryIdToLocation.TryGetValue(id, out var locLong) == false)
@@ -346,23 +368,23 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return termAmount;
     }
 
-    public bool TryGetTermsOfField(in FieldMetadata field, out ExistsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator> existsTermProvider)
+    public bool TryGetTermsOfField(in FieldMetadata field, out ExistsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator> existsTermsProvider)
     {
-        return TryGetTermsOfField<Lookup<CompactKeyLookup>.ForwardIterator>(field, out existsTermProvider);
+        return TryGetTermsOfField<Lookup<CompactKeyLookup>.ForwardIterator>(field, out existsTermsProvider);
     }
 
-    public bool TryGetTermsOfField<TLookupIterator>(in FieldMetadata field, out ExistsTermProvider<TLookupIterator> existsTermProvider)
+    public bool TryGetTermsOfField<TLookupIterator>(in FieldMetadata field, out ExistsTermsProvider<TLookupIterator> existsTermsProvider)
         where TLookupIterator : struct, ILookupIterator
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
 
         if (terms == null)
         {
-            existsTermProvider = default;
+            existsTermsProvider = default;
             return false;
         }
 
-        existsTermProvider = new ExistsTermProvider<TLookupIterator>(this, terms, field);
+        existsTermsProvider = new ExistsTermsProvider<TLookupIterator>(this, terms, field);
         return true;
     }
 
@@ -623,25 +645,8 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IncludeNullMatch<TInner> IncludeNullMatch<TInner>(in FieldMetadata field, in TInner inner, bool forward, bool nullIsSmallest)
-        where TInner : IQueryMatch
-    {
-        return new IncludeNullMatch<TInner>(this, inner, field, forward, nullIsSmallest);
-    }
-    
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IncludeNonExistingMatch<TInner> IncludeNonExistingMatch<TInner>(in FieldMetadata field, in TInner inner, bool forward, bool nullIsSmallest)
-        where TInner : IQueryMatch
-    {
-        return new IncludeNonExistingMatch<TInner>(this, inner, field, forward, nullIsSmallest);
-    }
 
-    public DeduplicationMatch<TInner> DeduplicationMatch<TInner>(in TInner inner, bool forceHashset = false) 
-        where TInner : IQueryMatch 
-        => new(this, inner, forceHashset);
-    
-    private void InitializeSpecialTermsMarkers()
+    public void InitializeSpecialTermsMarkers()
     {
         if (_nullTermsMarkersLoaded == false)
         {
