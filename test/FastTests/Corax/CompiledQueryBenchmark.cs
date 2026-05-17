@@ -47,19 +47,19 @@ public class CompiledQueryBenchmark : RavenTestBase
             ("IN clause", "from BenchDocs where Category in ('cat-0', 'cat-1', 'cat-2')"),
         };
 
-        Output.WriteLine($"{"Query",-35} {"Old (ms)",-12} {"Bitmap (ms)",-12} {"Speedup",-10} {"Results",-10}");
+        Output.WriteLine($"{"Query",-35} {"Run 1 (ms)",-12} {"Run 2 (ms)",-12} {"Ratio",-10} {"Results",-10}");
         Output.WriteLine(new string('-', 80));
 
         foreach (var (name, rql) in queries)
         {
-            var (oldMs, oldCount) = await BenchQuery(storeOld, rql, warmup, iterations);
-            var (newMs, newCount) = await BenchQuery(storeNew, rql, warmup, iterations);
+            var (ms1, count1) = await BenchQuery(storeOld, rql, warmup, iterations);
+            var (ms2, count2) = await BenchQuery(storeNew, rql, warmup, iterations);
 
-            double speedup = oldMs / Math.Max(newMs, 0.001);
-            Output.WriteLine($"{name,-35} {oldMs,8:F2}ms {newMs,8:F2}ms {speedup,8:F2}x {oldCount,8}");
+            double ratio = ms1 / Math.Max(ms2, 0.001);
+            Output.WriteLine($"{name,-35} {ms1,8:F2}ms {ms2,8:F2}ms {ratio,8:F2}x {count1,8}");
 
             // Results should match
-            Assert.Equal(oldCount, newCount);
+            Assert.Equal(count1, count2);
         }
     }
 
@@ -86,7 +86,7 @@ public class CompiledQueryBenchmark : RavenTestBase
         }
 
         Array.Sort(times);
-        return (times.Average(), count);
+        return (times[times.Length / 2], count);  // median eliminates outliers
     }
 
     private async Task SeedData(IDocumentStore store, int count)
