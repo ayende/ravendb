@@ -3114,11 +3114,13 @@ internal static partial class QueryPlanBuilder
             // buffer cap. Conservative gate: total driving cardinality must fit.
             if (drivingCardinality > SortedDrivingWithTieBreakMatch.MaxGroupSize)
                 return false;
+            // Secondary field uses its own NullsSortMode — distinct from the primary field's.
+            bool secondaryNullIsSmallest = (orderByFields[1].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
             drivingMatch = new SortedDrivingWithTieBreakMatch(
                 provider, llt, planParams.Allocator, indexSearcher,
                 orderByFields[0].Field, orderByFields[1].Field,
                 orderByFields[1].FieldType, secondaryDescending: orderByFields[1].Ascending == false,
-                nullFirst: nullFirst, nullIsSmallest: nullIsSmallest, drainNulls: drainNulls);
+                nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest, drainNulls: drainNulls);
         }
         else
         {

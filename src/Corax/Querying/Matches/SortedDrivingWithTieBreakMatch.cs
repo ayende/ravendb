@@ -70,6 +70,9 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private PostingList.Iterator _nullIterator;
     private readonly bool _hasNullPostingList;
     private bool _nullExhausted;
+    // Tracks whether the null-primary group has been loaded and secondary-sorted.
+    // Null-primary docs require the same per-group secondary sort as regular terms.
+    private bool _nullGroupPrepared;
 
     public SortedDrivingWithTieBreakMatch(
         ITermsProvider provider,
@@ -134,15 +137,11 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         int count = 0;
 
-        // Nulls-first: drain null posting list at the start of each Fill call.
-        if (_nullFirst && _nullExhausted == false)
-        {
-            count += DrainNullIterator(matches.Slice(count), entryBuffer);
-            if (count >= matches.Length || _nullExhausted == false)
-                return count;
-        }
+        // Nulls-first: load null-primary group and sort by secondary before regular terms.
+        if (_nullFirst && _nullGroupPrepared == false)
+            PrepareNullGroup(entryBuffer);
 
-        // Emit any remaining entries from a previously-sorted group.
+        // Emit any remaining entries from a previously-sorted group (null or regular).
         if (_groupReady)
         {
             count += EmitFromSortedGroup(matches.Slice(count));
@@ -272,10 +271,12 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             }
         }
 
-        // After the provider is exhausted, drain nulls if they appear last.
-        if (_providerExhausted && _groupReady == false && _nullFirst == false && _nullExhausted == false)
+        // After the provider is exhausted, load and emit null-primary group (nulls-last).
+        if (_providerExhausted && _nullFirst == false && _nullGroupPrepared == false)
         {
-            count += DrainNullIterator(matches.Slice(count), entryBuffer);
+            PrepareNullGroup(entryBuffer);
+            if (_groupReady)
+                count += EmitFromSortedGroup(matches.Slice(count));
         }
 
         return count;
@@ -394,34 +395,34 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         return count;
     }
 
-    private int DrainNullIterator(Span<long> matches, Span<long> entryBuffer)
+    // Loads all null-primary docs into the group buffer and sorts them by secondary value,
+    // so null-primary entries obey the same per-group secondary sort as regular terms.
+    private void PrepareNullGroup(Span<long> entryBuffer)
     {
-        int count = 0;
-        if (_hasNullPostingList == false || _nullExhausted)
-            return 0;
+        if (_nullGroupPrepared) return;
+        _nullGroupPrepared = true;
 
-        while (count < matches.Length)
+        if (_hasNullPostingList == false || _nullExhausted)
+            return;
+
+        // Ensure group buffers are allocated before we fill them.
+        if (_groupEntries.IsValid == false)
+            _groupEntries.Initialize(_allocator, 1024);
+        if (_groupSecondary.IsValid == false)
+            _groupSecondary.Initialize(_allocator, 1024);
+        if (_groupSortedIndexes.IsValid == false)
+            _groupSortedIndexes.Initialize(_allocator, 1024);
+
+        _groupSize = 0;
+        DrainLargeIntoGroup(ref _nullIterator, entryBuffer);
+        _nullExhausted = true;
+
+        if (_groupSize > 0)
         {
-            int slotsLeft = matches.Length - count;
-            int requestSize = Math.Min(entryBuffer.Length, slotsLeft);
-            var request = entryBuffer.Slice(0, requestSize);
-            if (_nullIterator.Fill(request, out int read) == false || read == 0)
-            {
-                _nullExhausted = true;
-                break;
-            }
-            EntryIdEncodings.DecodeAndDiscardFrequency(request, read);
-            for (int j = 0; j < read; j++)
-            {
-                long entryId = request[j];
-                if (_emittedBitmap.Contains(entryId) == false)
-                {
-                    _emittedBitmap.Add(entryId);
-                    matches[count++] = entryId;
-                }
-            }
+            SortGroupBySecondary();
+            _groupReady = true;
+            _groupEmitIdx = 0;
         }
-        return count;
     }
 
     private void InitPostingList(ref PostingList postingList, ref PostingList.Iterator iterator, long postingListId)
