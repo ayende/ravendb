@@ -180,7 +180,15 @@ public partial class IndexSearcher
         wildcardAnalyzer?.Dispose();
         tempBitmapData.Dispose();
 
-        return searchQuery ?? TermMatch.CreateEmpty(this, Allocator);
+        if (searchQuery is null)
+        {
+            // No terms produced — the eagerly-allocated searchBitmap holds native
+            // buffers that must be released before we return the empty match.
+            searchBitmap.Dispose();
+            return TermMatch.CreateEmpty(this, Allocator);
+        }
+
+        return searchQuery;
 
         IEnumerable<Token> GetTokens(string source)
         {
@@ -398,9 +406,17 @@ public partial class IndexSearcher
         wildcardAnalyzer?.Dispose();
         tempBitmapData.Dispose();
 
-        return searchQuery ?? TermMatch.CreateEmpty(this, Allocator);
-        
-        //In pharse query we expect to have multiple tokens, for most cases 
+        if (searchQuery is null)
+        {
+            // No terms produced — the eagerly-allocated searchBitmap holds native
+            // buffers that must be released before we return the empty match.
+            searchBitmap.Dispose();
+            return TermMatch.CreateEmpty(this, Allocator);
+        }
+
+        return searchQuery;
+
+        //In pharse query we expect to have multiple tokens, for most cases
         int CountTokens(in string source, out Token termToken)
         {
             int count = 0;
@@ -585,7 +601,14 @@ public partial class IndexSearcher
             searchQuery = searchBitmap;
 
         tempBitmapData.Dispose();
-        return searchQuery ?? TermMatch.CreateEmpty(this, Allocator);
+        if (searchQuery is null)
+        {
+            // No terms produced — the eagerly-allocated searchBitmap holds native
+            // buffers that must be released before we return the empty match.
+            searchBitmap.Dispose();
+            return TermMatch.CreateEmpty(this, Allocator);
+        }
+        return searchQuery;
 
         void AssertFieldIsSearched()
         {
