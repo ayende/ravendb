@@ -1,5 +1,6 @@
 [Bb]in
 [Oo]bj
+opencode.json
 *resharper.user
 build/
 [Hh]elp/
@@ -158,3 +159,7 @@ src/Sparrow.Server/Utils/VxSort/codegen/__pycache__/
 .claude/
 src/.cache/
 src/Raven.Server/embeddings/
+test/FastTests/TestResults/
+test/**/TestResults/
+Temp/
+.dbg/
