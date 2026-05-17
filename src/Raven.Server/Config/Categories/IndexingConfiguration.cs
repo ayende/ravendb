@@ -97,7 +97,7 @@ namespace Raven.Server.Config.Categories
             EncryptedTransactionSizeLimit = defaultEncryptedTransactionSizeLimit;
             MaxAllocationsAtDictionaryTraining = defaultMaxAllocationsAtDictionaryTraining;
 
-            MaxMemoizationSize = Size.Max(new Size(512, SizeUnit.Megabytes), totalMem / 10);
+            MaxFacetQueryFilterSize = Size.Max(new Size(512, SizeUnit.Megabytes), totalMem / 10);
 
             MaxNumberOfThreadsForLocalEmbeddingsGeneration = Environment.ProcessorCount switch
             {
@@ -584,12 +584,14 @@ namespace Raven.Server.Config.Categories
         [IndexUpdateType(IndexUpdateType.Refresh)]
         public bool CoraxIncludeSpatialDistance { get; set; }
         
-        [Description("The maximum amount of memory that Corax can use for a memoization clause during query processing")]
+
+        [Description("The maximum amount of memory Corax can use when materialising a faceted-query base filter into a HashSet before switching to the streaming scan fallback.")]
         [DefaultValue(DefaultValueSetInConstructor)]
         [SizeUnit(SizeUnit.Megabytes)]
         [IndexUpdateType(IndexUpdateType.Refresh)]
-        [ConfigurationEntry("Indexing.Corax.MaxMemoizationSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
-        public Size MaxMemoizationSize { get; set; }
+        [ConfigurationEntry("Indexing.Corax.MaxFacetQueryFilterSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        [ConfigurationEntry("Indexing.Corax.MaxMemoizationSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]  // old name, kept for backward compat
+        public Size MaxFacetQueryFilterSize { get; set; }
 
         [Description("Expert: The maximum amount of MB that we'll allocate for training indexing dictionaries.")]
         [DefaultValue(DefaultValueSetInConstructor)]
@@ -609,6 +611,12 @@ namespace Raven.Server.Config.Categories
         [IndexUpdateType(IndexUpdateType.Reset)]
         [ConfigurationEntry("Indexing.Corax.Static.ComplexFieldIndexingBehavior", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
         public CoraxComplexFieldIndexingBehavior CoraxStaticIndexComplexFieldIndexingBehavior { get; protected set; }
+
+        [Description("Suppress the validation that rejects Corax compound fields whose first source field uses a tokenizing or user-custom analyzer. When set to true, the validation logs a warning instead of failing index creation. Compound fields that are not compatible with the configured analyzer will still not be populated at indexing time.")]
+        [DefaultValue(false)]
+        [IndexUpdateType(IndexUpdateType.Reset)]
+        [ConfigurationEntry("Indexing.Corax.IgnoreInvalidTokenizedCompoundFields", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public bool CoraxIgnoreInvalidTokenizedCompoundFields { get; set; }
 
         [Description("Interval of saving elapsed time from last query in an idle index")]
         [DefaultValue(10)]
