@@ -453,7 +453,7 @@ public unsafe partial struct RoaringBitmap
 
             for (int bv = 0; bv < bVecCount; bv++)
             {
-                // Safe to over-read: buffer guaranteed ≥ 64 bytes, and bLen ≤ 64
+                // Safe to over-read: bLen ≤ 64 ushort elements (128 bytes total)
                 Vector256<ushort> bChunk = Vector256.Load(b + bv * Vector256<ushort>.Count);
 
                 var hasMatch = Vector256.Equals(needle, bChunk).ExtractMostSignificantBits();
