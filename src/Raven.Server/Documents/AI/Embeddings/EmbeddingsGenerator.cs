@@ -777,6 +777,23 @@ public class EmbeddingsGenerator(DocumentDatabase database, RavenLogger logger, 
     {
         if (_workers.TryGetValue(taskId, out var worker) is false)
         {
+            // Distinguish between a truly missing task and one that exists but is disabled,
+            // matching the diagnostics emitted by DynamicQueryRunner.ValidateVectorFields.
+            var destinations = _database.EtlLoader?.EmbeddingsGenerationDestinations;
+            if (destinations != null)
+            {
+                foreach (var taskConfiguration in destinations)
+                {
+                    if (taskConfiguration.Identifier != taskId.Value)
+                        continue;
+
+                    if (taskConfiguration.Disabled)
+                        throw new InvalidQueryException($"Embeddings Generation task with '{taskId.Value}' identifier is disabled, and cannot be used for querying");
+
+                    break;
+                }
+            }
+
             throw new InvalidQueryException($"Couldn't find Embeddings Generation task with '{taskId.Value}' identifier");
         }
 
