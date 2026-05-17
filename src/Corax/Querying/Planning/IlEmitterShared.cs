@@ -100,11 +100,16 @@ public static class IlEmitterShared
     public static readonly MethodInfo CtxAndNotFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromMatch))!;
 
     // MemoryExtensions.SequenceCompareTo<byte>(ReadOnlySpan<byte>, ReadOnlySpan<byte>)
+    // Match on full parameter type signature, not just name+arity: there are multiple
+    // two-parameter generic SequenceCompareTo overloads (Span/ReadOnlySpan variants) and
+    // First() ordering is not specified by reflection. Mirror the SequenceEqual lookup below.
     public static readonly MethodInfo SequenceCompareTo = typeof(MemoryExtensions)
         .GetMethods(BindingFlags.Public | BindingFlags.Static)
         .First(m => m.Name == nameof(MemoryExtensions.SequenceCompareTo)
                     && m.IsGenericMethodDefinition
-                    && m.GetParameters().Length == 2)
+                    && m.GetParameters().Length == 2
+                    && m.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == typeof(ReadOnlySpan<>)
+                    && m.GetParameters()[1].ParameterType.GetGenericTypeDefinition() == typeof(ReadOnlySpan<>))
         .MakeGenericMethod(typeof(byte));
 
     // MemoryExtensions.SequenceEqual<byte>(ReadOnlySpan<byte>, ReadOnlySpan<byte>)
