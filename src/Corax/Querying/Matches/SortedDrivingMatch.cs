@@ -347,6 +347,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         if (_smallListReader.WasInitialized)
             _smallListReader.Dispose();
         _pendingPostingList?.Dispose();
+        _nullPostingList?.Dispose();
         _emittedBitmap.Dispose();
         _plIdsBuffer.Dispose(_allocator);
         _smallContainerItems.Dispose(_allocator);
