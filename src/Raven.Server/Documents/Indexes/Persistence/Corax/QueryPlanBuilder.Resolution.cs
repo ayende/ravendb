@@ -160,14 +160,17 @@ internal static partial class QueryPlanBuilder
                 }
             }
 
-            // Single-value IN → convert to Equals (simpler plan, single PostingList lookup)
-            if (c.ClauseType == ClauseType.In && e.InTermCount == 1 && e.HasNullTerm == false)
-            {
-                // Clone before mutating, see contradictory-BETWEEN comment above.
-                c = c.Clone();
-                c.ClauseType = ClauseType.Equals;
-                clauses[ci] = c;
-            }
+            // Note: we intentionally do NOT rewrite single-value IN → Equals here.
+            // The plan cache is keyed by (queryText, OperandOrdering), but parameter
+            // cardinality changes between executions of the same queryText (e.g.
+            // `Identifier.In($ids)` with $ids growing from 1 to N elements). If the
+            // first execution rewrote to Equals and cached an Equals-shaped IL, the
+            // second execution with N>1 terms would reuse the cached Equals delegate
+            // and silently drop the extra terms — see RavenDB-17423. Keeping the IN
+            // shape uniform across cardinalities makes EmitInOps emit a single
+            // OrRange op whose term count is read from InRangeCounts at runtime, so
+            // the same compiled delegate handles any IN size.
+            //
             // Null-only IN (InTermCount=0, HasNullTerm=true): already optimized —
             // EmitInOps skips OrRange (no non-null terms) and emits only the null-term
             // OrWithPostings op. No conversion needed.
