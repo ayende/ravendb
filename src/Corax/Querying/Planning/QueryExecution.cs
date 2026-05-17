@@ -17,9 +17,9 @@ public class QueryExecution
     ///   <item><term>0..29</term><description>Clause-ordering encoding. Up to 10 clauses × 3 bits each;
     ///     slot i holds <c>clauses[i].OriginalIndex &amp; 0x7</c> shifted by <c>i*3</c>. Captures the
     ///     post-cardinality-sort order so a query whose clauses get reordered into a different sequence
-    ///     gets a distinct cache key (set in QueryPlanBuilder.cs ~L1526).</description></item>
+    ///     gets a distinct cache key.</description></item>
     ///   <item><term>30</term><description>HasBoost flag. Set when any clause has boost(); forces
-    ///     every op to QueryMatch dispatch (so scores are accumulated). Set in QueryPlanBuilder.Resolution.cs ~L299.</description></item>
+    ///     every op to QueryMatch dispatch (so scores are accumulated).</description></item>
     ///   <item><term>31</term><description>SentinelBetween flag. Set when any execution carries
     ///     BetweenLowUnbounded / BetweenHighUnbounded — those rewrites force QueryMatch dispatch
     ///     (IsTreeScanEligibleClause rejects sentinel BETWEEN) and must not collide with cached
@@ -27,16 +27,6 @@ public class QueryExecution
     ///     the int's sign bit, but PlanCache compares orderings bitwise (Vector256.Equals / scalar !=),
     ///     never as a signed magnitude, so setting bit 31 is safe — it just makes the value negative.</description></item>
     /// </list>
-    ///
-    /// <para>When adding a new disambiguator bit: only bit 31 was previously free and is now used by
-    /// SentinelBetween. The 10-slot × 3-bit ordering encoding fills bits 0..29 exactly. To add another
-    /// flag, either cap the ordering loop at 9 clauses (frees bits 27/28/29 as flag slots) or widen
-    /// OperandOrdering to a long (frees bits 32..63 — but the PlanCache SIMD comparison currently uses
-    /// Vector256&lt;int&gt; / Vector128&lt;int&gt;, so the change is non-trivial). Whichever path is taken,
-    /// document the new bit here, set it conditionally before the plan-cache lookup, and ensure the bit
-    /// is parameter-independent (depends only on query structure, not parameter values) — otherwise
-    /// different parameter values of the same query text would compile to different plans and defeat
-    /// the cache.</para>
     /// </summary>
     public int OperandOrdering;
 

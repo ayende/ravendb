@@ -59,15 +59,6 @@ internal static partial class QueryPlanBuilder
             //   FillFromPostings(C)      <-
             //   AndWithPostings(D)       <-
             //   OrBitmaps[0,2]           <- merge                      -> InsideAndGroup = false
-            //
-            // The inspection tree groups these into:
-            //   CompiledQuery
-            //     AND-Group
-            //       Fill(A)
-            //       AND(B)
-            //     AND-Group
-            //       Fill(C)
-            //       AND(D)
             if (t.InsideAndGroup && orGroupNode == null)
                 orGroupNode = new QueryInspectionNode("AND-Group");
             else if (!t.InsideAndGroup && orGroupNode != null)
@@ -116,6 +107,8 @@ internal static partial class QueryPlanBuilder
         return root;
     }
 
+    // Covers VectorSearch and Spatial post-filter ops — both expose Inspect() subtrees
+    // appended to the compiled-query root.
     private static void AppendVectorNodes(QueryInspectionNode source, QueryInspectionNode target)
     {
         if (source.Operation.Contains("VectorSearch") || source.Operation.Contains("Spatial"))
@@ -191,8 +184,6 @@ internal static partial class QueryPlanBuilder
             //   Fill(C)           <-
             //   And(D)            <-
             //   OrBitmaps         <- merge
-            // SwapBitmaps marks the start of an AND-group within the OR chain.
-            // OrBitmaps marks the end — it merges the group result back.
             if (op.Kind == PlanOpKind.SwapBitmaps) { insideAndGroup = true; continue; }
             if (op.Kind == PlanOpKind.OrBitmaps) { insideAndGroup = false; continue; }
             if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.CheckEmpty or PlanOpKind.RepairAfterLazy or PlanOpKind.IterateInto) continue;

@@ -256,7 +256,7 @@ public class CompiledQueryMatch(
         {
             for (int i = 1; i < bitmapCount; i++)
                 Bitmaps[i].Dispose();
-            ArrayPool<RoaringBitmap>.Shared.Return(Bitmaps);
+            ArrayPool<RoaringBitmap>.Shared.Return(Bitmaps, clearArray: true);
             Bitmaps = null;
         }
     }
