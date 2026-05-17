@@ -2946,8 +2946,23 @@ internal static partial class QueryPlanBuilder
     {
         directMatch = null;
 
-        if (orderByFields == null || orderByFields.Length != 1)
+        if (orderByFields == null || orderByFields.Length == 0)
             return false;
+
+        // Multi-field ORDER BY is only handled here as a tie-break optimization:
+        // primary field walked in tree order, secondary (numeric) values resolved per
+        // primary-term group and sorted in-place. >2 fields are out of scope — fall back
+        // to bitmap+sort which supports arbitrary depth.
+        if (orderByFields.Length > 2)
+            return false;
+
+        bool hasTieBreak = orderByFields.Length == 2;
+        if (hasTieBreak)
+        {
+            var tieBreakType = orderByFields[1].FieldType;
+            if (tieBreakType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
+                return false;
+        }
 
         var indexSearcher = planParams.IndexSearcher;
         string sortFieldName = orderByFields[0].Field.FieldName.ToString();
@@ -3092,8 +3107,24 @@ internal static partial class QueryPlanBuilder
         // BetweenQuery and StartWithQuery don't include nulls in their term output,
         // so SortedDrivingMatch must drain them itself (respecting nullFirst direction).
         bool drainNulls = true;
-        var drivingMatch = new SortedDrivingMatch(provider, llt, planParams.Allocator,
-            indexSearcher, orderByFields[0].Field, nullFirst, drainNulls);
+        IQueryMatch drivingMatch;
+        if (hasTieBreak)
+        {
+            // Per-term group cap: bail if any single primary term could exceed the group
+            // buffer cap. Conservative gate: total driving cardinality must fit.
+            if (drivingCardinality > SortedDrivingWithTieBreakMatch.MaxGroupSize)
+                return false;
+            drivingMatch = new SortedDrivingWithTieBreakMatch(
+                provider, llt, planParams.Allocator, indexSearcher,
+                orderByFields[0].Field, orderByFields[1].Field,
+                orderByFields[1].FieldType, secondaryDescending: orderByFields[1].Ascending == false,
+                nullFirst: nullFirst, nullIsSmallest: nullIsSmallest, drainNulls: drainNulls);
+        }
+        else
+        {
+            drivingMatch = new SortedDrivingMatch(provider, llt, planParams.Allocator,
+                indexSearcher, orderByFields[0].Field, nullFirst, drainNulls);
+        }
 
         // ── Residual scan parameters ──
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
