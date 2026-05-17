@@ -60,15 +60,25 @@ public class RandomNodesFromFilterEnumeratorTests(ITestOutputHelper output) : St
 
             using (var it = new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(indexSearcher, indexMapping.GetByFieldId(1).Metadata, filterBitmap, random))
             {
-                while (it.MoveNext())
+                // Each filter entry corresponds to exactly one vector node in this fixture
+                // (InsertData(indexAsList: false) writes one vector per document), so the
+                // enumerator must yield exactly `count` distinct node IDs and exhaust there.
+                for (int i = 0; i < count; ++i)
                 {
+                    Assert.True(it.MoveNext(), i.ToString());
                     results.Add(it.Current);
                 }
+                Assert.False(it.MoveNext());
             }
 
-            Assert.True(results.Count > 0);
-            // Each entry should produce at least one node ID
-            Assert.True(results.Distinct().Count() <= count * 2); // upper bound: each doc could have multiple vectors
+            Assert.Equal(count, results.Distinct().Count());
+            results.Sort();
+            var expected = toInsert.ToArray();
+            Array.Sort(expected);
+            Assert.Equal(expected, CollectionsMarshal.AsSpan(results));
+            foreach (var id in expected)
+                Assert.Contains(id, results);
+
             filterBitmap.Dispose();
         }
     }
