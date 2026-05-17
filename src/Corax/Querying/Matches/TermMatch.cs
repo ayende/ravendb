@@ -4,7 +4,6 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
-using System.Runtime.Intrinsics.X86;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
 using Sparrow;
@@ -41,10 +40,6 @@ namespace Corax.Querying.Matches
         public string Term;
 #endif
 
-        public SkipSortingResult AttemptToSkipSorting()
-        {
-            return SkipSortingResult.ResultsNativelySorted;
-        }
 
         public QueryCountConfidence Confidence => QueryCountConfidence.High;
 
@@ -365,9 +360,6 @@ namespace Corax.Querying.Matches
             static int AndWithVectorizedFunc<TBoostingMode>(ref TermMatch term, Span<long> buffer, int matches) where TBoostingMode : IBoostingMarker
             {
                 const int BlockSize = 4096;
-                uint N = (uint)Vector256<long>.Count;
-
-                Debug.Assert(Vector256<long>.Count == 4);
 
                 term._set.Seek(EntryIdEncodings.PrepareIdForSeekInPostingList(buffer[0] - 1));
 
@@ -402,111 +394,10 @@ namespace Corax.Querying.Matches
                         if (read == 0)
                             continue;
 
-                        long* smallerPtr, largerPtr;
-                        long* smallerEndPtr, largerEndPtr;
-
-                        bool applyVectorization;
-
-                        // See: MergeHelper.AndVectorized
-                        // read => leftLength
-                        // matches => rightLength
-                        bool isSmallerInput;
-                        if (read < (inputEndPtr - inputPtr))
-                        {
-                            smallerPtr = blockStartPtr;
-                            smallerEndPtr = blockStartPtr + read;
-                            isSmallerInput = false;
-                            largerPtr = inputPtr;
-                            largerEndPtr = inputEndPtr;
-                            applyVectorization = matches > N && read > 0;
-                        }
-                        else
-                        {
-                            smallerPtr = inputPtr;
-                            smallerEndPtr = inputEndPtr;
-                            isSmallerInput = true;
-                            largerPtr = blockStartPtr;
-                            largerEndPtr = blockStartPtr + read;
-                            applyVectorization = read > N && matches > 0;
-                        }
-
-                        Debug.Assert((ulong)(smallerEndPtr - smallerPtr) <= (ulong)(largerEndPtr - largerPtr));
-
-                        if (applyVectorization)
-                        {
-                            while (true)
-                            {
-                                // TODO: In here we can do SIMD galloping with gather operations. Therefore we will be able to do
-                                //       multiple checks at once and find the right amount of skipping using a table. 
-
-                                // If the value to compare is bigger than the biggest element in the block, we advance the block. 
-                                if ((ulong)*smallerPtr > (ulong)*(largerPtr + N - 1))
-                                {
-                                    if (largerPtr + N >= largerEndPtr)
-                                        break;
-
-                                    largerPtr += N;
-                                    continue;
-                                }
-
-                                // If the value to compare is smaller than the smallest element in the block, we advance the scalar value.
-                                if ((ulong)*smallerPtr < (ulong)*largerPtr)
-                                {
-                                    smallerPtr++;
-                                    if (smallerPtr >= smallerEndPtr)
-                                        break;
-
-                                    continue;
-                                }
-
-                                if (largerEndPtr - largerPtr < N)
-                                    break; // boundary guardian for vector load.
-
-                                Vector256<ulong> value = Vector256.Create((ulong)*smallerPtr);
-                                Vector256<ulong> blockValues = Vector256.Load((ulong*)largerPtr);
-
-                                // We are going to select which direction we are going to be moving forward. 
-                                if (Vector256.EqualsAny(value, blockValues))
-                                {
-                                    // We found the value, therefore we need to store this value in the destination.
-                                    *dstPtr = *smallerPtr;
-                                    dstPtr++;
-                                }
-
-                                smallerPtr++;
-                                if (smallerPtr >= smallerEndPtr)
-                                    break;
-                            }
-                        }
-
-                        // The scalar version. This shouldn't cost much either way. 
-                        while (smallerPtr < smallerEndPtr && largerPtr < largerEndPtr)
-                        {
-                            ulong leftValue = (ulong)*smallerPtr;
-                            ulong rightValue = (ulong)*largerPtr;
-
-                            if (leftValue > rightValue)
-                            {
-                                largerPtr++;
-                            }
-                            else if (leftValue < rightValue)
-                            {
-                                smallerPtr++;
-                            }
-                            else
-                            {
-                                *dstPtr = (long)leftValue;
-                                dstPtr++;
-                                smallerPtr++;
-                                largerPtr++;
-                            }
-                        }
-
-                        inputPtr = isSmallerInput ? smallerPtr : largerPtr;
+                        dstPtr += MergeHelper.And(dstPtr, blockStartPtr, read, ref inputPtr, inputEndPtr);
 
                         // In AndWith operation the end buffer has to be exactly the same size as input or be smaller.
                         Debug.Assert(inputEndPtr >= dstPtr);
-                        Debug.Assert((isSmallerInput ? largerPtr : smallerPtr) - blockStartPtr <= BlockSize);
                     }
 
                     return (int)((ulong*)dstPtr - (ulong*)inputStartPtr);
@@ -600,7 +491,7 @@ namespace Corax.Querying.Matches
         {
             if (_scoreFunc == null)
             {
-                return; // We ignore. Nothing to do here. 
+                return; // We ignore. Nothing to do here.
             }
 
             _scoreFunc(ref this, matches, scores, boostFactor);
@@ -609,6 +500,23 @@ namespace Corax.Querying.Matches
         public QueryInspectionNode Inspect()
         {
             return _inspectFunc is null ? QueryInspectionNode.NotInitializedInspectionNode(nameof(TermMatch)) : _inspectFunc(ref this);
+        }
+
+        /// <summary>
+        /// Expose the underlying PostingList-kind iterator for galloping page-scan.
+        /// Returns false for Empty / Single / SmallPostingList cases where the
+        /// existing Fill-loop path is already optimal. The caller takes ownership
+        /// of iteration; do not call <see cref="Fill"/> or <see cref="AndWith"/> on
+        /// the same TermMatch afterward.
+        /// </summary>
+        internal bool TryGetPostingListIterator(out PostingList.Iterator iterator)
+        {
+            // Empty / Single / Small all leave _set at default (zeroed Iterator).
+            // Only the Set path initializes _set and stamps _totalResults > 0;
+            // _containerReader stays default for the Set path, so zero-init makes
+            // the check below sufficient to disambiguate.
+            iterator = _set;
+            return _totalResults > 1 && _containerReader.IsValid == false;
         }
 
         string DebugView => Inspect().ToString();

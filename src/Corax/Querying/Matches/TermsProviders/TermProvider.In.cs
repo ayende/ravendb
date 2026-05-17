@@ -7,10 +7,10 @@ using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Voron;
 
-namespace Corax.Querying.Matches.TermProviders
+namespace Corax.Querying.Matches.TermsProviders
 {
     [DebuggerDisplay("{DebugView,nq}")]
-    public struct InTermProvider<TTermsType> : ITermProvider
+    public struct InTermsProvider<TTermsType> : ITermsProvider
     {
         private readonly IndexSearcher _searcher;
         private readonly List<TTermsType> _terms;
@@ -18,7 +18,7 @@ namespace Corax.Querying.Matches.TermProviders
         private readonly FieldMetadata _field;
         private readonly FieldMetadata _exactField;
 
-        public InTermProvider(IndexSearcher searcher, in FieldMetadata field, List<TTermsType> terms)
+        public InTermsProvider(IndexSearcher searcher, in FieldMetadata field, List<TTermsType> terms)
         {
             _field = field;
             _exactField = field.ChangeAnalyzer(FieldIndexingMode.Exact);
@@ -32,6 +32,44 @@ namespace Corax.Querying.Matches.TermProviders
         public int Fill(Span<long> containers)
         {
             throw new NotImplementedException();
+        }
+
+        public int FillPostingListIds(Span<long> postingListIds)
+        {
+            int count = 0;
+
+            while (count < postingListIds.Length && _termIndex + 1 < _terms.Count)
+            {
+                _termIndex++;
+
+                long containerId;
+                if (typeof(TTermsType) == typeof((string Term, bool Exact)) && (object)_terms[_termIndex] is (string stringTerm, bool isExact))
+                {
+                    containerId = _searcher.GetTermPostingListId(isExact ? _exactField : _field, stringTerm);
+                }
+                else if (typeof(TTermsType) == typeof((string Term, bool Exact)) && (object)_terms[_termIndex] is (null, _))
+                {
+                    containerId = _searcher.TryGetPostingListForNull(_field, out var plId) ? plId : -1;
+                }
+                else if (typeof(TTermsType) == typeof(string))
+                {
+                    containerId = _searcher.GetTermPostingListId(_field, (string)(object)_terms[_termIndex]);
+                }
+                else if (typeof(TTermsType) == typeof(Slice))
+                {
+                    containerId = _searcher.GetTermPostingListId(_field, (Slice)(object)_terms[_termIndex]);
+                }
+                else
+                {
+                    ThrowInvalidTermType();
+                    return count;
+                }
+
+                if (containerId != -1)
+                    postingListIds[count++] = containerId;
+            }
+
+            return count;
         }
 
         public void Reset() => _termIndex = -1;
@@ -65,7 +103,7 @@ namespace Corax.Querying.Matches.TermProviders
         
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(InTermProvider<TTermsType>)}",
+            return new QueryInspectionNode($"{nameof(InTermsProvider<TTermsType>)}",
                             parameters: new Dictionary<string, string>()
                             {
                                 { Constants.QueryInspectionNode.FieldName, _field.ToString() },
@@ -76,7 +114,7 @@ namespace Corax.Querying.Matches.TermProviders
         [DoesNotReturn]
         private static TermMatch ThrowInvalidTermType()
         {
-            throw new InvalidDataException($"In {nameof(InTermProvider<TTermsType>)} type {nameof(TTermsType)} has to be `string` or `Slice`.");
+            throw new InvalidDataException($"In {nameof(InTermsProvider<TTermsType>)} type {nameof(TTermsType)} has to be `string`, `Slice`, or `(string Term, bool Exact)`.");
         }
         
         string DebugView => Inspect().ToString();
