@@ -979,10 +979,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// <summary>Fill <paramref name="indices"/> with 0..read-1 using AVX2 256-bit stores.
     /// <paramref name="indices"/> must be padded to a multiple of 8 — i.e.
     /// <c>indices.Length &gt;= ((read + 7) &amp; ~7)</c> — so the unrolled SIMD loop can store
-    /// full Vector256&lt;int&gt; chunks without a scalar tail. Mirrors the helper in
-    /// IlEmitterShared so Voron does not back-reference Corax.</summary>
+    /// full Vector256&lt;int&gt; chunks without a scalar tail. Used by RoaringBitmap.Select
+    /// here and by Corax's DirectScanMatch via InternalsVisibleTo.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static void InitializeIndices(Span<int> indices, int read)
+    internal static void InitializeIndices(Span<int> indices, int read)
     {
         Debug.Assert(((read + 7) & ~7) <= indices.Length, "SIMD write past indices span");
         ref int ptr = ref MemoryMarshal.GetReference(indices);

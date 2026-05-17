@@ -190,21 +190,4 @@ public static class IlEmitterShared
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void InitializeIndices(Span<int> indices, int read)
-    {
-        Debug.Assert(((read + 7) & ~7) <= indices.Length, "SIMD write past indices span");
-        ref int ptr = ref MemoryMarshal.GetReference(indices);
-
-        var countVec = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
-        var increment = Vector256.Create(8);
-
-        int j = 0;
-        while (j < read)
-        {
-            countVec.StoreUnsafe(ref Unsafe.Add(ref ptr, j));
-            countVec += increment;
-            j += 8;
-        }
-    }
 }
