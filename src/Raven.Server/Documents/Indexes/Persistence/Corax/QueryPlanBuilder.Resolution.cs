@@ -299,13 +299,9 @@ internal static partial class QueryPlanBuilder
             plan.OperandOrdering |= (1 << 30);
         }
 
-        // Sentinel BETWEEN disambiguation: when a BETWEEN clause was rewritten because the
-        // client sent an unbounded sentinel ("*"/"NULL"), Dispatch was forced to QueryMatch
-        // (see IsTreeScanEligibleClause). Cached IL keyed only on (queryText, OperandOrdering,
-        // TypeSignature, FullKinds) would otherwise reuse a TreeScan-dispatch plan compiled
-        // from a prior, non-sentinel run of the same query text and bypass ResolveClause.
+        // Sentinel BETWEEN disambiguator. See QueryExecution.OperandOrdering doc for full bit layout.
         if (HasAnySentinelBetween(executions))
-            plan.OperandOrdering |= (1 << 29);
+            plan.OperandOrdering |= (1 << 31);
 
         // Step 8: Look up or compile the delegate for this ordering.
         // When the template has WHEN clauses, prepend 4 bytes of the survival mask
