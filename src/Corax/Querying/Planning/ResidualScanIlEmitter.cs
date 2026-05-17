@@ -25,12 +25,7 @@ namespace Corax.Querying.Planning;
 /// </summary>
 public static class ResidualScanIlEmitter
 {
-    /// <summary>Evaluates all baked-in scan predicates against each entry reader.
-    /// Passing entries are compacted to the front of <paramref name="entryIds"/>.
-    /// Both the entry-scan path (CompiledQueryMatch) and the direct-scan path
-    /// (DirectScanMatch) use the same delegate — the direct-scan path re-evaluates
-    /// driving-clause predicates that the tree scan already satisfied, which is
-    /// harmless — a few extra FindNext + compare operations per entry.</summary>
+    /// <summary>Compiled predicate that filters and compacts a batch of entry IDs in-place.</summary>
     public delegate int ResidualScanPredicate(
         IPredicateEvaluationContext ctx,
         Span<EntryTermsReader> readers,
