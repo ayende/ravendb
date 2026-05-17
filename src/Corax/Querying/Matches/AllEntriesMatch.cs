@@ -14,11 +14,6 @@ namespace Corax.Querying.Matches
         private readonly long _count;
         private Lookup<Int64LookupKey>.ForwardIterator _entriesPagesIt;
 
-        public SkipSortingResult AttemptToSkipSorting()
-        {
-            //we are already returning in sorted order
-            return SkipSortingResult.ResultsNativelySorted;
-        }
 
         public AllEntriesMatch(IndexSearcher searcher, Transaction tx)
         {
