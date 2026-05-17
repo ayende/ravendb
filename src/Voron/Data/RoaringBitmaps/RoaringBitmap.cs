@@ -167,12 +167,20 @@ public unsafe partial struct RoaringBitmap : IDisposable
     {
         AssertNotConsumed();
         long key = value >> ContainerKeyShift;
-        ushort low = (ushort)(value & ContainerValueMask);
-
         int slot = GetSlotForKey(key);
         if (slot < 0)
             return false;
+        return ContainsAtSlot(slot, (ushort)(value & ContainerValueMask));
+    }
 
+    /// <summary>
+    /// Container-internal membership test after the caller has already resolved the slot via
+    /// <see cref="GetSlotForKey"/>. Lets callers hoist the slot-resolution binary search out of
+    /// a hot loop when consecutive lookups share the same high-bits (e.g. BitmapMatch.AndWith
+    /// processing a batch with high entry-ID locality).
+    /// </summary>
+    internal readonly bool ContainsAtSlot(int slot, ushort low)
+    {
         ref ContainerEntry entry = ref _entries[slot];
         ContainerType type = _types.RawItems[slot];
         return type switch

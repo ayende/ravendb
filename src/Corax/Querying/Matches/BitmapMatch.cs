@@ -65,12 +65,26 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
     public int AndWith(Span<long> buffer, int matches)
     {
         // Cannot use AndWithSorted: callers may pass entry IDs in sort-field order
-        // (e.g. alphabetical), not in entry-ID order.
+        // (e.g. alphabetical), not in entry-ID order. Cache the last (key, slot) between
+        // elements — even in sort-field order, consecutive entries often share their high
+        // 16 bits because doc IDs cluster by insertion time. On a hit we skip the slot
+        // binary search entirely; on a miss we pay one extra compare.
+        long cachedKey = -1;
+        int cachedSlot = -1;
         int kept = 0;
         for (int i = 0; i < matches; i++)
         {
-            if (_bitmapState.Contains(buffer[i]))
-                buffer[kept++] = buffer[i];
+            long value = buffer[i];
+            long key = value >> RoaringBitmap.ContainerKeyShift;
+            if (key != cachedKey)
+            {
+                cachedSlot = _bitmapState.GetSlotForKey(key);
+                cachedKey = key;
+            }
+            if (cachedSlot < 0)
+                continue;
+            if (_bitmapState.ContainsAtSlot(cachedSlot, (ushort)value))
+                buffer[kept++] = value;
         }
         return kept;
     }
