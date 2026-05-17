@@ -19,17 +19,17 @@ using Voron.Util;
 
 namespace Corax.Querying.Matches.SortingMatches;
 
-public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
+public unsafe sealed partial class SortingMultiMatch<TInner>
     where TInner : IQueryMatch
 {
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
+    public override DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
     
     private interface IEntryComparer : IComparer<int>, IComparer<UnmanagedSpan>
     {
-        Slice GetSortFieldName(ref SortingMultiMatch<TInner> match);
-        void Init(ref SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId);
+        Slice GetSortFieldName(SortingMultiMatch<TInner> match);
+        void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId);
 
-        void SortBatch<TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
+        void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
             UnmanagedSpan<long> batchResults, Span<long> batchTermIds, UnmanagedSpan* batchTerms, OrderMetadata[] orderMetadata, TComparer2 comparer2,
             TComparer3 comparer3)
             where TComparer2 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
@@ -51,23 +51,23 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             this.cmp = cmp;
         }
 
-        public Slice GetSortFieldName(ref SortingMultiMatch<TInner> match)
+        public Slice GetSortFieldName(SortingMultiMatch<TInner> match)
         {
-            return cmp.GetSortFieldName(ref match);
+            return cmp.GetSortFieldName(match);
         }
 
-        public void Init(ref SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
+        public void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
         {
-            cmp.Init(ref match, batchResults, comparerId);
+            cmp.Init(match, batchResults, comparerId);
         }
 
-        public void SortBatch<TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
+        public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
             UnmanagedSpan<long> batchResults, Span<long> batchTermIds, UnmanagedSpan* batchTerms, OrderMetadata[] orderMetadata, TComparer2 comparer2,
             TComparer3 comparer3)
             where TComparer2 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
             where TComparer3 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
         {
-            cmp.SortBatch(ref match, llt,
+            cmp.SortBatch(match, llt,
                 pageLocator, batchResults, batchTermIds, batchTerms, orderMetadata, comparer2, comparer3);
         }
 
@@ -95,13 +95,13 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
     {
         private UnmanagedSpan<float> _scores;
         private int _comparerId;
-        public Slice GetSortFieldName(ref SortingMultiMatch<TInner> match)
+        public Slice GetSortFieldName(SortingMultiMatch<TInner> match)
         {
             throw new NotImplementedException("Scoring has no field name");
         }
         
         
-        public void Init(ref SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
+        public void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
         {
             if (comparerId == 0)
                 return;
@@ -125,7 +125,7 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             }
         }
 
-        public void SortBatch<TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match,
+        public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match,
             LowLevelTransaction llt, PageLocator pageLocator, UnmanagedSpan<long> batchResults, Span<long> batchTermIds, UnmanagedSpan* batchTerms,
             OrderMetadata[] orderMetadata, TComparer2 comparer2, TComparer3 comparer3)
             where TComparer2 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
@@ -158,7 +158,7 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             }
 
             match._token.ThrowIfCancellationRequested();
-            EntryComparerHelper.IndirectSort<EntryComparerByScore, TComparer2, TComparer3>(ref match, indexes, batchTerms, new(), comparer2, comparer3);
+            EntryComparerHelper.IndirectSort<EntryComparerByScore, TComparer2, TComparer3>(match, indexes, batchTerms, new(), comparer2, comparer3);
 
             for (int i = 0; i < indexes.Length; i++)
             {
@@ -211,17 +211,17 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
         private long _nullTermContainerId;
         private long _nonExistingTermContainerId;
         
-        public Slice GetSortFieldName(ref SortingMultiMatch<TInner> match) => match._orderMetadata[_comparerId].Field.FieldName;
+        public Slice GetSortFieldName(SortingMultiMatch<TInner> match) => match._orderMetadata[_comparerId].Field.FieldName;
 
         
-        public void Init(ref SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
+        public void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
         {
             _comparerId = comparerId;
             var fieldName = match._orderMetadata[_comparerId].Field.FieldName;
             _lookup = match._searcher.EntriesToTermsReader(fieldName);
             _batchResults = batchResults;
             _termsReader = match._searcher.TermsReaderFor(fieldName);
-            _nullResult = match.GetNullIsSmallestForClause(_comparerId) ? 1 : -1;
+            _nullResult = match.NullIsSmallest(_comparerId) ? 1 : -1;
             
             if (match._searcher.TryGetPostingListForNull(fieldName, out _, out _nullTermContainerId) == false)
                 _nullTermContainerId = -1;
@@ -229,7 +229,7 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
                 _nonExistingTermContainerId = -1;
         }
 
-        public void SortBatch<TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
+        public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
             UnmanagedSpan<long> batchResults, Span<long> batchTermIds, UnmanagedSpan* batchTerms, OrderMetadata[] orderMetadata, TComparer2 comparer2,
             TComparer3 comparer3)
             where TComparer2 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
@@ -249,9 +249,9 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             var heapSize = Math.Min(match._take, batchResults.Length);
             heapSize = heapSize < 0 ? batchResults.Length : heapSize;
             var indexes = MemoryMarshal.Cast<long, int>(batchTermIds)[..(batchTermIds.Length)];
-            var secondaryComparer = new IndirectComparer2<TComparer2, TComparer3>(ref match, comparer2, comparer3);
+            var secondaryComparer = new IndirectComparer2<TComparer2, TComparer3>(match, comparer2, comparer3);
             using var _ = llt.Allocator.Allocate(heapSize, out Span<UnmanagedSpan> terms);
-            var sorter = HeapSorterBuilder.BuildCompoundCompactKeySorter(indexes.Slice(0, heapSize), terms, orderMetadata[0].Ascending == false, secondaryComparer, match.GetNullIsSmallestForClause(_comparerId));
+            var sorter = HeapSorterBuilder.BuildCompoundCompactKeySorter(indexes.Slice(0, heapSize), terms, orderMetadata[0].Ascending == false, secondaryComparer, match.NullIsSmallest(_comparerId));
            
             for (int i = 0; i < indexes.Length; i++)
                 sorter.Insert(i, batchTerms[i]);
@@ -280,21 +280,21 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
         private int _comparerId;
         private long _missingValue;
         
-        public Slice GetSortFieldName(ref SortingMultiMatch<TInner> match)
+        public Slice GetSortFieldName(SortingMultiMatch<TInner> match)
         {
             IndexFieldsMappingBuilder.GetFieldNameForLongs(match._searcher.Allocator, match._orderMetadata[_comparerId].Field.FieldName, out var lngName);
             return lngName;
         }
 
-        public void Init(ref SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
+        public void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
         {
             _comparerId = comparerId;
-            _lookup = match._searcher.EntriesToTermsReader(GetSortFieldName(ref match));
+            _lookup = match._searcher.EntriesToTermsReader(GetSortFieldName(match));
             _batchResults = batchResults;
-            _missingValue = match.GetNullIsSmallestForClause(_comparerId) ? long.MinValue : long.MaxValue;
+            _missingValue = match.NullIsSmallest(_comparerId) ? long.MinValue : long.MaxValue;
         }
 
-        public void SortBatch<TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
+        public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
             UnmanagedSpan<long> batchResults, Span<long> batchTermIds,
             UnmanagedSpan* batchTerms, OrderMetadata[] orderMetadata, TComparer2 comparer2, TComparer3 comparer3)
             where TComparer2 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
@@ -313,8 +313,8 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             
             using var _ = llt.Allocator.Allocate(heapSize, out Span<long> terms);
             var indexes = MemoryMarshal.Cast<long, int>(batchTermIds)[..(batchTermIds.Length)];
-            var secondaryComparer = new IndirectComparer2<TComparer2, TComparer3>(ref match, comparer2, comparer3);
-            var heapSorter = HeapSorterBuilder.BuildCompoundNumericalSorter(indexes.Slice(0, heapSize), terms, orderMetadata[0].Ascending == false, secondaryComparer, match.GetNullIsSmallestForClause(_comparerId));
+            var secondaryComparer = new IndirectComparer2<TComparer2, TComparer3>(match, comparer2, comparer3);
+            var heapSorter = HeapSorterBuilder.BuildCompoundNumericalSorter(indexes.Slice(0, heapSize), terms, orderMetadata[0].Ascending == false, secondaryComparer, match.NullIsSmallest(_comparerId));
                 
             for (int i = 0; i < indexes.Length; i++)
                 heapSorter.Insert(i, batchTermIds[i]);
@@ -348,17 +348,17 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
     private struct NullComparer : IEntryComparer, IComparer<UnmanagedSpan>
     {
         private const string NullComparerExceptionMessage = $"{nameof(NullComparer)} is for type-relaxation. You should not use it";
-        public Slice GetSortFieldName(ref SortingMultiMatch<TInner> match)
+        public Slice GetSortFieldName(SortingMultiMatch<TInner> match)
         {
             throw new NotSupportedException(NullComparerExceptionMessage);
         }
 
-        public void Init(ref SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
+        public void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
         {
             //sometimes we can call init on this struct
         }
 
-        public void SortBatch<TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
+        public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
             UnmanagedSpan<long> batchResults, Span<long> batchTermIds,
             UnmanagedSpan* batchTerms, OrderMetadata[] orderMetadata, TComparer2 comparer2, TComparer3 comparer3)
             where TComparer2 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
@@ -385,7 +385,7 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
         private Lookup<Int64LookupKey> _lookup;
         private UnmanagedSpan<long> _batchResults;
 
-        public void SortBatch<TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
+        public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
             UnmanagedSpan<long> batchResults, Span<long> batchTermIds,
             UnmanagedSpan* batchTerms, OrderMetadata[] orderMetadata, TComparer2 comparer2, TComparer3 comparer3)
             where TComparer2 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
@@ -405,8 +405,8 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             
             using var _ = llt.Allocator.Allocate(heapSize, out Span<double> terms);
             var indexes = MemoryMarshal.Cast<long, int>(batchTermIds)[..(batchTermIds.Length)];
-            var secondaryComparer = new IndirectComparer2<TComparer2, TComparer3>(ref match, comparer2, comparer3);
-            var heapSorter = HeapSorterBuilder.BuildCompoundNumericalSorter(indexes.Slice(0, heapSize), terms, orderMetadata[0].Ascending == false, secondaryComparer, match.GetNullIsSmallestForClause(_comparerId));
+            var secondaryComparer = new IndirectComparer2<TComparer2, TComparer3>(match, comparer2, comparer3);
+            var heapSorter = HeapSorterBuilder.BuildCompoundNumericalSorter(indexes.Slice(0, heapSize), terms, orderMetadata[0].Ascending == false, secondaryComparer, match.NullIsSmallest(_comparerId));
                 
             for (int i = 0; i < indexes.Length; i++)
                 heapSorter.Insert(i, BitConverter.Int64BitsToDouble(batchTermIds[i]));
@@ -414,18 +414,18 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             heapSorter.Fill(batchResults, ref match._results, ref match._scoresResults, match._secondaryScoreBuffer);
         }
 
-        public Slice GetSortFieldName(ref SortingMultiMatch<TInner> match)
+        public Slice GetSortFieldName(SortingMultiMatch<TInner> match)
         {
             IndexFieldsMappingBuilder.GetFieldNameForDoubles(match._searcher.Allocator, match._orderMetadata[_comparerId].Field.FieldName, out var dblName);
             return dblName;
         }
 
-        public void Init(ref SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
+        public void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
         {
             _comparerId = comparerId;
-            _lookup = match._searcher.EntriesToTermsReader(GetSortFieldName(ref match));
+            _lookup = match._searcher.EntriesToTermsReader(GetSortFieldName(match));
             _batchResults = batchResults;
-            _missingValue = BitConverter.DoubleToInt64Bits(match.GetNullIsSmallestForClause(_comparerId) ? double.MinValue : double.MaxValue);
+            _missingValue = BitConverter.DoubleToInt64Bits(match.NullIsSmallest(_comparerId) ? double.MinValue : double.MaxValue);
         }
 
         public int Compare(UnmanagedSpan x, UnmanagedSpan y)
@@ -465,11 +465,11 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
         private ByteStringContext _allocator;
         private long _nullTermContainerId;
         private long _nonExistingTermContainerId;
-        private bool _nullIsSmallest;
+        private bool _nullFirst;
 
-        public Slice GetSortFieldName(ref SortingMultiMatch<TInner> match) => match._orderMetadata[_comparerId].Field.FieldName;
+        public Slice GetSortFieldName(SortingMultiMatch<TInner> match) => match._orderMetadata[_comparerId].Field.FieldName;
 
-        public void Init(ref SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
+        public void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
         {
             _comparerId = comparerId;
             var fieldName = match._orderMetadata[_comparerId].Field.FieldName;
@@ -478,14 +478,14 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             _lookup = match._searcher.EntriesToTermsReader(fieldName);
             _batchResults = batchResults;
             _allocator = match._searcher.Allocator;
-            _nullIsSmallest = match.GetNullIsSmallestForClause(_comparerId);
+            _nullFirst = match.NullIsSmallest(_comparerId);
             if (match._searcher.TryGetPostingListForNull(fieldName, out _, out _nullTermContainerId) == false)
                 _nullTermContainerId = SortingHelpers.InvalidTermId;
             if (match._searcher.TryGetPostingListForNonExisting(fieldName, out _, out _nonExistingTermContainerId) == false)
                 _nonExistingTermContainerId = SortingHelpers.InvalidTermId;
         }
 
-        public void SortBatch<TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
+        public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
             UnmanagedSpan<long> batchResults, Span<long> batchTermIds,
             UnmanagedSpan* batchTerms, OrderMetadata[] orderMetadata, TComparer2 comparer2, TComparer3 comparer3)
             where TComparer2 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
@@ -506,8 +506,8 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
 
             var heapCapacity = match._take == -1 ? batchResults.Length : Math.Min(match._take, batchResults.Length);
             using var _ = _allocator.Allocate(heapCapacity, out Span<ByteString> terms);
-            var secondaryComparers = new IndirectComparer2<TComparer2, TComparer3>(ref match, comparer2, comparer3);
-            var heapSorter = HeapSorterBuilder.BuildCompoundAlphanumericalSorter(documents.Slice(0, heapCapacity), terms, _allocator, orderMetadata[0].Ascending == false, secondaryComparers, match.GetNullIsSmallestForClause(_comparerId));
+            var secondaryComparers = new IndirectComparer2<TComparer2, TComparer3>(match, comparer2, comparer3);
+            var heapSorter = HeapSorterBuilder.BuildCompoundAlphanumericalSorter(documents.Slice(0, heapCapacity), terms, _allocator, orderMetadata[0].Ascending == false, secondaryComparers, match.NullIsSmallest(_comparerId));
 
             ContextBoundNativeList<int> nullIndexes = default;
             for (int i = 0; i < batchTermIds.Length; i++)
@@ -557,7 +557,7 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             if (xIsNull || yIsNull)
             {
                 if (xIsNull && yIsNull) return 0;
-                return _nullIsSmallest 
+                return _nullFirst 
                     ? (xIsNull ? -1 : 1) 
                     : (xIsNull ? 1 : -1);
             }
@@ -577,9 +577,9 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
         private UnmanagedSpan<long> _batchResults;
         private double _missingValueForInnerSorter;
         
-        public Slice GetSortFieldName(ref SortingMultiMatch<TInner> match) => match._orderMetadata[_comparerId].Field.FieldName;
+        public Slice GetSortFieldName(SortingMultiMatch<TInner> match) => match._orderMetadata[_comparerId].Field.FieldName;
 
-        public void Init(ref SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
+        public void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
         {
             _batchResults = batchResults;
             _comparerId = comparerId;
@@ -590,11 +590,11 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
 
             if (comparerId > 0)
             {
-                _missingValueForInnerSorter = match.GetNullIsSmallestForClause(_comparerId) ? double.MinValue : double.MaxValue;
+                _missingValueForInnerSorter = match.NullIsSmallest(_comparerId) ? double.MinValue : double.MaxValue;
             }
         }
 
-        public void SortBatch<TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
+        public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
             UnmanagedSpan<long> batchResults, Span<long> batchTermIds,
             UnmanagedSpan* batchTerms, OrderMetadata[] orderMetadata, TComparer2 comparer2, TComparer3 comparer3)
             where TComparer2 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
@@ -614,7 +614,7 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
             using var _ = llt.Allocator.Allocate(heapSize, out Span<SpatialResult> terms);
 
 
-            var heapSorter = HeapSorterBuilder.BuildSingleNumericalSorter<SpatialResult>(indexes.Slice(0, heapSize), terms, descending, match.GetNullIsSmallestForClause(_comparerId));
+            var heapSorter = HeapSorterBuilder.BuildSingleNumericalSorter<SpatialResult>(indexes.Slice(0, heapSize), terms, descending, match.NullIsSmallest(_comparerId));
             
 
 
@@ -623,7 +623,7 @@ public unsafe partial struct SortingMultiMatch<TInner> : IQueryMatch
                 SpatialResult distance; 
                 if (_reader.TryGetSpatialPoint(batchResults[i], out var coords) == false)
                 {
-                    var distanceForMissing = match.GetNullIsSmallestForClause(_comparerId) ? double.MinValue : double.MaxValue;
+                    var distanceForMissing = match.NullIsSmallest(_comparerId) ? double.MinValue : double.MaxValue;
                     distance = new SpatialResult() { Distance = distanceForMissing, Latitude = Double.NaN, Longitude = Double.NaN };
                 }
                 else

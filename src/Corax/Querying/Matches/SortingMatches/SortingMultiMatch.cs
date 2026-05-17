@@ -15,15 +15,15 @@ using Voron.Util;
 namespace Corax.Querying.Matches.SortingMatches;
 
 [DebuggerDisplay("{DebugView,nq}")]
-public unsafe partial struct SortingMultiMatch<TInner>
+public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
     where TInner : IQueryMatch
 {
     private const int NextComparerOffset = 3;
     private readonly IndexSearcher _searcher;
     private TInner _inner;
     private readonly OrderMetadata[] _orderMetadata;
-    private readonly NullsSortMode _defaultNullsSortMode;
-    private readonly delegate*<ref SortingMultiMatch<TInner>, Span<long>, int> _fillFunc;
+    private readonly bool _nullFirst;
+    private readonly delegate*<SortingMultiMatch<TInner>, Span<long>, int> _fillFunc;
     private readonly IEntryComparer[] _nextComparers;
     private readonly int _take;
     private readonly CancellationToken _token;
@@ -44,15 +44,13 @@ public unsafe partial struct SortingMultiMatch<TInner>
     private int _alreadyReadIdx;
 
 
-    public long TotalResults;
-    public SkipSortingResult AttemptToSkipSorting() => throw new NotSupportedException();
 
     public SortingMultiMatch(IndexSearcher searcher, in TInner inner, OrderMetadata[] orderMetadata, NullsSortMode defaultNullsSortMode, int take = -1, in CancellationToken token = default)
     {
         _searcher = searcher;
         _inner = inner;
         _orderMetadata = orderMetadata;
-        _defaultNullsSortMode = defaultNullsSortMode;
+        _nullFirst = defaultNullsSortMode == NullsSortMode.NullsSmallest;
         _take = take;
         _token = token;
         _alreadyReadIdx = 0;
@@ -98,7 +96,16 @@ public unsafe partial struct SortingMultiMatch<TInner>
         }
     }
 
-    public void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool NullIsSmallest(int comparerId)
+    {
+        var perField = _orderMetadata[comparerId].NullsSortMode;
+        if (perField != null)
+            return perField.Value == NullsSortMode.NullsSmallest;
+        return _nullFirst;
+    }
+
+    public override void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer)
     {
         _sortingDataTransfer = sortingDataTransfer;
         if (sortingDataTransfer.IncludeDistances)
@@ -107,38 +114,46 @@ public unsafe partial struct SortingMultiMatch<TInner>
             _scoresResults = new(_searcher.Allocator);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal readonly bool GetNullIsSmallestForClause(int comparerId) =>
-        (_orderMetadata[comparerId].NullsSortMode ?? _defaultNullsSortMode) == NullsSortMode.NullsSmallest;
-
-    private static int Fill<TComparer1, TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, Span<long> matches)
+    private static int Fill<TComparer1, TComparer2, TComparer3>(SortingMultiMatch<TInner> match, Span<long> matches)
         where TComparer1 : struct, IEntryComparer, IComparer<UnmanagedSpan> 
         where TComparer2 : struct, IEntryComparer, IComparer<int>, IComparer<UnmanagedSpan> 
         where TComparer3 : struct, IEntryComparer, IComparer<int>, IComparer<UnmanagedSpan>  
     
     {
-        // This method should also be re-entrant for the case where we have already pre-sorted everything and 
-        // we will just need to acquire via pages the totality of the results. 
+        // This method should also be re-entrant for the case where we have already pre-sorted everything and
+        // we will just need to acquire via pages the totality of the results.
         if (match.TotalResults == NotStarted)
         {
-            if (match._inner is not MemoizationMatch memoizer)
-            {
-                memoizer = match._searcher.Memoize(match._inner).Replay();
-            }
-            
             match._token.ThrowIfCancellationRequested();
-            var allMatches = memoizer.FillAndRetrieve();
-            match.TotalResults = allMatches.Length;
-            memoizer.InnerRetriever(out IQueryMatch inner);
-            if (inner is TInner typedInner)
-                match._inner = typedInner;
-            
-            
-            if (match.TotalResults == 0)
+
+            // Use Count as a buffer size hint, but don't trust it for early-exit:
+            // some matches (VectorSearchMatch) report Count=0 with Low confidence
+            // because their results are computed lazily during Fill.
+            var countHint = match._inner.Count;
+            int bufferSize = countHint > 0 && countHint < 1024 * 1024 ? (int)countHint : 4096;
+            var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
+            var allMatches = new Span<long>(bs.Ptr, bufferSize);
+            int filled = 0;
+            int r;
+            while ((r = match._inner.Fill(allMatches[filled..])) > 0)
+            {
+                filled += r;
+                if (filled >= allMatches.Length)
+                {
+                    match._searcher.Allocator.GrowAllocation(ref bs, ref scope, allMatches.Length * sizeof(long));
+                    allMatches = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
+                }
+            }
+
+            if (filled == 0)
+            {
+                scope.Dispose();
                 return 0;
-            
-            SortResults<TComparer1, TComparer2, TComparer3>(ref match, allMatches);
-            memoizer.Dispose();
+            }
+
+            match.TotalResults = filled;
+            SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
+            scope.Dispose();
         }
 
         var read = match._results.CopyTo(matches, match._alreadyReadIdx);
@@ -161,7 +176,7 @@ public unsafe partial struct SortingMultiMatch<TInner>
         return 0;
     }
     
-    private static void SortResults<TComparer1, TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, Span<long> matches) 
+    private static void SortResults<TComparer1, TComparer2, TComparer3>(SortingMultiMatch<TInner> match, Span<long> matches) 
         where TComparer1 : struct,  IEntryComparer, IComparer<UnmanagedSpan>
         where TComparer2 : struct,  IEntryComparer, IComparer<int>, IComparer<UnmanagedSpan>
         where TComparer3 : struct,  IEntryComparer, IComparer<int>, IComparer<UnmanagedSpan>
@@ -178,58 +193,55 @@ public unsafe partial struct SortingMultiMatch<TInner>
         if (match._sortingDataTransfer.IncludeDistances)
             sizeToAllocate += take * sizeof(SpatialResult);
         
-        var bufScope = allocator.Allocate(sizeToAllocate, out ByteString bs);
+        using var bufScope = allocator.Allocate(sizeToAllocate, out ByteString bs);
         Span<long> matchesTermIds = new(bs.Ptr, take);
         UnmanagedSpan* termsPtr = (UnmanagedSpan*)(bs.Ptr + take * sizeof(long));
 
-        // Initialize the important infrastructure for the sorting.
         TComparer1 entryComparer = new();
-        entryComparer.Init(ref match, default, 0);
+        entryComparer.Init(match, default, 0);
         var pageCache = llt.PageLocator;
         fixed (long* ptrBatchResults = matches)
         {
             var resultsPtr = new UnmanagedSpan<long>(ptrBatchResults, sizeof(long)* matches.Length);
             var comp2 = new TComparer2();
-            comp2.Init(ref match, resultsPtr, 1);
+            comp2.Init(match, resultsPtr, 1);
             var comp3 = new TComparer3();
-            comp3.Init(ref match, resultsPtr, 2);
+            comp3.Init(match, resultsPtr, 2);
             
             for (int comparerId = 0; comparerId < match._nextComparers.Length; comparerId++)
             {
                 IEntryComparer add = match._nextComparers[comparerId];
-                add.Init(ref match, resultsPtr, NextComparerOffset + comparerId);
+                add.Init(match, resultsPtr, NextComparerOffset + comparerId);
             }
 
-            entryComparer.SortBatch(ref match, llt, pageCache, resultsPtr, matchesTermIds, termsPtr, match._orderMetadata, comp2, comp3);
+            entryComparer.SortBatch(match, llt, pageCache, resultsPtr, matchesTermIds, termsPtr, match._orderMetadata, comp2, comp3);
         }
-
-        bufScope.Dispose();
     }
 
 
-    public long Count => _inner.Count;
+    public override long Count => _inner.Count;
 
-    public QueryCountConfidence Confidence => throw new NotSupportedException();
+    public override QueryCountConfidence Confidence => throw new NotSupportedException();
 
-    public bool IsBoosting => _inner.IsBoosting || _orderMetadata[0].FieldType == MatchCompareFieldType.Score;
+    public override bool IsBoosting => _inner.IsBoosting || _orderMetadata[0].FieldType == MatchCompareFieldType.Score;
 
-    public int AndWith(Span<long> buffer, int matches)
+    public override int AndWith(Span<long> buffer, int matches)
     {
         throw new NotSupportedException($"{nameof(SortingMultiMatch<TInner>)} does not support the operation of {nameof(AndWith)}.");
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public int Fill(Span<long> matches)
+    public override int Fill(Span<long> matches)
     {
-        return _fillFunc(ref this, matches);
+        return _fillFunc(this, matches);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Score(Span<long> matches, Span<float> scores, float boostFactor) 
+    public override void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
     }
 
-    public QueryInspectionNode Inspect()
+    public override QueryInspectionNode Inspect()
     {
         var parameters = new Dictionary<string, string>()
         {
