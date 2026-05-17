@@ -104,7 +104,7 @@ public sealed class ClauseInfo
     /// The complement set cannot be delivered by the raw posting list / range / tree-scan
     /// (which would produce the POSITIVE form). Instead, ResolveMatches pre-materializes
     /// AllEntries ANDNOT(positive form) into a BitmapMatch via CreateNotEqualsOrMatch,
-    /// so FillFromMatch during execution correctly ORs in the complement set. The slot
+    /// so OrWithMatch during execution correctly ORs in the complement set. The slot
     /// is always dispatched via QueryMatch, regardless of the underlying clause type.</summary>
     public bool IsOrChainNotEquals
     {

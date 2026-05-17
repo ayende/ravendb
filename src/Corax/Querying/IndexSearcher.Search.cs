@@ -116,7 +116,7 @@ public partial class IndexSearcher
                 };
 
                 if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)
-                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.BitmapState);
+                    Primitives.QueryPrimitives.OrWithMatch(query, ref searchBitmap.BitmapState);
                 else
                     Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.BitmapState, ref tempBitmapData);
                 searchBitmapHasValue = true;
@@ -138,7 +138,7 @@ public partial class IndexSearcher
                     var termQuery = TermQuery(field, term);
                     if (first)
                     {
-                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
+                        Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
                         first = false;
                     }
                     else
@@ -153,12 +153,12 @@ public partial class IndexSearcher
                 foreach (var term in termMatches)
                 {
                     var termQuery = TermQuery(field, term);
-                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
+                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
                 }
             }
 
             if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)
-                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState);
+                Primitives.QueryPrimitives.OrWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState);
             else
                 Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData);
             searchBitmapHasValue = true;
@@ -305,7 +305,7 @@ public partial class IndexSearcher
                 };
 
                 if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)
-                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.BitmapState);
+                    Primitives.QueryPrimitives.OrWithMatch(query, ref searchBitmap.BitmapState);
                 else
                     Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.BitmapState, ref tempBitmapData);
                 searchBitmapHasValue = true;
@@ -329,7 +329,7 @@ public partial class IndexSearcher
                 var termQuery = TermQuery(field, term);
                 if (firstPhraseTerm)
                 {
-                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref phraseBitmap.BitmapState);
+                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref phraseBitmap.BitmapState);
                     firstPhraseTerm = false;
                 }
                 else
@@ -343,7 +343,7 @@ public partial class IndexSearcher
             tempPhraseBitmapData.Dispose();
 
             if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)
-                Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.BitmapState);
+                Primitives.QueryPrimitives.OrWithMatch(phraseMatch, ref searchBitmap.BitmapState);
             else
                 Primitives.QueryPrimitives.AndWithMatch(phraseMatch, ref searchBitmap.BitmapState, ref tempBitmapData);
             searchBitmapHasValue = true;
@@ -364,7 +364,7 @@ public partial class IndexSearcher
                     var termQuery = TermQuery(field, term);
                     if (first)
                     {
-                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
+                        Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
                         first = false;
                     }
                     else
@@ -379,12 +379,12 @@ public partial class IndexSearcher
                 foreach (var term in termMatches)
                 {
                     var termQuery = TermQuery(field, term);
-                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
+                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
                 }
             }
 
             if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)
-                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState);
+                Primitives.QueryPrimitives.OrWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState);
             else
                 Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData);
             searchBitmapHasValue = true;
@@ -516,7 +516,7 @@ public partial class IndexSearcher
                 };
 
                 if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)
-                    Primitives.QueryPrimitives.FillFromMatch(query, ref searchBitmap.BitmapState);
+                    Primitives.QueryPrimitives.OrWithMatch(query, ref searchBitmap.BitmapState);
                 else
                     Primitives.QueryPrimitives.AndWithMatch(query, ref searchBitmap.BitmapState, ref tempBitmapData);
                 searchBitmapHasValue = true;
@@ -534,7 +534,7 @@ public partial class IndexSearcher
                 var termQuery = TermQuery(field, term);
                 if (firstPhraseTerm)
                 {
-                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref phraseBitmap.BitmapState);
+                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref phraseBitmap.BitmapState);
                     firstPhraseTerm = false;
                 }
                 else
@@ -548,7 +548,7 @@ public partial class IndexSearcher
             tempPhraseBitmapData.Dispose();
 
             if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)
-                Primitives.QueryPrimitives.FillFromMatch(phraseMatch, ref searchBitmap.BitmapState);
+                Primitives.QueryPrimitives.OrWithMatch(phraseMatch, ref searchBitmap.BitmapState);
             else
                 Primitives.QueryPrimitives.AndWithMatch(phraseMatch, ref searchBitmap.BitmapState, ref tempBitmapData);
             searchBitmapHasValue = true;
@@ -569,7 +569,7 @@ public partial class IndexSearcher
                     var termQuery = TermQuery(field, term);
                     if (first)
                     {
-                        Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
+                        Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
                         first = false;
                     }
                     else
@@ -584,12 +584,12 @@ public partial class IndexSearcher
                 foreach (var term in termMatches)
                 {
                     var termQuery = TermQuery(field, term);
-                    Primitives.QueryPrimitives.FillFromMatch(termQuery, ref termBitmap.BitmapState);
+                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
                 }
             }
 
             if (@operator == Constants.Search.Operator.Or || searchBitmapHasValue == false)
-                Primitives.QueryPrimitives.FillFromMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState);
+                Primitives.QueryPrimitives.OrWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState);
             else
                 Primitives.QueryPrimitives.AndWithMatch((IQueryMatch)termBitmap, ref searchBitmap.BitmapState, ref tempBitmapData);
             searchBitmapHasValue = true;

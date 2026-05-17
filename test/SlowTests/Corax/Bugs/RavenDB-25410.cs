@@ -34,7 +34,7 @@ public class RavenDB_25410(ITestOutputHelper output) : StorageTest(output)
 
         var bitmap = new BitmapMatch(searcher.Allocator);
         RoaringBitmap temp = new(searcher.Allocator);
-        QueryPrimitives.FillFromMatch(startsWith, ref bitmap.BitmapState);
+        QueryPrimitives.OrWithMatch(startsWith, ref bitmap.BitmapState);
         QueryPrimitives.AndWithMatch(dummyMatch, ref bitmap.BitmapState, ref temp);
         temp.Dispose();
 

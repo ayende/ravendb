@@ -40,8 +40,8 @@ public static class QueryPrimitives
         => FillBitmapFromTreeScan(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxFillFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => FillFromMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ctx.Limit);
+    public static void CtxOrWithMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
+        => OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
@@ -60,11 +60,11 @@ public static class QueryPrimitives
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxOrFillFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    public static void CtxOrWithMatchSlot(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
         if (remaining <= 0) return;
-        FillFromMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], remaining);
+        OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], remaining);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -289,7 +289,7 @@ public static class QueryPrimitives
     ///     skipping the per-batch IQueryMatch + function-pointer indirection.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
-    public static void FillFromMatch(IQueryMatch match, ref RoaringBitmap bitmap, long limit = long.MaxValue)
+    public static void OrWithMatch(IQueryMatch match, ref RoaringBitmap bitmap, long limit = long.MaxValue)
     {
         if (match is IBitmapQueryMatch bm)
         {
@@ -343,7 +343,7 @@ public static class QueryPrimitives
             return;
         }
         tempBitmap.Clear();
-        FillFromMatch(match, ref tempBitmap);
+        OrWithMatch(match, ref tempBitmap);
         bitmap.AndWith(ref tempBitmap);
     }
 
@@ -366,7 +366,7 @@ public static class QueryPrimitives
             return;
         }
         tempBitmap.Clear();
-        FillFromMatch(match, ref tempBitmap);
+        OrWithMatch(match, ref tempBitmap);
         bitmap.AndNotWith(ref tempBitmap);
     }
 
