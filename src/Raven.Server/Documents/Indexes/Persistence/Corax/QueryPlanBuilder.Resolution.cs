@@ -299,6 +299,14 @@ internal static partial class QueryPlanBuilder
             plan.OperandOrdering |= (1 << 30);
         }
 
+        // Sentinel BETWEEN disambiguation: when a BETWEEN clause was rewritten because the
+        // client sent an unbounded sentinel ("*"/"NULL"), Dispatch was forced to QueryMatch
+        // (see IsTreeScanEligibleClause). Cached IL keyed only on (queryText, OperandOrdering,
+        // TypeSignature, FullKinds) would otherwise reuse a TreeScan-dispatch plan compiled
+        // from a prior, non-sentinel run of the same query text and bypass ResolveClause.
+        if (HasAnySentinelBetween(executions))
+            plan.OperandOrdering |= (1 << 29);
+
         // Step 8: Look up or compile the delegate for this ordering.
         // When the template has WHEN clauses, prepend 4 bytes of the survival mask
         // to FullKinds so plans with different surviving subsets get distinct cache slots
@@ -438,6 +446,29 @@ internal static partial class QueryPlanBuilder
 
     // ── Template caching ──────────────────────────────────────────────
 
+    /// <summary>True if any clause execution carries a sentinel-BETWEEN flag (recurses into
+    /// OrGroup/AndGroup sub-executions). Used to disambiguate the plan-cache key — a sentinel
+    /// BETWEEN forces QueryMatch dispatch and must not collide with cached TreeScan IL for
+    /// the same query text.</summary>
+    private static bool HasAnySentinelBetween(ClauseExecution[] executions)
+    {
+        if (executions == null)
+            return false;
+        for (int i = 0; i < executions.Length; i++)
+        {
+            var e = executions[i];
+            if (e == null)
+                continue;
+            if (e.BetweenLowUnbounded || e.BetweenHighUnbounded)
+                return true;
+            if (HasAnySentinelBetween(e.OrSubExecutions))
+                return true;
+            if (HasAnySentinelBetween(e.AndSubExecutions))
+                return true;
+        }
+        return false;
+    }
+
     /// <summary>Create a ClauseExecution for a clause, including sub-executions for OrGroup/AndGroup.</summary>
     private static ClauseExecution CreateExecution(ClauseInfo clause)
     {
@@ -496,9 +527,32 @@ internal static partial class QueryPlanBuilder
             // BETWEEN: two values at Bindings[0] (low) and Bindings[1] (high)
             case ClauseType.Between:
                 var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters, builderParameters);
-                var (high, _) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
-                exec.TermValueType = lowType;
-                exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
+                var (high, highType) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
+                // Detect the client's unbounded-bound sentinel strings: WhereBetween(field, null, x)
+                // arrives as low="*"; WhereBetween(field, x, null) arrives as high="NULL"
+                // (see Raven.Client.Constants.Documents.Querying.Terms). When the OTHER bound
+                // is numeric, the sentinel string can't be coerced via Convert.ToInt64/Double,
+                // so we replace it with a type-appropriate extreme value and set a flag for
+                // resolution-time rewriting into LessThanOrEqual / GreaterThanOrEqual-with-null.
+                bool lowIsUnbounded = lowType == ParamValueType.String && low is string ls
+                                      && ls == Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
+                bool highIsUnbounded = highType == ParamValueType.String && high is string hs
+                                       && hs == Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
+                exec.BetweenLowUnbounded = lowIsUnbounded;
+                exec.BetweenHighUnbounded = highIsUnbounded;
+                // Pick effective type: the non-sentinel side dictates. When both are sentinels
+                // the type is irrelevant — resolution returns AllEntries without consulting the
+                // stored values.
+                ParamValueType effectiveType = (lowIsUnbounded, highIsUnbounded) switch
+                {
+                    (true, true) => ParamValueType.String,
+                    (true, false) => highType,
+                    _ => lowType
+                };
+                object effectiveLow = lowIsUnbounded ? GetTypeMinSentinel(effectiveType) : low;
+                object effectiveHigh = highIsUnbounded ? GetTypeMaxSentinel(effectiveType) : high;
+                exec.TermValueType = effectiveType;
+                exec.PackedParamValue = writer.AddPair(effectiveLow, effectiveHigh, ToValueTokenType(effectiveType));
                 return;
             case ClauseType.In or ClauseType.AllIn:
                 // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
@@ -961,13 +1015,46 @@ internal static partial class QueryPlanBuilder
                 PackedParam.TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.DoubleValues[packed.Param1], forward),
                 _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.StringValues[packed.Param1], forward)
             },
-            ClauseType.Between => packed.ValueType switch
-            {
-                PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, plan.LongValues[packed.Param1], plan.LongValues[packed.Param2], forward: forward),
-                PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, plan.DoubleValues[packed.Param1], plan.DoubleValues[packed.Param2], forward: forward),
-                _ => indexSearcher.BetweenQuery(fieldMeta, plan.StringValues[packed.Param1], plan.StringValues[packed.Param2], forward: forward)
-            },
+            ClauseType.Between => ResolveBetweenWithDirection(clause, exec, fieldMeta, indexSearcher, plan, forward),
             _ => ResolveClause(clause, exec, indexSearcher, plan, parameters, builderParams) // fallback
+        };
+    }
+
+    /// <summary>Resolve a BETWEEN clause for sort-driving (TermsProviderMatch) paths,
+    /// honoring the client's unbounded sentinels. For high-unbounded we cannot deliver
+    /// sorted-by-field iteration of "AllEntries ANDNOT LessThan(low)" via a single
+    /// TermsProvider, so we fall back to the unbounded GreaterThanOrEqual range — losing
+    /// the null-doc inclusion quirk in sorted paths only. Callers that need exact Lucene
+    /// parity should land in ResolveClause instead.</summary>
+    private static IQueryMatch ResolveBetweenWithDirection(ClauseInfo clause, ClauseExecution exec, FieldMetadata fieldMeta,
+        IndexSearcher indexSearcher, QueryExecution plan, bool forward)
+    {
+        var packed = exec.PackedParamValue;
+        if (exec.BetweenLowUnbounded && exec.BetweenHighUnbounded)
+            return indexSearcher.AllEntries();
+        if (exec.BetweenLowUnbounded)
+        {
+            return packed.ValueType switch
+            {
+                PackedParam.TypeLong => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.LongValues[packed.Param2], forward),
+                PackedParam.TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.DoubleValues[packed.Param2], forward),
+                _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.StringValues[packed.Param2], forward)
+            };
+        }
+        if (exec.BetweenHighUnbounded)
+        {
+            return packed.ValueType switch
+            {
+                PackedParam.TypeLong => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.LongValues[packed.Param1], forward),
+                PackedParam.TypeDouble => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.DoubleValues[packed.Param1], forward),
+                _ => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.StringValues[packed.Param1], forward)
+            };
+        }
+        return packed.ValueType switch
+        {
+            PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, plan.LongValues[packed.Param1], plan.LongValues[packed.Param2], forward: forward),
+            PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, plan.DoubleValues[packed.Param1], plan.DoubleValues[packed.Param2], forward: forward),
+            _ => indexSearcher.BetweenQuery(fieldMeta, plan.StringValues[packed.Param1], plan.StringValues[packed.Param2], forward: forward)
         };
     }
 
@@ -1105,6 +1192,39 @@ internal static partial class QueryPlanBuilder
             {
                 int idx1 = packed.Param1;
                 int idx2 = packed.Param2;
+                // Handle client-sent unbounded sentinels (see PopulateClauseValues): rewrite the
+                // BETWEEN into the equivalent half-open / all-entries match.
+                if (exec.BetweenLowUnbounded && exec.BetweenHighUnbounded)
+                    return indexSearcher.AllEntries();
+                if (exec.BetweenLowUnbounded)
+                {
+                    return packed.ValueType switch
+                    {
+                        PackedParam.TypeLong => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.LongValues[idx2]),
+                        PackedParam.TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.DoubleValues[idx2]),
+                        _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.StringValues[idx2])
+                    };
+                }
+                if (exec.BetweenHighUnbounded)
+                {
+                    // Lucene semantics: WhereBetween(field, low, null) ALSO includes docs whose
+                    // field is missing. Realize this as AllEntries() ANDNOT LessThan(low) so
+                    // null-valued documents (which have no entry in the numeric index, and only
+                    // a NULL_VALUE term in the string index) are pulled in via AllEntries and
+                    // not filtered out by the LessThan complement.
+                    IQueryMatch ltMatch = packed.ValueType switch
+                    {
+                        PackedParam.TypeLong => indexSearcher.LessThanQuery(fieldMeta, plan.LongValues[idx1]),
+                        PackedParam.TypeDouble => indexSearcher.LessThanQuery(fieldMeta, plan.DoubleValues[idx1]),
+                        _ => indexSearcher.LessThanQuery(fieldMeta, plan.StringValues[idx1])
+                    };
+                    var bmHigh = new BitmapMatch(indexSearcher.Allocator);
+                    var tempHigh = new RoaringBitmap(indexSearcher.Allocator);
+                    QueryPrimitives.FillFromMatch(indexSearcher.AllEntries(), ref bmHigh.BitmapState);
+                    QueryPrimitives.AndNotWithMatch(ltMatch, ref bmHigh.BitmapState, ref tempHigh);
+                    tempHigh.Dispose();
+                    return bmHigh;
+                }
                 return packed.ValueType switch
                 {
                     PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, plan.LongValues[idx1], plan.LongValues[idx2]),
