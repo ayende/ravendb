@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Corax.Indexing;
@@ -35,6 +36,9 @@ namespace Corax.Querying.Matches;
 public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDisposable
 {
     public const int MaxGroupSize = 16384;
+
+    private static readonly Comparer<long>   DescendingLong   = Comparer<long>.Create((a, b) => b.CompareTo(a));
+    private static readonly Comparer<double> DescendingDouble = Comparer<double>.Create((a, b) => b.CompareTo(a));
 
     private readonly ITermsProvider _provider;
     private readonly LowLevelTransaction _llt;
@@ -155,11 +159,11 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         if (_smallContainerItems.IsValid == false)
             _smallContainerItems.Initialize(_allocator, QueryPrimitives.EntryScanBatchSize);
         if (_groupEntries.IsValid == false)
-            _groupEntries.Initialize(_allocator, 1024);
+            _groupEntries.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
         if (_groupSecondary.IsValid == false)
-            _groupSecondary.Initialize(_allocator, 1024);
+            _groupSecondary.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
         if (_groupSortedIndexes.IsValid == false)
-            _groupSortedIndexes.Initialize(_allocator, 1024);
+            _groupSortedIndexes.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
 
         var pageLocator = _llt.PageLocator;
 
@@ -241,20 +245,14 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                     {
                         var setStateSpan = Container.GetReadOnly(_llt, EntryIdEncodings.GetContainerId(plId));
                         ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
-                        var pl = new PostingList(_llt, Slices.Empty, in setState);
-                        try
-                        {
-                            var iter = pl.Iterate();
-                            DrainLargeIntoGroup(ref iter, entryBuffer);
-                        }
-                        finally
-                        {
-                            pl.Dispose();
-                        }
+                        using var pl = new PostingList(_llt, Slices.Empty, in setState);
+                        var iter = pl.Iterate();
+                        DrainLargeIntoGroup(ref iter, entryBuffer);
                         _plIdsIdx++;
                         break;
                     }
                     default:
+                        Debug.Assert(false, $"Unexpected TermIdMask value {termType} for plId {plId}");
                         _plIdsIdx++;
                         continue;
                 }
@@ -302,8 +300,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             return;
 
         int newCap = curCap;
-        while (newCap < required) newCap *= 2;
-        if (newCap > MaxGroupSize) newCap = MaxGroupSize;
+        while (newCap < required)
+            newCap = (int)Math.Min((long)newCap * 2, MaxGroupSize);
         int addition = newCap - curCap;
 
         _groupEntries.Grow(_allocator, addition);
@@ -355,8 +353,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             secondarySpan.Fill(_missingSecondaryValue);
         }
 
-        for (int i = 0; i < _groupSize; i++)
-            indexesSpan[i] = i;
+        RoaringBitmap.InitializeIndices(indexesSpan, _groupSize);
 
         // Sort indexes by secondary value. For Integer fields the long IS the value.
         // For Floating fields, the long is the bit-cast of a double — sorting as longs
@@ -364,7 +361,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         if (_secondaryType == MatchCompareFieldType.Integer)
         {
             if (_secondaryDescending)
-                secondarySpan.Sort(indexesSpan, Comparer<long>.Create((a, b) => b.CompareTo(a)));
+                secondarySpan.Sort(indexesSpan, DescendingLong);
             else
                 secondarySpan.Sort(indexesSpan);
         }
@@ -372,7 +369,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         {
             var doubleSpan = MemoryMarshal.Cast<long, double>(secondarySpan);
             if (_secondaryDescending)
-                doubleSpan.Sort(indexesSpan, Comparer<double>.Create((a, b) => b.CompareTo(a)));
+                doubleSpan.Sort(indexesSpan, DescendingDouble);
             else
                 doubleSpan.Sort(indexesSpan);
         }
@@ -407,11 +404,11 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
         // Ensure group buffers are allocated before we fill them.
         if (_groupEntries.IsValid == false)
-            _groupEntries.Initialize(_allocator, 1024);
+            _groupEntries.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
         if (_groupSecondary.IsValid == false)
-            _groupSecondary.Initialize(_allocator, 1024);
+            _groupSecondary.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
         if (_groupSortedIndexes.IsValid == false)
-            _groupSortedIndexes.Initialize(_allocator, 1024);
+            _groupSortedIndexes.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
 
         _groupSize = 0;
         DrainLargeIntoGroup(ref _nullIterator, entryBuffer);

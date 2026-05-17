@@ -274,28 +274,9 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
     private int DrainLargePostingList(Span<long> matches, Span<long> entryBuffer)
     {
-        int count = 0;
-        while (count < matches.Length)
-        {
-            int slotsLeft = matches.Length - count;
-            int requestSize = Math.Min(entryBuffer.Length, slotsLeft);
-            var request = entryBuffer.Slice(0, requestSize);
-            if (_pendingLargeIterator.Fill(request, out int read) == false || read == 0)
-            {
-                _hasPendingLargeIterator = false; // exhausted
-                break;
-            }
-            EntryIdEncodings.DecodeAndDiscardFrequency(request, read);
-            for (int j = 0; j < read; j++)
-            {
-                long entryId = request[j];
-                if (_emittedBitmap.Contains(entryId) == false)
-                {
-                    _emittedBitmap.Add(entryId);
-                    matches[count++] = entryId;
-                }
-            }
-        }
+        bool exhausted = false;
+        int count = DrainIterator(matches, entryBuffer, ref _pendingLargeIterator, ref exhausted);
+        if (exhausted) _hasPendingLargeIterator = false;
         return count;
     }
 

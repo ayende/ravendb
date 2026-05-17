@@ -1037,7 +1037,7 @@ internal static partial class QueryPlanBuilder
         if (value is DateTimeOffset dto)
             return (dto.UtcDateTime.Ticks, ValueTokenType.Long);
         if (literalType != ValueTokenType.Parameter)
-            return (value.ToString(), literalType);
+            return (value, literalType);
         return ResolveParameterValue(value);
     }
 

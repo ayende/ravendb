@@ -1381,16 +1381,22 @@ internal static partial class QueryPlanBuilder
         return TermQueryFromParam(termPacked, fieldMeta, indexSearcher, plan);
     }
 
-    /// <summary>Create a pre-materialized <see cref="BitmapMatch"/> for a NotEquals clause
+    /// <summary>Create a pre-materialized <see cref="BitmapMatch"/> for a negated clause
     /// appearing in an OR chain. OR(NOT X, NOT Y, ...) cannot use the raw term posting list
     /// (FillBitmapFromPostingSource would add entries WITH X, not WITHOUT X). Instead, we
-    /// pre-compute AllEntries ANDNOT TermQuery(X) into a BitmapMatch so that FillFromMatch
-    /// during execution correctly ORs in the set of entries NOT having X.</summary>
+    /// pre-compute AllEntries ANDNOT (positive form) into a BitmapMatch so that FillFromMatch
+    /// during execution correctly ORs in the set of entries NOT matching the positive predicate.
+    /// Handles NOT EQUALS (single term), NOT EXISTS (ExistsQuery), and single-term NOT IN/AllIn.</summary>
     private static IQueryMatch CreateNotEqualsOrMatch(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
         QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
-        IQueryMatch termMatch = TermQueryFromParam(exec.PackedParamValue, fieldMeta, indexSearcher, plan);
+        // EXISTS clauses carry no PackedParam (bindings == null). Use ExistsQuery as the positive
+        // form to negate; TermQueryFromParam with a default-zero PackedParam would crash if the
+        // plan's LongValues array is empty.
+        IQueryMatch termMatch = clause.ClauseType == ClauseType.Exists
+            ? indexSearcher.ExistsQuery(fieldMeta)
+            : TermQueryFromParam(exec.PackedParamValue, fieldMeta, indexSearcher, plan);
 
         var bitmapMatch = new BitmapMatch(indexSearcher.Allocator);
         var tempData = new RoaringBitmap(indexSearcher.Allocator);
@@ -1837,12 +1843,11 @@ internal static partial class QueryPlanBuilder
         {
             var clauseObj = clauses[ci];
             var exec = execs != null && ci < execs.Length ? execs[ci] : null;
-            if (clauseObj?.FieldName == null)
-                continue;
 
-            PopulateHighlightingForClause(clauseObj, exec, highlightingTerms, metadata, plan);
-
-            switch (clauseObj.ClauseType)
+            // Recurse into sub-clauses before checking FieldName: OrGroup/AndGroup have
+            // FieldName==null (they are structural wrappers, not field clauses), so a
+            // FieldName-first guard would skip their children entirely.
+            switch (clauseObj?.ClauseType)
             {
                 case ClauseType.OrGroup when clauseObj.OrSubClauses is { Count: > 0 }:
                 {
@@ -1863,6 +1868,11 @@ internal static partial class QueryPlanBuilder
                     break;
                 }
             }
+
+            if (clauseObj?.FieldName == null)
+                continue;
+
+            PopulateHighlightingForClause(clauseObj, exec, highlightingTerms, metadata, plan);
         }
     }
 
@@ -1874,7 +1884,6 @@ internal static partial class QueryPlanBuilder
 
         if (highlightingTerms.TryGetValue(fieldName, out var existingTerm))
         {
-            // Already populated (e.g., multiple clauses on same field) — update values if needed
             existingTerm.Values ??= GetHighlightingValues(clause, exec, plan);
             return;
         }
@@ -2989,6 +2998,18 @@ internal static partial class QueryPlanBuilder
             // comparison) and ExistsQuery for string/sequence fields.
             // ExistsQuery uses CompactKeyLookup byte comparison which doesn't match numeric order.
             // Only index-walkable field types qualify.
+            //
+            // MayHaveMissingEntries: dynamic CreateField docs that never indexed this field have
+            // no entry anywhere — ExistsQuery/BetweenQuery silently drop them.
+            if (orderByFields[0].MayHaveMissingEntries)
+                return false;
+            // HasNonExistingEntries: auto-indexed docs whose field path is null/absent get an
+            // entry in the NonExisting posting list.  SortedDrivingMatch only drains the
+            // *null* posting list, so non-existing docs would be silently dropped.
+            // For single-field sort this is accepted (streaming trade-off).  For two-field
+            // sort (SortedDrivingWithTieBreakMatch), non-existing docs must not disappear.
+            if (hasTieBreak && indexSearcher.HasNonExistingEntries(orderByFields[0].Field))
+                return false;
             if (sortFieldType is not (MatchCompareFieldType.Sequence or MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
                 return false;
             var fieldMeta = orderByFields[0].Field;
