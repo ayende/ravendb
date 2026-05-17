@@ -281,14 +281,55 @@ internal static partial class QueryPlanBuilder
             }
         }
 
+        var templateClauses = clauses.ToArray();
+        FreezeAll(templateClauses);
+        FreezeAll(spatialClauses);
+        FreezeAll(vectorClauses);
         return new ClauseTemplate
         {
-            Clauses = clauses.ToArray(),
+            Clauses = templateClauses,
             IsAllEntries = false,
             IsOr = isOr,
             SpatialClauses = spatialClauses,
             VectorClauses = vectorClauses
         };
+    }
+
+    /// <summary>Recursively freeze every <see cref="ClauseInfo"/> in a template list,
+    /// including nested OrSubClauses / AndSubClauses. Called once at the end of
+    /// <see cref="ParseTemplate"/> so the entire shared template tree rejects mutation
+    /// from per-execution code paths (which must <see cref="ClauseInfo.Clone"/> before
+    /// rewriting).</summary>
+    private static void FreezeAll(ClauseInfo[] list)
+    {
+        if (list == null)
+            return;
+        for (int i = 0; i < list.Length; i++)
+        {
+            var c = list[i];
+            if (c == null || c.IsFrozen)
+                continue;
+            if (c.OrSubClauses != null)
+                for (int j = 0; j < c.OrSubClauses.Count; j++)
+                    FreezeRecursive(c.OrSubClauses[j]);
+            if (c.AndSubClauses != null)
+                for (int j = 0; j < c.AndSubClauses.Count; j++)
+                    FreezeRecursive(c.AndSubClauses[j]);
+            c.Freeze();
+        }
+    }
+
+    private static void FreezeRecursive(ClauseInfo c)
+    {
+        if (c == null || c.IsFrozen)
+            return;
+        if (c.OrSubClauses != null)
+            for (int j = 0; j < c.OrSubClauses.Count; j++)
+                FreezeRecursive(c.OrSubClauses[j]);
+        if (c.AndSubClauses != null)
+            for (int j = 0; j < c.AndSubClauses.Count; j++)
+                FreezeRecursive(c.AndSubClauses[j]);
+        c.Freeze();
     }
 
     private static BooleanOp ParseExpression(

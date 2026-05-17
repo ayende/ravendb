@@ -150,7 +150,12 @@ internal static partial class QueryPlanBuilder
                         e.Cardinality = 0;
                         e.InTermCount = 0;
                         e.HasNullTerm = false;
+                        // Clone before mutating: c references the frozen template clause,
+                        // shared across executions. Mutating it in place would poison cached
+                        // plans (RavenDB-17423 pattern).
+                        c = c.Clone();
                         c.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
+                        clauses[ci] = c;
                     }
                 }
             }
@@ -158,7 +163,10 @@ internal static partial class QueryPlanBuilder
             // Single-value IN → convert to Equals (simpler plan, single PostingList lookup)
             if (c.ClauseType == ClauseType.In && e.InTermCount == 1 && e.HasNullTerm == false)
             {
+                // Clone before mutating, see contradictory-BETWEEN comment above.
+                c = c.Clone();
                 c.ClauseType = ClauseType.Equals;
+                clauses[ci] = c;
             }
             // Null-only IN (InTermCount=0, HasNullTerm=true): already optimized —
             // EmitInOps skips OrRange (no non-null terms) and emits only the null-term
