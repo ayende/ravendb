@@ -4,11 +4,12 @@ using Corax.Querying.Matches.Meta;
 namespace Corax.Querying.Matches;
 
 /// <summary>
-/// Chains an inner IQueryMatch through one or more spatial filter matches.
+/// Chains an inner IQueryMatch through one or more additional filter matches.
 /// On Fill(), retrieves entries from the inner match, then applies each
-/// spatial match's AndWith() to narrow the results. This implements the
-/// post-filter phase where spatial predicates are applied after the bitmap
-/// filter phase builds the candidate set.
+/// filter's AndWith() to narrow the results. Currently only used to apply
+/// spatial predicates after the bitmap filter phase builds the candidate set,
+/// but the construct itself is just an AndWith-chain — nothing here is
+/// spatial-specific.
 /// </summary>
 public struct PostFilterMatch : IQueryMatch
 {
@@ -45,7 +46,7 @@ public struct PostFilterMatch : IQueryMatch
 
     public int AndWith(Span<long> buffer, int matches)
     {
-        // First apply inner's AndWith, then each spatial filter
+        // First apply inner's AndWith, then each post-filter in order.
         int count = _inner.AndWith(buffer, matches);
         if (count == 0)
             return 0;
