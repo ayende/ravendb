@@ -7,7 +7,7 @@ using System.Runtime.InteropServices;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
-using Sparrow.Server.Collections;
+using Voron.Data.RoaringBitmaps;
 using Sparrow.Server.Utils;
 using Voron.Data.Graphs;
 using Voron.Util;
@@ -55,10 +55,11 @@ public struct VectorSearchMatch : IQueryMatch
     /// </summary>
     private readonly bool _singleVectorSearchDoNotSort;
 
-    private GrowableBitArray? _filterResults;
+    private RoaringBitmap _filterResults;
+    private bool _hasFilterResults;
+    private bool _ownsFilterResults;
     private IQueryMatch _filterQuery;
     private bool _filterQueryLoaded;
-    private long _filterMatchesCount;
 
     private bool CanStreamResults => IsBoosting == false && _singleVectorSearchDoNotSort;
 
@@ -100,51 +101,52 @@ public struct VectorSearchMatch : IQueryMatch
         if (_filterQueryLoaded == false)
         {
             _filterQueryLoaded = true;
-            _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery);
-            _filterMatchesCount = _filterResults?.Count ?? 0;
+            // When filterQuery is IBitmapQueryMatch (e.g. CompiledQueryMatch), LoadFilterMatches
+            // borrows the bitmap directly without re-materialization. No separate fast-path
+            // needed here — the optimization lives in VectorSearchUtils.LoadFilterMatches.
+            _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery, out _ownsFilterResults);
+            _hasFilterResults = true;
 
             // Shortcut for empty filter
-            if (_filterMatchesCount == 0)
+            if (_filterResults.Count == 0)
             {
                 _isEmpty = true;
                 return;
             }
         }
-        
-        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterMatchesCount, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
+
+        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterResults.Count, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
         var llt = _indexSearcher._transaction.LowLevelTransaction;
         var vector = _vectorToSearch.GetEmbeddingMemory();
         var fieldName = _metadata.FieldName;
-        
+
         ContextBoundNativeList<long> nodesIdsToScan = default;
         if (_scanningQuery)
         {
-            var hasNodes = IndexSearcher.VectorSearchUtils.TryConvertDocumentsIdsToNodesIds(_indexSearcher, _metadata, _filterResults!.Value, out nodesIdsToScan);
+            var hasNodes = IndexSearcher.VectorSearchUtils.TryConvertDocumentsIdsToNodesIds(_indexSearcher, _metadata, ref _filterResults, out nodesIdsToScan);
             if (hasNodes == false)
             {
                 _isEmpty = true;
                 _vectorToSearch.Dispose();
-                _filterResults?.Dispose();
+                if (_hasFilterResults && _ownsFilterResults)
+                    _filterResults.Dispose();
                 return;
             }
-            
+
             _nodesIdsToScan = nodesIdsToScan;
         }
-        
-        
-        var searchState = _indexSearcher.GetOrCreateVectorSearchState(fieldName);
+
 
         _vectorSearchRetriever = _isExact switch
         {
-            _ when _scanningQuery => Hnsw.ExactNearest(searchState, _numberOfCandidates, vector, _minimumMatch, hasFilterMatch: false, nodesIdsToScan),
-            true => Hnsw.ExactNearest(searchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
-            false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(searchState, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults!.Value, _random)),
-                _ => Hnsw.ApproximateNearest(searchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
+            _ when _scanningQuery => Hnsw.ExactNearest(llt, fieldName, _numberOfCandidates, vector, _minimumMatch, hasFilterMatch: false, nodesIdsToScan),
+            true => Hnsw.ExactNearest(llt, fieldName, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
+            false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(llt, fieldName, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults, _random)),
+                _ => Hnsw.ApproximateNearest(llt, fieldName, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
         };
-        
 
-        _isEmpty = _scanningQuery 
-            ? _filterMatchesCount == 0 || _vectorSearchRetriever.IsEmpty
+        _isEmpty = _scanningQuery
+            ? _filterResults.Count == 0 || _vectorSearchRetriever.IsEmpty
             : _vectorSearchRetriever.IsEmpty;
     }
     
@@ -186,7 +188,8 @@ public struct VectorSearchMatch : IQueryMatch
         if (_resultsPersisted == false)
             FillAndPersistResults();
 
-        return MergeHelper.And(buffer, buffer.Slice(0, matches), _matches.Results);
+        var results = _matches.Results;
+        return MergeHelper.And(buffer[..matches], buffer[..matches], results);
     }
 
     private int FillDiscardSimilarity(Span<long> matches)
@@ -199,7 +202,7 @@ public struct VectorSearchMatch : IQueryMatch
 
         var distancesBuffer = _distances.GetSpace();
         
-        var read = _vectorSearchRetriever.Fill(matches, distancesBuffer, _filterResults);
+        var read = _hasFilterResults ? _vectorSearchRetriever.Fill(matches, distancesBuffer, ref _filterResults) : _vectorSearchRetriever.Fill(matches, distancesBuffer);
         
         if (read == 0)
         {
@@ -210,7 +213,7 @@ public struct VectorSearchMatch : IQueryMatch
             return 0;
         }
         
-        Sorting.SortAndMinOnDuplicates(matches[..read], distancesBuffer[..read]);
+        read = Sorting.SortAndMinOnDuplicates(matches[..read], distancesBuffer[..read]);
         distancesBuffer[..read].Sort(matches[..read]);
         return read;
     }
@@ -238,7 +241,9 @@ public struct VectorSearchMatch : IQueryMatch
             var dBuf = distances.GetSpace();
             Debug.Assert(mBuf.Length == dBuf.Length, "mBuf.Length == dBuf.Length");
 
-            currentRead = _vectorSearchRetriever.Fill(mBuf, dBuf, _filterResults);
+            currentRead = _hasFilterResults
+                ? _vectorSearchRetriever.Fill(mBuf, dBuf, ref _filterResults)
+                : _vectorSearchRetriever.Fill(mBuf, dBuf);
             
             matches.AddUsage(currentRead);
             distances.AddUsage(currentRead);
@@ -247,12 +252,12 @@ public struct VectorSearchMatch : IQueryMatch
         
         if (_singleVectorSearchDoNotSort == false)
         {
-            //Truncate the buffer to the actual size
             var matchesCount = Sorting.SortAndMinOnDuplicates(matches.Results, distances.Results);
             distances.Truncate(matchesCount);
             matches.Truncate(matchesCount);
         }
-        else if (_vectorSearchRetriever.IsSortedByDistance == false)
+        
+        if (_singleVectorSearchDoNotSort && _vectorSearchRetriever.IsSortedByDistance == false)
         {
             distances.Results.Sort(matches.Results);
         }
@@ -264,8 +269,8 @@ public struct VectorSearchMatch : IQueryMatch
     {
         if (_isEmpty || _resultsPersisted == false)
         {
-            // BinaryMatch may skip the method call if the other node of the AND clause 
-            // is empty, the evaluation of this primitive is pointless. In these cases, the call is ignored.
+            // The caller may invoke Score even when this match was not evaluated (e.g. the other
+            // side of an AND was empty). In these cases, the call is ignored.
             return;
         }
         
@@ -314,7 +319,7 @@ public struct VectorSearchMatch : IQueryMatch
 
         if (_filterQuery is not null)
         {
-            return new QueryInspectionNode($"{nameof(BinaryMatch)} [And]",
+            return new QueryInspectionNode($"{nameof(VectorSearchMatch)} [And]",
                 children: new List<QueryInspectionNode> { _filterQuery.Inspect(), vsInspect },
                 parameters: new Dictionary<string, string>()
                 {
@@ -339,12 +344,6 @@ public struct VectorSearchMatch : IQueryMatch
     
     public long Count { get; private set; }
 
-    public SkipSortingResult AttemptToSkipSorting()
-    {
-        return _singleVectorSearchDoNotSort 
-            ? SkipSortingResult.ResultsNativelySorted 
-            : SkipSortingResult.SortingIsRequired;
-    }
 
     public QueryCountConfidence Confidence => QueryCountConfidence.Low;
     
@@ -354,7 +353,8 @@ public struct VectorSearchMatch : IQueryMatch
     {
         if (_scanningQuery)
             _nodesIdsToScan.Dispose();
-        _filterResults?.Dispose();
+        if (_hasFilterResults && _ownsFilterResults)
+            _filterResults.Dispose();
         _vectorSearchRetriever.Dispose();
         _vectorToSearch.Dispose();
     }
