@@ -81,7 +81,7 @@ public class IndexSearcherTest : StorageTest
     {
         var bitmap = new BitmapMatch(searcher.Allocator);
         RoaringBitmap tempData = new(searcher.Allocator);
-        QueryPrimitives.FillFromMatch(left, ref bitmap.BitmapState);
+        QueryPrimitives.OrWithMatch(left, ref bitmap.BitmapState);
         QueryPrimitives.AndNotWithMatch(right, ref bitmap.BitmapState, ref tempData);
         tempData.Dispose();
         return bitmap;
@@ -91,7 +91,7 @@ public class IndexSearcherTest : StorageTest
     {
         var bitmap = new BitmapMatch(searcher.Allocator);
         RoaringBitmap tempData = new(searcher.Allocator);
-        QueryPrimitives.FillFromMatch(left, ref bitmap.BitmapState);
+        QueryPrimitives.OrWithMatch(left, ref bitmap.BitmapState);
         QueryPrimitives.AndWithMatch(right, ref bitmap.BitmapState, ref tempData);
         tempData.Dispose();
         return bitmap;

@@ -91,7 +91,7 @@ public static class QueryIlEmitter
                     IlEmitterShared.CtxFillFromTreeScan, IlEmitterShared.CtxAndFromTreeScan, IlEmitterShared.CtxOrFillFromTreeScan, IlEmitterShared.CtxAndNotFromTreeScan),
                 _ => (
                     $"ctx.ResolvedMatches[{op.ParamIndex}]",
-                    IlEmitterShared.CtxFillFromMatch, IlEmitterShared.CtxAndFromMatch, (MethodInfo)IlEmitterShared.CtxOrFillFromMatch, IlEmitterShared.CtxAndNotFromMatch)
+                    IlEmitterShared.CtxOrWithMatch, IlEmitterShared.CtxAndFromMatch, (MethodInfo)IlEmitterShared.CtxOrWithMatchSlot, IlEmitterShared.CtxAndNotFromMatch)
             };
 
             switch (op.Kind)

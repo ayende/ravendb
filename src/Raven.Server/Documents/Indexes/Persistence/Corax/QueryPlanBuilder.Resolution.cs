@@ -476,7 +476,7 @@ internal static partial class QueryPlanBuilder
                 var match = ResolveClause(clause, subExecs[ci2], indexSearcher, subPlan, builderParams: builderParams);
                 if (first)
                 {
-                    QueryPrimitives.FillFromMatch(match, ref bitmap.BitmapState);
+                    QueryPrimitives.OrWithMatch(match, ref bitmap.BitmapState);
                     first = false;
                 }
                 else
@@ -1136,7 +1136,7 @@ internal static partial class QueryPlanBuilder
             {
                 var subExec = exec.OrSubExecutions[si];
                 var subMatch = ResolveClause(clause.OrSubClauses[si], subExec, indexSearcher, plan, parameters, builderParams);
-                QueryPrimitives.FillFromMatch(subMatch, ref bm.BitmapState);
+                QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
             }
             temp.Dispose();
             return bm;
@@ -1153,7 +1153,7 @@ internal static partial class QueryPlanBuilder
                 var subMatch = ResolveClause(sub, subExec, indexSearcher, plan, parameters, builderParams);
                 if (first)
                 {
-                    QueryPrimitives.FillFromMatch(subMatch, ref bm.BitmapState);
+                    QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
                     first = false;
                 }
                 else if (sub.IsNegated)
@@ -1271,7 +1271,7 @@ internal static partial class QueryPlanBuilder
                     var tempHigh = new RoaringBitmap(indexSearcher.Allocator);
                     try
                     {
-                        QueryPrimitives.FillFromMatch(indexSearcher.AllEntries(), ref bmHigh.BitmapState);
+                        QueryPrimitives.OrWithMatch(indexSearcher.AllEntries(), ref bmHigh.BitmapState);
                         QueryPrimitives.AndNotWithMatch(ltMatch, ref bmHigh.BitmapState, ref tempHigh);
                         return bmHigh;
                     }
@@ -1304,7 +1304,7 @@ internal static partial class QueryPlanBuilder
                     if (clause.ClauseType == ClauseType.AllIn && t > 0)
                         QueryPrimitives.AndWithMatch(termMatch, ref bm.BitmapState, ref temp);
                     else
-                        QueryPrimitives.FillFromMatch(termMatch, ref bm.BitmapState);
+                        QueryPrimitives.OrWithMatch(termMatch, ref bm.BitmapState);
                 }
                 temp.Dispose();
                 return bm;
@@ -1432,7 +1432,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Create a pre-materialized <see cref="BitmapMatch"/> for a negated clause
     /// appearing in an OR chain. OR(NOT X, NOT Y, ...) cannot use the raw term posting list
     /// (FillBitmapFromPostingSource would add entries WITH X, not WITHOUT X). Instead, we
-    /// pre-compute AllEntries ANDNOT (positive form) into a BitmapMatch so that FillFromMatch
+    /// pre-compute AllEntries ANDNOT (positive form) into a BitmapMatch so that OrWithMatch
     /// during execution correctly ORs in the set of entries NOT matching the positive predicate.
     /// Handles NOT EQUALS (single term), NOT EXISTS (ExistsQuery), and single-term NOT IN/AllIn.</summary>
     private static IQueryMatch CreateNotEqualsOrMatch(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
@@ -1448,7 +1448,7 @@ internal static partial class QueryPlanBuilder
 
         var bitmapMatch = new BitmapMatch(indexSearcher.Allocator);
         var tempData = new RoaringBitmap(indexSearcher.Allocator);
-        QueryPrimitives.FillFromMatch(indexSearcher.AllEntries(), ref bitmapMatch.BitmapState);
+        QueryPrimitives.OrWithMatch(indexSearcher.AllEntries(), ref bitmapMatch.BitmapState);
         QueryPrimitives.AndNotWithMatch(termMatch, ref bitmapMatch.BitmapState, ref tempData);
         tempData.Dispose();
         return bitmapMatch;
