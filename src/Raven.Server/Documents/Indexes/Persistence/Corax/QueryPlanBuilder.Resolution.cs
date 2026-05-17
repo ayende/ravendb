@@ -3659,7 +3659,7 @@ internal static partial class QueryPlanBuilder
         IndexSearcher searcher, IQueryMatch drivingMatch,
         long[] longParams, double[] doubleParams, Voron.Slice[] sliceParams, long[] fieldRootPages,
         ResidualScanIlEmitter.ResidualScanPredicate residualDelegate,
-        ScanPredicateInfo[]? residualArray)
+        ScanPredicateInfo[] residualArray)
     {
         if (residualArray == null) 
             return new DirectScanSimpleMatch(searcher, drivingMatch, take: -1);

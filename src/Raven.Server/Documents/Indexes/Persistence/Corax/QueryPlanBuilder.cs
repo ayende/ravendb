@@ -46,8 +46,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>Thread-local WHEN condition accumulator used during ParseTemplate.
-    /// Avoids threading a List through all ParseExpression call sites.</summary>
     /// <summary>
     /// Parameters needed by the planner for field metadata resolution,
     /// analyzer setup, and cardinality estimation.
