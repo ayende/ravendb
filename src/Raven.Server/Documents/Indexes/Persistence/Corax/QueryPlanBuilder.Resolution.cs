@@ -62,15 +62,56 @@ internal static partial class QueryPlanBuilder
         CancellationToken token)
     {
         var indexSearcher = planParams.IndexSearcher;
+
+        // Phase 1: structural template (cached per queryText).
+        var template = BuildTemplate(planParams);
+
+        // Phase 2: parameter resolution, plan emission, IL compile (with cache miss handling).
+        compiledPlanOut = Build(template, planParams, builderParameters, out plan, wantTimings);
+        if (compiledPlanOut == null)
+            return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
+
+        // Phase 3: live binding (resolved matches, term sources, spatial/vector/highlighting wrappers).
+        return Instantiate(compiledPlanOut, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
+    }
+
+    /// <summary>
+    /// Phase 1: build (or fetch from the plan cache) the structural template for a query
+    /// text. Captures field names, clause types, parameter bindings, and literal values.
+    /// No cardinality estimation, no parameter values, no IL.
+    ///
+    /// Safe to call without a live transaction once the schema is known —
+    /// cmpxchg()/now()/today() bindings store a DeferredExpression that resolves per
+    /// execution, so the template itself remains parameter-independent.
+    /// </summary>
+    public static PlanTemplate BuildTemplate(PlanParameters planParams)
+    {
+        var queryText = planParams.Metadata.Query.QueryText;
+        var planCache = planParams.IndexSearcher.PlanCache;
+        return planCache.TryGetTemplate(queryText) ?? ParseTemplate(planParams);
+    }
+
+    /// <summary>
+    /// Phase 2: bind parameter values to the structural template, estimate cardinality,
+    /// sort clauses, emit plan ops, and look up or compile the IL delegate via the plan cache.
+    ///
+    /// Returns the (cached or newly compiled) <see cref="CompiledPlan"/> together with the
+    /// per-execution <see cref="QueryExecution"/> via <paramref name="plan"/>.
+    /// Returns <c>null</c> when the plan reduces to an empty match without spatial/vector
+    /// post-filters (e.g. an empty IN clause inside an AND chain) — the caller must produce
+    /// an explicit empty result rather than caching this shape under the wrong key.
+    /// </summary>
+    private static CompiledPlan Build(
+        PlanTemplate template,
+        PlanParameters planParams,
+        QueryBuilderParameters builderParameters,
+        out QueryExecution plan,
+        bool wantTimings)
+    {
+        _ = wantTimings; // IL emission always produces both timed and untimed delegates today.
+        var indexSearcher = planParams.IndexSearcher;
         var queryText = planParams.Metadata.Query.QueryText;
         var planCache = indexSearcher.PlanCache;
-
-        // Step 1: Get or build the plan template (structural, no values).
-        // cmpxchg()/now()/today() are safe to cache: the template stores a DeferredExpression
-        // delegate on the binding, and ResolveBindingScalar invokes it per execution with the
-        // current builderParameters/queryParameters — the resolved value lives on ClauseExecution,
-        // not on the cached binding.
-        var template = planCache.TryGetTemplate(queryText) ?? ParseTemplate(planParams);
 
         // Step 2: Create per-execution state for each clause (template is immutable, not cloned)
         var clauses = new List<ClauseInfo>(template.Clauses.Length);
@@ -291,8 +332,8 @@ internal static partial class QueryPlanBuilder
         if (plan.Ops is { Length: 0 } && plan.IsAllEntries == false
             && template.SpatialClauses == null && template.VectorClauses == null)
         {
-            compiledPlanOut = null;
-            return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
+            // Caller (BuildAndCompile facade) converts null into TermMatch.CreateEmpty.
+            return null;
         }
 
         if (template.SpatialClauses != null || template.VectorClauses != null)
@@ -381,7 +422,28 @@ internal static partial class QueryPlanBuilder
             planCache.Add(queryText, compiledPlan, template);
         }
 
-        compiledPlanOut = compiledPlan;
+        return compiledPlan;
+    }
+
+    /// <summary>
+    /// Phase 3: bind a cached/compiled plan to a live execution. Resolves matches and term
+    /// sources from the live transaction, extracts scan parameters, optionally populates
+    /// highlighting terms, builds the <see cref="CompiledQueryMatch"/>, then applies the
+    /// mandatory spatial post-filter and vector-select wrappers.
+    ///
+    /// The wrappers are correctness, not optional decoration — vector selects produce
+    /// unfiltered top-K without the filter source they're given here.
+    /// </summary>
+    private static IQueryMatch Instantiate(
+        CompiledPlan compiledPlan,
+        QueryExecution plan,
+        PlanParameters planParams,
+        QueryBuilderParameters builderParameters,
+        Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
+        bool wantTimings,
+        CancellationToken token)
+    {
+        var indexSearcher = planParams.IndexSearcher;
         var resolvedMatches = ResolveMatches(plan, indexSearcher, planParams, builderParameters);
         var termSources = ResolveTermSources(plan, indexSearcher, planParams, builderParameters);
         var termsProviders = ResolveTermsProviders(plan, indexSearcher, planParams, builderParameters);
