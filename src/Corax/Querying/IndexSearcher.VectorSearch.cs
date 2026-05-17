@@ -104,26 +104,44 @@ public partial class IndexSearcher
                     return;
                 }
 
-                // Materialize all entry IDs from the bitmap, then shuffle for random access.
-                // HNSW only probes up to 512 nodes, so cap the materialization to avoid
+                // Sample entry IDs from the filter for HNSW probe seeds. HNSW only
+                // probes up to 512 nodes, so cap the materialization to avoid
                 // allocating a huge array for very large filters.
+                //
+                // RoaringBitmapIterator yields entries in ascending entry-ID order.
+                // Taking the first N would bias the sample to the oldest documents
+                // (lowest entry IDs are assigned earliest at indexing time) and
+                // degrade recall for queries over newer documents. Use Algorithm R
+                // reservoir sampling so every filter entry has equal probability
+                // of being in the final sample, then shuffle the reservoir to make
+                // iteration order independent of insertion order.
                 const int MaxFilterSampleSize = 8192;
-                var sampleSize = Math.Min(filterCount, MaxFilterSampleSize);
+                var sampleSize = (int)Math.Min(filterCount, MaxFilterSampleSize);
                 _entryIds = new long[sampleSize];
                 using var iterator = filterResults.GetIterator();
                 Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-                int totalRead = 0;
+                int seen = 0;
                 int read;
-                while ((read = iterator.Fill(ref filterResults, batch)) > 0 && totalRead < _entryIds.Length)
+                while ((read = iterator.Fill(ref filterResults, batch)) > 0)
                 {
-                    int remaining = _entryIds.Length - totalRead;
-                    int copyLen = Math.Min(read, remaining);
-                    batch[..copyLen].CopyTo(_entryIds.AsSpan(totalRead));
-                    totalRead += copyLen;
+                    for (int i = 0; i < read; i++)
+                    {
+                        if (seen < sampleSize)
+                        {
+                            _entryIds[seen] = batch[i];
+                        }
+                        else
+                        {
+                            // Standard reservoir step: keep the new entry with probability
+                            // sampleSize / (seen + 1) by drawing j in [0, seen] and accepting
+                            // only when j < sampleSize.
+                            int j = _random.Next(seen + 1);
+                            if (j < sampleSize)
+                                _entryIds[j] = batch[i];
+                        }
+                        seen++;
+                    }
                 }
-
-                if (totalRead < _entryIds.Length)
-                    Array.Resize(ref _entryIds, totalRead);
 
                 _random.Shuffle(_entryIds.AsSpan());
                 _entryIndex = 0;
