@@ -1,7 +1,0 @@
-help
-break SortingMatch.cs:206
-run
-print match.TotalResults
-print match._searcher._testingConfiguration
-next
-quit

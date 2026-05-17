@@ -163,3 +163,4 @@ test/FastTests/TestResults/
 test/**/TestResults/
 Temp/
 .dbg/
+.netcoredbg_hist
