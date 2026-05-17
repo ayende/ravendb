@@ -4,7 +4,6 @@
     <RuntimeFrameworkVersion>10.0.9</RuntimeFrameworkVersion>
     <RuntimeFrameworkVersion>10.0.8</RuntimeFrameworkVersion>
 
-    <RuntimeFrameworkVersion>10.0.5</RuntimeFrameworkVersion>
     <AssemblyName>ServerStoreTxMerger.Benchmark</AssemblyName>
     <OutputType>Exe</OutputType>
     <PackageId>ServerStoreTxMerger.Benchmark</PackageId>

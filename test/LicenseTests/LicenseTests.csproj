@@ -5,7 +5,6 @@
     <RuntimeFrameworkVersion>10.0.9</RuntimeFrameworkVersion>
     <RuntimeFrameworkVersion>10.0.8</RuntimeFrameworkVersion>
 
-    <RuntimeFrameworkVersion>10.0.5</RuntimeFrameworkVersion>
     <AssemblyName>LicenseTests</AssemblyName>
     <PackageId>LicenseTests</PackageId>
     <CodeAnalysisRuleSet>..\..\RavenDB.ruleset</CodeAnalysisRuleSet>
