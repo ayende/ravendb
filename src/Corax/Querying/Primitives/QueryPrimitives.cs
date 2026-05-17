@@ -160,8 +160,10 @@ public static class QueryPrimitives
         long maxKey = bitmap.MaxContainerKey;
         Debug.Assert(minKey is not -1 && maxKey is not -1, "shouldn't happen, we checked IsEmpty");
 
-        long seekFrom = minKey * RoaringBitmap.ContainerSize;
-        long pruneAfter = (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
+        // Encode to posting-list space: the posting list stores encoded values (entryId << 10 | freq | type),
+        // so Seek and Fill both expect encoded bounds, not raw decoded entry IDs.
+        long seekFrom = EntryIdEncodings.PrepareIdForSeekInPostingList(minKey * RoaringBitmap.ContainerSize);
+        long pruneAfter = EntryIdEncodings.PrepareIdForPruneInPostingList((maxKey + 1) * RoaringBitmap.ContainerSize - 1);
 
         // Seek past all posting list entries below the bitmap's range
         if (!iterator.Seek(seekFrom))
@@ -202,8 +204,8 @@ public static class QueryPrimitives
         long maxKey = bitmap.MaxContainerKey;
         Debug.Assert(minKey is not -1 && maxKey is not -1);
 
-        long seekFrom = minKey * RoaringBitmap.ContainerSize;
-        long pruneAfter = (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
+        long seekFrom = EntryIdEncodings.PrepareIdForSeekInPostingList(minKey * RoaringBitmap.ContainerSize);
+        long pruneAfter = EntryIdEncodings.PrepareIdForPruneInPostingList((maxKey + 1) * RoaringBitmap.ContainerSize - 1);
 
         if (!iterator.Seek(seekFrom))
         {
@@ -251,8 +253,8 @@ public static class QueryPrimitives
         long maxKey = bitmap.MaxContainerKey;
         Debug.Assert(minKey is not -1 && maxKey is not -1, "shouldn't happen, we checked IsEmpty");
 
-        long seekFrom = minKey * RoaringBitmap.ContainerSize;
-        long pruneAfter = (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
+        long seekFrom = EntryIdEncodings.PrepareIdForSeekInPostingList(minKey * RoaringBitmap.ContainerSize);
+        long pruneAfter = EntryIdEncodings.PrepareIdForPruneInPostingList((maxKey + 1) * RoaringBitmap.ContainerSize - 1);
 
         if (!iterator.Seek(seekFrom))
             return; // No entries in range — nothing to subtract
@@ -598,6 +600,7 @@ public static class QueryPrimitives
                     var singlesLen = Sorting.SortAndRemoveDuplicates(singlesSpan);
                     bitmap.AddRange(singlesSpan[..singlesLen]);
                 }
+                if (bitmap.Count >= limit) goto fillDone;
 
                 // Bucket 1: SmallPostingList -> strip frequency, dedup, batch fetch, decode
                 var smallsSpan = buckets[1].ToSpan();
@@ -634,6 +637,7 @@ public static class QueryPrimitives
                         }
                     }
                 }
+                if (bitmap.Count >= limit) goto fillDone;
 
                 // Bucket 2: PostingList -> strip frequency, dedup, then iterate each
                 var largeSpan = buckets[2].ToSpan();
@@ -641,7 +645,7 @@ public static class QueryPrimitives
                 {
                     EntryIdEncodings.DecodeAndDiscardFrequency(largeSpan, largeSpan.Length);
                     var largeLen = Sorting.SortAndRemoveDuplicates(largeSpan);
-                    for (int i = 0; i < largeLen; i++)
+                    for (int i = 0; i < largeLen && bitmap.Count < limit; i++)
                     {
                         var setStateSpan = Container.GetReadOnly(llt, new ContainerEntryId(largeSpan[i]));
                         ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
@@ -651,6 +655,7 @@ public static class QueryPrimitives
                     }
                 }
             }
+            fillDone:;
         }
         finally
         {
