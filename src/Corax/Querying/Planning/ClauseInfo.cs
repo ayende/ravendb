@@ -33,12 +33,14 @@ public sealed class ClauseInfo
     public SpatialOperationType SpatialMethodType;
     public VectorSourceKind VectorMethod;
 
-    /// <summary>Set for NotEquals clauses appearing in OR chains.
-    /// Example: `WHERE Name != 'a' OR Age = 25`
-    /// The NOT(Name='a') term cannot use the raw posting list (which contains entries
-    /// WITH 'a', not entries WITHOUT 'a'). Instead, ResolveMatches pre-materializes
-    /// AllEntries ANDNOT TermQuery('a') into a BitmapMatch, so FillFromMatch during
-    /// execution correctly ORs in the complement set.</summary>
+    /// <summary>Set for any negated clause appearing in an OR chain — NotEquals,
+    /// NOT IN, NOT AllIn, NOT exists(), NOT startsWith(), etc.
+    /// Example: `WHERE Name != 'a' OR Age = 25` or `WHERE NOT exists(Tags) OR Score &gt; 10`.
+    /// The complement set cannot be delivered by the raw posting list / range / tree-scan
+    /// (which would produce the POSITIVE form). Instead, ResolveMatches pre-materializes
+    /// AllEntries ANDNOT(positive form) into a BitmapMatch via CreateNotEqualsOrMatch,
+    /// so FillFromMatch during execution correctly ORs in the complement set. The slot
+    /// is always dispatched via QueryMatch, regardless of the underlying clause type.</summary>
     public bool IsOrChainNotEquals;
 
     public List<ClauseInfo> OrSubClauses;

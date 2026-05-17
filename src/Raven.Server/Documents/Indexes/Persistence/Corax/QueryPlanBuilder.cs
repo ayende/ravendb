@@ -1155,6 +1155,27 @@ internal static partial class QueryPlanBuilder
             {
                 var it = clauses[ci];
                 var itExec = executions[ci];
+
+                // Negated clause in an OR chain: emit a single QueryMatch slot whose match
+                // is materialized at resolution time as AllEntries ANDNOT(positive form).
+                // Covers NotEquals, NOT IN, NOT AllIn, NOT exists(), NOT startsWith(), etc.
+                // The raw posting list / range / tree-scan can't deliver the complement,
+                // so dispatch is forced to QueryMatch and CreateNotEqualsOrMatch produces
+                // a pre-materialized BitmapMatch.
+                if (it.IsNegated || it.ClauseType == ClauseType.NotEquals)
+                {
+                    it.IsOrChainNotEquals = true;
+                    ops.Add(new PlanOp
+                    {
+                        Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+                        ParamIndex = matchIndex,
+                        EstimatedCardinality = itExec.Cardinality,
+                        Dispatch = MatchDispatch.QueryMatch
+                    });
+                    matchIndex++;
+                    continue;
+                }
+
                 switch (it.ClauseType)
                 {
                     case ClauseType.In or ClauseType.AllIn when (itExec.InTermCount > 0 || itExec.HasNullTerm):
@@ -1257,20 +1278,12 @@ internal static partial class QueryPlanBuilder
                     }
                     default:
                     {
-                        bool isNotEqualsInOr = it.ClauseType == ClauseType.NotEquals;
-                        if (isNotEqualsInOr)
-                        {
-                            // NotEquals in OR chain: OR of NOT(X) clauses cannot use the raw term posting list
-                            // (FillBitmapFromPostingSource would add entries WITH X, not entries WITHOUT X).
-                            // Mark the clause so ResolveMatches creates AllEntries ANDNOT TermQuery instead.
-                            it.IsOrChainNotEquals = true;
-                        }
                         ops.Add(new PlanOp
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
                             EstimatedCardinality = itExec.Cardinality,
-                            Dispatch = isNotEqualsInOr ? MatchDispatch.QueryMatch : GetDispatch(it, itExec)
+                            Dispatch = GetDispatch(it, itExec)
                         });
                         matchIndex++;
                         break;
@@ -1748,6 +1761,14 @@ internal static partial class QueryPlanBuilder
             var exec = executions != null && ci < executions.Length ? executions[ci] : null;
             int inTermCount = exec?.InTermCount ?? 0;
             bool hasNullTerm = exec?.HasNullTerm ?? false;
+            // OR-chain negated clauses (IsOrChainNotEquals) always use a single QueryMatch
+            // slot containing AllEntries ANDNOT(positive form) — regardless of underlying
+            // clause type (NotEquals, NOT IN, NOT AllIn, NOT exists(), ...).
+            if (clause.IsOrChainNotEquals)
+            {
+                count += 1;
+                continue;
+            }
             count += clause.ClauseType switch
             {
                 ClauseType.OrGroup when clause.OrSubClauses != null => clause.OrSubClauses.Count,
