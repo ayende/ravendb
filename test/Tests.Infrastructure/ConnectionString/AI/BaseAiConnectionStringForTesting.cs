@@ -63,13 +63,16 @@ public abstract class BaseAiConnectorForTesting<T, TConfig> : IAiConnectorForTes
         {
             _aiIntegrationConfiguration = GetAiConfiguration();
         }
-        catch (Exception)
+        catch (Exception e)
         {
             // Connector construction may fail when env vars are missing
             // (e.g. AzureOpenAiSettings throws on null deploymentName).
             // Leave _aiIntegrationConfiguration as default — the skip logic
             // in RavenAiIntegrationAttribute.HasSkipReason will skip the test
-            // based on MissingRequiredEnvVariables().
+            // based on MissingRequiredEnvVariables(). Log the exception so a
+            // real bug (NRE, config mismatch) is still visible in test output
+            // instead of being masked by the missing-env-var skip path.
+            Console.Error.WriteLine($"[{GetType().Name}] ctor: GetAiConfiguration threw, returning stub config: {e}");
             _aiIntegrationConfiguration = new TConfig();
         }
         CanConnect = new Lazy<bool>(IsConnectionAllowed);
@@ -117,12 +120,15 @@ public abstract class BaseAiConnectorForTesting<T, TConfig> : IAiConnectorForTes
                 Connection = connectionString
             };
         }
-        catch (Exception)
+        catch (Exception e)
         {
             // When env vars are missing, CreateAiConnectionStringImpl may throw
             // (e.g. AzureOpenAiSettings null deploymentName). Return a stub config
             // so the test data row can be built — the test will be skipped by
-            // HasSkipReason based on MissingRequiredEnvVariables.
+            // HasSkipReason based on MissingRequiredEnvVariables. Log so a real
+            // bug (NRE, config mismatch) is still surfaced instead of being
+            // masked by the env-var skip path.
+            Console.Error.WriteLine($"[{GetType().Name}] GetAiConfiguration threw, returning stub config: {e}");
             return new TConfig { Name = AiIntegrationTaskName, ConnectionStringName = ConnectionStringName };
         }
     }
