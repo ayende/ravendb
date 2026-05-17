@@ -55,6 +55,14 @@ public static class CoraxIndexingHelpers
             if (mapping.TryGetByFieldName(firstField, out IndexFieldBinding binding) == false)
                 continue;
 
+            // Numeric field1 bypasses the analyzer pipeline on both indexing and query sides
+            // (CoraxDocumentConverterBase.AppendFieldValue uses Bits.SwapBytes directly for
+            // long/double; QueryPlanBuilder.Resolution mirrors that on the query side). The
+            // byte-stable raw encoding is safe to use as the leading bytes of a compound key,
+            // regardless of what string-side analyzer the field happens to have configured.
+            if (binding.FieldNameLong.HasValue || binding.FieldNameDouble.HasValue)
+                continue;
+
             CoraxAnalyzer analyzer = binding.Analyzer;
             if (analyzer == null)
             {
