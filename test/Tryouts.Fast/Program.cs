@@ -44,7 +44,7 @@ public static class Program
                 }
                 catch (Exception e)
                 {
-                    Console.Write("x");
+                    Console.WriteLine($"\nFAIL {method.Name}: {e}");
                 }
             }
         }

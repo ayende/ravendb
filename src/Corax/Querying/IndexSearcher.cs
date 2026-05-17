@@ -106,10 +106,11 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private long _dictionaryId;
     private Lookup<Int64LookupKey> _entryIdToLocation;
     public FieldsCache FieldCache;
-    /// <summary>Query plan cache. Initialized to a new instance by default.
+    /// <summary>Query plan cache. Lazily initialized to a new instance on first use.
     /// Set externally to share compiled plans across IndexSearcher instances
     /// (e.g., per-index-instance lifetime via CoraxIndexPersistence).</summary>
-    public Planning.PlanCache PlanCache { get; set; } = new();
+    private Planning.PlanCache _planCache;
+    public Planning.PlanCache PlanCache { get => _planCache ??= new(); set => _planCache = value; }
     private bool _nullPostingListsTreeLoaded;
     private bool _nonExistingPostingListsTreeLoaded;
 
@@ -546,6 +547,13 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return exists;
     }
     
+    /// <summary>Returns true if any document was indexed without a value for <paramref name="field"/>
+    /// (i.e., the document's field path was null or missing). SortedDrivingMatch does not drain
+    /// the non-existing posting list, so callers that must include all documents should fall back
+    /// to SortingMatch when this returns true.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public bool HasNonExistingEntries(in FieldMetadata field) => TryGetPostingListForNonExisting(field.FieldName, out _, out _);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryGetPostingListForNonExisting(in FieldMetadata field, out long postingListId) => TryGetPostingListForNonExisting(field.FieldName, out postingListId, out _);
     
