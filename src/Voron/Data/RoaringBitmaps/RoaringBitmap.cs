@@ -907,11 +907,14 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
         // Track each rank's original position so we can scatter results back in input order
         // after sorting ranks ascending for the single-pass container walk.
-        using var _ = allocator.Allocate(n * sizeof(int), out ByteString work);
+        // Pad the allocation up to a multiple of 8 ints so the AVX2 init loop below can
+        // store full Vector256<int> chunks without a scalar tail. Only indexes[0..n) is
+        // ever read after init; we slice back to n for Sort (parallel-keys API requires
+        // matching lengths) and subsequent reads.
+        int paddedLen = (n + 7) & ~7;
+        using var _ = allocator.Allocate(paddedLen * sizeof(int), out ByteString work);
+        InitializeIndices(new Span<int>(work.Ptr, paddedLen), n);
         var indexes = new Span<int>(work.Ptr, n);
-
-        for (int i = 0; i < n; i++)
-            indexes[i] = i;
 
         // Parallel sort: ranks ascending; indexes follow the same permutation so
         // indexes[i] is the original position of the rank now at ranks[i].
@@ -970,6 +973,29 @@ public unsafe partial struct RoaringBitmap : IDisposable
         {
             results[indexes[rankIdx]] = -1;
             rankIdx++;
+        }
+    }
+
+    /// <summary>Fill <paramref name="indices"/> with 0..read-1 using AVX2 256-bit stores.
+    /// <paramref name="indices"/> must be padded to a multiple of 8 — i.e.
+    /// <c>indices.Length &gt;= ((read + 7) &amp; ~7)</c> — so the unrolled SIMD loop can store
+    /// full Vector256&lt;int&gt; chunks without a scalar tail. Mirrors the helper in
+    /// IlEmitterShared so Voron does not back-reference Corax.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void InitializeIndices(Span<int> indices, int read)
+    {
+        Debug.Assert(((read + 7) & ~7) <= indices.Length, "SIMD write past indices span");
+        ref int ptr = ref MemoryMarshal.GetReference(indices);
+
+        var countVec = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
+        var increment = Vector256.Create(8);
+
+        int j = 0;
+        while (j < read)
+        {
+            countVec.StoreUnsafe(ref Unsafe.Add(ref ptr, j));
+            countVec += increment;
+            j += 8;
         }
     }
 
