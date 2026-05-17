@@ -65,7 +65,7 @@ internal static partial class QueryPlanBuilder
         var queryText = planParams.Metadata.Query.QueryText;
         var planCache = indexSearcher.PlanCache;
 
-        // Step 1: Get or build the clause template (structural, no values).
+        // Step 1: Get or build the plan template (structural, no values).
         // cmpxchg()/now()/today() are safe to cache: the template stores a DeferredExpression
         // delegate on the binding, and ResolveBindingScalar invokes it per execution with the
         // current builderParameters/queryParameters — the resolved value lives on ClauseExecution,

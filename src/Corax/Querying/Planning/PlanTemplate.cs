@@ -3,7 +3,7 @@ namespace Corax.Querying.Planning;
 /// <summary>Immutable structural template built on the first execution of a query text.
 /// Cached on PerQueryPlans.Template. On cache hit, clauses are cloned and their
 /// per-execution fields overwritten by PopulateParameters.</summary>
-public sealed class ClauseTemplate
+public sealed class PlanTemplate
 {
     public ClauseInfo[] Clauses;
     public bool IsAllEntries;

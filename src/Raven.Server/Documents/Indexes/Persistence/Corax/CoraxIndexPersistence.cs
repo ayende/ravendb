@@ -33,7 +33,7 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
     private readonly CoraxDocumentConverterBase _converter;
 
     /// <summary>Shared plan cache across all queries for this index instance.
-    /// Compiled IL delegates and clause templates are reused across transactions,
+    /// Compiled IL delegates and plan templates are reused across transactions,
     /// amortizing JIT costs. Thread-safe (ConcurrentDictionary + SIMD SoA lookup).
     /// GC'd when the index instance is replaced (e.g., on index reset/rebuild).</summary>
     internal readonly global::Corax.Querying.Planning.PlanCache SharedPlanCache = new();

@@ -55,10 +55,10 @@ public class PlanCache
         return per?.TryLookup(ordering, typeSignature, kinds);
     }
 
-    /// <summary>Try to retrieve the cached clause template for a query text.
+    /// <summary>Try to retrieve the cached plan template for a query text.
     /// Stale reads are harmless — the worst case is one redundant ParseTemplate call.
     /// Write side uses ConcurrentDictionary.GetOrAdd ensuring correctness.</summary>
-    public ClauseTemplate TryGetTemplate(string queryText)
+    public PlanTemplate TryGetTemplate(string queryText)
     {
         var gen = _generation;
         if (gen.Current.TryGetValue(queryText, out var per) is false)
@@ -67,7 +67,7 @@ public class PlanCache
         return per?.Template;
     }
 
-    public void Add(string queryText, CompiledPlan plan, ClauseTemplate template = null)
+    public void Add(string queryText, CompiledPlan plan, PlanTemplate template = null)
     {
         var gen = _generation;
 
@@ -106,7 +106,7 @@ public class PlanCache
     /// maxSlots alignment: must be a multiple of 8 so the Vec256 loop never reads past the
     /// array end. The constructor rounds up if needed.
     /// </summary>
-    private sealed class PerQueryPlans(int maxSlots, ClauseTemplate template)
+    private sealed class PerQueryPlans(int maxSlots, PlanTemplate template)
     {
         private readonly int[] _orderings = new int[maxSlots];
         private readonly int[] _typeSignatures = new int[maxSlots];
@@ -126,8 +126,8 @@ public class PlanCache
         /// </summary>
         private int _nextSlot;
 
-        /// <summary>Cached clause template. Set in constructor, immutable thereafter.</summary>
-        public readonly ClauseTemplate Template = template;
+        /// <summary>Cached plan template. Set in constructor, immutable thereafter.</summary>
+        public readonly PlanTemplate Template = template;
 
         public CompiledPlan TryLookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
         {
