@@ -229,6 +229,8 @@ public static class QueryIlEmitter
                     il.Emit(OpCodes.Add);
                     il.Emit(OpCodes.Stloc, endVar);
 
+                    EmitRangeEndIndexTouch(il, op.Dispatch, start, endVar);
+
                     il.Emit(OpCodes.Ldc_I4, start);
                     il.Emit(OpCodes.Stloc, loopVar);
                     il.Emit(OpCodes.Br, loopCheck);
@@ -272,6 +274,8 @@ public static class QueryIlEmitter
                     il.Emit(OpCodes.Ldelem_I4);
                     il.Emit(OpCodes.Add);
                     il.Emit(OpCodes.Stloc, endVar);
+
+                    EmitRangeEndIndexTouch(il, op.Dispatch, start, endVar);
 
                     il.Emit(OpCodes.Ldc_I4, start);
                     il.Emit(OpCodes.Stloc, loopVar);
@@ -515,4 +519,54 @@ public static class QueryIlEmitter
 
     private static void EmptyExecute(CompiledQueryMatch ctx) { }
 
+    /// <summary>Emit a bounds-check hint immediately after computing <paramref name="endVar"/>
+    /// (the exclusive upper bound of an OrRange / AndRange loop). Touches the source array
+    /// at <c>endVar - 1</c> so the JIT proves the array is at least <c>endVar</c> long;
+    /// per-iteration <c>ldelem</c> calls in the loop body can then elide bounds checks.
+    /// Guarded by <c>endVar != start</c> because when the runtime range count is zero the
+    /// static <paramref name="start"/> may be past the array length (see
+    /// EmitBoundsCheckPreamble for the explanation of why OrRange/AndRange are skipped there).
+    /// </summary>
+    private static void EmitRangeEndIndexTouch(ILGenerator il, MatchDispatch dispatch, int start, LocalBuilder endVar)
+    {
+        FieldInfo arrayField;
+        OpCode loadOp;
+        Type elementType;
+        switch (dispatch)
+        {
+            case MatchDispatch.PostingList:
+                arrayField = IlEmitterShared.CtxTermSources;
+                loadOp = OpCodes.Ldelema;
+                elementType = typeof(PostingSource);
+                break;
+            case MatchDispatch.TreeScan:
+                arrayField = IlEmitterShared.CtxTermsProviders;
+                loadOp = OpCodes.Ldelem_Ref;
+                elementType = null;
+                break;
+            default:
+                arrayField = IlEmitterShared.CtxResolvedMatches;
+                loadOp = OpCodes.Ldelem_Ref;
+                elementType = null;
+                break;
+        }
+
+        var skipTouch = il.DefineLabel();
+        il.Emit(OpCodes.Ldloc, endVar);
+        il.Emit(OpCodes.Ldc_I4, start);
+        il.Emit(OpCodes.Beq, skipTouch);
+
+        il.Emit(OpCodes.Ldarg_0);
+        il.Emit(OpCodes.Ldfld, arrayField);
+        il.Emit(OpCodes.Ldloc, endVar);
+        il.Emit(OpCodes.Ldc_I4_1);
+        il.Emit(OpCodes.Sub);
+        if (elementType != null)
+            il.Emit(loadOp, elementType);
+        else
+            il.Emit(loadOp);
+        il.Emit(OpCodes.Pop);
+
+        il.MarkLabel(skipTouch);
+    }
 }
