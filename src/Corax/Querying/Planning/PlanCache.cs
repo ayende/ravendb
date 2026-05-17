@@ -111,7 +111,20 @@ public class PlanCache
         private readonly int[] _orderings = new int[maxSlots];
         private readonly int[] _typeSignatures = new int[maxSlots];
         private readonly CompiledPlan[] _plans = new CompiledPlan[maxSlots];
-        private int _filled;
+
+        /// <summary>
+        /// Monotonically increasing slot allocator. Counts from 0 up to maxSlots and
+        /// then stays there — it is intentionally never decremented. Once it reaches
+        /// maxSlots, all subsequent publishes use random eviction (pick any slot).
+        ///
+        /// This is by design: a PerQueryPlans is expected to stabilise at maxSlots
+        /// distinct plan variants for the lifetime of the IndexSearcher; past that
+        /// point we accept random replacement as the steady state. Decrementing on
+        /// eviction would only complicate concurrency without changing the steady
+        /// behaviour — the outer PlanCache.Add still drives rotation based on
+        /// distinct-query count, not per-query slot occupancy.
+        /// </summary>
+        private int _nextSlot;
 
         /// <summary>Cached clause template. Set in constructor, immutable thereafter.</summary>
         public readonly ClauseTemplate Template = template;
@@ -222,15 +235,16 @@ public class PlanCache
             int slot;
             while (true)
             {
-                int filled = Volatile.Read(ref _filled);
+                int filled = Volatile.Read(ref _nextSlot);
                 if (filled >= maxSlots)
                 {
-                    // Cache full — random eviction.
+                    // Cache full — random eviction. _nextSlot stays at maxSlots
+                    // permanently; see field doc for why this is intentional.
                     slot = Random.Shared.Next(0, maxSlots);
                     break;
                 }
 
-                if (Interlocked.CompareExchange(ref _filled, filled + 1, filled) == filled)
+                if (Interlocked.CompareExchange(ref _nextSlot, filled + 1, filled) == filled)
                 {
                     slot = filled;
                     break;
