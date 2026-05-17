@@ -25,7 +25,7 @@ public struct PostFilterMatch : IQueryMatch
     public long Count => _inner.Count;
     public QueryCountConfidence Confidence => _inner.Confidence;
     public bool IsBoosting => _inner.IsBoosting;
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
+    public DuplicatesOccurrence DuplicatesOccurrenceStatus => _inner.DuplicatesOccurrenceStatus;
 
 
     public int Fill(Span<long> matches)
