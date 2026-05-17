@@ -77,6 +77,12 @@ public class RavenFactAttribute : FactAttribute, ITraitAttribute, Xunit.v3.IFact
         set => Requires = value ? Requires | RavenServiceRequirement.AmazonSqs : Requires & ~RavenServiceRequirement.AmazonSqs;
     }
 
+    public bool S3Required
+    {
+        get => Requires.HasFlag(RavenServiceRequirement.Aws);
+        set => Requires = value ? Requires | RavenServiceRequirement.Aws : Requires & ~RavenServiceRequirement.Aws;
+    }
+
     public bool AwsRequired
     {
         get => Requires.HasFlag(RavenServiceRequirement.Aws);
