@@ -445,18 +445,26 @@ public static class QueryIlEmitter
                 if (1 > maxBitmapSlot) maxBitmapSlot = 1;
             }
 
-            // Source arrays
-            switch (op.Dispatch)
+            // Source arrays. Skip OrRange / AndRange — their loop is bounded by
+            // ctx.InRangeCounts[rangeIdx] at runtime, so the static op.ParamIndex
+            // (the loop's start) may be past the resolved array length when the
+            // runtime range count is zero (e.g. an IN with only a null term, no
+            // typed terms). The per-iteration ldelem still performs bounds checks
+            // when the loop actually runs.
+            if (op.Kind is not (PlanOpKind.OrRange or PlanOpKind.AndRange))
             {
-                case MatchDispatch.QueryMatch:
-                    if (op.ParamIndex > maxMatchIndex) maxMatchIndex = op.ParamIndex;
-                    break;
-                case MatchDispatch.PostingList:
-                    if (op.ParamIndex > maxTermSourceIndex) maxTermSourceIndex = op.ParamIndex;
-                    break;
-                case MatchDispatch.TreeScan:
-                    if (op.ParamIndex > maxTermsProviderIndex) maxTermsProviderIndex = op.ParamIndex;
-                    break;
+                switch (op.Dispatch)
+                {
+                    case MatchDispatch.QueryMatch:
+                        if (op.ParamIndex > maxMatchIndex) maxMatchIndex = op.ParamIndex;
+                        break;
+                    case MatchDispatch.PostingList:
+                        if (op.ParamIndex > maxTermSourceIndex) maxTermSourceIndex = op.ParamIndex;
+                        break;
+                    case MatchDispatch.TreeScan:
+                        if (op.ParamIndex > maxTermsProviderIndex) maxTermsProviderIndex = op.ParamIndex;
+                        break;
+                }
             }
 
             // CheckAndMaybeEntryScan uses DirectSources for the match count check

@@ -1368,7 +1368,14 @@ internal static partial class QueryPlanBuilder
                         case ClauseType.In when executions[0].InTermCount > 0 || executions[0].HasNullTerm:
                             EmitInOps(ops, executions[0], bitmapLocal: 0, isSeed: true, ref matchIndex, rangeCounts);
                             break;
-                        case ClauseType.AllIn when executions[0].InTermCount > 0:
+                        // Use the fixed-shape EmitAllInOps path whenever the clause has any term
+                        // (typed OR null). Routing the InTermCount=0/HasNullTerm=true case through
+                        // the default branch instead would emit a single QueryMatch-dispatched op,
+                        // which has a different cache-key-equivalent shape than the 2-op
+                        // (Fill+AndRange, PostingList) shape EmitAllInOps emits — and the cache key
+                        // uses only queryText/ordering/sig, so a subsequent execution with a typed
+                        // term would receive this 1-op IL and skip the AND-range entirely.
+                        case ClauseType.AllIn when executions[0].InTermCount > 0 || executions[0].HasNullTerm:
                             EmitAllInOps(ops, executions[0], ref matchIndex, rangeCounts);
                             break;
                         default:
@@ -1594,94 +1601,79 @@ internal static partial class QueryPlanBuilder
     // ── Plan helpers ─────────────────────────────────────────────────────
 
     /// <summary>Emit ops for an IN clause: Fill the first term + OrRange for the rest, plus null-term if needed.</summary>
+    /// <summary>Emit ops for an IN clause: Fill slot 0 + OrRange for the rest.
+    /// Fixed 2-op shape regardless of term count or presence of null. Slot 0 holds
+    /// the null-term posting list when HasNullTerm, else the first typed term, else
+    /// an empty PostingSource. Slots 1..N-1 hold remaining typed terms, dispatched
+    /// via OrRange whose count comes from <c>ctx.InRangeCounts[rangeIdx]</c> at
+    /// runtime. Keeping the op shape parameter-independent is what allows the plan
+    /// cache to share one compiled delegate across executions with different
+    /// InTermCount / HasNullTerm values for the same query text.</summary>
     private static void EmitInOps(List<PlanOp> ops, ClauseExecution exec, int bitmapLocal, bool isSeed, ref int matchIndex, List<int> rangeCounts)
     {
-        int terms = exec.InTermCount;
-        if (terms > 0)
-        {
-            if (isSeed)
-            {
-                ops.Add(new PlanOp
-                {
-                    Kind = PlanOpKind.FillFromPostings,
-                    ParamIndex = matchIndex,
-                    BitmapLocal = bitmapLocal,
-                    EstimatedCardinality = exec.Cardinality / terms,
-                    Dispatch = MatchDispatch.PostingList
-                });
-                if (terms > 1)
-                {
-                    int rangeIdx = rangeCounts.Count;
-                    rangeCounts.Add(terms - 1);
-                    ops.Add(new PlanOp
-                    {
-                        Kind = PlanOpKind.OrRange,
-                        ParamIndex = matchIndex + 1,
-                        ParamIndex2 = rangeIdx,
-                        BitmapLocal = bitmapLocal,
-                        EstimatedCardinality = exec.Cardinality,
-                        Dispatch = MatchDispatch.PostingList
-                    });
-                }
-            }
-            else
-            {
-                int rangeIdx = rangeCounts.Count;
-                rangeCounts.Add(terms);
-                ops.Add(new PlanOp
-                {
-                    Kind = PlanOpKind.OrRange,
-                    ParamIndex = matchIndex,
-                    ParamIndex2 = rangeIdx,
-                    BitmapLocal = bitmapLocal,
-                    EstimatedCardinality = exec.Cardinality,
-                    Dispatch = MatchDispatch.PostingList
-                });
-            }
-            matchIndex += terms;
-        }
+        // Always (inTermCount + 1) slots — matches CountMatchSlots and ResolveMatches.
+        // Last slot is the null-term slot (empty match when !HasNullTerm).
+        int totalSlots = exec.InTermCount + 1;
+        // Range iterates over the slots AFTER slot 0 (which Fill handles). When the parameter
+        // list has no null, the trailing null slot is Empty — ORing with Empty is a no-op, so
+        // we can safely include it (rangeCount = totalSlots - 1). When the list HAS a null
+        // term, that slot is non-empty and we want to OR it in. Both cases use the same range.
+        int rangeIdx = rangeCounts.Count;
+        rangeCounts.Add(totalSlots - 1);
 
-        // Always emit the null-term slot so the plan structure is the same regardless
-        // of whether the parameter array contains null. When null isn't present,
-        // ResolveMatches fills the slot with an empty match (Fill returns 0 → no-op OR).
-        bool isFirstOp = isSeed && exec.InTermCount == 0;
         ops.Add(new PlanOp
         {
-            Kind = isFirstOp ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
+            Kind = isSeed ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
             ParamIndex = matchIndex,
             BitmapLocal = bitmapLocal,
-            Dispatch = MatchDispatch.QueryMatch
+            EstimatedCardinality = Math.Max(1, exec.Cardinality / totalSlots),
+            Dispatch = MatchDispatch.PostingList
         });
-        matchIndex++;
+        ops.Add(new PlanOp
+        {
+            Kind = PlanOpKind.OrRange,
+            ParamIndex = matchIndex + 1,
+            ParamIndex2 = rangeIdx,
+            BitmapLocal = bitmapLocal,
+            EstimatedCardinality = exec.Cardinality,
+            Dispatch = MatchDispatch.PostingList
+        });
+        matchIndex += totalSlots;
     }
 
-    /// <summary>Emit ops for an AllIn clause: Fill the first term + AndRange for the rest.</summary>
+    /// <summary>Emit ops for an AllIn clause (as a seed): Fill slot 0 + AndRange for the rest.
+    /// Same fixed shape rationale as <see cref="EmitInOps"/> — the count of remaining
+    /// terms lives in <c>ctx.InRangeCounts</c> rather than the op shape itself.</summary>
     private static void EmitAllInOps(List<PlanOp> ops, ClauseExecution exec, ref int matchIndex, List<int> rangeCounts)
     {
-        int terms = exec.InTermCount;
+        // Always (inTermCount + 1) slots — matches CountMatchSlots and ResolveMatches.
+        int totalSlots = exec.InTermCount + 1;
+        // For AllIn, ANDing with an Empty PostingSource clears the bitmap — so we MUST
+        // exclude the trailing null slot from the range when HasNullTerm is false.
+        // Range walks slots [1..) over the typed terms (and the null term if present).
+        int rangeCount = exec.InTermCount - 1 + (exec.HasNullTerm ? 1 : 0);
+        if (rangeCount < 0) rangeCount = 0; // (HasNullTerm=true, InTermCount=0): no AND step
+        int rangeIdx = rangeCounts.Count;
+        rangeCounts.Add(rangeCount);
+
         ops.Add(new PlanOp
         {
             Kind = PlanOpKind.FillFromPostings,
             ParamIndex = matchIndex,
             BitmapLocal = 0,
-            EstimatedCardinality = exec.Cardinality / terms,
+            EstimatedCardinality = Math.Max(1, exec.Cardinality / totalSlots),
             Dispatch = MatchDispatch.PostingList
         });
-        if (terms > 1)
+        ops.Add(new PlanOp
         {
-            int rangeIdx = rangeCounts.Count;
-            rangeCounts.Add(terms - 1);
-            ops.Add(new PlanOp
-            {
-                Kind = PlanOpKind.AndRange,
-                ParamIndex = matchIndex + 1,
-                ParamIndex2 = rangeIdx,
-                BitmapLocal = 0,
-                EstimatedCardinality = exec.Cardinality,
-                Dispatch = MatchDispatch.PostingList
-            });
-        }
-        matchIndex += terms;
+            Kind = PlanOpKind.AndRange,
+            ParamIndex = matchIndex + 1,
+            ParamIndex2 = rangeIdx,
+            BitmapLocal = 0,
+            EstimatedCardinality = exec.Cardinality,
+            Dispatch = MatchDispatch.PostingList
+        });
+        matchIndex += totalSlots;
     }
 
     private static QueryExecution BuildAllEntriesPlan()
@@ -1838,8 +1830,6 @@ internal static partial class QueryPlanBuilder
             case ClauseType.Regex:
             case ClauseType.Spatial:
             case ClauseType.Vector:
-            case ClauseType.In:
-            case ClauseType.AllIn:
             case ClauseType.StartsWith:
             {
                 var packed2 = exec?.PackedParamValue ?? PackedParam.None;
@@ -1853,6 +1843,13 @@ internal static partial class QueryPlanBuilder
                     ParamIndex = sliceIndex - 1
                 };
             }
+            case ClauseType.In:
+            case ClauseType.AllIn:
+                // IN/AllIn cannot use the single-slot StartsWith fallback above — they
+                // need multi-term OR/AND semantics. Returning null forces these clauses
+                // through the regular posting-list pipeline; AreAllScanEligible will see
+                // null and disable entry-scan for any AND chain that contains them.
+                return null;
             case ClauseType.EndsWith:
             {
                 var packed2 = exec?.PackedParamValue ?? PackedParam.None;
