@@ -283,13 +283,28 @@ internal static partial class QueryPlanBuilder
         FreezeAll(templateClauses);
         FreezeAll(spatialClauses);
         FreezeAll(vectorClauses);
+
+        int whenCount = 0;
+        for (int i = 0; i < templateClauses.Length; i++)
+        {
+            if (templateClauses[i].WhenCondition != null)
+                whenCount++;
+        }
+        if (whenCount > PlanTemplate.MaxWhenClauses)
+        {
+            throw new System.NotSupportedException(
+                $"Query has {whenCount} WHEN-guarded clauses; the plan template supports at most " +
+                $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
+        }
+
         return new PlanTemplate
         {
             Clauses = templateClauses,
             IsAllEntries = false,
             IsOr = isOr,
             SpatialClauses = spatialClauses,
-            VectorClauses = vectorClauses
+            VectorClauses = vectorClauses,
+            WhenCount = whenCount
         };
     }
 

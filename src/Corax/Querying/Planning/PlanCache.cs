@@ -44,15 +44,18 @@ public class PlanCache
     }
 
     public CompiledPlan Get(string queryText, int ordering, int typeSignature = 0)
-        => Get(queryText, ordering, typeSignature, default);
+        => Get(queryText, ordering, typeSignature, default, 0);
 
     public CompiledPlan Get(string queryText, int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
+        => Get(queryText, ordering, typeSignature, kinds, 0);
+
+    public CompiledPlan Get(string queryText, int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
     {
         var gen = _generation;
         if (gen.Current.TryGetValue(queryText, out var per) is false)
             gen.Previous.TryGetValue(queryText, out per);
 
-        return per?.TryLookup(ordering, typeSignature, kinds);
+        return per?.TryLookup(ordering, typeSignature, kinds, whenFlags);
     }
 
     /// <summary>Try to retrieve the cached plan template for a query text.
@@ -129,21 +132,25 @@ public class PlanCache
         /// <summary>Cached plan template. Set in constructor, immutable thereafter.</summary>
         public readonly PlanTemplate Template = template;
 
-        public CompiledPlan TryLookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
+        public CompiledPlan TryLookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
         {
+            // SIMD pre-filter scans (Ordering, TypeSignature) — WhenFlags is zero for ~99%
+            // of queries (no WHEN clauses), so adding it to the SIMD compare would only
+            // slow the hot path. The chain walk below picks up WhenFlags + FullKinds
+            // as refinement.
             if (Vector256.IsHardwareAccelerated)
-                return Vec256Lookup(ordering, typeSignature, kinds);
+                return Vec256Lookup(ordering, typeSignature, kinds, whenFlags);
             if (Vector128.IsHardwareAccelerated)
-                return Vec128Lookup(ordering, typeSignature, kinds);
-            return ScalarLookup(ordering, typeSignature, kinds);
+                return Vec128Lookup(ordering, typeSignature, kinds, whenFlags);
+            return ScalarLookup(ordering, typeSignature, kinds, whenFlags);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static CompiledPlan ResolveCandidate(CompiledPlan head, int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
+        private static CompiledPlan ResolveCandidate(CompiledPlan head, int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
         {
             for (var p = head; p != null; p = p.Next)
             {
-                if (p.Ordering != ordering || p.TypeSignature != typeSignature)
+                if (p.Ordering != ordering || p.TypeSignature != typeSignature || p.WhenFlags != whenFlags)
                     continue;
                 if (kinds.IsEmpty)
                 {
@@ -160,7 +167,7 @@ public class PlanCache
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec256Lookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
+        private CompiledPlan Vec256Lookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
         {
             var ordVec = Vector256.Create(ordering);
             var typVec = Vector256.Create(typeSignature);
@@ -175,7 +182,7 @@ public class PlanCache
                     int lane = BitOperations.TrailingZeroCount(mask);
                     mask &= mask - 1;
                     var head = Volatile.Read(ref _plans[i + lane]);
-                    var resolved = ResolveCandidate(head, ordering, typeSignature, kinds);
+                    var resolved = ResolveCandidate(head, ordering, typeSignature, kinds, whenFlags);
                     if (resolved != null)
                         return resolved;
                 }
@@ -185,7 +192,7 @@ public class PlanCache
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec128Lookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
+        private CompiledPlan Vec128Lookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
         {
             var ordVec = Vector128.Create(ordering);
             var typVec = Vector128.Create(typeSignature);
@@ -200,7 +207,7 @@ public class PlanCache
                     int lane = BitOperations.TrailingZeroCount(mask);
                     mask &= mask - 1;
                     var head = Volatile.Read(ref _plans[i + lane]);
-                    var resolved = ResolveCandidate(head, ordering, typeSignature, kinds);
+                    var resolved = ResolveCandidate(head, ordering, typeSignature, kinds, whenFlags);
                     if (resolved != null)
                         return resolved;
                 }
@@ -209,14 +216,14 @@ public class PlanCache
             return null;
         }
 
-        private CompiledPlan ScalarLookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
+        private CompiledPlan ScalarLookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
         {
             for (int i = 0; i < _orderings.Length && i < _typeSignatures.Length; i++)
             {
                 if (_orderings[i] != ordering || _typeSignatures[i] != typeSignature)
                     continue;
                 var head = Volatile.Read(ref _plans[i]);
-                var resolved = ResolveCandidate(head, ordering, typeSignature, kinds);
+                var resolved = ResolveCandidate(head, ordering, typeSignature, kinds, whenFlags);
                 if (resolved != null)
                     return resolved;
             }
@@ -228,8 +235,12 @@ public class PlanCache
 
         public void Publish(CompiledPlan plan)
         {
-            // Try chain prepend for >16-kind plans that share (ordering, type signature) hash
-            if (plan.FullKinds != null && TryChainPrepend(plan))
+            // Try chain prepend for plans that need refinement beyond the SIMD pre-filter on
+            // (Ordering, TypeSignature). Two cases: >16-kind plans (FullKinds carries the kind
+            // vector) and plans with WHEN-clause survival masks (WhenFlags != 0). Without
+            // chaining, a second plan that hashes to the same slot would evict the first even
+            // though both are still reachable by distinct cache keys.
+            if ((plan.FullKinds != null || plan.WhenFlags != 0) && TryChainPrepend(plan))
                 return;
 
             int slot;
@@ -258,7 +269,7 @@ public class PlanCache
 
         private bool TryChainPrepend(CompiledPlan plan)
         {
-            Debug.Assert(plan.FullKinds is not null);
+            Debug.Assert(plan.FullKinds is not null || plan.WhenFlags != 0);
             for (int i = 0; i < _orderings.Length && i < _typeSignatures.Length && i < _plans.Length; i++)
             {
                 if (_orderings[i] != plan.Ordering || _typeSignatures[i] != plan.TypeSignature)

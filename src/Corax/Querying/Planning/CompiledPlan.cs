@@ -53,6 +53,13 @@ public sealed class CompiledPlan
     /// <summary>Full per-predicate kind vector for >16 typed scan predicates.</summary>
     public byte[] FullKinds { get; init; }
 
+    /// <summary>Per-execution WHEN-clause survival bitmask. Joins
+    /// (<see cref="Ordering"/>, <see cref="TypeSignature"/>, <see cref="FullKinds"/>)
+    /// as part of the cache key. Zero for queries with no WHEN clauses (the common
+    /// case). Bit <c>i</c> = "the <c>i</c>-th WHEN clause in template traversal order
+    /// evaluated true under the bound parameters."</summary>
+    public int WhenFlags { get; init; }
+
     /// <summary>Chain pointer for hash-collision disambiguation in PlanCache.</summary>
     public CompiledPlan Next;
 
