@@ -589,8 +589,8 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(DefaultValueSetInConstructor)]
         [SizeUnit(SizeUnit.Megabytes)]
         [IndexUpdateType(IndexUpdateType.Refresh)]
+        [ConfigurationEntry("Indexing.Corax.MaxMemoizationSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]  // old name, kept for backward compat; must come first so the new name wins when both are set
         [ConfigurationEntry("Indexing.Corax.MaxFacetQueryFilterSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
-        [ConfigurationEntry("Indexing.Corax.MaxMemoizationSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]  // old name, kept for backward compat
         public Size MaxFacetQueryFilterSize { get; set; }
 
         [Description("Expert: The maximum amount of MB that we'll allocate for training indexing dictionaries.")]
