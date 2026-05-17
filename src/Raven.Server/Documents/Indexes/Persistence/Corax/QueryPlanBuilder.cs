@@ -1205,7 +1205,15 @@ internal static partial class QueryPlanBuilder
                 // a pre-materialized BitmapMatch.
                 if (it.IsNegated || it.ClauseType == ClauseType.NotEquals)
                 {
-                    it.IsOrChainNotEquals = true;
+                    if (it.IsOrChainNotEquals == false)
+                    {
+                        // ClauseInfo is shared with the cached plan template; clone before
+                        // mutating so the template stays untouched across executions.
+                        var cloned = it.Clone();
+                        cloned.IsOrChainNotEquals = true;
+                        clauses[ci] = cloned;
+                        it = cloned;
+                    }
                     ops.Add(new PlanOp
                     {
                         Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
@@ -1361,8 +1369,15 @@ internal static partial class QueryPlanBuilder
                 });
                 ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
 
-                // Mark clause so ResolveMatches produces [AllEntries, TermMatch]
-                clauses[0].IsNegated = true;
+                // Mark clause so ResolveMatches produces [AllEntries, TermMatch].
+                // The ClauseInfo here is shared with the template; clone before mutating
+                // so the cached template stays untouched across executions.
+                if (clauses[0].IsNegated == false)
+                {
+                    var cloned = clauses[0].Clone();
+                    cloned.IsNegated = true;
+                    clauses[0] = cloned;
+                }
 
                 return new QueryExecution
                 {
