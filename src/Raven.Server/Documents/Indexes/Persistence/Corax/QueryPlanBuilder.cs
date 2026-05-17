@@ -217,27 +217,27 @@ internal static partial class QueryPlanBuilder
 
     private enum BooleanOp { And, Or, True, False, Leaf }
 
-    /// <summary>Parse the RQL AST into a structural clause template.
+    /// <summary>Parse the RQL AST into a structural plan template.
     /// Captures field names, clause types, parameter bindings, and literal values.
     /// No cardinality estimation, no sorting, no plan emission.
     /// Those happen in BuildAndCompile after PopulateClauseValues.</summary>
-    public static ClauseTemplate ParseTemplate(PlanParameters p)
+    public static PlanTemplate ParseTemplate(PlanParameters p)
     {
         var query = p.Metadata.Query;
         var indexSearcher = p.IndexSearcher;
         var queryParameters = p.QueryParameters;
         var metadata = p.Metadata;
         if (query.Where == null)
-            return new ClauseTemplate { IsAllEntries = true, Clauses = [] };
+            return new PlanTemplate { IsAllEntries = true, Clauses = [] };
 
         bool hasMixedAndOr = false;
         var clauses = new List<ClauseInfo>();
         var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
 
         if (rootOp == BooleanOp.True || clauses.Count == 0)
-            return new ClauseTemplate { IsAllEntries = true, Clauses = [] };
+            return new PlanTemplate { IsAllEntries = true, Clauses = [] };
         if (rootOp == BooleanOp.False)
-            return new ClauseTemplate { Clauses = [] };
+            return new PlanTemplate { Clauses = [] };
 
         bool isOr = rootOp == BooleanOp.Or;
 
@@ -268,7 +268,7 @@ internal static partial class QueryPlanBuilder
 
             if (clauses.Count == 0 && (spatialClauses != null || vectorClauses != null))
             {
-                return new ClauseTemplate
+                return new PlanTemplate
                 {
                     IsAllEntries = true,
                     Clauses = [],
@@ -283,7 +283,7 @@ internal static partial class QueryPlanBuilder
         FreezeAll(templateClauses);
         FreezeAll(spatialClauses);
         FreezeAll(vectorClauses);
-        return new ClauseTemplate
+        return new PlanTemplate
         {
             Clauses = templateClauses,
             IsAllEntries = false,
