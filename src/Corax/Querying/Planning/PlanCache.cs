@@ -75,7 +75,12 @@ public class PlanCache
         if (gen.Current.Count > MaxDistinctQueries / 2)
         {
             var newGen = new CacheGeneration([], gen.Current);
-            gen = Interlocked.CompareExchange(ref _generation, newGen, gen);
+            // CompareExchange returns the OLD comparand, not the installed value.
+            // After the CAS — whether we won or another thread beat us — re-read
+            // _generation so we write into the post-rotation Current dict, not into
+            // the dict that was just demoted to Previous.
+            Interlocked.CompareExchange(ref _generation, newGen, gen);
+            gen = Volatile.Read(ref _generation);
             Debug.Assert(gen is not null);
         }
 
