@@ -1527,7 +1527,16 @@ internal static partial class QueryPlanBuilder
                 {
                     for (int t = 0; t < exec.InTermCount; t++)
                         termSources[matchIdx++] = ResolveInTermSource(clause, exec, t, indexSearcher, plan, parameters, builderParams);
-                    matchIdx++; // null-term slot — always allocated, stays Empty in TermSources (uses QueryMatch path)
+                    // Null-term slot: resolve via the null posting list so that the PostingList
+                    // dispatch path (used by EmitInOps/EmitAllInOps) can read it.  When HasNullTerm
+                    // is false the slot stays Empty and the compiled OR/AND step is a no-op.
+                    if (exec.HasNullTerm)
+                    {
+                        FieldMetadata nullMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+                        if (indexSearcher.TryGetPostingListForNull(in nullMeta, out long nullPlId))
+                            termSources[matchIdx] = DecodePostingListId(nullPlId, indexSearcher);
+                    }
+                    matchIdx++;
                     break;
                 }
                 default:
