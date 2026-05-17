@@ -5,18 +5,9 @@ using Corax.Querying.Matches.SortingMatches.Meta;
 namespace Corax.Querying.Matches.SortingMatches;
 
 /// <summary>
-/// Abstract base for multi-field (ORDER BY ... , ...) sorting matches. Mirrors
-/// <see cref="SortingMatch"/> for the multi-comparator case.
-///
-/// Architecture note: see <see cref="SortingMatch"/> for the rationale. The same
-/// erasure-struct → abstract-class trade-off applies here: <c>Fill</c> dispatches
-/// through the <c>IQueryMatch</c> vtable at the call site in <c>CoraxIndexReadOperation</c>,
-/// while the <c>sealed</c> concrete subclass (<see cref="SortingMultiMatch{TInner}"/>)
-/// allows the JIT to devirtualize where the concrete type is statically visible.
-///
-/// Sharing note: see the comment on <see cref="SortingMatch"/> — the IEntryComparer interfaces
-/// and SortBatch signatures differ between single-field and multi-field sorting, preventing
-/// straightforward code sharing without a comparer unification refactor.
+/// Non-generic abstract base for multi-field (ORDER BY ..., ...) sorting matches.
+/// Mirrors <see cref="SortingMatch"/> for the multi-comparator case so callers can
+/// pattern-match without referencing the <c>TInner</c> type parameter.
 /// </summary>
 public abstract class SortingMultiMatch : IQueryMatch
 {
