@@ -32,12 +32,11 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
     private readonly RavenLogger _logger;
     private readonly CoraxDocumentConverterBase _converter;
 
-    private Dictionary<Slice, HnswIndexCache> _hnswCaches;
-    private IndexTransactionCache _currentCache;
-    private StorageEnvironment _environment;
-    private Action<LowLevelTransaction> _newTransactionCreatedHandler;
-    internal IndexWriter ActiveWriter;
-    internal Dictionary<Slice, HashSet<long>> PendingDirtyVectorSets;
+    /// <summary>Shared plan cache across all queries for this index instance.
+    /// Compiled IL delegates and clause templates are reused across transactions,
+    /// amortizing JIT costs. Thread-safe (ConcurrentDictionary + SIMD SoA lookup).
+    /// GC'd when the index instance is replaced (e.g., on index reset/rebuild).</summary>
+    internal readonly global::Corax.Querying.Planning.PlanCache SharedPlanCache = new();
 
     public CoraxIndexPersistence(Index index, IIndexReadOperationFactory indexReadOperationFactory) : base(index, indexReadOperationFactory)
     {
