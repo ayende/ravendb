@@ -3374,23 +3374,29 @@ internal static partial class QueryPlanBuilder
             var metadataField = QueryBuilderHelper.GetFieldIdForOrderBy(allocator, field.Name.Value, index, builderParameters.HasDynamics,
                 builderParameters.DynamicFields,
                 indexMapping, queryMapping, false);
+            // Dynamic CreateField fields: no IndexFieldsMapping entry, FieldId == DynamicField (-2).
+            // Such fields are written per-document only when the index function emits CreateField;
+            // docs that don't emit the field have NO entry (not even a NonExisting marker) in the
+            // field's tree, so StreamAndIntersect (which walks tree + null/nonExisting lists) would
+            // silently drop them. Route through ExtractAndSort instead — see SortingMatch.Fill.
+            bool mayHaveMissingEntries = metadataField.FieldId == global::Corax.Constants.IndexWriter.DynamicField;
             OrderMetadata? temporaryOrder = null;
             switch (orderingType)
             {
                 case OrderByFieldType.Custom:
                     throw new NotSupportedInCoraxException($"{nameof(Corax)} doesn't support Custom OrderBy.");
                 case OrderByFieldType.AlphaNumeric:
-                    sortArray[sortIndex++] = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Alphanumeric, fieldIsEmpty, nullsSortMode);
+                    sortArray[sortIndex++] = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Alphanumeric, fieldIsEmpty, nullsSortMode, mayHaveMissingEntries);
                     continue;
                 case OrderByFieldType.Long:
-                    temporaryOrder = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Integer, fieldIsEmpty, nullsSortMode);
+                    temporaryOrder = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Integer, fieldIsEmpty, nullsSortMode, mayHaveMissingEntries);
                     break;
                 case OrderByFieldType.Double:
-                    temporaryOrder = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Floating, fieldIsEmpty, nullsSortMode);
+                    temporaryOrder = new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Floating, fieldIsEmpty, nullsSortMode, mayHaveMissingEntries);
                     break;
             }
 
-            sortArray[sortIndex++] = temporaryOrder ?? new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Sequence, fieldIsEmpty, nullsSortMode);
+            sortArray[sortIndex++] = temporaryOrder ?? new OrderMetadata(metadataField, field.Ascending, MatchCompareFieldType.Sequence, fieldIsEmpty, nullsSortMode, mayHaveMissingEntries);
         }
 
         return sortArray[0..sortIndex];

@@ -159,9 +159,13 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                     // slots are ever live in memory at once.
                     ReservoirSampleFromBitmap(match, bitmapMatch);
                 }
-                else if (typeof(TDirection) == typeof(NoIterationOptimization))
+                else if (typeof(TDirection) == typeof(NoIterationOptimization) || match._orderMetadata.MayHaveMissingEntries)
                 {
-                    // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort
+                    // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort.
+                    // Also taken when MayHaveMissingEntries is set (e.g. dynamic CreateField sort fields):
+                    // StreamAndIntersect only walks tree terms + null/nonExisting posting lists, so
+                    // docs that didn't emit the field would be silently dropped. ExtractAndSort drains
+                    // the entire bitmap and uses the comparer's missing-value sentinel for those docs.
                     ExtractAndSort<TEntryComparer>(match, bitmapMatch);
                 }
                 else
