@@ -72,6 +72,16 @@ namespace FastTests.Corax
             Assert.Equal("list/1", idsName[0]);
             Assert.True(new HashSet<string> {"list/11", "list/111"}.SetEquals(idsName.GetRange(1, 2)));
             Assert.True(new HashSet<string> {"list/2", "list/4"}.SetEquals(idsName.GetRange(3, 2)));
+
+            // Also verify OR-wrapped boost: boost(A OR B, factor) applies the factor to all branches.
+            // Score order is the same as above; list/1 (matches both) remains first.
+            var idsWrappedBoost = ExecuteRQLQueryByScore(
+                "FROM TestIndex WHERE boost(startsWith(Id, 'list/1') OR Content1 = '1', 10) ORDER BY score()");
+
+            Assert.Equal(5, idsWrappedBoost.Count);
+            Assert.Equal("list/1", idsWrappedBoost[0]);
+            Assert.True(new HashSet<string> {"list/11", "list/111"}.SetEquals(idsWrappedBoost.GetRange(1, 2)));
+            Assert.True(new HashSet<string> {"list/2", "list/4"}.SetEquals(idsWrappedBoost.GetRange(3, 2)));
         }
 
         [RavenTheory(RavenTestCategory.Corax)]
@@ -85,7 +95,8 @@ namespace FastTests.Corax
             longList = Enumerable.Range(0, amount).Select(i => new IndexSingleNumericalEntry<long, long> {Id = $"list/{i}", Content1 = i % mod}).ToList();
             IndexEntries();
 
-            var result = ExecuteRQLQueryByScore("FROM TestIndex WHERE Content1 IN ('1', '2', '3') ORDER BY score()");
+            // Wrap the IN clause in boost() to exercise score propagation through an IN match.
+            var result = ExecuteRQLQueryByScore("FROM TestIndex WHERE boost(Content1 IN ('1', '2', '3'), 2) ORDER BY score()");
 
             Assert.Equal(result.Count, result.Distinct().Count());
 
@@ -136,9 +147,10 @@ namespace FastTests.Corax
 
             IndexEntries();
 
-            var allResults = ExecuteRQLQueryByScore(
-                "FROM TestIndex WHERE boost(startsWith(Id, 'list/1'), 20) OR boost(Content1 = '1', 10) OR Content1 = '2' ORDER BY score()");
-            var sortedByCorax = allResults.Take(4).ToList();
+            // Pass take=4 as a server-side sorter limit to exercise limit propagation through SortingMatch.
+            var sortedByCorax = ExecuteRQLQueryByScore(
+                "FROM TestIndex WHERE boost(startsWith(Id, 'list/1'), 20) OR boost(Content1 = '1', 10) OR Content1 = '2' ORDER BY score()",
+                take: 4);
 
             Assert.Equal(4, sortedByCorax.Count);
             Assert.Equal("list/1", sortedByCorax[0]);
@@ -270,7 +282,7 @@ namespace FastTests.Corax
                 Assert.Equal(longList[i].Content1, sortedByCorax[i]);
         }
 
-        private List<string> ExecuteRQLQueryByScore(string rqlQuery)
+        private List<string> ExecuteRQLQueryByScore(string rqlQuery, long take = long.MaxValue)
         {
             using var knownFields = CreateKnownFields(Allocator);
             using var searcher = new IndexSearcher(Env, knownFields);
@@ -283,7 +295,7 @@ namespace FastTests.Corax
                 Allocator = Allocator
             };
             var match = QueryPlanBuilder.BuildAndCompile(planParams, null, out _, out _, null, false, default);
-            match = QueryPlanBuilder.ApplyScoreOrdering(planParams, match, long.MaxValue);
+            match = QueryPlanBuilder.ApplyScoreOrdering(planParams, match, take);
             var list = new List<string>();
             Span<long> ids = stackalloc long[256];
             int count;
