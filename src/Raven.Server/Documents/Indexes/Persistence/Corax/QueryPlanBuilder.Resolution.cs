@@ -1269,10 +1269,16 @@ internal static partial class QueryPlanBuilder
                     };
                     var bmHigh = new BitmapMatch(indexSearcher.Allocator);
                     var tempHigh = new RoaringBitmap(indexSearcher.Allocator);
-                    QueryPrimitives.FillFromMatch(indexSearcher.AllEntries(), ref bmHigh.BitmapState);
-                    QueryPrimitives.AndNotWithMatch(ltMatch, ref bmHigh.BitmapState, ref tempHigh);
-                    tempHigh.Dispose();
-                    return bmHigh;
+                    try
+                    {
+                        QueryPrimitives.FillFromMatch(indexSearcher.AllEntries(), ref bmHigh.BitmapState);
+                        QueryPrimitives.AndNotWithMatch(ltMatch, ref bmHigh.BitmapState, ref tempHigh);
+                        return bmHigh;
+                    }
+                    finally
+                    {
+                        tempHigh.Dispose();
+                    }
                 }
                 return packed.ValueType switch
                 {
