@@ -77,6 +77,7 @@ namespace FastTests.Issues
                 "Query.RegexTimeoutInMs",
                 "Indexing.Lucene.ReaderTermsIndexDivisor",
                 "Indexing.Corax.DocumentsLimitForCompressionDictionaryCreation",
+                "Indexing.Corax.IgnoreInvalidTokenizedCompoundFields",
                 "Indexing.Corax.IncludeDocumentScore",
                 "Indexing.Corax.IncludeSpatialDistance",
                 "Indexing.Corax.MaxFacetQueryFilterSizeInMb",

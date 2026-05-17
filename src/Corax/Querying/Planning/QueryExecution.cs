@@ -30,6 +30,13 @@ public class QueryExecution
     /// </summary>
     public int OperandOrdering;
 
+    /// <summary>Bit 30 of <see cref="OperandOrdering"/>. Set when any clause carries a boost factor.</summary>
+    public const int HasBoostBit = 1 << 30;
+
+    /// <summary>Bit 31 of <see cref="OperandOrdering"/>. Set when any execution carries
+    /// BetweenLowUnbounded / BetweenHighUnbounded sentinel values.</summary>
+    public const int SentinelBetweenBit = 1 << 31;
+
     /// <summary>Clause list from the query plan builder — structural template data.</summary>
     public List<ClauseInfo> Clauses;
 

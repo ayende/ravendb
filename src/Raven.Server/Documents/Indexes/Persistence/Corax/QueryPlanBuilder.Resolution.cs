@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
@@ -183,34 +184,69 @@ internal static partial class QueryPlanBuilder
                 execList[ci].Cardinality = EstimateCardinality(clauses[ci], execList[ci], indexSearcher, writer);
         }
 
-        var executions = execList.ToArray();
-
         // Step 5: Sort operands by cardinality (sort clauses and executions in lockstep)
+        ClauseExecution[] executions;
         if (!isOr)
         {
-            // Build index array, sort by cardinality, then reorder both arrays
-            var indices = new int[clauses.Count];
-            for (int j = 0; j < indices.Length; j++) indices[j] = j;
-            Array.Sort(indices, (a, b) =>
+            // Build an index array, sort it by cardinality, then reorder both arrays.
+            // Use stackalloc for small clause counts to avoid heap allocation; fall back
+            // to ArrayPool for larger counts.  Span<int> can't be captured in a lambda,
+            // so the small path uses insertion sort instead of Array.Sort.
+            int n = clauses.Count;
+            var sortedClauses = new List<ClauseInfo>(n);
+            var sortedExecs = new ClauseExecution[n];
+            if (n <= 32)
             {
-                bool aNeg = clauses[a].IsNegated || clauses[a].ClauseType == ClauseType.NotEquals;
-                bool bNeg = clauses[b].IsNegated || clauses[b].ClauseType == ClauseType.NotEquals;
-                if (aNeg != bNeg)
-                    return aNeg ? 1 : -1;
-                return executions[a].Cardinality.CompareTo(executions[b].Cardinality);
-            });
-            var sortedClauses = new List<ClauseInfo>(clauses.Count);
-            var sortedExecs = new ClauseExecution[clauses.Count];
-            for (int j = 0; j < indices.Length; j++)
+                Span<int> indices = stackalloc int[n];
+                for (int j = 0; j < n; j++) indices[j] = j;
+                for (int j = 1; j < n; j++)
+                {
+                    int key = indices[j];
+                    bool keyNeg = clauses[key].IsNegated || clauses[key].ClauseType == ClauseType.NotEquals;
+                    long keyCard = execList[key].Cardinality;
+                    int k = j - 1;
+                    while (k >= 0)
+                    {
+                        int prev = indices[k];
+                        bool prevNeg = clauses[prev].IsNegated || clauses[prev].ClauseType == ClauseType.NotEquals;
+                        bool moveRight = prevNeg != keyNeg ? prevNeg : execList[prev].Cardinality > keyCard;
+                        if (moveRight == false) break;
+                        indices[k + 1] = indices[k];
+                        k--;
+                    }
+                    indices[k + 1] = key;
+                }
+                for (int j = 0; j < n; j++)
+                {
+                    sortedClauses.Add(clauses[indices[j]]);
+                    sortedExecs[j] = execList[indices[j]];
+                }
+            }
+            else
             {
-                sortedClauses.Add(clauses[indices[j]]);
-                sortedExecs[j] = executions[indices[j]];
+                int[] rented = ArrayPool<int>.Shared.Rent(n);
+                for (int j = 0; j < n; j++) rented[j] = j;
+                Array.Sort(rented, 0, n, Comparer<int>.Create((a, b) =>
+                {
+                    bool aNeg = clauses[a].IsNegated || clauses[a].ClauseType == ClauseType.NotEquals;
+                    bool bNeg = clauses[b].IsNegated || clauses[b].ClauseType == ClauseType.NotEquals;
+                    if (aNeg != bNeg)
+                        return aNeg ? 1 : -1;
+                    return execList[a].Cardinality.CompareTo(execList[b].Cardinality);
+                }));
+                for (int j = 0; j < n; j++)
+                {
+                    sortedClauses.Add(clauses[rented[j]]);
+                    sortedExecs[j] = execList[rented[j]];
+                }
+                ArrayPool<int>.Shared.Return(rented);
             }
             clauses = sortedClauses;
             executions = sortedExecs;
         }
         else
         {
+            executions = execList.ToArray();
             int insertPos = 0;
             for (int j = 0; j < clauses.Count; j++)
             {
@@ -242,10 +278,6 @@ internal static partial class QueryPlanBuilder
         {
             plan = EmitPlan(clauses, executions, isOr);
         }
-        plan.LongValues = writer.GetLongs();
-        plan.DoubleValues = writer.GetDoubles();
-        plan.StringValues = writer.GetStrings();
-
         // Empty-IN short-circuit: EmitPlan returns Ops=[] for an AND chain containing
         // an empty IN clause (e.g. `Names in ()`), and the resulting QueryExecution has
         // the default OperandOrdering=0 and TypeSignature=0. That cache key collides
@@ -294,11 +326,12 @@ internal static partial class QueryPlanBuilder
                 }
             }
             AttachPostFilterPhases(plan, spatialList, spatialExecs, vectorList, vectorExecs);
-            // Re-store typed arrays after spatial/vector population may have added more
-            plan.LongValues = writer.GetLongs();
-            plan.DoubleValues = writer.GetDoubles();
-            plan.StringValues = writer.GetStrings();
         }
+
+        // Store typed arrays once after all clauses (including spatial/vector) are populated.
+        plan.LongValues = writer.GetLongs();
+        plan.DoubleValues = writer.GetDoubles();
+        plan.StringValues = writer.GetStrings();
 
         // Step 7: Boost handling
         if (planParams.HasBoost)
@@ -307,12 +340,12 @@ internal static partial class QueryPlanBuilder
             if (ops != null)
                 for (int i = 0; i < ops.Length; i++)
                     ops[i].Dispatch = MatchDispatch.QueryMatch;
-            plan.OperandOrdering |= (1 << 30);
+            plan.OperandOrdering |= QueryExecution.HasBoostBit;
         }
 
         // Sentinel BETWEEN disambiguator. See QueryExecution.OperandOrdering doc for full bit layout.
         if (HasAnySentinelBetween(executions))
-            plan.OperandOrdering |= (1 << 31);
+            plan.OperandOrdering |= QueryExecution.SentinelBetweenBit;
 
         // Step 8: Look up or compile the delegate for this ordering.
         // When the template has WHEN clauses, prepend 4 bytes of the survival mask
@@ -429,25 +462,33 @@ internal static partial class QueryPlanBuilder
         if (clauses.Count == 1)
             return ResolveClause(clauses[0], subExecs[0], indexSearcher, subPlan, builderParams: builderParams);
 
-        // Multiple clauses (AND chain) — resolve each and AND them via bitmap
+        // Multiple clauses (AND chain) — resolve each and AND them via bitmap.
+        // RoaringBitmap is passed as `ref` to AndWithMatch, so using var is not legal here;
+        // use try/finally to guarantee disposal.
         var bitmap = new BitmapMatch(indexSearcher.Allocator);
         var temp = new RoaringBitmap(indexSearcher.Allocator);
-        bool first = true;
-        for (int ci2 = 0; ci2 < clauses.Count; ci2++)
+        try
         {
-            var clause = clauses[ci2];
-            var match = ResolveClause(clause, subExecs[ci2], indexSearcher, subPlan, builderParams: builderParams);
-            if (first)
+            bool first = true;
+            for (int ci2 = 0; ci2 < clauses.Count; ci2++)
             {
-                QueryPrimitives.FillFromMatch(match, ref bitmap.BitmapState);
-                first = false;
-            }
-            else
-            {
-                QueryPrimitives.AndWithMatch(match, ref bitmap.BitmapState, ref temp);
+                var clause = clauses[ci2];
+                var match = ResolveClause(clause, subExecs[ci2], indexSearcher, subPlan, builderParams: builderParams);
+                if (first)
+                {
+                    QueryPrimitives.FillFromMatch(match, ref bitmap.BitmapState);
+                    first = false;
+                }
+                else
+                {
+                    QueryPrimitives.AndWithMatch(match, ref bitmap.BitmapState, ref temp);
+                }
             }
         }
-        temp.Dispose();
+        finally
+        {
+            temp.Dispose();
+        }
         return bitmap;
     }
 
@@ -500,6 +541,7 @@ internal static partial class QueryPlanBuilder
     /// The optional builderParameters is needed to resolve deferred method expressions (cmpxchg, now, today).</summary>
     private static void PopulateClauseValues(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters = null)
     {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
         // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
         if (clause.OrSubClauses != null && exec.OrSubExecutions != null)
             for (int si = 0; si < clause.OrSubClauses.Count; si++)
