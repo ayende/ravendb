@@ -15,33 +15,10 @@ public enum QueryCountConfidence : int
     High = 2,
 }
 
-public static class QueryConfidenceExtensions
-{
-    public static QueryCountConfidence Min(this QueryCountConfidence c1, QueryCountConfidence c2)
-    {
-        if (c1 < c2)
-            return c1;
-        return c2;
-    }
-
-    public static QueryCountConfidence Max(this QueryCountConfidence c1, QueryCountConfidence c2)
-    {
-        if (c1 > c2)
-            return c1;
-        return c2;
-    }
-}
-
 public interface IQueryMatch
 {
     long Count { get; }
     
-    /// <summary>
-    /// This is called when the call is not interested in getting
-    /// the results in sorted order (may want to do its own sorting, etc)
-    /// The match will let the caller know whatever this is possible
-    /// </summary>
-    SkipSortingResult AttemptToSkipSorting();
         
     // The confidence of the query count.
     //  - High: We know exactly how many items there are.
@@ -73,11 +50,23 @@ public interface IQueryMatch
     DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
 }
 
-public enum SkipSortingResult
+/// <summary>
+/// Implemented by query matches backed by a RoaringBitmap, enabling SortingMatch
+/// to walk the CompactTree index and intersect batches via AndWith, stopping early
+/// when the LIMIT is reached — no full materialization needed.
+/// </summary>
+public interface IBitmapQueryMatch : IQueryMatch
 {
-    ResultsNativelySorted,
-    WillSkipSorting,
-    SortingIsRequired
+    bool Contains(long entryId);
+    long MinEntryId { get; }
+    long MaxEntryId { get; }
+
+    /// <summary>
+    /// Returns a reference to the underlying bitmap data. The caller MUST NOT dispose it.
+    /// Used by downstream consumers (vector search filter, faceted lookups) to skip re-materialization.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnscopedRef]
+    ref Voron.Data.RoaringBitmaps.RoaringBitmap BitmapState { get; }
 }
 
 public enum DuplicatesOccurrence

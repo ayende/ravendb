@@ -7,9 +7,9 @@ using Corax.Querying.Matches.Meta;
 using Voron.Data.CompactTrees;
 using Voron.Data.Lookups;
 
-namespace Corax.Querying.Matches.TermProviders;
+namespace Corax.Querying.Matches.TermsProviders;
 
-public struct RegexTermProvider<TLookupIterator> : ITermProvider
+public struct RegexTermsProvider<TLookupIterator> : ITermsProvider
     where TLookupIterator : struct, ILookupIterator
 {
     private readonly CompactTree _tree;
@@ -19,7 +19,7 @@ public struct RegexTermProvider<TLookupIterator> : ITermProvider
 
     private CompactTree.Iterator<TLookupIterator> _iterator;
 
-    public RegexTermProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, Regex regex)
+    public RegexTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, Regex regex)
     {
         _searcher = searcher;
         _regex = regex;
@@ -35,6 +35,28 @@ public struct RegexTermProvider<TLookupIterator> : ITermProvider
     public int Fill(Span<long> containers)
     {
         throw new NotImplementedException();
+    }
+
+    public int FillPostingListIds(Span<long> postingListIds)
+    {
+        int count = 0;
+
+        using var scope = new CompactKeyCacheScope(_searcher.Transaction.LowLevelTransaction);
+        var compactKey = scope.Key;
+
+        while (count < postingListIds.Length)
+        {
+            if (_iterator.MoveNext(compactKey, out long postingListId, out _) == false)
+                break;
+
+            var key = compactKey.Decoded();
+            if (_regex.IsMatch(Encoding.UTF8.GetString(key)) == false)
+                continue;
+
+            postingListIds[count++] = postingListId;
+        }
+
+        return count;
     }
 
     public void Reset()
@@ -61,7 +83,7 @@ public struct RegexTermProvider<TLookupIterator> : ITermProvider
 
     public QueryInspectionNode Inspect()
     {
-        return new QueryInspectionNode($"{nameof(RegexTermProvider<TLookupIterator>)}",
+        return new QueryInspectionNode($"{nameof(RegexTermsProvider<TLookupIterator>)}",
             parameters: new Dictionary<string, string>()
             {
                 { Constants.QueryInspectionNode.FieldName, _field.ToString() },
