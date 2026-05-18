@@ -263,8 +263,40 @@ internal static partial class QueryPlanBuilder
             IsOr = isOr,
             SpatialClauses = walkerCtx.SpatialClauses,
             VectorClauses = walkerCtx.VectorClauses,
-            WhenCount = walkerCtx.WhenCount
+            WhenCount = walkerCtx.WhenCount,
+            OptimizationFlags = ComputeOptFlags(templateClauses)
         };
+    }
+
+    /// <summary>Compute structural optimization applicability flags from the clause list.
+    /// Called once per template at construction time.</summary>
+    private static PlanOptFlags ComputeOptFlags(ClauseInfo[] clauses)
+    {
+        var flags = PlanOptFlags.None;
+        int equalsCount = 0;
+        for (int i = 0; i < clauses.Length; i++)
+        {
+            var c = clauses[i];
+            if (c.IsNegated || c.HasBoost)
+                continue;
+            switch (c.ClauseType)
+            {
+                case ClauseType.Equals:
+                    equalsCount++;
+                    flags |= PlanOptFlags.DirectScanCandidate;
+                    break;
+                case ClauseType.GreaterThan:
+                case ClauseType.GreaterThanOrEqual:
+                case ClauseType.LessThan:
+                case ClauseType.LessThanOrEqual:
+                case ClauseType.Between:
+                    flags |= PlanOptFlags.DirectScanCandidate;
+                    break;
+            }
+        }
+        if (equalsCount >= 2)
+            flags |= PlanOptFlags.CompoundExactCandidate;
+        return flags;
     }
 
     /// <summary>Recursively freeze every <see cref="ClauseInfo"/> in a template list,

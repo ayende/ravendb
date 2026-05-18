@@ -85,6 +85,10 @@ public class QueryExecution
     /// and the chain walk catches WhenFlags differences.</summary>
     public int WhenFlags;
 
+    /// <summary>Structural optimization flags inherited from the PlanTemplate.
+    /// Checked by CoraxIndexReadOperation to skip inapplicable Try* methods.</summary>
+    public PlanOptFlags OptimizationFlags;
+
     /// <summary>Number of bitmaps this plan needs at execution time.
     /// Slot 0 = main result, slot 1 = scratch for AND-with-postings / AND-NOT and OR-group
     /// accumulation. Plans with multiple AndGroups inside an OR chain use slot 2 as a
