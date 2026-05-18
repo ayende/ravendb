@@ -304,7 +304,7 @@ internal static partial class QueryPlanBuilder
         }
         else
         {
-            plan = EmitPlan(clauses, executions, isOr);
+            plan = EmitPlan(clauses, executions, isOr, writer.GetStrings());
         }
         // Empty-IN short-circuit: EmitPlan returns Ops=[] for an AND chain containing
         // an empty IN clause (e.g. `Names in ()`), and the resulting QueryExecution has
@@ -1858,6 +1858,7 @@ internal static partial class QueryPlanBuilder
                     doubles.Add(plan.DoubleValues[idx2]);
                 break;
             case ScanValueType.Slice:
+            case ScanValueType.SliceLong:
                 var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
                 slices.Add(indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, plan.StringValues[idx1]));
                 if (hasBetween)
@@ -2866,6 +2867,7 @@ internal static partial class QueryPlanBuilder
                         if (hasBetween) doubles.Add(plan.DoubleValues[idx2]);
                         break;
                     case ScanValueType.Slice:
+            case ScanValueType.SliceLong:
                     {
                         Voron.Slice.From(allocator, plan.StringValues[idx1], out var s1);
                         slices.Add(s1);
@@ -3158,6 +3160,7 @@ internal static partial class QueryPlanBuilder
                         if (hasBetween) doubles.Add(plan.DoubleValues[idx2]);
                         break;
                     case ScanValueType.Slice:
+            case ScanValueType.SliceLong:
                         Voron.Slice.From(planParams.Allocator, plan.StringValues[idx1], out var s1);
                         slices.Add(s1);
                         if (hasBetween) { Voron.Slice.From(planParams.Allocator, plan.StringValues[idx2], out var s2); slices.Add(s2); }
