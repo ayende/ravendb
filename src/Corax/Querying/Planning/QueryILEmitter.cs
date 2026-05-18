@@ -517,6 +517,49 @@ public static class QueryIlEmitter
         }
     }
 
+    public static string EmitCSharpSource(QueryExecution plan)
+    {
+        var ops = plan.Ops;
+        if (ops == null || ops.Length == 0) return "// Empty plan.\n";
+        var sb = new StringBuilder();
+        sb.AppendLine("static void CompiledQuery(CompiledQueryMatch ctx)");
+        sb.AppendLine("{");
+        EmitCSharpBoundsCheckPreamble(sb, ops);
+        bool hasEntryScan = false, needsLazyRepair = false; int entryScanOpIndex = -1;
+        for (int i = 0; i < ops.Length; i++) {
+            ref PlanOp op = ref ops[i];
+            var (fillName, andName, orName, andNotName) = op.Dispatch switch { MatchDispatch.PostingList => ("QueryPrimitives.CtxFillFromPostingSource", "QueryPrimitives.CtxAndFromPostingSource", "QueryPrimitives.CtxOrFillFromPostingSource", "QueryPrimitives.CtxAndNotFromPostingSource"), MatchDispatch.TreeScan => ("QueryPrimitives.CtxFillFromTreeScan", "QueryPrimitives.CtxAndFromTreeScan", "QueryPrimitives.CtxOrFillFromTreeScan", "QueryPrimitives.CtxAndNotFromTreeScan"), _ => ("QueryPrimitives.CtxOrWithMatch", "QueryPrimitives.CtxAndFromMatch", "QueryPrimitives.CtxOrWithMatchSlot", "QueryPrimitives.CtxAndNotFromMatch") };
+            sb.AppendLine($"    long startTick_{i} = Stopwatch.GetTimestamp();");
+            switch (op.Kind) {
+                case PlanOpKind.FillFromPostings: case PlanOpKind.DirectIterate: sb.AppendLine("    ctx.Token.ThrowIfCancellationRequested();"); sb.AppendLine($"    {fillName}(ctx, {op.ParamIndex});"); break;
+                case PlanOpKind.AndWithPostings: sb.AppendLine("    ctx.Token.ThrowIfCancellationRequested();"); sb.AppendLine($"    {andName}(ctx, {op.ParamIndex});"); if (!op.SkipEarlyExit) sb.AppendLine("    if (ctx.Bitmaps[0].IsEmpty) goto Done;"); break;
+                case PlanOpKind.OrWithPostings: case PlanOpKind.LazyOrWithPostings: sb.AppendLine("    ctx.Token.ThrowIfCancellationRequested();"); sb.AppendLine($"    {orName}(ctx, {op.ParamIndex}, {op.BitmapLocal});"); if (op.BitmapLocal == 0) sb.AppendLine("    if ((long)ctx.Bitmaps[0].Count >= ctx.Limit) goto Done;"); break;
+                case PlanOpKind.ClearBitmap: sb.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].Clear();"); break;
+                case PlanOpKind.AndBitmaps: sb.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].AndWith(ref ctx.Bitmaps[{op.ParamIndex2}]);"); break;
+                case PlanOpKind.AndNotBitmaps: sb.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].AndNotWith(ref ctx.Bitmaps[{op.ParamIndex2}]);"); break;
+                case PlanOpKind.OrBitmaps: sb.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].LazyOrWith(ref ctx.Bitmaps[{op.ParamIndex2}]);"); needsLazyRepair = true; break;
+                case PlanOpKind.SwapBitmaps: sb.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].SwapContents(ref ctx.Bitmaps[{op.ParamIndex2}]);"); break;
+                case PlanOpKind.CheckEmpty: sb.AppendLine($"    if (ctx.Bitmaps[{op.BitmapLocal}].IsEmpty) goto Done;"); break;
+                case PlanOpKind.AndNotWithPostings: sb.AppendLine("    ctx.Token.ThrowIfCancellationRequested();"); sb.AppendLine($"    {andNotName}(ctx, {op.ParamIndex});"); break;
+                case PlanOpKind.RepairAfterLazy: sb.AppendLine("    ctx.Bitmaps[0].RepairAfterLazy();"); break;
+                case PlanOpKind.CheckAndMaybeEntryScan: hasEntryScan = true; entryScanOpIndex = i; sb.AppendLine($"    if (QueryPrimitives.ShouldSwitchToEntryScan((long)ctx.Bitmaps[0].Count, ctx.ResolvedMatches[{op.ParamIndex}].Count))"); sb.AppendLine("        goto EntryScan;"); break;
+                case PlanOpKind.OrRange: { int start = op.ParamIndex; int rangeIdx = op.ParamIndex2; sb.AppendLine("    {"); sb.AppendLine($"        int end_{i} = {start} + ctx.InRangeCounts[{rangeIdx}];"); sb.AppendLine($"        for (int j_{i} = {start}; j_{i} < end_{i}; j_{i}++) {{ ctx.Token.ThrowIfCancellationRequested(); {orName}(ctx, j_{i}, {op.BitmapLocal}); }}"); sb.AppendLine("    }"); break; }
+                case PlanOpKind.AndRange: { int start = op.ParamIndex; int rangeIdx = op.ParamIndex2; sb.AppendLine("    {"); sb.AppendLine($"        int end_{i} = {start} + ctx.InRangeCounts[{rangeIdx}];"); sb.AppendLine($"        for (int j_{i} = {start}; j_{i} < end_{i}; j_{i}++) {{ ctx.Token.ThrowIfCancellationRequested(); {andName}(ctx, j_{i});"); if (!op.SkipEarlyExit) sb.AppendLine($"            if (ctx.Bitmaps[0].IsEmpty) goto Done;"); sb.AppendLine("        }"); sb.AppendLine("    }"); break; }
+                case PlanOpKind.IterateInto: sb.AppendLine("    goto Done;"); break;
+            }
+            sb.AppendLine($"    CompiledQueryHelper.RecordTiming(ctx, {i}, startTick_{i});");
+            sb.AppendLine($"    CompiledQueryHelper.RecordResultCount(ctx, {i});"); sb.AppendLine();
+        }
+        sb.AppendLine("Done:"); if (needsLazyRepair) sb.AppendLine("    ctx.Bitmaps[0].RepairAfterLazy();"); sb.AppendLine("    return;");
+        if (hasEntryScan) { sb.AppendLine(); sb.AppendLine("EntryScan:"); sb.AppendLine($"    ctx.EntryScanTakenAtOp = {entryScanOpIndex};"); sb.AppendLine("    CompiledQueryHelper.RunEntryScan(ctx, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);"); sb.AppendLine("    ctx.Bitmaps[0].SwapContents(ref ctx.Bitmaps[1]);"); sb.AppendLine("    ctx.Bitmaps[1].Clear();"); sb.AppendLine("    return;"); }
+        sb.AppendLine("}"); return sb.ToString();
+    }
+    private static void EmitCSharpBoundsCheckPreamble(StringBuilder sb, PlanOp[] ops) {
+        int maxBitmapSlot = -1, maxMatchIndex = -1, maxTermSourceIndex = -1, maxTermsProviderIndex = -1;
+        for (int i = 0; i < ops.Length; i++) { ref PlanOp op = ref ops[i]; if (op.BitmapLocal > maxBitmapSlot) maxBitmapSlot = op.BitmapLocal; if (op.Kind is PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.OrBitmaps or PlanOpKind.SwapBitmaps && op.ParamIndex2 > maxBitmapSlot) maxBitmapSlot = op.ParamIndex2; if (op.Kind is PlanOpKind.FillFromPostings or PlanOpKind.DirectIterate && 0 > maxBitmapSlot) maxBitmapSlot = 0; if (op.Kind is PlanOpKind.AndWithPostings or PlanOpKind.AndNotWithPostings && 1 > maxBitmapSlot) maxBitmapSlot = 1; if (op.Kind is not (PlanOpKind.OrRange or PlanOpKind.AndRange)) { switch (op.Dispatch) { case MatchDispatch.QueryMatch: if (op.ParamIndex > maxMatchIndex) maxMatchIndex = op.ParamIndex; break; case MatchDispatch.PostingList: if (op.ParamIndex > maxTermSourceIndex) maxTermSourceIndex = op.ParamIndex; break; case MatchDispatch.TreeScan: if (op.ParamIndex > maxTermsProviderIndex) maxTermsProviderIndex = op.ParamIndex; break; } } if (op.Kind == PlanOpKind.CheckAndMaybeEntryScan && op.ParamIndex > maxMatchIndex) maxMatchIndex = op.ParamIndex; }
+        if (maxBitmapSlot >= 0) sb.AppendLine($"    _ = ref ctx.Bitmaps[{maxBitmapSlot}];"); if (maxMatchIndex >= 0) sb.AppendLine($"    _ = ctx.ResolvedMatches[{maxMatchIndex}];"); if (maxTermSourceIndex >= 0) sb.AppendLine($"    _ = ref ctx.PostingSources[{maxTermSourceIndex}];"); if (maxTermsProviderIndex >= 0) sb.AppendLine($"    _ = ctx.TermsProviders[{maxTermsProviderIndex}];"); sb.AppendLine();
+    }
+
     private static void EmptyExecute(CompiledQueryMatch ctx) { }
 
     /// <summary>Emit a bounds-check hint immediately after computing <paramref name="endVar"/>
