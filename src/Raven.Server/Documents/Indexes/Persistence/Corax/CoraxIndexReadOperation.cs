@@ -670,6 +670,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 Page page = default;
                 bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
                 totalResults.Value = 0;
+                long totalResultsBefore = 0;
 
                 var hasOrderByDistance = query.Metadata.OrderBy is [{OrderingType: OrderByFieldType.Distance}, ..] && _index.Configuration.CoraxIncludeSpatialDistance;
                 if (builderParameters.HasBoost || hasOrderByDistance)
@@ -696,7 +697,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 }
 
                 // We don't need to do any processing for the query beyond counting if we are getting a count.
-                var totalResultsBefore = totalResults.Value;
+                totalResultsBefore = totalResults.Value;
                 while (query.IsCountQuery == false || typeof(TDistinct) == typeof(HasDistinct))
                 {
                     token.ThrowIfCancellationRequested();
