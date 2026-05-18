@@ -1151,9 +1151,10 @@ internal static partial class QueryPlanBuilder
         {
             if (builderParams != null)
             {
-                string resolvedFieldName = clause.FieldName;
-                if (clause.IsExact && builderParams.Metadata.IsDynamic)
-                    resolvedFieldName = AutoIndexField.GetExactAutoIndexFieldName(resolvedFieldName);
+                // Dynamic field name variants (exact/search) are pre-resolved by the
+                // DynamicFieldNameResolve walker step at template time — no per-execution
+                // string allocation.
+                string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
                 fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
             }
             else
@@ -1263,16 +1264,11 @@ internal static partial class QueryPlanBuilder
             case ClauseType.Search:
             {
                 FieldMetadata searchMeta;
-                // For auto-indexes, search() wraps a non-id field as "search(FieldName)" to use
-                // the analyzed variant of that field. id() is the document key, which is not
-                // analyzed, so we must skip the wrapping — matches Lucene's HandleSearch.
-                bool isDocumentId = string.Equals(clause.FieldName, Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName, StringComparison.Ordinal);
+                // Dynamic field name variants (search(FieldName) for auto-indexes) are
+                // pre-resolved by the DynamicFieldNameResolve walker step at template time.
+                string searchFieldName = clause.ResolvedFieldName ?? clause.FieldName;
                 if (builderParams != null)
                 {
-                    string searchFieldName = clause.FieldName;
-                    if (builderParams.Metadata.IsDynamic && isDocumentId == false)
-                        searchFieldName = AutoIndexField.GetSearchAutoIndexFieldName(searchFieldName);
-
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
                         builderParams.Allocator, searchFieldName, builderParams.Index,
                         builderParams.IndexFieldsMapping, builderParams.FieldsToFetch,
@@ -1281,10 +1277,6 @@ internal static partial class QueryPlanBuilder
                 }
                 else if (parameters is { Index: not null, IndexFieldsMapping: not null })
                 {
-                    string searchFieldName = clause.FieldName;
-                    if (parameters.Metadata.IsDynamic && isDocumentId == false)
-                        searchFieldName = AutoIndexField.GetSearchAutoIndexFieldName(searchFieldName);
-
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
                         parameters.Allocator, searchFieldName, parameters.Index,
                         parameters.IndexFieldsMapping, parameters.FieldsToFetch,
@@ -1667,9 +1659,8 @@ internal static partial class QueryPlanBuilder
     {
         if (builderParams != null)
         {
-            string resolvedFieldName = clause.FieldName;
-            if (clause.IsExact && builderParams.Metadata.IsDynamic)
-                resolvedFieldName = AutoIndexField.GetExactAutoIndexFieldName(resolvedFieldName);
+            // Dynamic field name variants are pre-resolved by DynamicFieldNameResolve at template time.
+            string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
             return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
         }
 
