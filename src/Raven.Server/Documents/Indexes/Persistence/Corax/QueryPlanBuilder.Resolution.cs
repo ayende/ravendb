@@ -371,9 +371,6 @@ internal static partial class QueryPlanBuilder
             plan.OperandOrdering |= QueryExecution.HasBoostBit;
         }
 
-        // Sentinel BETWEEN is rewritten at template time by BetweenRewriteSentinels — no
-        // runtime sentinel flag, no SentinelBetweenBit disambiguator needed. Bit 31 is free.
-
         // Step 8: Look up or compile the delegate for this ordering.
         // WhenFlags (set above when building clauses/execList from template) is a
         // first-class part of the cache key alongside Ordering / TypeSignature / FullKinds.
@@ -420,6 +417,16 @@ internal static partial class QueryPlanBuilder
                     remaining--;
                 }
             }
+        }
+
+        // Cardinality cliff bucket: if the sort-driving clause's cardinality is within
+        // the SortedDrivingWithTieBreakMatch.MaxGroupSize cap, set bit 31. This produces
+        // different compiled plans (and optimization hints) for under/over cliff cardinality.
+        if (plan.SortDrivingClauseIndex >= 0 && plan.SortDrivingClauseIndex < executions.Length)
+        {
+            long drivingCard = executions[plan.SortDrivingClauseIndex].Cardinality;
+            if (drivingCard >= 0 && drivingCard <= global::Corax.Querying.Matches.SortedDrivingWithTieBreakMatch.MaxGroupSize)
+                plan.OperandOrdering |= QueryExecution.CardinalityCliffBit;
         }
 
         var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds, plan.WhenFlags);
