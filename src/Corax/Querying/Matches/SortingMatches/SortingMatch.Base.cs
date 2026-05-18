@@ -10,7 +10,7 @@ namespace Corax.Querying.Matches.SortingMatches;
 /// referencing the <c>TInner</c> type parameter and read <see cref="TotalResults"/>
 /// after sorting completes.
 /// </summary>
-public abstract class SortingMatch : IQueryMatch
+public abstract class SortingMatch : IQueryMatch, IDisposable
 {
     public const int SortBatchSize = 8192;
 
@@ -26,4 +26,5 @@ public abstract class SortingMatch : IQueryMatch
     public abstract void Score(Span<long> matches, Span<float> scores, float boostFactor);
     public abstract QueryInspectionNode Inspect();
     public abstract void SetScoreAndDistanceBuffer(in SortingDataTransfer sortingDataTransfer);
+    public abstract void Dispose();
 }

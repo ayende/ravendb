@@ -277,5 +277,15 @@ public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
             parameters: parameters);
     }
 
+    public override void Dispose()
+    {
+        _results.Dispose();
+        _entriesBufferScope.Dispose();
+        _scoresResults.Dispose();
+        _distancesResults.Dispose();
+        _scoreBufferHandler?.Dispose();
+        (_inner as IDisposable)?.Dispose();
+    }
+
     string DebugView => Inspect().ToString();
 }
