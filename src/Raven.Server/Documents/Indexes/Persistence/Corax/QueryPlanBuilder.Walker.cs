@@ -412,6 +412,10 @@ internal static partial class QueryPlanBuilder
                 var inner = pending.InnerClauses;
                 for (int c = 0; c < inner.Length; c++)
                 {
+                    if (inner[c].ClauseType == ClauseType.Vector)
+                    {
+                        throw new NotSupportedException("Boosting the VectorSearchMatch is not supported yet.");
+                    }
                     var old = inner[c].Bindings;
                     var extended = new ParameterBinding[(old?.Length ?? 0) + 1];
                     if (old != null) Array.Copy(old, extended, old.Length);
