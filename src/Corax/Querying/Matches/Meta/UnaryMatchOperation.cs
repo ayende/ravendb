@@ -2,13 +2,8 @@
 
 public enum UnaryMatchOperation
 {
-    None,
-    NotEquals,
     LessThan,
     LessThanOrEqual,
     GreaterThan,
-    GreaterThanOrEqual,
-    Equals,
-    Between,
-    NotBetween
+    GreaterThanOrEqual
 }

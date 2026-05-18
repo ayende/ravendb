@@ -511,10 +511,8 @@ namespace Raven.Server.Documents.Queries.Facets
             {
                 Operation.LowerThan => UnaryMatchOperation.LessThan,
                 Operation.GreaterThan => UnaryMatchOperation.GreaterThan,
-                Operation.Equal => UnaryMatchOperation.Equals,
                 Operation.LowerOrEqualThan => UnaryMatchOperation.LessThanOrEqual,
                 Operation.GreaterOrEqualThan => UnaryMatchOperation.GreaterThanOrEqual,
-                Operation.None => UnaryMatchOperation.None,
                 _ => throw new ArgumentOutOfRangeException(nameof(o), o, null)
             };
             
