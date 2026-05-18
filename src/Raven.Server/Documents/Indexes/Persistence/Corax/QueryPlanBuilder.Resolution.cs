@@ -44,9 +44,25 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>Clause count at or below which we use stackalloc + insertion sort
-    /// instead of ArrayPool + Array.Sort for cardinality ordering.</summary>
+    /// <summary>Clause count at or below which we use stackalloc for the
+    /// indices buffer; larger counts fall back to ArrayPool.</summary>
     private const int StackallocClauseThreshold = 32;
+
+    /// <summary>Sort comparer for clause cardinality ordering. Negated clauses
+    /// sort last (must run after the positive set is established); ties broken
+    /// by ascending cardinality so the cheapest clause runs first.
+    /// Struct comparer to keep the sort path JIT-inlineable.</summary>
+    private readonly struct ClauseCardinalityComparer(List<ClauseInfo> clauses, List<ClauseExecution> execList) : IComparer<int>
+    {
+        public int Compare(int a, int b)
+        {
+            bool aNeg = clauses[a].IsNegated || clauses[a].ClauseType == ClauseType.NotEquals;
+            bool bNeg = clauses[b].IsNegated || clauses[b].ClauseType == ClauseType.NotEquals;
+            if (aNeg != bNeg)
+                return aNeg ? 1 : -1;
+            return execList[a].Cardinality.CompareTo(execList[b].Cardinality);
+        }
+    }
 
     /// <summary>Maximum number of ORDER BY fields supported by Corax.</summary>
     private const int MaxSortFields = 16;
@@ -334,59 +350,38 @@ internal static partial class QueryPlanBuilder
         ClauseExecution[] executions;
         if (!isOr)
         {
-            // Build an index array, sort it by cardinality, then reorder both arrays.
-            // Use stackalloc for small clause counts to avoid heap allocation; fall back
-            // to ArrayPool for larger counts.  Span<int> can't be captured in a lambda,
-            // so the small path uses insertion sort instead of Array.Sort.
+            // Build an index array, sort it by cardinality, then reorder both
+            // collections via the resulting permutation. Indices buffer is
+            // stackalloc for small clause counts, ArrayPool for larger; both
+            // paths share the same Span<int>.Sort with a struct comparer.
             int n = clauses.Count;
-            var sortedClauses = new List<ClauseInfo>(n);
-            var sortedExecs = new ClauseExecution[n];
+            Span<int> stackIndices = stackalloc int[StackallocClauseThreshold];
+            int[] rented = null;
+            scoped Span<int> indices;
             if (n <= StackallocClauseThreshold)
             {
-                Span<int> indices = stackalloc int[n];
-                for (int j = 0; j < n; j++) indices[j] = j;
-                for (int j = 1; j < n; j++)
-                {
-                    int key = indices[j];
-                    bool keyNeg = clauses[key].IsNegated || clauses[key].ClauseType == ClauseType.NotEquals;
-                    long keyCard = execList[key].Cardinality;
-                    int k = j - 1;
-                    while (k >= 0)
-                    {
-                        int prev = indices[k];
-                        bool prevNeg = clauses[prev].IsNegated || clauses[prev].ClauseType == ClauseType.NotEquals;
-                        bool moveRight = prevNeg != keyNeg ? prevNeg : execList[prev].Cardinality > keyCard;
-                        if (moveRight == false) break;
-                        indices[k + 1] = indices[k];
-                        k--;
-                    }
-                    indices[k + 1] = key;
-                }
-                for (int j = 0; j < n; j++)
-                {
-                    sortedClauses.Add(clauses[indices[j]]);
-                    sortedExecs[j] = execList[indices[j]];
-                }
+                indices = stackIndices.Slice(0, n);
             }
             else
             {
-                int[] rented = ArrayPool<int>.Shared.Rent(n);
-                for (int j = 0; j < n; j++) rented[j] = j;
-                Array.Sort(rented, 0, n, Comparer<int>.Create((a, b) =>
-                {
-                    bool aNeg = clauses[a].IsNegated || clauses[a].ClauseType == ClauseType.NotEquals;
-                    bool bNeg = clauses[b].IsNegated || clauses[b].ClauseType == ClauseType.NotEquals;
-                    if (aNeg != bNeg)
-                        return aNeg ? 1 : -1;
-                    return execList[a].Cardinality.CompareTo(execList[b].Cardinality);
-                }));
-                for (int j = 0; j < n; j++)
-                {
-                    sortedClauses.Add(clauses[rented[j]]);
-                    sortedExecs[j] = execList[rented[j]];
-                }
-                ArrayPool<int>.Shared.Return(rented);
+                rented = ArrayPool<int>.Shared.Rent(n);
+                indices = rented.AsSpan(0, n);
             }
+
+            for (int j = 0; j < n; j++) indices[j] = j;
+            indices.Sort(new ClauseCardinalityComparer(clauses, execList));
+
+            var sortedClauses = new List<ClauseInfo>(n);
+            var sortedExecs = new ClauseExecution[n];
+            for (int j = 0; j < n; j++)
+            {
+                sortedClauses.Add(clauses[indices[j]]);
+                sortedExecs[j] = execList[indices[j]];
+            }
+
+            if (rented != null)
+                ArrayPool<int>.Shared.Return(rented);
+
             clauses = sortedClauses;
             executions = sortedExecs;
         }
