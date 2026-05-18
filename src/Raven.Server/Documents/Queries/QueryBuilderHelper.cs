@@ -6,7 +6,6 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using Corax;
 using Corax.Mappings;
-using Corax.Querying.Matches.Meta;
 using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Utils;
 using Raven.Client.Documents.Indexes;
@@ -365,17 +364,6 @@ public static class QueryBuilderHelper
     {
         throw new InvalidOperationException($"Value should be a '{expectedType}' but was '{fieldType}'.");
     }
-
-    internal static UnaryMatchOperation TranslateUnaryMatchOperation(OperatorType current) => current switch
-    {
-        OperatorType.Equal => UnaryMatchOperation.Equals,
-        OperatorType.NotEqual => UnaryMatchOperation.NotEquals,
-        OperatorType.LessThan => UnaryMatchOperation.LessThan,
-        OperatorType.GreaterThan => UnaryMatchOperation.GreaterThan,
-        OperatorType.LessThanEqual => UnaryMatchOperation.LessThanOrEqual,
-        OperatorType.GreaterThanEqual => UnaryMatchOperation.GreaterThanOrEqual,
-        _ => throw new ArgumentOutOfRangeException(nameof(current), current, null)
-    };
 
     internal static IEnumerable<(string Value, ValueTokenType Type)> GetValuesForIn(
         Query query,
