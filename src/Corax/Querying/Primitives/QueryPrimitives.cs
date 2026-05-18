@@ -601,7 +601,7 @@ public static class QueryPrimitives
                     int singlesClipped = (int)Math.Min(singlesLen, limit - bitmap.Count);
                     bitmap.AddRange(singlesSpan[..singlesClipped]);
                 }
-                if (bitmap.Count >= limit) goto fillDone;
+                if (bitmap.Count >= limit) break;
 
                 // Bucket 1: SmallPostingList -> strip frequency, dedup, batch fetch, decode
                 var smallsSpan = buckets[1].ToSpan();
@@ -639,7 +639,7 @@ public static class QueryPrimitives
                         }
                     }
                 }
-                if (bitmap.Count >= limit) goto fillDone;
+                if (bitmap.Count >= limit) break;
 
                 // Bucket 2: PostingList -> strip frequency, dedup, then iterate each
                 var largeSpan = buckets[2].ToSpan();
@@ -657,7 +657,7 @@ public static class QueryPrimitives
                     }
                 }
             }
-            fillDone:;
+            // limit reached or provider exhausted — fall through to finally cleanup
         }
         finally
         {
