@@ -18,6 +18,14 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
     private RoaringBitmap _bitmapState = new(allocator);
     private RoaringBitmapIterator _iterator;
     private bool _iteratorInitialized = false;
+    private bool _isAllocated = true;
+
+    /// <summary>
+    /// Indicates whether this BitmapMatch was constructed with an allocator (true)
+    /// or is a default-initialized struct (false). A default BitmapMatch holds no
+    /// native memory and is safe to Dispose but must not be used for accumulation.
+    /// </summary>
+    public readonly bool IsAllocated => _isAllocated;
 
     /// <summary>Get a mutable reference to the internal bitmap state for building.
     /// The returned ref is intentionally unscoped because callers thread it through
