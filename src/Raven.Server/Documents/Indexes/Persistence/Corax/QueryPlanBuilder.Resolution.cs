@@ -380,50 +380,44 @@ internal static partial class QueryPlanBuilder
         plan.WhenFlags = whenFlags;
         plan.OptimizationFlags = template.OptimizationFlags;
 
-        // Remap template-position SortDrivingClauseIndex to post-sort runtime index.
+        // Remap template-position optimization indices to post-sort runtime indices.
         // After WHEN elimination + cardinality sort, clauses are reordered; OriginalIndex
-        // records each clause's template position.
+        // records each clause's template position. Single pass over the clause list.
         plan.SortDrivingClauseIndex = -1;
-        if (template.SortDrivingClauseIndex >= 0)
-        {
-            for (int i = 0; i < clauses.Count; i++)
-            {
-                if (clauses[i].OriginalIndex == template.SortDrivingClauseIndex)
-                {
-                    plan.SortDrivingClauseIndex = i;
-                    break;
-                }
-            }
-        }
-
-        // Remap compound-exact pair indices similarly.
         plan.CompoundExactClauseA = -1;
         plan.CompoundExactClauseB = -1;
         plan.CompoundExactAFirst = template.CompoundExactAFirst;
-        if (template.CompoundExactClauseA >= 0 && template.CompoundExactClauseB >= 0)
-        {
-            for (int i = 0; i < clauses.Count; i++)
-            {
-                int origIdx = clauses[i].OriginalIndex;
-                if (origIdx == template.CompoundExactClauseA)
-                    plan.CompoundExactClauseA = i;
-                else if (origIdx == template.CompoundExactClauseB)
-                    plan.CompoundExactClauseB = i;
-            }
-        }
-
-        // Remap compound-field driving clause index similarly.
         plan.CompoundFieldDrivingClause = -1;
         plan.CompoundFieldSortName = template.CompoundFieldSortName;
         plan.CompoundFieldIsMultiSort = template.CompoundFieldIsMultiSort;
-        if (template.CompoundFieldDrivingClause >= 0)
         {
-            for (int i = 0; i < clauses.Count; i++)
+            int needSort = template.SortDrivingClauseIndex >= 0 ? 1 : 0;
+            int needExactA = template.CompoundExactClauseA >= 0 ? 1 : 0;
+            int needExactB = template.CompoundExactClauseB >= 0 ? 1 : 0;
+            int needField = template.CompoundFieldDrivingClause >= 0 ? 1 : 0;
+            int remaining = needSort + needExactA + needExactB + needField;
+            for (int i = 0; i < clauses.Count && remaining > 0; i++)
             {
-                if (clauses[i].OriginalIndex == template.CompoundFieldDrivingClause)
+                int origIdx = clauses[i].OriginalIndex;
+                if (needSort > 0 && origIdx == template.SortDrivingClauseIndex)
+                {
+                    plan.SortDrivingClauseIndex = i;
+                    remaining--;
+                }
+                if (needExactA > 0 && origIdx == template.CompoundExactClauseA)
+                {
+                    plan.CompoundExactClauseA = i;
+                    remaining--;
+                }
+                else if (needExactB > 0 && origIdx == template.CompoundExactClauseB)
+                {
+                    plan.CompoundExactClauseB = i;
+                    remaining--;
+                }
+                if (needField > 0 && origIdx == template.CompoundFieldDrivingClause)
                 {
                     plan.CompoundFieldDrivingClause = i;
-                    break;
+                    remaining--;
                 }
             }
         }
