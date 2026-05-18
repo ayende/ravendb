@@ -598,7 +598,8 @@ public static class QueryPrimitives
                 {
                     EntryIdEncodings.DecodeAndDiscardFrequency(singlesSpan, singlesSpan.Length);
                     var singlesLen = Sorting.SortAndRemoveDuplicates(singlesSpan);
-                    bitmap.AddRange(singlesSpan[..singlesLen]);
+                    int singlesClipped = (int)Math.Min(singlesLen, limit - bitmap.Count);
+                    bitmap.AddRange(singlesSpan[..singlesClipped]);
                 }
                 if (bitmap.Count >= limit) goto fillDone;
 
@@ -622,17 +623,18 @@ public static class QueryPrimitives
 
                     fixed (long* pEntryBuffer = entryBuffer)
                     {
-                        for (int i = 0; i < smallLen; i++)
+                        for (int i = 0; i < smallLen && bitmap.Count < limit; i++)
                         {
                             var item = containerItems[i];
                             _ = VariableSizeEncoding.Read<int>(item.Address, out var offset);
                             smallListReader.Init(item.Address + offset, item.Length - offset);
 
                             int smallRead;
-                            while ((smallRead = smallListReader.Fill(pEntryBuffer, entryBuffer.Length)) > 0)
+                            while (bitmap.Count < limit && (smallRead = smallListReader.Fill(pEntryBuffer, entryBuffer.Length)) > 0)
                             {
                                 EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer, smallRead);
-                                bitmap.AddRange(entryBuffer[..smallRead]);
+                                int clipped = (int)Math.Min(smallRead, limit - bitmap.Count);
+                                bitmap.AddRange(entryBuffer[..clipped]);
                             }
                         }
                     }
