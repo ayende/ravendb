@@ -139,16 +139,6 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
         }
     }
 
-    public bool IsFillSupported => true;
-
-    public int Fill(Span<long> containers)
-    {
-        if (_isEmpty)
-            return 0;
-
-        return _iterator.Fill(containers, _endContainerId, _shouldIncludeLastTerm);
-    }
-
     public int FillPostingListIds(Span<long> postingListIds)
     {
         if (_isEmpty)

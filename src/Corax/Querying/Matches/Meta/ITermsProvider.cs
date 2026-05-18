@@ -4,10 +4,6 @@ namespace Corax.Querying.Matches.Meta
 {
     public interface ITermsProvider
     {
-        bool IsFillSupported { get; }
-
-        int Fill(Span<long> containers);
-
         /// <summary>
         /// Yields raw posting list IDs (with TermIdMask encoding) in batches.
         /// Each returned value encodes the posting list type in its low bits

@@ -39,13 +39,6 @@ namespace Corax.Querying.Matches.TermsProviders
             Reset();
         }
 
-        public bool IsFillSupported { get; }
-
-        public int Fill(Span<long> containers)
-        {
-            throw new NotImplementedException();
-        }
-
         public int FillPostingListIds(Span<long> postingListIds)
         {
             ReadOnlySpan<byte> decodedStartsWith = _startWith.Decoded();

@@ -35,13 +35,6 @@ namespace Corax.Querying.Matches.TermsProviders
             _tree = tree;
         }
 
-        public bool IsFillSupported { get; }
-
-        public int Fill(Span<long> containers)
-        {
-            throw new NotImplementedException();
-        }
-
         public int FillPostingListIds(Span<long> postingListIds)
         {
             var startWith = _startWith.Decoded();

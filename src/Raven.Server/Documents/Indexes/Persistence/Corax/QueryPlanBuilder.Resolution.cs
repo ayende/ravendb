@@ -3739,8 +3739,6 @@ internal static partial class QueryPlanBuilder
     private sealed class EmptyTermsProviderInstance : ITermsProvider
     {
         public static readonly EmptyTermsProviderInstance Instance = new();
-        public bool IsFillSupported => false;
-        public int Fill(Span<long> containers) => 0;
         public int FillPostingListIds(Span<long> postingListIds) => 0;
         public void Reset() { }
         public bool Next(out TermMatch term) { term = default; return false; }

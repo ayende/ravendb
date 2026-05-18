@@ -141,14 +141,6 @@ namespace Corax.Querying.Matches.TermsProviders
             }
         }
 
-        public bool IsFillSupported => true;
-
-        public int Fill(Span<long> containers)
-        {
-            if (_isEmpty) return 0;
-            return _iterator.Fill(containers, _lastTermId, _includeLastTerm);
-        }
-
         public int FillPostingListIds(Span<long> postingListIds)
         {
             if (_isEmpty) return 0;

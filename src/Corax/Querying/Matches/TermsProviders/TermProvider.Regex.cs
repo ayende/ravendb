@@ -29,14 +29,6 @@ public struct RegexTermsProvider<TLookupIterator> : ITermsProvider
         _field = field;
     }
 
-
-    public bool IsFillSupported { get; }
-
-    public int Fill(Span<long> containers)
-    {
-        throw new NotImplementedException();
-    }
-
     public int FillPostingListIds(Span<long> postingListIds)
     {
         int count = 0;
