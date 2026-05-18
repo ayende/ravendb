@@ -657,7 +657,6 @@ public static class QueryPrimitives
                     }
                 }
             }
-            // limit reached or provider exhausted — fall through to finally cleanup
         }
         finally
         {
