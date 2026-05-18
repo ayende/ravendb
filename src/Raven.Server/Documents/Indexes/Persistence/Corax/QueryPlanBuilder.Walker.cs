@@ -27,6 +27,20 @@ internal static partial class QueryPlanBuilder
         /// <see cref="PlanWalker.RewriteClauses"/>. Drives <see cref="PlanTemplate.WhenCount"/>.</summary>
         public int WhenCount;
 
+        /// <summary>True when the root expression is OR; disables several rewrites
+        /// (spatial/vector partitioning, etc.) that only apply to AND queries.</summary>
+        public bool IsOr;
+
+        /// <summary>Spatial clauses partitioned out by <see cref="PlanWalker.RewriteClauses"/>
+        /// (specifically the GroupCollapse step). Null when no spatial clauses are present
+        /// or when the root is OR.</summary>
+        public ClauseInfo[] SpatialClauses;
+
+        /// <summary>Vector clauses partitioned out by <see cref="PlanWalker.RewriteClauses"/>
+        /// (specifically the GroupCollapse step). Null when no vector clauses are present
+        /// or when the root is OR.</summary>
+        public ClauseInfo[] VectorClauses;
+
         public ResolutionContext(PlanParameters p)
         {
             QueryParameters = p.QueryParameters;
@@ -62,13 +76,16 @@ internal static partial class QueryPlanBuilder
 
         /// <summary>
         /// Post-materialization phase. Runs rewrite/registration steps over the
-        /// materialized <see cref="ClauseInfo"/>[] before it is frozen. The first
-        /// such step is <see cref="WhenRegister"/>; future commits add
+        /// materialized <see cref="ClauseInfo"/> list before it is frozen. Receives
+        /// a mutable <see cref="List{T}"/> so steps can repartition (GroupCollapse
+        /// pulls spatial/vector clauses out into <see cref="ResolutionContext.SpatialClauses"/>
+        /// / <see cref="ResolutionContext.VectorClauses"/>). Future commits add
         /// AnalyzerRewrite, TimeFieldTicks, NotCanonicalize, BetweenToOrWithWhen,
-        /// InNormalize, AllInNormalize, BoostPropagate, and GroupCollapse.
+        /// InNormalize, AllInNormalize, and BoostPropagate.
         /// </summary>
-        public static void RewriteClauses(ClauseInfo[] clauses, ResolutionContext ctx)
+        public static void RewriteClauses(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
+            GroupCollapse(clauses, ctx);
             WhenRegister(clauses, ctx);
             ThrowIfErrors(ctx);
         }
@@ -95,10 +112,10 @@ internal static partial class QueryPlanBuilder
         /// shape error, so it throws <see cref="NotSupportedException"/> directly
         /// rather than accumulating into <see cref="ResolutionContext.Errors"/>.
         /// </summary>
-        private static void WhenRegister(ClauseInfo[] clauses, ResolutionContext ctx)
+        private static void WhenRegister(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             int whenCount = 0;
-            for (int i = 0; i < clauses.Length; i++)
+            for (int i = 0; i < clauses.Count; i++)
             {
                 if (clauses[i].WhenCondition != null)
                     whenCount++;
@@ -110,6 +127,45 @@ internal static partial class QueryPlanBuilder
                     $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
             }
             ctx.WhenCount = whenCount;
+        }
+
+        /// <summary>
+        /// AND-query post-pass that pulls spatial and vector clauses out of the main
+        /// filter list into per-template aux arrays. Spatial and vector clauses are
+        /// dispatched on their own paths at execution time (separate IL emission and
+        /// per-execution materialization), so they must not be intermixed with the
+        /// regular filter chain.
+        ///
+        /// No-op on OR queries (<see cref="ResolutionContext.IsOr"/> = true), which
+        /// don't support spatial/vector partitioning today; any spatial or vector
+        /// clause in an OR query stays in the main list and follows the standard
+        /// dispatch path.
+        /// </summary>
+        private static void GroupCollapse(List<ClauseInfo> clauses, ResolutionContext ctx)
+        {
+            if (ctx.IsOr)
+                return;
+
+            List<ClauseInfo> spatialList = null;
+            List<ClauseInfo> vectorList = null;
+            for (int i = clauses.Count - 1; i >= 0; i--)
+            {
+                switch (clauses[i].ClauseType)
+                {
+                    case ClauseType.Spatial:
+                        spatialList ??= [];
+                        spatialList.Add(clauses[i]);
+                        clauses.RemoveAt(i);
+                        break;
+                    case ClauseType.Vector:
+                        vectorList ??= [];
+                        vectorList.Add(clauses[i]);
+                        clauses.RemoveAt(i);
+                        break;
+                }
+            }
+            ctx.SpatialClauses = spatialList?.ToArray();
+            ctx.VectorClauses = vectorList?.ToArray();
         }
 
         /// <summary>

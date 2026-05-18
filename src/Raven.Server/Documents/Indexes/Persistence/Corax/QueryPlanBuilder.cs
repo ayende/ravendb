@@ -245,62 +245,41 @@ internal static partial class QueryPlanBuilder
             return new PlanTemplate { Clauses = [] };
 
         bool isOr = rootOp == BooleanOp.Or;
+        walkerCtx.IsOr = isOr;
 
-        // Separate spatial and vector clauses from the filter chain (AND queries only).
-        ClauseInfo[] spatialClauses = null;
-        ClauseInfo[] vectorClauses = null;
-        if (!isOr)
+        // Phase 3: walker — rewrite/register steps on the materialized ClauseInfo list
+        // before freezing. Currently runs GroupCollapse (spatial/vector partition) then
+        // WhenRegister; future steps slot in here.
+        PlanWalker.RewriteClauses(clauses, walkerCtx);
+
+        // Spatial-only or vector-only AND query with no remaining filter clauses
+        // returns an IsAllEntries template that carries the aux arrays only.
+        if (clauses.Count == 0 && (walkerCtx.SpatialClauses != null || walkerCtx.VectorClauses != null))
         {
-            List<ClauseInfo> spatialList = null, vectorList = null;
-            for (int i = clauses.Count - 1; i >= 0; i--)
+            FreezeAll(walkerCtx.SpatialClauses);
+            FreezeAll(walkerCtx.VectorClauses);
+            return new PlanTemplate
             {
-                switch (clauses[i].ClauseType)
-                {
-                    case ClauseType.Spatial:
-                        spatialList ??= [];
-                        spatialList.Add(clauses[i]);
-                        clauses.RemoveAt(i);
-                        break;
-                    case ClauseType.Vector:
-                        vectorList ??= [];
-                        vectorList.Add(clauses[i]);
-                        clauses.RemoveAt(i);
-                        break;
-                }
-            }
-            spatialClauses = spatialList?.ToArray();
-            vectorClauses = vectorList?.ToArray();
-
-            if (clauses.Count == 0 && (spatialClauses != null || vectorClauses != null))
-            {
-                return new PlanTemplate
-                {
-                    IsAllEntries = true,
-                    Clauses = [],
-                    IsOr = false,
-                    SpatialClauses = spatialClauses,
-                    VectorClauses = vectorClauses
-                };
-            }
+                IsAllEntries = true,
+                Clauses = [],
+                IsOr = false,
+                SpatialClauses = walkerCtx.SpatialClauses,
+                VectorClauses = walkerCtx.VectorClauses
+            };
         }
 
         var templateClauses = clauses.ToArray();
-
-        // Phase 3: walker — rewrite/register steps on the materialized ClauseInfo[]
-        // before freezing. Currently runs WhenRegister; future steps slot in here.
-        PlanWalker.RewriteClauses(templateClauses, walkerCtx);
-
         FreezeAll(templateClauses);
-        FreezeAll(spatialClauses);
-        FreezeAll(vectorClauses);
+        FreezeAll(walkerCtx.SpatialClauses);
+        FreezeAll(walkerCtx.VectorClauses);
 
         return new PlanTemplate
         {
             Clauses = templateClauses,
             IsAllEntries = false,
             IsOr = isOr,
-            SpatialClauses = spatialClauses,
-            VectorClauses = vectorClauses,
+            SpatialClauses = walkerCtx.SpatialClauses,
+            VectorClauses = walkerCtx.VectorClauses,
             WhenCount = walkerCtx.WhenCount
         };
     }
