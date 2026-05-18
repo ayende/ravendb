@@ -731,5 +731,14 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             parameters: parameters);
     }
 
+    public override void Dispose()
+    {
+        _results.Dispose();
+        _entriesBufferScope.Dispose();
+        _scoresResults.Dispose();
+        _distancesResults.Dispose();
+        (_inner as IDisposable)?.Dispose();
+    }
+
     string DebugView => Inspect().ToString();
 }
