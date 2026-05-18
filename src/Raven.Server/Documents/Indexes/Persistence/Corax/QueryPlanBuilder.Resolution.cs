@@ -2029,6 +2029,21 @@ internal static partial class QueryPlanBuilder
         if (fieldName == null)
             return;
 
+        // Skip highlighting for null-valued clauses (e.g. WHERE City == null).
+        // Null is not a search term — there's nothing to highlight. Without this
+        // guard, the highlighter produces a spurious result for null fields (#4781).
+        if (clause.ClauseType is ClauseType.Equals or ClauseType.NotEquals)
+        {
+            var packed = exec?.PackedParamValue ?? PackedParam.None;
+            if (packed.IsNone || (packed.ValueType == PackedParam.TypeString
+                && packed.Param1 >= 0 && plan.StringValues != null
+                && packed.Param1 < plan.StringValues.Length
+                && plan.StringValues[packed.Param1] == null))
+            {
+                return;
+            }
+        }
+
         if (highlightingTerms.TryGetValue(fieldName, out var existingTerm))
         {
             existingTerm.Values ??= GetHighlightingValues(clause, exec, plan);
