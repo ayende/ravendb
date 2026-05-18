@@ -605,6 +605,7 @@ internal static partial class QueryPlanBuilder
                 CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanExplain),
 
                 ExplainSource = explainText + "\n" + scanExplain,
+                CSharpSource = QueryIlEmitter.EmitCSharpSource(plan) + "\n" + ResidualScanIlEmitter.EmitCSharpSource(plan.ScanPredicateInfos),
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
                 FullKinds = plan.FullKinds,

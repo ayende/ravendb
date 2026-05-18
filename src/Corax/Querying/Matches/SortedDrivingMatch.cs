@@ -59,13 +59,22 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     private int _plIdsIdx;
     private int _smallItemsIdx;
 
-    // Null entry handling (non-existing entries are never included when sorting by value)
+    // Null / non-existing entry handling.
+    // Non-existing entries (docs where the sort field was absent) are treated as null-adjacent:
+    //   nullFirst=true  → non-existing, then nulls, then normal values
+    //   nullFirst=false → normal values, then nulls, then non-existing
     private readonly bool _nullFirst;
     private readonly long _nullPostingListId;
     private PostingList _nullPostingList;
     private PostingList.Iterator _nullIterator;
     private bool _hasNullPostingList;
     private bool _nullExhausted;
+
+    private readonly long _nonExistingPostingListId;
+    private PostingList _nonExistingPostingList;
+    private PostingList.Iterator _nonExistingIterator;
+    private bool _hasNonExistingPostingList;
+    private bool _nonExistingExhausted;
 
     public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator,
         Querying.IndexSearcher searcher, FieldMetadata field, bool nullFirst, bool drainNulls = true)
@@ -82,10 +91,16 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             _nullExhausted = !_hasNullPostingList;
             if (_hasNullPostingList)
                 InitPostingList(ref _nullPostingList, ref _nullIterator, _nullPostingListId);
+
+            _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in field, out _nonExistingPostingListId);
+            _nonExistingExhausted = !_hasNonExistingPostingList;
+            if (_hasNonExistingPostingList)
+                InitPostingList(ref _nonExistingPostingList, ref _nonExistingIterator, _nonExistingPostingListId);
         }
         else
         {
             _nullExhausted = true;
+            _nonExistingExhausted = true;
         }
     }
 
@@ -102,19 +117,19 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         bool hasPendingBatch = _plIdsIdx < _plIdsRead;
         if (_providerExhausted && hasPendingBatch == false && _hasPendingLargeIterator == false && _hasSmallListReader == false)
         {
-            // After the provider is exhausted, drain nulls if they appear last
-            if (_nullFirst == false && _nullExhausted == false)
+            // After the provider is exhausted, drain nulls/non-existing if they appear last
+            if (_nullFirst == false && (_nullExhausted == false || _nonExistingExhausted == false))
                 return DrainNullAndNonExisting(matches, entryBuffer);
             return 0;
         }
 
         int count = 0;
 
-        // If nulls-first, drain null iterators at the start of every Fill call.
-        if (_nullFirst && _nullExhausted == false)
+        // If nulls-first, drain non-existing and null iterators at the start of every Fill call.
+        if (_nullFirst && (_nullExhausted == false || _nonExistingExhausted == false))
         {
             count += DrainNullAndNonExisting(matches, entryBuffer);
-            if (count >= matches.Length || _nullExhausted == false)
+            if (count >= matches.Length || _nullExhausted == false || _nonExistingExhausted == false)
                 return count;
         }
 
@@ -166,6 +181,8 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                     long plId = _plIdsBuffer.RawItems[i];
                     if (_hasNullPostingList && plId == _nullPostingListId)
                         continue;
+                    if (_hasNonExistingPostingList && plId == _nonExistingPostingListId)
+                        continue;
                     var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
                     if (termType == TermIdMask.SmallPostingList)
                         entryBuffer[smallCount++] = (long)EntryIdEncodings.GetContainerId(plId);
@@ -182,10 +199,14 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             {
                 long plId = _plIdsBuffer.RawItems[_plIdsIdx];
 
-                // When we're draining nulls ourselves, skip the provider's null posting list ID — it
-                // would otherwise emit the null entries inline (at the start of the iteration), but we
-                // want them positioned by _nullFirst (start or end of the whole stream).
+                // Skip null and non-existing posting list IDs — they are drained separately
+                // by DrainNullAndNonExisting, positioned by _nullFirst (start or end of stream).
                 if (_hasNullPostingList && plId == _nullPostingListId)
+                {
+                    _plIdsIdx++;
+                    continue;
+                }
+                if (_hasNonExistingPostingList && plId == _nonExistingPostingListId)
                 {
                     _plIdsIdx++;
                     continue;
@@ -284,10 +305,23 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     {
         int count = 0;
 
-        // Drain null posting list — entries with explicit null value.
-        if (_hasNullPostingList && _nullExhausted == false && count < matches.Length)
+        if (_nullFirst)
         {
-            count += DrainIterator(matches.Slice(count), entryBuffer, ref _nullIterator, ref _nullExhausted);
+            // nullFirst: non-existing first, then nulls
+            if (_hasNonExistingPostingList && _nonExistingExhausted == false && count < matches.Length)
+                count += DrainIterator(matches.Slice(count), entryBuffer, ref _nonExistingIterator, ref _nonExistingExhausted);
+
+            if (_hasNullPostingList && _nullExhausted == false && count < matches.Length)
+                count += DrainIterator(matches.Slice(count), entryBuffer, ref _nullIterator, ref _nullExhausted);
+        }
+        else
+        {
+            // nullLast: nulls first, then non-existing
+            if (_hasNullPostingList && _nullExhausted == false && count < matches.Length)
+                count += DrainIterator(matches.Slice(count), entryBuffer, ref _nullIterator, ref _nullExhausted);
+
+            if (_hasNonExistingPostingList && _nonExistingExhausted == false && count < matches.Length)
+                count += DrainIterator(matches.Slice(count), entryBuffer, ref _nonExistingIterator, ref _nonExistingExhausted);
         }
 
         return count;
@@ -348,6 +382,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             _smallListReader.Dispose();
         _pendingPostingList?.Dispose();
         _nullPostingList?.Dispose();
+        _nonExistingPostingList?.Dispose();
         _emittedBitmap.Dispose();
         _plIdsBuffer.Dispose(_allocator);
         _smallContainerItems.Dispose(_allocator);

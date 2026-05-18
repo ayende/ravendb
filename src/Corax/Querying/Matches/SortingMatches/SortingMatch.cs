@@ -448,13 +448,33 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         
         void LoadNonExistingAndNullIntoBuffer(Span<long> buffer)
         {
+            // nullFirst:  non-existing < null < normal values
+            // nullLast:   normal values < null < non-existing
+            bool nullsFirst = _isForward ? _nullFirst : !_nullFirst;
+            if (nullsFirst)
+            {
+                LoadNonExistingIntoBuffer(buffer);
+                LoadNullIntoBuffer(buffer);
+            }
+            else
+            {
+                LoadNullIntoBuffer(buffer);
+                LoadNonExistingIntoBuffer(buffer);
+            }
+        }
+
+        void LoadNonExistingIntoBuffer(Span<long> buffer)
+        {
             if (_nonExistingPostingListRead == false)
             {
                 buffer[_bufferCount] = _nonExistingPostingListId;
                 _nonExistingPostingListRead = true;
                 _bufferCount += 1;
             }
-                
+        }
+
+        void LoadNullIntoBuffer(Span<long> buffer)
+        {
             if (_nullPostingListRead == false)
             {
                 buffer[_bufferCount] = _nullPostingListId;
