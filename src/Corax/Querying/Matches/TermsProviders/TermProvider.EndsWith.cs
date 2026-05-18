@@ -28,13 +28,6 @@ namespace Corax.Querying.Matches.TermsProviders
             _endsWith = endsWith;
         }
 
-        public bool IsFillSupported => false;
-
-        public int Fill(Span<long> containers)
-        {
-            throw new NotImplementedException();
-        }
-
         public int FillPostingListIds(Span<long> postingListIds)
         {
             var suffix = _endsWith.Decoded();

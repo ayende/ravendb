@@ -28,13 +28,6 @@ namespace Corax.Querying.Matches.TermsProviders
             _term = term;
         }
 
-        public bool IsFillSupported { get; }
-
-        public int Fill(Span<long> containers)
-        {
-            throw new NotImplementedException();
-        }
-
         public int FillPostingListIds(Span<long> postingListIds)
         {
             var contains = _term.Decoded();

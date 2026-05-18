@@ -113,7 +113,7 @@ public partial class IndexSearcher
 
     public IQueryMatch InQuery(in FieldMetadata field, List<string> terms)
     {
-        ITermsProvider provider = new InTermsProvider<string>(this, field, terms);
+        ITermsProvider provider = new InTermsProvider(this, field, terms);
         return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
     }
 }
