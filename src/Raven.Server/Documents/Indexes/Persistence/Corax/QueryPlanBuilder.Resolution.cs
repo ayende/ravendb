@@ -412,6 +412,22 @@ internal static partial class QueryPlanBuilder
             }
         }
 
+        // Remap compound-field driving clause index similarly.
+        plan.CompoundFieldDrivingClause = -1;
+        plan.CompoundFieldSortName = template.CompoundFieldSortName;
+        plan.CompoundFieldIsMultiSort = template.CompoundFieldIsMultiSort;
+        if (template.CompoundFieldDrivingClause >= 0)
+        {
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (clauses[i].OriginalIndex == template.CompoundFieldDrivingClause)
+                {
+                    plan.CompoundFieldDrivingClause = i;
+                    break;
+                }
+            }
+        }
+
         var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds, plan.WhenFlags);
         if (compiledPlan == null)
         {
@@ -2533,87 +2549,20 @@ internal static partial class QueryPlanBuilder
     {
         compoundMatch = null;
 
-        if (orderByFields == null || orderByFields.Length == 0)
+        // Use the pre-identified compound-field candidate from template time.
+        // Structural checks (ORDER BY shape, HasCompoundField, Equals clause pairing)
+        // were done at template construction (FindCompoundFieldCandidate).
+        int drivingClauseIdx = plan.CompoundFieldDrivingClause;
+        string sortFieldName = plan.CompoundFieldSortName;
+        if (drivingClauseIdx < 0 || sortFieldName == null)
             return false;
-        if (plan.Clauses == null || plan.Clauses.Count == 0 || plan.AllNegated)
+        if (plan.Clauses == null || drivingClauseIdx >= plan.Clauses.Count || plan.AllNegated)
             return false;
 
         var clauses = plan.Clauses;
         var execs = plan.Executions;
-        var index = planParams.Index;
         var indexSearcher = planParams.IndexSearcher;
         var allocator = planParams.Allocator;
-
-        // Determine which field to pair with the Equals clause for compound lookup.
-        // Single ORDER BY: compound(equalsField, sortField)
-        // Two ORDER BY fields: compound(orderBy[0], orderBy[1]) — the Equals must be on orderBy[0]
-        string sortFieldName;
-        string compoundField1ForMultiSort = null;
-        if (orderByFields.Length == 1)
-        {
-            sortFieldName = orderByFields[0].Field.FieldName.ToString();
-        }
-        else if (orderByFields.Length == 2)
-        {
-            // Check if compound(orderBy[0], orderBy[1]) exists
-            string f1 = orderByFields[0].Field.FieldName.ToString();
-            string f2 = orderByFields[1].Field.FieldName.ToString();
-            using (Voron.Slice.From(allocator, f1, out var s1))
-            using (Voron.Slice.From(allocator, f2, out var s2))
-            {
-                if (index.HasCompoundField(s1, s2, out _))
-                {
-                    sortFieldName = f2; // The compound tree sorts by f1 then f2
-                    compoundField1ForMultiSort = f1; // The Equals clause must be on f1
-                }
-                else
-                {
-                    return false; // No compound field for this ORDER BY pair
-                }
-            }
-        }
-        else
-        {
-            return false; // >2 ORDER BY fields not supported
-        }
-
-        // Find an Equals clause that, paired with the ORDER BY field, matches a compound field
-        int drivingClauseIdx = -1;
-        for (int i = 0; i < clauses.Count; i++)
-        {
-            var c = clauses[i];
-            if (c.ClauseType != ClauseType.Equals || c.IsNegated || c.HasBoost)
-                continue;
-            var e = execs[i];
-            if (e.BoostFactor > 0)
-                continue;
-
-            if (compoundField1ForMultiSort != null)
-            {
-                // Multi-field ORDER BY: the Equals must be on the first ORDER BY field
-                if (c.FieldName == compoundField1ForMultiSort)
-                {
-                    drivingClauseIdx = i;
-                    break;
-                }
-            }
-            else
-            {
-                // Single-field ORDER BY: check compound(equalsField, sortField)
-                using (Voron.Slice.From(allocator, c.FieldName, out var f1Slice))
-                using (Voron.Slice.From(allocator, sortFieldName, out var sortSlice))
-                {
-                    if (index.HasCompoundField(f1Slice, sortSlice, out _))
-                    {
-                        drivingClauseIdx = i;
-                        break;
-                    }
-                }
-            }
-        }
-
-        if (drivingClauseIdx == -1)
-            return false;
 
         var drivingClause = clauses[drivingClauseIdx];
         var drivingExec = execs[drivingClauseIdx];

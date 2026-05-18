@@ -101,6 +101,14 @@ public class QueryExecution
     /// <summary>True when compound field order is (A, B); false when (B, A).</summary>
     public bool CompoundExactAFirst;
 
+    /// <summary>Pre-identified compound-field-match (WHERE Equals + ORDER BY) driving clause
+    /// index (runtime, remapped from template). -1 when none.</summary>
+    public int CompoundFieldDrivingClause = -1;
+    /// <summary>Sort field name for compound-field match.</summary>
+    public string CompoundFieldSortName;
+    /// <summary>Multi-sort mode for compound-field match.</summary>
+    public bool CompoundFieldIsMultiSort;
+
     /// <summary>Number of bitmaps this plan needs at execution time.
     /// Slot 0 = main result, slot 1 = scratch for AND-with-postings / AND-NOT and OR-group
     /// accumulation. Plans with multiple AndGroups inside an OR chain use slot 2 as a

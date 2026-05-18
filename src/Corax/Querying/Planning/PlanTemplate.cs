@@ -66,6 +66,16 @@ public sealed class PlanTemplate
     /// <summary>True when compound field order is (A, B); false when (B, A).</summary>
     public bool CompoundExactAFirst;
 
+    /// <summary>Pre-identified compound-field-match (WHERE Equals + ORDER BY) driving clause
+    /// index (template position). -1 when no qualifying clause/compound-field pair exists.
+    /// Eliminates per-execution clause scan + HasCompoundField Slice allocations.</summary>
+    public int CompoundFieldDrivingClause = -1;
+    /// <summary>Sort field name for the compound-field match (the second field in the compound pair).
+    /// Null when CompoundFieldDrivingClause is -1.</summary>
+    public string CompoundFieldSortName;
+    /// <summary>True when compound-field match uses two ORDER BY fields (multi-sort mode).</summary>
+    public bool CompoundFieldIsMultiSort;
+
     /// <summary>Count of clauses that carry a <see cref="ClauseInfo.WhenCondition"/>,
     /// in template traversal order. Computed once at template construction. If this
     /// exceeds <see cref="MaxWhenClauses"/>, template construction throws
