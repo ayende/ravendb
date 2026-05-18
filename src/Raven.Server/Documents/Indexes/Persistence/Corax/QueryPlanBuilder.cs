@@ -514,8 +514,7 @@ internal static partial class QueryPlanBuilder
                 return BooleanOp.Leaf;
 
             case MethodExpression method:
-                ParseMethod(method, indexSearcher, clauses, queryParameters, metadata, walkerCtx, ref hasMixedAndOr);
-                return BooleanOp.Leaf;
+                return ParseMethod(method, indexSearcher, clauses, queryParameters, metadata, walkerCtx, ref hasMixedAndOr);
 
             case NegatedExpression negated:
                 ParseNegated(negated, indexSearcher, clauses, queryParameters, metadata, walkerCtx, ref hasMixedAndOr);
@@ -765,7 +764,7 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static void ParseMethod(MethodExpression method, IndexSearcher indexSearcher,
+    private static BooleanOp ParseMethod(MethodExpression method, IndexSearcher indexSearcher,
         List<ClauseInfo> clauses, BlittableJsonReaderObject queryParameters, QueryMetadata metadata,
         ResolutionContext walkerCtx, ref bool hasMixedAndOr)
     {
@@ -800,13 +799,17 @@ internal static partial class QueryPlanBuilder
 
             case MethodType.Exact:
             {
-                // exact(expr) → recurse, then mark all new clauses as exact
+                // exact(expr) → recurse, then mark all new clauses as exact.
+                // Propagate the inner BooleanOp so that exact(A OR B) is still detected as OR at
+                // the root — otherwise the outer ParseExpression would see Leaf and compile in
+                // AND mode, intersecting the OR branches.
                 int beforeCount = clauses.Count;
+                BooleanOp innerOp = BooleanOp.Leaf;
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, walkerCtx, ref hasMixedAndOr);
+                    innerOp = ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, walkerCtx, ref hasMixedAndOr);
                 for (int c = beforeCount; c < clauses.Count; c++)
                     clauses[c].IsExact = true;
-                break;
+                return innerOp;
             }
 
             case MethodType.Boost:
@@ -816,9 +819,14 @@ internal static partial class QueryPlanBuilder
                 // boost propagation centralised in PlanWalker.RewriteClauses so future
                 // rewrites that reshape the clause list (e.g. GroupCollapse, AnalyzerRewrite)
                 // observe a stable post-materialize tree before propagation runs.
+                //
+                // Propagate the inner BooleanOp so that boost(A OR B, n) is still detected as OR
+                // at the root — otherwise the outer ParseExpression would see Leaf and compile in
+                // AND mode, intersecting the OR branches (RavenDB-25281 / OrBoosting regression).
                 int beforeCount = clauses.Count;
+                BooleanOp innerOp = BooleanOp.Leaf;
                 if (method.Arguments.Count > 0)
-                    ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, walkerCtx, ref hasMixedAndOr);
+                    innerOp = ParseExpression(method.Arguments[0], indexSearcher, clauses, queryParameters, metadata, walkerCtx, ref hasMixedAndOr);
                 ParameterBinding boostBinding = method.Arguments.Count > 1
                     ? CreateBinding(method.Arguments[1], queryParameters) : null;
                 if (boostBinding != null && clauses.Count > beforeCount)
@@ -831,7 +839,7 @@ internal static partial class QueryPlanBuilder
                         inner[c] = clauses[beforeCount + c];
                     walkerCtx.RecordPendingBoost(inner, boostBinding);
                 }
-                break;
+                return innerOp;
             }
 
             case MethodType.Regex:
@@ -965,21 +973,28 @@ internal static partial class QueryPlanBuilder
                 // when(condition, expr) — create a delegate that evaluates the condition
                 // against the query's BlittableJsonReaderObject parameters at execution time.
                 // Clauses whose condition evaluates to false are eliminated in BuildAndCompile.
+                //
+                // Propagate the inner BooleanOp so that when(c, A OR B) preserves the OR shape
+                // for rootOp detection (parallels Boost/Exact wrappers).
                 if (method.Arguments.Count != 2)
                     break;
                 var conditionExpr = method.Arguments[0];
                 int beforeCount = clauses.Count;
-                ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, walkerCtx, ref hasMixedAndOr);
+                BooleanOp innerOp = ParseExpression(method.Arguments[1], indexSearcher, clauses, queryParameters, metadata, walkerCtx, ref hasMixedAndOr);
                 for (int wi = beforeCount; wi < clauses.Count; wi++)
                     clauses[wi].WhenCondition = (queryParams) =>
                         QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(conditionExpr, metadata.Query, metadata, queryParams);
-                break;
+                return innerOp;
             }
 
             default:
                 throw new InvalidOperationException(
                     $"Unexpected method '{method.Name.Value}' ({methodType}) in WHERE clause.");
         }
+
+        // Leaf methods (Search, StartsWith, EndsWith, Exists, Regex, Spatial_*, Vector.*, MoreLikeThis, etc.)
+        // and the malformed-When fallback all add at most one ClauseInfo with no nested boolean structure.
+        return BooleanOp.Leaf;
     }
 
     private static void ParseSearchMethod(MethodExpression method, List<ClauseInfo> clauses,
