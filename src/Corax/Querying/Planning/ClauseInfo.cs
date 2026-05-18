@@ -48,6 +48,8 @@ public sealed class ClauseInfo
     private List<ClauseInfo> _andSubClauses;
     private ParameterBinding[] _bindings;
     private bool _hasBoost;
+    private ParamValueType _inDominantType;
+    private bool _inAllLiteral;
     private Func<BlittableJsonReaderObject, bool> _whenCondition;
 
     public string FieldName
@@ -144,6 +146,24 @@ public sealed class ClauseInfo
         set { ThrowIfFrozen(); _bindings = value; }
     }
 
+    /// <summary>For IN/AllIn clauses: true when ALL bindings are literals (no parameters).
+    /// When set, the dominant type and type-incompatible filtering are pre-computed at
+    /// template time, skipping per-execution work in ResolveInFromBindings.</summary>
+    public bool InAllLiteral
+    {
+        get => _inAllLiteral;
+        set { ThrowIfFrozen(); _inAllLiteral = value; }
+    }
+
+    /// <summary>Pre-computed dominant type for all-literal IN/AllIn clauses. Only valid
+    /// when <see cref="InAllLiteral"/> is true. The dominant type determines which typed
+    /// array (Long/Double/String) receives the resolved values.</summary>
+    public ParamValueType InDominantType
+    {
+        get => _inDominantType;
+        set { ThrowIfFrozen(); _inDominantType = value; }
+    }
+
     /// <summary>True if this clause is wrapped in boost(). When set, Bindings[^1] is the
     /// boost factor binding and exec.BoostFactor is resolved from it per-execution.</summary>
     public bool HasBoost
@@ -196,6 +216,8 @@ public sealed class ClauseInfo
             _andSubClauses = _andSubClauses,
             _bindings = _bindings,
             _hasBoost = _hasBoost,
+            _inDominantType = _inDominantType,
+            _inAllLiteral = _inAllLiteral,
             _whenCondition = _whenCondition,
             // _frozen intentionally left false — clones are mutable
         };

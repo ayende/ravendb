@@ -740,7 +740,7 @@ internal static partial class QueryPlanBuilder
                 return;
             case ClauseType.In or ClauseType.AllIn:
                 // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
-                ResolveInFromBindings(exec, queryParameters, writer, bindings);
+                ResolveInFromBindings(clause, exec, queryParameters, writer, bindings);
                 break;
             default:
                 // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
@@ -782,7 +782,7 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static void ResolveInFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings)
+    private static void ResolveInFromBindings(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings)
     {
         var termTypes = new List<ParamValueType>();
         var resolvedValues = new List<object>();
@@ -840,16 +840,25 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // Determine dominant type
-        ParamValueType dominantType = ParamValueType.Null;
-        for (int i = 0; i < termTypes.Count; i++)
+        // Determine dominant type. For all-literal IN clauses, this was pre-computed
+        // at template time by InPreClassify — skip the per-execution scan.
+        ParamValueType dominantType;
+        if (clause.InAllLiteral)
         {
-            if (resolvedValues[i] == null) continue;
-            if (dominantType == ParamValueType.Null)  
-                dominantType = termTypes[i];
+            dominantType = clause.InDominantType;
         }
-        if (dominantType == ParamValueType.Null) 
-            dominantType = ParamValueType.String;
+        else
+        {
+            dominantType = ParamValueType.Null;
+            for (int i = 0; i < termTypes.Count; i++)
+            {
+                if (resolvedValues[i] == null) continue;
+                if (dominantType == ParamValueType.Null)
+                    dominantType = termTypes[i];
+            }
+            if (dominantType == ParamValueType.Null)
+                dominantType = ParamValueType.String;
+        }
 
         int packedType = dominantType switch
         {
