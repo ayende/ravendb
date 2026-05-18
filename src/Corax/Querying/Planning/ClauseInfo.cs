@@ -47,8 +47,6 @@ public sealed class ClauseInfo
     private List<ClauseInfo> _andSubClauses;
     private ParameterBinding[] _bindings;
     private bool _hasBoost;
-    private bool _betweenLowUnbounded;
-    private bool _betweenHighUnbounded;
     private Func<BlittableJsonReaderObject, bool> _whenCondition;
 
     public string FieldName
@@ -134,26 +132,6 @@ public sealed class ClauseInfo
         set { ThrowIfFrozen(); _bindings = value; }
     }
 
-    /// <summary>True when the BETWEEN low bound is the unbounded sentinel ("*") and was
-    /// detected at plan time from a literal binding by the BetweenDetectSentinels walker
-    /// step. Copied to <see cref="ClauseExecution.BetweenLowUnbounded"/> at execution time;
-    /// parameter-bound sentinels are detected at runtime and only set the exec flag.</summary>
-    public bool BetweenLowUnbounded
-    {
-        get => _betweenLowUnbounded;
-        set { ThrowIfFrozen(); _betweenLowUnbounded = value; }
-    }
-
-    /// <summary>True when the BETWEEN high bound is the unbounded sentinel ("NULL") and was
-    /// detected at plan time from a literal binding by the BetweenDetectSentinels walker
-    /// step. Copied to <see cref="ClauseExecution.BetweenHighUnbounded"/> at execution time;
-    /// parameter-bound sentinels are detected at runtime and only set the exec flag.</summary>
-    public bool BetweenHighUnbounded
-    {
-        get => _betweenHighUnbounded;
-        set { ThrowIfFrozen(); _betweenHighUnbounded = value; }
-    }
-
     /// <summary>True if this clause is wrapped in boost(). When set, Bindings[^1] is the
     /// boost factor binding and exec.BoostFactor is resolved from it per-execution.</summary>
     public bool HasBoost
@@ -205,8 +183,6 @@ public sealed class ClauseInfo
             _andSubClauses = _andSubClauses,
             _bindings = _bindings,
             _hasBoost = _hasBoost,
-            _betweenLowUnbounded = _betweenLowUnbounded,
-            _betweenHighUnbounded = _betweenHighUnbounded,
             _whenCondition = _whenCondition,
             // _frozen intentionally left false — clones are mutable
         };

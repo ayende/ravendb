@@ -170,25 +170,6 @@ internal static partial class QueryPlanBuilder
         _ => ValueTokenType.String
     };
 
-    /// <summary>Type-appropriate "no lower bound" value, used when rewriting BETWEEN with the
-    /// "*" sentinel. We still write a real value into ValueWriter so AddPair doesn't crash
-    /// (Convert.ToInt64("*") would throw); the actual bound semantics are applied at resolution
-    /// via <see cref="ClauseExecution.BetweenLowUnbounded"/>.</summary>
-    private static object GetTypeMinSentinel(ParamValueType t) => t switch
-    {
-        ParamValueType.Long => long.MinValue,
-        ParamValueType.Double => double.MinValue,
-        _ => string.Empty
-    };
-
-    /// <summary>Type-appropriate "no upper bound" value — see <see cref="GetTypeMinSentinel"/>.</summary>
-    private static object GetTypeMaxSentinel(ParamValueType t) => t switch
-    {
-        ParamValueType.Long => long.MaxValue,
-        ParamValueType.Double => double.MaxValue,
-        _ => "\uFFFF"
-    };
-
     /// <summary>True when a value of type <paramref name="termType"/> cannot be coerced
     /// to <paramref name="dominantType"/> without throwing. Used to filter mixed-type IN
     /// lists: a string term in an otherwise-numeric IN list (e.g. IN(DateTime, "Shalom")
@@ -1852,15 +1833,10 @@ internal static partial class QueryPlanBuilder
             return false;
         if (clause.HasBoost)
             return false;
-        // BETWEEN with a client-sent null sentinel rewrites at resolution time into
-        // LessThanOrEqual / AllEntries-ANDNOT-LessThan — those custom shapes can't be
-        // delivered by the TreeScan ITermsProvider dispatch, so force QueryMatch.
-        // Template-level flags (from BetweenDetectSentinels) catch literal sentinels even
-        // when exec is null; exec-level flags catch parameter-bound sentinels at build time.
-        if (clause.ClauseType == ClauseType.Between && (clause.BetweenLowUnbounded || clause.BetweenHighUnbounded))
-            return false;
-        if (clause.ClauseType == ClauseType.Between && exec is { BetweenLowUnbounded: true } or { BetweenHighUnbounded: true })
-            return false;
+        // Sentinel BETWEEN (unbounded low/high) is rewritten at template time by the
+        // BetweenRewriteSentinels walker step into LessThanOrEqual / NOT-LessThan, so
+        // remaining BETWEEN clauses here are always standard bounded ranges — no sentinel
+        // guard needed.
         return clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith
             or ClauseType.Exists or ClauseType.Regex
             or ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
