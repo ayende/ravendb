@@ -1192,18 +1192,12 @@ internal static partial class QueryPlanBuilder
                 // Covers NotEquals, NOT IN, NOT AllIn, NOT exists(), NOT startsWith(), etc.
                 // The raw posting list / range / tree-scan can't deliver the complement,
                 // so dispatch is forced to QueryMatch and CreateNotEqualsOrMatch produces
-                // a pre-materialized BitmapMatch.
+                // a pre-materialized BitmapMatch. The IsOrChainNotEquals flag is set at
+                // template build time by PlanWalker.NotCanonicalize.
                 if (it.IsNegated || it.ClauseType == ClauseType.NotEquals)
                 {
-                    if (it.IsOrChainNotEquals == false)
-                    {
-                        // ClauseInfo is shared with the cached plan template; clone before
-                        // mutating so the template stays untouched across executions.
-                        var cloned = it.Clone();
-                        cloned.IsOrChainNotEquals = true;
-                        clauses[ci] = cloned;
-                        it = cloned;
-                    }
+                    Debug.Assert(it.IsOrChainNotEquals,
+                        "PlanWalker.NotCanonicalize must mark every negated OR-chain clause with IsOrChainNotEquals=true before template freeze.");
                     ops.Add(new PlanOp
                     {
                         Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,

@@ -114,6 +114,7 @@ internal static partial class QueryPlanBuilder
         public static void RewriteClauses(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             BoostPropagate(ctx);
+            NotCanonicalize(clauses, ctx);
             GroupCollapse(clauses, ctx);
             WhenRegister(clauses, ctx);
             ThrowIfErrors(ctx);
@@ -156,6 +157,38 @@ internal static partial class QueryPlanBuilder
                     $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
             }
             ctx.WhenCount = whenCount;
+        }
+
+        /// <summary>
+        /// For OR-rooted templates, mark every top-level negated clause with
+        /// <see cref="ClauseInfo.IsOrChainNotEquals"/> = true. This was previously a
+        /// per-execution decision in <see cref="EmitPlan"/> — observing a negated clause
+        /// inside an OR chain, it would <see cref="ClauseInfo.Clone"/> the template
+        /// ClauseInfo, flip the flag on the clone, and swap it into the per-execution
+        /// list because the template was frozen. Performing the flip here, before
+        /// <see cref="FreezeAll"/>, means the template already carries the canonical
+        /// value and the per-execution clone is unnecessary.
+        ///
+        /// Covers NotEquals, NOT IN, NOT AllIn, NOT exists(), NOT startsWith(), etc.
+        /// The flag tells <c>CreateNotEqualsOrMatch</c> to pre-materialise
+        /// AllEntries ANDNOT(positive form) into a BitmapMatch — required because the
+        /// raw posting list / range / tree-scan can't deliver the complement directly,
+        /// and the OR chain needs the complement bitmap to OrWith into.
+        ///
+        /// No-op for AND-rooted templates: <see cref="ClauseInfo.IsOrChainNotEquals"/>
+        /// is meaningful only inside an OR chain.
+        /// </summary>
+        private static void NotCanonicalize(List<ClauseInfo> clauses, ResolutionContext ctx)
+        {
+            if (ctx.IsOr == false)
+                return;
+
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                var c = clauses[i];
+                if (c.IsNegated || c.ClauseType == ClauseType.NotEquals)
+                    c.IsOrChainNotEquals = true;
+            }
         }
 
         /// <summary>
