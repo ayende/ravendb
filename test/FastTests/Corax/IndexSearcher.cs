@@ -235,6 +235,7 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content IN ('road', 'lake')");
                 Assert.Equal(2, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/2");
             }
         }
 
@@ -253,6 +254,7 @@ namespace FastTests.Corax
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/1' AND Content = 'mountain'");
 
                 Assert.Equal(1, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1");
             }
         }
 
@@ -270,6 +272,7 @@ namespace FastTests.Corax
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/1' AND Content = 'mountain'");
 
                 Assert.Equal(2, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/1");
             }
         }
 
@@ -300,6 +303,7 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/1' AND Content = 'mountain'");
                 Assert.Equal(2, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/1");
             }
         }
 
@@ -330,9 +334,11 @@ namespace FastTests.Corax
             {
                 var results1 = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/1' OR Content = 'highway'");
                 Assert.Equal(1, results1.Count);
+                AssertIds(ResolveDocumentIds(results1), "entry/1");
 
                 var results2 = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/3' OR Content = 'mountain'");
                 Assert.Equal(1, results2.Count);
+                AssertIds(ResolveDocumentIds(results2), "entry/2");
             }
         }
 
@@ -348,6 +354,7 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/1' OR Content = 'mountain'");
                 Assert.Equal(2, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/2");
             }
         }
 
@@ -364,6 +371,7 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/1' OR Content = 'mountain'");
                 Assert.Equal(3, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/2", "entry/3");
             }
         }
 
@@ -380,11 +388,13 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE (Id = 'entry/1' AND Content = 'mountain') OR Id = 'entry/3'");
                 Assert.Equal(2, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/3");
             }
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/3' OR (Id = 'entry/1' AND Content = 'mountain')");
                 Assert.Equal(2, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/3");
             }
         }
 
@@ -455,16 +465,19 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content IN ('road', 'space')");
                 Assert.Equal(3, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/2", "entry/3");
             }
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content IN ('sky', 'space')");
                 Assert.Equal(1, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/3");
             }
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content IN ('road', 'mountain', 'space')");
                 Assert.Equal(3, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/2", "entry/3");
             }
         }
 
@@ -640,12 +653,14 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content = 'quo' AND Content = 'in'");
                 Assert.Equal(2, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/0", "entry/6");
             }
 
             {
                 // ALL IN requires every listed term to be present — only entry9 has all 27.
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content ALL IN ('dolorem', 'ipsa', 'in', 'omnis', 'ullamco', 'ab', 'esse', 'aut', 'rem', 'eu', 'iure', 'ad', 'consequuntur', 'est', 'adipisci', 'velit', 'inventore', 'nesciunt.', 'vitae', 'laborum.', 'voluptate', 'et', 'fugiat', 'voluptas', 'quae', 'dolor', 'qui')");
                 Assert.Equal(1, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/9");
             }
 
             {
@@ -902,11 +917,13 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content > '1'");
                 Assert.Equal(2, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/2");
             }
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content >= '1'");
                 Assert.Equal(3, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/2", "entry/3");
             }
 
             {
@@ -917,6 +934,7 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content <= '1'");
                 Assert.Equal(1, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/3");
             }
         }
 
@@ -934,11 +952,13 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content = '1'");
                 Assert.Equal(2, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/3");
             }
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content != '1'");
                 Assert.Equal(1, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/2");
             }
 
             {
@@ -949,6 +969,7 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content != '4'");
                 Assert.Equal(3, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/2", "entry/3");
             }
         }
 
@@ -1060,11 +1081,13 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content >= '1' AND Content <= '2'");
                 Assert.Equal(2, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/2", "entry/3");
             }
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content >= '0' AND Content <= '3'");
                 Assert.Equal(3, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/1", "entry/2", "entry/3");
             }
 
             {
@@ -1075,6 +1098,7 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content >= '1' AND Content <= '1'");
                 Assert.Equal(1, results.Count);
+                AssertIds(ResolveDocumentIds(results), "entry/3");
             }
         }
 
@@ -1087,22 +1111,30 @@ namespace FastTests.Corax
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content >= 20 AND Content <= 30");
-                Assert.Equal(entries.Count(i => i.Content is >= 20 and <= 30), results.Count);
+                var expected = entries.Where(i => i.Content is >= 20 and <= 30).Select(e => e.Id).ToArray();
+                Assert.Equal(expected.Length, results.Count);
+                AssertIds(ResolveDocumentIds(results), expected);
             }
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content > 20 AND Content <= 30");
-                Assert.Equal(entries.Count(i => i.Content is > 20 and <= 30), results.Count);
+                var expected = entries.Where(i => i.Content is > 20 and <= 30).Select(e => e.Id).ToArray();
+                Assert.Equal(expected.Length, results.Count);
+                AssertIds(ResolveDocumentIds(results), expected);
             }
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content >= 20 AND Content < 30");
-                Assert.Equal(entries.Count(i => i.Content is >= 20 and < 30), results.Count);
+                var expected = entries.Where(i => i.Content is >= 20 and < 30).Select(e => e.Id).ToArray();
+                Assert.Equal(expected.Length, results.Count);
+                AssertIds(ResolveDocumentIds(results), expected);
             }
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content > 20 AND Content < 30");
-                Assert.Equal(entries.Count(i => i.Content is > 20 and < 30), results.Count);
+                var expected = entries.Where(i => i.Content is > 20 and < 30).Select(e => e.Id).ToArray();
+                Assert.Equal(expected.Length, results.Count);
+                AssertIds(ResolveDocumentIds(results), expected);
             }
         }
         
@@ -1304,11 +1336,14 @@ namespace FastTests.Corax
             using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
             IndexEntries(bsc, entriesToIndex, CreateKnownFields(bsc));
 
+            var allIds = entries.Select(e => e.Id).ToArray();
+
             {
                 // Test: (Content != '8') OR (Content != '9') OR (Content != '10') = all entries
                 // (no entry has 8, 9, or 10, so each != matches all 7)
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content != '8' OR Content != '9' OR Content != '10'");
                 Assert.Equal(7, results.Count);
+                AssertIds(ResolveDocumentIds(results), allIds);
             }
 
             {
@@ -1317,12 +1352,14 @@ namespace FastTests.Corax
                 // No entry has ALL of {1,2,3,5,7}, so OR of NOT-in gives all 7 entries.
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content != '1' OR Content != '2' OR Content != '3' OR Content != '5' OR Content != '7'");
                 Assert.Equal(entries.Count, results.Count);
+                AssertIds(ResolveDocumentIds(results), allIds);
             }
 
             {
                 // Test: All entries have an Id starting with 'entry/'
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE startsWith(Id, 'entry/')");
                 Assert.Equal(7, results.Count);
+                AssertIds(ResolveDocumentIds(results), allIds);
             }
 
             {
@@ -1330,6 +1367,7 @@ namespace FastTests.Corax
                 // None of the entries have content values 8, 9, or 10.
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE startsWith(Id, 'entry/') AND NOT Content IN ('8', '9', '10')");
                 Assert.Equal(7, results.Count);
+                AssertIds(ResolveDocumentIds(results), allIds);
             }
         }
 
@@ -1465,6 +1503,31 @@ namespace FastTests.Corax
             }
 
             return results;
+        }
+
+        /// <summary>
+        /// Resolves a list of Corax entry IDs to their document ID strings (preserving duplicates).
+        /// </summary>
+        private List<string> ResolveDocumentIds(List<long> entryIds)
+        {
+            using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
+            var result = new List<string>(entryIds.Count);
+            foreach (long id in entryIds)
+                result.Add(searcher.TermsReaderFor(searcher.GetFirstIndexedFiledName()).GetTermFor(id));
+            result.Sort(StringComparer.Ordinal);
+            return result;
+        }
+
+        /// <summary>
+        /// Asserts that the resolved document IDs match the expected set exactly (order-independent).
+        /// </summary>
+        private static void AssertIds(List<string> actual, params string[] expected)
+        {
+            var sorted = (string[])expected.Clone();
+            Array.Sort(sorted, StringComparer.Ordinal);
+            Assert.Equal(sorted.Length, actual.Count);
+            for (int i = 0; i < sorted.Length; i++)
+                Assert.Equal(sorted[i], actual[i]);
         }
 
         private class IndexEntry
