@@ -99,27 +99,22 @@ public static class IlEmitterShared
     public static readonly MethodInfo CtxAndNotFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromTreeScan))!;
     public static readonly MethodInfo CtxAndNotFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromMatch))!;
 
-    // MemoryExtensions.SequenceCompareTo<byte>(ReadOnlySpan<byte>, ReadOnlySpan<byte>)
-    // Match on full parameter type signature, not just name+arity: there are multiple
-    // two-parameter generic SequenceCompareTo overloads (Span/ReadOnlySpan variants) and
-    // First() ordering is not specified by reflection. Mirror the SequenceEqual lookup below.
+    // ReadOnlySpan<T0> where T0 is the 0th generic method parameter — used to resolve
+    // MemoryExtensions overloads that take (ReadOnlySpan<T>, ReadOnlySpan<T>).
+    private static readonly Type ReadOnlySpanOfT0 = typeof(ReadOnlySpan<>).MakeGenericType(Type.MakeGenericMethodParameter(0));
+
+    // MemoryExtensions.SequenceCompareTo<T>(ReadOnlySpan<T>, ReadOnlySpan<T>)
     public static readonly MethodInfo SequenceCompareTo = typeof(MemoryExtensions)
-        .GetMethods(BindingFlags.Public | BindingFlags.Static)
-        .First(m => m.Name == nameof(MemoryExtensions.SequenceCompareTo)
-                    && m.IsGenericMethodDefinition
-                    && m.GetParameters().Length == 2
-                    && m.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == typeof(ReadOnlySpan<>)
-                    && m.GetParameters()[1].ParameterType.GetGenericTypeDefinition() == typeof(ReadOnlySpan<>))
+        .GetMethod(nameof(MemoryExtensions.SequenceCompareTo), 1,
+            BindingFlags.Public | BindingFlags.Static, null,
+            [ReadOnlySpanOfT0, ReadOnlySpanOfT0], null)!
         .MakeGenericMethod(typeof(byte));
 
-    // MemoryExtensions.SequenceEqual<byte>(ReadOnlySpan<byte>, ReadOnlySpan<byte>)
+    // MemoryExtensions.SequenceEqual<T>(ReadOnlySpan<T>, ReadOnlySpan<T>)
     public static readonly MethodInfo SequenceEqual = typeof(MemoryExtensions)
-        .GetMethods(BindingFlags.Public | BindingFlags.Static)
-        .First(m => m.Name == nameof(MemoryExtensions.SequenceEqual)
-                    && m.IsGenericMethodDefinition
-                    && m.GetParameters().Length == 2
-                    && m.GetParameters()[0].ParameterType.GetGenericTypeDefinition() == typeof(ReadOnlySpan<>)
-                    && m.GetParameters()[1].ParameterType.GetGenericTypeDefinition() == typeof(ReadOnlySpan<>))
+        .GetMethod(nameof(MemoryExtensions.SequenceEqual), 1,
+            BindingFlags.Public | BindingFlags.Static, null,
+            [ReadOnlySpanOfT0, ReadOnlySpanOfT0], null)!
         .MakeGenericMethod(typeof(byte));
 
     // Entry-scan cost heuristics — called from emitted IL so thresholds stay in one place
