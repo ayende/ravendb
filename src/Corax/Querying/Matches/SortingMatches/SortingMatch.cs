@@ -693,7 +693,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public override void SetScoreAndDistanceBuffer(in SortingDataTransfer sortingDataTransfer)
+    public override void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer)
     {
         _sortingDataTransfer = sortingDataTransfer;
         if (_sortingDataTransfer.IncludeScores)
