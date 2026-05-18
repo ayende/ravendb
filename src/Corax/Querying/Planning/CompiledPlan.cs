@@ -92,6 +92,9 @@ public sealed class CompiledPlan
     /// <summary>EXPLAIN pseudocode. Generated in the same pass as IL emission.</summary>
     public string ExplainSource { get; init; }
 
+    /// <summary>Compilable C# source string mirroring emitted IL.</summary>
+    public string CSharpSource { get; init; }
+
     /// <summary>Template inspection nodes built during IL emission.
     /// At query time, cloned and populated with per-execution telemetry
     /// (timings, result counts, scanned entries) from CompiledQueryMatch.</summary>
