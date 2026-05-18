@@ -76,7 +76,7 @@ public class RavenDB_25410(ITestOutputHelper output) : StorageTest(output)
             else
             {
                 var q = indexSearcher.OrderBy(dummyMatch, new OrderMetadata(true, MatchCompareFieldType.Score), defaultNullsSortMode: NullsSortMode.NullsSmallest);
-                q.SetScoreAndDistanceBuffer(transfer);
+                q.SetSortingDataTransfer(transfer);
                 sortingMatch = q;
             }
 
