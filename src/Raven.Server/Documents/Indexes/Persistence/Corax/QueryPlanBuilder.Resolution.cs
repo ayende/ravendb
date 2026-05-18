@@ -388,7 +388,81 @@ internal static partial class QueryPlanBuilder
         }
         else
         {
-            plan = EmitPlan(clauses, executions, isOr, writer.GetStrings());
+            // Extract per-clause cardinalities and value types for EmitPlan.
+            // EmitPlan uses these for annotations (EstimatedCardinality, scan predicate types)
+            // but NOT for shape decisions.
+            var emitCardinalities = new long[executions.Length];
+            var emitTermTypes = new ParamValueType[executions.Length];
+            for (int ei = 0; ei < executions.Length; ei++)
+            {
+                emitCardinalities[ei] = executions[ei].Cardinality;
+                emitTermTypes[ei] = executions[ei].TermValueType;
+            }
+            plan = EmitPlan(clauses, emitCardinalities, emitTermTypes, isOr, writer.GetStrings());
+            plan.Executions = executions;
+
+            // Fixup InRangeCounts from actual runtime InTermCount / HasNullTerm.
+            // EmitPlan uses Bindings.Length (structural) for range counts, but runtime
+            // InTermCount may differ when a single parameter binding expands to an array.
+            // For AllIn, the null-term slot must be excluded when HasNullTerm is false
+            // (ANDing with an empty PostingSource clears the bitmap).
+            if (plan.InRangeCounts != null)
+            {
+                int rangeIdx = 0;
+                // OR chain: every In/AllIn clause emits one range entry
+                // AND chain: seed In/AllIn at position 0 emits one entry, each non-seed In/AllIn emits one
+                for (int ci = 0; ci < clauses.Count && rangeIdx < plan.InRangeCounts.Length; ci++)
+                {
+                    var cl = clauses[ci];
+                    if (cl.ClauseType == ClauseType.In)
+                    {
+                        // IN: range = InTermCount (OR with empty null-slot is no-op)
+                        plan.InRangeCounts[rangeIdx] = executions[ci].InTermCount;
+                        rangeIdx++;
+                    }
+                    else if (cl.ClauseType == ClauseType.AllIn)
+                    {
+                        int inCount = executions[ci].InTermCount;
+                        bool hasNull = executions[ci].HasNullTerm;
+                        if (ci == 0 && !isOr)
+                        {
+                            // Seed AllIn (EmitAllInOps): exclude null-slot when !HasNullTerm
+                            plan.InRangeCounts[rangeIdx] = Math.Max(0, inCount - 1 + (hasNull ? 1 : 0));
+                        }
+                        else if (isOr)
+                        {
+                            // OR chain uses EmitInOps for AllIn too — range = InTermCount
+                            plan.InRangeCounts[rangeIdx] = inCount;
+                        }
+                        else
+                        {
+                            // Non-seed AND AllIn: range = InTermCount (direct AndRange)
+                            plan.InRangeCounts[rangeIdx] = inCount;
+                        }
+                        rangeIdx++;
+                    }
+                }
+            }
+
+            // Build scan predicate infos for entry scan — done here (not in EmitPlan)
+            // because OrGroup/AndGroup subclauses need actual resolved types from executions.
+            if (isOr == false && clauses.Count > 1)
+            {
+                var scanPreds = new List<ScanPredicateInfo>();
+                int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
+                int scanStart = plan.AllNegated ? 0 : 1;
+                for (int si2 = scanStart; si2 < clauses.Count; si2++)
+                {
+                    var pred = BuildScanPredicateInfo(clauses[si2], executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex);
+                    if (pred != null)
+                        scanPreds.Add(pred.Value);
+                }
+                if (scanPreds.Count > 0)
+                {
+                    plan.ScanPredicateInfos = scanPreds.ToArray();
+                    (plan.TypeSignature, plan.FullKinds) = GetTypeSignature(plan.ScanPredicateInfos, writer.GetStrings());
+                }
+            }
         }
         // Empty-IN short-circuit: EmitPlan returns Ops=[] for an AND chain containing
         // an empty IN clause (e.g. `Names in ()`), and the resulting QueryExecution has
@@ -1680,7 +1754,7 @@ internal static partial class QueryPlanBuilder
             var clause = clauses[ci];
             var exec = execs != null && ci < execs.Length ? execs[ci] : null;
 
-            if (IsTreeScanEligibleClause(clause, exec))
+            if (IsTreeScanEligibleClause(clause))
             {
                 hasAnyTreeScan = true;
                 break;
@@ -1692,7 +1766,7 @@ internal static partial class QueryPlanBuilder
                 for (int si = 0; si < clause.OrSubClauses.Count; si++)
                 {
                     var subExec = exec?.OrSubExecutions?[si];
-                    if (IsTreeScanEligibleClause(clause.OrSubClauses[si], subExec))
+                    if (IsTreeScanEligibleClause(clause.OrSubClauses[si]))
                     {
                         hasAnyTreeScan = true;
                         break;
@@ -1706,7 +1780,7 @@ internal static partial class QueryPlanBuilder
                 for (int si = 0; si < clause.AndSubClauses.Count; si++)
                 {
                     var subExec = exec?.AndSubExecutions?[si];
-                    if (IsTreeScanEligibleClause(clause.AndSubClauses[si], subExec))
+                    if (IsTreeScanEligibleClause(clause.AndSubClauses[si]))
                     {
                         hasAnyTreeScan = true;
                         break;
@@ -1772,7 +1846,7 @@ internal static partial class QueryPlanBuilder
     private static ITermsProvider ResolveSingleTermsProvider(ClauseInfo clause, ClauseExecution exec,
         IndexSearcher indexSearcher, QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
-        if (IsTreeScanEligibleClause(clause, exec) == false)
+        if (IsTreeScanEligibleClause(clause) == false)
             return null;
 
         // Create the match via the existing factory methods, then extract the provider.
@@ -1793,7 +1867,7 @@ internal static partial class QueryPlanBuilder
     private static PostingSource ResolveSingleTermSource(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
         QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
-        if (IsTermSourceEligibleClause(clause, exec) == false)
+        if (IsTermSourceEligibleClause(clause) == false)
             return default; // Kind == Empty
 
         FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
