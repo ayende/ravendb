@@ -1119,4 +1119,89 @@ public static class QueryBuilderHelper
             _ => GetValueAsString(value),
         };
     }
+
+    /// <summary>Split a search value on whitespace, respecting double-quoted phrases.
+    /// Escapes (<c>\"</c> and <c>\\</c>) are honored — a quote is treated as a literal
+    /// when preceded by an odd number of backslashes, and the backslashes themselves
+    /// are stripped from the yielded values.</summary>
+    /// <example>
+    /// <c>nonexists "second third" nonexsts</c> -> <c>["nonexists", "second third", "nonexsts"]</c>
+    /// </example>
+    public static IEnumerable<string> SplitSearchValue(string value)
+    {
+        if (string.IsNullOrEmpty(value))
+            yield break;
+
+        List<int> escapePositions = null;
+        var quoted = false;
+        var lastWordStart = 0;
+
+        for (var i = 0; i < value.Length; i++)
+        {
+            switch (value[i])
+            {
+                case '\\' when IsEscaped(value, i):
+                    AddEscapePosition(i);
+                    break;
+                case '"':
+                    if (IsEscaped(value, i))
+                    {
+                        AddEscapePosition(i);
+                        continue;
+                    }
+
+                    if (lastWordStart != i)
+                        yield return YieldValue(value, lastWordStart, i - lastWordStart, escapePositions);
+
+                    quoted = !quoted;
+                    lastWordStart = i + 1;
+                    break;
+                case '\t':
+                case ' ':
+                    if (quoted)
+                        continue;
+
+                    if (lastWordStart != i)
+                        yield return YieldValue(value, lastWordStart, i - lastWordStart, escapePositions);
+
+                    lastWordStart = i + 1;
+                    break;
+            }
+        }
+
+        if (value.Length - lastWordStart > 0)
+            yield return YieldValue(value, lastWordStart, value.Length - lastWordStart, escapePositions);
+
+        void AddEscapePosition(int i)
+        {
+            escapePositions ??= new List<int>(16);
+            escapePositions.Add(i - 1);
+        }
+
+        static string YieldValue(string input, int startIndex, int length, List<int> escapePositions)
+        {
+            if (escapePositions == null || escapePositions.Count == 0)
+                return input.Substring(startIndex, length);
+
+            var sb = new System.Text.StringBuilder(input, startIndex, length, length);
+            for (int i = escapePositions.Count - 1; i >= 0; i--)
+                sb.Remove(escapePositions[i] - startIndex, 1);
+
+            escapePositions.Clear();
+            return sb.ToString();
+        }
+
+        static bool IsEscaped(string input, int index)
+        {
+            var count = 0;
+            for (int i = index - 1; i >= 0; i--)
+            {
+                if (input[i] == '\\')
+                    count++;
+                else
+                    break;
+            }
+            return (count & 1) == 1;
+        }
+    }
 }
