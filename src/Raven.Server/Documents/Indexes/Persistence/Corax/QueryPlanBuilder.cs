@@ -1855,6 +1855,10 @@ internal static partial class QueryPlanBuilder
         // BETWEEN with a client-sent null sentinel rewrites at resolution time into
         // LessThanOrEqual / AllEntries-ANDNOT-LessThan — those custom shapes can't be
         // delivered by the TreeScan ITermsProvider dispatch, so force QueryMatch.
+        // Template-level flags (from BetweenDetectSentinels) catch literal sentinels even
+        // when exec is null; exec-level flags catch parameter-bound sentinels at build time.
+        if (clause.ClauseType == ClauseType.Between && (clause.BetweenLowUnbounded || clause.BetweenHighUnbounded))
+            return false;
         if (clause.ClauseType == ClauseType.Between && exec is { BetweenLowUnbounded: true } or { BetweenHighUnbounded: true })
             return false;
         return clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith

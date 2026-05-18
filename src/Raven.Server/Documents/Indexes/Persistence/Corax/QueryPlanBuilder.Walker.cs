@@ -84,8 +84,7 @@ internal static partial class QueryPlanBuilder
     ///
     /// Step 4 of #25281 introduces this scaffolding with a single step
     /// (<see cref="AstShapeValidate"/>); follow-up commits add the remaining steps
-    /// (AnalyzerRewrite, TimeFieldTicks, NotCanonicalize, BetweenToOrWithWhen,
-    /// InNormalize, AllInNormalize, WhenRegister, BoostPropagate, GroupCollapse).
+    /// (AnalyzerRewrite, TimeFieldTicks, InNormalize, AllInNormalize).
     /// </summary>
     private static class PlanWalker
     {
@@ -108,13 +107,13 @@ internal static partial class QueryPlanBuilder
         /// a mutable <see cref="List{T}"/> so steps can repartition (GroupCollapse
         /// pulls spatial/vector clauses out into <see cref="ResolutionContext.SpatialClauses"/>
         /// / <see cref="ResolutionContext.VectorClauses"/>). Future commits add
-        /// AnalyzerRewrite, TimeFieldTicks, NotCanonicalize, BetweenToOrWithWhen,
-        /// InNormalize, AllInNormalize, and BoostPropagate.
+        /// AnalyzerRewrite, TimeFieldTicks, InNormalize, and AllInNormalize.
         /// </summary>
         public static void RewriteClauses(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             BoostPropagate(ctx);
             NotCanonicalize(clauses, ctx);
+            BetweenDetectSentinels(clauses);
             GroupCollapse(clauses, ctx);
             WhenRegister(clauses, ctx);
             ThrowIfErrors(ctx);
@@ -188,6 +187,52 @@ internal static partial class QueryPlanBuilder
                 var c = clauses[i];
                 if (c.IsNegated || c.ClauseType == ClauseType.NotEquals)
                     c.IsOrChainNotEquals = true;
+            }
+        }
+
+        /// <summary>
+        /// Detect BETWEEN clauses whose literal bindings carry the client's unbounded-bound
+        /// sentinel strings ("*" for low, "NULL" for high). When a bound is a literal (not
+        /// a parameter placeholder), we can detect the sentinel at plan time and set
+        /// <see cref="ClauseInfo.BetweenLowUnbounded"/>/<see cref="ClauseInfo.BetweenHighUnbounded"/>,
+        /// which are copied to <see cref="ClauseExecution"/> at execution time.
+        ///
+        /// For parameter-bound values the sentinel string is only known after the blittable
+        /// lookup, so runtime detection in <see cref="PopulateClauseValues"/> remains the
+        /// fallback — this step only handles the literal case.
+        ///
+        /// Recurses into OrGroup/AndGroup sub-clauses so nested BETWEEN clauses are covered.
+        /// </summary>
+        private static void BetweenDetectSentinels(List<ClauseInfo> clauses)
+        {
+            for (int i = 0; i < clauses.Count; i++)
+                BetweenDetectSentinelsRecursive(clauses[i]);
+        }
+
+        private static void BetweenDetectSentinelsRecursive(ClauseInfo clause)
+        {
+            if (clause.OrSubClauses != null)
+                for (int i = 0; i < clause.OrSubClauses.Count; i++)
+                    BetweenDetectSentinelsRecursive(clause.OrSubClauses[i]);
+            if (clause.AndSubClauses != null)
+                for (int i = 0; i < clause.AndSubClauses.Count; i++)
+                    BetweenDetectSentinelsRecursive(clause.AndSubClauses[i]);
+
+            if (clause.ClauseType != ClauseType.Between || clause.Bindings is not { Length: >= 2 })
+                return;
+
+            var low = clause.Bindings[BindingIndex.BetweenLow];
+            if (low is { LiteralType: ParamValueType.String, LiteralValue: string ls }
+                && ls == Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery)
+            {
+                clause.BetweenLowUnbounded = true;
+            }
+
+            var high = clause.Bindings[BindingIndex.BetweenHigh];
+            if (high is { LiteralType: ParamValueType.String, LiteralValue: string hs }
+                && hs == Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery)
+            {
+                clause.BetweenHighUnbounded = true;
             }
         }
 

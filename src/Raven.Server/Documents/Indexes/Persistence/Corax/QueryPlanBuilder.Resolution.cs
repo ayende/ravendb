@@ -621,16 +621,15 @@ internal static partial class QueryPlanBuilder
             case ClauseType.Between:
                 var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters, builderParameters);
                 var (high, highType) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
-                // Detect the client's unbounded-bound sentinel strings: WhereBetween(field, null, x)
-                // arrives as low="*"; WhereBetween(field, x, null) arrives as high="NULL"
-                // (see Raven.Client.Constants.Documents.Querying.Terms). When the OTHER bound
-                // is numeric, the sentinel string can't be coerced via Convert.ToInt64/Double,
-                // so we replace it with a type-appropriate extreme value and set a flag for
-                // resolution-time rewriting into LessThanOrEqual / GreaterThanOrEqual-with-null.
-                bool lowIsUnbounded = lowType == ParamValueType.String && low is string ls
-                                      && ls == Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
-                bool highIsUnbounded = highType == ParamValueType.String && high is string hs
-                                       && hs == Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
+                // Template-level flags (set by BetweenDetectSentinels walker step) cover literal
+                // sentinel bindings. For parameter-bound values the sentinel is only known after
+                // the blittable lookup, so we fall back to runtime detection here.
+                bool lowIsUnbounded = clause.BetweenLowUnbounded
+                                      || (lowType == ParamValueType.String && low is string ls
+                                          && ls == Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery);
+                bool highIsUnbounded = clause.BetweenHighUnbounded
+                                       || (highType == ParamValueType.String && high is string hs
+                                           && hs == Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery);
                 exec.BetweenLowUnbounded = lowIsUnbounded;
                 exec.BetweenHighUnbounded = highIsUnbounded;
                 // Pick effective type: the non-sentinel side dictates. When both are sentinels
