@@ -82,6 +82,8 @@ public sealed class CompiledPlan
     /// (volatile store), then read-only — safe for concurrent readers.</summary>
     public volatile InstantiateHint Hint;
 
+    public PlanDecisionTrail DecisionTrail;
+
     /// <summary>Chain pointer for hash-collision disambiguation in PlanCache.</summary>
     public CompiledPlan Next;
 

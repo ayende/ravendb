@@ -39,6 +39,7 @@ internal static partial class QueryPlanBuilder
             rootParams["ScannedEntries"] = scannedEntries.ToString();
         if (compiledPlan.ExplainSource != null)
             rootParams["Explain"] = compiledPlan.ExplainSource;
+        rootParams["OptimizationHint"] = compiledPlan.Hint.ToString();
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
         QueryInspectionNode orGroupNode = null;
@@ -91,6 +92,22 @@ internal static partial class QueryPlanBuilder
         }
 
         if (orGroupNode != null) root.Children.Add(orGroupNode);
+
+        if (compiledPlan.DecisionTrail is { Entries.Count: > 0 } trail)
+        {
+            var trailNode = new QueryInspectionNode("DecisionTrail");
+            for (int d = 0; d < trail.Entries.Count; d++)
+            {
+                var entry = trail.Entries[d];
+                var entryParams = new Dictionary<string, string>
+                {
+                    ["Accepted"] = entry.Accepted.ToString(),
+                    ["Reason"] = entry.Reason
+                };
+                trailNode.Children.Add(new QueryInspectionNode(entry.Optimization, parameters: entryParams));
+            }
+            root.Children.Add(trailNode);
+        }
 
         // Vector/spatial nodes from executed match
         var matchInspection = executedMatch.Inspect();
