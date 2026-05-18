@@ -556,6 +556,8 @@ internal static partial class QueryPlanBuilder
         {
             if (TryGetFieldName(inExpr.Source, ctx.Metadata, ctx.QueryParameters, out _) == false)
                 ctx.Report($"IN source must be a field expression or id(), but got: {inExpr.Source.Type}");
+            if (inExpr.Values.Count == 0)
+                ctx.Report("IN/ALL IN with an empty value list is a syntax error.");
         }
 
         private static void ValidateMethod(MethodExpression method, ResolutionContext ctx)
