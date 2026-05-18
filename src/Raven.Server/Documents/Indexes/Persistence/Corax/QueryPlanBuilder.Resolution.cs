@@ -1659,7 +1659,7 @@ internal static partial class QueryPlanBuilder
                     searchMeta = ReplaceAnalyzerForWildcardQueries(searchMeta, builderParams, parameters);
                 }
 
-                var searchValues = SplitSearchTerms(searchTerm);
+                var searchValues = QueryBuilderHelper.SplitSearchValue(searchTerm);
 
                 return indexSearcher.SearchQuery(searchMeta,
                     searchValues,
@@ -3930,69 +3930,6 @@ internal static partial class QueryPlanBuilder
         }
 
         return result;
-    }
-
-    /// <summary>Split search term value respecting quoted phrases.
-    /// "nonexists \"second third\" nonexsts" -> ["nonexists", "second third", "nonexsts"]
-    /// Same logic as old CoraxQueryBuilder.GetValues().</summary>
-    private static IEnumerable<string> SplitSearchTerms(string value)
-    {
-        if (string.IsNullOrEmpty(value))
-        {
-            yield return value;
-            yield break;
-        }
-
-        bool quoted = false;
-        int lastStart = 0;
-
-        for (int i = 0; i < value.Length; i++)
-        {
-            char c = value[i];
-            if (c == '"')
-            {
-                if (i > 0 && value[i - 1] == '\\')
-                    continue; // escaped quote
-
-                if (lastStart != i)
-                    yield return StripEscapes(value.Substring(lastStart, i - lastStart));
-
-                quoted = !quoted;
-                lastStart = i + 1;
-            }
-            else if ((c == ' ' || c == '\t') && !quoted)
-            {
-                if (lastStart != i)
-                    yield return StripEscapes(value.Substring(lastStart, i - lastStart));
-                lastStart = i + 1;
-            }
-        }
-
-        if (value.Length - lastStart > 0)
-            yield return StripEscapes(value.Substring(lastStart, value.Length - lastStart));
-    }
-
-    /// <summary>Strip escape backslashes from a search term. Matches Lucene's GetValues
-    /// behavior: \\" → ", \\\\ → \\. Only backslashes immediately before " or \ are escapes.</summary>
-    private static string StripEscapes(string term)
-    {
-        if (term.IndexOf('\\') < 0)
-            return term;
-
-        var sb = new System.Text.StringBuilder(term.Length);
-        for (int i = 0; i < term.Length; i++)
-        {
-            if (term[i] == '\\' && i + 1 < term.Length && (term[i + 1] == '"' || term[i + 1] == '\\'))
-            {
-                sb.Append(term[i + 1]);
-                i++; // skip the escaped char
-            }
-            else
-            {
-                sb.Append(term[i]);
-            }
-        }
-        return sb.ToString();
     }
 
     /// <summary>Create the appropriate DirectScan match based on whether residual predicates exist.</summary>
