@@ -48,6 +48,14 @@ public sealed class PlanTemplate
     /// construction and checked at Instantiate time to skip inapplicable Try* methods.</summary>
     public PlanOptFlags OptimizationFlags;
 
+    /// <summary>Template-position index of the clause that can drive a sorted scan
+    /// (range/eq on the primary ORDER BY field, non-negated, non-boosted). -1 when no
+    /// such clause exists or the query has no ORDER BY. Pre-computed at template time
+    /// so TryCreateSimpleFieldDirectScan skips the per-execution clause scan loop.
+    /// NOTE: after WHEN elimination + cardinality sort, the runtime clause index may
+    /// differ — Build must remap via OriginalIndex.</summary>
+    public int SortDrivingClauseIndex = -1;
+
     /// <summary>Count of clauses that carry a <see cref="ClauseInfo.WhenCondition"/>,
     /// in template traversal order. Computed once at template construction. If this
     /// exceeds <see cref="MaxWhenClauses"/>, template construction throws

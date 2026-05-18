@@ -89,6 +89,11 @@ public class QueryExecution
     /// Checked by CoraxIndexReadOperation to skip inapplicable Try* methods.</summary>
     public PlanOptFlags OptimizationFlags;
 
+    /// <summary>Template-position index of the clause identified at plan time as the
+    /// sort-driving candidate (range/eq on ORDER BY field). -1 when none. Remapped to
+    /// post-sort runtime index by Build. See <see cref="PlanTemplate.SortDrivingClauseIndex"/>.</summary>
+    public int SortDrivingClauseIndex = -1;
+
     /// <summary>Number of bitmaps this plan needs at execution time.
     /// Slot 0 = main result, slot 1 = scratch for AND-with-postings / AND-NOT and OR-group
     /// accumulation. Plans with multiple AndGroups inside an OR chain use slot 2 as a

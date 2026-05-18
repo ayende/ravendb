@@ -256,6 +256,13 @@ internal static partial class QueryPlanBuilder
         FreezeAll(walkerCtx.SpatialClauses);
         FreezeAll(walkerCtx.VectorClauses);
 
+        // Primary ORDER BY field name from the query metadata (null if no ORDER BY or
+        // ORDER BY score/random/etc. which have no field name).
+        string orderByPrimaryField = metadata.OrderBy is { Length: > 0 }
+            ? metadata.OrderBy[0].Name?.Value
+            : null;
+
+        var optFlags = ComputeOptFlags(templateClauses, orderByPrimaryField, out int sortDrivingIdx);
         return new PlanTemplate
         {
             Clauses = templateClauses,
@@ -264,14 +271,20 @@ internal static partial class QueryPlanBuilder
             SpatialClauses = walkerCtx.SpatialClauses,
             VectorClauses = walkerCtx.VectorClauses,
             WhenCount = walkerCtx.WhenCount,
-            OptimizationFlags = ComputeOptFlags(templateClauses)
+            OptimizationFlags = optFlags,
+            SortDrivingClauseIndex = sortDrivingIdx
         };
     }
 
-    /// <summary>Compute structural optimization applicability flags from the clause list.
-    /// Called once per template at construction time.</summary>
-    private static PlanOptFlags ComputeOptFlags(ClauseInfo[] clauses)
+    /// <summary>Compute structural optimization applicability flags and identify the
+    /// sort-driving clause from the clause list. Called once per template at construction time.
+    /// <paramref name="orderByPrimaryField"/> is the raw field name from the first ORDER BY
+    /// (null if no ORDER BY). <paramref name="sortDrivingIdx"/> receives the template-position
+    /// index of the clause that can drive a sorted scan, or -1 if none.</summary>
+    private static PlanOptFlags ComputeOptFlags(ClauseInfo[] clauses, string orderByPrimaryField,
+        out int sortDrivingIdx)
     {
+        sortDrivingIdx = -1;
         var flags = PlanOptFlags.None;
         int equalsCount = 0;
         for (int i = 0; i < clauses.Length; i++)
@@ -284,6 +297,9 @@ internal static partial class QueryPlanBuilder
                 case ClauseType.Equals:
                     equalsCount++;
                     flags |= PlanOptFlags.DirectScanCandidate;
+                    if (sortDrivingIdx == -1 && orderByPrimaryField != null
+                        && c.FieldName == orderByPrimaryField)
+                        sortDrivingIdx = i;
                     break;
                 case ClauseType.GreaterThan:
                 case ClauseType.GreaterThanOrEqual:
@@ -291,6 +307,9 @@ internal static partial class QueryPlanBuilder
                 case ClauseType.LessThanOrEqual:
                 case ClauseType.Between:
                     flags |= PlanOptFlags.DirectScanCandidate;
+                    if (sortDrivingIdx == -1 && orderByPrimaryField != null
+                        && c.FieldName == orderByPrimaryField)
+                        sortDrivingIdx = i;
                     break;
             }
         }
