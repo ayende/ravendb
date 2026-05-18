@@ -3153,7 +3153,7 @@ internal static partial class QueryPlanBuilder
         if (hasTieBreak)
         {
             var tieBreakType = orderByFields[1].FieldType;
-            if (tieBreakType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
+            if (tieBreakType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating or MatchCompareFieldType.Sequence))
                 return false;
         }
 
