@@ -1234,9 +1234,7 @@ internal static partial class QueryPlanBuilder
                     // When HasNullTerm is false, fill with a TermQuery(null) that resolves to an
                     // empty posting list — the OR with an empty match is a no-op.
                     {
-                        FieldMetadata nullMeta = builderParams != null
-                            ? QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost)
-                            : indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+                        FieldMetadata nullMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
                         matches[matchIdx++] = exec.HasNullTerm
                             ? indexSearcher.TermQuery(nullMeta, null)
                             : TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
@@ -1500,19 +1498,25 @@ internal static partial class QueryPlanBuilder
                 string searchFieldName = clause.ResolvedFieldName ?? clause.FieldName;
                 if (builderParams != null)
                 {
+                    bool forceSearch = builderParams.Metadata.IsDynamic
+                        && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
                         builderParams.Allocator, searchFieldName, builderParams.Index,
                         builderParams.IndexFieldsMapping, builderParams.FieldsToFetch,
                         builderParams.HasDynamics, builderParams.DynamicFields,
-                        handleSearch: true, hasBoost: builderParams.HasBoost);
+                        handleSearch: true, hasBoost: builderParams.HasBoost,
+                        forceDefaultSearchAnalyzer: forceSearch);
                 }
                 else if (parameters is { Index: not null, IndexFieldsMapping: not null })
                 {
+                    bool forceSearch = parameters.Metadata.IsDynamic
+                        && (parameters.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
                         parameters.Allocator, searchFieldName, parameters.Index,
                         parameters.IndexFieldsMapping, parameters.FieldsToFetch,
                         parameters.HasDynamics, parameters.DynamicFields,
-                        handleSearch: true, hasBoost: parameters.HasBoost);
+                        handleSearch: true, hasBoost: parameters.HasBoost,
+                        forceDefaultSearchAnalyzer: forceSearch);
                 }
                 else
                 {
@@ -1883,9 +1887,8 @@ internal static partial class QueryPlanBuilder
     private static PostingSource ResolveInTermSource(ClauseInfo clause, ClauseExecution exec, int termIndex, IndexSearcher indexSearcher,
         QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
-        FieldMetadata fieldMeta = builderParams != null ?
-            QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
-            indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+        // Use ResolveFieldMetadata to pick up the exact/search field name variant (#4777 fix).
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
 
         var p = exec.PackedParamValue;
         int idx = p.Param1 + termIndex;
@@ -3776,7 +3779,7 @@ internal static partial class QueryPlanBuilder
                     continue; // escaped quote
 
                 if (lastStart != i)
-                    yield return value.Substring(lastStart, i - lastStart);
+                    yield return StripEscapes(value.Substring(lastStart, i - lastStart));
 
                 quoted = !quoted;
                 lastStart = i + 1;
@@ -3784,13 +3787,36 @@ internal static partial class QueryPlanBuilder
             else if ((c == ' ' || c == '\t') && !quoted)
             {
                 if (lastStart != i)
-                    yield return value.Substring(lastStart, i - lastStart);
+                    yield return StripEscapes(value.Substring(lastStart, i - lastStart));
                 lastStart = i + 1;
             }
         }
 
         if (value.Length - lastStart > 0)
-            yield return value.Substring(lastStart, value.Length - lastStart);
+            yield return StripEscapes(value.Substring(lastStart, value.Length - lastStart));
+    }
+
+    /// <summary>Strip escape backslashes from a search term. Matches Lucene's GetValues
+    /// behavior: \\" → ", \\\\ → \\. Only backslashes immediately before " or \ are escapes.</summary>
+    private static string StripEscapes(string term)
+    {
+        if (term.IndexOf('\\') < 0)
+            return term;
+
+        var sb = new System.Text.StringBuilder(term.Length);
+        for (int i = 0; i < term.Length; i++)
+        {
+            if (term[i] == '\\' && i + 1 < term.Length && (term[i + 1] == '"' || term[i + 1] == '\\'))
+            {
+                sb.Append(term[i + 1]);
+                i++; // skip the escaped char
+            }
+            else
+            {
+                sb.Append(term[i]);
+            }
+        }
+        return sb.ToString();
     }
 
     /// <summary>Create the appropriate DirectScan match based on whether residual predicates exist.</summary>
