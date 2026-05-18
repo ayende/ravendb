@@ -35,6 +35,7 @@ public sealed class ClauseInfo
     private bool _frozen;
 
     private string _fieldName;
+    private string _resolvedFieldName;
     private ClauseType _clauseType;
     private int _originalIndex;
     private bool _isNegated;
@@ -53,6 +54,17 @@ public sealed class ClauseInfo
     {
         get => _fieldName;
         set { ThrowIfFrozen(); _fieldName = value; }
+    }
+
+    /// <summary>Pre-resolved dynamic-index field name variant (e.g. <c>exact(Name)</c> or
+    /// <c>search(Name)</c>). Set by the DynamicFieldNameResolve walker step for auto-indexes.
+    /// Null for static indexes and non-exact/non-search clauses. When set, execution-time
+    /// field metadata lookups use this instead of <see cref="FieldName"/> — saving one string
+    /// allocation per clause per query execution.</summary>
+    public string ResolvedFieldName
+    {
+        get => _resolvedFieldName;
+        set { ThrowIfFrozen(); _resolvedFieldName = value; }
     }
 
     public ClauseType ClauseType
@@ -171,6 +183,7 @@ public sealed class ClauseInfo
         return new ClauseInfo
         {
             _fieldName = _fieldName,
+            _resolvedFieldName = _resolvedFieldName,
             _clauseType = _clauseType,
             _originalIndex = _originalIndex,
             _isNegated = _isNegated,

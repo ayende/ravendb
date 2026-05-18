@@ -114,6 +114,8 @@ internal static partial class QueryPlanBuilder
             BoostPropagate(ctx);
             NotCanonicalize(clauses, ctx);
             BetweenRewriteSentinels(clauses);
+            if (ctx.Metadata.IsDynamic)
+                DynamicFieldNameResolve(clauses);
             GroupCollapse(clauses, ctx);
             WhenRegister(clauses, ctx);
             ThrowIfErrors(ctx);
@@ -187,6 +189,56 @@ internal static partial class QueryPlanBuilder
                 var c = clauses[i];
                 if (c.IsNegated || c.ClauseType == ClauseType.NotEquals)
                     c.IsOrChainNotEquals = true;
+            }
+        }
+
+        /// <summary>
+        /// For dynamic (auto-) indexes, pre-resolve field names to their exact or search
+        /// variants at template time. On dynamic indexes every exact clause resolves its
+        /// field to <c>exact(FieldName)</c> and every search clause to <c>search(FieldName)</c>
+        /// (except document-id fields). These string allocations previously happened
+        /// per-clause per-execution in ResolveClause / ResolveFieldMetadata / ResolveTermSources.
+        /// By rewriting at template time the execution paths can use <see cref="ClauseInfo.FieldName"/>
+        /// directly — saving one string allocation per clause per query execution.
+        ///
+        /// Only runs when <see cref="ResolutionContext.Metadata"/> indicates a dynamic index.
+        /// </summary>
+        private static void DynamicFieldNameResolve(List<ClauseInfo> clauses)
+        {
+            for (int i = 0; i < clauses.Count; i++)
+                DynamicFieldNameResolveRecursive(clauses[i]);
+        }
+
+        private static void DynamicFieldNameResolveRecursive(ClauseInfo clause)
+        {
+            if (clause.OrSubClauses != null)
+                for (int i = 0; i < clause.OrSubClauses.Count; i++)
+                    DynamicFieldNameResolveRecursive(clause.OrSubClauses[i]);
+            if (clause.AndSubClauses != null)
+                for (int i = 0; i < clause.AndSubClauses.Count; i++)
+                    DynamicFieldNameResolveRecursive(clause.AndSubClauses[i]);
+
+            if (clause.FieldName == null)
+                return;
+
+            // Spatial and Vector clauses handle their own field resolution — skip them.
+            if (clause.ClauseType is ClauseType.Spatial or ClauseType.Vector)
+                return;
+
+            if (clause.ClauseType == ClauseType.Search)
+            {
+                // search() on document-id field must NOT be wrapped — id() is the document
+                // key which is not analyzed. Matches Lucene's HandleSearch guard.
+                if (string.Equals(clause.FieldName,
+                        Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName,
+                        StringComparison.Ordinal) == false)
+                {
+                    clause.ResolvedFieldName = AutoIndexField.GetSearchAutoIndexFieldName(clause.FieldName);
+                }
+            }
+            else if (clause.IsExact)
+            {
+                clause.ResolvedFieldName = AutoIndexField.GetExactAutoIndexFieldName(clause.FieldName);
             }
         }
 
