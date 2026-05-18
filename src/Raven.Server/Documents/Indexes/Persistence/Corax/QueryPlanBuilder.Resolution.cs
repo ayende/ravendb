@@ -379,6 +379,22 @@ internal static partial class QueryPlanBuilder
         // first-class part of the cache key alongside Ordering / TypeSignature / FullKinds.
         plan.WhenFlags = whenFlags;
         plan.OptimizationFlags = template.OptimizationFlags;
+
+        // Remap template-position SortDrivingClauseIndex to post-sort runtime index.
+        // After WHEN elimination + cardinality sort, clauses are reordered; OriginalIndex
+        // records each clause's template position.
+        plan.SortDrivingClauseIndex = -1;
+        if (template.SortDrivingClauseIndex >= 0)
+        {
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (clauses[i].OriginalIndex == template.SortDrivingClauseIndex)
+                {
+                    plan.SortDrivingClauseIndex = i;
+                    break;
+                }
+            }
+        }
         var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds, plan.WhenFlags);
         if (compiledPlan == null)
         {
@@ -3020,23 +3036,33 @@ internal static partial class QueryPlanBuilder
         else
         {
             // ── Find a range or equals clause on the sort field ──
-            for (int i = 0; i < clauses.Count; i++)
+            // SortDrivingClauseIndex pre-identified at template time and remapped to
+            // post-sort index during Build — skip the per-execution clause scan.
+            drivingIdx = plan.SortDrivingClauseIndex;
+            if (drivingIdx == -1)
             {
-                if (clauses[i].FieldName != sortFieldName)
-                    continue;
-                if (clauses[i].ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                    or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between
-                    or ClauseType.Equals))
-                    continue;
-                // Negated range clauses (e.g. NOT LessThan from sentinel BETWEEN rewrite) reverse
-                // the semantics — the TermsProvider walks the positive form, not the complement.
-                // Cannot drive sorted iteration.
-                if (clauses[i].IsNegated)
-                    continue;
-                if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
-                    continue;
-                drivingIdx = i;
-                break;
+                // Fallback: template didn't identify a candidate (e.g. WHEN eliminated the
+                // clause, or sort field didn't match any template clause). Scan as before.
+                for (int i = 0; i < clauses.Count; i++)
+                {
+                    if (clauses[i].FieldName != sortFieldName)
+                        continue;
+                    if (clauses[i].ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+                        or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between
+                        or ClauseType.Equals))
+                        continue;
+                    if (clauses[i].IsNegated)
+                        continue;
+                    if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
+                        continue;
+                    drivingIdx = i;
+                    break;
+                }
+            }
+            else if (execs[drivingIdx] is { BoostFactor: > 0 })
+            {
+                // Template identified the clause, but runtime boost factor disqualifies it.
+                drivingIdx = -1;
             }
 
             if (drivingIdx == -1)
