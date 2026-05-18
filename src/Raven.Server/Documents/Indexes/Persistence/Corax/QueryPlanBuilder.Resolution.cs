@@ -110,59 +110,85 @@ internal static partial class QueryPlanBuilder
             highlightingTerms, wantTimings, token);
         var disposable = queryMatch as IDisposable;
 
-        // ORDER BY optimization dispatch with InstantiateHint caching.
         var hint = compiledPlanOut?.Hint ?? InstantiateHint.NotEvaluated;
         bool needsFullChain = hint == InstantiateHint.NotEvaluated;
         var resultHint = hint;
+        PlanDecisionTrail trail = needsFullChain ? new PlanDecisionTrail() : null;
 
-        // Compound exact match (no ORDER BY needed)
-        if ((hint == InstantiateHint.CompoundExact || needsFullChain) &&
-            plan != null &&
-            (plan.OptimizationFlags & PlanOptFlags.CompoundExactCandidate) != 0 &&
-            TryCreateCompoundExactMatch(plan, planParams, builderParameters, out var compoundExact))
+        if (hint == InstantiateHint.CompoundExact || needsFullChain)
         {
-            disposable?.Dispose();
-            queryMatch = compoundExact;
-            resultHint = InstantiateHint.CompoundExact;
-            needsFullChain = false;
+            if (plan == null)
+                trail?.Record("CompoundExact", false, "no plan available");
+            else if ((plan.OptimizationFlags & PlanOptFlags.CompoundExactCandidate) == 0)
+                trail?.Record("CompoundExact", false, "template has no compound-exact candidate");
+            else if (TryCreateCompoundExactMatch(plan, planParams, builderParameters, out var compoundExact, out var ceReason))
+            {
+                disposable?.Dispose();
+                queryMatch = compoundExact;
+                resultHint = InstantiateHint.CompoundExact;
+                needsFullChain = false;
+                trail?.Record("CompoundExact", true, "compound exact-term lookup");
+            }
+            else
+                trail?.Record("CompoundExact", false, ceReason ?? "rejected");
         }
 
         orderByFieldsOut = GetSortMetadata(builderParameters, out hasEmptySorts);
         if (orderByFieldsOut != null)
         {
-            if ((hint == InstantiateHint.CompoundField || needsFullChain) &&
-                plan != null &&
-                (plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) != 0 &&
-                TryCreateCompoundFieldMatch(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var compoundMatch))
+            if (hint == InstantiateHint.CompoundField || needsFullChain)
             {
-                disposable?.Dispose();
-                queryMatch = OrderBy(builderParameters, compoundMatch, orderByFieldsOut, hasEmptySorts);
-                resultHint = InstantiateHint.CompoundField;
-                needsFullChain = false;
+                if (plan == null)
+                    trail?.Record("CompoundField", false, "no plan available");
+                else if ((plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) == 0)
+                    trail?.Record("CompoundField", false, "template has no direct-scan candidate");
+                else if (TryCreateCompoundFieldMatch(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var compoundMatch, out var cfReason))
+                {
+                    disposable?.Dispose();
+                    queryMatch = OrderBy(builderParameters, compoundMatch, orderByFieldsOut, hasEmptySorts);
+                    resultHint = InstantiateHint.CompoundField;
+                    needsFullChain = false;
+                    trail?.Record("CompoundField", true, "compound tree scan with ORDER BY");
+                }
+                else
+                    trail?.Record("CompoundField", false, cfReason ?? "rejected");
             }
-            else if ((hint == InstantiateHint.DirectScan || needsFullChain) &&
-                plan != null &&
-                (plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) != 0 &&
-                TryCreateSimpleFieldDirectScan(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var directMatch))
+
+            if (hint == InstantiateHint.DirectScan || needsFullChain)
             {
-                disposable?.Dispose();
-                queryMatch = directMatch;
-                resultHint = InstantiateHint.DirectScan;
-                needsFullChain = false;
+                if (plan == null)
+                    trail?.Record("DirectScan", false, "no plan available");
+                else if ((plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) == 0)
+                    trail?.Record("DirectScan", false, "template has no direct-scan candidate");
+                else if (TryCreateSimpleFieldDirectScan(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var directMatch, out var dsReason))
+                {
+                    disposable?.Dispose();
+                    queryMatch = directMatch;
+                    resultHint = InstantiateHint.DirectScan;
+                    needsFullChain = false;
+                    trail?.Record("DirectScan", true, "direct tree scan on sort field");
+                }
+                else
+                    trail?.Record("DirectScan", false, dsReason ?? "rejected");
             }
-            else if (hint == InstantiateHint.None || needsFullChain)
+
+            if (hint == InstantiateHint.None || needsFullChain)
             {
                 if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
                     TrySetSortSeekHint(seekMatch, plan, orderByFieldsOut);
-
                 queryMatch = OrderBy(builderParameters, queryMatch, orderByFieldsOut, hasEmptySorts);
                 resultHint = InstantiateHint.None;
+                trail?.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
             }
         }
+        else if (needsFullChain)
+            trail?.Record("NoOrderBy", true, "no ORDER BY");
 
-        // Record the hint for subsequent cache-hit executions.
         if (compiledPlanOut != null && hint == InstantiateHint.NotEvaluated)
+        {
             compiledPlanOut.Hint = resultHint;
+            compiledPlanOut.DecisionTrail = trail;
+        }
 
         return queryMatch;
     }
@@ -1162,7 +1188,11 @@ internal static partial class QueryPlanBuilder
         PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         var clauses = plan.Clauses ?? [];
-        // All-entries plan with possible post-filter phases
+        // IsAllEntries + spatial/vector occurs when the query's only predicates are
+        // vector.search() or spatial clauses with no other WHERE terms. GroupCollapse
+        // partitions them into SpatialClauses/VectorClauses, leaving the main clause
+        // list empty → IsAllEntries=true. The AllEntries bitmap feeds the post-filter
+        // phases (spatial AND, then vector select with null filter for unfiltered top-K).
         if (plan.IsAllEntries)
         {
             int spatialCount = plan.SpatialFilters?.Length ?? 0;
