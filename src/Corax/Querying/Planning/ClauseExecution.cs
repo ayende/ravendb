@@ -18,6 +18,9 @@ public sealed class ClauseExecution
     /// The clause is stripped from the plan (like empty IN).</summary>
     public bool WhenEliminated;
 
+    public ClauseType? SentinelRewriteType;
+    public bool SentinelRewriteNegated;
+
     /// <summary>Per-execution state for OrGroup subclauses. Parallel to <see cref="ClauseInfo.OrSubClauses"/>.</summary>
     public ClauseExecution[] OrSubExecutions;
 

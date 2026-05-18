@@ -548,7 +548,10 @@ internal static partial class QueryPlanBuilder
                 && minStr == Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
             bool maxIsSentinel = maxBinding is { LiteralType: ParamValueType.String, LiteralValue: string maxStr }
                 && maxStr == Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
+            bool bothAstStrings = between.Min is ValueExpression { Value: ValueTokenType.String }
+                && between.Max is ValueExpression { Value: ValueTokenType.String };
             if (minIsSentinel == false && maxIsSentinel == false
+                && bothAstStrings == false
                 && minBinding is { LiteralType: not ParamValueType.Parameter }
                 && maxBinding is { LiteralType: not ParamValueType.Parameter }
                 && minBinding.LiteralType != maxBinding.LiteralType)
