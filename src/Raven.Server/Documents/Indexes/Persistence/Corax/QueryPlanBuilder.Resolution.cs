@@ -76,6 +76,90 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
+    /// Full pipeline: build, compile, optimize, and apply ORDER BY — returns the final
+    /// <see cref="IQueryMatch"/> ready for result iteration. Encapsulates the optimization
+    /// dispatch (compound-exact, compound-field, direct-scan) that previously lived in
+    /// <c>CoraxIndexReadOperation</c>. The <see cref="InstantiateHint"/> on the compiled plan
+    /// caches which optimization succeeded on the first execution; subsequent cache-hit
+    /// executions skip the Try* chain entirely.
+    /// </summary>
+    /// <param name="orderByFieldsOut">Resolved ORDER BY metadata, or null if no ORDER BY.
+    /// Needed by the caller for result streaming (sort data transfer).</param>
+    /// <param name="hasEmptySorts">True if any ORDER BY field had zero indexed terms
+    /// (sharded scenario — caller must handle empty-sort placeholders).</param>
+    public static IQueryMatch BuildCompileAndOptimize(
+        PlanParameters planParams,
+        QueryBuilderParameters builderParameters,
+        out QueryExecution plan,
+        out CompiledPlan compiledPlanOut,
+        out OrderMetadata[] orderByFieldsOut,
+        out bool hasEmptySorts,
+        Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
+        bool wantTimings,
+        CancellationToken token)
+    {
+        var queryMatch = BuildAndCompile(planParams, builderParameters, out plan, out compiledPlanOut,
+            highlightingTerms, wantTimings, token);
+        var disposable = queryMatch as IDisposable;
+
+        // ORDER BY optimization dispatch with InstantiateHint caching.
+        var hint = compiledPlanOut?.Hint ?? InstantiateHint.NotEvaluated;
+        bool needsFullChain = hint == InstantiateHint.NotEvaluated;
+        var resultHint = hint;
+
+        // Compound exact match (no ORDER BY needed)
+        if ((hint == InstantiateHint.CompoundExact || needsFullChain) &&
+            plan != null &&
+            (plan.OptimizationFlags & PlanOptFlags.CompoundExactCandidate) != 0 &&
+            TryCreateCompoundExactMatch(plan, planParams, builderParameters, out var compoundExact))
+        {
+            disposable?.Dispose();
+            queryMatch = compoundExact;
+            resultHint = InstantiateHint.CompoundExact;
+            needsFullChain = false;
+        }
+
+        orderByFieldsOut = GetSortMetadata(builderParameters, out hasEmptySorts);
+        if (orderByFieldsOut != null)
+        {
+            if ((hint == InstantiateHint.CompoundField || needsFullChain) &&
+                plan != null &&
+                (plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) != 0 &&
+                TryCreateCompoundFieldMatch(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var compoundMatch))
+            {
+                disposable?.Dispose();
+                queryMatch = OrderBy(builderParameters, compoundMatch, orderByFieldsOut, hasEmptySorts);
+                resultHint = InstantiateHint.CompoundField;
+                needsFullChain = false;
+            }
+            else if ((hint == InstantiateHint.DirectScan || needsFullChain) &&
+                plan != null &&
+                (plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) != 0 &&
+                TryCreateSimpleFieldDirectScan(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var directMatch))
+            {
+                disposable?.Dispose();
+                queryMatch = directMatch;
+                resultHint = InstantiateHint.DirectScan;
+                needsFullChain = false;
+            }
+            else if (hint == InstantiateHint.None || needsFullChain)
+            {
+                if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
+                    TrySetSortSeekHint(seekMatch, plan, orderByFieldsOut);
+
+                queryMatch = OrderBy(builderParameters, queryMatch, orderByFieldsOut, hasEmptySorts);
+                resultHint = InstantiateHint.None;
+            }
+        }
+
+        // Record the hint for subsequent cache-hit executions.
+        if (compiledPlanOut != null && hint == InstantiateHint.NotEvaluated)
+            compiledPlanOut.Hint = resultHint;
+
+        return queryMatch;
+    }
+
+    /// <summary>
     /// Phase 1: build (or fetch from the plan cache) the structural template for a query
     /// text. Captures field names, clause types, parameter bindings, and literal values.
     /// No cardinality estimation, no parameter values, no IL.

@@ -635,75 +635,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                 DynamicFields = builderParameters.DynamicFields,
                                 HasBoost = builderParameters.HasBoost
                             };
-                            queryMatch = QueryPlanBuilder.BuildAndCompile(
-                                planParams, builderParameters, out queryPlan, out compiledPlan, highlightings.Terms, wantTimings: queryTimings != null, token);
+                            queryMatch = QueryPlanBuilder.BuildCompileAndOptimize(
+                                planParams, builderParameters, out queryPlan, out compiledPlan,
+                                out orderByFields, out bool hasEmptySorts,
+                                highlightings.Terms, wantTimings: queryTimings != null, token);
 
                             innerDisposableMatch = queryMatch as IDisposable;
-
-                            // ORDER BY optimization dispatch with InstantiateHint caching.
-                            // On first execution (hint == NotEvaluated), run the full Try* chain
-                            // and record which path won. On subsequent executions (cache hit),
-                            // jump directly to the recorded path — the cardinality cliff bit in
-                            // the cache key ensures the hint is stable within each bucket.
-                            var hint = compiledPlan?.Hint ?? InstantiateHint.NotEvaluated;
-                            bool needsFullChain = hint == InstantiateHint.NotEvaluated;
-                            var resultHint = hint;
-
-                            // Compound exact match (no ORDER BY needed)
-                            if ((hint == InstantiateHint.CompoundExact || needsFullChain) &&
-                                queryPlan != null &&
-                                (queryPlan.OptimizationFlags & PlanOptFlags.CompoundExactCandidate) != 0 &&
-                                QueryPlanBuilder.TryCreateCompoundExactMatch(queryPlan, planParams, builderParameters, out var compoundExact))
-                            {
-                                innerDisposableMatch?.Dispose();
-                                innerDisposableMatch = compoundExact as IDisposable;
-                                queryMatch = compoundExact;
-                                resultHint = InstantiateHint.CompoundExact;
-                                needsFullChain = false;
-                            }
-
-                            orderByFields = QueryPlanBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
-                            if (orderByFields != null)
-                            {
-                                if ((hint == InstantiateHint.CompoundField || needsFullChain) &&
-                                    queryPlan != null &&
-                                    (queryPlan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) != 0 &&
-                                    QueryPlanBuilder.TryCreateCompoundFieldMatch(
-                                        queryPlan, orderByFields, planParams, builderParameters, compiledPlan, out var compoundMatch))
-                                {
-                                    innerDisposableMatch?.Dispose();
-                                    innerDisposableMatch = compoundMatch as IDisposable;
-                                    queryMatch = QueryPlanBuilder.OrderBy(
-                                        builderParameters, compoundMatch, orderByFields, hasEmptySorts);
-                                    resultHint = InstantiateHint.CompoundField;
-                                    needsFullChain = false;
-                                }
-                                else if ((hint == InstantiateHint.DirectScan || needsFullChain) &&
-                                    queryPlan != null &&
-                                    (queryPlan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) != 0 &&
-                                    QueryPlanBuilder.TryCreateSimpleFieldDirectScan(
-                                        queryPlan, orderByFields, planParams, builderParameters, compiledPlan, out var directMatch))
-                                {
-                                    innerDisposableMatch?.Dispose();
-                                    innerDisposableMatch = directMatch as IDisposable;
-                                    queryMatch = directMatch;
-                                    resultHint = InstantiateHint.DirectScan;
-                                    needsFullChain = false;
-                                }
-                                else if (hint == InstantiateHint.None || needsFullChain)
-                                {
-                                    if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
-                                        QueryPlanBuilder.TrySetSortSeekHint(seekMatch, queryPlan, orderByFields);
-
-                                    queryMatch = QueryPlanBuilder.OrderBy(
-                                        builderParameters, queryMatch, orderByFields, hasEmptySorts);
-                                    resultHint = InstantiateHint.None;
-                                }
-                            }
-
-                            // Record the hint for subsequent cache-hit executions.
-                            if (compiledPlan != null && hint == InstantiateHint.NotEvaluated)
-                                compiledPlan.Hint = resultHint;
 
                             if (orderByFields == null && take > 0 && query.Metadata.IsDistinct == false
                                 && query.SkipStatistics
