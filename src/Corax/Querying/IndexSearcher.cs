@@ -592,9 +592,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     }
     
     /// <summary>Returns true if any document was indexed without a value for <paramref name="field"/>
-    /// (i.e., the document's field path was null or missing). SortedDrivingMatch does not drain
-    /// the non-existing posting list, so callers that must include all documents should fall back
-    /// to SortingMatch when this returns true.</summary>
+    /// (i.e., the document's field path was null or missing).</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool HasNonExistingEntries(in FieldMetadata field) => TryGetPostingListForNonExisting(field.FieldName, out _, out _);
 

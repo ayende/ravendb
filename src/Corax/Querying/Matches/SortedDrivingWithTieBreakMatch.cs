@@ -71,15 +71,25 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private int _groupEmitIdx;
     private bool _groupReady;
 
-    // Null primary term handling
+    // Null / non-existing primary term handling.
+    // Non-existing entries (docs where the primary sort field was absent) are treated as null-adjacent:
+    //   nullFirst=true  → non-existing, then nulls, then normal values
+    //   nullFirst=false → normal values, then nulls, then non-existing
     private readonly bool _nullFirst;
     private readonly long _nullPostingListId;
     private PostingList _nullPostingList;
     private PostingList.Iterator _nullIterator;
     private readonly bool _hasNullPostingList;
     private bool _nullExhausted;
-    // Tracks whether the null-primary group has been loaded and secondary-sorted.
-    // Null-primary docs require the same per-group secondary sort as regular terms.
+
+    private readonly long _nonExistingPostingListId;
+    private PostingList _nonExistingPostingList;
+    private PostingList.Iterator _nonExistingIterator;
+    private readonly bool _hasNonExistingPostingList;
+    private bool _nonExistingExhausted;
+
+    // Tracks whether the null/non-existing primary group has been loaded and secondary-sorted.
+    // These docs require the same per-group secondary sort as regular terms.
     private bool _nullGroupPrepared;
 
     public SortedDrivingWithTieBreakMatch(
@@ -139,10 +149,16 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             _nullExhausted = !_hasNullPostingList;
             if (_hasNullPostingList)
                 InitPostingList(ref _nullPostingList, ref _nullIterator, _nullPostingListId);
+
+            _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in primaryField, out _nonExistingPostingListId);
+            _nonExistingExhausted = !_hasNonExistingPostingList;
+            if (_hasNonExistingPostingList)
+                InitPostingList(ref _nonExistingPostingList, ref _nonExistingIterator, _nonExistingPostingListId);
         }
         else
         {
             _nullExhausted = true;
+            _nonExistingExhausted = true;
         }
     }
 
@@ -207,6 +223,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                     long plId = _plIdsBuffer.RawItems[i];
                     if (_hasNullPostingList && plId == _nullPostingListId)
                         continue;
+                    if (_hasNonExistingPostingList && plId == _nonExistingPostingListId)
+                        continue;
                     var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
                     if (termType == TermIdMask.SmallPostingList)
                         entryBuffer[smallCount++] = (long)EntryIdEncodings.GetContainerId(plId);
@@ -223,8 +241,13 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             {
                 long plId = _plIdsBuffer.RawItems[_plIdsIdx];
 
-                // Skip null primary posting list — drained separately at start/end.
+                // Skip null and non-existing primary posting lists — drained separately at start/end.
                 if (_hasNullPostingList && plId == _nullPostingListId)
+                {
+                    _plIdsIdx++;
+                    continue;
+                }
+                if (_hasNonExistingPostingList && plId == _nonExistingPostingListId)
                 {
                     _plIdsIdx++;
                     continue;
@@ -424,7 +447,9 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         if (_nullGroupPrepared) return;
         _nullGroupPrepared = true;
 
-        if (_hasNullPostingList == false || _nullExhausted)
+        bool hasNull = _hasNullPostingList && _nullExhausted == false;
+        bool hasNonExisting = _hasNonExistingPostingList && _nonExistingExhausted == false;
+        if (hasNull == false && hasNonExisting == false)
             return;
 
         // Ensure group buffers are allocated before we fill them.
@@ -438,8 +463,19 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             _groupTerms.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
 
         _groupSize = 0;
-        DrainLargeIntoGroup(ref _nullIterator, entryBuffer);
-        _nullExhausted = true;
+
+        // Drain both null and non-existing entries into a single group; the secondary sort
+        // determines their interleaved order within the group.
+        if (hasNonExisting)
+        {
+            DrainLargeIntoGroup(ref _nonExistingIterator, entryBuffer);
+            _nonExistingExhausted = true;
+        }
+        if (hasNull)
+        {
+            DrainLargeIntoGroup(ref _nullIterator, entryBuffer);
+            _nullExhausted = true;
+        }
 
         if (_groupSize > 0)
         {
@@ -475,6 +511,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     public void Dispose()
     {
         _nullPostingList?.Dispose();
+        _nonExistingPostingList?.Dispose();
         _emittedBitmap.Dispose();
         _plIdsBuffer.Dispose(_allocator);
         _smallContainerItems.Dispose(_allocator);
