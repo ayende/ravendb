@@ -20,9 +20,10 @@ public class QueryExecution
     ///     gets a distinct cache key.</description></item>
     ///   <item><term>30</term><description>HasBoost flag. Set when any clause has boost(); forces
     ///     every op to QueryMatch dispatch (so scores are accumulated).</description></item>
-    ///   <item><term>31</term><description>Reserved (was SentinelBetween; removed when the walker
-    ///     started rewriting sentinel BETWEEN into LessThanOrEqual / NOT-LessThan at template time).
-    ///     Available for future use (e.g. cardinality cliff bucket).</description></item>
+    ///   <item><term>31</term><description>Cardinality cliff bucket. Set when the sort-driving clause's
+    ///     cardinality ≤ MaxGroupSize (16K) — the tie-break sorted scan is viable. Clear when
+    ///     cardinality exceeds the cliff. Different buckets produce different compiled plans so
+    ///     the optimization hint per plan is cardinality-stable.</description></item>
     /// </list>
     /// </summary>
     public int OperandOrdering;
@@ -30,10 +31,13 @@ public class QueryExecution
     /// <summary>Bit 30 of <see cref="OperandOrdering"/>. Set when any clause carries a boost factor.</summary>
     public const int HasBoostBit = 1 << 30;
 
-    /// <summary>Bit 31 of <see cref="OperandOrdering"/>. Reserved — was SentinelBetween,
-    /// removed when the walker started rewriting sentinel BETWEEN at template time.
-    /// Available for cardinality cliff bucket (#4814).</summary>
-    public const int ReservedBit31 = 1 << 31;
+    /// <summary>Bit 31 of <see cref="OperandOrdering"/>. Set when the sort-driving clause's
+    /// cardinality is ≤ <see cref="Corax.Querying.Matches.SortedDrivingWithTieBreakMatch.MaxGroupSize"/>
+    /// (16K). Queries under the cliff can use tie-break sorted scan; queries over it cannot.
+    /// Different cardinality buckets get different compiled plans (and different optimization
+    /// hints), so a plan cached from a small-cardinality execution isn't reused for a
+    /// large-cardinality one that needs a different dispatch path.</summary>
+    public const int CardinalityCliffBit = 1 << 31;
 
     /// <summary>Clause list from the query plan builder — structural template data.</summary>
     public List<ClauseInfo> Clauses;

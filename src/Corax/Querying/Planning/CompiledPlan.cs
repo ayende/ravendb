@@ -1,5 +1,22 @@
 namespace Corax.Querying.Planning;
 
+/// <summary>Records which ORDER BY optimization succeeded on the first execution of a
+/// compiled plan. Subsequent executions with the same cache key skip the full Try* chain
+/// and go directly to the recorded path — or to the bitmap+sort fallback if None.</summary>
+public enum InstantiateHint : byte
+{
+    /// <summary>First execution hasn't completed yet. Run the full Try* chain.</summary>
+    NotEvaluated = 0,
+    /// <summary>No ORDER BY optimization applies. Go directly to bitmap + SortingMatch.</summary>
+    None,
+    /// <summary>TryCreateCompoundExactMatch succeeded (no ORDER BY needed).</summary>
+    CompoundExact,
+    /// <summary>TryCreateCompoundFieldMatch succeeded.</summary>
+    CompoundField,
+    /// <summary>TryCreateSimpleFieldDirectScan succeeded.</summary>
+    DirectScan,
+}
+
 public sealed class CompiledPlan
 {
     /// <summary>IL-emitted delegate that executes the posting-list scan plan (no timing instrumentation).</summary>
@@ -59,6 +76,11 @@ public sealed class CompiledPlan
     /// case). Bit <c>i</c> = "the <c>i</c>-th WHEN clause in template traversal order
     /// evaluated true under the bound parameters."</summary>
     public int WhenFlags { get; init; }
+
+    /// <summary>ORDER BY optimization hint, recorded on the first Instantiate call for this
+    /// compiled plan. Subsequent cache hits read the hint to skip the Try* chain. Written once
+    /// (volatile store), then read-only — safe for concurrent readers.</summary>
+    public volatile InstantiateHint Hint;
 
     /// <summary>Chain pointer for hash-collision disambiguation in PlanCache.</summary>
     public CompiledPlan Next;

@@ -640,26 +640,33 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                             innerDisposableMatch = queryMatch as IDisposable;
 
-                            // Compound exact match: WHERE f1 = val AND f2 = val → single compound tree lookup.
-                            // Check before ORDER BY — the compound match is faster regardless of sort.
-                            // OptimizationFlags.CompoundExactCandidate is set at template time when
-                            // the template has ≥2 non-negated Equals clauses — skip the O(n²) scan otherwise.
-                            if (queryPlan != null &&
+                            // ORDER BY optimization dispatch with InstantiateHint caching.
+                            // On first execution (hint == NotEvaluated), run the full Try* chain
+                            // and record which path won. On subsequent executions (cache hit),
+                            // jump directly to the recorded path — the cardinality cliff bit in
+                            // the cache key ensures the hint is stable within each bucket.
+                            var hint = compiledPlan?.Hint ?? InstantiateHint.NotEvaluated;
+                            bool needsFullChain = hint == InstantiateHint.NotEvaluated;
+                            var resultHint = hint;
+
+                            // Compound exact match (no ORDER BY needed)
+                            if ((hint == InstantiateHint.CompoundExact || needsFullChain) &&
+                                queryPlan != null &&
                                 (queryPlan.OptimizationFlags & PlanOptFlags.CompoundExactCandidate) != 0 &&
                                 QueryPlanBuilder.TryCreateCompoundExactMatch(queryPlan, planParams, builderParameters, out var compoundExact))
                             {
                                 innerDisposableMatch?.Dispose();
                                 innerDisposableMatch = compoundExact as IDisposable;
                                 queryMatch = compoundExact;
+                                resultHint = InstantiateHint.CompoundExact;
+                                needsFullChain = false;
                             }
 
                             orderByFields = QueryPlanBuilder.GetSortMetadata(builderParameters, out bool hasEmptySorts);
                             if (orderByFields != null)
                             {
-                                // Compound field optimization: WHERE field1 = 'val' ORDER BY field2
-                                // can be served by a single StartsWith scan on the compound tree.
-                                // Results come back pre-sorted by field2, eliminating the SortingMatch.
-                                if (queryPlan != null &&
+                                if ((hint == InstantiateHint.CompoundField || needsFullChain) &&
+                                    queryPlan != null &&
                                     (queryPlan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) != 0 &&
                                     QueryPlanBuilder.TryCreateCompoundFieldMatch(
                                         queryPlan, orderByFields, planParams, builderParameters, compiledPlan, out var compoundMatch))
@@ -668,30 +675,37 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                                     innerDisposableMatch = compoundMatch as IDisposable;
                                     queryMatch = QueryPlanBuilder.OrderBy(
                                         builderParameters, compoundMatch, orderByFields, hasEmptySorts);
+                                    resultHint = InstantiateHint.CompoundField;
+                                    needsFullChain = false;
                                 }
-                                else if (queryPlan != null &&
+                                else if ((hint == InstantiateHint.DirectScan || needsFullChain) &&
+                                    queryPlan != null &&
                                     (queryPlan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) != 0 &&
                                     QueryPlanBuilder.TryCreateSimpleFieldDirectScan(
                                         queryPlan, orderByFields, planParams, builderParameters, compiledPlan, out var directMatch))
                                 {
-                                    // Simple field DirectScan: SortedDrivingMatch walks the ITermsProvider
-                                    // in term order (field-value sort order). No SortingMatch needed.
                                     innerDisposableMatch?.Dispose();
                                     innerDisposableMatch = directMatch as IDisposable;
                                     queryMatch = directMatch;
+                                    resultHint = InstantiateHint.DirectScan;
+                                    needsFullChain = false;
                                 }
-                                else
+                                else if (hint == InstantiateHint.None || needsFullChain)
                                 {
-                                    // Set seek hint if WHERE field matches ORDER BY field (optimization for
-                                    // StreamAndIntersect to skip walking irrelevant tree terms).
                                     if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
                                         QueryPlanBuilder.TrySetSortSeekHint(seekMatch, queryPlan, orderByFields);
 
                                     queryMatch = QueryPlanBuilder.OrderBy(
                                         builderParameters, queryMatch, orderByFields, hasEmptySorts);
+                                    resultHint = InstantiateHint.None;
                                 }
                             }
-                            else if (take > 0 && query.Metadata.IsDistinct == false
+
+                            // Record the hint for subsequent cache-hit executions.
+                            if (compiledPlan != null && hint == InstantiateHint.NotEvaluated)
+                                compiledPlan.Hint = resultHint;
+
+                            if (orderByFields == null && take > 0 && query.Metadata.IsDistinct == false
                                 && query.SkipStatistics
                                 && query.Metadata.Query.Filter == null
                                 && queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch compiledMatch)
