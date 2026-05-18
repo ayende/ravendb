@@ -378,6 +378,7 @@ internal static partial class QueryPlanBuilder
         // WhenFlags (set above when building clauses/execList from template) is a
         // first-class part of the cache key alongside Ordering / TypeSignature / FullKinds.
         plan.WhenFlags = whenFlags;
+        plan.OptimizationFlags = template.OptimizationFlags;
         var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds, plan.WhenFlags);
         if (compiledPlan == null)
         {
