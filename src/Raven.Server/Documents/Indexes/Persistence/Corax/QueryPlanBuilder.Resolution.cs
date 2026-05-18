@@ -3290,13 +3290,6 @@ internal static partial class QueryPlanBuilder
             // no entry anywhere — ExistsQuery/BetweenQuery silently drop them.
             if (orderByFields[0].MayHaveMissingEntries)
                 return false;
-            // HasNonExistingEntries: auto-indexed docs whose field path is null/absent get an
-            // entry in the NonExisting posting list.  SortedDrivingMatch only drains the
-            // *null* posting list, so non-existing docs would be silently dropped.
-            // For single-field sort this is accepted (streaming trade-off).  For two-field
-            // sort (SortedDrivingWithTieBreakMatch), non-existing docs must not disappear.
-            if (hasTieBreak && indexSearcher.HasNonExistingEntries(orderByFields[0].Field))
-                return false;
             if (sortFieldType is not (MatchCompareFieldType.Sequence or MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
                 return false;
             var fieldMeta = orderByFields[0].Field;
