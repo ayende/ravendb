@@ -6,6 +6,7 @@ using System.Runtime.InteropServices;
 using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Matches.SortingMatches;
 using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Querying.Primitives;
 using Corax.Utils;
@@ -25,20 +26,17 @@ namespace Corax.Querying.Matches;
 
 /// <summary>
 /// Like SortedDrivingMatch but resolves ties within each primary term by a secondary
-/// numeric (long/double) field. Walks the ITermsProvider in primary-term order; for each
-/// term, drains the entire posting list into a per-term buffer, fetches secondary values
-/// via Lookup&lt;Int64LookupKey&gt;.GetFor, sorts the buffer, then emits in sorted order.
+/// field. Walks the ITermsProvider in primary-term order; for each term, drains the
+/// entire posting list into a per-term buffer, fetches secondary values via
+/// Lookup&lt;Int64LookupKey&gt;.GetFor, sorts the buffer, then emits in sorted order.
 ///
-/// Only supports numeric tie-break fields (MatchCompareFieldType.Integer or Floating).
+/// Supports Integer, Floating, and Sequence (string/Slice) tie-break fields.
 /// The planner must gate by per-term group size — this class caps groups at MaxGroupSize
 /// and throws if exceeded.
 /// </summary>
 public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDisposable
 {
     public const int MaxGroupSize = 16384;
-
-    private static readonly Comparer<long>   DescendingLong   = Comparer<long>.Create((a, b) => b.CompareTo(a));
-    private static readonly Comparer<double> DescendingDouble = Comparer<double>.Create((a, b) => b.CompareTo(a));
 
     private readonly ITermsProvider _provider;
     private readonly LowLevelTransaction _llt;
@@ -48,6 +46,10 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private readonly bool _secondaryDescending;
     private readonly bool _nullIsSmallest;
     private readonly long _missingSecondaryValue;
+
+    // String tie-break: container IDs for null/non-existing terms, resolved once in ctor.
+    private readonly long _nullTermContainerId;
+    private readonly long _nonExistingTermContainerId;
 
     private RoaringBitmap _emittedBitmap;
     private bool _providerExhausted;
@@ -63,6 +65,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private NativeList<long> _groupEntries;
     private NativeList<long> _groupSecondary;
     private NativeList<int> _groupSortedIndexes;
+    // String tie-break scratch: resolved CompactKey blobs per group entry.
+    private NativeList<UnmanagedSpan> _groupTerms;
     private int _groupSize;
     private int _groupEmitIdx;
     private bool _groupReady;
@@ -91,8 +95,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         bool nullIsSmallest,
         bool drainNulls = true)
     {
-        if (secondaryType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
-            throw new NotSupportedException($"SortedDrivingWithTieBreakMatch only supports Integer or Floating tie-break fields (got {secondaryType})");
+        if (secondaryType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating or MatchCompareFieldType.Sequence))
+            throw new NotSupportedException($"SortedDrivingWithTieBreakMatch only supports Integer, Floating, or Sequence tie-break fields (got {secondaryType})");
 
         _provider = provider;
         _llt = llt;
@@ -110,10 +114,22 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             IndexFieldsMappingBuilder.GetFieldNameForLongs(searcher.Allocator, secondaryField.FieldName, out secondaryLookupName);
             _missingSecondaryValue = nullIsSmallest ? long.MinValue : long.MaxValue;
         }
-        else
+        else if (secondaryType == MatchCompareFieldType.Floating)
         {
             IndexFieldsMappingBuilder.GetFieldNameForDoubles(searcher.Allocator, secondaryField.FieldName, out secondaryLookupName);
             _missingSecondaryValue = BitConverter.DoubleToInt64Bits(nullIsSmallest ? double.MinValue : double.MaxValue);
+        }
+        else
+        {
+            // Sequence: the lookup maps entry IDs to term container IDs (no type suffix).
+            secondaryLookupName = secondaryField.FieldName;
+            _missingSecondaryValue = SortingHelpers.MissingTermId;
+
+            // Resolve null/non-existing term container IDs for the string path.
+            if (searcher.TryGetPostingListForNull(secondaryField.FieldName, out _, out _nullTermContainerId) == false)
+                _nullTermContainerId = SortingHelpers.InvalidTermId;
+            if (searcher.TryGetPostingListForNonExisting(secondaryField.FieldName, out _, out _nonExistingTermContainerId) == false)
+                _nonExistingTermContainerId = SortingHelpers.InvalidTermId;
         }
         _secondaryLookup = searcher.EntriesToTermsReader(secondaryLookupName);
 
@@ -164,6 +180,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             _groupSecondary.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
         if (_groupSortedIndexes.IsValid == false)
             _groupSortedIndexes.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
+        if (_secondaryType == MatchCompareFieldType.Sequence && _groupTerms.IsValid == false)
+            _groupTerms.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
 
         var pageLocator = _llt.PageLocator;
 
@@ -307,6 +325,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _groupEntries.Grow(_allocator, addition);
         _groupSecondary.Grow(_allocator, addition);
         _groupSortedIndexes.Grow(_allocator, addition);
+        if (_groupTerms.IsValid)
+            _groupTerms.Grow(_allocator, addition);
     }
 
     private void DrainSmallIntoGroup(ref FastPForBufferedReader reader, Span<long> entryBuffer)
@@ -341,37 +361,28 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     {
         var entriesSpan = new Span<long>(_groupEntries.RawItems, _groupSize);
         var secondarySpan = new Span<long>(_groupSecondary.RawItems, _groupSize);
-        var indexesSpan = new Span<int>(_groupSortedIndexes.RawItems, _groupSize);
+        // _groupSortedIndexes is allocated to capacity (power-of-2, >= _groupSize),
+        // which is always a multiple of 8 (TieBreakGroupInitialCapacity = 1024),
+        // satisfying the SIMD padding contract of InitializeIndices.
+        var indexesSpan = new Span<int>(_groupSortedIndexes.RawItems, _groupSortedIndexes.Capacity);
 
-        if (_secondaryLookup != null)
+        switch (_secondaryType)
         {
-            _secondaryLookup.GetFor(entriesSpan, secondarySpan, _missingSecondaryValue);
-        }
-        else
-        {
-            // No lookup tree → field doesn't exist; treat all secondary values as missing.
-            secondarySpan.Fill(_missingSecondaryValue);
-        }
-
-        RoaringBitmap.InitializeIndices(indexesSpan, _groupSize);
-
-        // Sort indexes by secondary value. For Integer fields the long IS the value.
-        // For Floating fields, the long is the bit-cast of a double — sorting as longs
-        // would be wrong for negative values, so we reinterpret as a Span<double>.
-        if (_secondaryType == MatchCompareFieldType.Integer)
-        {
-            if (_secondaryDescending)
-                secondarySpan.Sort(indexesSpan, DescendingLong);
-            else
-                secondarySpan.Sort(indexesSpan);
-        }
-        else
-        {
-            var doubleSpan = MemoryMarshal.Cast<long, double>(secondarySpan);
-            if (_secondaryDescending)
-                doubleSpan.Sort(indexesSpan, DescendingDouble);
-            else
-                doubleSpan.Sort(indexesSpan);
+            case MatchCompareFieldType.Integer:
+                SortKernels.SortByLong(_secondaryLookup, entriesSpan, secondarySpan, indexesSpan, _missingSecondaryValue);
+                break;
+            case MatchCompareFieldType.Floating:
+                SortKernels.SortByDouble(_secondaryLookup, entriesSpan, secondarySpan, indexesSpan, _missingSecondaryValue);
+                break;
+            case MatchCompareFieldType.Sequence:
+                var termsSpan = new Span<UnmanagedSpan>(_groupTerms.RawItems, _groupTerms.Capacity);
+                SortKernels.SortBySlice(_secondaryLookup, _llt, _llt.PageLocator,
+                    entriesSpan, secondarySpan, termsSpan, indexesSpan,
+                    _nullTermContainerId, _nonExistingTermContainerId);
+                break;
+            default:
+                Debug.Assert(false, $"Unexpected secondary type {_secondaryType}");
+                break;
         }
     }
 
@@ -380,9 +391,23 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         int count = 0;
         var entries = _groupEntries.RawItems;
         var indexes = _groupSortedIndexes.RawItems;
-        while (_groupEmitIdx < _groupSize && count < matches.Length)
+        if (_secondaryDescending)
         {
-            matches[count++] = entries[indexes[_groupEmitIdx++]];
+            // Kernels always sort ascending; descending order is achieved by reading
+            // the index array from the end, avoiding delegate-backed comparers.
+            while (_groupEmitIdx < _groupSize && count < matches.Length)
+            {
+                int pos = _groupSize - 1 - _groupEmitIdx;
+                matches[count++] = entries[indexes[pos]];
+                _groupEmitIdx++;
+            }
+        }
+        else
+        {
+            while (_groupEmitIdx < _groupSize && count < matches.Length)
+            {
+                matches[count++] = entries[indexes[_groupEmitIdx++]];
+            }
         }
         if (_groupEmitIdx >= _groupSize)
         {
@@ -409,6 +434,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             _groupSecondary.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
         if (_groupSortedIndexes.IsValid == false)
             _groupSortedIndexes.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
+        if (_secondaryType == MatchCompareFieldType.Sequence && _groupTerms.IsValid == false)
+            _groupTerms.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
 
         _groupSize = 0;
         DrainLargeIntoGroup(ref _nullIterator, entryBuffer);
@@ -454,5 +481,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _groupEntries.Dispose(_allocator);
         _groupSecondary.Dispose(_allocator);
         _groupSortedIndexes.Dispose(_allocator);
+        _groupTerms.Dispose(_allocator);
     }
 }
