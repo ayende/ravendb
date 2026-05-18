@@ -707,10 +707,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 }
 
                 // We don't need to do any processing for the query beyond counting if we are getting a count.
+                var totalResultsBefore = totalResults.Value;
                 while (query.IsCountQuery == false || typeof(TDistinct) == typeof(HasDistinct))
                 {
                     token.ThrowIfCancellationRequested();
-                    var totalResultsBefore = totalResults.Value;
 
                     // We look for items that was haven't seen before in the case of paging. 
                     int read = queryMatch.Fill(ids);
