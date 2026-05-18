@@ -94,7 +94,7 @@ internal static partial class QueryPlanBuilder
 
         // Vector/spatial nodes from executed match
         var matchInspection = executedMatch.Inspect();
-        AppendVectorNodes(matchInspection, root);
+        AppendPostFilterNodes(matchInspection, root);
 
         if (sortingWrapper != null)
         {
@@ -109,7 +109,7 @@ internal static partial class QueryPlanBuilder
 
     // Covers VectorSearch and Spatial post-filter ops — both expose Inspect() subtrees
     // appended to the compiled-query root.
-    private static void AppendVectorNodes(QueryInspectionNode source, QueryInspectionNode target)
+    private static void AppendPostFilterNodes(QueryInspectionNode source, QueryInspectionNode target)
     {
         if (source.Operation.Contains("VectorSearch") || source.Operation.Contains("Spatial"))
         {
@@ -117,7 +117,7 @@ internal static partial class QueryPlanBuilder
             return;
         }
         foreach (var child in source.Children)
-            AppendVectorNodes(child, target);
+            AppendPostFilterNodes(child, target);
     }
 
     /// <summary>Build an inspection template from plan ops + clauses. Created once, cached.</summary>
