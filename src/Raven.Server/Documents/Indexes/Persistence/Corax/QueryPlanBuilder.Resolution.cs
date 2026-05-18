@@ -43,6 +43,13 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static partial class QueryPlanBuilder
 {
+    /// <summary>Clause count at or below which we use stackalloc + insertion sort
+    /// instead of ArrayPool + Array.Sort for cardinality ordering.</summary>
+    private const int StackallocClauseThreshold = 32;
+
+    /// <summary>Maximum number of ORDER BY fields supported by Corax.</summary>
+    private const int MaxSortFields = 16;
+
     // ── Entry points ─────────────────────────────────────────────────────
 
     /// <summary>
@@ -307,7 +314,7 @@ internal static partial class QueryPlanBuilder
             int n = clauses.Count;
             var sortedClauses = new List<ClauseInfo>(n);
             var sortedExecs = new ClauseExecution[n];
-            if (n <= 32)
+            if (n <= StackallocClauseThreshold)
             {
                 Span<int> indices = stackalloc int[n];
                 for (int j = 0; j < n; j++) indices[j] = j;
@@ -712,7 +719,7 @@ internal static partial class QueryPlanBuilder
         };
 
         if (clauses.Count == 1)
-            return ResolveClause(clauses[0], subExecs[0], indexSearcher, subPlan, builderParams: builderParams);
+            return ResolveClause(clauses[0], subExecs[0], indexSearcher, subPlan, parameters: null, builderParams: builderParams);
 
         // Multiple clauses (AND chain) — resolve each and AND them via bitmap.
         // RoaringBitmap is passed as `ref` to AndWithMatch, so using var is not legal here;
@@ -725,7 +732,7 @@ internal static partial class QueryPlanBuilder
             for (int ci2 = 0; ci2 < clauses.Count; ci2++)
             {
                 var clause = clauses[ci2];
-                var match = ResolveClause(clause, subExecs[ci2], indexSearcher, subPlan, builderParams: builderParams);
+                var match = ResolveClause(clause, subExecs[ci2], indexSearcher, subPlan, parameters: null, builderParams: builderParams);
                 if (first)
                 {
                     QueryPrimitives.OrWithMatch(match, ref bitmap.BitmapState);
@@ -768,7 +775,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Resolve a single clause's parameter value using its cached binding.
     /// Called for each clause during parameter population (both first execution and cache hit).
     /// The optional builderParameters is needed to resolve deferred method expressions (cmpxchg, now, today).</summary>
-    private static void PopulateClauseValues(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters = null)
+    private static void PopulateClauseValues(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
@@ -841,7 +848,7 @@ internal static partial class QueryPlanBuilder
 
     private static void ResolveBoostFactor(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters)
     {
-        var (boostVal, boostType) = ResolveBindingScalar(clause.Bindings[^1], queryParameters);
+        var (boostVal, boostType) = ResolveBindingScalar(clause.Bindings[^1], queryParameters, builderParameters: null);
         if (boostVal == null) return;
 
         exec.BoostFactor = boostType switch
@@ -978,7 +985,7 @@ internal static partial class QueryPlanBuilder
         // [0] = distanceErrorPct
         if (bindings.Length > 0 && bindings[BindingIndex.SpatialDistErrPct] != null)
         {
-            var (depVal, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialDistErrPct], queryParameters);
+            var (depVal, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialDistErrPct], queryParameters, builderParameters: null);
             sp.DistanceErrorPct = depVal != null ? Convert.ToDouble(depVal) : -1;
         }
 
@@ -987,15 +994,15 @@ internal static partial class QueryPlanBuilder
         if (bindings.Length >= BindingIndex.SpatialCircleBindingCount - 1) // circle: at least distErrPct + radius + lat + lng
         {
             sp.ShapeType = SpatialShapeType.Circle;
-            var (r, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialRadius], queryParameters);
-            var (lat, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLatitude], queryParameters);
-            var (lng, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLongitude], queryParameters);
+            var (r, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialRadius], queryParameters, builderParameters: null);
+            var (lat, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLatitude], queryParameters, builderParameters: null);
+            var (lng, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLongitude], queryParameters, builderParameters: null);
             sp.CircleRadius = Convert.ToDouble(r);
             sp.CircleLatitude = Convert.ToDouble(lat);
             sp.CircleLongitude = Convert.ToDouble(lng);
             if (bindings.Length > BindingIndex.SpatialUnits && bindings[BindingIndex.SpatialUnits] != null)
             {
-                var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialUnits], queryParameters);
+                var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialUnits], queryParameters, builderParameters: null);
                 if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
                     sp.Units = (SpatialUnits)su == SpatialUnits.Kilometers
                             ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
@@ -1007,11 +1014,11 @@ internal static partial class QueryPlanBuilder
             sp.ShapeType = SpatialShapeType.Wkt;
             if (bindings.Length > BindingIndex.SpatialWkt && bindings[BindingIndex.SpatialWkt] != null)
             {
-                var (wkt, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWkt], queryParameters);
+                var (wkt, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWkt], queryParameters, builderParameters: null);
                 sp.Wkt = wkt?.ToString();
                 if (bindings.Length > BindingIndex.SpatialWktUnits && bindings[BindingIndex.SpatialWktUnits] != null)
                 {
-                    var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWktUnits], queryParameters);
+                    var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWktUnits], queryParameters, builderParameters: null);
                     if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
                         sp.Units = (SpatialUnits)su == SpatialUnits.Kilometers
                             ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
@@ -1032,20 +1039,20 @@ internal static partial class QueryPlanBuilder
         // [1]=minimumMatch, [2]=numberOfCandidates, [3]=aiTask
         if (bindings.Length > BindingIndex.VectorMinMatch && bindings[BindingIndex.VectorMinMatch] != null)
         {
-            var (simVal, simType) = ResolveBindingScalar(bindings[BindingIndex.VectorMinMatch], queryParameters);
+            var (simVal, simType) = ResolveBindingScalar(bindings[BindingIndex.VectorMinMatch], queryParameters, builderParameters: null);
             if (simVal != null && simType != ParamValueType.Null)
                 vec.MinimumMatch = simType == ParamValueType.Double ? (float)(double)simVal
                     : simType == ParamValueType.Long ? (long)simVal : -1;
         }
         if (bindings.Length > BindingIndex.VectorCandidates && bindings[BindingIndex.VectorCandidates] != null)
         {
-            var (candVal, candType) = ResolveBindingScalar(bindings[BindingIndex.VectorCandidates], queryParameters);
+            var (candVal, candType) = ResolveBindingScalar(bindings[BindingIndex.VectorCandidates], queryParameters, builderParameters: null);
             if (candVal != null && candType != ParamValueType.Null)
                 vec.NumberOfCandidates = Convert.ToInt32(candVal);
         }
         if (bindings.Length > BindingIndex.VectorAiTask && bindings[BindingIndex.VectorAiTask] != null)
         {
-            var (taskVal, _) = ResolveBindingScalar(bindings[BindingIndex.VectorAiTask], queryParameters);
+            var (taskVal, _) = ResolveBindingScalar(bindings[BindingIndex.VectorAiTask], queryParameters, builderParameters: null);
             vec.AiTaskName = taskVal?.ToString();
         }
 
@@ -1081,7 +1088,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Resolve a binding to a scalar value. Asserts the result is not an array/object.
     /// For parameters that might be arrays, use ResolveBindingRaw and handle arrays first.
     /// The optional builderParameters is needed to resolve deferred method expressions (cmpxchg, now, today).</summary>
-    private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters = null)
+    private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
     {
         switch (binding.Source)
         {
@@ -1145,7 +1152,7 @@ internal static partial class QueryPlanBuilder
     /// posting list resolution, etc.
     /// </summary>
     private static IQueryMatch[] ResolveMatches(QueryExecution plan, IndexSearcher indexSearcher,
-        PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
+        PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         var clauses = plan.Clauses ?? [];
         // All-entries plan with possible post-filter phases
@@ -1332,7 +1339,7 @@ internal static partial class QueryPlanBuilder
     }
 
     private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
-        QueryExecution plan, PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
+        QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
         {
@@ -1646,7 +1653,7 @@ internal static partial class QueryPlanBuilder
     /// array to read.
     /// </summary>
     private static PostingSource[] ResolveTermSources(QueryExecution plan, IndexSearcher indexSearcher,
-        PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
+        PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         // IsAllEntries plans never emit term ops (FillFromPostings / AndWith / etc.) —
         // their match[0] is AllEntries, post-filter slots are spatial/vector. No
@@ -1744,7 +1751,7 @@ internal static partial class QueryPlanBuilder
     /// tree-scan dispatch in the compiled pipeline. Slot indexing is parallel to
     /// ResolveMatches/ResolveTermSources. Returns null if no TreeScan clauses exist.</summary>
     private static ITermsProvider[] ResolveTermsProviders(QueryExecution plan, IndexSearcher indexSearcher,
-        PlanParameters parameters = null, QueryBuilderParameters builderParams = null)
+        PlanParameters parameters, QueryBuilderParameters builderParams)
     {
         if (plan.IsAllEntries || plan.Clauses is not { Count: > 0 } clauses)
             return null;
@@ -2196,7 +2203,7 @@ internal static partial class QueryPlanBuilder
     /// These are NOT materialized yet — the caller materializes them with the bitmap-producing
     /// match as the filterQuery. Returns null if the plan has no vectors.
     /// </summary>
-    private static CoraxVectorItem[] ResolveVectorItems(QueryExecution plan, QueryBuilderParameters builderParams = null)
+    private static CoraxVectorItem[] ResolveVectorItems(QueryExecution plan, QueryBuilderParameters builderParams)
     {
         if (plan.VectorSelects == null || plan.VectorSelects.Length == 0)
             return null;
@@ -3528,7 +3535,7 @@ internal static partial class QueryPlanBuilder
         }
 
         int sortIndex = 0;
-        var sortArray = new OrderMetadata[16];
+        var sortArray = new OrderMetadata[MaxSortFields];
 
         if (orderByFields.Length > sortArray.Length)
             throw new InvalidOperationException($"Corax does not support ordering by more than {sortArray.Length} properties.");
