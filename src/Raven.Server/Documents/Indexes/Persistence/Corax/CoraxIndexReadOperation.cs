@@ -687,7 +687,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     switch (queryMatch)
                     {
                         case SortingMatch sm:
-                            sm.SetScoreAndDistanceBuffer(sortingData);
+                            sm.SetSortingDataTransfer(sortingData);
                             break;
                         case SortingMultiMatch smm:
                             smm.SetSortingDataTransfer(sortingData);

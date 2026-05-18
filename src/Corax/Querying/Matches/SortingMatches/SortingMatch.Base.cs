@@ -5,10 +5,10 @@ using Corax.Querying.Matches.SortingMatches.Meta;
 namespace Corax.Querying.Matches.SortingMatches;
 
 /// <summary>
-/// Non-generic abstract base for single-field sorting matches. Lets callers in
-/// <c>CoraxIndexReadOperation</c> pattern-match on <c>SortingMatch</c> without
-/// referencing the <c>TInner</c> type parameter and read <see cref="TotalResults"/>
-/// after sorting completes.
+/// Non-generic abstract base for sorting matches (single-field and multi-field).
+/// Lets callers in <c>CoraxIndexReadOperation</c> pattern-match on <c>SortingMatch</c>
+/// without referencing the <c>TInner</c> type parameter and read
+/// <see cref="TotalResults"/> after sorting completes.
 /// </summary>
 public abstract class SortingMatch : IQueryMatch, IDisposable
 {
@@ -25,6 +25,6 @@ public abstract class SortingMatch : IQueryMatch, IDisposable
     public abstract int AndWith(Span<long> buffer, int matches);
     public abstract void Score(Span<long> matches, Span<float> scores, float boostFactor);
     public abstract QueryInspectionNode Inspect();
-    public abstract void SetScoreAndDistanceBuffer(in SortingDataTransfer sortingDataTransfer);
+    public abstract void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer);
     public abstract void Dispose();
 }
