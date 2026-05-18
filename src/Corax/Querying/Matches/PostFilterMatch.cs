@@ -14,12 +14,12 @@ namespace Corax.Querying.Matches;
 public struct PostFilterMatch : IQueryMatch
 {
     private readonly IQueryMatch _inner;
-    private readonly IQueryMatch[] _spatialFilters;
+    private readonly IQueryMatch[] _postFilters;
 
-    public PostFilterMatch(IQueryMatch inner, IQueryMatch[] spatialFilters)
+    public PostFilterMatch(IQueryMatch inner, IQueryMatch[] postFilters)
     {
         _inner = inner;
-        _spatialFilters = spatialFilters;
+        _postFilters = postFilters;
     }
 
     public long Count => _inner.Count;
@@ -34,9 +34,9 @@ public struct PostFilterMatch : IQueryMatch
         if (read == 0)
             return 0;
 
-        for (int i = 0; i < _spatialFilters.Length; i++)
+        for (int i = 0; i < _postFilters.Length; i++)
         {
-            read = _spatialFilters[i].AndWith(matches, read);
+            read = _postFilters[i].AndWith(matches, read);
             if (read == 0)
                 return 0;
         }
@@ -51,9 +51,9 @@ public struct PostFilterMatch : IQueryMatch
         if (count == 0)
             return 0;
 
-        for (int i = 0; i < _spatialFilters.Length; i++)
+        for (int i = 0; i < _postFilters.Length; i++)
         {
-            count = _spatialFilters[i].AndWith(buffer, count);
+            count = _postFilters[i].AndWith(buffer, count);
             if (count == 0)
                 return 0;
         }
@@ -64,8 +64,8 @@ public struct PostFilterMatch : IQueryMatch
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         _inner.Score(matches, scores, boostFactor);
-        for (int i = 0; i < _spatialFilters.Length; i++)
-            _spatialFilters[i].Score(matches, scores, boostFactor);
+        for (int i = 0; i < _postFilters.Length; i++)
+            _postFilters[i].Score(matches, scores, boostFactor);
     }
 
     public QueryInspectionNode Inspect()
@@ -74,8 +74,8 @@ public struct PostFilterMatch : IQueryMatch
         {
             _inner.Inspect()
         };
-        for (int i = 0; i < _spatialFilters.Length; i++)
-            children.Add(_spatialFilters[i].Inspect());
+        for (int i = 0; i < _postFilters.Length; i++)
+            children.Add(_postFilters[i].Inspect());
 
         return new QueryInspectionNode(nameof(PostFilterMatch), children: children);
     }
