@@ -1909,8 +1909,8 @@ internal static partial class QueryPlanBuilder
     /// <summary>Attach spatial and vector post-filter phases to a query plan.
     /// Spatial/vector clauses are stored in the plan's Clauses array at known indices,
     /// and SpatialFilters/VectorSelects reference those indices for resolution at execution time.</summary>
-    private static void AttachPostFilterPhases(QueryExecution plan, List<ClauseInfo> spatialClauses, ClauseExecution[] spatialExecs,
-        List<ClauseInfo> vectorClauses, ClauseExecution[] vectorExecs)
+    private static void AttachPostFilterPhases(QueryExecution plan, ClauseInfo[] spatialClauses, ClauseExecution[] spatialExecs,
+        ClauseInfo[] vectorClauses, ClauseExecution[] vectorExecs)
     {
         if (spatialClauses == null && vectorClauses == null)
             return;
@@ -1918,7 +1918,7 @@ internal static partial class QueryPlanBuilder
         var clauses = plan.Clauses ??= [];
 
         // Extend Executions array to match the clauses that will be added
-        int extraCount = (spatialClauses?.Count ?? 0) + (vectorClauses?.Count ?? 0);
+        int extraCount = (spatialClauses?.Length ?? 0) + (vectorClauses?.Length ?? 0);
         var execs = plan.Executions ??= [];
         int execIdx = execs.Length;
         Array.Resize(ref execs, execs.Length + extraCount);
@@ -1927,8 +1927,8 @@ internal static partial class QueryPlanBuilder
 
         if (spatialClauses != null)
         {
-            plan.SpatialFilters = new SpatialFilterOp[spatialClauses.Count];
-            for (int i = 0; i < spatialClauses.Count; i++)
+            plan.SpatialFilters = new SpatialFilterOp[spatialClauses.Length];
+            for (int i = 0; i < spatialClauses.Length; i++)
             {
                 clauses.Add(spatialClauses[i]);
                 var exec = spatialExecs?[i] ?? new ClauseExecution();
@@ -1939,8 +1939,8 @@ internal static partial class QueryPlanBuilder
 
         if (vectorClauses != null)
         {
-            plan.VectorSelects = new VectorSearchOp[vectorClauses.Count];
-            for (int i = 0; i < vectorClauses.Count; i++)
+            plan.VectorSelects = new VectorSearchOp[vectorClauses.Length];
+            for (int i = 0; i < vectorClauses.Length; i++)
             {
                 clauses.Add(vectorClauses[i]);
                 var exec = vectorExecs?[i] ?? new ClauseExecution();

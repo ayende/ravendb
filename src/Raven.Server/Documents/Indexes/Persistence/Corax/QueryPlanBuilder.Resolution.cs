@@ -393,19 +393,23 @@ internal static partial class QueryPlanBuilder
         else
         {
             executions = execList.ToArray();
+            // Move AndGroup clauses to the front (preserving relative order)
+            // using in-place shifts on both the clauses list and executions array.
             int insertPos = 0;
             for (int j = 0; j < clauses.Count; j++)
             {
                 if (clauses[j].ClauseType == ClauseType.AndGroup)
                 {
-                    ClauseInfo ag = clauses[j];
-                    ClauseExecution agExec = executions[j];
-                    clauses.RemoveAt(j);
-                    var execListTmp = new List<ClauseExecution>(executions);
-                    execListTmp.RemoveAt(j);
-                    clauses.Insert(insertPos, ag);
-                    execListTmp.Insert(insertPos, agExec);
-                    executions = execListTmp.ToArray();
+                    if (j != insertPos)
+                    {
+                        ClauseInfo ag = clauses[j];
+                        ClauseExecution agExec = executions[j];
+                        // Shift elements [insertPos..j-1] right by one in both collections.
+                        clauses.RemoveAt(j);
+                        clauses.Insert(insertPos, ag);
+                        Array.Copy(executions, insertPos, executions, insertPos + 1, j - insertPos);
+                        executions[insertPos] = agExec;
+                    }
                     insertPos++;
                 }
             }
@@ -482,18 +486,22 @@ internal static partial class QueryPlanBuilder
             // because OrGroup/AndGroup subclauses need actual resolved types from executions.
             if (isOr == false && clauses.Count > 1)
             {
-                var scanPreds = new List<ScanPredicateInfo>();
                 int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
                 int scanStart = plan.AllNegated ? 0 : 1;
+                int maxPreds = clauses.Count - scanStart;
+                var scanPreds = new ScanPredicateInfo[maxPreds];
+                int scanPredCount = 0;
                 for (int si2 = scanStart; si2 < clauses.Count; si2++)
                 {
                     var pred = BuildScanPredicateInfo(clauses[si2], executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex);
                     if (pred != null)
-                        scanPreds.Add(pred.Value);
+                        scanPreds[scanPredCount++] = pred.Value;
                 }
-                if (scanPreds.Count > 0)
+                if (scanPredCount > 0)
                 {
-                    plan.ScanPredicateInfos = scanPreds.ToArray();
+                    if (scanPredCount < maxPreds)
+                        Array.Resize(ref scanPreds, scanPredCount);
+                    plan.ScanPredicateInfos = scanPreds;
                     (plan.TypeSignature, plan.FullKinds) = GetTypeSignature(plan.ScanPredicateInfos, writer.GetStrings());
                 }
             }
@@ -517,35 +525,39 @@ internal static partial class QueryPlanBuilder
 
         if (template.SpatialClauses != null || template.VectorClauses != null)
         {
-            var spatialList = template.SpatialClauses != null ? new List<ClauseInfo>(template.SpatialClauses.Length) : null;
-            var vectorList = template.VectorClauses != null ? new List<ClauseInfo>(template.VectorClauses.Length) : null;
+            ClauseInfo[] spatialArr = null;
+            ClauseInfo[] vectorArr = null;
             ClauseExecution[] spatialExecs = null;
             ClauseExecution[] vectorExecs = null;
-            if (spatialList != null)
+            if (template.SpatialClauses != null)
             {
-                spatialExecs = new ClauseExecution[template.SpatialClauses.Length];
-                for (int si = 0; si < template.SpatialClauses.Length; si++)
+                int sLen = template.SpatialClauses.Length;
+                spatialArr = new ClauseInfo[sLen];
+                spatialExecs = new ClauseExecution[sLen];
+                for (int si = 0; si < sLen; si++)
                 {
                     var sc = template.SpatialClauses[si];
                     var scExec = new ClauseExecution();
                     PopulateClauseValues(sc, scExec, planParams.QueryParameters, writer, builderParameters);
-                    spatialList.Add(sc);
+                    spatialArr[si] = sc;
                     spatialExecs[si] = scExec;
                 }
             }
-            if (vectorList != null)
+            if (template.VectorClauses != null)
             {
-                vectorExecs = new ClauseExecution[template.VectorClauses.Length];
-                for (int vi = 0; vi < template.VectorClauses.Length; vi++)
+                int vLen = template.VectorClauses.Length;
+                vectorArr = new ClauseInfo[vLen];
+                vectorExecs = new ClauseExecution[vLen];
+                for (int vi = 0; vi < vLen; vi++)
                 {
                     var vc = template.VectorClauses[vi];
                     var vcExec = new ClauseExecution();
                     PopulateClauseValues(vc, vcExec, planParams.QueryParameters, writer, builderParameters);
-                    vectorList.Add(vc);
+                    vectorArr[vi] = vc;
                     vectorExecs[vi] = vcExec;
                 }
             }
-            AttachPostFilterPhases(plan, spatialList, spatialExecs, vectorList, vectorExecs);
+            AttachPostFilterPhases(plan, spatialArr, spatialExecs, vectorArr, vectorExecs);
         }
 
         // Store typed arrays once after all clauses (including spatial/vector) are populated.
@@ -898,17 +910,26 @@ internal static partial class QueryPlanBuilder
 
     private static void ResolveInFromBindings(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings)
     {
-        var termTypes = new List<ParamValueType>();
-        var resolvedValues = new List<object>();
+        // Pre-size arrays from bindings.Length (covers all-literal and scalar-parameter
+        // cases without growth). Array-expansion parameters that push beyond capacity
+        // trigger a single resize.
+        int capacity = bindings.Length;
+        var termTypes = new ParamValueType[capacity];
+        var resolvedValues = new object[capacity];
+        int count = 0;
         bool hasNullTerm = false;
 
-        foreach (var it in bindings)
+        for (int bi = 0; bi < bindings.Length; bi++)
         {
+            var it = bindings[bi];
             switch (it.Source)
             {
                 case BindingSource.Literal:
-                    resolvedValues.Add(it.LiteralValue);
-                    termTypes.Add(it.LiteralType);
+                    if (count == capacity)
+                        GrowInArrays(ref resolvedValues, ref termTypes, ref capacity);
+                    resolvedValues[count] = it.LiteralValue;
+                    termTypes[count] = it.LiteralType;
+                    count++;
                     if (it.LiteralValue == null)
                         hasNullTerm = true;
                     break;
@@ -920,25 +941,36 @@ internal static partial class QueryPlanBuilder
                     queryParameters?.TryGet(it.ParameterName, out inRaw);
                     if (inRaw is BlittableJsonReaderArray arr)
                     {
+                        // Ensure capacity for all array elements.
+                        int needed = count + arr.Length;
+                        while (capacity < needed)
+                            GrowInArrays(ref resolvedValues, ref termTypes, ref capacity);
                         foreach (var elem in arr)
                         {
                             var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter);
-                            resolvedValues.Add(elemVal);
-                            termTypes.Add(ToParamValueType(elemType));
+                            resolvedValues[count] = elemVal;
+                            termTypes[count] = ToParamValueType(elemType);
+                            count++;
                             if (elemVal == null)
                                 hasNullTerm = true;
                         }
                     }
                     else if (inRaw != null)
                     {
+                        if (count == capacity)
+                            GrowInArrays(ref resolvedValues, ref termTypes, ref capacity);
                         var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter);
-                        resolvedValues.Add(singleVal);
-                        termTypes.Add(ToParamValueType(singleType));
+                        resolvedValues[count] = singleVal;
+                        termTypes[count] = ToParamValueType(singleType);
+                        count++;
                     }
                     else
                     {
-                        resolvedValues.Add(null);
-                        termTypes.Add(ParamValueType.Null);
+                        if (count == capacity)
+                            GrowInArrays(ref resolvedValues, ref termTypes, ref capacity);
+                        resolvedValues[count] = null;
+                        termTypes[count] = ParamValueType.Null;
+                        count++;
                         hasNullTerm = true;
                     }
                     break;
@@ -947,8 +979,11 @@ internal static partial class QueryPlanBuilder
                 case BindingSource.DeferredMethod:
                     // Deferred bindings (cmpxchg, now, today) shouldn't appear in IN lists,
                     // but handle gracefully: resolve as null.
-                    resolvedValues.Add(null);
-                    termTypes.Add(ParamValueType.Null);
+                    if (count == capacity)
+                        GrowInArrays(ref resolvedValues, ref termTypes, ref capacity);
+                    resolvedValues[count] = null;
+                    termTypes[count] = ParamValueType.Null;
+                    count++;
                     hasNullTerm = true;
                     break;
             }
@@ -964,7 +999,7 @@ internal static partial class QueryPlanBuilder
         else
         {
             dominantType = ParamValueType.Null;
-            for (int i = 0; i < termTypes.Count; i++)
+            for (int i = 0; i < count; i++)
             {
                 if (resolvedValues[i] == null) continue;
                 if (dominantType == ParamValueType.Null)
@@ -995,7 +1030,7 @@ internal static partial class QueryPlanBuilder
         // so dropping it produces the correct empty/partial result (matches Lucene).
         // Without this guard, Convert.ToInt64("Shalom") would throw FormatException.
         int nonNullCount = 0;
-        for (int i = 0; i < resolvedValues.Count; i++)
+        for (int i = 0; i < count; i++)
         {
             if (resolvedValues[i] == null) continue;
             if (termTypes[i] != dominantType && IsTypeIncompatible(termTypes[i], dominantType))
@@ -1007,6 +1042,14 @@ internal static partial class QueryPlanBuilder
         exec.PackedParamValue = new PackedParam(packedType, startIdx);
         exec.InTermCount = nonNullCount;
         exec.HasNullTerm = hasNullTerm;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static void GrowInArrays(ref object[] resolvedValues, ref ParamValueType[] termTypes, ref int capacity)
+    {
+        capacity = Math.Max(capacity * 2, 4);
+        Array.Resize(ref resolvedValues, capacity);
+        Array.Resize(ref termTypes, capacity);
     }
 
     /// <summary>Resolve spatial parameters from cached bindings (no MethodExpression dependency).</summary>
