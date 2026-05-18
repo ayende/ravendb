@@ -1509,9 +1509,9 @@ internal static partial class QueryPlanBuilder
         IndexSearcher indexSearcher, QueryExecution plan,
         PlanParameters parameters, QueryBuilderParameters builderParams)
     {
-        FieldMetadata fieldMeta = builderParams != null ?
-            QueryBuilderHelper.GetFieldMetadata(in builderParams, clause.FieldName, hasBoost: builderParams.HasBoost) :
-            indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+        // Use ResolveFieldMetadata to pick up the exact/search field name variant
+        // for dynamic indexes (#4777 fix).
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
 
         var p = exec.PackedParamValue;
         int idx = p.Param1 + termIndex;
@@ -1829,7 +1829,14 @@ internal static partial class QueryPlanBuilder
         {
             // Dynamic field name variants are pre-resolved by DynamicFieldNameResolve at template time.
             string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
-            return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
+            // When forceDefaultSearchAnalyzer is enabled for dynamic indexes, non-exact non-search
+            // clauses should use the search analyzer (#4778 fix).
+            bool forceSearchAnalyzer = builderParams.Metadata.IsDynamic
+                && clause.IsExact == false
+                && clause.ClauseType != ClauseType.Search
+                && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
+            return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact,
+                hasBoost: builderParams.HasBoost, forceDefaultSearchAnalyzer: forceSearchAnalyzer);
         }
 
         return indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);

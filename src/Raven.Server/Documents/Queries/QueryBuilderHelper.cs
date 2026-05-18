@@ -512,9 +512,9 @@ public static class QueryBuilderHelper
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static FieldMetadata GetFieldMetadata(in QueryBuilderParameters parameters, string fieldName, bool isForQuery = true,
-        bool exact = false, bool isSorting = false, bool hasBoost = false, bool handleSearch = false)
+        bool exact = false, bool isSorting = false, bool hasBoost = false, bool handleSearch = false, bool forceDefaultSearchAnalyzer = false)
     {
-        return GetFieldMetadata(parameters.Allocator, fieldName, parameters.Index, parameters.IndexFieldsMapping, parameters.FieldsToFetch, parameters.HasDynamics, parameters.DynamicFields, isForQuery, exact, isSorting, hasBoost, handleSearch);
+        return GetFieldMetadata(parameters.Allocator, fieldName, parameters.Index, parameters.IndexFieldsMapping, parameters.FieldsToFetch, parameters.HasDynamics, parameters.DynamicFields, isForQuery, exact, isSorting, hasBoost, handleSearch, forceDefaultSearchAnalyzer);
     }
     
     internal static FieldMetadata GetFieldMetadata(ByteStringContext allocator, string fieldName, Index index, IndexFieldsMapping indexMapping,
