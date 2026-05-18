@@ -113,7 +113,7 @@ internal static partial class QueryPlanBuilder
         {
             BoostPropagate(ctx);
             NotCanonicalize(clauses, ctx);
-            BetweenDetectSentinels(clauses);
+            BetweenRewriteSentinels(clauses);
             GroupCollapse(clauses, ctx);
             WhenRegister(clauses, ctx);
             ThrowIfErrors(ctx);
@@ -191,49 +191,102 @@ internal static partial class QueryPlanBuilder
         }
 
         /// <summary>
-        /// Detect BETWEEN clauses whose literal bindings carry the client's unbounded-bound
-        /// sentinel strings ("*" for low, "NULL" for high). When a bound is a literal (not
-        /// a parameter placeholder), we can detect the sentinel at plan time and set
-        /// <see cref="ClauseInfo.BetweenLowUnbounded"/>/<see cref="ClauseInfo.BetweenHighUnbounded"/>,
-        /// which are copied to <see cref="ClauseExecution"/> at execution time.
+        /// Rewrite BETWEEN clauses whose literal bindings carry the client's unbounded-bound
+        /// sentinel strings ("*" for low, "NULL" for high) into equivalent range clauses:
+        /// <list type="bullet">
+        ///   <item>Low sentinel only → <see cref="ClauseType.LessThanOrEqual"/> on the high bound.</item>
+        ///   <item>High sentinel only → negated <see cref="ClauseType.LessThan"/> on the low bound.
+        ///     The negation gives ANDNOT semantics at execution time, which preserves the Lucene
+        ///     quirk where <c>WhereBetween(field, low, null)</c> includes null-valued docs.</item>
+        ///   <item>Both sentinels → clause removed (matches everything; tautological in AND,
+        ///     dominates in OR).</item>
+        /// </list>
         ///
-        /// For parameter-bound values the sentinel string is only known after the blittable
-        /// lookup, so runtime detection in <see cref="PopulateClauseValues"/> remains the
-        /// fallback — this step only handles the literal case.
+        /// After this step, sentinel BETWEEN clauses no longer exist at execution time, so
+        /// <c>SentinelBetweenBit</c> (bit 31 of OperandOrdering) is unnecessary and the bit
+        /// is freed for future use. Sentinel constants are <c>internal</c> to Raven.Client and
+        /// only appear as literals in the RQL emitted by the .NET SDK — parameter-bound
+        /// sentinels are not supported and will be treated as normal string values.
         ///
-        /// Recurses into OrGroup/AndGroup sub-clauses so nested BETWEEN clauses are covered.
+        /// Recurses into OrGroup/AndGroup sub-clauses. For both-sentinel sub-clauses inside
+        /// a group, the sub-clause is removed from the group's list.
         /// </summary>
-        private static void BetweenDetectSentinels(List<ClauseInfo> clauses)
+        private static void BetweenRewriteSentinels(List<ClauseInfo> clauses)
         {
-            for (int i = 0; i < clauses.Count; i++)
-                BetweenDetectSentinelsRecursive(clauses[i]);
+            for (int i = clauses.Count - 1; i >= 0; i--)
+            {
+                BetweenRewriteSubClauses(clauses[i]);
+                if (TryRewriteBetweenSentinel(clauses[i], out bool bothSentinel))
+                {
+                    if (bothSentinel)
+                        clauses.RemoveAt(i);
+                }
+            }
         }
 
-        private static void BetweenDetectSentinelsRecursive(ClauseInfo clause)
+        private static void BetweenRewriteSubClauses(ClauseInfo clause)
         {
             if (clause.OrSubClauses != null)
-                for (int i = 0; i < clause.OrSubClauses.Count; i++)
-                    BetweenDetectSentinelsRecursive(clause.OrSubClauses[i]);
+            {
+                for (int i = clause.OrSubClauses.Count - 1; i >= 0; i--)
+                {
+                    BetweenRewriteSubClauses(clause.OrSubClauses[i]);
+                    if (TryRewriteBetweenSentinel(clause.OrSubClauses[i], out bool bothSentinel) && bothSentinel)
+                        clause.OrSubClauses.RemoveAt(i);
+                }
+            }
             if (clause.AndSubClauses != null)
-                for (int i = 0; i < clause.AndSubClauses.Count; i++)
-                    BetweenDetectSentinelsRecursive(clause.AndSubClauses[i]);
+            {
+                for (int i = clause.AndSubClauses.Count - 1; i >= 0; i--)
+                {
+                    BetweenRewriteSubClauses(clause.AndSubClauses[i]);
+                    if (TryRewriteBetweenSentinel(clause.AndSubClauses[i], out bool bothSentinel) && bothSentinel)
+                        clause.AndSubClauses.RemoveAt(i);
+                }
+            }
+        }
 
+        /// <summary>Rewrite a single BETWEEN clause with literal sentinel bounds.
+        /// Returns true if the clause was rewritten (caller should remove if bothSentinel).</summary>
+        private static bool TryRewriteBetweenSentinel(ClauseInfo clause, out bool bothSentinel)
+        {
+            bothSentinel = false;
             if (clause.ClauseType != ClauseType.Between || clause.Bindings is not { Length: >= 2 })
-                return;
+                return false;
 
-            var low = clause.Bindings[BindingIndex.BetweenLow];
-            if (low is { LiteralType: ParamValueType.String, LiteralValue: string ls }
-                && ls == Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery)
+            bool lowIsSentinel = clause.Bindings[BindingIndex.BetweenLow] is
+                { LiteralType: ParamValueType.String, LiteralValue: string ls }
+                && ls == Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
+
+            bool highIsSentinel = clause.Bindings[BindingIndex.BetweenHigh] is
+                { LiteralType: ParamValueType.String, LiteralValue: string hs }
+                && hs == Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
+
+            if (!lowIsSentinel && !highIsSentinel)
+                return false;
+
+            if (lowIsSentinel && highIsSentinel)
             {
-                clause.BetweenLowUnbounded = true;
+                bothSentinel = true;
+                return true;
             }
 
-            var high = clause.Bindings[BindingIndex.BetweenHigh];
-            if (high is { LiteralType: ParamValueType.String, LiteralValue: string hs }
-                && hs == Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery)
+            if (lowIsSentinel)
             {
-                clause.BetweenHighUnbounded = true;
+                // BETWEEN '*' AND high → field <= high
+                clause.ClauseType = ClauseType.LessThanOrEqual;
+                clause.Bindings = [clause.Bindings[BindingIndex.BetweenHigh]];
             }
+            else
+            {
+                // BETWEEN low AND 'NULL' → NOT (field < low)
+                // ANDNOT semantics preserve the Lucene quirk: null-valued docs stay.
+                clause.ClauseType = ClauseType.LessThan;
+                clause.IsNegated = true;
+                clause.Bindings = [clause.Bindings[BindingIndex.BetweenLow]];
+            }
+
+            return true;
         }
 
         /// <summary>

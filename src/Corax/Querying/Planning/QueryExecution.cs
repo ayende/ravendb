@@ -20,12 +20,9 @@ public class QueryExecution
     ///     gets a distinct cache key.</description></item>
     ///   <item><term>30</term><description>HasBoost flag. Set when any clause has boost(); forces
     ///     every op to QueryMatch dispatch (so scores are accumulated).</description></item>
-    ///   <item><term>31</term><description>SentinelBetween flag. Set when any execution carries
-    ///     BetweenLowUnbounded / BetweenHighUnbounded — those rewrites force QueryMatch dispatch
-    ///     (IsTreeScanEligibleClause rejects sentinel BETWEEN) and must not collide with cached
-    ///     TreeScan IL for the same queryText. Set in QueryPlanBuilder.Resolution.cs ~L304. This is
-    ///     the int's sign bit, but PlanCache compares orderings bitwise (Vector256.Equals / scalar !=),
-    ///     never as a signed magnitude, so setting bit 31 is safe — it just makes the value negative.</description></item>
+    ///   <item><term>31</term><description>Reserved (was SentinelBetween; removed when the walker
+    ///     started rewriting sentinel BETWEEN into LessThanOrEqual / NOT-LessThan at template time).
+    ///     Available for future use (e.g. cardinality cliff bucket).</description></item>
     /// </list>
     /// </summary>
     public int OperandOrdering;
@@ -33,9 +30,10 @@ public class QueryExecution
     /// <summary>Bit 30 of <see cref="OperandOrdering"/>. Set when any clause carries a boost factor.</summary>
     public const int HasBoostBit = 1 << 30;
 
-    /// <summary>Bit 31 of <see cref="OperandOrdering"/>. Set when any execution carries
-    /// BetweenLowUnbounded / BetweenHighUnbounded sentinel values.</summary>
-    public const int SentinelBetweenBit = 1 << 31;
+    /// <summary>Bit 31 of <see cref="OperandOrdering"/>. Reserved — was SentinelBetween,
+    /// removed when the walker started rewriting sentinel BETWEEN at template time.
+    /// Available for cardinality cliff bucket (#4814).</summary>
+    public const int ReservedBit31 = 1 << 31;
 
     /// <summary>Clause list from the query plan builder — structural template data.</summary>
     public List<ClauseInfo> Clauses;
