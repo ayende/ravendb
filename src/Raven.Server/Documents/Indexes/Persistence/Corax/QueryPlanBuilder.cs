@@ -715,14 +715,14 @@ internal static partial class QueryPlanBuilder
                 if (ve.Value == ValueTokenType.Parameter)
                 {
                     // Parameter — could be a single value or an array. Mark as array-capable.
-                    inBindings.Add(new ParameterBinding { ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter });
+                    inBindings.Add(new ParameterBinding { Source = BindingSource.QueryParameter, ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter });
                 }
                 else
                 {
                     // Literal value
                     var rawValue = ve.GetValue(queryParameters);
                     var (resolved, resolvedType) = ResolveInValue(rawValue, ve.Value);
-                    inBindings.Add(new ParameterBinding { LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) });
+                    inBindings.Add(new ParameterBinding { Source = BindingSource.Literal, LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) });
                 }
             }
         }
@@ -1110,6 +1110,7 @@ internal static partial class QueryPlanBuilder
             // the QueryBuilderParameters provided at invocation time (boxed as object).
             return new ParameterBinding
             {
+                Source = BindingSource.DeferredMethod,
                 DeferredExpression = (builderParamsObj, qp) =>
                 {
                     var bp = (QueryBuilderParameters)builderParamsObj;
@@ -1140,17 +1141,17 @@ internal static partial class QueryPlanBuilder
             return null;
 
         if (ve.Value == ValueTokenType.Parameter)
-            return new ParameterBinding { ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter };
+            return new ParameterBinding { Source = BindingSource.QueryParameter, ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter };
 
         var value = ve.GetValue(queryParameters);
 
         if (ve.Value == ValueTokenType.Null || value is null)
-            return new ParameterBinding { LiteralValue = null, LiteralType = ParamValueType.String };
+            return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = null, LiteralType = ParamValueType.String };
         if (value is bool b)
-            return new ParameterBinding { LiteralValue = b ? "true" : "false", LiteralType = ParamValueType.String };
+            return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = b ? "true" : "false", LiteralType = ParamValueType.String };
 
         var (resolved, resolvedType) = ResolveParameterValue(value);
-        return new ParameterBinding { LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) };
+        return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) };
     }
 
     /// <summary>Format a value from the plan's typed arrays as a string for display/highlighting.</summary>

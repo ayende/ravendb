@@ -790,45 +790,53 @@ internal static partial class QueryPlanBuilder
 
         foreach (var it in bindings)
         {
-            if (it.LiteralType != ParamValueType.Parameter)
+            switch (it.Source)
             {
-                resolvedValues.Add(it.LiteralValue);
-                termTypes.Add(it.LiteralType);
-                if (it.LiteralValue == null)
+                case BindingSource.Literal:
+                    resolvedValues.Add(it.LiteralValue);
+                    termTypes.Add(it.LiteralType);
+                    if (it.LiteralValue == null)
+                        hasNullTerm = true;
+                    break;
+
+                case BindingSource.QueryParameter:
                 {
-                    hasNullTerm = true;
-                }
-            }
-            else
-            {
-                // Parameter — resolve from blittable. It may be scalar or array.
-                object inRaw = null;
-                queryParameters?.TryGet(it.ParameterName, out inRaw);
-                if (inRaw is BlittableJsonReaderArray arr)
-                {
-                    // Array parameter — expand each element
-                    foreach (var elem in arr)
+                    // Parameter — resolve from blittable. May be scalar or array.
+                    object inRaw = null;
+                    queryParameters?.TryGet(it.ParameterName, out inRaw);
+                    if (inRaw is BlittableJsonReaderArray arr)
                     {
-                        var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter);
-                        resolvedValues.Add(elemVal);
-                        termTypes.Add(ToParamValueType(elemType));
-                        if (elemVal == null)
-                            hasNullTerm = true;
+                        foreach (var elem in arr)
+                        {
+                            var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter);
+                            resolvedValues.Add(elemVal);
+                            termTypes.Add(ToParamValueType(elemType));
+                            if (elemVal == null)
+                                hasNullTerm = true;
+                        }
                     }
+                    else if (inRaw != null)
+                    {
+                        var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter);
+                        resolvedValues.Add(singleVal);
+                        termTypes.Add(ToParamValueType(singleType));
+                    }
+                    else
+                    {
+                        resolvedValues.Add(null);
+                        termTypes.Add(ParamValueType.Null);
+                        hasNullTerm = true;
+                    }
+                    break;
                 }
-                else if (inRaw != null)
-                {
-                    // Scalar parameter — single term
-                    var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter);
-                    resolvedValues.Add(singleVal);
-                    termTypes.Add(ToParamValueType(singleType));
-                }
-                else
-                {
+
+                case BindingSource.DeferredMethod:
+                    // Deferred bindings (cmpxchg, now, today) shouldn't appear in IN lists,
+                    // but handle gracefully: resolve as null.
                     resolvedValues.Add(null);
                     termTypes.Add(ParamValueType.Null);
                     hasNullTerm = true;
-                }
+                    break;
             }
         }
 
@@ -992,24 +1000,29 @@ internal static partial class QueryPlanBuilder
     /// The optional builderParameters is needed to resolve deferred method expressions (cmpxchg, now, today).</summary>
     private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters = null)
     {
-        // Handle deferred method expressions (cmpxchg, now, today) — resolve at execution time
-        if (binding.DeferredExpression != null)
+        switch (binding.Source)
         {
-            var value = binding.DeferredExpression(builderParameters, queryParameters);
-            if (value == null)
-                return (null, ParamValueType.Null);
-            var (val, valType) = ResolveParameterValue(value);
-            return (val, ToParamValueType(valType));
-        }
+            case BindingSource.Literal:
+                return (binding.LiteralValue, binding.LiteralType);
 
-        if (binding.LiteralType != ParamValueType.Parameter)
-            return (binding.LiteralValue, binding.LiteralType);
-        if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
-        {
-            var (val, type) = ResolveParameterValue(raw); // asserts not array/object
-            return (val, ToParamValueType(type));
+            case BindingSource.DeferredMethod:
+            {
+                var value = binding.DeferredExpression(builderParameters, queryParameters);
+                if (value == null)
+                    return (null, ParamValueType.Null);
+                var (val, valType) = ResolveParameterValue(value);
+                return (val, ToParamValueType(valType));
+            }
+
+            case BindingSource.QueryParameter:
+            default:
+                if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
+                {
+                    var (val, type) = ResolveParameterValue(raw);
+                    return (val, ToParamValueType(type));
+                }
+                return (null, ParamValueType.Null);
         }
-        return (null, ParamValueType.Null);
     }
 
     // ── Typed dispatch helpers ───────────────────────────────────────────
