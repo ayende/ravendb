@@ -395,6 +395,23 @@ internal static partial class QueryPlanBuilder
                 }
             }
         }
+
+        // Remap compound-exact pair indices similarly.
+        plan.CompoundExactClauseA = -1;
+        plan.CompoundExactClauseB = -1;
+        plan.CompoundExactAFirst = template.CompoundExactAFirst;
+        if (template.CompoundExactClauseA >= 0 && template.CompoundExactClauseB >= 0)
+        {
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                int origIdx = clauses[i].OriginalIndex;
+                if (origIdx == template.CompoundExactClauseA)
+                    plan.CompoundExactClauseA = i;
+                else if (origIdx == template.CompoundExactClauseB)
+                    plan.CompoundExactClauseB = i;
+            }
+        }
+
         var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds, plan.WhenFlags);
         if (compiledPlan == null)
         {
@@ -2410,78 +2427,64 @@ internal static partial class QueryPlanBuilder
 
         var clauses = plan.Clauses;
         var execs = plan.Executions;
-        var index = planParams.Index;
         var indexSearcher = planParams.IndexSearcher;
-        var allocator = planParams.Allocator;
 
-        // Find two unboosted Equals clauses that match a compound field
-        for (int i = 0; i < clauses.Count; i++)
+        // Use the pre-identified compound-exact pair from template time.
+        // The pair and compound-field ordering were verified at template construction
+        // (FindCompoundExactPair), so we skip the O(n²) scan + HasCompoundField check.
+        int idxA = plan.CompoundExactClauseA;
+        int idxB = plan.CompoundExactClauseB;
+        if (idxA < 0 || idxB < 0 || idxA >= clauses.Count || idxB >= clauses.Count)
+            return false;
+
         {
-            var c1 = clauses[i];
-            if (c1.ClauseType != ClauseType.Equals || c1.IsNegated || c1.HasBoost)
-                continue;
-            var e1 = execs[i];
-            if (e1.BoostFactor > 0 || e1.PackedParamValue.IsNone)
-                continue;
+            var eA = execs[idxA];
+            var eB = execs[idxB];
+            if (eA.BoostFactor > 0 || eA.PackedParamValue.IsNone)
+                return false;
+            if (eB.BoostFactor > 0 || eB.PackedParamValue.IsNone)
+                return false;
 
-            for (int j = i + 1; j < clauses.Count; j++)
+            string firstField, secondField;
+            ClauseExecution firstExec, secondExec;
+            if (plan.CompoundExactAFirst)
             {
-                var c2 = clauses[j];
-                if (c2.ClauseType != ClauseType.Equals || c2.IsNegated || c2.HasBoost)
-                    continue;
-                var e2 = execs[j];
-                if (e2.BoostFactor > 0 || e2.PackedParamValue.IsNone)
-                    continue;
-
-                // Check both orderings
-                string firstField = null, secondField = null;
-                ClauseExecution firstExec = null, secondExec = null;
-
-                using (Voron.Slice.From(allocator, c1.FieldName, out var s1))
-                using (Voron.Slice.From(allocator, c2.FieldName, out var s2))
-                {
-                    if (index.HasCompoundField(s1, s2, out _))
-                    {
-                        firstField = c1.FieldName; secondField = c2.FieldName;
-                        firstExec = e1; secondExec = e2;
-                    }
-                    else if (index.HasCompoundField(s2, s1, out _))
-                    {
-                        firstField = c2.FieldName; secondField = c1.FieldName;
-                        firstExec = e2; secondExec = e1;
-                    }
-                }
-
-                if (firstField == null) continue;
-
-                // Build field1 bytes
-                byte[] field1Bytes = BuildCompoundFieldBytes(firstField, firstExec, indexSearcher, plan);
-                if (field1Bytes == null || field1Bytes.Length > byte.MaxValue) continue;
-
-                // Build field2 bytes
-                byte[] field2Bytes = BuildCompoundFieldBytes(secondField, secondExec, indexSearcher, plan);
-                if (field2Bytes == null) continue;
-
-                // Build composite key
-                int totalLen = field1Bytes.Length + field2Bytes.Length + 1;
-                if (totalLen > Constants.Terms.MaxLength) continue;
-
-                var compositeKey = new byte[totalLen];
-                field1Bytes.CopyTo(compositeKey, 0);
-                field2Bytes.CopyTo(compositeKey.AsSpan(field1Bytes.Length));
-                compositeKey[^1] = (byte)field1Bytes.Length;
-
-                var compoundFieldName = $"compound({firstField},{secondField})";
-                var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
-                Voron.Slice.From(allocator, compositeKey, out var keySlice);
-
-                // Single exact-term lookup on the compound tree
-                compoundMatch = indexSearcher.TermQuery(compoundFieldMeta, keySlice);
-                return true;
+                firstField = clauses[idxA].ResolvedFieldName ?? clauses[idxA].FieldName;
+                secondField = clauses[idxB].ResolvedFieldName ?? clauses[idxB].FieldName;
+                firstExec = eA; secondExec = eB;
             }
-        }
+            else
+            {
+                firstField = clauses[idxB].ResolvedFieldName ?? clauses[idxB].FieldName;
+                secondField = clauses[idxA].ResolvedFieldName ?? clauses[idxA].FieldName;
+                firstExec = eB; secondExec = eA;
+            }
 
-        return false;
+            // Build field1 bytes
+            byte[] field1Bytes = BuildCompoundFieldBytes(firstField, firstExec, indexSearcher, plan);
+            if (field1Bytes == null || field1Bytes.Length > byte.MaxValue) return false;
+
+            // Build field2 bytes
+            byte[] field2Bytes = BuildCompoundFieldBytes(secondField, secondExec, indexSearcher, plan);
+            if (field2Bytes == null) return false;
+
+            // Build composite key
+            int totalLen = field1Bytes.Length + field2Bytes.Length + 1;
+            if (totalLen > Constants.Terms.MaxLength) return false;
+
+            var compositeKey = new byte[totalLen];
+            field1Bytes.CopyTo(compositeKey, 0);
+            field2Bytes.CopyTo(compositeKey.AsSpan(field1Bytes.Length));
+            compositeKey[^1] = (byte)field1Bytes.Length;
+
+            var compoundFieldName = $"compound({firstField},{secondField})";
+            var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
+            Voron.Slice.From(planParams.Allocator, compositeKey, out var keySlice);
+
+            // Single exact-term lookup on the compound tree
+            compoundMatch = indexSearcher.TermQuery(compoundFieldMeta, keySlice);
+            return true;
+        }
     }
 
     private static byte[] BuildCompoundFieldBytes(string fieldName, ClauseExecution exec,

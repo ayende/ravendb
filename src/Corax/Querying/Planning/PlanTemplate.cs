@@ -56,6 +56,16 @@ public sealed class PlanTemplate
     /// differ — Build must remap via OriginalIndex.</summary>
     public int SortDrivingClauseIndex = -1;
 
+    /// <summary>Pre-identified compound-exact-match clause pair (template-position indices).
+    /// -1/-1 when no qualifying pair exists. Set at template time after checking the index's
+    /// compound field configuration. <see cref="CompoundExactAFirst"/> encodes the compound
+    /// field ordering. Eliminates the O(n²) scan + Slice allocation + HasCompoundField check
+    /// on every execution.</summary>
+    public int CompoundExactClauseA = -1;
+    public int CompoundExactClauseB = -1;
+    /// <summary>True when compound field order is (A, B); false when (B, A).</summary>
+    public bool CompoundExactAFirst;
+
     /// <summary>Count of clauses that carry a <see cref="ClauseInfo.WhenCondition"/>,
     /// in template traversal order. Computed once at template construction. If this
     /// exceeds <see cref="MaxWhenClauses"/>, template construction throws
