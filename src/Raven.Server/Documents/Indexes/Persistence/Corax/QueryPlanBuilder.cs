@@ -2042,10 +2042,15 @@ internal static partial class QueryPlanBuilder
             return false;
         if (clause.HasBoost)
             return false;
-        // Sentinel BETWEEN (unbounded low/high) is rewritten at template time by the
-        // BetweenRewriteSentinels walker step into LessThanOrEqual / NOT-LessThan, so
-        // remaining BETWEEN clauses here are always standard bounded ranges — no sentinel
-        // guard needed.
+        // Parameter-bound BETWEEN sentinels use QueryMatch dispatch, not TreeScan.
+        if (clause.ClauseType == ClauseType.Between && clause.Bindings != null)
+        {
+            for (int i = 0; i < clause.Bindings.Length; i++)
+            {
+                if (clause.Bindings[i]?.Source == BindingSource.QueryParameter)
+                    return false;
+            }
+        }
         return clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith
             or ClauseType.Exists or ClauseType.Regex
             or ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual

@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -809,16 +810,21 @@ internal static partial class QueryPlanBuilder
 
         switch (clause.ClauseType)
         {
-            // BETWEEN: two values at Bindings[0] (low) and Bindings[1] (high).
-            // Sentinel bounds ("*"/"NULL") are rewritten by BetweenRewriteSentinels at
-            // template time into LessThanOrEqual / NOT-LessThan, so remaining BETWEEN
-            // clauses here always have genuine bounds.
+            // BETWEEN: Literal sentinel bounds are rewritten at template time.
+            // Parameter-bound sentinels are detected here at execution time.
             case ClauseType.Between:
+            {
                 var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters, builderParameters);
                 var (high, highType) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
+                bool lowIsSentinel = low is string lowStr && lowStr == RavenConstants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
+                bool highIsSentinel = high is string highStr && highStr == RavenConstants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
+                if (lowIsSentinel && highIsSentinel) { exec.SentinelRewriteType = ClauseType.Exists; return; }
+                if (lowIsSentinel) { exec.SentinelRewriteType = ClauseType.LessThanOrEqual; exec.TermValueType = highType; exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType)); return; }
+                if (highIsSentinel) { exec.SentinelRewriteType = ClauseType.LessThan; exec.SentinelRewriteNegated = true; exec.TermValueType = lowType; exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType)); return; }
                 exec.TermValueType = lowType;
                 exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
                 return;
+            }
             case ClauseType.In or ClauseType.AllIn:
                 // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
                 ResolveInFromBindings(clause, exec, queryParameters, writer, bindings);
@@ -1300,6 +1306,8 @@ internal static partial class QueryPlanBuilder
                 PackedParam.TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.DoubleValues[packed.Param1], forward),
                 _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.StringValues[packed.Param1], forward)
             },
+            ClauseType.Between when exec.SentinelRewriteType != null =>
+                ResolveSentinelRewrittenBetween(exec, fieldMeta, indexSearcher, plan),
             ClauseType.Between => ResolveBetweenWithDirection(clause, exec, fieldMeta, indexSearcher, plan, forward),
             _ => ResolveClause(clause, exec, indexSearcher, plan, parameters, builderParams) // fallback
         };
@@ -1318,6 +1326,37 @@ internal static partial class QueryPlanBuilder
             PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, plan.DoubleValues[packed.Param1], plan.DoubleValues[packed.Param2], forward: forward),
             _ => indexSearcher.BetweenQuery(fieldMeta, plan.StringValues[packed.Param1], plan.StringValues[packed.Param2], forward: forward)
         };
+    }
+
+    private static IQueryMatch ResolveSentinelRewrittenBetween(ClauseExecution exec, FieldMetadata fieldMeta,
+        IndexSearcher indexSearcher, QueryExecution plan)
+    {
+        if (exec.SentinelRewriteType == ClauseType.Exists)
+            return indexSearcher.AllEntries();
+        var packed = exec.PackedParamValue;
+        int idx = packed.Param1;
+        if (exec.SentinelRewriteType == ClauseType.LessThanOrEqual)
+        {
+            return packed.ValueType switch
+            {
+                PackedParam.TypeLong => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.LongValues[idx]),
+                PackedParam.TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.DoubleValues[idx]),
+                _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.StringValues[idx])
+            };
+        }
+        Debug.Assert(exec.SentinelRewriteType == ClauseType.LessThan && exec.SentinelRewriteNegated);
+        IQueryMatch lessThanMatch = packed.ValueType switch
+        {
+            PackedParam.TypeLong => indexSearcher.LessThanQuery(fieldMeta, plan.LongValues[idx]),
+            PackedParam.TypeDouble => indexSearcher.LessThanQuery(fieldMeta, plan.DoubleValues[idx]),
+            _ => indexSearcher.LessThanQuery(fieldMeta, plan.StringValues[idx])
+        };
+        var bitmap = new BitmapMatch(indexSearcher.Allocator);
+        var temp = new RoaringBitmap(indexSearcher.Allocator);
+        QueryPrimitives.OrWithMatch(indexSearcher.AllEntries(), ref bitmap.BitmapState);
+        QueryPrimitives.AndNotWithMatch(lessThanMatch, ref bitmap.BitmapState, ref temp);
+        temp.Dispose();
+        return bitmap;
     }
 
     /// <summary>Converts an Equals clause into a BetweenQuery(low==high==value) so
@@ -1453,9 +1492,8 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Between:
             {
-                // Sentinel BETWEEN (unbounded low/high) is rewritten at template time by
-                // BetweenRewriteSentinels into LessThanOrEqual / NOT-LessThan. Remaining
-                // BETWEEN clauses always have genuine bounds.
+                if (exec.SentinelRewriteType != null)
+                    return ResolveSentinelRewrittenBetween(exec, fieldMeta, indexSearcher, plan);
                 int idx1 = packed.Param1;
                 int idx2 = packed.Param2;
                 return packed.ValueType switch
@@ -2653,6 +2691,28 @@ internal static partial class QueryPlanBuilder
 
     // ── Compound field exact match (no ORDER BY) ─────────────────────────
 
+    public static bool TryCreateCompoundExactMatch(
+        QueryExecution plan, PlanParameters planParams, QueryBuilderParameters builderParams,
+        out IQueryMatch compoundMatch, out string rejectReason)
+    {
+        rejectReason = null;
+        bool result = TryCreateCompoundExactMatch(plan, planParams, builderParams, out compoundMatch);
+        if (!result)
+        {
+            if (plan.Clauses == null || plan.Clauses.Count < 2)
+                rejectReason = $"fewer than 2 clauses ({plan.Clauses?.Count ?? 0})";
+            else if (plan.AllNegated)
+                rejectReason = "all clauses are negated";
+            else if (planParams.Index == null)
+                rejectReason = "no index available";
+            else if (plan.CompoundExactClauseA < 0 || plan.CompoundExactClauseB < 0)
+                rejectReason = "no compound-exact clause pair identified at template time";
+            else
+                rejectReason = "composite key encoding failed or exceeded max term length";
+        }
+        return result;
+    }
+
     /// <summary>Check if two Equals clauses on (field1, field2) match a compound field.
     /// If so, build a single TermQuery on the compound tree with the composite key.
     /// One tree lookup instead of two posting list intersections.</summary>
@@ -2763,6 +2823,25 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Check if WHERE + ORDER BY can be served by a compound tree scan.
     /// Condition: an Equals clause on field1, ORDER BY on field2 (or field1, or both),
+    public static bool TryCreateCompoundFieldMatch(
+        QueryExecution plan, OrderMetadata[] orderByFields,
+        PlanParameters planParams, QueryBuilderParameters builderParams,
+        CompiledPlan compiledPlan, out IQueryMatch compoundMatch, out string rejectReason)
+    {
+        rejectReason = null;
+        bool result = TryCreateCompoundFieldMatch(plan, orderByFields, planParams, builderParams, compiledPlan, out compoundMatch);
+        if (!result)
+        {
+            if (plan.CompoundFieldDrivingClause < 0 || plan.CompoundFieldSortName == null)
+                rejectReason = "no compound-field candidate identified at template time";
+            else if (plan.AllNegated)
+                rejectReason = "all clauses are negated";
+            else
+                rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or prefix too long";
+        }
+        return result;
+    }
+
     /// compound(field1, field2) exists in the index, and any residual clauses are
     /// entry-scan eligible.
     /// Returns a DirectScanMatch wrapping a compound tree StartsWith with optional
@@ -3130,6 +3209,29 @@ internal static partial class QueryPlanBuilder
     // ── Simple field direct scan ──────────────────────────────────────────
 
     /// <summary>Check if a range clause on the ORDER BY field can be served by a direct
+    public static bool TryCreateSimpleFieldDirectScan(
+        QueryExecution plan, OrderMetadata[] orderByFields,
+        PlanParameters planParams, QueryBuilderParameters builderParams,
+        CompiledPlan compiledPlan, out IQueryMatch directMatch, out string rejectReason)
+    {
+        rejectReason = null;
+        bool result = TryCreateSimpleFieldDirectScan(plan, orderByFields, planParams, builderParams, compiledPlan, out directMatch);
+        if (!result)
+        {
+            if (orderByFields == null || orderByFields.Length == 0)
+                rejectReason = "no ORDER BY fields";
+            else if (orderByFields.Length > 2)
+                rejectReason = $"ORDER BY has {orderByFields.Length} fields (max 2 for direct scan)";
+            else if (orderByFields.Length == 2 && orderByFields[1].FieldType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
+                rejectReason = $"tie-break field type {orderByFields[1].FieldType} is not numeric";
+            else if (plan.Clauses is { Count: > 0 } && plan.SortDrivingClauseIndex < 0)
+                rejectReason = $"no range/equals clause on sort field '{orderByFields[0].Field.FieldName}'";
+            else
+                rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or cardinality too high for tie-break";
+        }
+        return result;
+    }
+
     /// tree scan instead of the bitmap pipeline. The range query already walks the tree
     /// in sort order, so no SortingMatch wrapper is needed.</summary>
     public static bool TryCreateSimpleFieldDirectScan(
