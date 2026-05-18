@@ -99,7 +99,17 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
-        // No scoring for bitmap-only matches
+        // For bitmap-backed matches (e.g. search() results built by OR-ing term posting
+        // lists), per-term BM25 frequency data is not available. Contribute a flat
+        // boostFactor for each entry present in the bitmap so that query-time boost()
+        // and document-level boost differentiate scores correctly.
+        if (boostFactor == 0f)
+            return;
+        for (int i = 0; i < matches.Length; i++)
+        {
+            if (_bitmapState.Contains(matches[i]))
+                scores[i] += boostFactor;
+        }
     }
 
 

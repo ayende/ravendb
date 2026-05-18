@@ -540,9 +540,16 @@ internal static partial class QueryPlanBuilder
 
             // Mirror the literal/literal type-mismatch check from ParseBetween. Parameter-typed
             // bindings are validated later, in PopulateParameters, when the actual value is known.
+            // Skip when either bound is a sentinel ("*" / "NULL") — the sentinel will be rewritten
+            // away by BetweenRewriteSentinels; only the remaining bound's type matters.
             var minBinding = CreateBinding(between.Min, ctx.QueryParameters);
             var maxBinding = CreateBinding(between.Max, ctx.QueryParameters);
-            if (minBinding is { LiteralType: not ParamValueType.Parameter }
+            bool minIsSentinel = minBinding is { LiteralType: ParamValueType.String, LiteralValue: string minStr }
+                && minStr == Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
+            bool maxIsSentinel = maxBinding is { LiteralType: ParamValueType.String, LiteralValue: string maxStr }
+                && maxStr == Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
+            if (minIsSentinel == false && maxIsSentinel == false
+                && minBinding is { LiteralType: not ParamValueType.Parameter }
                 && maxBinding is { LiteralType: not ParamValueType.Parameter }
                 && minBinding.LiteralType != maxBinding.LiteralType)
             {

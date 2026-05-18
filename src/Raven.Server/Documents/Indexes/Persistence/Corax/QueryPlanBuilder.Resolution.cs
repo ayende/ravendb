@@ -1498,7 +1498,7 @@ internal static partial class QueryPlanBuilder
                 string searchFieldName = clause.ResolvedFieldName ?? clause.FieldName;
                 if (builderParams != null)
                 {
-                    bool forceSearch = builderParams.Metadata.IsDynamic
+                    bool forceSearch = builderParams.HasDynamics
                         && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
                         builderParams.Allocator, searchFieldName, builderParams.Index,
@@ -1509,7 +1509,7 @@ internal static partial class QueryPlanBuilder
                 }
                 else if (parameters is { Index: not null, IndexFieldsMapping: not null })
                 {
-                    bool forceSearch = parameters.Metadata.IsDynamic
+                    bool forceSearch = parameters.HasDynamics
                         && (parameters.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
                         parameters.Allocator, searchFieldName, parameters.Index,
@@ -1906,9 +1906,9 @@ internal static partial class QueryPlanBuilder
         {
             // Dynamic field name variants are pre-resolved by DynamicFieldNameResolve at template time.
             string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
-            // When forceDefaultSearchAnalyzer is enabled for dynamic indexes, non-exact non-search
-            // clauses should use the search analyzer (#4778 fix).
-            bool forceSearchAnalyzer = builderParams.Metadata.IsDynamic
+            // When forceDefaultSearchAnalyzer is enabled for indexes with dynamic fields (CreateField),
+            // non-exact non-search clauses should use the search analyzer (#4778 fix).
+            bool forceSearchAnalyzer = builderParams.HasDynamics
                 && clause.IsExact == false
                 && clause.ClauseType != ClauseType.Search
                 && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);

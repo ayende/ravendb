@@ -694,11 +694,14 @@ internal static partial class QueryPlanBuilder
 
         // Literal-type symmetry is also enforced by AstShapeValidate; we only assert
         // here as a defensive backstop. Parameter-typed bindings are validated later
-        // in PopulateParameters, when the actual value is known.
+        // in PopulateParameters, when the actual value is known. Sentinel bounds ("*"/"NULL")
+        // are allowed with any other type — they're rewritten away by BetweenRewriteSentinels.
         Debug.Assert(
             minBinding is not { LiteralType: not ParamValueType.Parameter }
             || maxBinding is not { LiteralType: not ParamValueType.Parameter }
-            || minBinding.LiteralType == maxBinding.LiteralType,
+            || minBinding.LiteralType == maxBinding.LiteralType
+            || (minBinding is { LiteralType: ParamValueType.String, LiteralValue: Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery })
+            || (maxBinding is { LiteralType: ParamValueType.String, LiteralValue: Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery }),
             "PlanWalker.AstShapeValidate must reject mixed-type BETWEEN literal bounds before materialization");
 
         clauses.Add(new ClauseInfo
