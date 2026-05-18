@@ -263,8 +263,18 @@ internal static partial class QueryPlanBuilder
             : null;
 
         var optFlags = ComputeOptFlags(templateClauses, orderByPrimaryField, out int sortDrivingIdx);
-        FindCompoundExactPair(templateClauses, p, out int cexA, out int cexB, out bool cexAFirst);
-        FindCompoundFieldCandidate(templateClauses, p, metadata, out int cfDriving, out string cfSortName, out bool cfMultiSort);
+        // Compound optimizations (compound-exact, compound-field) are AND-only.
+        // OR queries use bitmap union, which compound tree lookups can't serve.
+        int cexA = -1, cexB = -1;
+        bool cexAFirst = false;
+        int cfDriving = -1;
+        string cfSortName = null;
+        bool cfMultiSort = false;
+        if (isOr == false)
+        {
+            FindCompoundExactPair(templateClauses, p, out cexA, out cexB, out cexAFirst);
+            FindCompoundFieldCandidate(templateClauses, p, metadata, out cfDriving, out cfSortName, out cfMultiSort);
+        }
         return new PlanTemplate
         {
             Clauses = templateClauses,
