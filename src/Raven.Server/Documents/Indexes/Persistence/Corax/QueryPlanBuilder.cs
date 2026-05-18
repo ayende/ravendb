@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using Corax.Querying.Planning;
 using Corax.Mappings;
-using Raven.Client.Exceptions;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Json;
@@ -230,6 +229,13 @@ internal static partial class QueryPlanBuilder
         if (query.Where == null)
             return new PlanTemplate { IsAllEntries = true, Clauses = [] };
 
+        // Phase 1: walker pipeline — validate AST shape (and, in later steps, rewrite
+        // the AST/ClauseInfo[]) before materialization. Accumulates every shape error
+        // into ResolutionContext.Errors so the user sees them all at once.
+        var walkerCtx = new ResolutionContext(p);
+        PlanWalker.Apply(query.Where, walkerCtx);
+
+        // Phase 2: materialize the AST into ClauseInfo[].
         bool hasMixedAndOr = false;
         var clauses = new List<ClauseInfo>();
         var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, ref hasMixedAndOr);
@@ -501,8 +507,8 @@ internal static partial class QueryPlanBuilder
     private static void ParseComparison(BinaryExpression be, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName) == false)
-            throw new InvalidQueryException($"Comparison left side must be a field expression or id(), but got: {be.Left.Type}");
+        TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName);
+        Debug.Assert(fieldName != null, "PlanWalker.AstShapeValidate must reject comparisons with non-field LHS before materialization");
 
         clauses.Add(new ClauseInfo
         {
@@ -516,8 +522,8 @@ internal static partial class QueryPlanBuilder
     private static void ParseRangeComparison(BinaryExpression be, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName) == false)
-            throw new InvalidQueryException($"Range comparison left side must be a field expression or id(), but got: {be.Left.Type}");
+        TryGetFieldName(be.Left, metadata, queryParameters, out string fieldName);
+        Debug.Assert(fieldName != null, "PlanWalker.AstShapeValidate must reject range comparisons with non-field LHS before materialization");
 
         clauses.Add(new ClauseInfo
         {
@@ -538,20 +544,20 @@ internal static partial class QueryPlanBuilder
     private static void ParseBetween(BetweenExpression between, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (TryGetFieldName(between.Source, metadata, queryParameters, out string resolvedFieldName) == false)
-            throw new InvalidQueryException($"BETWEEN source must be a field expression or id(), but got: {between.Source.Type}");
+        TryGetFieldName(between.Source, metadata, queryParameters, out string resolvedFieldName);
+        Debug.Assert(resolvedFieldName != null, "PlanWalker.AstShapeValidate must reject BETWEEN with non-field source before materialization");
 
         var minBinding = CreateBinding(between.Min, queryParameters);
         var maxBinding = CreateBinding(between.Max, queryParameters);
 
-        // Type validation for literals (parameter types validated in PopulateParameters)
-        if (minBinding is { LiteralType: not ParamValueType.Parameter } && maxBinding is { LiteralType: not ParamValueType.Parameter }
-            && minBinding.LiteralType != maxBinding.LiteralType)
-        {
-            throw new InvalidQueryException(
-                $"BETWEEN bounds for field '{resolvedFieldName}' have different types: " +
-                $"low is {minBinding.LiteralType}, high is {maxBinding.LiteralType}. Both must be the same type.");
-        }
+        // Literal-type symmetry is also enforced by AstShapeValidate; we only assert
+        // here as a defensive backstop. Parameter-typed bindings are validated later
+        // in PopulateParameters, when the actual value is known.
+        Debug.Assert(
+            minBinding is not { LiteralType: not ParamValueType.Parameter }
+            || maxBinding is not { LiteralType: not ParamValueType.Parameter }
+            || minBinding.LiteralType == maxBinding.LiteralType,
+            "PlanWalker.AstShapeValidate must reject mixed-type BETWEEN literal bounds before materialization");
 
         clauses.Add(new ClauseInfo
         {
@@ -565,8 +571,8 @@ internal static partial class QueryPlanBuilder
     private static void ParseIn(InExpression inExpr, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (TryGetFieldName(inExpr.Source, metadata, queryParameters, out string resolvedFieldName) == false)
-            throw new InvalidQueryException($"IN source must be a field expression or id(), but got: {inExpr.Source.Type}");
+        TryGetFieldName(inExpr.Source, metadata, queryParameters, out string resolvedFieldName);
+        Debug.Assert(resolvedFieldName != null, "PlanWalker.AstShapeValidate must reject IN with non-field source before materialization");
 
         // Capture bindings for each IN term. Array parameters expand at PopulateParameters time.
         var inBindings = new List<ParameterBinding>();
@@ -633,10 +639,9 @@ internal static partial class QueryPlanBuilder
 
             case MethodType.Exists:
             {
-                if (method.Arguments.Count == 0)
-                    throw new InvalidQueryException("exists() requires a field argument.");
-                if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var existsFieldName) == false)
-                    throw new InvalidQueryException($"exists() argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+                Debug.Assert(method.Arguments.Count > 0, "PlanWalker.AstShapeValidate must reject exists() without a field argument before materialization");
+                TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var existsFieldName);
+                Debug.Assert(existsFieldName != null, "PlanWalker.AstShapeValidate must reject exists() with a non-field argument before materialization");
                 clauses.Add(new ClauseInfo
                 {
                     FieldName = existsFieldName,
@@ -683,10 +688,9 @@ internal static partial class QueryPlanBuilder
 
             case MethodType.Regex:
             {
-                if (method.Arguments.Count < 2)
-                    throw new InvalidQueryException($"regex() requires at least 2 arguments (field, pattern), but got {method.Arguments.Count}.");
-                if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var regexFieldName) == false)
-                    throw new InvalidQueryException($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+                Debug.Assert(method.Arguments.Count >= 2, "PlanWalker.AstShapeValidate must reject regex() with fewer than 2 arguments before materialization");
+                TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var regexFieldName);
+                Debug.Assert(regexFieldName != null, "PlanWalker.AstShapeValidate must reject regex() with a non-field first argument before materialization");
                 clauses.Add(new ClauseInfo
                 {
                     FieldName = regexFieldName,
@@ -712,8 +716,8 @@ internal static partial class QueryPlanBuilder
                 else
                     spatialFieldName = QueryBuilderHelper.ExtractIndexFieldName(metadata.Query, queryParameters, method.Arguments[0], metadata);
 
-                var shapeExpr = method.Arguments[1] as MethodExpression
-                    ?? throw new InvalidQueryException($"Spatial shape argument must be a method expression (spatial.circle or spatial.wkt), but got: {method.Arguments[1].Type}");
+                var shapeExpr = method.Arguments[1] as MethodExpression;
+                Debug.Assert(shapeExpr != null, "PlanWalker.AstShapeValidate must reject spatial calls without a method-expression shape before materialization");
                 var shapeType = QueryMethod.GetMethodType(shapeExpr.Name.Value);
 
                 // Build spatial bindings: [0]=distErrPct, then shape-specific args
@@ -833,11 +837,9 @@ internal static partial class QueryPlanBuilder
     private static void ParseSearchMethod(MethodExpression method, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
     {
-        if (method.Arguments.Count < 2)
-            throw new InvalidQueryException($"search() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
-
-        if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName) == false)
-            throw new InvalidQueryException($"search() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+        Debug.Assert(method.Arguments.Count >= 2, "PlanWalker.AstShapeValidate must reject search() with fewer than 2 arguments before materialization");
+        TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName);
+        Debug.Assert(fieldName != null, "PlanWalker.AstShapeValidate must reject search() with a non-field first argument before materialization");
 
         var searchOp = Constants.Search.Operator.Or;
         if (method.Arguments.Count >= 3 && method.Arguments[2] is FieldExpression opField
@@ -861,11 +863,9 @@ internal static partial class QueryPlanBuilder
     private static void ParsePrefixMethod(MethodExpression method, List<ClauseInfo> clauses,
         BlittableJsonReaderObject queryParameters, QueryMetadata metadata, ClauseType type)
     {
-        if (method.Arguments.Count < 2)
-            throw new InvalidQueryException($"{type}() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
-
-        if (TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName) == false)
-            throw new InvalidQueryException($"{type}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+        Debug.Assert(method.Arguments.Count >= 2, "PlanWalker.AstShapeValidate must reject startsWith/endsWith with fewer than 2 arguments before materialization");
+        TryGetFieldName(method.Arguments[0], metadata, queryParameters, out var fieldName);
+        Debug.Assert(fieldName != null, "PlanWalker.AstShapeValidate must reject startsWith/endsWith with a non-field first argument before materialization");
 
         clauses.Add(new ClauseInfo
         {
