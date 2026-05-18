@@ -474,8 +474,14 @@ internal static partial class QueryPlanBuilder
         var indexSearcher = builderParams.IndexSearcher;
         var clauses = new List<ClauseInfo>();
         bool hasMixed = false;
+        // Sub-expression entry point: run the same walker phases as ParseTemplate
+        // (ValidateAst pre-materialize, RewriteClauses post-materialize) so boost()
+        // and other deferred rewrites apply consistently here too.
+        var walkerCtx = new ResolutionContext(builderParams.QueryParameters, builderParams.Metadata);
+        PlanWalker.ValidateAst(expression, walkerCtx);
         ParseExpression(expression, indexSearcher, clauses, builderParams.QueryParameters,
-            builderParams.Metadata, ref hasMixed);
+            builderParams.Metadata, walkerCtx, ref hasMixed);
+        PlanWalker.RewriteClauses(clauses, walkerCtx);
 
         if (clauses.Count == 0)
             return indexSearcher.AllEntries();
