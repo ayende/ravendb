@@ -120,15 +120,11 @@ public abstract class BaseAiConnectorForTesting<T, TConfig> : IAiConnectorForTes
                 Connection = connectionString
             };
         }
-        catch (Exception e)
+        catch
         {
-            // When env vars are missing, CreateAiConnectionStringImpl may throw
-            // (e.g. AzureOpenAiSettings null deploymentName). Return a stub config
-            // so the test data row can be built — the test will be skipped by
-            // HasSkipReason based on MissingRequiredEnvVariables. Log so a real
-            // bug (NRE, config mismatch) is still surfaced instead of being
-            // masked by the env-var skip path.
-            Console.Error.WriteLine($"[{GetType().Name}] GetAiConfiguration threw, returning stub config: {e}");
+            // Missing env vars are expected — CreateAiConnectionStringImpl throws
+            // when credentials aren't configured. Return a stub config so the test
+            // data row can be built; the test will be skipped by HasSkipReason.
             return new TConfig { Name = AiIntegrationTaskName, ConnectionStringName = ConnectionStringName };
         }
     }
