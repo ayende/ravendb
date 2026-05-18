@@ -94,6 +94,13 @@ public class QueryExecution
     /// post-sort runtime index by Build. See <see cref="PlanTemplate.SortDrivingClauseIndex"/>.</summary>
     public int SortDrivingClauseIndex = -1;
 
+    /// <summary>Pre-identified compound-exact-match clause pair (runtime indices, remapped
+    /// from template via OriginalIndex). -1/-1 when no qualifying pair exists.</summary>
+    public int CompoundExactClauseA = -1;
+    public int CompoundExactClauseB = -1;
+    /// <summary>True when compound field order is (A, B); false when (B, A).</summary>
+    public bool CompoundExactAFirst;
+
     /// <summary>Number of bitmaps this plan needs at execution time.
     /// Slot 0 = main result, slot 1 = scratch for AND-with-postings / AND-NOT and OR-group
     /// accumulation. Plans with multiple AndGroups inside an OR chain use slot 2 as a

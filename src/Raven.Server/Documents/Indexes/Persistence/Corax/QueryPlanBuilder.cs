@@ -263,6 +263,7 @@ internal static partial class QueryPlanBuilder
             : null;
 
         var optFlags = ComputeOptFlags(templateClauses, orderByPrimaryField, out int sortDrivingIdx);
+        FindCompoundExactPair(templateClauses, p, out int cexA, out int cexB, out bool cexAFirst);
         return new PlanTemplate
         {
             Clauses = templateClauses,
@@ -272,7 +273,10 @@ internal static partial class QueryPlanBuilder
             VectorClauses = walkerCtx.VectorClauses,
             WhenCount = walkerCtx.WhenCount,
             OptimizationFlags = optFlags,
-            SortDrivingClauseIndex = sortDrivingIdx
+            SortDrivingClauseIndex = sortDrivingIdx,
+            CompoundExactClauseA = cexA,
+            CompoundExactClauseB = cexB,
+            CompoundExactAFirst = cexAFirst
         };
     }
 
@@ -316,6 +320,55 @@ internal static partial class QueryPlanBuilder
         if (equalsCount >= 2)
             flags |= PlanOptFlags.CompoundExactCandidate;
         return flags;
+    }
+
+    /// <summary>Find the first pair of non-negated, non-boosted Equals clauses whose field names
+    /// match a compound field in the index. Stores the template-position indices and the compound
+    /// field ordering. Called once per template at construction time.</summary>
+    private static void FindCompoundExactPair(ClauseInfo[] clauses, PlanParameters p,
+        out int clauseA, out int clauseB, out bool aFirst)
+    {
+        clauseA = -1;
+        clauseB = -1;
+        aFirst = false;
+        if (p.Index == null || clauses.Length < 2)
+            return;
+
+        for (int i = 0; i < clauses.Length; i++)
+        {
+            var c1 = clauses[i];
+            if (c1.ClauseType != ClauseType.Equals || c1.IsNegated || c1.HasBoost)
+                continue;
+
+            for (int j = i + 1; j < clauses.Length; j++)
+            {
+                var c2 = clauses[j];
+                if (c2.ClauseType != ClauseType.Equals || c2.IsNegated || c2.HasBoost)
+                    continue;
+
+                // Use ResolvedFieldName (dynamic auto-index variants) if available.
+                string f1 = c1.ResolvedFieldName ?? c1.FieldName;
+                string f2 = c2.ResolvedFieldName ?? c2.FieldName;
+                using (Voron.Slice.From(p.Allocator, f1, out var s1))
+                using (Voron.Slice.From(p.Allocator, f2, out var s2))
+                {
+                    if (p.Index.HasCompoundField(s1, s2, out _))
+                    {
+                        clauseA = i;
+                        clauseB = j;
+                        aFirst = true;
+                        return;
+                    }
+                    if (p.Index.HasCompoundField(s2, s1, out _))
+                    {
+                        clauseA = i;
+                        clauseB = j;
+                        aFirst = false;
+                        return;
+                    }
+                }
+            }
+        }
     }
 
     /// <summary>Recursively freeze every <see cref="ClauseInfo"/> in a template list,
