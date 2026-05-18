@@ -1299,7 +1299,7 @@ internal static partial class QueryPlanBuilder
     ///
     /// OR chain: all terms are ORed into slot 0. AND-groups within an OR use the three-bitmap
     /// swap pattern: save slot 0 → slot 2, build AND result in slot 0, OR slot 2 back.</summary>
-    private static QueryExecution EmitPlan(List<ClauseInfo> clauses, ClauseExecution[] executions, bool isOr)
+    private static QueryExecution EmitPlan(List<ClauseInfo> clauses, ClauseExecution[] executions, bool isOr, string[] stringValues = null)
     {
         if (isOr is false)
         {
@@ -1754,7 +1754,7 @@ internal static partial class QueryPlanBuilder
         // Compute type signature from scan predicates. The int packs the first 16 kinds
         // (2 bits each). For ≤ 16 predicates this is the exact cache identity. For more,
         // it's a lossy hash, and we attach FullKinds for disambiguation in PlanCache.
-        (int typeSignature, byte[] fullKinds) = GetTypeSignature(scanPredicateInfos);
+        (int typeSignature, byte[] fullKinds) = GetTypeSignature(scanPredicateInfos, stringValues);
 
         return new QueryExecution
         {
@@ -1771,29 +1771,52 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static (int TypeSignature, byte[] FullKinds) GetTypeSignature(ScanPredicateInfo[] scanPredicateInfos)
+    /// <summary>Compute TypeSignature from scan predicates. Packs 2 bits per predicate (first 16)
+    /// into an int. For Slice-typed predicates, checks the resolved string value's UTF-8 byte
+    /// count against the compound-index segment limit (255 bytes) to produce
+    /// <see cref="ScanValueType.Slice"/> (≤ 255) vs <see cref="ScanValueType.SliceLong"/> (&gt; 255).
+    /// This ensures compound-index-eligible string plans don't share a cache entry with
+    /// ineligible ones.</summary>
+    private static (int TypeSignature, byte[] FullKinds) GetTypeSignature(ScanPredicateInfo[] scanPredicateInfos, string[] stringValues)
     {
-        if (scanPredicateInfos == null) 
+        if (scanPredicateInfos == null)
             return (0, null);
-        
+
         int typeSignature = 0;
-        
+
         int n = scanPredicateInfos.Length;
         int packCount = Math.Min(n, 16);
         for (int i = 0; i < packCount; i++)
         {
-            typeSignature |= ((int)scanPredicateInfos[i].ValueType & 0x3) << (i * 2);
+            int kind = (int)ResolveSliceKind(scanPredicateInfos[i], stringValues) & 0x3;
+            typeSignature |= kind << (i * 2);
         }
 
         if (n <= 16) return (typeSignature, null);
-        
+
         var fullKinds = new byte[n];
         for (int i = 0; i < n; i++)
         {
-            fullKinds[i] = (byte)scanPredicateInfos[i].ValueType;
+            fullKinds[i] = (byte)ResolveSliceKind(scanPredicateInfos[i], stringValues);
         }
 
         return (typeSignature, fullKinds);
+    }
+
+    /// <summary>For Slice predicates, check if the resolved string exceeds 255 UTF-8 bytes.
+    /// Returns SliceLong if so — separating compound-eligible from ineligible in the cache key.
+    /// Non-Slice types pass through unchanged.</summary>
+    private static ScanValueType ResolveSliceKind(ScanPredicateInfo pred, string[] stringValues)
+    {
+        if (pred.ValueType != ScanValueType.Slice)
+            return pred.ValueType;
+        if (stringValues != null && pred.ParamIndex >= 0 && pred.ParamIndex < stringValues.Length)
+        {
+            string val = stringValues[pred.ParamIndex];
+            if (val != null && System.Text.Encoding.UTF8.GetByteCount(val) > byte.MaxValue)
+                return ScanValueType.SliceLong;
+        }
+        return ScanValueType.Slice;
     }
 
     private static bool AreAllScanEligible(List<ClauseInfo> clauses, ClauseExecution[] executions, int startIndex)

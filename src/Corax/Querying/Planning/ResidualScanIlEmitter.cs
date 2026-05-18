@@ -337,6 +337,7 @@ public static class ResidualScanIlEmitter
             }
 
             case ScanValueType.Slice:
+            case ScanValueType.SliceLong:
             {
                 if (pred.CompareOp == ScanCompareOp.Between)
                 {
