@@ -229,11 +229,10 @@ internal static partial class QueryPlanBuilder
         if (query.Where == null)
             return new PlanTemplate { IsAllEntries = true, Clauses = [] };
 
-        // Phase 1: walker pipeline — validate AST shape (and, in later steps, rewrite
-        // the AST/ClauseInfo[]) before materialization. Accumulates every shape error
-        // into ResolutionContext.Errors so the user sees them all at once.
+        // Phase 1: walker — validate AST shape. Accumulates every shape error into
+        // walkerCtx.Errors so the user sees them all at once.
         var walkerCtx = new ResolutionContext(p);
-        PlanWalker.Apply(query.Where, walkerCtx);
+        PlanWalker.ValidateAst(query.Where, walkerCtx);
 
         // Phase 2: materialize the AST into ClauseInfo[].
         bool hasMixedAndOr = false;
@@ -286,22 +285,14 @@ internal static partial class QueryPlanBuilder
         }
 
         var templateClauses = clauses.ToArray();
+
+        // Phase 3: walker — rewrite/register steps on the materialized ClauseInfo[]
+        // before freezing. Currently runs WhenRegister; future steps slot in here.
+        PlanWalker.RewriteClauses(templateClauses, walkerCtx);
+
         FreezeAll(templateClauses);
         FreezeAll(spatialClauses);
         FreezeAll(vectorClauses);
-
-        int whenCount = 0;
-        for (int i = 0; i < templateClauses.Length; i++)
-        {
-            if (templateClauses[i].WhenCondition != null)
-                whenCount++;
-        }
-        if (whenCount > PlanTemplate.MaxWhenClauses)
-        {
-            throw new System.NotSupportedException(
-                $"Query has {whenCount} WHEN-guarded clauses; the plan template supports at most " +
-                $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
-        }
 
         return new PlanTemplate
         {
@@ -310,7 +301,7 @@ internal static partial class QueryPlanBuilder
             IsOr = isOr,
             SpatialClauses = spatialClauses,
             VectorClauses = vectorClauses,
-            WhenCount = whenCount
+            WhenCount = walkerCtx.WhenCount
         };
     }
 

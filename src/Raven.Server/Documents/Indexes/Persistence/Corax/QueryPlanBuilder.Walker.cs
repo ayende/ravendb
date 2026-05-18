@@ -13,13 +13,19 @@ internal static partial class QueryPlanBuilder
     /// <summary>
     /// Per-template context shared across walker steps. Accumulates validation
     /// errors so the user sees every shape problem at once rather than one fix-edit-retry
-    /// cycle per issue, and threads the parameter/metadata bag walker steps need.
+    /// cycle per issue, threads the parameter/metadata bag walker steps need, and
+    /// stores derived facts (e.g. <see cref="WhenCount"/>) walker steps publish back
+    /// to the caller for inclusion in the <see cref="PlanTemplate"/>.
     /// </summary>
     private sealed class ResolutionContext
     {
         public readonly List<string> Errors = [];
         public readonly BlittableJsonReaderObject QueryParameters;
         public readonly QueryMetadata Metadata;
+
+        /// <summary>Number of top-level WHEN-guarded clauses observed by
+        /// <see cref="PlanWalker.RewriteClauses"/>. Drives <see cref="PlanTemplate.WhenCount"/>.</summary>
+        public int WhenCount;
 
         public ResolutionContext(PlanParameters p)
         {
@@ -42,15 +48,33 @@ internal static partial class QueryPlanBuilder
     private static class PlanWalker
     {
         /// <summary>
-        /// Apply all walker steps to the parsed AST. Throws a single
-        /// <see cref="InvalidQueryException"/> with every accumulated shape error
-        /// if validation fails; otherwise returns control to the caller for
+        /// Pre-materialization phase. Runs validation steps that need access to the
+        /// RQL AST (currently just <see cref="AstShapeValidate"/>). Throws a single
+        /// <see cref="InvalidQueryException"/> with every accumulated shape error if
+        /// validation fails; otherwise returns control to the caller for
         /// materialization (<see cref="ParseExpression"/>).
         /// </summary>
-        public static void Apply(QueryExpression where, ResolutionContext ctx)
+        public static void ValidateAst(QueryExpression where, ResolutionContext ctx)
         {
             AstShapeValidate(where, ctx);
+            ThrowIfErrors(ctx);
+        }
 
+        /// <summary>
+        /// Post-materialization phase. Runs rewrite/registration steps over the
+        /// materialized <see cref="ClauseInfo"/>[] before it is frozen. The first
+        /// such step is <see cref="WhenRegister"/>; future commits add
+        /// AnalyzerRewrite, TimeFieldTicks, NotCanonicalize, BetweenToOrWithWhen,
+        /// InNormalize, AllInNormalize, BoostPropagate, and GroupCollapse.
+        /// </summary>
+        public static void RewriteClauses(ClauseInfo[] clauses, ResolutionContext ctx)
+        {
+            WhenRegister(clauses, ctx);
+            ThrowIfErrors(ctx);
+        }
+
+        private static void ThrowIfErrors(ResolutionContext ctx)
+        {
             if (ctx.Errors.Count == 0)
                 return;
 
@@ -59,6 +83,33 @@ internal static partial class QueryPlanBuilder
                 : "Query has " + ctx.Errors.Count + " validation errors:" + Environment.NewLine
                     + string.Join(Environment.NewLine, ctx.Errors);
             throw new InvalidQueryException(combined);
+        }
+
+        /// <summary>
+        /// Count top-level WHEN-guarded clauses and reject templates that exceed
+        /// <see cref="PlanTemplate.MaxWhenClauses"/>. The count is published via
+        /// <see cref="ResolutionContext.WhenCount"/> so <see cref="ParseTemplate"/>
+        /// can copy it onto the resulting <see cref="PlanTemplate"/>.
+        ///
+        /// The cap is a structural limit (WhenFlags is a 32-bit mask), not a query
+        /// shape error, so it throws <see cref="NotSupportedException"/> directly
+        /// rather than accumulating into <see cref="ResolutionContext.Errors"/>.
+        /// </summary>
+        private static void WhenRegister(ClauseInfo[] clauses, ResolutionContext ctx)
+        {
+            int whenCount = 0;
+            for (int i = 0; i < clauses.Length; i++)
+            {
+                if (clauses[i].WhenCondition != null)
+                    whenCount++;
+            }
+            if (whenCount > PlanTemplate.MaxWhenClauses)
+            {
+                throw new NotSupportedException(
+                    $"Query has {whenCount} WHEN-guarded clauses; the plan template supports at most " +
+                    $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
+            }
+            ctx.WhenCount = whenCount;
         }
 
         /// <summary>
