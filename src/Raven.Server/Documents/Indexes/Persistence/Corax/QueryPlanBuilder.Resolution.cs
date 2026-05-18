@@ -1528,13 +1528,24 @@ internal static partial class QueryPlanBuilder
     private static IQueryMatch CreateNotEqualsOrMatch(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
         QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
-        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
-        // EXISTS clauses carry no PackedParam (bindings == null). Use ExistsQuery as the positive
-        // form to negate; TermQueryFromParam with a default-zero PackedParam would crash if the
-        // plan's LongValues array is empty.
-        IQueryMatch termMatch = clause.ClauseType == ClauseType.Exists
-            ? indexSearcher.ExistsQuery(fieldMeta)
-            : TermQueryFromParam(exec.PackedParamValue, fieldMeta, indexSearcher, plan);
+        // Resolve the positive form of the match. For IN/AllIn clauses, ResolveClause
+        // handles multi-term expansion correctly. For simple Equals/NotEquals, the
+        // single-term TermQueryFromParam suffices. EXISTS clauses carry no PackedParam.
+        IQueryMatch termMatch;
+        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn)
+        {
+            termMatch = ResolveClause(clause, exec, indexSearcher, plan, parameters, builderParams);
+        }
+        else if (clause.ClauseType == ClauseType.Exists)
+        {
+            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+            termMatch = indexSearcher.ExistsQuery(fieldMeta);
+        }
+        else
+        {
+            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+            termMatch = TermQueryFromParam(exec.PackedParamValue, fieldMeta, indexSearcher, plan);
+        }
 
         var bitmapMatch = new BitmapMatch(indexSearcher.Allocator);
         var tempData = new RoaringBitmap(indexSearcher.Allocator);
