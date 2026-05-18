@@ -41,14 +41,42 @@ internal static partial class QueryPlanBuilder
         /// or when the root is OR.</summary>
         public ClauseInfo[] VectorClauses;
 
+        /// <summary>Pending boost factor propagations recorded by the materializer.
+        /// Each entry pairs a snapshot of clauses inside a boost(...) wrapper with the
+        /// factor binding to apply. Drained by <see cref="PlanWalker.BoostPropagate"/>.
+        /// Lazily allocated — null when no boost() wrapper has been seen.</summary>
+        public List<PendingBoost> PendingBoosts;
+
         public ResolutionContext(PlanParameters p)
+            : this(p.QueryParameters, p.Metadata)
         {
-            QueryParameters = p.QueryParameters;
-            Metadata = p.Metadata;
+        }
+
+        /// <summary>Construct from raw bag/metadata. Used by sub-expression entry points
+        /// (e.g. <see cref="BuildFromSubExpression"/>) that do not have a full
+        /// <see cref="PlanParameters"/> available.</summary>
+        public ResolutionContext(BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
+        {
+            QueryParameters = queryParameters;
+            Metadata = metadata;
         }
 
         public void Report(string error) => Errors.Add(error);
+
+        /// <summary>Record a boost() wrapper for later application by
+        /// <see cref="PlanWalker.BoostPropagate"/>. Captures the inner clauses by
+        /// reference so subsequent list manipulation (e.g. GroupCollapse) does not
+        /// invalidate the propagation target.</summary>
+        public void RecordPendingBoost(ClauseInfo[] innerClauses, ParameterBinding factor)
+        {
+            PendingBoosts ??= [];
+            PendingBoosts.Add(new PendingBoost(innerClauses, factor));
+        }
     }
+
+    /// <summary>Snapshot of a boost() wrapper's inner clauses with the factor to apply.
+    /// See <see cref="ResolutionContext.PendingBoosts"/>.</summary>
+    private readonly record struct PendingBoost(ClauseInfo[] InnerClauses, ParameterBinding Factor);
 
     /// <summary>
     /// Walker pipeline orchestrator. Runs validation/rewrite steps over the RQL AST
@@ -85,6 +113,7 @@ internal static partial class QueryPlanBuilder
         /// </summary>
         public static void RewriteClauses(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
+            BoostPropagate(ctx);
             GroupCollapse(clauses, ctx);
             WhenRegister(clauses, ctx);
             ThrowIfErrors(ctx);
@@ -127,6 +156,36 @@ internal static partial class QueryPlanBuilder
                     $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
             }
             ctx.WhenCount = whenCount;
+        }
+
+        /// <summary>
+        /// Walks <see cref="ResolutionContext.PendingBoosts"/> and applies each recorded
+        /// factor binding to its inner clauses by appending the factor to
+        /// <see cref="ClauseInfo.Bindings"/> and flipping <see cref="ClauseInfo.HasBoost"/>.
+        ///
+        /// The materializer records the wrapper at boost() encounter time; the actual
+        /// propagation happens here so the rewrite is centralised in the walker rather
+        /// than splintered across ParseMethod's recursive descent.
+        /// </summary>
+        private static void BoostPropagate(ResolutionContext ctx)
+        {
+            if (ctx.PendingBoosts == null)
+                return;
+
+            for (int i = 0; i < ctx.PendingBoosts.Count; i++)
+            {
+                var pending = ctx.PendingBoosts[i];
+                var inner = pending.InnerClauses;
+                for (int c = 0; c < inner.Length; c++)
+                {
+                    var old = inner[c].Bindings;
+                    var extended = new ParameterBinding[(old?.Length ?? 0) + 1];
+                    if (old != null) Array.Copy(old, extended, old.Length);
+                    extended[^1] = pending.Factor;
+                    inner[c].Bindings = extended;
+                    inner[c].HasBoost = true;
+                }
+            }
         }
 
         /// <summary>
