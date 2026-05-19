@@ -129,21 +129,35 @@ internal static partial class QueryPlanBuilder
         bool wantTimings,
         CancellationToken token)
     {
-        var queryMatch = BuildAndCompile(planParams, builderParameters, out plan, out compiledPlanOut,
-            highlightingTerms, wantTimings, token);
-        var disposable = queryMatch as IDisposable;
-        innerMatchOut = queryMatch;
+        var indexSearcher = planParams.IndexSearcher;
+
+        // Phase 1: structural template (cached per queryText).
+        var template = BuildTemplate(planParams);
+
+        // Phase 2: parameter resolution, plan emission, IL compile (with cache miss handling).
+        // We do NOT call Instantiate here — it allocates a CompiledQueryMatch that is wasted
+        // when the cached hint resolves to a non-BitmapSort strategy. Instantiate is deferred
+        // until we know we need the bitmap pipeline (cached hint=None, or all Try* failed).
+        compiledPlanOut = Build(template, planParams, builderParameters, out plan, wantTimings);
+        if (compiledPlanOut == null)
+        {
+            innerMatchOut = TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
+            orderByFieldsOut = null;
+            hasEmptySorts = false;
+            return innerMatchOut;
+        }
 
         orderByFieldsOut = GetSortMetadata(builderParameters, out hasEmptySorts);
 
         // Phase 5 (#4814 + #4830): split Discovery (compile-miss) from Construction
         // (per-execution). On a hint hit, dispatch straight to Construct* and skip
-        // the Try*-chain discovery. On miss, run the full Try* chain — each Try*
-        // performs discovery and, if it wins, calls its Construct* internally.
-        var hint = compiledPlanOut?.Hint ?? InstantiateHint.NotEvaluated;
+        // both the Try*-chain discovery AND the bitmap-pipeline Instantiate. On miss,
+        // run the full Try* chain — each Try* performs discovery and, if it wins,
+        // calls its Construct* internally; Instantiate runs only when all Try* fail.
+        var hint = compiledPlanOut.Hint;
         if (hint != InstantiateHint.NotEvaluated)
         {
-            // ── Fast path: cached hint, dispatch to Construct directly ──
+            // ── Fast path: cached hint, dispatch to Construct directly (no Instantiate) ──
             IQueryMatch built = null;
             switch (hint)
             {
@@ -152,7 +166,6 @@ internal static partial class QueryPlanBuilder
                         built = ConstructCompoundExact(plan, planParams);
                     if (built != null)
                     {
-                        disposable?.Dispose();
                         innerMatchOut = built;
                         return built;
                     }
@@ -169,7 +182,6 @@ internal static partial class QueryPlanBuilder
                     }
                     if (built != null)
                     {
-                        disposable?.Dispose();
                         innerMatchOut = built;
                         return OrderBy(builderParameters, built, orderByFieldsOut, hasEmptySorts);
                     }
@@ -198,29 +210,34 @@ internal static partial class QueryPlanBuilder
                     }
                     if (built != null)
                     {
-                        disposable?.Dispose();
                         innerMatchOut = built;
                         return built;
                     }
                     break;
             }
 
-            // Cached hint failed at construction time (e.g. per-execution byte length
-            // overflow). Fall through to the bitmap+sort fallback. The cached hint stays
-            // valid for the next execution; this one had unlucky parameter values.
+            // Cached non-None hint failed at construction time (e.g. per-execution byte
+            // length overflow). Fall back to bitmap+sort by instantiating now. The cached
+            // hint stays valid for the next execution; this one had unlucky parameter values.
+            var fallbackMatch = Instantiate(compiledPlanOut, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
+            innerMatchOut = fallbackMatch;
             if (orderByFieldsOut != null)
             {
-                if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
+                if (fallbackMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
                     TrySetSortSeekHint(seekMatch, plan, orderByFieldsOut);
-                queryMatch = OrderBy(builderParameters, queryMatch, orderByFieldsOut, hasEmptySorts);
+                return OrderBy(builderParameters, fallbackMatch, orderByFieldsOut, hasEmptySorts);
             }
-            return queryMatch;
+            return fallbackMatch;
         }
 
         // ── Slow path: compile-miss, run full Try* chain to discover the winner ──
+        // Important: run Try* BEFORE Instantiate, so a Try* win avoids the bitmap
+        // pipeline allocation. Only call Instantiate as the last fallback.
         bool needsFullChain = true;
         var resultHint = InstantiateHint.None;
         var trail = new PlanDecisionTrail();
+        IQueryMatch queryMatch = null;
+        innerMatchOut = null;
 
         if (plan == null)
             trail.Record("CompoundExact", false, "no plan available");
@@ -228,7 +245,6 @@ internal static partial class QueryPlanBuilder
             trail.Record("CompoundExact", false, "template has no compound-exact candidate");
         else if (TryCreateCompoundExactMatch(plan, planParams, builderParameters, out var compoundExact, out var ceReason))
         {
-            disposable?.Dispose();
             queryMatch = compoundExact;
             innerMatchOut = compoundExact;
             resultHint = InstantiateHint.CompoundExact;
@@ -248,7 +264,6 @@ internal static partial class QueryPlanBuilder
                     trail.Record("CompoundField", false, "template has no direct-scan candidate");
                 else if (TryCreateCompoundFieldMatch(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var compoundMatch, out var cfReason))
                 {
-                    disposable?.Dispose();
                     innerMatchOut = compoundMatch;
                     queryMatch = OrderBy(builderParameters, compoundMatch, orderByFieldsOut, hasEmptySorts);
                     resultHint = InstantiateHint.CompoundField;
@@ -267,7 +282,6 @@ internal static partial class QueryPlanBuilder
                     trail.Record("DirectScan", false, "template has no direct-scan candidate");
                 else if (TryCreateSimpleFieldDirectScan(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var directMatch, out var dsReason))
                 {
-                    disposable?.Dispose();
                     queryMatch = directMatch;
                     innerMatchOut = directMatch;
                     resultHint = InstantiateHint.DirectScan;
@@ -280,25 +294,29 @@ internal static partial class QueryPlanBuilder
 
             if (needsFullChain)
             {
-                if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
+                // All Try* failed → fall back to bitmap pipeline. Instantiate now.
+                var bitmapMatch = Instantiate(compiledPlanOut, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
+                innerMatchOut = bitmapMatch;
+                if (bitmapMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
                     TrySetSortSeekHint(seekMatch, plan, orderByFieldsOut);
-                // innerMatchOut already references the pre-wrap match (the CompiledQueryMatch
-                // produced by BuildAndCompile). The OrderBy wrapper here doesn't replace the
-                // inner — the SortingMatch keeps it alive and the caller disposes it via
-                // innerMatchOut after the inspection graph is built.
-                queryMatch = OrderBy(builderParameters, queryMatch, orderByFieldsOut, hasEmptySorts);
+                queryMatch = OrderBy(builderParameters, bitmapMatch, orderByFieldsOut, hasEmptySorts);
                 resultHint = InstantiateHint.None;
                 trail.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
             }
         }
         else
-            trail.Record("NoOrderBy", true, "no ORDER BY");
-
-        if (compiledPlanOut != null)
         {
-            compiledPlanOut.Hint = resultHint;
-            compiledPlanOut.DecisionTrail = trail;
+            trail.Record("NoOrderBy", true, "no ORDER BY");
+            if (queryMatch == null)
+            {
+                // No ORDER BY and no Try* winner — use bitmap match (Instantiate now).
+                queryMatch = Instantiate(compiledPlanOut, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
+                innerMatchOut = queryMatch;
+            }
         }
+
+        compiledPlanOut.Hint = resultHint;
+        compiledPlanOut.DecisionTrail = trail;
 
         return queryMatch;
     }
