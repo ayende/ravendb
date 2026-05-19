@@ -102,7 +102,7 @@ public class QueryExecution
     /// from template via OriginalIndex). -1/-1 when no qualifying pair exists.</summary>
     public int CompoundExactClauseA = -1;
     public int CompoundExactClauseB = -1;
-    /// <summary>True when compound field order is (A, B); false when (B, A).</summary>
+    /// <summary>True when the compound field order is (A, B); false when (B, A).</summary>
     public bool CompoundExactAFirst;
 
     /// <summary>Pre-identified compound-field-match (WHERE Equals + ORDER BY) driving clause
@@ -110,8 +110,6 @@ public class QueryExecution
     public int CompoundFieldDrivingClause = -1;
     /// <summary>Sort field name for compound-field match.</summary>
     public string CompoundFieldSortName;
-    /// <summary>Multi-sort mode for compound-field match.</summary>
-    public bool CompoundFieldIsMultiSort;
 
     /// <summary>Number of bitmaps this plan needs at execution time.
     /// Slot 0 = main result, slot 1 = scratch for AND-with-postings / AND-NOT and OR-group

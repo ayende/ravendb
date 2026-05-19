@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.IO;
-using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using Corax.Analyzers;
@@ -10,10 +9,8 @@ using Corax.Mappings;
 using Corax.Pipeline;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
-using Corax.Utils;
 using Sparrow.Server;
 using Voron;
-using Voron.Data.PostingLists;
 using Voron.Util;
 
 namespace Corax.Querying;
@@ -106,11 +103,11 @@ public partial class IndexSearcher
 
                 if (termType is Constants.Search.SearchMatchOptions.TermMatch)
                 {
-                    termMatches ??= new();
+                    termMatches ??= [];
 
-                    terms.Clear(); // Clear the terms list.
+                    terms.Clear(); // Clear the terms' list.
                     EncodeAndApplyAnalyzerForMultipleTerms(field, termReadyToAnalyze, ref terms);
-                    foreach (var term in terms.GetEnumerator())
+                    foreach (var term in terms)
                     {
                         if (term.Size == 0)
                             continue; //skip empty results
@@ -178,7 +175,7 @@ public partial class IndexSearcher
                 }
             }
 
-            AccumulateIntoSearchBitmap((IQueryMatch)termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
+            AccumulateIntoSearchBitmap(termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
 
             tempTermBitmapData.Dispose();
             termBitmap.Dispose();
@@ -274,15 +271,15 @@ public partial class IndexSearcher
 
                 if (termType is Constants.Search.SearchMatchOptions.TermMatch)
                 {
-                    termMatches ??= new();
-                    terms.Clear(); // Clear the terms list.
+                    termMatches ??= [];
+                    terms.Clear(); // Clear the terms' list.
                     EncodeAndApplyAnalyzerForMultipleTerms(field, word, ref terms);
 
-                    //When single term outputs multiple terms we've to jump into phraseQuery
+                    //When single term outputs multiple terms, we've to jump into phraseQuery
                     if (terms.Count > 1)
                         goto PhraseQuery;
 
-                    foreach (var term in terms.GetEnumerator())
+                    foreach (var term in terms)
                     {
                         if (term.Size == 0)
                             continue; //skip empty results
@@ -328,7 +325,7 @@ public partial class IndexSearcher
             var phraseBitmap = new BitmapMatch(Allocator);
             var tempPhraseBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
             bool firstPhraseTerm = true;
-            foreach (var term in terms.GetEnumerator())
+            foreach (var term in terms)
             {
                 var termQuery = TermQuery(field, term);
                 if (firstPhraseTerm)
@@ -383,7 +380,7 @@ public partial class IndexSearcher
                 }
             }
 
-            AccumulateIntoSearchBitmap((IQueryMatch)termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
+            AccumulateIntoSearchBitmap(termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
 
             tempTermBitmapData.Dispose();
             termBitmap.Dispose();
@@ -486,7 +483,7 @@ public partial class IndexSearcher
 
                 if (termType is Constants.Search.SearchMatchOptions.TermMatch)
                 {
-                    termMatches ??= new();
+                    termMatches ??= [];
                     termMatches.Add(value);
                     continue;
                 }
@@ -508,11 +505,11 @@ public partial class IndexSearcher
             }
 
             // Phrase query part (wildcards are not supported in phrase queries).
-            // Build bitmap directly from term posting lists for phrase query
+            // Build bitmap directly from term posting lists for a phrase query
             var phraseBitmap = new BitmapMatch(Allocator);
             var tempPhraseBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
             bool firstPhraseTerm = true;
-            foreach (var term in terms.GetEnumerator())
+            foreach (var term in terms)
             {
                 var termQuery = TermQuery(field, term);
                 if (firstPhraseTerm)
@@ -567,7 +564,7 @@ public partial class IndexSearcher
                 }
             }
 
-            AccumulateIntoSearchBitmap((IQueryMatch)termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
+            AccumulateIntoSearchBitmap(termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
 
             tempTermBitmapData.Dispose();
         }

@@ -626,11 +626,10 @@ internal static partial class QueryPlanBuilder
             indexSearcher, planParams.Allocator, wantTimings, token)
         {
             InRangeCounts = plan.InRangeCounts,
-            ScanPredicateInfos = plan.ScanPredicateInfos,
-            ScanLongParams = longParams,
-            ScanDoubleParams = doubleParams,
-            ScanSliceParams = sliceParams,
-            ScanFieldRootPages = fieldRootPages
+            ResidualLongParams = longParams,
+            ResidualDoubleParams = doubleParams,
+            ResidualSliceParams = sliceParams,
+            ResidualFieldRootPages = fieldRootPages
         };
         IQueryMatch result = compiledMatch;
 
@@ -997,7 +996,6 @@ internal static partial class QueryPlanBuilder
         plan.CompoundExactAFirst = template.CompoundExactAFirst;
         plan.CompoundFieldDrivingClause = -1;
         plan.CompoundFieldSortName = template.CompoundFieldSortName;
-        plan.CompoundFieldIsMultiSort = template.CompoundFieldIsMultiSort;
 
         int needSort = template.SortDrivingClauseIndex >= 0 ? 1 : 0;
         int needExactA = template.CompoundExactClauseA >= 0 ? 1 : 0;
@@ -3957,7 +3955,7 @@ internal static partial class QueryPlanBuilder
 
             if (seekValue != null)
             {
-                match.SortHint = new SortHint(clause.FieldName, seekValue, inclusive);
+                match.SortHint = new SortHint(clause.FieldName, seekValue);
                 return;
             }
         }
