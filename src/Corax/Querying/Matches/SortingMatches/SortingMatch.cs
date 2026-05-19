@@ -12,6 +12,7 @@ using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Utils;
 using Corax.Utils.Spatial;
 using Sparrow;
+using Sparrow.Binary;
 using Sparrow.Compression;
 using Sparrow.Server;
 using Voron;
@@ -587,6 +588,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         reader.Dispose();
         sortedIdsScope.Dispose();
 
+        [SkipLocalsInit]
         SortedIndexReader<TDirection> GetReader(long min, long max, object hint)
         {
             if (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
@@ -607,16 +609,8 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                     }
                     else
                     {
-                        ref byte[] threadBuf = ref Utf8ThreadBuffer;
-                        if (threadBuf == null || threadBuf.Length < byteCount)
-                        {
-                            int newLen = threadBuf == null ? Utf8StackAllocThreshold : threadBuf.Length;
-                            while (newLen < byteCount)
-                                newLen <<= 1;
-                            threadBuf = new byte[newLen];
-                        }
-                        int written = System.Text.Encoding.UTF8.GetBytes(strVal, threadBuf);
-                        compactKey.Set(((Span<byte>)threadBuf)[..written]);
+                        int written = System.Text.Encoding.UTF8.GetBytes(strVal, GrowUtf8Buffer(byteCount));
+                        compactKey.Set(((Span<byte>)Utf8ThreadBuffer)[..written]);
                     }
                     compactKey.ChangeDictionary(termsTree.DictionaryId);
                     it.Seek(new CompactTree.CompactKeyLookup(compactKey));
@@ -650,6 +644,18 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         }
     }
 
+    /// <summary>Ensures <see cref="SortingMatch.Utf8ThreadBuffer"/> is at least <paramref name="byteCount"/>
+    /// bytes long and returns it. Grows to the next power of two on demand.
+    /// Called only on the rare path where the string exceeds <see cref="Utf8StackAllocThreshold"/>.</summary>
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static byte[] GrowUtf8Buffer(int byteCount)
+    {
+        ref byte[] buf = ref Utf8ThreadBuffer;
+        if (buf == null || buf.Length < byteCount)
+            buf = new byte[Bits.PowerOf2(byteCount)];
+        return buf;
+    }
+
     /// <summary>Compare a Slice's bytes to a string's UTF-8 encoding without allocating.
     /// Used for sort-hint field-name matching where the slice comes from the index
     /// and the hint field name comes from the query AST.</summary>
@@ -666,16 +672,8 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             int written = System.Text.Encoding.UTF8.GetBytes(s, stackBuf);
             return sliceSpan.SequenceEqual(stackBuf[..written]);
         }
-        ref byte[] threadBuf = ref Utf8ThreadBuffer;
-        if (threadBuf == null || threadBuf.Length < byteCount)
-        {
-            int newLen = threadBuf == null ? Utf8StackAllocThreshold : threadBuf.Length;
-            while (newLen < byteCount)
-                newLen <<= 1;
-            threadBuf = new byte[newLen];
-        }
-        int written2 = System.Text.Encoding.UTF8.GetBytes(s, threadBuf);
-        return sliceSpan.SequenceEqual(((Span<byte>)threadBuf)[..written2]);
+        int written2 = System.Text.Encoding.UTF8.GetBytes(s, GrowUtf8Buffer(byteCount));
+        return sliceSpan.SequenceEqual(((Span<byte>)Utf8ThreadBuffer)[..written2]);
     }
 
     /// <summary>

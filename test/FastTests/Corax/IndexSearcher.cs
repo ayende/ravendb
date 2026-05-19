@@ -272,6 +272,7 @@ namespace FastTests.Corax
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/1' AND Content = 'mountain'");
 
                 Assert.Equal(2, results.Count);
+                Assert.NotEqual(results[0], results[1]); // two distinct index entries, not the same entry twice
                 AssertIds(ResolveDocumentIds(results), "entry/1", "entry/1");
             }
         }
@@ -303,6 +304,7 @@ namespace FastTests.Corax
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/1' AND Content = 'mountain'");
                 Assert.Equal(2, results.Count);
+                Assert.NotEqual(results[0], results[1]); // two distinct index entries, not the same entry twice
                 AssertIds(ResolveDocumentIds(results), "entry/1", "entry/1");
             }
         }
