@@ -70,20 +70,17 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private int _groupEmitIdx;
     private bool _groupReady;
 
-    // Null / non-existing primary term handling.
     // Non-existing entries (docs where the primary sort field was absent) are treated as null-adjacent:
-    //   nullFirst=true  → non-existing, then nulls, then normal values
+    //   nullFirst=true → non-existing, then nulls, then normal values
     //   nullFirst=false → normal values, then nulls, then non-existing
     private readonly bool _nullFirst;
-    private readonly long _nullPostingListId;
-    private PostingList _nullPostingList;
-    private PostingList.Iterator _nullIterator;
+    private readonly PostingList _nullPostingList;
+    private readonly PostingList.Iterator _nullIterator;
     private readonly bool _hasNullPostingList;
     private bool _nullExhausted;
 
-    private readonly long _nonExistingPostingListId;
-    private PostingList _nonExistingPostingList;
-    private PostingList.Iterator _nonExistingIterator;
+    private readonly PostingList _nonExistingPostingList;
+    private readonly PostingList.Iterator _nonExistingIterator;
     private readonly bool _hasNonExistingPostingList;
     private bool _nonExistingExhausted;
 
@@ -95,7 +92,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         ITermsProvider provider,
         LowLevelTransaction llt,
         ByteStringContext allocator,
-        Querying.IndexSearcher searcher,
+        IndexSearcher searcher,
         FieldMetadata primaryField,
         FieldMetadata secondaryField,
         MatchCompareFieldType secondaryType,
@@ -143,15 +140,15 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
         if (drainNulls)
         {
-            _hasNullPostingList = searcher.TryGetPostingListForNull(in primaryField, out _nullPostingListId);
+            _hasNullPostingList = searcher.TryGetPostingListForNull(in primaryField, out var nullPostingListId);
             _nullExhausted = !_hasNullPostingList;
             if (_hasNullPostingList)
-                InitPostingList(ref _nullPostingList, ref _nullIterator, _nullPostingListId);
+                InitPostingList(out _nullPostingList, out _nullIterator, nullPostingListId);
 
-            _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in primaryField, out _nonExistingPostingListId);
+            _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in primaryField, out var nonExistingPostingListId);
             _nonExistingExhausted = !_hasNonExistingPostingList;
             if (_hasNonExistingPostingList)
-                InitPostingList(ref _nonExistingPostingList, ref _nonExistingIterator, _nonExistingPostingListId);
+                InitPostingList(out _nonExistingPostingList, out _nonExistingIterator, nonExistingPostingListId);
         }
         else
         {
@@ -178,7 +175,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         // Emit any remaining entries from a previously-sorted group (null or regular).
         if (_groupReady)
         {
-            count += EmitFromSortedGroup(matches.Slice(count));
+            count += EmitFromSortedGroup(matches[count..]);
             if (count >= matches.Length)
                 return count;
         }
@@ -219,17 +216,13 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 for (int i = 0; i < _plIdsRead; i++)
                 {
                     long plId = _plIdsBuffer.RawItems[i];
-                    if (_hasNullPostingList && plId == _nullPostingListId)
-                        continue;
-                    if (_hasNonExistingPostingList && plId == _nonExistingPostingListId)
-                        continue;
                     var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
                     if (termType == TermIdMask.SmallPostingList)
                         entryBuffer[smallCount++] = (long)EntryIdEncodings.GetContainerId(plId);
                 }
                 if (smallCount > 0)
                 {
-                    Container.GetAll(_llt, entryBuffer.Slice(0, smallCount),
+                    Container.GetAll(_llt, entryBuffer[..smallCount],
                         new Span<UnmanagedSpan>(_smallContainerItems.RawItems, smallCount), long.MinValue, pageLocator);
                 }
             }
@@ -238,19 +231,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             while (_plIdsIdx < _plIdsRead && count < matches.Length)
             {
                 long plId = _plIdsBuffer.RawItems[_plIdsIdx];
-
-                // Skip null and non-existing primary posting lists — drained separately at start/end.
-                if (_hasNullPostingList && plId == _nullPostingListId)
-                {
-                    _plIdsIdx++;
-                    continue;
-                }
-                if (_hasNonExistingPostingList && plId == _nonExistingPostingListId)
-                {
-                    _plIdsIdx++;
-                    continue;
-                }
-
                 _groupSize = 0;
                 var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
                 switch (termType)
@@ -302,7 +282,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 SortGroupBySecondary();
                 _groupReady = true;
                 _groupEmitIdx = 0;
-                count += EmitFromSortedGroup(matches.Slice(count));
+                count += EmitFromSortedGroup(matches[count..]);
                 if (count >= matches.Length)
                     return count;
             }
@@ -313,7 +293,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         {
             PrepareNullGroup(entryBuffer);
             if (_groupReady)
-                count += EmitFromSortedGroup(matches.Slice(count));
+                count += EmitFromSortedGroup(matches[count..]);
         }
 
         return count;
@@ -372,7 +352,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         {
             if (iter.Fill(entryBuffer, out int read) == false || read == 0)
                 break;
-            EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer.Slice(0, read), read);
+            EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer[..read], read);
             for (int j = 0; j < read; j++)
                 AddToGroup(entryBuffer[j]);
         }
@@ -466,12 +446,14 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         // determines their interleaved order within the group.
         if (hasNonExisting)
         {
-            DrainLargeIntoGroup(ref _nonExistingIterator, entryBuffer);
+            var iter = _nonExistingIterator;
+            DrainLargeIntoGroup(ref iter, entryBuffer);
             _nonExistingExhausted = true;
         }
         if (hasNull)
         {
-            DrainLargeIntoGroup(ref _nullIterator, entryBuffer);
+            var iter = _nullIterator;
+            DrainLargeIntoGroup(ref iter, entryBuffer);
             _nullExhausted = true;
         }
 
@@ -483,7 +465,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         }
     }
 
-    private void InitPostingList(ref PostingList postingList, ref PostingList.Iterator iterator, long postingListId)
+    private void InitPostingList(out PostingList postingList, out PostingList.Iterator iterator, long postingListId)
     {
         var containerEntryId = EntryIdEncodings.GetContainerId(postingListId);
         var setStateSpan = Container.GetReadOnly(_llt, containerEntryId);
