@@ -3880,9 +3880,14 @@ internal static partial class QueryPlanBuilder
             return null;
         }
 
+        if (orderByFields.Length == 0)
+            return null;
+
         if (orderByFields.Length > MaxSortFields)
             throw new InvalidOperationException($"Corax does not support ordering by more than {MaxSortFields} properties.");
 
+        // OrderMetadata contains a managed IPoint reference field, so stackalloc is not
+        // possible here (only unmanaged structs may be stack-allocated in C#).
         int sortIndex = 0;
         var sortArray = new OrderMetadata[MaxSortFields];
 
