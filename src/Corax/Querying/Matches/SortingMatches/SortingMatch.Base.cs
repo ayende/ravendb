@@ -14,6 +14,15 @@ public abstract class SortingMatch : IQueryMatch, IDisposable
 {
     public const int SortBatchSize = 8192;
 
+    /// <summary>
+    /// Per-thread byte buffer for UTF-8 encode in SliceEqualsUtf8.
+    /// Lives here (non-generic base) so all closed SortingMatch&lt;TInner&gt; instantiations
+    /// share one buffer per thread instead of one per generic instantiation per thread.
+    /// Grown to the next power-of-two size on demand.
+    /// </summary>
+    [ThreadStatic]
+    internal static byte[] Utf8ThreadBuffer;
+
     /// <summary>Total number of matching entries (set after the first Fill call).</summary>
     public long TotalResults;
 
