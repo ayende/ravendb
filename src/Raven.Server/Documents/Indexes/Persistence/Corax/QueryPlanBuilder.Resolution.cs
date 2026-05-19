@@ -96,7 +96,9 @@ internal static partial class QueryPlanBuilder
             return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
 
         // Phase 3: live binding (resolved matches, term sources, spatial/vector/highlighting wrappers).
-        return Instantiate(compiledPlanOut, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
+        // BuildAndCompile uses the unconditional bitmap path — ORDER BY optimization dispatch
+        // (CompoundExact / CompoundField / DirectScan) belongs to BuildCompileAndOptimize.
+        return InstantiateBitmapPipeline(compiledPlanOut, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
     }
 
     /// <summary>
@@ -134,10 +136,7 @@ internal static partial class QueryPlanBuilder
         // Phase 1: structural template (cached per queryText).
         var template = BuildTemplate(planParams);
 
-        // Phase 2: parameter resolution, plan emission, IL compile (with cache miss handling).
-        // We do NOT call Instantiate here — it allocates a CompiledQueryMatch that is wasted
-        // when the cached hint resolves to a non-BitmapSort strategy. Instantiate is deferred
-        // until we know we need the bitmap pipeline (cached hint=None, or all Try* failed).
+        // Phase 2: parameter resolution, plan emission, IL compile (with cache-miss handling).
         compiledPlanOut = Build(template, planParams, builderParameters, out plan, wantTimings);
         if (compiledPlanOut == null)
         {
@@ -147,16 +146,49 @@ internal static partial class QueryPlanBuilder
             return innerMatchOut;
         }
 
+        // Phase 3a: resolve ORDER BY metadata (needed by Instantiate's strategy dispatch).
         orderByFieldsOut = GetSortMetadata(builderParameters, out hasEmptySorts);
 
-        // Phase 5 (#4814 + #4830): on a Strategy hit, dispatch straight to Construct* and
-        // skip both the Try*-chain discovery AND the bitmap-pipeline Instantiate. On miss,
-        // run the full Try* chain — each Try* performs discovery and, if it wins, calls its
-        // Construct* internally; Instantiate runs only when all Try* fail.
-        var strategy = compiledPlanOut.Strategy;
+        // Phase 3b: dispatch on the cached ExecutionStrategy (fast path) or run Try* discovery
+        // (slow path, cache-miss only). Instantiate falls through to the bitmap pipeline as the
+        // last resort. All four strategies — CompoundExact / CompoundField / DirectScan / BitmapSort
+        // — are produced here.
+        return Instantiate(compiledPlanOut, plan, orderByFieldsOut, hasEmptySorts,
+            planParams, builderParameters, highlightingTerms, wantTimings, out innerMatchOut, token);
+    }
+
+    /// <summary>
+    /// Phase 3 dispatcher: produce the final <see cref="IQueryMatch"/> for a compiled plan,
+    /// applying ORDER BY when present. On the first execution (<see cref="ExecutionStrategy.NotEvaluated"/>)
+    /// runs the Try* discovery chain — CompoundExact → CompoundField → DirectScan — and caches
+    /// the winner's strategy + structural facts on <paramref name="compiledPlan"/>. Subsequent
+    /// executions read the cached <see cref="CompiledPlan.Strategy"/> and dispatch straight to
+    /// the matching Construct* helper, skipping discovery.
+    ///
+    /// The bitmap pipeline (<see cref="InstantiateBitmapPipeline"/>) is the last fallback —
+    /// reached either when all Try* methods reject (cache-miss path) or when a cached Construct*
+    /// returns null on per-execution rejection (e.g. byte-length overflow for CompoundExact).
+    /// </summary>
+    /// <param name="innerMatch">Pre-wrap inner match: same as the return value for the no-wrap
+    /// strategies (CompoundExact / DirectScan / no ORDER BY), the compound match for CompoundField,
+    /// or the bitmap CompiledQueryMatch for BitmapSort. The caller uses this for inspection-graph
+    /// construction and deterministic disposal of the IL-emitted match.</param>
+    private static IQueryMatch Instantiate(
+        CompiledPlan compiledPlan,
+        QueryExecution plan,
+        OrderMetadata[] orderByFields,
+        bool hasEmptySorts,
+        PlanParameters planParams,
+        QueryBuilderParameters builderParameters,
+        Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
+        bool wantTimings,
+        out IQueryMatch innerMatch,
+        CancellationToken token)
+    {
+        // ── Fast path: cached strategy, dispatch directly to Construct* ──
+        var strategy = compiledPlan.Strategy;
         if (strategy != ExecutionStrategy.NotEvaluated)
         {
-            // ── Fast path: cached strategy, dispatch to Construct directly (no Instantiate) ──
             IQueryMatch built = null;
             switch (strategy)
             {
@@ -165,35 +197,35 @@ internal static partial class QueryPlanBuilder
                         built = ConstructCompoundExact(plan, planParams);
                     if (built != null)
                     {
-                        innerMatchOut = built;
+                        innerMatch = built;
                         return built;
                     }
                     break;
                 case ExecutionStrategy.CompoundField:
-                    if (plan != null && orderByFieldsOut != null)
+                    if (plan != null && orderByFields != null)
                     {
                         int f2 = FindCompoundFieldField2Range(plan.Clauses, plan.CompoundFieldDrivingClause, plan.CompoundFieldSortName);
                         // Cost facts (entriesToScan, bitmapCost) are diagnostic-only inside
                         // Construct (used for the Reason string). Pass zeros — the cliff bit
                         // in the cache key already segregates cost buckets.
-                        built = ConstructCompoundField(plan, orderByFieldsOut, planParams, builderParameters,
-                            compiledPlanOut, f2, entriesToScan: 0, bitmapCost: 0);
+                        built = ConstructCompoundField(plan, orderByFields, planParams, builderParameters,
+                            compiledPlan, f2, entriesToScan: 0, bitmapCost: 0);
                     }
                     if (built != null)
                     {
-                        innerMatchOut = built;
-                        return OrderBy(builderParameters, built, orderByFieldsOut, hasEmptySorts);
+                        innerMatch = built;
+                        return OrderBy(builderParameters, built, orderByFields, hasEmptySorts);
                     }
                     break;
                 case ExecutionStrategy.DirectScan:
-                    if (plan != null && orderByFieldsOut != null && orderByFieldsOut.Length <= 2)
+                    if (plan != null && orderByFields != null && orderByFields.Length <= 2)
                     {
                         var clauses = plan.Clauses;
                         bool isFullScan = clauses == null || clauses.Count == 0;
-                        bool hasTieBreak = orderByFieldsOut.Length == 2;
-                        // Re-resolve drivingIdx (cheap structural lookup; cached at
-                        // template time via SortDrivingClauseIndex). Skip cost gating —
-                        // strategy cache encodes the cost decision via cliff bit in Ordering.
+                        bool hasTieBreak = orderByFields.Length == 2;
+                        // Re-resolve drivingIdx (cheap structural lookup; cached at template time
+                        // via SortDrivingClauseIndex). Skip cost gating — strategy cache encodes
+                        // the cost decision via cliff bit in Ordering.
                         int drivingIdx = -1;
                         if (isFullScan == false)
                         {
@@ -203,40 +235,34 @@ internal static partial class QueryPlanBuilder
                                 drivingIdx = -1;
                         }
                         if (isFullScan || drivingIdx >= 0)
-                            built = ConstructDirectScan(plan, orderByFieldsOut, planParams, builderParameters,
-                                compiledPlanOut, drivingIdx, isFullScan, hasTieBreak,
+                            built = ConstructDirectScan(plan, orderByFields, planParams, builderParameters,
+                                compiledPlan, drivingIdx, isFullScan, hasTieBreak,
                                 entriesToScan: 0, bitmapCost: 0);
                     }
                     if (built != null)
                     {
-                        innerMatchOut = built;
+                        innerMatch = built;
                         return built;
                     }
                     break;
             }
 
             // Cached non-BitmapSort strategy failed at construction time (e.g. per-execution
-            // byte-length overflow). Fall back to bitmap+sort by instantiating now. The cached
-            // strategy stays valid for the next execution; this one had unlucky parameter values.
-            var fallbackMatch = Instantiate(compiledPlanOut, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
-            innerMatchOut = fallbackMatch;
-            if (orderByFieldsOut != null)
-            {
-                if (fallbackMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
-                    TrySetSortSeekHint(seekMatch, plan, orderByFieldsOut);
-                return OrderBy(builderParameters, fallbackMatch, orderByFieldsOut, hasEmptySorts);
-            }
-            return fallbackMatch;
+            // byte-length overflow). Fall back to bitmap+sort. The cached strategy stays valid
+            // for the next execution; this one had unlucky parameter values.
+            return InstantiateBitmapFallback(compiledPlan, plan, orderByFields, hasEmptySorts,
+                planParams, builderParameters, highlightingTerms, wantTimings, out innerMatch, token);
         }
 
-        // ── Slow path: compile-miss, run full Try* chain to discover the winner ──
-        // Important: run Try* BEFORE Instantiate, so a Try* win avoids the bitmap
-        // pipeline allocation. Only call Instantiate as the last fallback.
+        // ── Slow path: cache-miss, run Try* discovery chain ──
+        // Each Try* method performs structural + cost checks and, on success, constructs the
+        // live match. We record the outcome on a DecisionTrail for diagnostics, then bake the
+        // winning strategy + *Data onto compiledPlan so future executions skip discovery.
         bool needsFullChain = true;
         var resultStrategy = ExecutionStrategy.BitmapSort;
         var trail = new PlanDecisionTrail();
         IQueryMatch queryMatch = null;
-        innerMatchOut = null;
+        innerMatch = null;
 
         if (plan == null)
             trail.Record("CompoundExact", false, "no plan available");
@@ -245,16 +271,16 @@ internal static partial class QueryPlanBuilder
         else if (TryCreateCompoundExactMatch(plan, planParams, builderParameters, out var compoundExact, out var ceReason))
         {
             queryMatch = compoundExact;
-            innerMatchOut = compoundExact;
+            innerMatch = compoundExact;
             resultStrategy = ExecutionStrategy.CompoundExact;
-            compiledPlanOut.CompoundExactData = new CompoundExactPlan(plan.CompoundExactClauseA, plan.CompoundExactClauseB, plan.CompoundExactAFirst);
+            compiledPlan.CompoundExactData = new CompoundExactPlan(plan.CompoundExactClauseA, plan.CompoundExactClauseB, plan.CompoundExactAFirst);
             needsFullChain = false;
             trail.Record("CompoundExact", true, "compound exact-term lookup");
         }
         else
             trail.Record("CompoundExact", false, ceReason ?? "rejected");
 
-        if (orderByFieldsOut != null)
+        if (orderByFields != null)
         {
             if (needsFullChain)
             {
@@ -262,12 +288,12 @@ internal static partial class QueryPlanBuilder
                     trail.Record("CompoundField", false, "no plan available");
                 else if ((plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) == 0)
                     trail.Record("CompoundField", false, "template has no direct-scan candidate");
-                else if (TryCreateCompoundFieldMatch(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var compoundMatch, out var cfReason))
+                else if (TryCreateCompoundFieldMatch(plan, orderByFields, planParams, builderParameters, compiledPlan, out var compoundMatch, out var cfReason))
                 {
-                    innerMatchOut = compoundMatch;
-                    queryMatch = OrderBy(builderParameters, compoundMatch, orderByFieldsOut, hasEmptySorts);
+                    innerMatch = compoundMatch;
+                    queryMatch = OrderBy(builderParameters, compoundMatch, orderByFields, hasEmptySorts);
                     resultStrategy = ExecutionStrategy.CompoundField;
-                    compiledPlanOut.CompoundFieldData = new CompoundFieldPlan(plan.CompoundFieldDrivingClause, plan.CompoundFieldSortName, plan.CompoundFieldIsMultiSort);
+                    compiledPlan.CompoundFieldData = new CompoundFieldPlan(plan.CompoundFieldDrivingClause, plan.CompoundFieldSortName, plan.CompoundFieldIsMultiSort);
                     needsFullChain = false;
                     trail.Record("CompoundField", true, "compound tree scan with ORDER BY");
                 }
@@ -281,12 +307,12 @@ internal static partial class QueryPlanBuilder
                     trail.Record("DirectScan", false, "no plan available");
                 else if ((plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) == 0)
                     trail.Record("DirectScan", false, "template has no direct-scan candidate");
-                else if (TryCreateSimpleFieldDirectScan(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var directMatch, out var dsReason))
+                else if (TryCreateSimpleFieldDirectScan(plan, orderByFields, planParams, builderParameters, compiledPlan, out var directMatch, out var dsReason))
                 {
                     queryMatch = directMatch;
-                    innerMatchOut = directMatch;
+                    innerMatch = directMatch;
                     resultStrategy = ExecutionStrategy.DirectScan;
-                    compiledPlanOut.DirectScanData = new DirectScanPlan(plan.SortDrivingClauseIndex);
+                    compiledPlan.DirectScanData = new DirectScanPlan(plan.SortDrivingClauseIndex);
                     needsFullChain = false;
                     trail.Record("DirectScan", true, "direct tree scan on sort field");
                 }
@@ -296,12 +322,12 @@ internal static partial class QueryPlanBuilder
 
             if (needsFullChain)
             {
-                // All Try* failed → fall back to bitmap pipeline. Instantiate now.
-                var bitmapMatch = Instantiate(compiledPlanOut, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
-                innerMatchOut = bitmapMatch;
+                // All Try* failed → fall back to bitmap pipeline.
+                var bitmapMatch = InstantiateBitmapPipeline(compiledPlan, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
+                innerMatch = bitmapMatch;
                 if (bitmapMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
-                    TrySetSortSeekHint(seekMatch, plan, orderByFieldsOut);
-                queryMatch = OrderBy(builderParameters, bitmapMatch, orderByFieldsOut, hasEmptySorts);
+                    TrySetSortSeekHint(seekMatch, plan, orderByFields);
+                queryMatch = OrderBy(builderParameters, bitmapMatch, orderByFields, hasEmptySorts);
                 resultStrategy = ExecutionStrategy.BitmapSort;
                 trail.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
             }
@@ -311,16 +337,41 @@ internal static partial class QueryPlanBuilder
             trail.Record("NoOrderBy", true, "no ORDER BY");
             if (queryMatch == null)
             {
-                // No ORDER BY and no Try* winner — use bitmap match (Instantiate now).
-                queryMatch = Instantiate(compiledPlanOut, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
-                innerMatchOut = queryMatch;
+                // No ORDER BY and no Try* winner — use bitmap match.
+                queryMatch = InstantiateBitmapPipeline(compiledPlan, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
+                innerMatch = queryMatch;
             }
         }
 
-        compiledPlanOut.Strategy = resultStrategy;
-        compiledPlanOut.DecisionTrail = trail;
+        compiledPlan.Strategy = resultStrategy;
+        compiledPlan.DecisionTrail = trail;
 
         return queryMatch;
+    }
+
+    /// <summary>Bitmap-pipeline fallback used when a cached non-BitmapSort strategy fails at
+    /// construction time (per-execution rejection, not a structural rejection). Applies ORDER BY
+    /// when present and sets the seek hint on the inner CompiledQueryMatch. The cached strategy
+    /// is intentionally NOT downgraded — the next execution's parameters may construct
+    /// successfully.</summary>
+    private static IQueryMatch InstantiateBitmapFallback(
+        CompiledPlan compiledPlan, QueryExecution plan,
+        OrderMetadata[] orderByFields, bool hasEmptySorts,
+        PlanParameters planParams, QueryBuilderParameters builderParameters,
+        Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
+        bool wantTimings,
+        out IQueryMatch innerMatch,
+        CancellationToken token)
+    {
+        var fallbackMatch = InstantiateBitmapPipeline(compiledPlan, plan, planParams, builderParameters, highlightingTerms, wantTimings, token);
+        innerMatch = fallbackMatch;
+        if (orderByFields != null)
+        {
+            if (fallbackMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
+                TrySetSortSeekHint(seekMatch, plan, orderByFields);
+            return OrderBy(builderParameters, fallbackMatch, orderByFields, hasEmptySorts);
+        }
+        return fallbackMatch;
     }
 
     /// <summary>
@@ -803,15 +854,18 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
-    /// Phase 3: bind a cached/compiled plan to a live execution. Resolves matches and term
-    /// sources from the live transaction, extracts scan parameters, optionally populates
-    /// highlighting terms, builds the <see cref="CompiledQueryMatch"/>, then applies the
-    /// mandatory spatial post-filter and vector-select wrappers.
+    /// Bitmap-pipeline match allocator: resolves matches and term sources from the live
+    /// transaction, extracts scan parameters, optionally populates highlighting terms,
+    /// builds the <see cref="CompiledQueryMatch"/>, then applies the mandatory spatial
+    /// post-filter and vector-select wrappers.
     ///
+    /// This is the unconditional bitmap path. <see cref="Instantiate"/> calls it as the
+    /// last fallback when no strategy (CompoundExact / CompoundField / DirectScan) wins;
+    /// <see cref="BuildAndCompile"/> calls it directly (no ORDER BY optimization dispatch).
     /// The wrappers are correctness, not optional decoration — vector selects produce
     /// unfiltered top-K without the filter source they're given here.
     /// </summary>
-    private static IQueryMatch Instantiate(
+    private static IQueryMatch InstantiateBitmapPipeline(
         CompiledPlan compiledPlan,
         QueryExecution plan,
         PlanParameters planParams,
