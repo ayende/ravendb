@@ -2897,27 +2897,46 @@ internal static partial class QueryPlanBuilder
         {
             var bytesUsed = array.Length * (vectorOptions.SourceEmbeddingType is VectorEmbeddingType.Single ? sizeof(float) : 1);
             var memScope = parameters.Allocator.Allocate(bytesUsed, out Memory<byte> mem);
-            ref var floatRef = ref MemoryMarshal.GetReference(MemoryMarshal.Cast<byte, float>(mem.Span));
-            ref var sbyteRef = ref MemoryMarshal.GetReference(MemoryMarshal.Cast<byte, sbyte>(mem.Span));
-            ref var byteRef = ref MemoryMarshal.GetReference(mem.Span);
 
-            for (int i = 0; i < array.Length; ++i)
+            // Hoist the per-element type switch out of the loop: SourceEmbeddingType is
+            // constant for the whole array, so dispatching once and then running a tight
+            // typed copy loop avoids repeating the branch (and the three ref captures) per
+            // element.
+            switch (vectorOptions.SourceEmbeddingType)
             {
-                switch (vectorOptions.SourceEmbeddingType)
-                {
-                    case VectorEmbeddingType.Single:
-                        Unsafe.Add(ref floatRef, i) = array.GetByIndex<float>(i);
-                        break;
-                    case VectorEmbeddingType.Int8:
-                        Unsafe.Add(ref sbyteRef, i) = array.GetByIndex<sbyte>(i);
-                        break;
-                    default:
-                        Unsafe.AddByteOffset(ref byteRef, i) = array.GetByIndex<byte>(i);
-                        break;
-                }
+                case VectorEmbeddingType.Single:
+                    CopyFloats(array, MemoryMarshal.Cast<byte, float>(mem.Span));
+                    break;
+                case VectorEmbeddingType.Int8:
+                    CopyInt8(array, MemoryMarshal.Cast<byte, sbyte>(mem.Span));
+                    break;
+                default:
+                    CopyBytes(array, mem.Span);
+                    break;
             }
 
             return GenerateEmbeddings.FromArray(parameters.Allocator, memScope, mem, vectorOptions, bytesUsed);
+
+            static void CopyFloats(BlittableJsonReaderArray src, Span<float> dst)
+            {
+                ref var dstRef = ref MemoryMarshal.GetReference(dst);
+                for (int i = 0; i < src.Length; ++i)
+                    Unsafe.Add(ref dstRef, i) = src.GetByIndex<float>(i);
+            }
+
+            static void CopyInt8(BlittableJsonReaderArray src, Span<sbyte> dst)
+            {
+                ref var dstRef = ref MemoryMarshal.GetReference(dst);
+                for (int i = 0; i < src.Length; ++i)
+                    Unsafe.Add(ref dstRef, i) = src.GetByIndex<sbyte>(i);
+            }
+
+            static void CopyBytes(BlittableJsonReaderArray src, Span<byte> dst)
+            {
+                ref var dstRef = ref MemoryMarshal.GetReference(dst);
+                for (int i = 0; i < src.Length; ++i)
+                    Unsafe.AddByteOffset(ref dstRef, i) = src.GetByIndex<byte>(i);
+            }
         }
 
         internal static VectorOptions GetExplicitVectorOptions(QueryBuilderParameters builderParameters, in string fieldName, out IndexField indexField)
