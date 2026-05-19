@@ -835,12 +835,12 @@ internal static partial class QueryPlanBuilder
         {
             compiledPlan = new CompiledPlan
             {
-                CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, emitTimings: false),
-                CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
-                CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanExplain),
+                CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var explainText, out var csharpText, emitTimings: false),
+                CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, out _, emitTimings: true),
+                CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanExplain, out var scanCsharp),
 
                 ExplainSource = explainText + "\n" + scanExplain,
-                CSharpSource = QueryIlEmitter.EmitCSharpSource(plan) + "\n" + ResidualScanIlEmitter.EmitCSharpSource(plan.ScanPredicateInfos),
+                CSharpSource = csharpText + "\n" + scanCsharp,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
                 FullKinds = plan.FullKinds,

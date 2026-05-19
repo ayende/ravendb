@@ -25,6 +25,7 @@
     <Compile Include="..\CommonAssemblyInfo.cs" Link="Properties\CommonAssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" />
     <PackageReference Include="Newtonsoft.Json" />
     <PackageReference Include="Spatial4n" />
     <PackageReference Include="System.Numerics.Tensors" />
