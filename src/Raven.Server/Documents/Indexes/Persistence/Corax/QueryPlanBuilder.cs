@@ -2161,12 +2161,28 @@ internal static partial class QueryPlanBuilder
         return lit == ParamValueType.Parameter ? ParamValueType.String : lit;
     }
 
-    /// <summary>Convert a ClauseInfo to a ScanPredicateInfo for entry scan IL emission.
-    /// Returns null for complex clauses that can't be entry-scanned.</summary>
+    /// <summary>Template-time overload: caller supplies <paramref name="termType"/> directly.
+    /// Group-clause recursion falls back to <see cref="InferTermType"/> per sub-clause since
+    /// no ClauseExecution is available. Used by <see cref="AreAllScanEligible"/> at plan time.</summary>
     private static ScanPredicateInfo? BuildScanPredicateInfo(ClauseInfo clause, ParamValueType termType,
         ref int longIndex, ref int doubleIndex, ref int sliceIndex)
+        => BuildScanPredicateInfoCore(clause, exec: null, termType,
+            ref longIndex, ref doubleIndex, ref sliceIndex);
+
+    /// <summary>Resolution-time overload: derives term type from <paramref name="exec"/>
+    /// and recurses into subclauses using sub-execution types. Used when actual resolved
+    /// types are available (per-execution, after PopulateClauseValues).</summary>
+    internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseInfo clause, ClauseExecution exec,
+        ref int longIndex, ref int doubleIndex, ref int sliceIndex)
+        => BuildScanPredicateInfoCore(clause, exec, exec?.TermValueType ?? ParamValueType.String,
+            ref longIndex, ref doubleIndex, ref sliceIndex);
+
+    /// <summary>Single walker shared by both overloads. <paramref name="exec"/> is non-null on
+    /// the resolution path and supplies per-sub TermValueType during group recursion; on the
+    /// template path it is null and recursion falls back to InferTermType.</summary>
+    private static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseInfo clause, ClauseExecution exec,
+        ParamValueType termType, ref int longIndex, ref int doubleIndex, ref int sliceIndex)
     {
-        // Complex clauses can't be entry-scanned
         switch (clause.ClauseType)
         {
             case ClauseType.Search:
@@ -2206,19 +2222,23 @@ internal static partial class QueryPlanBuilder
             }
             case ClauseType.AndGroup:
             {
-                if (clause.AndSubClauses == null || clause.AndSubClauses.Count == 0)
+                if (clause.AndSubClauses is not { Count: > 0 } subs)
                     return null;
+                var subExecs = exec?.AndSubExecutions;
                 var branches = new List<ScanPredicateInfo>();
-                for (int si = 0; si < clause.AndSubClauses.Count; si++)
+                for (int si = 0; si < subs.Count; si++)
                 {
-                    var sub = clause.AndSubClauses[si];
-                    var subPred = BuildScanPredicateInfo(sub, InferTermType(sub), ref longIndex, ref doubleIndex, ref sliceIndex);
+                    var sub = subs[si];
+                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
+                    var subTermType = subExec?.TermValueType ?? InferTermType(sub);
+                    var subPred = BuildScanPredicateInfoCore(sub, subExec, subTermType,
+                        ref longIndex, ref doubleIndex, ref sliceIndex);
                     if (subPred == null) return null;
                     branches.Add(subPred.Value);
                 }
                 return new ScanPredicateInfo
                 {
-                    FieldName = clause.FieldName ?? clause.AndSubClauses[0].FieldName,
+                    FieldName = clause.FieldName ?? subs[0].FieldName,
                     ValueType = ScanValueType.Long,
                     CompareOp = ScanCompareOp.Equal,
                     SubPredicates = branches.ToArray(),
@@ -2237,22 +2257,26 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.OrGroup:
             {
-                if (clause.OrSubClauses == null || clause.OrSubClauses.Count == 0)
+                if (clause.OrSubClauses is not { Count: > 0 } subs)
                     return null;
+                var subExecs = exec?.OrSubExecutions;
                 var branches = new List<ScanPredicateInfo>();
-                int li = longIndex, di = doubleIndex, si = sliceIndex;
-                for (int si2 = 0; si2 < clause.OrSubClauses.Count; si2++)
+                int li = longIndex, di = doubleIndex, slc = sliceIndex;
+                for (int si = 0; si < subs.Count; si++)
                 {
-                    var sub = clause.OrSubClauses[si2];
-                    var subPred = BuildScanPredicateInfo(sub, InferTermType(sub), ref li, ref di, ref si);
+                    var sub = subs[si];
+                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
+                    var subTermType = subExec?.TermValueType ?? InferTermType(sub);
+                    var subPred = BuildScanPredicateInfoCore(sub, subExec, subTermType,
+                        ref li, ref di, ref slc);
                     if (subPred == null)
                         return null; // Any complex subclause → can't entry-scan the whole group
                     branches.Add(subPred.Value);
                 }
-                longIndex = li; doubleIndex = di; sliceIndex = si;
+                longIndex = li; doubleIndex = di; sliceIndex = slc;
                 return new ScanPredicateInfo
                 {
-                    FieldName = clause.OrSubClauses[0].FieldName,
+                    FieldName = subs[0].FieldName,
                     SubPredicates = branches.ToArray(),
                     Group = GroupKind.Or
                 };
@@ -2318,65 +2342,4 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    /// <summary>Resolution-time overload: derives term type from <paramref name="exec"/>
-    /// and recurses into subclauses using sub-execution types. Used when actual resolved
-    /// types are available (per-execution, after PopulateClauseValues).</summary>
-    internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseInfo clause, ClauseExecution exec,
-        ref int longIndex, ref int doubleIndex, ref int sliceIndex)
-    {
-        // For OrGroup/AndGroup, recurse with sub-execution types
-        switch (clause.ClauseType)
-        {
-            case ClauseType.AndGroup:
-            {
-                if (clause.AndSubClauses == null || clause.AndSubClauses.Count == 0)
-                    return null;
-                var branches = new List<ScanPredicateInfo>();
-                var subExecs = exec?.AndSubExecutions;
-                for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                {
-                    var sub = clause.AndSubClauses[si];
-                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
-                    var subPred = BuildScanPredicateInfo(sub, subExec, ref longIndex, ref doubleIndex, ref sliceIndex);
-                    if (subPred == null) return null;
-                    branches.Add(subPred.Value);
-                }
-                return new ScanPredicateInfo
-                {
-                    FieldName = clause.FieldName ?? clause.AndSubClauses[0].FieldName,
-                    ValueType = ScanValueType.Long,
-                    CompareOp = ScanCompareOp.Equal,
-                    SubPredicates = branches.ToArray(),
-                    Group = GroupKind.And
-                };
-            }
-            case ClauseType.OrGroup:
-            {
-                if (clause.OrSubClauses == null || clause.OrSubClauses.Count == 0)
-                    return null;
-                var branches = new List<ScanPredicateInfo>();
-                int li = longIndex, di = doubleIndex, si = sliceIndex;
-                var subExecs = exec?.OrSubExecutions;
-                for (int si2 = 0; si2 < clause.OrSubClauses.Count; si2++)
-                {
-                    var sub = clause.OrSubClauses[si2];
-                    var subExec = subExecs != null && si2 < subExecs.Length ? subExecs[si2] : null;
-                    var subPred = BuildScanPredicateInfo(sub, subExec, ref li, ref di, ref si);
-                    if (subPred == null) return null;
-                    branches.Add(subPred.Value);
-                }
-                longIndex = li; doubleIndex = di; sliceIndex = si;
-                return new ScanPredicateInfo
-                {
-                    FieldName = clause.OrSubClauses[0].FieldName,
-                    SubPredicates = branches.ToArray(),
-                    Group = GroupKind.Or
-                };
-            }
-        }
-
-        // For leaf clauses, derive term type from exec and delegate to the primary overload
-        var termType = exec?.TermValueType ?? ParamValueType.String;
-        return BuildScanPredicateInfo(clause, termType, ref longIndex, ref doubleIndex, ref sliceIndex);
-    }
 }
