@@ -1332,15 +1332,23 @@ internal static partial class QueryPlanBuilder
     /// Takes only structural data (ClauseInfo[]) plus per-execution cardinalities and
     /// value types. Does NOT take ClauseExecution[] — the plan shape must not depend
     /// on per-execution state like InTermCount or HasNullTerm.</summary>
-    private static QueryExecution EmitPlan(List<ClauseInfo> clauses, long[] cardinalities, ParamValueType[] termTypes, bool isOr, string[] stringValues = null)
+    private static QueryExecution EmitPlan(List<ClauseInfo> clauses, long[] cardinalities, ParamValueType[] termTypes, bool isOr, string[] stringValues = null, ClauseExecution[] executions = null)
     {
+        // "Empty IN" check — must consult runtime InTermCount when executions are
+        // available. Bindings.Length is the *structural* count (one slot per
+        // ValueExpression in the IN literal); when a single parameter binding
+        // expands to a runtime array, InTermCount is the true element count and
+        // can be 0 even though Bindings.Length is 1.
+        static bool IsEmptyIn(ClauseInfo c, ClauseExecution e) =>
+            c.ClauseType is ClauseType.In or ClauseType.AllIn &&
+            ((e?.InTermCount ?? c.Bindings?.Length ?? 0) == 0);
+
         if (isOr is false)
         {
             // Empty IN clauses: zero results in AND, no-op in OR.
             for (int i = 0; i < clauses.Count; i++)
             {
-                if (clauses[i].ClauseType is ClauseType.In or ClauseType.AllIn &&
-                    (clauses[i].Bindings?.Length ?? 0) == 0)
+                if (IsEmptyIn(clauses[i], executions != null && i < executions.Length ? executions[i] : null))
                 {
                     return new QueryExecution { Ops = [], IsAllEntries = false };
                 }
@@ -1351,12 +1359,14 @@ internal static partial class QueryPlanBuilder
             int write = 0;
             for (int i = 0; i < clauses.Count; i++)
             {
-                if (clauses[i].ClauseType is ClauseType.In or ClauseType.AllIn &&
-                    (clauses[i].Bindings?.Length ?? 0) == 0)
+                var execI = executions != null && i < executions.Length ? executions[i] : null;
+                if (IsEmptyIn(clauses[i], execI))
                     continue;
                 clauses[write] = clauses[i];
                 cardinalities[write] = cardinalities[i];
                 termTypes[write] = termTypes[i];
+                if (executions != null)
+                    executions[write] = executions[i];
                 write++;
             }
             if (write < clauses.Count)
@@ -1364,6 +1374,8 @@ internal static partial class QueryPlanBuilder
                 clauses.RemoveRange(write, clauses.Count - write);
                 cardinalities = cardinalities[..write];
                 termTypes = termTypes[..write];
+                if (executions != null)
+                    Array.Resize(ref executions, write);
             }
         }
 

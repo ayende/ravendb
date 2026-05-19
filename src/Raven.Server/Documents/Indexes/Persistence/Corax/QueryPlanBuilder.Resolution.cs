@@ -434,7 +434,7 @@ internal static partial class QueryPlanBuilder
                 emitCardinalities[ei] = executions[ei].Cardinality;
                 emitTermTypes[ei] = executions[ei].TermValueType;
             }
-            plan = EmitPlan(clauses, emitCardinalities, emitTermTypes, isOr, writer.GetStrings());
+            plan = EmitPlan(clauses, emitCardinalities, emitTermTypes, isOr, writer.GetStrings(), executions);
             plan.Executions = executions;
 
             // Fixup InRangeCounts from actual runtime InTermCount / HasNullTerm.
