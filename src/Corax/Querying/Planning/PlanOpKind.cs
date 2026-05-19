@@ -71,4 +71,13 @@ public enum PlanOpKind : byte
     /// ParamIndex = start index, ParamIndex2 = index into ctx.InRangeCounts for runtime count. Emits a loop in IL with
     /// empty-check after each (unless SkipEarlyExit). Used for AllIn clauses.</summary>
     AndRange,
+
+    /// <summary>Fill bitmap[0] with all entries via <c>ctx.Searcher.AllEntries()</c>.
+    /// Used as the seed op for AllNegated AND chains (every top-level clause is negated,
+    /// so the plan starts from "everything" and ANDNOTs each clause). Distinct from
+    /// FillFromPostings(AllEntries) because no slot lookup is needed — the IL calls
+    /// indexSearcher.AllEntries() directly. This sidesteps the structural-vs-runtime
+    /// slot-index mismatch that occurs when an IN clause's runtime InTermCount differs
+    /// from its template Bindings.Length.</summary>
+    FillAllEntries,
 }

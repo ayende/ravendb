@@ -35,6 +35,15 @@ public static class QueryPrimitives
     public static void CtxFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
         => FillBitmapFromPostingSource(ref ctx.PostingSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
 
+    /// <summary>Seed bitmap[0] with AllEntries — used by AllNegated AND chains
+    /// where the plan starts from "everything" and ANDNOTs each clause. No
+    /// slot lookup: the AllEntries match is obtained directly from the searcher
+    /// so the IL stays parameter-independent even when an IN clause's runtime
+    /// term count differs from its template Bindings.Length.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void CtxFillAllEntries(Matches.CompiledQueryMatch ctx)
+        => OrWithMatch(ctx.Searcher.AllEntries(), ref ctx.Bitmaps[0], ctx.Limit);
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
         => FillBitmapFromTreeScan(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);

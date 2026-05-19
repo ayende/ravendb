@@ -105,6 +105,13 @@ public static class QueryIlEmitter
                     explain.AppendLine($"QueryPrimitives.CtxFill(ctx, paramIndex: {op.ParamIndex});  // bitmap[0] ← {src}");
                     break;
 
+                case PlanOpKind.FillAllEntries:
+                    EmitCancellationCheck(il);
+                    il.Emit(OpCodes.Ldarg_0);
+                    il.Emit(OpCodes.Call, IlEmitterShared.CtxFillAllEntries);
+                    explain.AppendLine("QueryPrimitives.CtxFillAllEntries(ctx);  // bitmap[0] ← AllEntries");
+                    break;
+
                 case PlanOpKind.AndWithPostings:
                     EmitCancellationCheck(il);
                     il.Emit(OpCodes.Ldarg_0);
@@ -439,8 +446,8 @@ public static class QueryIlEmitter
             {
                 if (op.ParamIndex2 > maxBitmapSlot) maxBitmapSlot = op.ParamIndex2;
             }
-            // FillFromPostings always uses bitmap[0]; And/AndNot use [0] and [1]
-            if (op.Kind is PlanOpKind.FillFromPostings or PlanOpKind.DirectIterate)
+            // FillFromPostings / FillAllEntries always use bitmap[0]; And/AndNot use [0] and [1]
+            if (op.Kind is PlanOpKind.FillFromPostings or PlanOpKind.DirectIterate or PlanOpKind.FillAllEntries)
             {
                 if (0 > maxBitmapSlot) maxBitmapSlot = 0;
             }
@@ -532,6 +539,7 @@ public static class QueryIlEmitter
             sb.AppendLine($"    long startTick_{i} = Stopwatch.GetTimestamp();");
             switch (op.Kind) {
                 case PlanOpKind.FillFromPostings: case PlanOpKind.DirectIterate: sb.AppendLine("    ctx.Token.ThrowIfCancellationRequested();"); sb.AppendLine($"    {fillName}(ctx, {op.ParamIndex});"); break;
+                case PlanOpKind.FillAllEntries: sb.AppendLine("    ctx.Token.ThrowIfCancellationRequested();"); sb.AppendLine("    QueryPrimitives.CtxFillAllEntries(ctx);"); break;
                 case PlanOpKind.AndWithPostings: sb.AppendLine("    ctx.Token.ThrowIfCancellationRequested();"); sb.AppendLine($"    {andName}(ctx, {op.ParamIndex});"); if (!op.SkipEarlyExit) sb.AppendLine("    if (ctx.Bitmaps[0].IsEmpty) goto Done;"); break;
                 case PlanOpKind.OrWithPostings: case PlanOpKind.LazyOrWithPostings: sb.AppendLine("    ctx.Token.ThrowIfCancellationRequested();"); sb.AppendLine($"    {orName}(ctx, {op.ParamIndex}, {op.BitmapLocal});"); if (op.BitmapLocal == 0) sb.AppendLine("    if ((long)ctx.Bitmaps[0].Count >= ctx.Limit) goto Done;"); break;
                 case PlanOpKind.ClearBitmap: sb.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].Clear();"); break;

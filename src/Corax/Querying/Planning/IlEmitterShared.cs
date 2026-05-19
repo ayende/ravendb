@@ -87,6 +87,7 @@ public static class IlEmitterShared
 
     // Ctx-based entry points — take ref CompiledQueryMatch, IL just pushes ldarg.0 + int constants
     public static readonly MethodInfo CtxFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromPostingSource))!;
+    public static readonly MethodInfo CtxFillAllEntries = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillAllEntries))!;
     public static readonly MethodInfo CtxFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromTreeScan))!;
     public static readonly MethodInfo CtxOrWithMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrWithMatch))!;
     public static readonly MethodInfo CtxOrFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromPostingSource))!;
