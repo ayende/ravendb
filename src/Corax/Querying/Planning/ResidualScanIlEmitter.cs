@@ -40,7 +40,7 @@ public static class ResidualScanIlEmitter
     /// are compacted to the front of their spans. Returns the count of survivors.
     /// The emitted IL always evaluates ALL predicates against every entry.
     /// <paramref name="explainSource"/> receives a human-readable pseudocode description
-    /// of the predicates, matching the format used by <see cref="QueryILEmitter.EmitDelegate"/>.</summary>
+    /// of the predicates, matching the format used by <see cref="QueryIlEmitter.EmitDelegate"/>.</summary>
     public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string explainSource)
     {
         if (predicates == null || predicates.Length == 0)

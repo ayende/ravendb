@@ -259,5 +259,6 @@ public class CompiledQueryMatch(
     {
         _iterator.Dispose();
         _bitmapData.Dispose();
+        Llt = null; // release transaction reference so it is not kept alive longer than needed
     }
 }
