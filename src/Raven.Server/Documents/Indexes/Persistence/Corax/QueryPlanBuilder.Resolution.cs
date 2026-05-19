@@ -302,7 +302,10 @@ internal static partial class QueryPlanBuilder
                     {
                         PackedParam.TypeLong => writer.GetLongs()[p.Param1] > writer.GetLongs()[p.Param2],
                         PackedParam.TypeDouble => writer.GetDoubles()[p.Param1] > writer.GetDoubles()[p.Param2],
-                        PackedParam.TypeString => string.Compare(writer.GetStrings()[p.Param1], writer.GetStrings()[p.Param2], StringComparison.Ordinal) > 0,
+                        // Strings: skip — the per-field analyzer (e.g. LowerCaseKeyword on
+                        // auto-indexes) rewrites both bounds at BetweenQuery time. A raw-bounds
+                        // ordinal compare here would mis-mark e.g. ('m', 'Maciej') as contradictory
+                        // before 'Maciej' is normalized to 'maciej'. See RavenDB-23642.
                         _ => false
                     };
                     if (contradictory)
