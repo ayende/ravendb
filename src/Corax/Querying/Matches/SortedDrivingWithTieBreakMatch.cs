@@ -44,7 +44,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private readonly Lookup<Int64LookupKey> _secondaryLookup;
     private readonly MatchCompareFieldType _secondaryType;
     private readonly bool _secondaryDescending;
-    private readonly bool _nullIsSmallest;
     private readonly long _missingSecondaryValue;
 
     // String tie-break: container IDs for null/non-existing terms, resolved once in ctor.
@@ -112,7 +111,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _llt = llt;
         _allocator = allocator;
         _nullFirst = nullFirst;
-        _nullIsSmallest = nullIsSmallest;
         _secondaryType = secondaryType;
         _secondaryDescending = secondaryDescending;
         _emittedBitmap = new RoaringBitmap(allocator);
