@@ -604,6 +604,15 @@ public unsafe partial struct RoaringBitmap : IDisposable
             ContainerType otherType = other._types.RawItems[otherSlot];
             ContainerEntry stolen = otherEntry;
             otherEntry = default; // Clear the entry
+            // Detach the stolen slot from `other` so subsequent Contains/AndWith calls on
+            // `other` don't dereference the now-empty ContainerEntry. Without this the
+            // slot is still indexed (GetSlotForKey returns it) and ContainsAtSlot would
+            // NRE on entry.Data. Hit by SortingMatch.ExtractAndSort → Score paths that
+            // need to read membership from a bitmap whose containers were absorbed by
+            // a prior OrWith.
+            other._types.RawItems[otherSlot] = ContainerType.Free;
+            other._index.RawItems[key] = IndexAbsent;
+            other._containerCount--;
             AddNewContainer(key, otherType, stolen);
         }
     }
