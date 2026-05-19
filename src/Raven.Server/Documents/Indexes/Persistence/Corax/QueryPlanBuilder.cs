@@ -1585,11 +1585,13 @@ internal static partial class QueryPlanBuilder
                 if (firstIsNegated)
                 {
                     // All clauses are negated — start from all entries.
-                    // AllEntries match is appended AFTER all clause-expanded matches by ResolveMatches.
+                    // FillAllEntries doesn't need a slot index — it calls indexSearcher.AllEntries()
+                    // directly. This sidesteps the structural-vs-runtime slot-index mismatch that
+                    // occurs when an IN clause's runtime InTermCount differs from its template
+                    // Bindings.Length (e.g. NOT IN with a parameter that expands to an array).
                     ops.Add(new PlanOp
                     {
-                        Kind = PlanOpKind.FillFromPostings,
-                        ParamIndex = CountMatchSlots(clauses, isAllEntries: false, allNegated: false), // Index of AllEntries in resolved matches
+                        Kind = PlanOpKind.FillAllEntries,
                         EstimatedCardinality = long.MaxValue
                     });
                     startIndex = 0; // Process all clauses as ANDNOT
