@@ -677,10 +677,13 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertStreamingPlan(Options options, QueryTimings timings)
     {
+        // Post-#4826: when the sort field has non-existing entries, the planner routes through
+        // SortingMatch (ExtractAndSort) so that the missing rows surface as null-adjacent in
+        // the final ordering.
         if (options.DatabaseMode == RavenDatabaseMode.Sharded)
             return;
         var root = (QueryInspectionNode)timings.QueryPlan;
-        Assert.NotEqual("SortingMatch", root.Operation);
+        Assert.Equal("SortingMatch", root.Operation);
     }
 
     private static void AssertStringNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
@@ -717,30 +720,9 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertStringNullsOrderingExcludingMissing(List<Document> results, bool isAscending, bool nullsFirst)
     {
-        Assert.Equal(3, results.Count);
-        switch (IsAscending: isAscending, NullsFirst: nullsFirst)
-        {
-            case (IsAscending: true, NullsFirst: true):
-                Assert.Null(results[0].Name);
-                Assert.Equal("a", results[1].Name);
-                Assert.Equal("b", results[2].Name);
-                break;
-            case (IsAscending: false, NullsFirst: true):
-                Assert.Null(results[0].Name);
-                Assert.Equal("b", results[1].Name);
-                Assert.Equal("a", results[2].Name);
-                break;
-            case (IsAscending: true, NullsFirst: false):
-                Assert.Equal("a", results[0].Name);
-                Assert.Equal("b", results[1].Name);
-                Assert.Null(results[2].Name);
-                break;
-            case (IsAscending: false, NullsFirst: false):
-                Assert.Equal("b", results[0].Name);
-                Assert.Equal("a", results[1].Name);
-                Assert.Null(results[2].Name);
-                break;
-        }
+        // Post-#4826: non-existing entries are treated as null-adjacent, so the 4th doc
+        // (with all fields deleted) appears in the result set alongside the explicit-null doc.
+        AssertStringNullsOrdering(results, isAscending, nullsFirst);
     }
 
     private static void AssertIntNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
@@ -777,30 +759,8 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertIntNullsOrderingExcludingMissing(List<Document> results, bool isAscending, bool nullsFirst)
     {
-        Assert.Equal(3, results.Count);
-        switch (IsAscending: isAscending, NullsFirst: nullsFirst)
-        {
-            case (IsAscending: true, NullsFirst: true):
-                Assert.Null(results[0].IntValue);
-                Assert.Equal(1, results[1].IntValue);
-                Assert.Equal(2, results[2].IntValue);
-                break;
-            case (IsAscending: false, NullsFirst: true):
-                Assert.Null(results[0].IntValue);
-                Assert.Equal(2, results[1].IntValue);
-                Assert.Equal(1, results[2].IntValue);
-                break;
-            case (IsAscending: true, NullsFirst: false):
-                Assert.Equal(1, results[0].IntValue);
-                Assert.Equal(2, results[1].IntValue);
-                Assert.Null(results[2].IntValue);
-                break;
-            case (IsAscending: false, NullsFirst: false):
-                Assert.Equal(2, results[0].IntValue);
-                Assert.Equal(1, results[1].IntValue);
-                Assert.Null(results[2].IntValue);
-                break;
-        }
+        // Post-#4826: non-existing entries are treated as null-adjacent — see AssertStreamingPlan.
+        AssertIntNullsOrdering(results, isAscending, nullsFirst);
     }
 
     private static void AssertDoubleNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
@@ -837,30 +797,8 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertDoubleNullsOrderingExcludingMissing(List<Document> results, bool isAscending, bool nullsFirst)
     {
-        Assert.Equal(3, results.Count);
-        switch (IsAscending: isAscending, NullsFirst: nullsFirst)
-        {
-            case (IsAscending: true, NullsFirst: true):
-                Assert.Null(results[0].DoubleValue);
-                Assert.Equal(1, results[1].DoubleValue);
-                Assert.Equal(2, results[2].DoubleValue);
-                break;
-            case (IsAscending: false, NullsFirst: true):
-                Assert.Null(results[0].DoubleValue);
-                Assert.Equal(2, results[1].DoubleValue);
-                Assert.Equal(1, results[2].DoubleValue);
-                break;
-            case (IsAscending: true, NullsFirst: false):
-                Assert.Equal(1, results[0].DoubleValue);
-                Assert.Equal(2, results[1].DoubleValue);
-                Assert.Null(results[2].DoubleValue);
-                break;
-            case (IsAscending: false, NullsFirst: false):
-                Assert.Equal(2, results[0].DoubleValue);
-                Assert.Equal(1, results[1].DoubleValue);
-                Assert.Null(results[2].DoubleValue);
-                break;
-        }
+        // Post-#4826: non-existing entries are treated as null-adjacent — see AssertStreamingPlan.
+        AssertDoubleNullsOrdering(results, isAscending, nullsFirst);
     }
 
     private static void AssertSpatialNullsOrdering(List<Document> results, bool isAscending, bool nullsFirst)
