@@ -1220,13 +1220,18 @@ internal static partial class QueryPlanBuilder
 
     // ── Cardinality estimation ───────────────────────────────────────────
 
-    private static long EstimateCardinality(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher, ValueWriter writer)
+    private static long EstimateCardinality(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher, ValueWriter writer,
+        PlanParameters planParams, QueryBuilderParameters builderParameters)
     {
         switch (clause.ClauseType)
         {
             case ClauseType.Equals:
             {
-                var fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
+                // ResolveFieldMetadata attaches the field's analyzer; FieldMetadataBuilder
+                // does not. Without the analyzer, NumberOfDocumentsUnderSpecificTerm looks
+                // up the term verbatim and misses index-time-normalized matches (e.g.
+                // LowerCaseKeyword turns "Alpha" into "alpha" on the index side).
+                var fieldMeta = ResolveFieldMetadata(clause, indexSearcher, planParams, builderParameters);
                 var p = exec.PackedParamValue;
                 return p.ValueType switch
                 {
@@ -1249,13 +1254,17 @@ internal static partial class QueryPlanBuilder
             case ClauseType.Regex:
                 // Use field-level cardinality as upper bound
                 return indexSearcher.GetTermAmountInField(
-                    indexSearcher.FieldMetadataBuilder(clause.FieldName));
+                    ResolveFieldMetadata(clause, indexSearcher, planParams, builderParameters));
 
             case ClauseType.In:
             case ClauseType.AllIn:
-                // Sum of individual term cardinalities
+                // Sum of individual term cardinalities. ResolveFieldMetadata picks up the
+                // field analyzer so case-folding/keyword normalization applies before the
+                // per-term posting-list lookup — otherwise IN over an analyzed field
+                // returns 0 for every term and the clause is misjudged as trivially small,
+                // which corrupts the cardinality-driven clause ordering.
                 long sum = 0;
-                var meta = indexSearcher.FieldMetadataBuilder(clause.FieldName);
+                var meta = ResolveFieldMetadata(clause, indexSearcher, planParams, builderParameters);
                 var ip = exec.PackedParamValue;
                 if (!ip.IsNone)
                 {
@@ -1286,7 +1295,7 @@ internal static partial class QueryPlanBuilder
                     {
                         var subExec = exec.OrSubExecutions[si];
                         if (subExec.Cardinality < 0)
-                            subExec.Cardinality = EstimateCardinality(clause.OrSubClauses[si], subExec, indexSearcher, writer);
+                            subExec.Cardinality = EstimateCardinality(clause.OrSubClauses[si], subExec, indexSearcher, writer, planParams, builderParameters);
                         orSum += subExec.Cardinality;
                     }
                 }
@@ -1300,7 +1309,7 @@ internal static partial class QueryPlanBuilder
                     {
                         var subExec = exec.AndSubExecutions[si];
                         if (subExec.Cardinality < 0)
-                            subExec.Cardinality = EstimateCardinality(clause.AndSubClauses[si], subExec, indexSearcher, writer);
+                            subExec.Cardinality = EstimateCardinality(clause.AndSubClauses[si], subExec, indexSearcher, writer, planParams, builderParameters);
                         if (subExec.Cardinality < andMin)
                             andMin = subExec.Cardinality;
                     }
@@ -1339,9 +1348,16 @@ internal static partial class QueryPlanBuilder
         // ValueExpression in the IN literal); when a single parameter binding
         // expands to a runtime array, InTermCount is the true element count and
         // can be 0 even though Bindings.Length is 1.
+        //
+        // HasNullTerm must also block the empty-IN path: a list whose only entry
+        // is null arrives as InTermCount=0+HasNullTerm=true and still has to match
+        // docs with a null in that field via the null-term posting list (Fill@0
+        // reads the null PL, OrRange/AndRange becomes a runtime no-op when
+        // InRangeCounts[rangeIdx] resolves to 0).
         static bool IsEmptyIn(ClauseInfo c, ClauseExecution e) =>
             c.ClauseType is ClauseType.In or ClauseType.AllIn &&
-            ((e?.InTermCount ?? c.Bindings?.Length ?? 0) == 0);
+            ((e?.InTermCount ?? c.Bindings?.Length ?? 0) == 0) &&
+            e?.HasNullTerm != true;
 
         if (isOr is false)
         {
@@ -1416,8 +1432,11 @@ internal static partial class QueryPlanBuilder
                 switch (it.ClauseType)
                 {
                     case ClauseType.In or ClauseType.AllIn:
+                    {
+                        // OR chain uses EmitInOps for both In and AllIn (range is OR'd regardless).
                         EmitInOps(ops, it, cardinalities[ci], bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
                         break;
+                    }
                     case ClauseType.OrGroup when it.OrSubClauses is {Count: > 0}:
                     {
                         int subCount = it.OrSubClauses.Count;
@@ -1625,14 +1644,16 @@ internal static partial class QueryPlanBuilder
                             break;
                         }
                         case ClauseType.In:
+                        {
                             EmitInOps(ops, clauses[0], cardinalities[0], bitmapLocal: 0, isSeed: true, ref matchIndex, rangeCounts);
                             break;
-                        // Use the fixed-shape EmitAllInOps path for AllIn clauses. The plan shape
-                        // is structural (parameter-independent), so all executions share the same
-                        // 2-op (Fill+AndRange, PostingList) shape.
+                        }
+                        // Use the fixed-shape EmitAllInOps path for AllIn clauses.
                         case ClauseType.AllIn:
+                        {
                             EmitAllInOps(ops, clauses[0], cardinalities[0], ref matchIndex, rangeCounts);
                             break;
+                        }
                         default:
                             ops.Add(new PlanOp
                             {
@@ -1718,7 +1739,7 @@ internal static partial class QueryPlanBuilder
                         }
                         case ClauseType.AllIn:
                         {
-                            int inTermCount = clauses[i].Bindings?.Length ?? 0;
+                            int inTermCount = (clauses[i].Bindings?.Length ?? 0);
                             int rangeIdx = rangeCounts.Count;
                             rangeCounts.Add(inTermCount);
                             ops.Add(new PlanOp
@@ -1853,13 +1874,9 @@ internal static partial class QueryPlanBuilder
     /// the null-term posting list when HasNullTerm, else the first typed term, else
     /// an empty PostingSource. Slots 1..N-1 hold remaining typed terms, dispatched
     /// via OrRange whose count comes from <c>ctx.InRangeCounts[rangeIdx]</c> at
-    /// runtime. Keeping the op shape parameter-independent is what allows the plan
-    /// cache to share one compiled delegate across executions with different
-    /// InTermCount / HasNullTerm values for the same query text.</summary>
+    /// runtime.</summary>
     private static void EmitInOps(List<PlanOp> ops, ClauseInfo clause, long cardinality, int bitmapLocal, bool isSeed, ref int matchIndex, List<int> rangeCounts)
     {
-        // Always (bindingCount + 1) slots — matches CountMatchSlots and ResolveMatches.
-        // Last slot is the null-term slot (empty match when null isn't in the parameter).
         int totalSlots = (clause.Bindings?.Length ?? 0) + 1;
         // Range iterates over the slots AFTER slot 0 (which Fill handles). When the parameter
         // list has no null, the trailing null slot is Empty — ORing with Empty is a no-op, so
@@ -1893,9 +1910,7 @@ internal static partial class QueryPlanBuilder
     /// terms lives in <c>ctx.InRangeCounts</c> rather than the op shape itself.</summary>
     private static void EmitAllInOps(List<PlanOp> ops, ClauseInfo clause, long cardinality, ref int matchIndex, List<int> rangeCounts)
     {
-        // Always (bindingCount + 1) slots — matches CountMatchSlots and ResolveMatches.
-        int bindingCount = clause.Bindings?.Length ?? 0;
-        int totalSlots = bindingCount + 1;
+        int totalSlots = (clause.Bindings?.Length ?? 0) + 1;
         // For AllIn, ANDing with an Empty PostingSource clears the bitmap — so the
         // null-term slot is always included in the range. At runtime, when no null term
         // is present the slot holds an empty match (AND with empty = clear), which is

@@ -780,13 +780,33 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Filter a sorted buffer in-place, keeping only values present in this bitmap.
-    /// Exploits sorted order: looks up each container key once, skips entire missing
-    /// container ranges, and checks membership within a container without per-element
-    /// key lookups.
+    /// Filter a buffer in-place, keeping only values present in this bitmap.
+    /// The buffer does NOT need to be sorted — callers may pass entry IDs in any order
+    /// (e.g. sort-field order from <c>StreamAndIntersect</c>).
+    ///
+    /// Algorithm: sort buffer to entry-ID order carrying a parallel index array, walk
+    /// containers once (amortising slot lookup and type dispatch to once per container
+    /// group), then restore the original order via the index array.
+    ///
+    /// ArrayUnsorted containers are sorted in-place and upgraded to Array on first
+    /// multi-element group hit — cheaper than O(m × k) per-element SIMD linear scans.
     /// </summary>
-    public readonly int AndWithSorted(Span<long> buffer, int count)
+    public int AndWith(Span<long> buffer, int count)
     {
+        if (count == 0) return 0;
+
+        // Allocate parallel index array (padded to AVX2 width for InitializeIndices).
+        // Use the bitmap's own ByteStringContext — same allocator as container memory.
+        int paddedLen = (count + 7) & ~7;
+        using var _ = _ctx.Allocate(paddedLen * sizeof(int), out ByteString work);
+        Span<int> indices = new Span<int>(work.Ptr, paddedLen);
+
+        // Fill indices with 0..count-1 via AVX2, then parallel-sort buffer ascending.
+        InitializeIndices(indices, count);
+        buffer[..count].Sort(indices[..count]);
+
+        // Container walk — same structure as the old AndWithSorted but uses gallop to
+        // find each group's end and tracks the index array in parallel with the buffer.
         int kept = 0;
         int i = 0;
         int* idx = _index.RawItems;
@@ -798,34 +818,33 @@ public unsafe partial struct RoaringBitmap : IDisposable
         {
             long containerKey = buffer[i] >> ContainerKeyShift;
 
-            // Fast reject: container key out of range or absent.
+            // Fast reject: container key out of range or absent — gallop past the group.
             if (containerKey < 0 || containerKey >= idxLen || idx[containerKey] < 0)
             {
-                // Skip all entries in this container key.
-                long nextContainerStart = (containerKey + 1) << ContainerKeyShift;
-                // Branchless linear scan for small runs; the common case is a short skip.
-                while (i < count && buffer[i] < nextContainerStart)
-                    i++;
+                i = GallopRight(buffer, i, count, (containerKey + 1) << ContainerKeyShift);
                 continue;
             }
 
             int slot = idx[containerKey];
             ref ContainerEntry entry = ref entries[slot];
-            ContainerType type = types[slot];
+            ref ContainerType type = ref types[slot];
             long containerEnd = (containerKey + 1) << ContainerKeyShift;
+            int groupEnd = GallopRight(buffer, i, count, containerEnd);
 
-            // Process all entries in this container.
             switch (type)
             {
                 case ContainerType.Bitmap:
                 {
                     ulong* bmp = (ulong*)entry.Data;
-                    while (i < count && buffer[i] < containerEnd)
+                    for (int gi = i; gi < groupEnd; gi++)
                     {
-                        ushort low = (ushort)(buffer[i] & ContainerValueMask);
+                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
                         if (BitmapContains(bmp, low))
-                            buffer[kept++] = buffer[i];
-                        i++;
+                        {
+                            buffer[kept] = buffer[gi];
+                            indices[kept] = indices[gi];
+                            kept++;
+                        }
                     }
                     break;
                 }
@@ -834,65 +853,116 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 {
                     int rangeStart = entry.RangeStart;
                     int rangeEnd = rangeStart + entry.Cardinality;
-                    while (i < count && buffer[i] < containerEnd)
+                    for (int gi = i; gi < groupEnd; gi++)
                     {
-                        ushort low = (ushort)(buffer[i] & ContainerValueMask);
+                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
                         if (low >= rangeStart && low < rangeEnd)
-                            buffer[kept++] = buffer[i];
-                        i++;
+                        {
+                            buffer[kept] = buffer[gi];
+                            indices[kept] = indices[gi];
+                            kept++;
+                        }
                     }
                     break;
                 }
 
                 case ContainerType.Array:
                 {
-                    // Sorted array — use two-pointer merge.
+                    // Two-pointer merge: buffer group (sorted) vs sorted array.
                     ushort* arr = entry.ArrayData;
                     int arrLen = entry.Cardinality;
                     int ai = 0;
-                    while (i < count && buffer[i] < containerEnd && ai < arrLen)
+                    for (int gi = i; gi < groupEnd && ai < arrLen; )
                     {
-                        ushort low = (ushort)(buffer[i] & ContainerValueMask);
-                        if (low < arr[ai])
-                            i++;
-                        else if (low > arr[ai])
-                            ai++;
+                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
+                        if (low < arr[ai])       { gi++; }
+                        else if (low > arr[ai])  { ai++; }
                         else
                         {
-                            buffer[kept++] = buffer[i];
-                            i++;
-                            ai++;
+                            buffer[kept] = buffer[gi];
+                            indices[kept] = indices[gi];
+                            kept++;
+                            gi++; ai++;
                         }
                     }
-                    // Skip remaining buffer entries in this container (no more array entries to match).
-                    while (i < count && buffer[i] < containerEnd)
-                        i++;
                     break;
                 }
 
                 case ContainerType.ArrayUnsorted:
                 {
-                    // Fall back to per-element Contains for unsorted arrays.
-                    while (i < count && buffer[i] < containerEnd)
+                    int groupLen = groupEnd - i;
+                    if (groupLen == 1)
                     {
+                        // Single element: SIMD linear scan, avoid sorting the container.
                         ushort low = (ushort)(buffer[i] & ContainerValueMask);
                         if (SimdLinearContains(entry.ArrayData, entry.Cardinality, low))
-                            buffer[kept++] = buffer[i];
-                        i++;
+                        {
+                            buffer[kept] = buffer[i];
+                            indices[kept] = indices[i];
+                            kept++;
+                        }
+                    }
+                    else
+                    {
+                        // Multiple elements: sort the container in-place once, upgrade to Array,
+                        // then use the two-pointer merge. Cheaper than groupLen × O(k) SIMD scans.
+                        new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
+                        type = ContainerType.Array;
+                        ushort* arr = entry.ArrayData;
+                        int arrLen = entry.Cardinality;
+                        int ai = 0;
+                        for (int gi = i; gi < groupEnd && ai < arrLen; )
+                        {
+                            ushort low = (ushort)(buffer[gi] & ContainerValueMask);
+                            if (low < arr[ai])       { gi++; }
+                            else if (low > arr[ai])  { ai++; }
+                            else
+                            {
+                                buffer[kept] = buffer[gi];
+                                indices[kept] = indices[gi];
+                                kept++;
+                                gi++; ai++;
+                            }
+                        }
                     }
                     break;
                 }
 
                 case ContainerType.Free:
-                    // Free entries are tombstones — skip to next container.
-                    while (i < count && buffer[i] < containerEnd)
-                        i++;
-                    break;
+                    break; // tombstone — skip
+
                 default:
                     throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in AndWith");
             }
+
+            i = groupEnd;
         }
+
+        // Restore original order: sort the kept indices ascending; buffer follows.
+        indices[..kept].Sort(buffer[..kept]);
         return kept;
+    }
+
+    /// <summary>Returns the first index in <c>[lo, hi)</c> where <c>buffer[index] &gt;= sentinel</c>,
+    /// using exponential probing then binary search — O(log d) where d is the run length.</summary>
+    private static int GallopRight(Span<long> buffer, int lo, int hi, long sentinel)
+    {
+        int step = 1;
+        int probe = lo;
+        while (probe < hi && buffer[probe] < sentinel)
+        {
+            lo = probe + 1;
+            probe = lo + step;
+            step <<= 1;
+        }
+        int limit = probe < hi ? probe : hi;
+        while (lo < limit)
+        {
+            int mid = (lo + limit) >> 1;
+            if (buffer[mid] < sentinel) lo = mid + 1;
+            else limit = mid;
+        }
+        return lo;
     }
 
     /// <summary>

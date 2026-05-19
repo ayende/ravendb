@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
-using System.Runtime.CompilerServices;
 using Corax.Querying.Matches.Meta;
 using Sparrow.Server;
 using Voron.Data.RoaringBitmaps;
@@ -70,32 +69,7 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
         return _iterator.Fill(ref _bitmapState, matches);
     }
 
-    public int AndWith(Span<long> buffer, int matches)
-    {
-        // Cannot use AndWithSorted: callers may pass entry IDs in sort-field order
-        // (e.g. alphabetical), not in entry-ID order. Cache the last (key, slot) between
-        // elements — even in sort-field order, consecutive entries often share their high
-        // 16 bits because doc IDs cluster by insertion time. On a hit we skip the slot
-        // binary search entirely; on a miss we pay one extra compare.
-        long cachedKey = -1;
-        int cachedSlot = -1;
-        int kept = 0;
-        for (int i = 0; i < matches; i++)
-        {
-            long value = buffer[i];
-            long key = value >> RoaringBitmap.ContainerKeyShift;
-            if (key != cachedKey)
-            {
-                cachedSlot = _bitmapState.GetSlotForKey(key);
-                cachedKey = key;
-            }
-            if (cachedSlot < 0)
-                continue;
-            if (_bitmapState.ContainsAtSlot(cachedSlot, (ushort)value))
-                buffer[kept++] = value;
-        }
-        return kept;
-    }
+    public int AndWith(Span<long> buffer, int matches) => _bitmapState.AndWith(buffer, matches);
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {

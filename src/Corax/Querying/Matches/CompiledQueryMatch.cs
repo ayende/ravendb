@@ -160,15 +160,7 @@ public class CompiledQueryMatch(
     public int AndWith(Span<long> buffer, int matches)
     {
         if (!_executed) Execute();
-        // Cannot use AndWithSorted: callers (StreamAndIntersect) pass entry IDs
-        // in sort-field order (e.g. alphabetical by Name), not in entry-ID order.
-        int kept = 0;
-        foreach(var cur in buffer[..matches])
-        {
-            if (_bitmapData.Contains(cur))
-                buffer[kept++] = cur;
-        }
-        return kept;
+        return _bitmapData.AndWith(buffer, matches);
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)

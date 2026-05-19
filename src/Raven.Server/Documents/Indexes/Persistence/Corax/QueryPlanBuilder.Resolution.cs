@@ -111,6 +111,12 @@ internal static partial class QueryPlanBuilder
     /// Needed by the caller for result streaming (sort data transfer).</param>
     /// <param name="hasEmptySorts">True if any ORDER BY field had zero indexed terms
     /// (sharded scenario — caller must handle empty-sort placeholders).</param>
+    /// <param name="innerMatchOut">The unwrapped inner match — same as the return value when no
+    /// ORDER BY wrapper is applied (CompoundExact / DirectScan / no-ORDER-BY paths), or the
+    /// pre-wrap match (compoundMatch or the original CompiledQueryMatch) when CompoundField /
+    /// BitmapSort wraps with a SortingMatch. The caller uses this to dispose the IL-emitted
+    /// compiled match deterministically and to build the inspection graph with the SortingMatch
+    /// wrapper visible as the root.</param>
     public static IQueryMatch BuildCompileAndOptimize(
         PlanParameters planParams,
         QueryBuilderParameters builderParameters,
@@ -118,6 +124,7 @@ internal static partial class QueryPlanBuilder
         out CompiledPlan compiledPlanOut,
         out OrderMetadata[] orderByFieldsOut,
         out bool hasEmptySorts,
+        out IQueryMatch innerMatchOut,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         bool wantTimings,
         CancellationToken token)
@@ -125,82 +132,169 @@ internal static partial class QueryPlanBuilder
         var queryMatch = BuildAndCompile(planParams, builderParameters, out plan, out compiledPlanOut,
             highlightingTerms, wantTimings, token);
         var disposable = queryMatch as IDisposable;
-
-        var hint = compiledPlanOut?.Hint ?? InstantiateHint.NotEvaluated;
-        bool needsFullChain = hint == InstantiateHint.NotEvaluated;
-        var resultHint = hint;
-        PlanDecisionTrail trail = needsFullChain ? new PlanDecisionTrail() : null;
-
-        if (hint == InstantiateHint.CompoundExact || needsFullChain)
-        {
-            if (plan == null)
-                trail?.Record("CompoundExact", false, "no plan available");
-            else if ((plan.OptimizationFlags & PlanOptFlags.CompoundExactCandidate) == 0)
-                trail?.Record("CompoundExact", false, "template has no compound-exact candidate");
-            else if (TryCreateCompoundExactMatch(plan, planParams, builderParameters, out var compoundExact, out var ceReason))
-            {
-                disposable?.Dispose();
-                queryMatch = compoundExact;
-                resultHint = InstantiateHint.CompoundExact;
-                needsFullChain = false;
-                trail?.Record("CompoundExact", true, "compound exact-term lookup");
-            }
-            else
-                trail?.Record("CompoundExact", false, ceReason ?? "rejected");
-        }
+        innerMatchOut = queryMatch;
 
         orderByFieldsOut = GetSortMetadata(builderParameters, out hasEmptySorts);
-        if (orderByFieldsOut != null)
+
+        // Phase 5 (#4814 + #4830): split Discovery (compile-miss) from Construction
+        // (per-execution). On a hint hit, dispatch straight to Construct* and skip
+        // the Try*-chain discovery. On miss, run the full Try* chain — each Try*
+        // performs discovery and, if it wins, calls its Construct* internally.
+        var hint = compiledPlanOut?.Hint ?? InstantiateHint.NotEvaluated;
+        if (hint != InstantiateHint.NotEvaluated)
         {
-            if (hint == InstantiateHint.CompoundField || needsFullChain)
+            // ── Fast path: cached hint, dispatch to Construct directly ──
+            IQueryMatch built = null;
+            switch (hint)
             {
-                if (plan == null)
-                    trail?.Record("CompoundField", false, "no plan available");
-                else if ((plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) == 0)
-                    trail?.Record("CompoundField", false, "template has no direct-scan candidate");
-                else if (TryCreateCompoundFieldMatch(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var compoundMatch, out var cfReason))
-                {
-                    disposable?.Dispose();
-                    queryMatch = OrderBy(builderParameters, compoundMatch, orderByFieldsOut, hasEmptySorts);
-                    resultHint = InstantiateHint.CompoundField;
-                    needsFullChain = false;
-                    trail?.Record("CompoundField", true, "compound tree scan with ORDER BY");
-                }
-                else
-                    trail?.Record("CompoundField", false, cfReason ?? "rejected");
+                case InstantiateHint.CompoundExact:
+                    if (plan != null)
+                        built = ConstructCompoundExact(plan, planParams);
+                    if (built != null)
+                    {
+                        disposable?.Dispose();
+                        innerMatchOut = built;
+                        return built;
+                    }
+                    break;
+                case InstantiateHint.CompoundField:
+                    if (plan != null && orderByFieldsOut != null)
+                    {
+                        int f2 = FindCompoundFieldField2Range(plan.Clauses, plan.CompoundFieldDrivingClause, plan.CompoundFieldSortName);
+                        // Cost facts (entriesToScan, bitmapCost) are diagnostic-only inside
+                        // Construct (used for the Reason string). Pass zeros — the cliff bit
+                        // in the cache key already segregates cost buckets.
+                        built = ConstructCompoundField(plan, orderByFieldsOut, planParams, builderParameters,
+                            compiledPlanOut, f2, entriesToScan: 0, bitmapCost: 0);
+                    }
+                    if (built != null)
+                    {
+                        disposable?.Dispose();
+                        innerMatchOut = built;
+                        return OrderBy(builderParameters, built, orderByFieldsOut, hasEmptySorts);
+                    }
+                    break;
+                case InstantiateHint.DirectScan:
+                    if (plan != null && orderByFieldsOut != null && orderByFieldsOut.Length <= 2)
+                    {
+                        var clauses = plan.Clauses;
+                        bool isFullScan = clauses == null || clauses.Count == 0;
+                        bool hasTieBreak = orderByFieldsOut.Length == 2;
+                        // Re-resolve drivingIdx (cheap structural lookup; cached at
+                        // template time via SortDrivingClauseIndex). Skip cost gating —
+                        // hint cache encodes the cost decision via cliff bit in Ordering.
+                        int drivingIdx = -1;
+                        if (isFullScan == false)
+                        {
+                            drivingIdx = plan.SortDrivingClauseIndex;
+                            if (drivingIdx >= 0 && (plan.Executions[drivingIdx] is { BoostFactor: > 0 } ||
+                                                    plan.Executions[drivingIdx].PackedParamValue.IsNone))
+                                drivingIdx = -1;
+                        }
+                        if (isFullScan || drivingIdx >= 0)
+                            built = ConstructDirectScan(plan, orderByFieldsOut, planParams, builderParameters,
+                                compiledPlanOut, drivingIdx, isFullScan, hasTieBreak,
+                                entriesToScan: 0, bitmapCost: 0);
+                    }
+                    if (built != null)
+                    {
+                        disposable?.Dispose();
+                        innerMatchOut = built;
+                        return built;
+                    }
+                    break;
             }
 
-            if (hint == InstantiateHint.DirectScan || needsFullChain)
-            {
-                if (plan == null)
-                    trail?.Record("DirectScan", false, "no plan available");
-                else if ((plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) == 0)
-                    trail?.Record("DirectScan", false, "template has no direct-scan candidate");
-                else if (TryCreateSimpleFieldDirectScan(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var directMatch, out var dsReason))
-                {
-                    disposable?.Dispose();
-                    queryMatch = directMatch;
-                    resultHint = InstantiateHint.DirectScan;
-                    needsFullChain = false;
-                    trail?.Record("DirectScan", true, "direct tree scan on sort field");
-                }
-                else
-                    trail?.Record("DirectScan", false, dsReason ?? "rejected");
-            }
-
-            if (hint == InstantiateHint.None || needsFullChain)
+            // Cached hint failed at construction time (e.g. per-execution byte length
+            // overflow). Fall through to the bitmap+sort fallback. The cached hint stays
+            // valid for the next execution; this one had unlucky parameter values.
+            if (orderByFieldsOut != null)
             {
                 if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
                     TrySetSortSeekHint(seekMatch, plan, orderByFieldsOut);
                 queryMatch = OrderBy(builderParameters, queryMatch, orderByFieldsOut, hasEmptySorts);
+            }
+            return queryMatch;
+        }
+
+        // ── Slow path: compile-miss, run full Try* chain to discover the winner ──
+        bool needsFullChain = true;
+        var resultHint = InstantiateHint.None;
+        var trail = new PlanDecisionTrail();
+
+        if (plan == null)
+            trail.Record("CompoundExact", false, "no plan available");
+        else if ((plan.OptimizationFlags & PlanOptFlags.CompoundExactCandidate) == 0)
+            trail.Record("CompoundExact", false, "template has no compound-exact candidate");
+        else if (TryCreateCompoundExactMatch(plan, planParams, builderParameters, out var compoundExact, out var ceReason))
+        {
+            disposable?.Dispose();
+            queryMatch = compoundExact;
+            innerMatchOut = compoundExact;
+            resultHint = InstantiateHint.CompoundExact;
+            needsFullChain = false;
+            trail.Record("CompoundExact", true, "compound exact-term lookup");
+        }
+        else
+            trail.Record("CompoundExact", false, ceReason ?? "rejected");
+
+        if (orderByFieldsOut != null)
+        {
+            if (needsFullChain)
+            {
+                if (plan == null)
+                    trail.Record("CompoundField", false, "no plan available");
+                else if ((plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) == 0)
+                    trail.Record("CompoundField", false, "template has no direct-scan candidate");
+                else if (TryCreateCompoundFieldMatch(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var compoundMatch, out var cfReason))
+                {
+                    disposable?.Dispose();
+                    innerMatchOut = compoundMatch;
+                    queryMatch = OrderBy(builderParameters, compoundMatch, orderByFieldsOut, hasEmptySorts);
+                    resultHint = InstantiateHint.CompoundField;
+                    needsFullChain = false;
+                    trail.Record("CompoundField", true, "compound tree scan with ORDER BY");
+                }
+                else
+                    trail.Record("CompoundField", false, cfReason ?? "rejected");
+            }
+
+            if (needsFullChain)
+            {
+                if (plan == null)
+                    trail.Record("DirectScan", false, "no plan available");
+                else if ((plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) == 0)
+                    trail.Record("DirectScan", false, "template has no direct-scan candidate");
+                else if (TryCreateSimpleFieldDirectScan(plan, orderByFieldsOut, planParams, builderParameters, compiledPlanOut, out var directMatch, out var dsReason))
+                {
+                    disposable?.Dispose();
+                    queryMatch = directMatch;
+                    innerMatchOut = directMatch;
+                    resultHint = InstantiateHint.DirectScan;
+                    needsFullChain = false;
+                    trail.Record("DirectScan", true, "direct tree scan on sort field");
+                }
+                else
+                    trail.Record("DirectScan", false, dsReason ?? "rejected");
+            }
+
+            if (needsFullChain)
+            {
+                if (queryMatch is global::Corax.Querying.Matches.CompiledQueryMatch seekMatch)
+                    TrySetSortSeekHint(seekMatch, plan, orderByFieldsOut);
+                // innerMatchOut already references the pre-wrap match (the CompiledQueryMatch
+                // produced by BuildAndCompile). The OrderBy wrapper here doesn't replace the
+                // inner — the SortingMatch keeps it alive and the caller disposes it via
+                // innerMatchOut after the inspection graph is built.
+                queryMatch = OrderBy(builderParameters, queryMatch, orderByFieldsOut, hasEmptySorts);
                 resultHint = InstantiateHint.None;
-                trail?.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
+                trail.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
             }
         }
-        else if (needsFullChain)
-            trail?.Record("NoOrderBy", true, "no ORDER BY");
+        else
+            trail.Record("NoOrderBy", true, "no ORDER BY");
 
-        if (compiledPlanOut != null && hint == InstantiateHint.NotEvaluated)
+        if (compiledPlanOut != null)
         {
             compiledPlanOut.Hint = resultHint;
             compiledPlanOut.DecisionTrail = trail;
@@ -235,6 +329,7 @@ internal static partial class QueryPlanBuilder
     /// post-filters (e.g. an empty IN clause inside an AND chain) — the caller must produce
     /// an explicit empty result rather than caching this shape under the wrong key.
     /// </summary>
+    [SkipLocalsInit] // stackalloc int[StackallocClauseThreshold] is immediately overwritten by InitializeIndices
     private static CompiledPlan Build(
         PlanTemplate template,
         PlanParameters planParams,
@@ -262,22 +357,36 @@ internal static partial class QueryPlanBuilder
         var clauses = new List<ClauseInfo>(template.Clauses.Length);
         var execList = new List<ClauseExecution>(template.Clauses.Length);
         int whenFlags = 0;
-        int whenBit = 0;
-        for (int ti = 0; ti < template.Clauses.Length; ti++)
+        if (template.WhenCount == 0)
         {
-            var cached = template.Clauses[ti];
-            if (cached.WhenCondition != null)
+            // Fast path: no WHEN clauses anywhere in the template — skip the per-clause
+            // WhenCondition null check. Common case for non-conditional queries.
+            for (int ti = 0; ti < template.Clauses.Length; ti++)
             {
-                if (cached.WhenCondition(planParams.QueryParameters) == false)
-                {
-                    whenBit++;
-                    continue;
-                }
-                whenFlags |= 1 << whenBit;
-                whenBit++;
+                var cached = template.Clauses[ti];
+                clauses.Add(cached);
+                execList.Add(CreateExecution(cached));
             }
-            clauses.Add(cached);
-            execList.Add(CreateExecution(cached));
+        }
+        else
+        {
+            int whenBit = 0;
+            for (int ti = 0; ti < template.Clauses.Length; ti++)
+            {
+                var cached = template.Clauses[ti];
+                if (cached.WhenCondition != null)
+                {
+                    if (cached.WhenCondition(planParams.QueryParameters) == false)
+                    {
+                        whenBit++;
+                        continue;
+                    }
+                    whenFlags |= 1 << whenBit;
+                    whenBit++;
+                }
+                clauses.Add(cached);
+                execList.Add(CreateExecution(cached));
+            }
         }
 
         // Step 3: Populate parameter values into typed arrays
@@ -346,7 +455,7 @@ internal static partial class QueryPlanBuilder
         for (int ci = 0; ci < clauses.Count; ci++)
         {
             if (execList[ci].Cardinality < 0)
-                execList[ci].Cardinality = EstimateCardinality(clauses[ci], execList[ci], indexSearcher, writer);
+                execList[ci].Cardinality = EstimateCardinality(clauses[ci], execList[ci], indexSearcher, writer, planParams, builderParameters);
         }
 
         // Step 5: Sort operands by cardinality (sort clauses and executions in lockstep)
@@ -367,26 +476,45 @@ internal static partial class QueryPlanBuilder
             }
             else
             {
-                rented = ArrayPool<int>.Shared.Rent(n);
-                indices = rented.AsSpan(0, n);
+                // Rent padded to a multiple of 8 for RoaringBitmap.InitializeIndices
+                // (AVX2 Vector256 stores write 8 ints at a time).
+                int paddedLen = (n + 7) & ~7;
+                rented = ArrayPool<int>.Shared.Rent(paddedLen);
+                indices = rented.AsSpan(0, paddedLen);
             }
 
-            for (int j = 0; j < n; j++) indices[j] = j;
+            RoaringBitmap.InitializeIndices(indices, n);
             indices.Sort(new ClauseCardinalityComparer(clauses, execList));
 
-            var sortedClauses = new List<ClauseInfo>(n);
-            var sortedExecs = new ClauseExecution[n];
-            for (int j = 0; j < n; j++)
+            // Apply the forward permutation (indices[sorted_pos] = original_pos) to both
+            // clauses and execList in-place via cycle decomposition — O(n) time, O(1) space.
+            // Each cycle: save the start element, rotate the chain, place saved at cycle end.
+            // Entries where indices[j]==j (fixed points, already-settled cycles) are skipped.
+            Span<ClauseInfo> clausesSpan = CollectionsMarshal.AsSpan(clauses);
+            Span<ClauseExecution> execSpan = CollectionsMarshal.AsSpan(execList);
+            for (int start = 0; start < n; start++)
             {
-                sortedClauses.Add(clauses[indices[j]]);
-                sortedExecs[j] = execList[indices[j]];
+                if (indices[start] == start) continue;
+                int j = start;
+                ClauseInfo savedClause = clausesSpan[j];
+                ClauseExecution savedExec = execSpan[j];
+                while (indices[j] != start)
+                {
+                    int next = indices[j];
+                    clausesSpan[j] = clausesSpan[next];
+                    execSpan[j] = execSpan[next];
+                    indices[j] = j; // mark settled
+                    j = next;
+                }
+                clausesSpan[j] = savedClause;
+                execSpan[j] = savedExec;
+                indices[j] = j; // mark settled
             }
 
             if (rented != null)
                 ArrayPool<int>.Shared.Return(rented);
 
-            clauses = sortedClauses;
-            executions = sortedExecs;
+            executions = execList.ToArray();
         }
         else
         {
@@ -908,13 +1036,11 @@ internal static partial class QueryPlanBuilder
 
     private static void ResolveInFromBindings(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings)
     {
-        // Pre-size arrays from bindings.Length (covers all-literal and scalar-parameter
-        // cases without growth). Array-expansion parameters that push beyond capacity
-        // trigger a single resize.
-        int capacity = bindings.Length;
-        var termTypes = new ParamValueType[capacity];
-        var resolvedValues = new object[capacity];
-        int count = 0;
+        // Pre-size lists from bindings.Length (covers all-literal and scalar-parameter
+        // cases without growth). Array-expansion parameters grow the backing array
+        // automatically.
+        var resolvedValues = new List<object>(bindings.Length);
+        var termTypes = new List<ParamValueType>(bindings.Length);
         bool hasNullTerm = false;
 
         for (int bi = 0; bi < bindings.Length; bi++)
@@ -923,11 +1049,8 @@ internal static partial class QueryPlanBuilder
             switch (it.Source)
             {
                 case BindingSource.Literal:
-                    if (count == capacity)
-                        GrowInArrays(ref resolvedValues, ref termTypes, ref capacity);
-                    resolvedValues[count] = it.LiteralValue;
-                    termTypes[count] = it.LiteralType;
-                    count++;
+                    resolvedValues.Add(it.LiteralValue);
+                    termTypes.Add(it.LiteralType);
                     if (it.LiteralValue == null)
                         hasNullTerm = true;
                     break;
@@ -939,36 +1062,25 @@ internal static partial class QueryPlanBuilder
                     queryParameters?.TryGet(it.ParameterName, out inRaw);
                     if (inRaw is BlittableJsonReaderArray arr)
                     {
-                        // Ensure capacity for all array elements.
-                        int needed = count + arr.Length;
-                        while (capacity < needed)
-                            GrowInArrays(ref resolvedValues, ref termTypes, ref capacity);
                         foreach (var elem in arr)
                         {
                             var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter);
-                            resolvedValues[count] = elemVal;
-                            termTypes[count] = ToParamValueType(elemType);
-                            count++;
+                            resolvedValues.Add(elemVal);
+                            termTypes.Add(ToParamValueType(elemType));
                             if (elemVal == null)
                                 hasNullTerm = true;
                         }
                     }
                     else if (inRaw != null)
                     {
-                        if (count == capacity)
-                            GrowInArrays(ref resolvedValues, ref termTypes, ref capacity);
                         var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter);
-                        resolvedValues[count] = singleVal;
-                        termTypes[count] = ToParamValueType(singleType);
-                        count++;
+                        resolvedValues.Add(singleVal);
+                        termTypes.Add(ToParamValueType(singleType));
                     }
                     else
                     {
-                        if (count == capacity)
-                            GrowInArrays(ref resolvedValues, ref termTypes, ref capacity);
-                        resolvedValues[count] = null;
-                        termTypes[count] = ParamValueType.Null;
-                        count++;
+                        resolvedValues.Add(null);
+                        termTypes.Add(ParamValueType.Null);
                         hasNullTerm = true;
                     }
                     break;
@@ -977,15 +1089,14 @@ internal static partial class QueryPlanBuilder
                 case BindingSource.DeferredMethod:
                     // Deferred bindings (cmpxchg, now, today) shouldn't appear in IN lists,
                     // but handle gracefully: resolve as null.
-                    if (count == capacity)
-                        GrowInArrays(ref resolvedValues, ref termTypes, ref capacity);
-                    resolvedValues[count] = null;
-                    termTypes[count] = ParamValueType.Null;
-                    count++;
+                    resolvedValues.Add(null);
+                    termTypes.Add(ParamValueType.Null);
                     hasNullTerm = true;
                     break;
             }
         }
+
+        int count = resolvedValues.Count;
 
         // Determine dominant type. For all-literal IN clauses, this was pre-computed
         // at template time by InPreClassify — skip the per-execution scan.
@@ -1040,14 +1151,6 @@ internal static partial class QueryPlanBuilder
         exec.PackedParamValue = new PackedParam(packedType, startIdx);
         exec.InTermCount = nonNullCount;
         exec.HasNullTerm = hasNullTerm;
-    }
-
-    [MethodImpl(MethodImplOptions.NoInlining)]
-    private static void GrowInArrays(ref object[] resolvedValues, ref ParamValueType[] termTypes, ref int capacity)
-    {
-        capacity = Math.Max(capacity * 2, 4);
-        Array.Resize(ref resolvedValues, capacity);
-        Array.Resize(ref termTypes, capacity);
     }
 
     /// <summary>Resolve spatial parameters from cached bindings (no MethodExpression dependency).</summary>
@@ -2793,71 +2896,81 @@ internal static partial class QueryPlanBuilder
         out IQueryMatch compoundMatch)
     {
         compoundMatch = null;
+        // Discovery: structural rejection. All structural facts (CompoundExactClauseA/B,
+        // CompoundExactAFirst) were pre-classified at template time; this method only
+        // confirms the runtime state is compatible.
         if (plan.Clauses == null || plan.Clauses.Count < 2 || plan.AllNegated)
             return false;
         if (planParams.Index == null)
             return false;
 
+        int idxA = plan.CompoundExactClauseA;
+        int idxB = plan.CompoundExactClauseB;
+        if (idxA < 0 || idxB < 0 || idxA >= plan.Clauses.Count || idxB >= plan.Clauses.Count)
+            return false;
+
+        var eA = plan.Executions[idxA];
+        var eB = plan.Executions[idxB];
+        if (eA.BoostFactor > 0 || eA.PackedParamValue.IsNone)
+            return false;
+        if (eB.BoostFactor > 0 || eB.PackedParamValue.IsNone)
+            return false;
+
+        compoundMatch = ConstructCompoundExact(plan, planParams);
+        return compoundMatch != null;
+    }
+
+    /// <summary>Phase 5 bake: construction-only path for the CompoundExact hint.
+    /// Assumes structural discovery has already validated this optimization applies
+    /// (called either right after <see cref="TryCreateCompoundExactMatch"/>'s checks pass
+    /// on compile-miss, or directly on cache-hit when <c>plan.Hint == InstantiateHint.CompoundExact</c>).
+    /// Returns null when a per-execution byte-length check fails — the caller must fall
+    /// back to the next optimization (or bitmap). No cost gates here — those are encoded
+    /// in the plan-cache key (cardinality cliff bit 31 of Ordering).</summary>
+    private static IQueryMatch ConstructCompoundExact(QueryExecution plan, PlanParameters planParams)
+    {
         var clauses = plan.Clauses;
         var execs = plan.Executions;
         var indexSearcher = planParams.IndexSearcher;
-
-        // Use the pre-identified compound-exact pair from template time.
-        // The pair and compound-field ordering were verified at template construction
-        // (FindCompoundExactPair), so we skip the O(n²) scan + HasCompoundField check.
         int idxA = plan.CompoundExactClauseA;
         int idxB = plan.CompoundExactClauseB;
-        if (idxA < 0 || idxB < 0 || idxA >= clauses.Count || idxB >= clauses.Count)
-            return false;
+        var eA = execs[idxA];
+        var eB = execs[idxB];
 
+        string firstField, secondField;
+        ClauseExecution firstExec, secondExec;
+        if (plan.CompoundExactAFirst)
         {
-            var eA = execs[idxA];
-            var eB = execs[idxB];
-            if (eA.BoostFactor > 0 || eA.PackedParamValue.IsNone)
-                return false;
-            if (eB.BoostFactor > 0 || eB.PackedParamValue.IsNone)
-                return false;
-
-            string firstField, secondField;
-            ClauseExecution firstExec, secondExec;
-            if (plan.CompoundExactAFirst)
-            {
-                firstField = clauses[idxA].ResolvedFieldName ?? clauses[idxA].FieldName;
-                secondField = clauses[idxB].ResolvedFieldName ?? clauses[idxB].FieldName;
-                firstExec = eA; secondExec = eB;
-            }
-            else
-            {
-                firstField = clauses[idxB].ResolvedFieldName ?? clauses[idxB].FieldName;
-                secondField = clauses[idxA].ResolvedFieldName ?? clauses[idxA].FieldName;
-                firstExec = eB; secondExec = eA;
-            }
-
-            // Build field1 bytes
-            byte[] field1Bytes = BuildCompoundFieldBytes(firstField, firstExec, indexSearcher, plan);
-            if (field1Bytes == null || field1Bytes.Length > byte.MaxValue) return false;
-
-            // Build field2 bytes
-            byte[] field2Bytes = BuildCompoundFieldBytes(secondField, secondExec, indexSearcher, plan);
-            if (field2Bytes == null) return false;
-
-            // Build composite key
-            int totalLen = field1Bytes.Length + field2Bytes.Length + 1;
-            if (totalLen > Constants.Terms.MaxLength) return false;
-
-            var compositeKey = new byte[totalLen];
-            field1Bytes.CopyTo(compositeKey, 0);
-            field2Bytes.CopyTo(compositeKey.AsSpan(field1Bytes.Length));
-            compositeKey[^1] = (byte)field1Bytes.Length;
-
-            var compoundFieldName = $"compound({firstField},{secondField})";
-            var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
-            Voron.Slice.From(planParams.Allocator, compositeKey, out var keySlice);
-
-            // Single exact-term lookup on the compound tree
-            compoundMatch = indexSearcher.TermQuery(compoundFieldMeta, keySlice);
-            return true;
+            firstField = clauses[idxA].ResolvedFieldName ?? clauses[idxA].FieldName;
+            secondField = clauses[idxB].ResolvedFieldName ?? clauses[idxB].FieldName;
+            firstExec = eA; secondExec = eB;
         }
+        else
+        {
+            firstField = clauses[idxB].ResolvedFieldName ?? clauses[idxB].FieldName;
+            secondField = clauses[idxA].ResolvedFieldName ?? clauses[idxA].FieldName;
+            firstExec = eB; secondExec = eA;
+        }
+
+        byte[] field1Bytes = BuildCompoundFieldBytes(firstField, firstExec, indexSearcher, plan);
+        if (field1Bytes == null || field1Bytes.Length > byte.MaxValue) return null;
+
+        byte[] field2Bytes = BuildCompoundFieldBytes(secondField, secondExec, indexSearcher, plan);
+        if (field2Bytes == null) return null;
+
+        int totalLen = field1Bytes.Length + field2Bytes.Length + 1;
+        if (totalLen > Constants.Terms.MaxLength) return null;
+
+        var compositeKey = new byte[totalLen];
+        field1Bytes.CopyTo(compositeKey, 0);
+        field2Bytes.CopyTo(compositeKey.AsSpan(field1Bytes.Length));
+        compositeKey[^1] = (byte)field1Bytes.Length;
+
+        var compoundFieldName = $"compound({firstField},{secondField})";
+        var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
+        Voron.Slice.From(planParams.Allocator, compositeKey, out var keySlice);
+
+        return indexSearcher.TermQuery(compoundFieldMeta, keySlice);
     }
 
     private static byte[] BuildCompoundFieldBytes(string fieldName, ClauseExecution exec,
@@ -2925,9 +3038,11 @@ internal static partial class QueryPlanBuilder
     {
         compoundMatch = null;
 
-        // Use the pre-identified compound-field candidate from template time.
-        // Structural checks (ORDER BY shape, HasCompoundField, Equals clause pairing)
-        // were done at template construction (FindCompoundFieldCandidate).
+        // Discovery: structural rejection + cost gate. Structural facts
+        // (CompoundFieldDrivingClause, CompoundFieldSortName) were pre-classified at
+        // template time. This method runs cost estimation and residual-scannability
+        // checks that are deterministic for the cache key (cardinality cliff bit 31
+        // in Ordering segregates cliff buckets, so cost outcome is stable per key).
         int drivingClauseIdx = plan.CompoundFieldDrivingClause;
         string sortFieldName = plan.CompoundFieldSortName;
         if (drivingClauseIdx < 0 || sortFieldName == null)
@@ -2938,52 +3053,35 @@ internal static partial class QueryPlanBuilder
         var clauses = plan.Clauses;
         var execs = plan.Executions;
         var indexSearcher = planParams.IndexSearcher;
-        var allocator = planParams.Allocator;
 
-        var drivingClause = clauses[drivingClauseIdx];
         var drivingExec = execs[drivingClauseIdx];
-        var packed = drivingExec.PackedParamValue;
-        if (packed.IsNone)
+        if (drivingExec.PackedParamValue.IsNone)
             return false;
 
-        // Look for an optional range clause on field2 (the sort field) — narrows the compound scan
-        int field2RangeIdx = -1;
-        for (int i = 0; i < clauses.Count; i++)
-        {
-            if (i == drivingClauseIdx) continue;
-            if (clauses[i].FieldName != sortFieldName) continue;
-            if (clauses[i].ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between)
-            {
-                field2RangeIdx = i;
-                break;
-            }
-        }
+        // Find optional field2 range narrowing clause (structural — same for all
+        // executions of this template).
+        int field2RangeIdx = FindCompoundFieldField2Range(clauses, drivingClauseIdx, sortFieldName);
 
-        // Check residual clauses are entry-scan eligible
-        var residualPreds = new List<ScanPredicateInfo>();
+        // Residual scannability + cost check
         int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
+        long bitmapCost = 0;
+        int residualCount = 0;
         for (int i = 0; i < clauses.Count; i++)
         {
+            bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
             if (i == drivingClauseIdx || i == field2RangeIdx)
                 continue;
             if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
-                return false; // boosted clauses need scoring — can't entry scan
+                return false;
             var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
             if (pred == null)
-                return false; // non-scannable residual → fall back to bitmap
-            residualPreds.Add(pred.Value);
+                return false;
+            residualCount++;
         }
 
-        // Cost check: estimate scan count vs bitmap cost
         long drivingCardinality = drivingExec.Cardinality > 0 ? drivingExec.Cardinality : indexSearcher.NumberOfEntries;
-        long bitmapCost = 0;
-        for (int i = 0; i < clauses.Count; i++)
-            bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
-
-        // Estimate entries to scan (accounting for residual selectivity)
         long entriesToScan = drivingCardinality;
-        if (residualPreds.Count > 0)
+        if (residualCount > 0)
         {
             long minResidualCardinality = long.MaxValue;
             for (int i = 0; i < clauses.Count; i++)
@@ -3003,9 +3101,65 @@ internal static partial class QueryPlanBuilder
 
         long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier ? long.MaxValue : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
         if (directCost >= bitmapCost || entriesToScan > QueryPrimitives.EntryScanCountThreshold)
-            return false; // bitmap is cheaper
+            return false;
 
-        // Build the compound tree match
+        compoundMatch = ConstructCompoundField(plan, orderByFields, planParams, builderParams, compiledPlan,
+            field2RangeIdx, entriesToScan, bitmapCost);
+        return compoundMatch != null;
+    }
+
+    /// <summary>Locate an optional GT/GTE/LT/LTE/Between clause on the sort field
+    /// that can narrow the compound prefix scan. Structural — same for all executions
+    /// of a given template, but cheap enough to recompute on each Construct call
+    /// rather than threading another field through QueryExecution.</summary>
+    private static int FindCompoundFieldField2Range(List<ClauseInfo> clauses, int drivingClauseIdx, string sortFieldName)
+    {
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            if (i == drivingClauseIdx) continue;
+            if (clauses[i].FieldName != sortFieldName) continue;
+            if (clauses[i].ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+                or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between)
+                return i;
+        }
+        return -1;
+    }
+
+    /// <summary>Phase 5 bake: construction-only path for the CompoundField hint.
+    /// Caller has either run TryCreateCompoundFieldMatch's discovery (compile-miss)
+    /// or read the cached InstantiateHint and is dispatching directly.
+    /// Returns null on per-execution failure (e.g. analyzed prefix exceeds 255 bytes);
+    /// caller falls back to the next optimization or bitmap.</summary>
+    private static IQueryMatch ConstructCompoundField(
+        QueryExecution plan, OrderMetadata[] orderByFields,
+        PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
+        int field2RangeIdx, long entriesToScan, long bitmapCost)
+    {
+        var clauses = plan.Clauses;
+        var execs = plan.Executions;
+        var indexSearcher = planParams.IndexSearcher;
+        var allocator = planParams.Allocator;
+        int drivingClauseIdx = plan.CompoundFieldDrivingClause;
+        string sortFieldName = plan.CompoundFieldSortName;
+
+        var drivingClause = clauses[drivingClauseIdx];
+        var drivingExec = execs[drivingClauseIdx];
+        var packed = drivingExec.PackedParamValue;
+
+        // Rebuild residual predicates (Construct rebuilds; the structural shape is
+        // identical to what discovery just walked, so List growth is bounded).
+        var residualPreds = new List<ScanPredicateInfo>();
+        int rLongIdx = 0, rDoubleIdx = 0, rSliceIdx = 0;
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            if (i == drivingClauseIdx || i == field2RangeIdx)
+                continue;
+            var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref rLongIdx, ref rDoubleIdx, ref rSliceIdx);
+            if (pred == null)
+                return null;
+            residualPreds.Add(pred.Value);
+        }
+
         string field1Name = drivingClause.FieldName;
         var compoundFieldName = $"compound({field1Name},{sortFieldName})";
         var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
@@ -3045,14 +3199,14 @@ internal static partial class QueryPlanBuilder
                 break;
             }
             default:
-                return false;
+                return null;
         }
 
         // Compound key trailing byte stores field1 length as a single byte.
         // If the analyzed prefix exceeds 255 bytes, the compound key format can't represent it.
         // Fall back to the bitmap pipeline which queries individual fields normally.
         if (analyzedPrefix.Size > byte.MaxValue)
-            return false;
+            return null;
 
         IQueryMatch drivingMatch = null;
         if (field2RangeIdx >= 0)
@@ -3274,8 +3428,7 @@ internal static partial class QueryPlanBuilder
             : null;
         directScan.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
 
-        compoundMatch = directScan;
-        return true;
+        return directScan;
     }
 
     // ── Simple field direct scan ──────────────────────────────────────────
@@ -3313,13 +3466,13 @@ internal static partial class QueryPlanBuilder
     {
         directMatch = null;
 
+        // Discovery: ORDER BY shape, sort-driving clause selection, residual
+        // scannability + cost check. Per Phase 5, all per-execution rebuilds of
+        // the live match are routed through ConstructDirectScan; this method
+        // only validates the runtime state is compatible and then delegates.
         if (orderByFields == null || orderByFields.Length == 0)
             return false;
 
-        // Multi-field ORDER BY is only handled here as a tie-break optimization:
-        // primary field walked in tree order, secondary (numeric) values resolved per
-        // primary-term group and sorted in-place. >2 fields are out of scope — fall back
-        // to bitmap+sort which supports arbitrary depth.
         if (orderByFields.Length > 2)
             return false;
 
@@ -3343,51 +3496,18 @@ internal static partial class QueryPlanBuilder
         if (isFullScan && plan.AllNegated)
             return false;
 
-        ITermsProvider provider;
-        Voron.Impl.LowLevelTransaction llt;
-        long drivingCardinality;
-        string drivingClauseDescription;
+        // ── Discovery: drivingIdx + cost gate ──
         int drivingIdx = -1;
-
-        if (isFullScan)
+        long entriesToScan = 0, bitmapCost = 0;
+        if (isFullScan == false)
         {
-            // ── No WHERE at all, only ORDER BY ──
-            // Full field tree walk — use BetweenQuery for numeric fields (correct numeric
-            // comparison) and ExistsQuery for string/sequence fields.
-            // ExistsQuery uses CompactKeyLookup byte comparison which doesn't match numeric order.
-            // Only index-walkable field types qualify.
-            //
-            // MayHaveMissingEntries: dynamic CreateField docs that never indexed this field have
-            // no entry anywhere — ExistsQuery/BetweenQuery silently drop them.
-            if (orderByFields[0].MayHaveMissingEntries)
-                return false;
-            if (sortFieldType is not (MatchCompareFieldType.Sequence or MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
-                return false;
-            var fieldMeta = orderByFields[0].Field;
-            IQueryMatch fullScanMatch;
-            if (sortFieldType == MatchCompareFieldType.Integer)
-                fullScanMatch = indexSearcher.BetweenQuery(fieldMeta, long.MinValue, long.MaxValue, forward: forward);
-            else if (sortFieldType == MatchCompareFieldType.Floating)
-                fullScanMatch = indexSearcher.BetweenQuery(fieldMeta, double.MinValue, double.MaxValue, forward: forward);
-            else
-                fullScanMatch = indexSearcher.ExistsQuery(fieldMeta, forward: forward);
-            if (fullScanMatch is not TermsProviderMatch tpm)
-                return false;
-            provider = tpm.Provider;
-            llt = tpm.Llt;
-            drivingCardinality = 0; // not used (cost check skipped)
-            drivingClauseDescription = $"{sortFieldName} [all]";
-        }
-        else
-        {
-            // ── Find a range or equals clause on the sort field ──
             // SortDrivingClauseIndex pre-identified at template time and remapped to
             // post-sort index during Build — skip the per-execution clause scan.
             drivingIdx = plan.SortDrivingClauseIndex;
             if (drivingIdx == -1)
             {
                 // Fallback: template didn't identify a candidate (e.g. WHEN eliminated the
-                // clause, or sort field didn't match any template clause). Scan as before.
+                // clause, or sort field didn't match any template clause).
                 for (int i = 0; i < clauses.Count; i++)
                 {
                     if (clauses[i].FieldName != sortFieldName)
@@ -3406,68 +3526,33 @@ internal static partial class QueryPlanBuilder
             }
             else if (execs[drivingIdx] is { BoostFactor: > 0 })
             {
-                // Template identified the clause, but runtime boost factor disqualifies it.
                 drivingIdx = -1;
             }
 
             if (drivingIdx == -1)
                 return false;
 
-            var drivingPacked = execs[drivingIdx].PackedParamValue;
-            if (drivingPacked.IsNone)
+            if (execs[drivingIdx].PackedParamValue.IsNone)
                 return false;
 
-            var drivingClause = clauses[drivingIdx];
-            var drivingExec = execs[drivingIdx];
-
-            TermsProviderMatch tpm;
-            if (drivingClause.ClauseType == ClauseType.Equals)
-            {
-                var eqMatch = ResolveEqualsClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
-                if (eqMatch is not TermsProviderMatch eq)
-                    return false;
-                tpm = eq;
-            }
-            else
-            {
-                var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
-                if (match is not TermsProviderMatch m)
-                    return false;
-                tpm = m;
-            }
-
-            provider = tpm.Provider;
-            llt = tpm.Llt;
-            drivingCardinality = drivingExec.Cardinality > 0 ? drivingExec.Cardinality : indexSearcher.NumberOfEntries;
-            drivingClauseDescription = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
-        }
-
-        // ── Residual predicates ──
-        int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
-        var residualPreds = new List<ScanPredicateInfo>();
-        if (isFullScan == false)
-        {
+            // Residual scannability + bitmap cost summation in one pass.
+            int rlongIdx = 0, rdoubleIdx = 0, rsliceIdx = 0;
+            int residualCount = 0;
             for (int i = 0; i < clauses.Count; i++)
             {
+                bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
                 if (i == drivingIdx) continue;
                 if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
                     return false;
-                var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
+                var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref rlongIdx, ref rdoubleIdx, ref rsliceIdx);
                 if (pred == null)
                     return false;
-                residualPreds.Add(pred.Value);
+                residualCount++;
             }
-        }
 
-        // ── Cost check (skip for full scan — always beneficial) ──
-        long entriesToScan = 0, bitmapCost = 0;
-        if (isFullScan == false)
-        {
-            for (int i = 0; i < clauses.Count; i++)
-                bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
-
-            entriesToScan = drivingCardinality;
-            if (residualPreds.Count > 0)
+            long drivingCard = execs[drivingIdx].Cardinality > 0 ? execs[drivingIdx].Cardinality : indexSearcher.NumberOfEntries;
+            entriesToScan = drivingCard;
+            if (residualCount > 0)
             {
                 long minResidual = long.MaxValue;
                 for (int i = 0; i < clauses.Count; i++)
@@ -3479,7 +3564,7 @@ internal static partial class QueryPlanBuilder
                 if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
                 {
                     double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
-                    if (passRate > 0) entriesToScan = (long)(drivingCardinality / passRate);
+                    if (passRate > 0) entriesToScan = (long)(drivingCard / passRate);
                 }
             }
 
@@ -3487,12 +3572,107 @@ internal static partial class QueryPlanBuilder
             if (directCost >= bitmapCost || entriesToScan > QueryPrimitives.EntryScanCountThreshold)
                 return false;
         }
+        else
+        {
+            // Full-scan structural eligibility checks (would-cause-empty paths).
+            if (orderByFields[0].MayHaveMissingEntries)
+                return false;
+            if (sortFieldType is not (MatchCompareFieldType.Sequence or MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
+                return false;
+        }
+
+        directMatch = ConstructDirectScan(plan, orderByFields, planParams, builderParams, compiledPlan,
+            drivingIdx, isFullScan, hasTieBreak, entriesToScan, bitmapCost);
+        return directMatch != null;
+    }
+
+    /// <summary>Phase 5 bake: construction-only path for the DirectScan hint.
+    /// Discovery (clause selection, cost gate, residual scannability) already passed
+    /// in either TryCreateSimpleFieldDirectScan or by virtue of a cached
+    /// <see cref="InstantiateHint.DirectScan"/>. Returns null when a per-execution
+    /// runtime check fails (e.g. driving match resolution returns non-TermsProviderMatch
+    /// or tie-break group cap exceeded by current parameter cardinality).</summary>
+    private static IQueryMatch ConstructDirectScan(
+        QueryExecution plan, OrderMetadata[] orderByFields,
+        PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
+        int drivingIdx, bool isFullScan, bool hasTieBreak,
+        long entriesToScan, long bitmapCost)
+    {
+        var indexSearcher = planParams.IndexSearcher;
+        string sortFieldName = orderByFields[0].Field.FieldName.ToString();
+        bool forward = orderByFields[0].Ascending;
+        var sortFieldType = orderByFields[0].FieldType;
+        var clauses = plan.Clauses;
+        var execs = plan.Executions;
+
+        ITermsProvider provider;
+        Voron.Impl.LowLevelTransaction llt;
+        long drivingCardinality;
+        string drivingClauseDescription;
+
+        if (isFullScan)
+        {
+            var fieldMeta = orderByFields[0].Field;
+            IQueryMatch fullScanMatch;
+            if (sortFieldType == MatchCompareFieldType.Integer)
+                fullScanMatch = indexSearcher.BetweenQuery(fieldMeta, long.MinValue, long.MaxValue, forward: forward);
+            else if (sortFieldType == MatchCompareFieldType.Floating)
+                fullScanMatch = indexSearcher.BetweenQuery(fieldMeta, double.MinValue, double.MaxValue, forward: forward);
+            else
+                fullScanMatch = indexSearcher.ExistsQuery(fieldMeta, forward: forward);
+            if (fullScanMatch is not TermsProviderMatch tpm)
+                return null;
+            provider = tpm.Provider;
+            llt = tpm.Llt;
+            drivingCardinality = 0;
+            drivingClauseDescription = $"{sortFieldName} [all]";
+        }
+        else
+        {
+            var drivingClause = clauses[drivingIdx];
+            var drivingExec = execs[drivingIdx];
+
+            TermsProviderMatch tpm;
+            if (drivingClause.ClauseType == ClauseType.Equals)
+            {
+                var eqMatch = ResolveEqualsClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+                if (eqMatch is not TermsProviderMatch eq)
+                    return null;
+                tpm = eq;
+            }
+            else
+            {
+                var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+                if (match is not TermsProviderMatch m)
+                    return null;
+                tpm = m;
+            }
+            provider = tpm.Provider;
+            llt = tpm.Llt;
+            drivingCardinality = drivingExec.Cardinality > 0 ? drivingExec.Cardinality : indexSearcher.NumberOfEntries;
+            drivingClauseDescription = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
+        }
+
+        // Rebuild residual predicates structurally (same shape as discovery's pre-check).
+        int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
+        var residualPreds = new List<ScanPredicateInfo>();
+        if (isFullScan == false)
+        {
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (i == drivingIdx) continue;
+                var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
+                if (pred == null)
+                    return null;
+                residualPreds.Add(pred.Value);
+            }
+        }
 
         // ── Create the driving match ──
-        bool nullIsSmallest = (orderByFields[0].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
-        bool nullFirst = forward ? nullIsSmallest : !nullIsSmallest;
         // BetweenQuery and StartWithQuery don't include nulls in their term output,
         // so SortedDrivingMatch must drain them itself (respecting nullFirst direction).
+        bool nullIsSmallest = (orderByFields[0].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
+        bool nullFirst = forward ? nullIsSmallest : !nullIsSmallest;
         bool drainNulls = true;
         IQueryMatch drivingMatch;
         if (hasTieBreak)
@@ -3500,7 +3680,7 @@ internal static partial class QueryPlanBuilder
             // Per-term group cap: bail if any single primary term could exceed the group
             // buffer cap. Conservative gate: total driving cardinality must fit.
             if (drivingCardinality > SortedDrivingWithTieBreakMatch.MaxGroupSize)
-                return false;
+                return null;
             // Secondary field uses its own NullsSortMode — distinct from the primary field's.
             bool secondaryNullIsSmallest = (orderByFields[1].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
             drivingMatch = new SortedDrivingWithTieBreakMatch(
@@ -3576,8 +3756,7 @@ internal static partial class QueryPlanBuilder
         ds.Reason = isFullScan
             ? "full index-only scan (no WHERE clause)"
             : $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
-        directMatch = ds;
-        return true;
+        return ds;
     }
 
     // ── Sort seek hint ────────────────────────────────────────────────────
@@ -3701,11 +3880,11 @@ internal static partial class QueryPlanBuilder
             return null;
         }
 
+        if (orderByFields.Length > MaxSortFields)
+            throw new InvalidOperationException($"Corax does not support ordering by more than {MaxSortFields} properties.");
+
         int sortIndex = 0;
         var sortArray = new OrderMetadata[MaxSortFields];
-
-        if (orderByFields.Length > sortArray.Length)
-            throw new InvalidOperationException($"Corax does not support ordering by more than {sortArray.Length} properties.");
 
         foreach (var field in orderByFields)
         {
