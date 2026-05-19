@@ -13,7 +13,7 @@ namespace Corax.Querying.Planning;
 [StructLayout(LayoutKind.Auto)]
 internal ref partial struct DualEmit
 {
-    private void IlLoadBitmapRef(int slot)
+    public void IlLoadBitmapRef(int slot)
     {
         Il.Emit(OpCodes.Ldarg_0);
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxBitmaps);
@@ -21,7 +21,7 @@ internal ref partial struct DualEmit
         Il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap));
     }
 
-    private void IlCancellationCheck()
+    public void IlCancellationCheck()
     {
         Il.Emit(OpCodes.Ldarg_0);
         Il.Emit(OpCodes.Ldflda, IlEmitterShared.CtxToken);

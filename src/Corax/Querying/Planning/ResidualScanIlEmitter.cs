@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using System.Reflection.Emit;
 using System.Text;
 using Corax.Querying.Matches;
@@ -43,15 +44,6 @@ public static class ResidualScanIlEmitter
             return null;
         }
 
-        var cs = new StringBuilder();
-        cs.AppendLine("static int ResidualScan(IPredicateEvaluationContext ctx, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
-        cs.AppendLine("{");
-        cs.AppendLine("    int length = entryIds.Length;");
-        cs.AppendLine("    int writeIdx = 0;");
-        cs.AppendLine("    for (int i = 0; i < length; i++)");
-        cs.AppendLine("    {");
-        cs.AppendLine("        ref EntryTermsReader reader = ref readers[i];");
-
         var dm = new DynamicMethod(
             "ResidualScan",
             typeof(int),
@@ -63,119 +55,147 @@ public static class ResidualScanIlEmitter
         };
 
         var il = dm.GetILGenerator();
-
-        var iLocal = il.DeclareLocal(typeof(int));
-        var writeIdxLocal = il.DeclareLocal(typeof(int));
-        var lengthLocal = il.DeclareLocal(typeof(int));
-        var readerRefLocal = il.DeclareLocal(typeof(EntryTermsReader).MakeByRefType());
-        var origIdxLengthLocal = il.DeclareLocal(typeof(int));
-
-        il.Emit(OpCodes.Ldarga_S, (byte)2);
-        il.Emit(OpCodes.Call, IlEmitterShared.SpanLongLength);
-        il.Emit(OpCodes.Stloc, lengthLocal);
-
-        il.Emit(OpCodes.Ldarga_S, (byte)3);
-        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntLength);
-        il.Emit(OpCodes.Stloc, origIdxLengthLocal);
-
-        il.Emit(OpCodes.Ldc_I4_0);
-        il.Emit(OpCodes.Stloc, writeIdxLocal);
-
-        il.Emit(OpCodes.Ldc_I4_0);
-        il.Emit(OpCodes.Stloc, iLocal);
-
-        var loopCheck = il.DefineLabel();
-        var loopBody = il.DefineLabel();
-        var loopIncrement = il.DefineLabel();
-        // The "rejected" label is shared by every predicate's fail path. Use a raw IL
-        // label here and emit the C# label literally so the generated source keeps a
-        // clean "rejected:;" name (rather than the numbered form DualEmit would produce).
-        // Per-predicate intermediate labels still go through DualEmit.
-        var failLabel = il.DefineLabel();
-
-        il.Emit(OpCodes.Br, loopCheck);
-
-        il.MarkLabel(loopBody);
-
-        il.Emit(OpCodes.Ldarga_S, (byte)1);
-        il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Call, IlEmitterShared.SpanEntryTermsReaderGetItem);
-        il.Emit(OpCodes.Stloc, readerRefLocal);
-
-        // DualEmit drives per-predicate emission: every primitive pushes IL + C# fragment
-        // so the two outputs cannot drift. Indent matches the C# loop body opened above.
+        var cs = new StringBuilder();
         var d = new DualEmit(il, cs);
+
+        // Register arguments for C# name tracking.
+        d.RegisterArg(0, "ctx");
+        d.RegisterArg(1, "readers");
+        d.RegisterArg(2, "entryIds");
+        d.RegisterArg(3, "originalIndexes");
+
+        // C# function signature (no IL equivalent).
+        d.CsLine("static int ResidualScan(IPredicateEvaluationContext ctx, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
+        d.CsLine("{");
+
+        // Locals
+        var iLocal = d.DeclareLocal(typeof(int), "i");
+        var writeIdxLocal = d.DeclareLocal(typeof(int), "writeIdx");
+        var lengthLocal = d.DeclareLocal(typeof(int), "length");
+        var readerRefLocal = d.DeclareLocalRef(typeof(EntryTermsReader), "reader");
+        var origIdxLengthLocal = d.DeclareLocal(typeof(int), "origIdxLength");
+
+        // length = entryIds.Length
+        EmitSpanLengthToLocal(ref d, 2, IlEmitterShared.SpanLongLength, lengthLocal);
+        // origIdxLength = originalIndexes.Length
+        EmitSpanLengthToLocal(ref d, 3, IlEmitterShared.SpanIntLength, origIdxLengthLocal);
+        // writeIdx = 0; i = 0
+        d.StoreLocalConst(writeIdxLocal, 0);
+        d.StoreLocalConst(iLocal, 0);
+
+        // Loop structure
+        var loopCheck = d.DefineLabelPair("loopCheck");
+        var loopBody = d.DefineLabelPair("loopBody");
+        var loopIncrement = d.DefineLabelPair("loopInc");
+        var rejected = d.DefineNamedLabel("rejected");
+
+        d.GotoAlways(loopCheck);
+
+        d.MarkLabel(loopBody);
+
+        // ref reader = ref readers[i]
+        EmitSpanGetItemRef(ref d, 1, IlEmitterShared.SpanEntryTermsReaderGetItem, iLocal, readerRefLocal);
+
+        // Per-predicate emission (already through DualEmit).
         int rootIdx = 0;
         for (int p = 0; p < predicates.Length; p++)
         {
-            cs.AppendLine();
-            EmitPredicate(ref d, in predicates[p], failLabel, ref rootIdx, readerRefLocal, p);
+            d.CsLine("");
+            EmitPredicate(ref d, in predicates[p], rejected.Il, ref rootIdx, readerRefLocal, p);
         }
 
         // All passed: entryIds[writeIdx] = entryIds[i]
-        il.Emit(OpCodes.Ldarga_S, (byte)2);
-        il.Emit(OpCodes.Ldloc, writeIdxLocal);
-        il.Emit(OpCodes.Call, IlEmitterShared.SpanLongGetItem);
-        il.Emit(OpCodes.Ldarga_S, (byte)2);
-        il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Call, IlEmitterShared.SpanLongGetItem);
-        il.Emit(OpCodes.Ldind_I8);
-        il.Emit(OpCodes.Stind_I8);
+        EmitSpanElementCopy(ref d, 2, IlEmitterShared.SpanLongGetItem, writeIdxLocal, iLocal, OpCodes.Ldind_I8, OpCodes.Stind_I8);
 
-        // originalIndexes compaction (only if span is non-empty — caller decides)
-        il.Emit(OpCodes.Ldarga_S, (byte)3);
-        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntLength);
-        var noOrigIdx = il.DefineLabel();
-        il.Emit(OpCodes.Ldc_I4_0);
-        il.Emit(OpCodes.Ceq);
-        il.Emit(OpCodes.Brtrue, noOrigIdx);
+        // if (originalIndexes.Length == 0) skip copy
+        var noOrigIdx = d.DefineLabelPair("noOrigIdx");
+        EmitSpanLengthBranchIfZero(ref d, 3, IlEmitterShared.SpanIntLength, noOrigIdx);
 
         // originalIndexes[writeIdx] = originalIndexes[i]
-        il.Emit(OpCodes.Ldarga_S, (byte)3);
-        il.Emit(OpCodes.Ldloc, writeIdxLocal);
-        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntGetItem);
-        il.Emit(OpCodes.Ldarga_S, (byte)3);
-        il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Call, IlEmitterShared.SpanIntGetItem);
-        il.Emit(OpCodes.Ldind_I4);
-        il.Emit(OpCodes.Stind_I4);
+        EmitSpanElementCopy(ref d, 3, IlEmitterShared.SpanIntGetItem, writeIdxLocal, iLocal, OpCodes.Ldind_I4, OpCodes.Stind_I4);
 
-        il.MarkLabel(noOrigIdx);
+        d.MarkLabel(noOrigIdx);
 
-        il.Emit(OpCodes.Ldloc, writeIdxLocal);
-        il.Emit(OpCodes.Ldc_I4_1);
-        il.Emit(OpCodes.Add);
-        il.Emit(OpCodes.Stloc, writeIdxLocal);
-        il.Emit(OpCodes.Br, loopIncrement);
+        // writeIdx++
+        d.IncrementLocal(writeIdxLocal);
+        d.GotoAlways(loopIncrement);
 
-        il.MarkLabel(failLabel);
+        // rejected:
+        d.MarkLabel(rejected);
 
-        il.MarkLabel(loopIncrement);
-        il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Ldc_I4_1);
-        il.Emit(OpCodes.Add);
-        il.Emit(OpCodes.Stloc, iLocal);
+        // i++
+        d.MarkLabel(loopIncrement);
+        d.IncrementLocal(iLocal);
 
-        il.MarkLabel(loopCheck);
-        il.Emit(OpCodes.Ldloc, iLocal);
-        il.Emit(OpCodes.Ldloc, lengthLocal);
-        il.Emit(OpCodes.Blt, loopBody);
+        // loop check: if (i < length) goto loopBody
+        d.MarkLabel(loopCheck);
+        d.LoadLocal(iLocal);
+        d.LoadLocal(lengthLocal);
+        d.BranchLT(loopBody);
 
-        il.Emit(OpCodes.Ldloc, writeIdxLocal);
-        il.Emit(OpCodes.Ret);
+        // return writeIdx
+        d.LoadLocal(writeIdxLocal);
+        d.EmitReturn();
 
-        // Mirror of the post-loop epilogue.
-        cs.AppendLine();
-        cs.AppendLine("        entryIds[writeIdx] = entryIds[i];");
-        cs.AppendLine("        if (originalIndexes.Length != 0) originalIndexes[writeIdx] = originalIndexes[i];");
-        cs.AppendLine("        writeIdx++; continue;");
-        cs.AppendLine("        rejected:;");
-        cs.AppendLine("    }");
-        cs.AppendLine("    return writeIdx;");
-        cs.AppendLine("}");
+        d.CsLine("}");
         csharpSource = cs.ToString();
 
         return (ResidualScanPredicate)dm.CreateDelegate(typeof(ResidualScanPredicate));
+    }
+
+    // ── Span scaffolding helpers ─────────────────────────────────────
+    // Statement-level: emit complete IL + C# for one Span operation.
+
+    /// <summary>target = arg.Length</summary>
+    private static void EmitSpanLengthToLocal(ref DualEmit d, byte argIdx, MethodInfo lengthGetter, LocalBuilder target)
+    {
+        d.LoadArgAddress(argIdx);
+        d.Il.Emit(OpCodes.Call, lengthGetter);
+        d.Il.Emit(OpCodes.Stloc, target);
+        var argName = d.CsStack.Pop();
+        d.CsLine($"{d.GetLocalName(target)} = {argName}.Length;");
+    }
+
+    /// <summary>ref dest = ref arg[index]</summary>
+    private static void EmitSpanGetItemRef(ref DualEmit d, byte argIdx, MethodInfo getItem,
+        LocalBuilder indexLocal, LocalBuilder destRef)
+    {
+        d.Il.Emit(OpCodes.Ldarga_S, argIdx);
+        d.Il.Emit(OpCodes.Ldloc, indexLocal);
+        d.Il.Emit(OpCodes.Call, getItem);
+        d.Il.Emit(OpCodes.Stloc, destRef);
+        d.CsLine($"ref var {d.GetLocalName(destRef)} = ref {d.GetArgName(argIdx)}[{d.GetLocalName(indexLocal)}];");
+    }
+
+    /// <summary>arg[destIdx] = arg[srcIdx]</summary>
+    private static void EmitSpanElementCopy(ref DualEmit d, byte argIdx, MethodInfo getItem,
+        LocalBuilder destIdx, LocalBuilder srcIdx, OpCode loadIndirect, OpCode storeIndirect)
+    {
+        // &arg[destIdx]
+        d.Il.Emit(OpCodes.Ldarga_S, argIdx);
+        d.Il.Emit(OpCodes.Ldloc, destIdx);
+        d.Il.Emit(OpCodes.Call, getItem);
+        // arg[srcIdx] value
+        d.Il.Emit(OpCodes.Ldarga_S, argIdx);
+        d.Il.Emit(OpCodes.Ldloc, srcIdx);
+        d.Il.Emit(OpCodes.Call, getItem);
+        d.Il.Emit(loadIndirect);
+        // store
+        d.Il.Emit(storeIndirect);
+
+        string argName = d.GetArgName(argIdx);
+        d.CsLine($"{argName}[{d.GetLocalName(destIdx)}] = {argName}[{d.GetLocalName(srcIdx)}];");
+    }
+
+    /// <summary>if (arg.Length == 0) goto target</summary>
+    private static void EmitSpanLengthBranchIfZero(ref DualEmit d, byte argIdx, MethodInfo lengthGetter, LabelPair target)
+    {
+        d.Il.Emit(OpCodes.Ldarga_S, argIdx);
+        d.Il.Emit(OpCodes.Call, lengthGetter);
+        d.Il.Emit(OpCodes.Ldc_I4_0);
+        d.Il.Emit(OpCodes.Ceq);
+        d.Il.Emit(OpCodes.Brtrue, target.Il);
+        d.CsLine($"if ({d.GetArgName(argIdx)}.Length == 0) goto {target.Name};");
     }
 
     /// <summary>Emit one top-level predicate (leaf, AND group, or OR group). The OR group
@@ -279,14 +299,7 @@ public static class ResidualScanIlEmitter
                 // NotEqual semantics: if the field is absent (FindNext == false), the
                 // predicate PASSES (nothing to be unequal to ≠ violation). If found, then
                 // it fails iff the value compares equal.
-                // C# mirror: emit as nested `if (FindNext) { if (compare) goto fail; }`
-                // matching the IL exactly. (The previous textual emitter emitted
-                // `if (!FindNext) goto rejected;` here — wrong for NotEqual; C# is
-                // diagnostic-only, but the lockstep emitter now mirrors the real IL.)
                 var notFoundIl = d.Il.DefineLabel();
-                // The DualEmit branch helpers would write IF (!found) goto notFound; here
-                // we want a `goto skip` C# but no jump back — so we open a C# `if (found)`
-                // block by hand around the equality compare.
                 var foundFragment = d.CsStack.Pop();
                 d.Il.Emit(OpCodes.Brfalse, notFoundIl);
                 d.CsLine($"if ({foundFragment})");

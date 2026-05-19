@@ -25,84 +25,56 @@ public static class QueryIlEmitter
             return EmptyExecute;
         }
 
-        // C# source built alongside IL emission so the two backends cannot drift.
-        var cs = new StringBuilder();
-        cs.AppendLine("static void CompiledQuery(CompiledQueryMatch ctx)");
-        cs.AppendLine("{");
-        EmitCSharpBoundsCheckPreamble(cs, ops);
-        // Runtime cursor over ctx.ResolvedMatches / ctx.TermSources / ctx.TermsProviders.
-        // Each consuming op uses cursor as the slot index and then advances it; OrRange /
-        // AndRange advance by ctx.InRangeCounts[rangeIdx].
-        cs.AppendLine("    int cursor = 0;");
-
         var dm = new DynamicMethod(
             "CompiledQuery",
             typeof(void),
             [typeof(CompiledQueryMatch)],
             typeof(CompiledQueryMatch).Module,
             skipVisibility: true)
-            {
-                InitLocals = false
-            };
+        {
+            InitLocals = false
+        };
 
         var il = dm.GetILGenerator();
+        var cs = new StringBuilder();
+        var d = new DualEmit(il, cs);
+
+        // Register arguments.
+        d.RegisterArg(0, "ctx");
+
+        // C# function header.
+        d.CsLine("static void CompiledQuery(CompiledQueryMatch ctx)");
+        d.CsLine("{");
 
         // Locals
-        var bufferLocal = il.DeclareLocal(typeof(Span<long>));    // 0: Fill buffer
-        var readLocal = il.DeclareLocal(typeof(int));              // 1: read count
-        var startTickLocal = il.DeclareLocal(typeof(long));        // 2: timing start tick
-        // Runtime cursor over the resolved-source array slot space (ctx.ResolvedMatches /
-        // ctx.TermSources / ctx.TermsProviders, depending on op.Dispatch). Each consuming
-        // op uses cursor as the slot index and then advances it; OrRange / AndRange advance
-        // by ctx.InRangeCounts[rangeIdx]. Replaces the previously-baked op.ParamIndex so the
-        // plan stays structural while slot indices follow the runtime IN expansion.
-        var cursorVar = il.DeclareLocal(typeof(int));              // 3: runtime slot cursor
+        var bufferLocal = d.DeclareLocal(typeof(Span<long>), "buffer");
+        var readLocal = d.DeclareLocal(typeof(int), "read");
+        var startTickLocal = d.DeclareLocal(typeof(long), "startTick");
+        var cursorVar = d.DeclareLocal(typeof(int), "cursor");
 
-        // Top-level labels: keep IL-only Label + manual C# label emission so the C# output
-        // continues to use literal "Done:" / "EntryScan:" names (rather than the numbered
-        // form DualEmit.DefineLabelPair would produce). QueryILEmitter never pushes to a
-        // CsStack, so the MarkLabel stack-balance assert is not load-bearing here.
-        var doneLabel = il.DefineLabel();
-        var entryScanLabel = il.DefineLabel();
+        // Labels
+        var doneLabel = d.DefineNamedLabel("Done");
+        var entryScanLabel = d.DefineNamedLabel("EntryScan");
         bool hasEntryScan = false;
         bool needsLazyRepair = false;
         int entryScanOpIndex = -1;
 
         // stackalloc long[FillBufferSize]
-        IlEmitterShared.EmitLdcI4(il, QueryPrimitives.FillBufferSize);
-        il.Emit(OpCodes.Conv_U);
-        il.Emit(OpCodes.Sizeof, typeof(long));
-        il.Emit(OpCodes.Mul_Ovf_Un);
-        il.Emit(OpCodes.Localloc);
-        IlEmitterShared.EmitLdcI4(il, QueryPrimitives.FillBufferSize);
-        il.Emit(OpCodes.Newobj, SpanCtor);
-        il.Emit(OpCodes.Stloc, bufferLocal);
+        EmitStackAlloc(ref d, bufferLocal);
 
-        // Initialize cursor = 0 (DynamicMethod has InitLocals = false).
-        il.Emit(OpCodes.Ldc_I4_0);
-        il.Emit(OpCodes.Stloc, cursorVar);
+        // cursor = 0
+        d.StoreLocalConst(cursorVar, 0);
 
-        // Bounds-check elimination preamble: touch the max bitmap index so the JIT
-        // can hoist bitmap-slot length checks. Source-array touches are skipped —
-        // the cursor is runtime-driven, so we have no compile-time upper bound.
-        EmitBoundsCheckPreamble(il, ops);
-
-        // DualEmit drives every IL+C# pair through a single primitive so the two
-        // backends cannot drift. The CsStack assert at MarkLabel is not load-bearing
-        // here (QueryILEmitter uses statement-level helpers that never push to the
-        // value-stack) — DualEmit is used purely for its statement-level helpers.
-        var d = new DualEmit(il, cs);
+        // Bounds-check elimination preamble
+        EmitBoundsCheckPreamble(ref d, ops);
 
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
 
-            // Timing: record start tick before each op (skipped for untimed delegate)
+            // Timing: record start tick before each op
             if (emitTimings)
-            {
-                EmitTimingStart(il, startTickLocal);
-                cs.AppendLine($"    long startTick_{i} = Stopwatch.GetTimestamp();");
-            }
+                EmitTimingStart(ref d, startTickLocal, i);
 
             // Resolve dispatch once per op — used by IL and C# emission.
             var (fillMethod, andMethod, orMethod, andNotMethod) = op.Dispatch switch
@@ -148,14 +120,14 @@ public static class QueryIlEmitter
                 case PlanOpKind.AndWithPostings:
                     d.EmitCancelledCursorCall(cursorVar, andMethod, andName);
                     if (!op.SkipEarlyExit)
-                        d.EmitBitmapEmptyGoto(0, doneLabel, "Done");
+                        d.EmitBitmapEmptyGoto(0, doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.OrWithPostings:
                 case PlanOpKind.LazyOrWithPostings:
                     d.EmitCancelledCursorOrCall(cursorVar, orMethod, orName, op.BitmapLocal);
                     if (op.BitmapLocal == 0)
-                        d.EmitLimitReachedGoto(doneLabel, "Done");
+                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.ClearBitmap:
@@ -180,7 +152,7 @@ public static class QueryIlEmitter
                     break;
 
                 case PlanOpKind.CheckEmpty:
-                    d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel, "Done");
+                    d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.AndNotWithPostings:
@@ -195,321 +167,244 @@ public static class QueryIlEmitter
                 {
                     hasEntryScan = true;
                     entryScanOpIndex = i;
-
-                    EmitLoadBitmapRef(il, 0);
-                    il.Emit(OpCodes.Call, IlEmitterShared.CountGetter);
-                    il.Emit(OpCodes.Conv_I8);
-                    // Compare against the match the next consumer op will read (cursor, not cursor-1):
-                    // CheckAndMaybeEntryScan is emitted BEFORE the next AND step, so cursor still
-                    // points at that step's slot.
-                    EmitLoadMatchFromCursor(il, cursorVar);
-                    il.Emit(OpCodes.Callvirt, IlEmitterShared.MatchCountGetter);
-                    il.Emit(OpCodes.Call, IlEmitterShared.ShouldSwitchToEntryScan);
-                    il.Emit(OpCodes.Brtrue, entryScanLabel);
-                    cs.AppendLine("    if (QueryPrimitives.ShouldSwitchToEntryScan((long)ctx.Bitmaps[0].Count, ctx.ResolvedMatches[cursor].Count))");
-                    cs.AppendLine("        goto EntryScan;");
+                    EmitEntryScanCheck(ref d, cursorVar, entryScanLabel);
                     break;
                 }
 
                 case PlanOpKind.OrRange:
-                {
-                    int rangeIdx = op.ParamIndex2;
-                    var loopVar = il.DeclareLocal(typeof(int));
-                    var endVar = il.DeclareLocal(typeof(int));
-                    var loopCheck = il.DefineLabel();
-                    var loopBody = il.DefineLabel();
-
-                    // endVar = cursor + ctx.InRangeCounts[rangeIdx]
-                    il.Emit(OpCodes.Ldloc, cursorVar);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxInRangeCounts);
-                    IlEmitterShared.EmitLdcI4(il, rangeIdx);
-                    il.Emit(OpCodes.Ldelem_I4);
-                    il.Emit(OpCodes.Add);
-                    il.Emit(OpCodes.Stloc, endVar);
-
-                    EmitRangeEndIndexTouch(il, op.Dispatch, cursorVar, endVar);
-
-                    il.Emit(OpCodes.Ldloc, cursorVar);
-                    il.Emit(OpCodes.Stloc, loopVar);
-                    il.Emit(OpCodes.Br, loopCheck);
-
-                    il.MarkLabel(loopBody);
-                    EmitCancellationCheck(il);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldloc, loopVar);
-                    il.Emit(OpCodes.Ldc_I4, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, orMethod);
-
-                    il.Emit(OpCodes.Ldloc, loopVar);
-                    il.Emit(OpCodes.Ldc_I4_1);
-                    il.Emit(OpCodes.Add);
-                    il.Emit(OpCodes.Stloc, loopVar);
-
-                    il.MarkLabel(loopCheck);
-                    il.Emit(OpCodes.Ldloc, loopVar);
-                    il.Emit(OpCodes.Ldloc, endVar);
-                    il.Emit(OpCodes.Blt, loopBody);
-
-                    // cursor = endVar (advance past all consumed slots in this range)
-                    il.Emit(OpCodes.Ldloc, endVar);
-                    il.Emit(OpCodes.Stloc, cursorVar);
-
-                    cs.AppendLine("    {");
-                    cs.AppendLine($"        int end_{i} = cursor + ctx.InRangeCounts[{rangeIdx}];");
-                    cs.AppendLine($"        for (int j_{i} = cursor; j_{i} < end_{i}; j_{i}++) {{ ctx.Token.ThrowIfCancellationRequested(); {orName}(ctx, j_{i}, {op.BitmapLocal}); }}");
-                    cs.AppendLine($"        cursor = end_{i};");
-                    cs.AppendLine("    }");
+                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, op.Dispatch, orMethod, orName, i,
+                        earlyExit: false, skipEarlyExit: false, doneLabel);
                     break;
-                }
 
                 case PlanOpKind.AndRange:
-                {
-                    int rangeIdx = op.ParamIndex2;
-                    var loopVar = il.DeclareLocal(typeof(int));
-                    var endVar = il.DeclareLocal(typeof(int));
-                    var loopCheck = il.DefineLabel();
-                    var loopBody = il.DefineLabel();
-
-                    // endVar = cursor + ctx.InRangeCounts[rangeIdx]
-                    il.Emit(OpCodes.Ldloc, cursorVar);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxInRangeCounts);
-                    IlEmitterShared.EmitLdcI4(il, rangeIdx);
-                    il.Emit(OpCodes.Ldelem_I4);
-                    il.Emit(OpCodes.Add);
-                    il.Emit(OpCodes.Stloc, endVar);
-
-                    EmitRangeEndIndexTouch(il, op.Dispatch, cursorVar, endVar);
-
-                    il.Emit(OpCodes.Ldloc, cursorVar);
-                    il.Emit(OpCodes.Stloc, loopVar);
-                    il.Emit(OpCodes.Br, loopCheck);
-
-                    il.MarkLabel(loopBody);
-                    EmitCancellationCheck(il);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldloc, loopVar);
-                    il.Emit(OpCodes.Call, andMethod);
-
-                    if (!op.SkipEarlyExit)
-                    {
-                        EmitLoadBitmapRef(il, 0);
-                        il.Emit(OpCodes.Call, IlEmitterShared.IsEmptyGetter);
-                        il.Emit(OpCodes.Brtrue, doneLabel);
-                    }
-
-                    il.Emit(OpCodes.Ldloc, loopVar);
-                    il.Emit(OpCodes.Ldc_I4_1);
-                    il.Emit(OpCodes.Add);
-                    il.Emit(OpCodes.Stloc, loopVar);
-
-                    il.MarkLabel(loopCheck);
-                    il.Emit(OpCodes.Ldloc, loopVar);
-                    il.Emit(OpCodes.Ldloc, endVar);
-                    il.Emit(OpCodes.Blt, loopBody);
-
-                    // cursor = endVar (advance past all consumed slots in this range)
-                    il.Emit(OpCodes.Ldloc, endVar);
-                    il.Emit(OpCodes.Stloc, cursorVar);
-
-                    cs.AppendLine("    {");
-                    cs.AppendLine($"        int end_{i} = cursor + ctx.InRangeCounts[{rangeIdx}];");
-                    cs.AppendLine($"        for (int j_{i} = cursor; j_{i} < end_{i}; j_{i}++) {{ ctx.Token.ThrowIfCancellationRequested(); {andName}(ctx, j_{i});");
-                    if (!op.SkipEarlyExit)
-                        cs.AppendLine($"            if (ctx.Bitmaps[0].IsEmpty) goto Done;");
-                    cs.AppendLine("        }");
-                    cs.AppendLine($"        cursor = end_{i};");
-                    cs.AppendLine("    }");
+                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, op.Dispatch, andMethod, andName, i,
+                        earlyExit: true, skipEarlyExit: op.SkipEarlyExit, doneLabel);
                     break;
-                }
 
                 case PlanOpKind.IterateInto:
-                    d.EmitGotoDone(doneLabel, "Done");
+                    d.EmitGotoDone(doneLabel.Il, doneLabel.Name);
                     break;
             }
 
-            // Timing: record elapsed time and result count after each op (skipped for untimed delegate)
+            // Timing: record elapsed time and result count after each op
             if (emitTimings)
-            {
-                EmitTimingEnd(il, i, startTickLocal);
-                cs.AppendLine($"    CompiledQueryHelper.RecordTiming(ctx, {i}, startTick_{i});");
-                cs.AppendLine($"    CompiledQueryHelper.RecordResultCount(ctx, {i});");
-                cs.AppendLine();
-            }
+                EmitTimingEnd(ref d, i, startTickLocal);
         }
 
-        il.MarkLabel(doneLabel);
-        cs.AppendLine("Done:");
+        // Done label
+        d.MarkLabel(doneLabel);
         if (needsLazyRepair)
-        {
             d.EmitBitmapUnaryCall(0, IlEmitterShared.RepairAfterLazy, "RepairAfterLazy");
-        }
-        il.Emit(OpCodes.Ret);
-        cs.AppendLine("    return;");
+        d.EmitRetVoid();
 
+        // EntryScan tail
         if (hasEntryScan)
-        {
-            il.MarkLabel(entryScanLabel);
-            cs.AppendLine();
-            cs.AppendLine("EntryScan:");
-            cs.AppendLine($"    ctx.EntryScanTakenAtOp = {entryScanOpIndex};");
-            cs.AppendLine("    CompiledQueryHelper.RunEntryScan(ctx, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
-            cs.AppendLine("    ctx.Bitmaps[0].SwapContents(ref ctx.Bitmaps[1]);");
-            cs.AppendLine("    ctx.Bitmaps[1].Clear();");
-            cs.AppendLine("    return;");
-
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldc_I4, entryScanOpIndex);
-            il.Emit(OpCodes.Stfld, IlEmitterShared.CtxEntryScanTakenAtOp);
-
-            il.Emit(OpCodes.Ldarg_0);
-            EmitLoadBitmapRef(il, 0);
-            EmitLoadBitmapRef(il, 1);
-            il.Emit(OpCodes.Call, IlEmitterShared.RunEntryScanMethod);
-
-            EmitLoadBitmapRef(il, 0);
-            EmitLoadBitmapRef(il, 1);
-            il.Emit(OpCodes.Call, IlEmitterShared.SwapContents);
-            EmitLoadBitmapRef(il, 1);
-            il.Emit(OpCodes.Call, IlEmitterShared.Clear);
-            il.Emit(OpCodes.Ret);
-        }
+            EmitEntryScanTail(ref d, entryScanLabel, entryScanOpIndex);
         else
         {
-            il.MarkLabel(entryScanLabel);
-            il.Emit(OpCodes.Ret);
+            // Dead label — must be marked even if unreachable (IL verifier requires it).
+            d.Il.MarkLabel(entryScanLabel.Il);
+            d.Il.Emit(OpCodes.Ret);
         }
 
-        cs.AppendLine("}");
+        d.CsLine("}");
 
         csharpSource = cs.ToString();
         return (CompiledExecuteDelegate)dm.CreateDelegate(typeof(CompiledExecuteDelegate));
     }
 
-    private static void EmitLoadBitmapRef(ILGenerator il, int slot)
+    // ── Scaffolding helpers ──────────────────────────────────────────
+
+    /// <summary>stackalloc long[FillBufferSize] → bufferLocal</summary>
+    private static void EmitStackAlloc(ref DualEmit d, LocalBuilder bufferLocal)
     {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxBitmaps);  // RoaringBitmap[]
-        IlEmitterShared.EmitLdcI4(il, slot);
-        il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap)); // ref RoaringBitmap
+        IlEmitterShared.EmitLdcI4(d.Il, QueryPrimitives.FillBufferSize);
+        d.Il.Emit(OpCodes.Conv_U);
+        d.Il.Emit(OpCodes.Sizeof, typeof(long));
+        d.Il.Emit(OpCodes.Mul_Ovf_Un);
+        d.Il.Emit(OpCodes.Localloc);
+        IlEmitterShared.EmitLdcI4(d.Il, QueryPrimitives.FillBufferSize);
+        d.Il.Emit(OpCodes.Newobj, SpanCtor);
+        d.Il.Emit(OpCodes.Stloc, bufferLocal);
+        d.CsLine($"Span<long> {d.GetLocalName(bufferLocal)} = stackalloc long[{QueryPrimitives.FillBufferSize}];");
     }
 
-    private static void EmitLoadMatch(ILGenerator il, int index)
+    /// <summary>Emit bounds-check preamble: touch max bitmap slot so JIT hoists length checks.</summary>
+    private static void EmitBoundsCheckPreamble(ref DualEmit d, PlanOp[] ops)
     {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxResolvedMatches); // IQueryMatch[]
-        IlEmitterShared.EmitLdcI4(il, index);
-        il.Emit(OpCodes.Ldelem_Ref);                  // IQueryMatch
+        int maxBitmapSlot = ComputeMaxBitmapSlot(ops);
+
+        if (maxBitmapSlot >= 0)
+        {
+            d.IlLoadBitmapRef(maxBitmapSlot);
+            d.Il.Emit(OpCodes.Pop);
+            d.CsLine($"_ = ref ctx.Bitmaps[{maxBitmapSlot}];");
+        }
+        d.CsLine("");
     }
 
-    private static void EmitLoadLimit(ILGenerator il)
+    private static int ComputeMaxBitmapSlot(PlanOp[] ops)
     {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxLimit);
-    }
-
-    /// <summary>Emit: startTick = Stopwatch.GetTimestamp()</summary>
-    private static void EmitTimingStart(ILGenerator il, LocalBuilder startTickLocal)
-    {
-        il.Emit(OpCodes.Call, IlEmitterShared.GetTimestamp);
-        il.Emit(OpCodes.Stloc, startTickLocal);
-    }
-
-    /// <summary>Emit: IlEmitterShared.RecordTiming(ref ctx, opIndex, startTick); IlEmitterShared.RecordResultCount(ref ctx, opIndex);</summary>
-    private static void EmitTimingEnd(ILGenerator il, int opIndex, LocalBuilder startTickLocal)
-    {
-        il.Emit(OpCodes.Ldarg_0);         // ref ctx
-        IlEmitterShared.EmitLdcI4(il, opIndex);           // opIndex
-        il.Emit(OpCodes.Ldloc, startTickLocal); // startTick
-        il.Emit(OpCodes.Call, IlEmitterShared.RecordTiming);
-
-        il.Emit(OpCodes.Ldarg_0);
-        IlEmitterShared.EmitLdcI4(il, opIndex);
-        il.Emit(OpCodes.Call, IlEmitterShared.RecordResultCount);
-    }
-
-    private static void EmitCancellationCheck(ILGenerator il)
-    {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldflda, IlEmitterShared.CtxToken);
-        il.Emit(OpCodes.Call, IlEmitterShared.ThrowIfCancelled);
-    }
-
-    /// <summary>Emit array-length validation hints at the start of the delegate.
-    /// Touch the maximum bitmap slot so the JIT can elide bitmap bounds checks
-    /// inside the body. Source arrays (TermSources / TermsProviders / ResolvedMatches)
-    /// are indexed by the runtime cursor (see <c>cursorVar</c>), not by a static
-    /// op.ParamIndex, so we don't know a compile-time upper bound for them. The
-    /// per-iteration ldelem still performs the bounds check at runtime.</summary>
-    private static void EmitBoundsCheckPreamble(ILGenerator il, PlanOp[] ops)
-    {
-        int maxBitmapSlot = -1;
-
+        int max = -1;
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
-
-            // Bitmap slots
-            if (op.BitmapLocal > maxBitmapSlot) maxBitmapSlot = op.BitmapLocal;
-            if (op.Kind is PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.OrBitmaps or PlanOpKind.SwapBitmaps)
-            {
-                if (op.ParamIndex2 > maxBitmapSlot) maxBitmapSlot = op.ParamIndex2;
-            }
-            // FillFromPostings / FillAllEntries always use bitmap[0]; And/AndNot use [0] and [1]
-            if (op.Kind is PlanOpKind.FillFromPostings or PlanOpKind.DirectIterate or PlanOpKind.FillAllEntries)
-            {
-                if (0 > maxBitmapSlot) maxBitmapSlot = 0;
-            }
-            if (op.Kind is PlanOpKind.AndWithPostings or PlanOpKind.AndNotWithPostings)
-            {
-                if (1 > maxBitmapSlot) maxBitmapSlot = 1;
-            }
+            if (op.BitmapLocal > max) max = op.BitmapLocal;
+            if (op.Kind is PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.OrBitmaps or PlanOpKind.SwapBitmaps
+                && op.ParamIndex2 > max) max = op.ParamIndex2;
+            if (op.Kind is PlanOpKind.FillFromPostings or PlanOpKind.DirectIterate or PlanOpKind.FillAllEntries && 0 > max) max = 0;
+            if (op.Kind is PlanOpKind.AndWithPostings or PlanOpKind.AndNotWithPostings && 1 > max) max = 1;
         }
-
-        // Touch _bitmaps[maxBitmapSlot] (RoaringBitmap is a value type, use ldelema)
-        if (maxBitmapSlot >= 0)
-        {
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxBitmaps);
-            IlEmitterShared.EmitLdcI4(il, maxBitmapSlot);
-            il.Emit(OpCodes.Ldelema, typeof(RoaringBitmap));
-            il.Emit(OpCodes.Pop);
-        }
+        return max;
     }
 
-    /// <summary>C# mirror of <see cref="EmitBoundsCheckPreamble"/>: emit the textual
-    /// bounds-check touch and a trailing blank line. Same upper-bound computation;
-    /// only bitmap-slot indices are static so only those are emitted.</summary>
-    private static void EmitCSharpBoundsCheckPreamble(StringBuilder sb, PlanOp[] ops)
+    /// <summary>startTick = Stopwatch.GetTimestamp()</summary>
+    private static void EmitTimingStart(ref DualEmit d, LocalBuilder startTickLocal, int opIndex)
     {
-        int maxBitmapSlot = -1;
-        for (int i = 0; i < ops.Length; i++)
-        {
-            ref PlanOp op = ref ops[i];
-            if (op.BitmapLocal > maxBitmapSlot) maxBitmapSlot = op.BitmapLocal;
-            if (op.Kind is PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.OrBitmaps or PlanOpKind.SwapBitmaps && op.ParamIndex2 > maxBitmapSlot)
-                maxBitmapSlot = op.ParamIndex2;
-            if (op.Kind is PlanOpKind.FillFromPostings or PlanOpKind.DirectIterate && 0 > maxBitmapSlot)
-                maxBitmapSlot = 0;
-            if (op.Kind is PlanOpKind.AndWithPostings or PlanOpKind.AndNotWithPostings && 1 > maxBitmapSlot)
-                maxBitmapSlot = 1;
-        }
-        if (maxBitmapSlot >= 0)
-            sb.AppendLine($"    _ = ref ctx.Bitmaps[{maxBitmapSlot}];");
-        sb.AppendLine();
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.GetTimestamp);
+        d.Il.Emit(OpCodes.Stloc, startTickLocal);
+        d.CsLine($"long startTick_{opIndex} = Stopwatch.GetTimestamp();");
     }
 
-    private static void EmptyExecute(CompiledQueryMatch ctx) { }
+    /// <summary>RecordTiming + RecordResultCount</summary>
+    private static void EmitTimingEnd(ref DualEmit d, int opIndex, LocalBuilder startTickLocal)
+    {
+        d.Il.Emit(OpCodes.Ldarg_0);
+        IlEmitterShared.EmitLdcI4(d.Il, opIndex);
+        d.Il.Emit(OpCodes.Ldloc, startTickLocal);
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.RecordTiming);
 
-    /// <summary>Emit a bounds-check hint immediately after computing <paramref name="endVar"/>
+        d.Il.Emit(OpCodes.Ldarg_0);
+        IlEmitterShared.EmitLdcI4(d.Il, opIndex);
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.RecordResultCount);
+
+        d.CsLine($"CompiledQueryHelper.RecordTiming(ctx, {opIndex}, startTick_{opIndex});");
+        d.CsLine($"CompiledQueryHelper.RecordResultCount(ctx, {opIndex});");
+        d.CsLine("");
+    }
+
+    /// <summary>if (ShouldSwitchToEntryScan(bitmaps[0].Count, matches[cursor].Count)) goto EntryScan</summary>
+    private static void EmitEntryScanCheck(ref DualEmit d, LocalBuilder cursorVar, LabelPair entryScanLabel)
+    {
+        d.IlLoadBitmapRef(0);
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.CountGetter);
+        d.Il.Emit(OpCodes.Conv_I8);
+
+        // Load ctx.ResolvedMatches[cursor]
+        d.Il.Emit(OpCodes.Ldarg_0);
+        d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxResolvedMatches);
+        d.Il.Emit(OpCodes.Ldloc, cursorVar);
+        d.Il.Emit(OpCodes.Ldelem_Ref);
+        d.Il.Emit(OpCodes.Callvirt, IlEmitterShared.MatchCountGetter);
+
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.ShouldSwitchToEntryScan);
+        d.Il.Emit(OpCodes.Brtrue, entryScanLabel.Il);
+
+        d.CsLine($"if (QueryPrimitives.ShouldSwitchToEntryScan((long)ctx.Bitmaps[0].Count, ctx.ResolvedMatches[{d.GetLocalName(cursorVar)}].Count))");
+        d.CsLine($"    goto {entryScanLabel.Name};");
+    }
+
+    /// <summary>Emit the OR/AND range loop over IN-expanded term slots.</summary>
+    private static void EmitRangeLoop(ref DualEmit d, LocalBuilder cursorVar, int rangeIdx, int bitmapLocal,
+        MatchDispatch dispatch, MethodInfo method, string methodName, int opIndex,
+        bool earlyExit, bool skipEarlyExit, LabelPair doneLabel)
+    {
+        var loopVar = d.DeclareLocal(typeof(int), $"j_{opIndex}");
+        var endVar = d.DeclareLocal(typeof(int), $"end_{opIndex}");
+        var loopCheck = d.DefineLabelPair($"rangeCheck_{opIndex}");
+        var loopBody = d.DefineLabelPair($"rangeBody_{opIndex}");
+
+        // endVar = cursor + ctx.InRangeCounts[rangeIdx]
+        d.Il.Emit(OpCodes.Ldloc, cursorVar);
+        d.Il.Emit(OpCodes.Ldarg_0);
+        d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxInRangeCounts);
+        IlEmitterShared.EmitLdcI4(d.Il, rangeIdx);
+        d.Il.Emit(OpCodes.Ldelem_I4);
+        d.Il.Emit(OpCodes.Add);
+        d.Il.Emit(OpCodes.Stloc, endVar);
+        d.CsLine($"{d.GetLocalName(endVar)} = {d.GetLocalName(cursorVar)} + ctx.InRangeCounts[{rangeIdx}];");
+
+        // Bounds-check hint: touch source[endVar-1]
+        EmitRangeEndIndexTouch(d.Il, dispatch, cursorVar, endVar);
+
+        // loopVar = cursor
+        d.Il.Emit(OpCodes.Ldloc, cursorVar);
+        d.Il.Emit(OpCodes.Stloc, loopVar);
+        d.CsLine($"{d.GetLocalName(loopVar)} = {d.GetLocalName(cursorVar)};");
+
+        d.GotoAlways(loopCheck);
+
+        // Loop body
+        d.MarkLabel(loopBody);
+        d.IlCancellationCheck();
+
+        if (earlyExit)
+        {
+            // AND: ctx.Method(ctx, loopVar)
+            d.Il.Emit(OpCodes.Ldarg_0);
+            d.Il.Emit(OpCodes.Ldloc, loopVar);
+            d.Il.Emit(OpCodes.Call, method);
+            d.CsLine($"{methodName}(ctx, {d.GetLocalName(loopVar)});");
+
+            if (!skipEarlyExit)
+            {
+                d.EmitBitmapEmptyGoto(0, doneLabel.Il, doneLabel.Name);
+            }
+        }
+        else
+        {
+            // OR: ctx.Method(ctx, loopVar, bitmapLocal)
+            d.Il.Emit(OpCodes.Ldarg_0);
+            d.Il.Emit(OpCodes.Ldloc, loopVar);
+            d.Il.Emit(OpCodes.Ldc_I4, bitmapLocal);
+            d.Il.Emit(OpCodes.Call, method);
+            d.CsLine($"{methodName}(ctx, {d.GetLocalName(loopVar)}, {bitmapLocal});");
+        }
+
+        // loopVar++
+        d.IncrementLocal(loopVar);
+
+        // Loop check: if (loopVar < endVar) goto loopBody
+        d.MarkLabel(loopCheck);
+        d.LoadLocal(loopVar);
+        d.LoadLocal(endVar);
+        d.BranchLT(loopBody);
+
+        // cursor = endVar
+        d.Il.Emit(OpCodes.Ldloc, endVar);
+        d.Il.Emit(OpCodes.Stloc, cursorVar);
+        d.CsLine($"{d.GetLocalName(cursorVar)} = {d.GetLocalName(endVar)};");
+    }
+
+    /// <summary>EntryScan tail: set ctx.EntryScanTakenAtOp, run entry scan, swap bitmaps, return.</summary>
+    private static void EmitEntryScanTail(ref DualEmit d, LabelPair entryScanLabel, int entryScanOpIndex)
+    {
+        d.MarkLabel(entryScanLabel);
+
+        // ctx.EntryScanTakenAtOp = entryScanOpIndex
+        d.Il.Emit(OpCodes.Ldarg_0);
+        d.Il.Emit(OpCodes.Ldc_I4, entryScanOpIndex);
+        d.Il.Emit(OpCodes.Stfld, IlEmitterShared.CtxEntryScanTakenAtOp);
+        d.CsLine($"ctx.EntryScanTakenAtOp = {entryScanOpIndex};");
+
+        // CompiledQueryHelper.RunEntryScan(ctx, ref bitmaps[0], ref bitmaps[1])
+        d.Il.Emit(OpCodes.Ldarg_0);
+        d.IlLoadBitmapRef(0);
+        d.IlLoadBitmapRef(1);
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.RunEntryScanMethod);
+        d.CsLine("CompiledQueryHelper.RunEntryScan(ctx, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
+
+        // bitmaps[0].SwapContents(ref bitmaps[1])
+        d.EmitBitmapBinaryOp(0, 1, IlEmitterShared.SwapContents, "SwapContents");
+        // bitmaps[1].Clear()
+        d.EmitBitmapUnaryCall(1, IlEmitterShared.Clear, "Clear");
+
+        d.EmitRetVoid();
+    }
+
+    /// <summary>Emit a bounds-check hint immediately after computing endVar
     /// (the exclusive upper bound of an OrRange / AndRange loop). Touches the source array
-    /// at <c>endVar - 1</c> so the JIT proves the array is at least <c>endVar</c> long;
-    /// per-iteration <c>ldelem</c> calls in the loop body can then elide bounds checks.
-    /// Guarded by <c>endVar != start</c> because when the runtime range count is zero the
-    /// static <paramref name="start"/> may be past the array length (see
-    /// EmitBoundsCheckPreamble for the explanation of why OrRange/AndRange are skipped there).
-    /// </summary>
+    /// at endVar - 1 so the JIT proves the array is at least endVar long.</summary>
     private static void EmitRangeEndIndexTouch(ILGenerator il, MatchDispatch dispatch, LocalBuilder cursorVar, LocalBuilder endVar)
     {
         FieldInfo arrayField;
@@ -553,12 +448,5 @@ public static class QueryIlEmitter
         il.MarkLabel(skipTouch);
     }
 
-    /// <summary>Emit: push ctx.ResolvedMatches[cursor] onto the stack.</summary>
-    private static void EmitLoadMatchFromCursor(ILGenerator il, LocalBuilder cursorVar)
-    {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxResolvedMatches);
-        il.Emit(OpCodes.Ldloc, cursorVar);
-        il.Emit(OpCodes.Ldelem_Ref);
-    }
+    private static void EmptyExecute(CompiledQueryMatch ctx) { }
 }
