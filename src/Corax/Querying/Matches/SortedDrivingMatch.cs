@@ -54,18 +54,16 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     private int _smallItemsIdx;
 
     private readonly bool _nullFirst;
-    private readonly long _nullPostingListId;
     private readonly PostingList _nullPostingList;
-    private PostingList.Iterator _nullIterator;
+    private readonly PostingList.Iterator _nullIterator;
     private readonly bool _hasNullPostingList;
     private bool _nullExhausted;
 
     // Non-existing entries (docs where the sort field was absent) are treated as null-adjacent:
     //   nullFirst=true → non-existing, then nulls, then normal values
     //   nullFirst=false → normal values, then nulls, then non-existing
-    private readonly long _nonExistingPostingListId;
     private readonly PostingList _nonExistingPostingList;
-    private PostingList.Iterator _nonExistingIterator;
+    private readonly PostingList.Iterator _nonExistingIterator;
     private readonly bool _hasNonExistingPostingList;
     private bool _nonExistingExhausted;
 
@@ -80,15 +78,15 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
         if (drainNulls)
         {
-            _hasNullPostingList = searcher.TryGetPostingListForNull(in field, out _nullPostingListId);
+            _hasNullPostingList = searcher.TryGetPostingListForNull(in field, out var nullPostingListId);
             _nullExhausted = !_hasNullPostingList;
             if (_hasNullPostingList)
-                InitPostingList(out _nullPostingList, out _nullIterator, _nullPostingListId);
+                InitPostingList(out _nullPostingList, out _nullIterator, nullPostingListId);
 
-            _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in field, out _nonExistingPostingListId);
+            _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in field, out var nonExistingPostingListId);
             _nonExistingExhausted = !_hasNonExistingPostingList;
             if (_hasNonExistingPostingList)
-                InitPostingList(out _nonExistingPostingList, out _nonExistingIterator, _nonExistingPostingListId);
+                InitPostingList(out _nonExistingPostingList, out _nonExistingIterator, nonExistingPostingListId);
         }
         else
         {
