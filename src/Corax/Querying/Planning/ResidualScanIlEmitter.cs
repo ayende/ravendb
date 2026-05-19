@@ -38,29 +38,15 @@ public static class ResidualScanIlEmitter
     /// against each reader in the batch. Passing entry IDs and (optionally) original indexes
     /// are compacted to the front of their spans. Returns the count of survivors.
     /// The emitted IL always evaluates ALL predicates against every entry.
-    /// <paramref name="explainSource"/> receives a human-readable pseudocode description
-    /// of the predicates; <paramref name="csharpSource"/> receives the C# equivalent of the
-    /// emitted IL, generated side-by-side via <see cref="DualEmit"/>.</summary>
-    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string explainSource, out string csharpSource)
+    /// <paramref name="csharpSource"/> receives the C# equivalent of the emitted IL,
+    /// generated side-by-side via <see cref="DualEmit"/>.</summary>
+    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string csharpSource)
     {
         if (predicates == null || predicates.Length == 0)
         {
-            explainSource = "// No residual predicates";
             csharpSource = "// No residual predicates.\n";
             return null;
         }
-
-        var explain = new StringBuilder();
-        explain.AppendLine("// Entry scan — residual predicate evaluation (emitted IL).");
-        for (int p = 0; p < predicates.Length; p++)
-        {
-            ref readonly var pred = ref predicates[p];
-            explain.Append($"//   [{p}] Field '{pred.FieldName}' {pred.ValueType} {pred.CompareOp}");
-            if (pred.SubPredicates != null)
-                explain.Append($" ({pred.Group} group, {pred.SubPredicates.Length} branches)");
-            explain.AppendLine($" at rootPage=[rootIdx]");
-        }
-        explainSource = explain.ToString();
 
         var cs = new StringBuilder();
         cs.AppendLine("static int ResidualScan(IPredicateEvaluationContext ctx, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");

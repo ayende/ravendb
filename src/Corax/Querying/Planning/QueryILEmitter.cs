@@ -1,16 +1,10 @@
 using System;
-using System.Diagnostics;
-using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
 using System.Text;
-using System.Threading;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Primitives;
-using Corax.Utils;
-using Voron;
-using Voron.Data.CompactTrees;
 using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
@@ -22,19 +16,14 @@ public static class QueryIlEmitter
     // Span<long>
     private static readonly ConstructorInfo SpanCtor = typeof(Span<long>).GetConstructor([typeof(void*), typeof(int)])!;
 
-    public static CompiledExecuteDelegate EmitDelegate(QueryExecution plan, out string explainSource, out string csharpSource, bool emitTimings = true)
+    public static CompiledExecuteDelegate EmitDelegate(QueryExecution plan, out string csharpSource, bool emitTimings = true)
     {
         var ops = plan.Ops;
         if (ops == null || ops.Length == 0)
         {
-            explainSource = "// Empty plan";
             csharpSource = "// Empty plan.\n";
             return EmptyExecute;
         }
-
-        // EXPLAIN pseudocode built alongside IL emission.
-        var explain = new StringBuilder();
-        explain.AppendLine("// Compiled query — pseudocode mirroring the emitted IL.");
 
         // C# source built alongside IL emission so the two backends cannot drift.
         var cs = new StringBuilder();
@@ -98,6 +87,12 @@ public static class QueryIlEmitter
         // the cursor is runtime-driven, so we have no compile-time upper bound.
         EmitBoundsCheckPreamble(il, ops);
 
+        // DualEmit drives every IL+C# pair through a single primitive so the two
+        // backends cannot drift. The CsStack assert at MarkLabel is not load-bearing
+        // here (QueryILEmitter uses statement-level helpers that never push to the
+        // value-stack) — DualEmit is used purely for its statement-level helpers.
+        var d = new DualEmit(il, cs);
+
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
@@ -109,17 +104,14 @@ public static class QueryIlEmitter
                 cs.AppendLine($"    long startTick_{i} = Stopwatch.GetTimestamp();");
             }
 
-            // Resolve dispatch once per op — used by IL, EXPLAIN, and C# emission.
-            var (src, fillMethod, andMethod, orMethod, andNotMethod) = op.Dispatch switch
+            // Resolve dispatch once per op — used by IL and C# emission.
+            var (fillMethod, andMethod, orMethod, andNotMethod) = op.Dispatch switch
             {
                 MatchDispatch.PostingList => (
-                    $"ctx.TermSources[{op.ParamIndex}]",
                     IlEmitterShared.CtxFillFromPostingSource, IlEmitterShared.CtxAndFromPostingSource, IlEmitterShared.CtxOrFillFromPostingSource, IlEmitterShared.CtxAndNotFromPostingSource),
                 MatchDispatch.TreeScan => (
-                    $"ctx.TermsProviders[{op.ParamIndex}]",
                     IlEmitterShared.CtxFillFromTreeScan, IlEmitterShared.CtxAndFromTreeScan, IlEmitterShared.CtxOrFillFromTreeScan, IlEmitterShared.CtxAndNotFromTreeScan),
                 _ => (
-                    $"ctx.ResolvedMatches[{op.ParamIndex}]",
                     IlEmitterShared.CtxOrWithMatch, IlEmitterShared.CtxAndFromMatch, (MethodInfo)IlEmitterShared.CtxOrWithMatchSlot, IlEmitterShared.CtxAndNotFromMatch)
             };
 
@@ -146,131 +138,57 @@ public static class QueryIlEmitter
             {
                 case PlanOpKind.FillFromPostings:
                 case PlanOpKind.DirectIterate:
-                    EmitCancellationCheck(il);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldloc, cursorVar);
-                    il.Emit(OpCodes.Call, fillMethod);
-                    EmitCursorAdvance(il, cursorVar);
-                    explain.AppendLine($"QueryPrimitives.CtxFill(ctx, paramIndex: cursor);  // bitmap[0] ← {src.Replace($"[{op.ParamIndex}]", "[cursor]")}; cursor++");
-                    cs.AppendLine("    ctx.Token.ThrowIfCancellationRequested();");
-                    cs.AppendLine($"    {fillName}(ctx, cursor); cursor++;");
+                    d.EmitCancelledCursorCall(cursorVar, fillMethod, fillName);
                     break;
 
                 case PlanOpKind.FillAllEntries:
-                    EmitCancellationCheck(il);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Call, IlEmitterShared.CtxFillAllEntries);
-                    explain.AppendLine("QueryPrimitives.CtxFillAllEntries(ctx);  // bitmap[0] ← AllEntries");
-                    cs.AppendLine("    ctx.Token.ThrowIfCancellationRequested();");
-                    cs.AppendLine("    QueryPrimitives.CtxFillAllEntries(ctx);");
+                    d.EmitFillAllEntries();
                     break;
 
                 case PlanOpKind.AndWithPostings:
-                    EmitCancellationCheck(il);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldloc, cursorVar);
-                    il.Emit(OpCodes.Call, andMethod);
-                    EmitCursorAdvance(il, cursorVar);
-                    explain.AppendLine($"QueryPrimitives.CtxAnd(ctx, paramIndex: cursor);  // bitmap[0] &= {src.Replace($"[{op.ParamIndex}]", "[cursor]")}; cursor++");
-                    cs.AppendLine("    ctx.Token.ThrowIfCancellationRequested();");
-                    cs.AppendLine($"    {andName}(ctx, cursor); cursor++;");
+                    d.EmitCancelledCursorCall(cursorVar, andMethod, andName);
                     if (!op.SkipEarlyExit)
-                    {
-                        EmitLoadBitmapRef(il, 0);
-                        il.Emit(OpCodes.Call, IlEmitterShared.IsEmptyGetter);
-                        il.Emit(OpCodes.Brtrue, doneLabel);
-                        explain.AppendLine("if (bitmap[0].IsEmpty) goto Done;");
-                        cs.AppendLine("    if (ctx.Bitmaps[0].IsEmpty) goto Done;");
-                    }
+                        d.EmitBitmapEmptyGoto(0, doneLabel, "Done");
                     break;
 
                 case PlanOpKind.OrWithPostings:
                 case PlanOpKind.LazyOrWithPostings:
-                    EmitCancellationCheck(il);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldloc, cursorVar);
-                    il.Emit(OpCodes.Ldc_I4, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, orMethod);
-                    EmitCursorAdvance(il, cursorVar);
-                    explain.AppendLine($"QueryPrimitives.CtxOr(ctx, paramIndex: cursor, bitmapSlot: {op.BitmapLocal});  // bitmap[{op.BitmapLocal}] |= {src.Replace($"[{op.ParamIndex}]", "[cursor]")}; cursor++");
-                    cs.AppendLine("    ctx.Token.ThrowIfCancellationRequested();");
-                    cs.AppendLine($"    {orName}(ctx, cursor, {op.BitmapLocal}); cursor++;");
+                    d.EmitCancelledCursorOrCall(cursorVar, orMethod, orName, op.BitmapLocal);
                     if (op.BitmapLocal == 0)
-                    {
-                        EmitLoadBitmapRef(il, 0);
-                        il.Emit(OpCodes.Call, IlEmitterShared.CountGetter);
-                        il.Emit(OpCodes.Conv_I8);
-                        EmitLoadLimit(il);
-                        il.Emit(OpCodes.Bge, doneLabel);
-                        explain.AppendLine("if (bitmap[0].Count >= limit) goto Done;");
-                        cs.AppendLine("    if ((long)ctx.Bitmaps[0].Count >= ctx.Limit) goto Done;");
-                    }
+                        d.EmitLimitReachedGoto(doneLabel, "Done");
                     break;
 
                 case PlanOpKind.ClearBitmap:
-                    EmitLoadBitmapRef(il, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, IlEmitterShared.Clear);
-                    explain.AppendLine($"bitmap[{op.BitmapLocal}].Clear();");
-                    cs.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].Clear();");
+                    d.EmitBitmapUnaryCall(op.BitmapLocal, IlEmitterShared.Clear, "Clear");
                     break;
 
                 case PlanOpKind.AndBitmaps:
-                    EmitLoadBitmapRef(il, op.BitmapLocal);
-                    EmitLoadBitmapRef(il, op.ParamIndex2);
-                    il.Emit(OpCodes.Call, IlEmitterShared.AndWith);
-                    explain.AppendLine($"bitmap[{op.BitmapLocal}].AndWith(bitmap[{op.ParamIndex2}]);  // bitmap[{op.BitmapLocal}] &= bitmap[{op.ParamIndex2}]");
-                    cs.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].AndWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.AndWith, "AndWith");
                     break;
 
                 case PlanOpKind.AndNotBitmaps:
-                    EmitLoadBitmapRef(il, op.BitmapLocal);
-                    EmitLoadBitmapRef(il, op.ParamIndex2);
-                    il.Emit(OpCodes.Call, IlEmitterShared.AndNotWith);
-                    explain.AppendLine($"bitmap[{op.BitmapLocal}].AndNotWith(bitmap[{op.ParamIndex2}]);  // bitmap[{op.BitmapLocal}] &= ~bitmap[{op.ParamIndex2}]");
-                    cs.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].AndNotWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.AndNotWith, "AndNotWith");
                     break;
 
                 case PlanOpKind.OrBitmaps:
-                    EmitLoadBitmapRef(il, op.BitmapLocal);
-                    EmitLoadBitmapRef(il, op.ParamIndex2);
-                    il.Emit(OpCodes.Call, IlEmitterShared.LazyOrWith);
+                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.LazyOrWith, "LazyOrWith");
                     needsLazyRepair = true;
-                    explain.AppendLine($"bitmap[{op.BitmapLocal}].LazyOrWith(bitmap[{op.ParamIndex2}]);  // lazy OR (cardinality repaired later)");
-                    cs.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].LazyOrWith(ref ctx.Bitmaps[{op.ParamIndex2}]);");
                     break;
 
                 case PlanOpKind.SwapBitmaps:
-                    EmitLoadBitmapRef(il, op.BitmapLocal);
-                    EmitLoadBitmapRef(il, op.ParamIndex2);
-                    il.Emit(OpCodes.Call, IlEmitterShared.SwapContents);
-                    explain.AppendLine($"bitmap[{op.BitmapLocal}].SwapContents(bitmap[{op.ParamIndex2}]);");
-                    cs.AppendLine($"    ctx.Bitmaps[{op.BitmapLocal}].SwapContents(ref ctx.Bitmaps[{op.ParamIndex2}]);");
+                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.SwapContents, "SwapContents");
                     break;
 
                 case PlanOpKind.CheckEmpty:
-                    EmitLoadBitmapRef(il, op.BitmapLocal);
-                    il.Emit(OpCodes.Call, IlEmitterShared.IsEmptyGetter);
-                    il.Emit(OpCodes.Brtrue, doneLabel);
-                    explain.AppendLine($"if (bitmap[{op.BitmapLocal}].IsEmpty) goto Done;");
-                    cs.AppendLine($"    if (ctx.Bitmaps[{op.BitmapLocal}].IsEmpty) goto Done;");
+                    d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel, "Done");
                     break;
 
                 case PlanOpKind.AndNotWithPostings:
-                    EmitCancellationCheck(il);
-                    il.Emit(OpCodes.Ldarg_0);
-                    il.Emit(OpCodes.Ldloc, cursorVar);
-                    il.Emit(OpCodes.Call, andNotMethod);
-                    EmitCursorAdvance(il, cursorVar);
-                    explain.AppendLine($"QueryPrimitives.CtxAndNot(ctx, paramIndex: cursor);  // bitmap[0] &= ~{src.Replace($"[{op.ParamIndex}]", "[cursor]")}; cursor++");
-                    cs.AppendLine("    ctx.Token.ThrowIfCancellationRequested();");
-                    cs.AppendLine($"    {andNotName}(ctx, cursor); cursor++;");
+                    d.EmitCancelledCursorCall(cursorVar, andNotMethod, andNotName);
                     break;
 
                 case PlanOpKind.RepairAfterLazy:
-                    EmitLoadBitmapRef(il, 0);
-                    il.Emit(OpCodes.Call, IlEmitterShared.RepairAfterLazy);
-                    explain.AppendLine("bitmap[0].RepairAfterLazy();  // fix lazy cardinalities from LazyOrWith");
-                    cs.AppendLine("    ctx.Bitmaps[0].RepairAfterLazy();");
+                    d.EmitBitmapUnaryCall(0, IlEmitterShared.RepairAfterLazy, "RepairAfterLazy");
                     break;
 
                 case PlanOpKind.CheckAndMaybeEntryScan:
@@ -288,8 +206,6 @@ public static class QueryIlEmitter
                     il.Emit(OpCodes.Callvirt, IlEmitterShared.MatchCountGetter);
                     il.Emit(OpCodes.Call, IlEmitterShared.ShouldSwitchToEntryScan);
                     il.Emit(OpCodes.Brtrue, entryScanLabel);
-                    explain.AppendLine($"if (QueryPrimitives.ShouldSwitchToEntryScan(bitmap[0].Count, ctx.ResolvedMatches[cursor].Count))");
-                    explain.AppendLine($"    goto EntryScan;  // bitmap[0] is small, walk entries instead of decoding posting list");
                     cs.AppendLine("    if (QueryPrimitives.ShouldSwitchToEntryScan((long)ctx.Bitmaps[0].Count, ctx.ResolvedMatches[cursor].Count))");
                     cs.AppendLine("        goto EntryScan;");
                     break;
@@ -338,11 +254,6 @@ public static class QueryIlEmitter
                     // cursor = endVar (advance past all consumed slots in this range)
                     il.Emit(OpCodes.Ldloc, endVar);
                     il.Emit(OpCodes.Stloc, cursorVar);
-
-                    explain.AppendLine($"// Range OR: ctx.InRangeCounts[{rangeIdx}] terms starting at cursor");
-                    explain.AppendLine($"for (int j = cursor; j < cursor + ctx.InRangeCounts[{rangeIdx}]; j++)");
-                    explain.AppendLine($"    QueryPrimitives.CtxOr(ctx, j, bitmapSlot: {op.BitmapLocal});  // bitmap[{op.BitmapLocal}] |= ResolvedMatches[j]");
-                    explain.AppendLine($"cursor += ctx.InRangeCounts[{rangeIdx}];");
 
                     cs.AppendLine("    {");
                     cs.AppendLine($"        int end_{i} = cursor + ctx.InRangeCounts[{rangeIdx}];");
@@ -402,17 +313,6 @@ public static class QueryIlEmitter
                     il.Emit(OpCodes.Ldloc, endVar);
                     il.Emit(OpCodes.Stloc, cursorVar);
 
-                    explain.AppendLine($"// Range AND: ctx.InRangeCounts[{rangeIdx}] terms starting at cursor");
-                    explain.AppendLine($"for (int j = cursor; j < cursor + ctx.InRangeCounts[{rangeIdx}]; j++)");
-                    explain.AppendLine($"{{");
-                    explain.AppendLine($"    QueryPrimitives.CtxAnd(ctx, j);  // bitmap[0] &= ResolvedMatches[j]");
-                    if (!op.SkipEarlyExit)
-                    {
-                        explain.AppendLine($"    if (bitmap[0].IsEmpty) goto Done;");
-                    }
-                    explain.AppendLine($"}}");
-                    explain.AppendLine($"cursor += ctx.InRangeCounts[{rangeIdx}];");
-
                     cs.AppendLine("    {");
                     cs.AppendLine($"        int end_{i} = cursor + ctx.InRangeCounts[{rangeIdx}];");
                     cs.AppendLine($"        for (int j_{i} = cursor; j_{i} < end_{i}; j_{i}++) {{ ctx.Token.ThrowIfCancellationRequested(); {andName}(ctx, j_{i});");
@@ -425,9 +325,7 @@ public static class QueryIlEmitter
                 }
 
                 case PlanOpKind.IterateInto:
-                    il.Emit(OpCodes.Br, doneLabel);
-                    explain.AppendLine("goto Done;  // result ready in bitmap[0]");
-                    cs.AppendLine("    goto Done;");
+                    d.EmitGotoDone(doneLabel, "Done");
                     break;
             }
 
@@ -445,10 +343,7 @@ public static class QueryIlEmitter
         cs.AppendLine("Done:");
         if (needsLazyRepair)
         {
-            EmitLoadBitmapRef(il, 0);
-            il.Emit(OpCodes.Call, IlEmitterShared.RepairAfterLazy);
-            explain.AppendLine("bitmap[0].RepairAfterLazy();  // fix lazy cardinalities before returning");
-            cs.AppendLine("    ctx.Bitmaps[0].RepairAfterLazy();");
+            d.EmitBitmapUnaryCall(0, IlEmitterShared.RepairAfterLazy, "RepairAfterLazy");
         }
         il.Emit(OpCodes.Ret);
         cs.AppendLine("    return;");
@@ -456,11 +351,6 @@ public static class QueryIlEmitter
         if (hasEntryScan)
         {
             il.MarkLabel(entryScanLabel);
-            explain.AppendLine();
-            explain.AppendLine("EntryScan:");
-            explain.AppendLine("// Per-entry scan path: walk bitmap[0] entries, check residual predicates,");
-            explain.AppendLine("// compact survivors into bitmap[1], then swap bitmap[0] ← bitmap[1].");
-
             cs.AppendLine();
             cs.AppendLine("EntryScan:");
             cs.AppendLine($"    ctx.EntryScanTakenAtOp = {entryScanOpIndex};");
@@ -493,7 +383,6 @@ public static class QueryIlEmitter
 
         cs.AppendLine("}");
 
-        explainSource = explain.ToString();
         csharpSource = cs.ToString();
         return (CompiledExecuteDelegate)dm.CreateDelegate(typeof(CompiledExecuteDelegate));
     }
@@ -662,15 +551,6 @@ public static class QueryIlEmitter
         il.Emit(OpCodes.Pop);
 
         il.MarkLabel(skipTouch);
-    }
-
-    /// <summary>Emit: cursor = cursor + 1.</summary>
-    private static void EmitCursorAdvance(ILGenerator il, LocalBuilder cursorVar)
-    {
-        il.Emit(OpCodes.Ldloc, cursorVar);
-        il.Emit(OpCodes.Ldc_I4_1);
-        il.Emit(OpCodes.Add);
-        il.Emit(OpCodes.Stloc, cursorVar);
     }
 
     /// <summary>Emit: push ctx.ResolvedMatches[cursor] onto the stack.</summary>
