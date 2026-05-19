@@ -179,7 +179,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// a hot loop when consecutive lookups share the same high-bits (e.g. BitmapMatch.AndWith
     /// processing a batch with high entry-ID locality).
     /// </summary>
-    internal readonly bool ContainsAtSlot(int slot, ushort low)
+    private readonly bool ContainsAtSlot(int slot, ushort low)
     {
         ref ContainerEntry entry = ref _entries[slot];
         ContainerType type = _types.RawItems[slot];
@@ -189,7 +189,6 @@ public unsafe partial struct RoaringBitmap : IDisposable
             ContainerType.ArrayUnsorted => SimdLinearContains(entry.ArrayData, entry.Cardinality, low),
             ContainerType.Bitmap => BitmapContains((ulong*)entry.Data, low),
             ContainerType.Range => low >= entry.RangeStart && low < entry.RangeStart + entry.Cardinality,
-            ContainerType.Free => ThrowUnexpectedContainerType(type),
             _ => ThrowUnexpectedContainerType(type)
         };
 
@@ -230,7 +229,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
         }
     }
 
-    public readonly int GetSlotForKey(long key)
+    private readonly int GetSlotForKey(long key)
     {
         if (key < 0 || key >= _index.Count)
             return IndexAbsent;
@@ -804,11 +803,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     {
         if (count == 0) return 0;
 
-        // Allocate parallel index array (padded to AVX2 width for InitializeIndices).
-        // Use the bitmap's own ByteStringContext — same allocator as container memory.
-        int paddedLen = PadToVector256Width(count);
-        using var _ = _ctx.Allocate(paddedLen * sizeof(int), out ByteString work);
-        Span<int> indices = new Span<int>(work.Ptr, paddedLen);
+        using var _ = _ctx.Allocate(PadToVector256Width(count), out Span<int> indices);
 
         // Fill indices with 0..count-1 via AVX2, then parallel-sort buffer ascending.
         InitializeIndices(indices, count);
@@ -917,22 +912,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
                         // then use the two-pointer merge. Cheaper than groupLen × O(k) SIMD scans.
                         new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
                         type = ContainerType.Array;
-                        ushort* arr = entry.ArrayData;
-                        int arrLen = entry.Cardinality;
-                        int ai = 0;
-                        for (int gi = i; gi < groupEnd && ai < arrLen; )
-                        {
-                            ushort low = (ushort)(buffer[gi] & ContainerValueMask);
-                            if (low < arr[ai])       { gi++; }
-                            else if (low > arr[ai])  { ai++; }
-                            else
-                            {
-                                buffer[kept] = buffer[gi];
-                                indices[kept] = indices[gi];
-                                kept++;
-                                gi++; ai++;
-                            }
-                        }
+                        goto case ContainerType.Array;
                     }
                     break;
                 }
