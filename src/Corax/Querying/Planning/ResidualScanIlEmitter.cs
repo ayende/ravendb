@@ -1,12 +1,9 @@
 using System;
-using System.Linq;
-using System.Reflection;
 using System.Reflection.Emit;
 using System.Text;
 using Corax.Querying.Matches;
 using Corax.Utils;
 using Voron;
-using Voron.Data.CompactTrees;
 
 namespace Corax.Querying.Planning;
 
@@ -23,6 +20,10 @@ namespace Corax.Querying.Planning;
 /// harmless, and it eliminates the need for a separate delegate-per-path or a
 /// runtime predicate-count parameter. The extra cost is negligible: a handful
 /// of FindNext + compare operations per entry against already-cached stored fields.
+///
+/// IL and the diagnostic C# source are emitted in lockstep through <see cref="DualEmit"/>:
+/// each predicate primitive pushes to both the IL evaluation stack and a parallel
+/// textual operand stack, so the two backends cannot drift.
 /// </summary>
 public static class ResidualScanIlEmitter
 {
@@ -33,33 +34,42 @@ public static class ResidualScanIlEmitter
         Span<long> entryIds,
         Span<int> originalIndexes);
 
-
-
     /// <summary>Emit a residual-scan delegate that evaluates <paramref name="predicates"/>
     /// against each reader in the batch. Passing entry IDs and (optionally) original indexes
     /// are compacted to the front of their spans. Returns the count of survivors.
     /// The emitted IL always evaluates ALL predicates against every entry.
     /// <paramref name="explainSource"/> receives a human-readable pseudocode description
-    /// of the predicates, matching the format used by <see cref="QueryIlEmitter.EmitDelegate"/>.</summary>
-    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string explainSource)
+    /// of the predicates; <paramref name="csharpSource"/> receives the C# equivalent of the
+    /// emitted IL, generated side-by-side via <see cref="DualEmit"/>.</summary>
+    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string explainSource, out string csharpSource)
     {
         if (predicates == null || predicates.Length == 0)
         {
             explainSource = "// No residual predicates";
+            csharpSource = "// No residual predicates.\n";
             return null;
         }
 
-        var sb = new System.Text.StringBuilder();
-        sb.AppendLine("// Entry scan — residual predicate evaluation (emitted IL).");
+        var explain = new StringBuilder();
+        explain.AppendLine("// Entry scan — residual predicate evaluation (emitted IL).");
         for (int p = 0; p < predicates.Length; p++)
         {
             ref readonly var pred = ref predicates[p];
-            sb.Append($"//   [{p}] Field '{pred.FieldName}' {pred.ValueType} {pred.CompareOp}");
+            explain.Append($"//   [{p}] Field '{pred.FieldName}' {pred.ValueType} {pred.CompareOp}");
             if (pred.SubPredicates != null)
-                sb.Append($" ({pred.Group} group, {pred.SubPredicates.Length} branches)");
-            sb.AppendLine($" at rootPage=[rootIdx]");
+                explain.Append($" ({pred.Group} group, {pred.SubPredicates.Length} branches)");
+            explain.AppendLine($" at rootPage=[rootIdx]");
         }
-        explainSource = sb.ToString();
+        explainSource = explain.ToString();
+
+        var cs = new StringBuilder();
+        cs.AppendLine("static int ResidualScan(IPredicateEvaluationContext ctx, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
+        cs.AppendLine("{");
+        cs.AppendLine("    int length = entryIds.Length;");
+        cs.AppendLine("    int writeIdx = 0;");
+        cs.AppendLine("    for (int i = 0; i < length; i++)");
+        cs.AppendLine("    {");
+        cs.AppendLine("        ref EntryTermsReader reader = ref readers[i];");
 
         var dm = new DynamicMethod(
             "ResidualScan",
@@ -96,6 +106,10 @@ public static class ResidualScanIlEmitter
         var loopCheck = il.DefineLabel();
         var loopBody = il.DefineLabel();
         var loopIncrement = il.DefineLabel();
+        // The "rejected" label is shared by every predicate's fail path. Use a raw IL
+        // label here and emit the C# label literally so the generated source keeps a
+        // clean "rejected:;" name (rather than the numbered form DualEmit would produce).
+        // Per-predicate intermediate labels still go through DualEmit.
         var failLabel = il.DefineLabel();
 
         il.Emit(OpCodes.Br, loopCheck);
@@ -107,10 +121,14 @@ public static class ResidualScanIlEmitter
         il.Emit(OpCodes.Call, IlEmitterShared.SpanEntryTermsReaderGetItem);
         il.Emit(OpCodes.Stloc, readerRefLocal);
 
+        // DualEmit drives per-predicate emission: every primitive pushes IL + C# fragment
+        // so the two outputs cannot drift. Indent matches the C# loop body opened above.
+        var d = new DualEmit(il, cs, indent: "        ");
         int rootIdx = 0;
         for (int p = 0; p < predicates.Length; p++)
         {
-            EmitPredicate(il, in predicates[p], failLabel, ref rootIdx, readerRefLocal);
+            cs.AppendLine();
+            EmitPredicate(ref d, in predicates[p], failLabel, ref rootIdx, readerRefLocal, p);
         }
 
         // All passed: entryIds[writeIdx] = entryIds[i]
@@ -165,307 +183,343 @@ public static class ResidualScanIlEmitter
         il.Emit(OpCodes.Ldloc, writeIdxLocal);
         il.Emit(OpCodes.Ret);
 
+        // Mirror of the post-loop epilogue.
+        cs.AppendLine();
+        cs.AppendLine("        entryIds[writeIdx] = entryIds[i];");
+        cs.AppendLine("        if (originalIndexes.Length != 0) originalIndexes[writeIdx] = originalIndexes[i];");
+        cs.AppendLine("        writeIdx++; continue;");
+        cs.AppendLine("        rejected:;");
+        cs.AppendLine("    }");
+        cs.AppendLine("    return writeIdx;");
+        cs.AppendLine("}");
+        csharpSource = cs.ToString();
+
         return (ResidualScanPredicate)dm.CreateDelegate(typeof(ResidualScanPredicate));
     }
 
+    /// <summary>Emit one top-level predicate (leaf, AND group, or OR group). The OR group
+    /// short-circuits to a per-group "passed" label after any branch succeeds; falling off
+    /// the end means every branch failed and routes to <paramref name="failLabel"/>.</summary>
     private static void EmitPredicate(
-        ILGenerator il,
+        ref DualEmit d,
         in ScanPredicateInfo pred,
         Label failLabel,
         ref int rootIdx,
-        LocalBuilder readerRefLocal)
+        LocalBuilder readerRefLocal,
+        int pIdx)
     {
         if (pred.SubPredicates != null)
         {
             if (pred.Group == GroupKind.Or)
             {
-                var groupPassed = il.DefineLabel();
+                var groupPassed = d.DefineLabelPair($"gp_{pIdx}");
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
-                    var nextSub = il.DefineLabel();
-                    EmitLeafPredicate(il, in pred.SubPredicates[b], nextSub, rootIdx, readerRefLocal);
-                    il.Emit(OpCodes.Br, groupPassed);
-                    il.MarkLabel(nextSub);
+                    var nextSub = d.DefineLabelPair("nextBranch");
+                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], nextSub.IL, nextSub.Name, rootIdx, readerRefLocal);
+                    // Branch succeeded — skip remaining alternatives.
+                    d.GotoAlways(groupPassed);
+                    d.MarkLabel(nextSub);
                     rootIdx++;
                 }
-                il.Emit(OpCodes.Br, failLabel);
-                il.MarkLabel(groupPassed);
+                // All branches fell through → group fails.
+                d.IL.Emit(OpCodes.Br, failLabel);
+                d.CsLine("goto rejected;");
+                d.MarkLabel(groupPassed);
             }
             else
             {
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
-                    EmitLeafPredicate(il, in pred.SubPredicates[b], failLabel, rootIdx, readerRefLocal);
+                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], failLabel, "rejected", rootIdx, readerRefLocal);
                     rootIdx++;
                 }
             }
             return;
         }
 
-        EmitLeafPredicate(il, in pred, failLabel, rootIdx, readerRefLocal);
+        EmitLeafPredicate(ref d, in pred, failLabel, "rejected", rootIdx, readerRefLocal);
         rootIdx++;
     }
 
+    /// <summary>Emit FindNext + per-op comparison for one leaf predicate. A failure routes
+    /// to (<paramref name="failIl"/>, <paramref name="failName"/>) — either the global "rejected"
+    /// label (top-level/AND group) or the OR-branch "nextBranch" label.</summary>
     private static void EmitLeafPredicate(
-        ILGenerator il,
+        ref DualEmit d,
         in ScanPredicateInfo pred,
-        Label failLabel,
+        Label failIl,
+        string failName,
         int rootIdx,
         LocalBuilder readerRefLocal)
     {
-        var nextPredicate = il.DefineLabel();
-        var foundLabel = il.DefineLabel();
+        // reader.Reset();
+        d.IL.Emit(OpCodes.Ldloc, readerRefLocal);
+        d.IL.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);
+        d.CsLine("reader.Reset();");
 
-        il.Emit(OpCodes.Ldloc, readerRefLocal);
-        il.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);
+        // StartsWith / EndsWith are full-field scans rather than positioning calls — they
+        // wrap FindNext internally, so they replace the usual FindNext+compare sequence.
+        if (pred.CompareOp == ScanCompareOp.StartsWith || pred.CompareOp == ScanCompareOp.EndsWith)
+        {
+            var helper = pred.CompareOp == ScanCompareOp.StartsWith
+                ? IlEmitterShared.CheckFieldTermStartsWith
+                : IlEmitterShared.CheckFieldTermEndsWith;
+            var helperName = pred.CompareOp == ScanCompareOp.StartsWith
+                ? "CompiledQueryHelper.CheckFieldTermStartsWith"
+                : "CompiledQueryHelper.CheckFieldTermEndsWith";
 
-        // FindNext(ctx.ResidualFieldRootPages[rootIdx])
-        il.Emit(OpCodes.Ldloc, readerRefLocal);
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
-        IlEmitterShared.EmitLdcI4(il, rootIdx);
-        il.Emit(OpCodes.Ldelem_I8);
-        il.Emit(OpCodes.Call, IlEmitterShared.ReaderFindNext);
+            // ref reader, fieldRootPage, paramSpan
+            d.IL.Emit(OpCodes.Ldloc, readerRefLocal);
+            d.CsStack.Push("ref reader");
+            d.LoadFieldRootPage(rootIdx);
+            d.LoadSliceSpan(pred.ParamIndex);
+            d.CallReturning(helper, arity: 3, csTemplate: helperName + "({0}, {1}, {2})");
+            // Fail if helper returned false.
+            EmitBranchFalse(ref d, failIl, failName);
+            return;
+        }
+
+        // FindNext(ctx.ResidualFieldRootPages[rootIdx]) leaves a bool on both stacks.
+        d.IL.Emit(OpCodes.Ldloc, readerRefLocal);
+        d.CsStack.Push("reader");
+        d.LoadFieldRootPage(rootIdx);
+        d.CallReturning(IlEmitterShared.ReaderFindNext, arity: 2, csTemplate: "{0}.FindNext({1})");
 
         switch (pred.CompareOp)
         {
             case ScanCompareOp.Exists:
-                il.Emit(OpCodes.Brfalse, failLabel);
-                il.Emit(OpCodes.Br, nextPredicate);
+                // Predicate succeeds iff FindNext returned true.
+                EmitBranchFalse(ref d, failIl, failName);
                 break;
 
             case ScanCompareOp.NotEqual:
-                il.Emit(OpCodes.Brtrue, foundLabel);
-                il.Emit(OpCodes.Br, nextPredicate);
-                il.MarkLabel(foundLabel);
-                EmitTypedComparison(il, in pred, rootIdx, readerRefLocal);
-                il.Emit(OpCodes.Brtrue, failLabel);
+            {
+                // NotEqual semantics: if the field is absent (FindNext == false), the
+                // predicate PASSES (nothing to be unequal to ≠ violation). If found, then
+                // it fails iff the value compares equal.
+                // C# mirror: emit as nested `if (FindNext) { if (compare) goto fail; }`
+                // matching the IL exactly. (The previous textual emitter emitted
+                // `if (!FindNext) goto rejected;` here — wrong for NotEqual; C# is
+                // diagnostic-only, but the lockstep emitter now mirrors the real IL.)
+                var notFoundIl = d.IL.DefineLabel();
+                // The DualEmit branch helpers would write IF (!found) goto notFound; here
+                // we want a `goto skip` C# but no jump back — so we open a C# `if (found)`
+                // block by hand around the equality compare.
+                var foundFragment = d.CsStack.Pop();
+                d.IL.Emit(OpCodes.Brfalse, notFoundIl);
+                d.CsLine($"if ({foundFragment})");
+                d.CsLine("{");
+                var prev = d.Indent;
+                d.Indent = prev + "    ";
+                EmitTypedComparison(ref d, in pred, readerRefLocal);
+                // FAIL if comparison is true (value equals).
+                EmitBranchTrue(ref d, failIl, failName);
+                d.Indent = prev;
+                d.CsLine("}");
+                d.IL.MarkLabel(notFoundIl);
                 break;
+            }
 
             default:
-                il.Emit(OpCodes.Brfalse, failLabel);
-                EmitTypedComparison(il, in pred, rootIdx, readerRefLocal);
-                il.Emit(OpCodes.Brfalse, failLabel);
+            {
+                // FindNext must return true.
+                EmitBranchFalse(ref d, failIl, failName);
+                // And the typed comparison must hold.
+                EmitTypedComparison(ref d, in pred, readerRefLocal);
+                EmitBranchFalse(ref d, failIl, failName);
                 break;
+            }
         }
-
-        il.MarkLabel(nextPredicate);
     }
 
+    /// <summary>Emit the comparison portion of a leaf predicate. On entry both stacks are
+    /// balanced; on exit both stacks have one extra bool (top of IL stack + C# fragment).
+    /// Equality/relational comparisons compose via the DualEmit stack machine; BETWEEN
+    /// uses a tiny diamond materializing 1/0 onto the stacks.</summary>
     private static void EmitTypedComparison(
-        ILGenerator il,
+        ref DualEmit d,
         in ScanPredicateInfo pred,
-        int rootIdx,
         LocalBuilder readerRefLocal)
     {
-        _ = rootIdx;
-
-        if (pred.CompareOp == ScanCompareOp.StartsWith)
-        {
-            // Multi-term: iterate ALL field terms — correct for both entry-scan and direct-scan
-            il.Emit(OpCodes.Ldloc, readerRefLocal);
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
-            IlEmitterShared.EmitLdcI4(il, rootIdx);
-            il.Emit(OpCodes.Ldelem_I8);
-            EmitLoadSliceSpan(il, pred.ParamIndex);
-            il.Emit(OpCodes.Call, IlEmitterShared.CheckFieldTermStartsWith);
-            return;
-        }
-
-        if (pred.CompareOp == ScanCompareOp.EndsWith)
-        {
-            il.Emit(OpCodes.Ldloc, readerRefLocal);
-            il.Emit(OpCodes.Ldarg_0);
-            il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
-            IlEmitterShared.EmitLdcI4(il, rootIdx);
-            il.Emit(OpCodes.Ldelem_I8);
-            EmitLoadSliceSpan(il, pred.ParamIndex);
-            il.Emit(OpCodes.Call, IlEmitterShared.CheckFieldTermEndsWith);
-            return;
-        }
-
         switch (pred.ValueType)
         {
             case ScanValueType.Long:
-            {
                 if (pred.CompareOp == ScanCompareOp.Between)
                 {
-                    var fail = il.DefineLabel();
-                    var done = il.DefineLabel();
-                    EmitLoadReaderCurrentLong(il, readerRefLocal);
-                    EmitLoadLongParam(il, pred.ParamIndex);
-                    il.Emit(OpCodes.Blt, fail);
-                    EmitLoadReaderCurrentLong(il, readerRefLocal);
-                    EmitLoadLongParam(il, pred.ParamIndex2);
-                    il.Emit(OpCodes.Bgt, fail);
-                    il.Emit(OpCodes.Ldc_I4_1);
-                    il.Emit(OpCodes.Br, done);
-                    il.MarkLabel(fail);
-                    il.Emit(OpCodes.Ldc_I4_0);
-                    il.MarkLabel(done);
+                    EmitLongBetween(ref d, readerRefLocal, pred.ParamIndex, pred.ParamIndex2);
                     break;
                 }
-                EmitLoadReaderCurrentLong(il, readerRefLocal);
-                EmitLoadLongParam(il, pred.ParamIndex);
-                EmitNumericCompareOp(il, pred.CompareOp);
+                d.LoadReaderCurrentLong(readerRefLocal);
+                d.LoadLongParam(pred.ParamIndex);
+                EmitNumericCompareOp(ref d, pred.CompareOp);
                 break;
-            }
 
             case ScanValueType.Double:
-            {
                 if (pred.CompareOp == ScanCompareOp.Between)
                 {
-                    var fail = il.DefineLabel();
-                    var done = il.DefineLabel();
-                    EmitLoadReaderCurrentDouble(il, readerRefLocal);
-                    EmitLoadDoubleParam(il, pred.ParamIndex);
-                    il.Emit(OpCodes.Blt_Un, fail);
-                    EmitLoadReaderCurrentDouble(il, readerRefLocal);
-                    EmitLoadDoubleParam(il, pred.ParamIndex2);
-                    il.Emit(OpCodes.Bgt_Un, fail);
-                    il.Emit(OpCodes.Ldc_I4_1);
-                    il.Emit(OpCodes.Br, done);
-                    il.MarkLabel(fail);
-                    il.Emit(OpCodes.Ldc_I4_0);
-                    il.MarkLabel(done);
+                    EmitDoubleBetween(ref d, readerRefLocal, pred.ParamIndex, pred.ParamIndex2);
                     break;
                 }
-                EmitLoadReaderCurrentDouble(il, readerRefLocal);
-                EmitLoadDoubleParam(il, pred.ParamIndex);
-                EmitNumericCompareOp(il, pred.CompareOp);
+                d.LoadReaderCurrentDouble(readerRefLocal);
+                d.LoadDoubleParam(pred.ParamIndex);
+                EmitNumericCompareOp(ref d, pred.CompareOp);
                 break;
-            }
 
             case ScanValueType.Slice:
             case ScanValueType.SliceLong:
             {
                 if (pred.CompareOp == ScanCompareOp.Between)
                 {
-                    var fail = il.DefineLabel();
-                    var done = il.DefineLabel();
-                    EmitLoadReaderDecodedSlice(il, readerRefLocal);
-                    EmitLoadSliceSpan(il, pred.ParamIndex);
-                    il.Emit(OpCodes.Call, IlEmitterShared.SequenceCompareTo);
-                    il.Emit(OpCodes.Ldc_I4_0);
-                    il.Emit(OpCodes.Blt, fail);
-                    EmitLoadReaderDecodedSlice(il, readerRefLocal);
-                    EmitLoadSliceSpan(il, pred.ParamIndex2);
-                    il.Emit(OpCodes.Call, IlEmitterShared.SequenceCompareTo);
-                    il.Emit(OpCodes.Ldc_I4_0);
-                    il.Emit(OpCodes.Bgt, fail);
-                    il.Emit(OpCodes.Ldc_I4_1);
-                    il.Emit(OpCodes.Br, done);
-                    il.MarkLabel(fail);
-                    il.Emit(OpCodes.Ldc_I4_0);
-                    il.MarkLabel(done);
+                    // Diamond mirroring the long/double Between using SequenceCompareTo(a,b) vs 0.
+                    var fail = d.DefineLabelPair("sliceBetweenFail");
+                    var done = d.DefineLabelPair("sliceBetweenDone");
+
+                    // a.SequenceCompareTo(low) < 0 → fail
+                    d.LoadReaderDecodedSlice(readerRefLocal);
+                    d.LoadSliceSpan(pred.ParamIndex);
+                    d.CallReturning(IlEmitterShared.SequenceCompareTo, arity: 2, csTemplate: "{0}.SequenceCompareTo({1})");
+                    d.PushConstInt(0);
+                    d.BranchLT(fail);
+
+                    // a.SequenceCompareTo(high) > 0 → fail
+                    d.LoadReaderDecodedSlice(readerRefLocal);
+                    d.LoadSliceSpan(pred.ParamIndex2);
+                    d.CallReturning(IlEmitterShared.SequenceCompareTo, arity: 2, csTemplate: "{0}.SequenceCompareTo({1})");
+                    d.PushConstInt(0);
+                    d.BranchGT(fail);
+
+                    EmitBetweenTail(ref d, fail, done);
                     break;
                 }
                 if (pred.CompareOp == ScanCompareOp.Equal || pred.CompareOp == ScanCompareOp.NotEqual)
                 {
-                    EmitLoadReaderDecodedSlice(il, readerRefLocal);
-                    EmitLoadSliceSpan(il, pred.ParamIndex);
-                    il.Emit(OpCodes.Call, IlEmitterShared.SequenceEqual);
+                    d.LoadReaderDecodedSlice(readerRefLocal);
+                    d.LoadSliceSpan(pred.ParamIndex);
+                    d.CallReturning(IlEmitterShared.SequenceEqual, arity: 2, csTemplate: "{0}.SequenceEqual({1})");
                     break;
                 }
-                EmitLoadReaderDecodedSlice(il, readerRefLocal);
-                EmitLoadSliceSpan(il, pred.ParamIndex);
-                il.Emit(OpCodes.Call, IlEmitterShared.SequenceCompareTo);
-                il.Emit(OpCodes.Ldc_I4_0);
-                EmitNumericCompareOp(il, pred.CompareOp);
+                // Relational: compare SequenceCompareTo result against 0 using the same op.
+                d.LoadReaderDecodedSlice(readerRefLocal);
+                d.LoadSliceSpan(pred.ParamIndex);
+                d.CallReturning(IlEmitterShared.SequenceCompareTo, arity: 2, csTemplate: "{0}.SequenceCompareTo({1})");
+                d.PushConstInt(0);
+                EmitNumericCompareOp(ref d, pred.CompareOp);
                 break;
             }
 
             default:
-                il.Emit(OpCodes.Ldc_I4_0);
+                // Unknown value type — emit a constant false so the predicate always rejects.
+                d.PushConstBool(false);
                 break;
         }
     }
 
-    private static void EmitNumericCompareOp(ILGenerator il, ScanCompareOp op)
+    /// <summary>Pop two numerics from both stacks and push 1/0 representing the compare result.</summary>
+    private static void EmitNumericCompareOp(ref DualEmit d, ScanCompareOp op)
     {
         switch (op)
         {
             case ScanCompareOp.Equal:
             case ScanCompareOp.NotEqual:
-                il.Emit(OpCodes.Ceq);
+                // Caller decides whether to invert (NotEqual branches on TRUE-equal → fail).
+                d.Ceq();
                 break;
             case ScanCompareOp.GreaterThan:
-                il.Emit(OpCodes.Cgt);
+                d.Cgt();
                 break;
             case ScanCompareOp.GreaterThanOrEqual:
-                il.Emit(OpCodes.Clt);
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Ceq);
+                // !(a < b)
+                d.Clt();
+                d.LogicalNot();
                 break;
             case ScanCompareOp.LessThan:
-                il.Emit(OpCodes.Clt);
+                d.Clt();
                 break;
             case ScanCompareOp.LessThanOrEqual:
-                il.Emit(OpCodes.Cgt);
-                il.Emit(OpCodes.Ldc_I4_0);
-                il.Emit(OpCodes.Ceq);
+                // !(a > b)
+                d.Cgt();
+                d.LogicalNot();
                 break;
             default:
-                il.Emit(OpCodes.Pop);
-                il.Emit(OpCodes.Pop);
-                il.Emit(OpCodes.Ldc_I4_0);
+                // Unknown compare → constant false. Discard the two operands first.
+                d.IL.Emit(OpCodes.Pop);
+                d.IL.Emit(OpCodes.Pop);
+                d.CsStack.Pop();
+                d.CsStack.Pop();
+                d.PushConstBool(false);
                 break;
         }
     }
 
-    private static void EmitLoadReaderCurrentLong(ILGenerator il, LocalBuilder readerRefLocal)
+    /// <summary>BETWEEN diamond over <c>reader.CurrentLong</c> and two long params.
+    /// Materializes 1/0 on the IL stack mirrored by a bool temp on the C# stack.</summary>
+    private static void EmitLongBetween(ref DualEmit d, LocalBuilder readerRefLocal, int loIdx, int hiIdx)
     {
-        il.Emit(OpCodes.Ldloc, readerRefLocal);
-        il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderCurrentLong);
+        var fail = d.DefineLabelPair("betweenFail");
+        var done = d.DefineLabelPair("betweenDone");
+
+        d.LoadReaderCurrentLong(readerRefLocal);
+        d.LoadLongParam(loIdx);
+        d.BranchLT(fail);
+
+        d.LoadReaderCurrentLong(readerRefLocal);
+        d.LoadLongParam(hiIdx);
+        d.BranchGT(fail);
+
+        EmitBetweenTail(ref d, fail, done);
     }
 
-    private static void EmitLoadReaderCurrentDouble(ILGenerator il, LocalBuilder readerRefLocal)
+    /// <summary>BETWEEN diamond over <c>reader.CurrentDouble</c> and two double params.
+    /// Uses unsigned float comparisons (Blt_Un / Bgt_Un) — matches the original IL.</summary>
+    private static void EmitDoubleBetween(ref DualEmit d, LocalBuilder readerRefLocal, int loIdx, int hiIdx)
     {
-        il.Emit(OpCodes.Ldloc, readerRefLocal);
-        il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderCurrentDouble);
+        var fail = d.DefineLabelPair("betweenFail");
+        var done = d.DefineLabelPair("betweenDone");
+
+        d.LoadReaderCurrentDouble(readerRefLocal);
+        d.LoadDoubleParam(loIdx);
+        d.BranchLTUnsigned(fail);
+
+        d.LoadReaderCurrentDouble(readerRefLocal);
+        d.LoadDoubleParam(hiIdx);
+        d.BranchGTUnsigned(fail);
+
+        EmitBetweenTail(ref d, fail, done);
     }
 
-    private static void EmitLoadReaderDecodedSlice(ILGenerator il, LocalBuilder readerRefLocal)
+    /// <summary>Shared tail for BETWEEN diamonds: materialize the 1/0 result via a temp,
+    /// emit the fail/done labels, and leave a bool fragment on the C# stack.</summary>
+    private static void EmitBetweenTail(ref DualEmit d, LabelPair fail, LabelPair done)
     {
-        il.Emit(OpCodes.Ldloc, readerRefLocal);
-        il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderCurrent);
-        il.Emit(OpCodes.Callvirt, IlEmitterShared.CompactKeyDecoded);
+        var tmp = d.DeclareTempBool("between");
+        d.IL.Emit(OpCodes.Ldc_I4_1);
+        d.CsLine($"{tmp} = true;");
+        d.GotoAlways(done);
+
+        d.MarkLabel(fail);
+        d.IL.Emit(OpCodes.Ldc_I4_0);
+        d.CsLine($"{tmp} = false;");
+
+        d.MarkLabel(done);
+        d.PushTempName(tmp);
     }
 
-    private static void EmitLoadLongParam(ILGenerator il, int index)
+    /// <summary>Pop the top of both stacks and branch to (<paramref name="ilLabel"/>,
+    /// <paramref name="csName"/>) when the value is false. The C# label name may be
+    /// the literal "rejected" or a DualEmit-generated branch name, so we accept the
+    /// raw string rather than a LabelPair.</summary>
+    private static void EmitBranchFalse(ref DualEmit d, Label ilLabel, string csName)
     {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxLongParams);
-        IlEmitterShared.EmitLdcI4(il, index);
-        il.Emit(OpCodes.Ldelem_I8);
+        d.IL.Emit(OpCodes.Brfalse, ilLabel);
+        var a = d.CsStack.Pop();
+        d.CsLine($"if (!{a}) goto {csName};");
     }
 
-    private static void EmitLoadDoubleParam(ILGenerator il, int index)
+    private static void EmitBranchTrue(ref DualEmit d, Label ilLabel, string csName)
     {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxDoubleParams);
-        IlEmitterShared.EmitLdcI4(il, index);
-        il.Emit(OpCodes.Ldelem_R8);
+        d.IL.Emit(OpCodes.Brtrue, ilLabel);
+        var a = d.CsStack.Pop();
+        d.CsLine($"if ({a}) goto {csName};");
     }
-
-    private static void EmitLoadSliceSpan(ILGenerator il, int paramIndex)
-    {
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxSliceParams);
-        IlEmitterShared.EmitLdcI4(il, paramIndex);
-        il.Emit(OpCodes.Ldelema, typeof(Slice));
-        il.Emit(OpCodes.Call, IlEmitterShared.SliceAsReadOnlySpan);
-    }
-
-
-    public static string EmitCSharpSource(ScanPredicateInfo[] predicates) {
-        if (predicates == null || predicates.Length == 0) return "// No residual predicates.\n";
-        var sb = new StringBuilder(); sb.AppendLine("static int ResidualScan(IPredicateEvaluationContext ctx, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)"); sb.AppendLine("{"); sb.AppendLine("    int length = entryIds.Length;"); sb.AppendLine("    int writeIdx = 0;"); sb.AppendLine("    for (int i = 0; i < length; i++)"); sb.AppendLine("    {"); sb.AppendLine("        ref EntryTermsReader reader = ref readers[i];");
-        int rootIdx = 0; for (int p = 0; p < predicates.Length; p++) { sb.AppendLine(); EmitCSharpPredicate(sb, in predicates[p], ref rootIdx, p); }
-        sb.AppendLine(); sb.AppendLine("        entryIds[writeIdx] = entryIds[i];"); sb.AppendLine("        if (originalIndexes.Length != 0) originalIndexes[writeIdx] = originalIndexes[i];"); sb.AppendLine("        writeIdx++; continue;"); sb.AppendLine("        rejected:;"); sb.AppendLine("    }"); sb.AppendLine("    return writeIdx;"); sb.AppendLine("}"); return sb.ToString(); }
-    private static void EmitCSharpPredicate(StringBuilder sb, in ScanPredicateInfo pred, ref int rootIdx, int pIdx) { if (pred.SubPredicates != null) { if (pred.Group == GroupKind.Or) { sb.AppendLine($"        // OR group ({pIdx})"); sb.AppendLine("        {"); for (int b = 0; b < pred.SubPredicates.Length; b++) { EmitCSharpLeafBranch(sb, in pred.SubPredicates[b], rootIdx, $"gp_{pIdx}"); rootIdx++; } sb.AppendLine("            goto rejected;"); sb.AppendLine($"            gp_{pIdx}:;"); sb.AppendLine("        }"); } else { for (int b = 0; b < pred.SubPredicates.Length; b++) { EmitCSharpLeafPredicate(sb, in pred.SubPredicates[b], rootIdx); rootIdx++; } } return; } EmitCSharpLeafPredicate(sb, in pred, rootIdx); rootIdx++; }
-    private static void EmitCSharpLeafBranch(StringBuilder sb, in ScanPredicateInfo pred, int ri, string pl) { sb.AppendLine("            reader.Reset();"); switch (pred.CompareOp) { case ScanCompareOp.Exists: sb.AppendLine($"            if (reader.FindNext(ctx.ResidualFieldRootPages[{ri}])) goto {pl};"); break; case ScanCompareOp.StartsWith: sb.AppendLine($"            if (CompiledQueryHelper.CheckFieldTermStartsWith(ref reader, ctx.ResidualFieldRootPages[{ri}], ctx.ResidualSliceParams[{pred.ParamIndex}].AsReadOnlySpan())) goto {pl};"); break; case ScanCompareOp.EndsWith: sb.AppendLine($"            if (CompiledQueryHelper.CheckFieldTermEndsWith(ref reader, ctx.ResidualFieldRootPages[{ri}], ctx.ResidualSliceParams[{pred.ParamIndex}].AsReadOnlySpan())) goto {pl};"); break; default: sb.AppendLine($"            if (reader.FindNext(ctx.ResidualFieldRootPages[{ri}]) && {EmitCSharpComparison(in pred)}) goto {pl};"); break; } }
-    private static void EmitCSharpLeafPredicate(StringBuilder sb, in ScanPredicateInfo pred, int ri) { sb.AppendLine("        reader.Reset();"); switch (pred.CompareOp) { case ScanCompareOp.Exists: sb.AppendLine($"        if (!reader.FindNext(ctx.ResidualFieldRootPages[{ri}])) goto rejected;"); break; case ScanCompareOp.StartsWith: sb.AppendLine($"        if (!CompiledQueryHelper.CheckFieldTermStartsWith(ref reader, ctx.ResidualFieldRootPages[{ri}], ctx.ResidualSliceParams[{pred.ParamIndex}].AsReadOnlySpan())) goto rejected;"); break; case ScanCompareOp.EndsWith: sb.AppendLine($"        if (!CompiledQueryHelper.CheckFieldTermEndsWith(ref reader, ctx.ResidualFieldRootPages[{ri}], ctx.ResidualSliceParams[{pred.ParamIndex}].AsReadOnlySpan())) goto rejected;"); break; default: sb.AppendLine($"        if (!reader.FindNext(ctx.ResidualFieldRootPages[{ri}])) goto rejected;"); sb.AppendLine($"        if (!({EmitCSharpComparison(in pred)})) goto rejected;"); break; } }
-    private static string EmitCSharpComparison(in ScanPredicateInfo pred) { return pred.ValueType switch { ScanValueType.Long => pred.CompareOp switch { ScanCompareOp.Equal or ScanCompareOp.NotEqual => $"reader.CurrentLong == ctx.ResidualLongParams[{pred.ParamIndex}]", ScanCompareOp.GreaterThan => $"reader.CurrentLong > ctx.ResidualLongParams[{pred.ParamIndex}]", ScanCompareOp.Between => $"reader.CurrentLong >= ctx.ResidualLongParams[{pred.ParamIndex}] && reader.CurrentLong <= ctx.ResidualLongParams[{pred.ParamIndex2}]", _ => "false" }, ScanValueType.Double => pred.CompareOp switch { ScanCompareOp.Equal or ScanCompareOp.NotEqual => $"reader.CurrentDouble == ctx.ResidualDoubleParams[{pred.ParamIndex}]", ScanCompareOp.GreaterThan => $"reader.CurrentDouble > ctx.ResidualDoubleParams[{pred.ParamIndex}]", ScanCompareOp.Between => $"reader.CurrentDouble >= ctx.ResidualDoubleParams[{pred.ParamIndex}] && reader.CurrentDouble <= ctx.ResidualDoubleParams[{pred.ParamIndex2}]", _ => "false" }, ScanValueType.Slice or ScanValueType.SliceLong => pred.CompareOp switch { ScanCompareOp.Equal or ScanCompareOp.NotEqual => $"reader.Current.Decoded().SequenceEqual(ctx.ResidualSliceParams[{pred.ParamIndex}].AsReadOnlySpan())", ScanCompareOp.Between => $"reader.Current.Decoded().SequenceCompareTo(ctx.ResidualSliceParams[{pred.ParamIndex}].AsReadOnlySpan()) >= 0 && reader.Current.Decoded().SequenceCompareTo(ctx.ResidualSliceParams[{pred.ParamIndex2}].AsReadOnlySpan()) <= 0", _ => "false" }, _ => "false" }; }
 }

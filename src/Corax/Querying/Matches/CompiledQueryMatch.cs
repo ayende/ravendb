@@ -59,8 +59,7 @@ public class CompiledQueryMatch(
     public long EntryScanEntriesScanned;
     public long EntryScanEntriesPassed;
 
-    private readonly string _explainSource = compiledPlan.ExplainSource;
-    private readonly string _csharpSource = compiledPlan.CSharpSource;
+    private readonly Planning.CompiledPlan _compiledPlan = compiledPlan;
     public readonly IndexSearcher Searcher = searcher;
     public readonly CancellationToken Token = token;
 
@@ -182,8 +181,9 @@ public class CompiledQueryMatch(
     {
         var parameters = new Dictionary<string, string>
         {
-            ["Explain"] = _explainSource ?? "N/A",
-            ["CSharpSource"] = _csharpSource ?? "N/A"
+            ["Explain"] = _compiledPlan?.ExplainSource ?? "N/A",
+            ["CSharpSource"] = _compiledPlan?.CSharpSource ?? "N/A",
+            ["CSharpSourceFormatted"] = _compiledPlan?.CSharpSourceFormatted ?? "N/A"
         };
 
         if (EntryScanTakenAtOp >= 0)

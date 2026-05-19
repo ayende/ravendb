@@ -129,6 +129,12 @@ public sealed class CompiledPlan
     /// <summary>Compilable C# source string mirroring emitted IL.</summary>
     public string CSharpSource { get; init; }
 
+    private string _cSharpSourceFormatted;
+    /// <summary>Roslyn-normalized version of <see cref="CSharpSource"/>. Computed lazily on first
+    /// access and cached. Benign races between concurrent readers produce the same string so no
+    /// lock is needed.</summary>
+    public string CSharpSourceFormatted => _cSharpSourceFormatted ??= CSharpFormatter.Format(CSharpSource);
+
     /// <summary>Template inspection nodes built during IL emission.
     /// At query time, cloned and populated with per-execution telemetry
     /// (timings, result counts, scanned entries) from CompiledQueryMatch.</summary>
