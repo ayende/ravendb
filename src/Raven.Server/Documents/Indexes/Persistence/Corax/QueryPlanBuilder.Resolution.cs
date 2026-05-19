@@ -275,7 +275,6 @@ internal static partial class QueryPlanBuilder
             queryMatch = compoundExact;
             innerMatch = compoundExact;
             resultStrategy = ExecutionStrategy.CompoundExact;
-            compiledPlan.CompoundExactData = new CompoundExactPlan(plan.CompoundExactClauseA, plan.CompoundExactClauseB, plan.CompoundExactAFirst);
             needsFullChain = false;
             trail.Record("CompoundExact", true, "compound exact-term lookup");
         }
@@ -295,7 +294,6 @@ internal static partial class QueryPlanBuilder
                     innerMatch = compoundMatch;
                     queryMatch = OrderBy(builderParameters, compoundMatch, orderByFields, hasEmptySorts);
                     resultStrategy = ExecutionStrategy.CompoundField;
-                    compiledPlan.CompoundFieldData = new CompoundFieldPlan(plan.CompoundFieldDrivingClause, plan.CompoundFieldSortName, plan.CompoundFieldIsMultiSort);
                     needsFullChain = false;
                     trail.Record("CompoundField", true, "compound tree scan with ORDER BY");
                 }
@@ -314,7 +312,6 @@ internal static partial class QueryPlanBuilder
                     queryMatch = directMatch;
                     innerMatch = directMatch;
                     resultStrategy = ExecutionStrategy.DirectScan;
-                    compiledPlan.DirectScanData = new DirectScanPlan(plan.SortDrivingClauseIndex);
                     needsFullChain = false;
                     trail.Record("DirectScan", true, "direct tree scan on sort field");
                 }
@@ -580,7 +577,7 @@ internal static partial class QueryPlanBuilder
                 CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
                 CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanCsharp),
 
-                CSharpSource = csharpText + "\n" + scanCsharp,
+                Source = csharpText + "\n" + scanCsharp,
                 Ordering = plan.OperandOrdering,
                 TypeSignature = plan.TypeSignature,
                 FullKinds = plan.FullKinds,

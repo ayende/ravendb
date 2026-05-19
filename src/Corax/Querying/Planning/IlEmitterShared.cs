@@ -1,18 +1,12 @@
 using System;
 using System.Diagnostics;
-using System.Linq;
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
 using System.Threading;
-using Corax.Querying;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Primitives;
 using Corax.Utils;
-using Sparrow;
 using Voron;
 using Voron.Data.CompactTrees;
 using Voron.Data.RoaringBitmaps;
@@ -23,14 +17,10 @@ namespace Corax.Querying.Planning;
 /// and <see cref="ResidualScanIlEmitter"/>.</summary>
 public static class IlEmitterShared
 {
-    // --- From QueryILEmitter ---
-
-    // CompiledQueryMatch fields (accessed by emitted IL)
     public static readonly FieldInfo CtxBitmaps = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Bitmaps));
     public static readonly FieldInfo CtxTermSources = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.PostingSources));
     public static readonly FieldInfo CtxLimit = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Limit));
 
-    // Timing helpers
     public static readonly MethodInfo GetTimestamp =
         typeof(Stopwatch).GetMethod(nameof(Stopwatch.GetTimestamp))!;
     public static readonly MethodInfo RecordTiming =
@@ -40,16 +30,14 @@ public static class IlEmitterShared
     public static readonly MethodInfo RunEntryScanMethod =
         typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RunEntryScan))!;
 
-    // IQueryMatch
     public static readonly MethodInfo MatchCountGetter = typeof(IQueryMatch).GetProperty(nameof(IQueryMatch.Count))!.GetGetMethod()!;
 
-    // RoaringBitmap — methods called directly by emitted IL
     public static readonly MethodInfo AndWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndWith),
             [typeof(RoaringBitmap).MakeByRefType()])!;
     public static readonly MethodInfo LazyOrWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.LazyOrWith),
-            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
+            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public,
             [typeof(RoaringBitmap).MakeByRefType()])!;
     public static readonly MethodInfo AndNotWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndNotWith),
@@ -64,12 +52,8 @@ public static class IlEmitterShared
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.SwapContents),
             [typeof(RoaringBitmap).MakeByRefType()])!;
 
-    // CancellationToken
     public static readonly MethodInfo ThrowIfCancelled = typeof(CancellationToken).GetMethod(nameof(CancellationToken.ThrowIfCancellationRequested))!;
 
-    // IndexSearcher — for entry scan
-
-    // CompiledQueryMatch typed parameter arrays
     public static readonly FieldInfo CtxResolvedMatches =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ResolvedMatches));
     public static readonly FieldInfo CtxInRangeCounts =
@@ -81,11 +65,9 @@ public static class IlEmitterShared
     public static readonly FieldInfo CtxToken =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Token));
 
-    // CompactKey.Decoded() → ReadOnlySpan<byte>
     public static readonly MethodInfo CompactKeyDecoded =
         typeof(CompactKey).GetMethod(nameof(CompactKey.Decoded), Type.EmptyTypes)!;
 
-    // Ctx-based entry points — take ref CompiledQueryMatch, IL just pushes ldarg.0 + int constants
     public static readonly MethodInfo CtxFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromPostingSource))!;
     public static readonly MethodInfo CtxFillAllEntries = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillAllEntries))!;
     public static readonly MethodInfo CtxFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromTreeScan))!;
@@ -100,43 +82,34 @@ public static class IlEmitterShared
     public static readonly MethodInfo CtxAndNotFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromTreeScan))!;
     public static readonly MethodInfo CtxAndNotFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxAndNotFromMatch))!;
 
-    // ReadOnlySpan<T0> where T0 is the 0th generic method parameter — used to resolve
-    // MemoryExtensions overloads that take (ReadOnlySpan<T>, ReadOnlySpan<T>).
     private static readonly Type ReadOnlySpanOfT0 = typeof(ReadOnlySpan<>).MakeGenericType(Type.MakeGenericMethodParameter(0));
 
-    // MemoryExtensions.SequenceCompareTo<T>(ReadOnlySpan<T>, ReadOnlySpan<T>)
     public static readonly MethodInfo SequenceCompareTo = typeof(MemoryExtensions)
         .GetMethod(nameof(MemoryExtensions.SequenceCompareTo), 1,
             BindingFlags.Public | BindingFlags.Static, null,
             [ReadOnlySpanOfT0, ReadOnlySpanOfT0], null)!
         .MakeGenericMethod(typeof(byte));
 
-    // MemoryExtensions.SequenceEqual<T>(ReadOnlySpan<T>, ReadOnlySpan<T>)
     public static readonly MethodInfo SequenceEqual = typeof(MemoryExtensions)
         .GetMethod(nameof(MemoryExtensions.SequenceEqual), 1,
             BindingFlags.Public | BindingFlags.Static, null,
             [ReadOnlySpanOfT0, ReadOnlySpanOfT0], null)!
         .MakeGenericMethod(typeof(byte));
 
-    // Entry-scan cost heuristics — called from emitted IL so thresholds stay in one place
     public static readonly MethodInfo ShouldSwitchToEntryScan =
         typeof(QueryPrimitives).GetMethod(
             nameof(QueryPrimitives.ShouldSwitchToEntryScan),
             [typeof(long), typeof(long)])!;
 
-    // --- From ResidualScanIlEmitter ---
-
-    // IPredicateEvaluationContext interface property getters
     public static readonly MethodInfo CtxLongParams =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualLongParams)).GetGetMethod();
+        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualLongParams))!.GetGetMethod();
     public static readonly MethodInfo CtxDoubleParams =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualDoubleParams)).GetGetMethod();
+        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualDoubleParams))!.GetGetMethod();
     public static readonly MethodInfo CtxSliceParams =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualSliceParams)).GetGetMethod();
+        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualSliceParams))!.GetGetMethod();
     public static readonly MethodInfo CtxFieldRootPages =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualFieldRootPages)).GetGetMethod();
+        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualFieldRootPages))!.GetGetMethod();
 
-    // EntryTermsReader members
     public static readonly MethodInfo ReaderReset =
         typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset));
     public static readonly MethodInfo ReaderFindNext =
@@ -148,7 +121,6 @@ public static class IlEmitterShared
     public static readonly FieldInfo ReaderCurrent =
         typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.Current));
 
-    // Span<T> reflection handles (used by emitted IL for array access/length in the delegate)
     public static readonly MethodInfo SpanLongLength =
         typeof(Span<long>).GetMethod("get_Length")!;
     public static readonly MethodInfo SpanIntLength =
@@ -168,7 +140,6 @@ public static class IlEmitterShared
     public static readonly MethodInfo CheckFieldTermEndsWith =
         typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermEndsWith));
 
-    /// <summary>Emit the most compact Ldc_I4 opcode for the given value.</summary>
     public static void EmitLdcI4(ILGenerator il, int value)
     {
         switch (value)

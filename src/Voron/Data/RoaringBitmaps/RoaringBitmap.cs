@@ -1076,7 +1076,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// full Vector256&lt;int&gt; chunks without a scalar tail. Used by RoaringBitmap.Select
     /// here and by Corax's DirectScanMatch via InternalsVisibleTo.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static void InitializeIndices(Span<int> indices, int read)
+    public static void InitializeIndices(Span<int> indices, int read)
     {
         Debug.Assert(PadToVector256Width(read) <= indices.Length, "SIMD write past indices span");
         ref int ptr = ref MemoryMarshal.GetReference(indices);
