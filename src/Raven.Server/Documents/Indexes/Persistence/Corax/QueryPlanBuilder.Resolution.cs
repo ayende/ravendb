@@ -230,8 +230,10 @@ internal static partial class QueryPlanBuilder
                         if (isFullScan == false)
                         {
                             drivingIdx = plan.SortDrivingClauseIndex;
-                            if (drivingIdx >= 0 && (plan.Executions[drivingIdx] is { BoostFactor: > 0 } ||
-                                                    plan.Executions[drivingIdx].PackedParamValue.IsNone))
+                            // BoostFactor cannot land here: ComputeOptFlags clears
+                            // DirectScanCandidate template-wide for any boost; only IsNone
+                            // (parameter resolved to null) can still invalidate at runtime.
+                            if (drivingIdx >= 0 && plan.Executions[drivingIdx].PackedParamValue.IsNone)
                                 drivingIdx = -1;
                         }
                         if (isFullScan || drivingIdx >= 0)
@@ -3667,7 +3669,8 @@ internal static partial class QueryPlanBuilder
             if (drivingIdx == -1)
             {
                 // Fallback: template didn't identify a candidate (e.g. WHEN eliminated the
-                // clause, or sort field didn't match any template clause).
+                // clause, or sort field didn't match any template clause). Boost is ruled
+                // out at template time, so we don't recheck BoostFactor here.
                 for (int i = 0; i < clauses.Count; i++)
                 {
                     if (clauses[i].FieldName != sortFieldName)
@@ -3678,15 +3681,9 @@ internal static partial class QueryPlanBuilder
                         continue;
                     if (clauses[i].IsNegated)
                         continue;
-                    if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
-                        continue;
                     drivingIdx = i;
                     break;
                 }
-            }
-            else if (execs[drivingIdx] is { BoostFactor: > 0 })
-            {
-                drivingIdx = -1;
             }
 
             if (drivingIdx == -1)
@@ -3703,8 +3700,7 @@ internal static partial class QueryPlanBuilder
             {
                 bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
                 if (i == drivingIdx) continue;
-                if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
-                    return false;
+                // Boost is ruled out at template time (see ComputeOptFlags).
                 var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref rlongIdx, ref rdoubleIdx, ref rsliceIdx);
                 if (pred == null)
                     return false;

@@ -305,20 +305,23 @@ internal static partial class QueryPlanBuilder
         sortDrivingIdx = -1;
         var flags = PlanOptFlags.None;
         int equalsCount = 0;
+        // Any boost — anywhere in the clause tree — rules out DirectScan and
+        // CompoundField. Both strategies stream terms straight off the tree in
+        // sort order, with no scoring stage, so a boosted query cannot use them.
+        // Gating here at template time means runtime never re-checks BoostFactor.
+        bool anyBoost = HasAnyBoost(clauses);
         for (int i = 0; i < clauses.Length; i++)
         {
             var c = clauses[i];
             if (c.IsNegated || c.HasBoost)
                 continue;
+            if (c.ClauseType == ClauseType.Equals)
+                equalsCount++;
+            if (anyBoost)
+                continue;
             switch (c.ClauseType)
             {
                 case ClauseType.Equals:
-                    equalsCount++;
-                    flags |= PlanOptFlags.DirectScanCandidate;
-                    if (sortDrivingIdx == -1 && orderByPrimaryField != null
-                        && c.FieldName == orderByPrimaryField)
-                        sortDrivingIdx = i;
-                    break;
                 case ClauseType.GreaterThan:
                 case ClauseType.GreaterThanOrEqual:
                 case ClauseType.LessThan:
@@ -334,6 +337,32 @@ internal static partial class QueryPlanBuilder
         if (equalsCount >= 2)
             flags |= PlanOptFlags.CompoundExactCandidate;
         return flags;
+    }
+
+    /// <summary>True if any clause anywhere in the tree carries a boost wrapper.
+    /// Recurses into Or/And sub-clauses; boost propagation in the walker may set
+    /// HasBoost on inner clauses without lifting it to the outer group.</summary>
+    private static bool HasAnyBoost(ClauseInfo[] clauses)
+    {
+        for (int i = 0; i < clauses.Length; i++)
+            if (HasBoostRecursive(clauses[i]))
+                return true;
+        return false;
+    }
+
+    private static bool HasBoostRecursive(ClauseInfo c)
+    {
+        if (c.HasBoost)
+            return true;
+        if (c.OrSubClauses != null)
+            for (int i = 0; i < c.OrSubClauses.Count; i++)
+                if (HasBoostRecursive(c.OrSubClauses[i]))
+                    return true;
+        if (c.AndSubClauses != null)
+            for (int i = 0; i < c.AndSubClauses.Count; i++)
+                if (HasBoostRecursive(c.AndSubClauses[i]))
+                    return true;
+        return false;
     }
 
     /// <summary>Find the first pair of non-negated, non-boosted Equals clauses whose field names
