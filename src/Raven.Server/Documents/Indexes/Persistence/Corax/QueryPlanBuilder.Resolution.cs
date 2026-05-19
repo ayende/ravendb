@@ -1146,7 +1146,7 @@ internal static partial class QueryPlanBuilder
                     {
                         foreach (var elem in arr)
                         {
-                            var (elemVal, elemType) = ResolveInValue(elem, ValueTokenType.Parameter);
+                            var (elemVal, elemType) = ResolveParameterValue(elem);
                             resolvedValues.Add(elemVal);
                             termTypes.Add(ToParamValueType(elemType));
                             if (elemVal == null)
@@ -1155,7 +1155,7 @@ internal static partial class QueryPlanBuilder
                     }
                     else if (inRaw != null)
                     {
-                        var (singleVal, singleType) = ResolveInValue(inRaw, ValueTokenType.Parameter);
+                        var (singleVal, singleType) = ResolveParameterValue(inRaw);
                         resolvedValues.Add(singleVal);
                         termTypes.Add(ToParamValueType(singleType));
                     }
@@ -1913,20 +1913,27 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Resolve a single IN term to a typed TermQuery.
+    /// <summary>Compute the field metadata and packed parameter for an IN term at the given index.
+    /// Shared by <see cref="ResolveInTerm"/> (bitmap path) and <see cref="ResolveInTermSource"/>
+    /// (posting-list path) to ensure field resolution and index arithmetic stay in sync.</summary>
+    private static (FieldMetadata FieldMeta, PackedParam TermPacked) ResolveInTermParam(
+        ClauseInfo clause, ClauseExecution exec, int termIndex,
+        IndexSearcher indexSearcher, PlanParameters parameters, QueryBuilderParameters builderParams)
+    {
+        // ResolveFieldMetadata picks up the exact/search field name variant for dynamic indexes (#4777 fix).
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+        var p = exec.PackedParamValue;
+        return (fieldMeta, new PackedParam(p.ValueType, p.Param1 + termIndex));
+    }
+
+    /// <summary>Resolve a single IN term to a typed TermQuery (bitmap path).
     /// IN terms are stored contiguously: PackedParamValue.Param1 = start index, InTermCount = count.
     /// Only non-null terms are in the typed array. Null is handled separately via HasNullTerm.</summary>
     private static IQueryMatch ResolveInTerm(ClauseInfo clause, ClauseExecution exec, int termIndex,
         IndexSearcher indexSearcher, QueryExecution plan,
         PlanParameters parameters, QueryBuilderParameters builderParams)
     {
-        // Use ResolveFieldMetadata to pick up the exact/search field name variant
-        // for dynamic indexes (#4777 fix).
-        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
-
-        var p = exec.PackedParamValue;
-        int idx = p.Param1 + termIndex;
-        var termPacked = new PackedParam(p.ValueType, idx);
+        var (fieldMeta, termPacked) = ResolveInTermParam(clause, exec, termIndex, indexSearcher, parameters, builderParams);
         return TermQueryFromParam(termPacked, fieldMeta, indexSearcher, plan);
     }
 
@@ -2212,22 +2219,13 @@ internal static partial class QueryPlanBuilder
         return DecodePostingListId(postingListId, indexSearcher);
     }
 
-    /// <summary>Resolve a single In/AllIn term to a posting-list ID.
-    /// Uses <paramref name="termIndex"/> into <see cref="ClauseInfo.InTerms"/> /
-    /// <see cref="ClauseInfo.InTermTypes"/> to pick the correct numeric vs. string
-    /// overload — avoids the long.TryParse false-positive on zero-padded string
-    /// values like "000001" (parses as 1L but is indexed as the string "000001").</summary>
+    /// <summary>Resolve a single In/AllIn term to a posting-list source (posting-list path).
+    /// Uses <see cref="ResolveInTermParam"/> for field resolution and index arithmetic.</summary>
     private static PostingSource ResolveInTermSource(ClauseInfo clause, ClauseExecution exec, int termIndex, IndexSearcher indexSearcher,
         QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
     {
-        // Use ResolveFieldMetadata to pick up the exact/search field name variant (#4777 fix).
-        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
-
-        var p = exec.PackedParamValue;
-        int idx = p.Param1 + termIndex;
-        var termPacked = new PackedParam(p.ValueType, idx);
-        long postingListId = GetTermPostingListIdFromParam(termPacked, fieldMeta, indexSearcher, plan);
-        return DecodePostingListId(postingListId, indexSearcher);
+        var (fieldMeta, termPacked) = ResolveInTermParam(clause, exec, termIndex, indexSearcher, parameters, builderParams);
+        return DecodePostingListId(GetTermPostingListIdFromParam(termPacked, fieldMeta, indexSearcher, plan), indexSearcher);
     }
 
     /// <summary>Resolve field metadata for a term-source clause. Mirrors the

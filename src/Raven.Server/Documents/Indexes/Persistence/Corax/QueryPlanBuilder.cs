@@ -722,21 +722,9 @@ internal static partial class QueryPlanBuilder
         var inBindings = new List<ParameterBinding>();
         foreach (var value in inExpr.Values)
         {
-            if (value is ValueExpression ve)
-            {
-                if (ve.Value == ValueTokenType.Parameter)
-                {
-                    // Parameter — could be a single value or an array. Mark as array-capable.
-                    inBindings.Add(new ParameterBinding { Source = BindingSource.QueryParameter, ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter });
-                }
-                else
-                {
-                    // Literal value
-                    var rawValue = ve.GetValue(queryParameters);
-                    var (resolved, resolvedType) = ResolveInValue(rawValue, ve.Value);
-                    inBindings.Add(new ParameterBinding { Source = BindingSource.Literal, LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) });
-                }
-            }
+            var binding = CreateBinding(value, queryParameters);
+            if (binding != null)
+                inBindings.Add(binding);
         }
 
         // Empty IN() with no bindings still creates an In clause —
@@ -1096,6 +1084,10 @@ internal static partial class QueryPlanBuilder
 
         switch (value)
         {
+            case null:
+                return (null, ValueTokenType.String);
+            case bool b:
+                return (b ? "true" : "false", ValueTokenType.String);
             case long l:
                 return (l, ValueTokenType.Long);
             case int i:
@@ -1106,13 +1098,17 @@ internal static partial class QueryPlanBuilder
                 return ((double)f, ValueTokenType.Double);
             case decimal dec:
                 return ((double)dec, ValueTokenType.Double);
+            case DateTime dt:
+                return (dt.Ticks, ValueTokenType.Long);
+            case DateTimeOffset dto:
+                return (dto.UtcDateTime.Ticks, ValueTokenType.Long);
             case LazyNumberValue lnv when lnv.TryParseLong(out long lnvLong):
                 return (lnvLong, ValueTokenType.Long);
             case LazyNumberValue lnv:
                 return ((double)lnv, ValueTokenType.Double);
             default:
             {
-                var str = value?.ToString();
+                var str = value.ToString();
                 if (str is { Length: > 18 and < 35 } && str.Contains('T')
                     && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
                         System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
@@ -1200,22 +1196,6 @@ internal static partial class QueryPlanBuilder
             PackedParam.TypeDouble => idx < (plan.DoubleValues?.Length ?? 0) ? plan.DoubleValues[idx].ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
             _ => idx < (plan.StringValues?.Length ?? 0) ? plan.StringValues[idx] : null
         };
-    }
-
-    /// <summary>Resolve an IN value to its native type, handling booleans and dates.</summary>
-    private static (object Value, ValueTokenType Type) ResolveInValue(object value, ValueTokenType literalType)
-    {
-        if (value == null)
-            return (null, ValueTokenType.String);
-        if (value is bool b)
-            return (b ? "true" : "false", ValueTokenType.String);
-        if (value is DateTime dt)
-            return (dt.Ticks, ValueTokenType.Long);
-        if (value is DateTimeOffset dto)
-            return (dto.UtcDateTime.Ticks, ValueTokenType.Long);
-        if (literalType != ValueTokenType.Parameter)
-            return (value, literalType);
-        return ResolveParameterValue(value);
     }
 
     // ── Cardinality estimation ───────────────────────────────────────────
