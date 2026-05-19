@@ -37,6 +37,14 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     private readonly delegate*<SortingMatch<TInner>, Span<long>, int> _fillFunc;
     private readonly int _take;
     private const int NotStarted = -1;
+    /// <summary>Threshold for DrainAndSort pre-allocation: counts above this are unknown/unbounded
+    /// and use the growing-buffer pattern instead of a fixed pre-sized allocation.</summary>
+    private const int MaxPreallocCount = 1024 * 1024;
+    /// <summary>Fallback buffer size for DrainAndSort when count is unknown or exceeds <see cref="MaxPreallocCount"/>.</summary>
+    private const int DrainFallbackBufferSize = 4096;
+    /// <summary>UTF-8 byte buffer size for stackalloc encode/compare in sort-hint seek and SliceEqualsUtf8.
+    /// Strings longer than this fall back to heap allocation.</summary>
+    private const int Utf8StackAllocThreshold = 256;
     private ByteStringContext<ByteStringMemoryCache>.InternalScope _entriesBufferScope;
 
     private ContextBoundNativeList<long> _results;
@@ -177,12 +185,13 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 // DrainAndSort: Non-bitmap path (PostFilterMatch, VectorSearchMatch, etc.)
                 // Drain all results by calling Fill repeatedly, then heap sort.
                 var count = match._inner.Count;
-                int bufferSize = count is > 0 and < 1024 * 1024 ? (int)count : 4096;
+                int bufferSize = count is > 0 and < MaxPreallocCount ? (int)count : DrainFallbackBufferSize;
+                // Note: scope cannot use 'using' here — GrowAllocation takes it as ref.
                 var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
                 var allMatches = new Span<long>(bs.Ptr, bufferSize);
                 int filled = 0;
                 int r;
-                if (count is > 0 and < 1024 * 1024)
+                if (count is > 0 and < MaxPreallocCount)
                 {
                     // Count is known and reasonable — buffer is pre-sized, no growing needed.
                     while ((r = match._inner.Fill(allMatches[filled..])) > 0)
@@ -590,7 +599,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 {
                     var compactKey = llt.AcquireCompactKey();
                     int byteCount = System.Text.Encoding.UTF8.GetByteCount(strVal);
-                    Span<byte> buffer = byteCount <= 256 ? stackalloc byte[256] : new byte[byteCount];
+                    Span<byte> buffer = byteCount <= Utf8StackAllocThreshold ? stackalloc byte[Utf8StackAllocThreshold] : new byte[byteCount];
                     int written = System.Text.Encoding.UTF8.GetBytes(strVal, buffer);
                     compactKey.Set(buffer[..written]);
                     compactKey.ChangeDictionary(termsTree.DictionaryId);
@@ -634,7 +643,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         int byteCount = System.Text.Encoding.UTF8.GetByteCount(s);
         if (byteCount != sliceSpan.Length)
             return false;
-        Span<byte> buffer = byteCount <= 256 ? stackalloc byte[256] : new byte[byteCount];
+        Span<byte> buffer = byteCount <= Utf8StackAllocThreshold ? stackalloc byte[Utf8StackAllocThreshold] : new byte[byteCount];
         int written = System.Text.Encoding.UTF8.GetBytes(s, buffer);
         return sliceSpan.SequenceEqual(buffer[..written]);
     }
@@ -654,20 +663,15 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         int total = (int)match.TotalResults;
 
         // TotalResults == bitmapMatch.Count, so one Fill call covers everything.
-        var scope = allocator.Allocate(total * sizeof(long), out ByteString bs);
+        using var scope = allocator.Allocate(total * sizeof(long), out ByteString bs);
         var allMatches = new Span<long>(bs.Ptr, total);
 
         int filled = bitmapMatch.Fill(allMatches);
 
         if (filled == 0)
-        {
-            scope.Dispose();
             return;
-        }
 
         SortResults<TEntryComparer>(match, allMatches[..filled]);
-
-        scope.Dispose();
     }
     
     private static void SortResults<TEntryComparer>(SortingMatch<TInner> match, Span<long> batchResults) 
