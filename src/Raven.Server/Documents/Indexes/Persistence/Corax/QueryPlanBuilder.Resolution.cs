@@ -1110,9 +1110,18 @@ internal static partial class QueryPlanBuilder
 
     private static void ResolveInFromBindings(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings)
     {
-        // Pre-size lists from bindings.Length (covers all-literal and scalar-parameter
-        // cases without growth). Array-expansion parameters grow the backing array
-        // automatically.
+        // Fast path: all bindings are inline literals. No parameter resolution,
+        // no array-expansion, dominantType was pre-computed by InPreClassify at template
+        // time — so we can read straight from bindings[i] without materializing any
+        // intermediate buffer. Skips two List<> allocations per IN execution.
+        if (clause.InAllLiteral)
+        {
+            ResolveInAllLiteral(clause, exec, writer, bindings);
+            return;
+        }
+
+        // Slow path: parameter-bound IN. Array parameters may expand to N elements,
+        // so total count isn't known up front — use List<> backing.
         var resolvedValues = new List<object>(bindings.Length);
         var termTypes = new List<ParamValueType>(bindings.Length);
         bool hasNullTerm = false;
@@ -1171,26 +1180,15 @@ internal static partial class QueryPlanBuilder
         }
 
         int count = resolvedValues.Count;
-
-        // Determine dominant type. For all-literal IN clauses, this was pre-computed
-        // at template time by InPreClassify — skip the per-execution scan.
-        ParamValueType dominantType;
-        if (clause.InAllLiteral)
+        ParamValueType dominantType = ParamValueType.Null;
+        for (int i = 0; i < count; i++)
         {
-            dominantType = clause.InDominantType;
-        }
-        else
-        {
-            dominantType = ParamValueType.Null;
-            for (int i = 0; i < count; i++)
-            {
-                if (resolvedValues[i] == null) continue;
-                if (dominantType == ParamValueType.Null)
-                    dominantType = termTypes[i];
-            }
+            if (resolvedValues[i] == null) continue;
             if (dominantType == ParamValueType.Null)
-                dominantType = ParamValueType.String;
+                dominantType = termTypes[i];
         }
+        if (dominantType == ParamValueType.Null)
+            dominantType = ParamValueType.String;
 
         int packedType = dominantType switch
         {
@@ -1219,6 +1217,48 @@ internal static partial class QueryPlanBuilder
             if (termTypes[i] != dominantType && IsTypeIncompatible(termTypes[i], dominantType))
                 continue;
             writer.Add(resolvedValues[i], ToValueTokenType(dominantType));
+            nonNullCount++;
+        }
+
+        exec.PackedParamValue = new PackedParam(packedType, startIdx);
+        exec.InTermCount = nonNullCount;
+        exec.HasNullTerm = hasNullTerm;
+    }
+
+    /// <summary>Allocation-free IN resolution for the all-literal fast path. dominantType
+    /// is pre-computed at template time; bindings[] carries final values and types — no
+    /// intermediate buffering is needed.</summary>
+    private static void ResolveInAllLiteral(ClauseInfo clause, ClauseExecution exec, ValueWriter writer, ParameterBinding[] bindings)
+    {
+        var dominantType = clause.InDominantType;
+        int packedType = dominantType switch
+        {
+            ParamValueType.Long => PackedParam.TypeLong,
+            ParamValueType.Double => PackedParam.TypeDouble,
+            _ => PackedParam.TypeString
+        };
+        int startIdx = packedType switch
+        {
+            PackedParam.TypeLong => writer.LongCount,
+            PackedParam.TypeDouble => writer.DoubleCount,
+            _ => writer.StringCount
+        };
+        var dominantTokenType = ToValueTokenType(dominantType);
+
+        bool hasNullTerm = false;
+        int nonNullCount = 0;
+        for (int bi = 0; bi < bindings.Length; bi++)
+        {
+            var it = bindings[bi];
+            var value = it.LiteralValue;
+            if (value == null)
+            {
+                hasNullTerm = true;
+                continue;
+            }
+            if (it.LiteralType != dominantType && IsTypeIncompatible(it.LiteralType, dominantType))
+                continue;
+            writer.Add(value, dominantTokenType);
             nonNullCount++;
         }
 
