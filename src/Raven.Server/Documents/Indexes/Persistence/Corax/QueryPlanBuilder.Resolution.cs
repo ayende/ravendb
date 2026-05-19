@@ -2354,6 +2354,74 @@ internal static partial class QueryPlanBuilder
         fieldRootPages = roots.Count > 0 ? roots.ToArray() : [];
     }
 
+    /// <summary>Materialize residual scan parameter arrays for a DirectScan/CompoundField driving
+    /// match. Walks all clauses except the driving (and optional secondary) index, mirroring
+    /// <paramref name="residualArray"/> positionally. Used by both DirectScan and CompoundField
+    /// construction; both feed the resulting arrays straight into <see cref="BuildDirectScan"/>.
+    ///
+    /// Unlike the bitmap-pipeline <see cref="ExtractScanParameters"/> path, slice values here
+    /// use raw <c>Slice.From</c> (no analyzer) because the residual evaluator compares against
+    /// the entry's stored term directly.</summary>
+    private static void BuildResidualScanParams(
+        QueryExecution plan, IndexSearcher indexSearcher, Sparrow.Server.ByteStringContext allocator,
+        ScanPredicateInfo[] residualArray, int skipClauseIdx1, int skipClauseIdx2,
+        out long[] longParams, out double[] doubleParams, out Voron.Slice[] sliceParams, out long[] fieldRootPages)
+    {
+        longParams = null;
+        doubleParams = null;
+        sliceParams = null;
+        fieldRootPages = null;
+
+        var clauses = plan.Clauses;
+        if (residualArray == null || clauses == null)
+            return;
+
+        var execs = plan.Executions;
+        var longs = new List<long>();
+        var doubles = new List<double>();
+        var slices = new List<Voron.Slice>();
+        var roots = new List<long>();
+
+        int residualIdx = 0;
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            if (i == skipClauseIdx1 || i == skipClauseIdx2) continue;
+            roots.Add(indexSearcher.FieldCache.GetLookupRootPage(clauses[i].FieldName));
+            var packed = execs[i].PackedParamValue;
+            if (packed.IsNone) { residualIdx++; continue; }
+            int idx1 = packed.Param1;
+            int idx2 = packed.Param2;
+            bool hasBetween = idx2 != PackedParam.NoParamValue;
+            switch (residualArray[residualIdx].ValueType)
+            {
+                case ScanValueType.Long:
+                    longs.Add(plan.LongValues[idx1]);
+                    if (hasBetween) longs.Add(plan.LongValues[idx2]);
+                    break;
+                case ScanValueType.Double:
+                    doubles.Add(plan.DoubleValues[idx1]);
+                    if (hasBetween) doubles.Add(plan.DoubleValues[idx2]);
+                    break;
+                case ScanValueType.Slice:
+                case ScanValueType.SliceLong:
+                    Voron.Slice.From(allocator, plan.StringValues[idx1], out var s1);
+                    slices.Add(s1);
+                    if (hasBetween)
+                    {
+                        Voron.Slice.From(allocator, plan.StringValues[idx2], out var s2);
+                        slices.Add(s2);
+                    }
+                    break;
+            }
+            residualIdx++;
+        }
+
+        longParams = longs.Count > 0 ? longs.ToArray() : null;
+        doubleParams = doubles.Count > 0 ? doubles.ToArray() : null;
+        sliceParams = slices.Count > 0 ? slices.ToArray() : null;
+        fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
+    }
+
     private static void ExtractParamsFromPredicate(ScanPredicateInfo pred, ClauseInfo clause, ClauseExecution exec,
         IndexSearcher indexSearcher, QueryExecution plan, List<long> longs, List<double> doubles,
         List<Voron.Slice> slices, List<long> roots)
@@ -3477,65 +3545,9 @@ internal static partial class QueryPlanBuilder
 
         // Extract scan parameters for residual predicates
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
-        long[] longParams = null;
-        double[] doubleParams = null;
-        Voron.Slice[] sliceParams = null;
-        long[] fieldRootPages = null;
-
-        if (residualArray != null)
-        {
-            var longs = new List<long>();
-            var doubles = new List<double>();
-            var slices = new List<Voron.Slice>();
-            var roots = new List<long>();
-
-            int residualIdx = 0;
-            for (int i = 0; i < clauses.Count; i++)
-            {
-                if (i == drivingClauseIdx || i == field2RangeIdx) continue;
-                var matchingExec = execs[i];
-
-                // Add field root page
-                roots.Add(indexSearcher.FieldCache.GetLookupRootPage(clauses[i].FieldName));
-
-                var predPacked = matchingExec.PackedParamValue;
-                if (predPacked.IsNone) { residualIdx++; continue; }
-
-                int idx1 = predPacked.Param1;
-                int idx2 = predPacked.Param2;
-                bool hasBetween = idx2 != PackedParam.NoParamValue;
-
-                switch (residualArray[residualIdx].ValueType)
-                {
-                    case ScanValueType.Long:
-                        longs.Add(plan.LongValues[idx1]);
-                        if (hasBetween) longs.Add(plan.LongValues[idx2]);
-                        break;
-                    case ScanValueType.Double:
-                        doubles.Add(plan.DoubleValues[idx1]);
-                        if (hasBetween) doubles.Add(plan.DoubleValues[idx2]);
-                        break;
-                    case ScanValueType.Slice:
-            case ScanValueType.SliceLong:
-                    {
-                        Voron.Slice.From(allocator, plan.StringValues[idx1], out var s1);
-                        slices.Add(s1);
-                        if (hasBetween)
-                        {
-                            Voron.Slice.From(allocator, plan.StringValues[idx2], out var s2);
-                            slices.Add(s2);
-                        }
-                        break;
-                    }
-                }
-                residualIdx++;
-            }
-
-            longParams = longs.Count > 0 ? longs.ToArray() : null;
-            doubleParams = doubles.Count > 0 ? doubles.ToArray() : null;
-            sliceParams = slices.Count > 0 ? slices.ToArray() : null;
-            fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
-        }
+        BuildResidualScanParams(plan, indexSearcher, allocator, residualArray,
+            drivingClauseIdx, field2RangeIdx,
+            out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
 
         var directScan = BuildDirectScan(
             indexSearcher, drivingMatch, longParams, doubleParams, sliceParams, fieldRootPages,
@@ -3818,52 +3830,9 @@ internal static partial class QueryPlanBuilder
 
         // ── Residual scan parameters ──
         ScanPredicateInfo[] residualArray = residualPreds is { Count: > 0 } ? residualPreds.ToArray() : null;
-        long[] longParams = null;
-        double[] doubleParams = null;
-        Voron.Slice[] sliceParams = null;
-        long[] fieldRootPages = null;
-
-        if (residualArray != null && clauses != null)
-        {
-            var longs = new List<long>();
-            var doubles = new List<double>();
-            var slices = new List<Voron.Slice>();
-            var roots = new List<long>();
-
-            int residualIdx = 0;
-            for (int i = 0; i < clauses.Count; i++)
-            {
-                if (i == drivingIdx) continue;
-                roots.Add(indexSearcher.FieldCache.GetLookupRootPage(clauses[i].FieldName));
-                var predPacked = execs[i].PackedParamValue;
-                if (predPacked.IsNone) { residualIdx++; continue; }
-                int idx1 = predPacked.Param1;
-                int idx2 = predPacked.Param2;
-                bool hasBetween = idx2 != PackedParam.NoParamValue;
-                switch (residualArray[residualIdx].ValueType)
-                {
-                    case ScanValueType.Long:
-                        longs.Add(plan.LongValues[idx1]);
-                        if (hasBetween) longs.Add(plan.LongValues[idx2]);
-                        break;
-                    case ScanValueType.Double:
-                        doubles.Add(plan.DoubleValues[idx1]);
-                        if (hasBetween) doubles.Add(plan.DoubleValues[idx2]);
-                        break;
-                    case ScanValueType.Slice:
-            case ScanValueType.SliceLong:
-                        Voron.Slice.From(planParams.Allocator, plan.StringValues[idx1], out var s1);
-                        slices.Add(s1);
-                        if (hasBetween) { Voron.Slice.From(planParams.Allocator, plan.StringValues[idx2], out var s2); slices.Add(s2); }
-                        break;
-                }
-                residualIdx++;
-            }
-            longParams = longs.Count > 0 ? longs.ToArray() : null;
-            doubleParams = doubles.Count > 0 ? doubles.ToArray() : null;
-            sliceParams = slices.Count > 0 ? slices.ToArray() : null;
-            fieldRootPages = roots.Count > 0 ? roots.ToArray() : null;
-        }
+        BuildResidualScanParams(plan, indexSearcher, planParams.Allocator, residualArray,
+            drivingIdx, -1,
+            out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
 
         var ds = BuildDirectScan(
             indexSearcher, drivingMatch, longParams, doubleParams, sliceParams, fieldRootPages,
