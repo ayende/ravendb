@@ -1401,14 +1401,13 @@ namespace FastTests.Corax
                 //MultiTermMatch And TermMatch
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Content IN ('maciej', 'poland') AND Content = 'this'");
                 var resultByLinq = entries.Where(x => (x.Content.Contains("maciej") || x.Content.Contains("poland")) && x.Content.Contains("this")).ToList();
-                Assert.Equal(results.Count, results.Distinct().Count());
-                Assert.Equal(resultByLinq.Count, results.Count);
+                AssertIds(ResolveDocumentIds(results), resultByLinq.Select(e => e.Id).ToArray());
             }
 
             {
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE startsWith(Content, 'ma') OR Content = 'torun'");
                 var linqResult = entries.Where(x => x.Content.Any(z => z.StartsWith("ma") || z.Contains("torun"))).ToList();
-                Assert.Equal(linqResult.Count, results.Count);
+                AssertIds(ResolveDocumentIds(results), linqResult.Select(e => e.Id).ToArray());
             }
 
             string[] GetContent()
