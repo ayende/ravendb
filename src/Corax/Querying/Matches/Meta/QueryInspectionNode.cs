@@ -5,18 +5,11 @@ using Sparrow.Json.Parsing;
 namespace Corax.Querying.Matches.Meta
 {
     // This class is reflected in the Raven.Client solution for deserialization purposes. Please ensure that any changes made here are also reflected in the Client's code.
-    public sealed class QueryInspectionNode : IDynamicJson
+    public sealed class QueryInspectionNode(string operation, List<QueryInspectionNode> children = null, Dictionary<string, string> parameters = null) : IDynamicJson
     {
-        public readonly string Operation;
-        public readonly Dictionary<string, string> Parameters;
-        public readonly List<QueryInspectionNode> Children;
-
-        public QueryInspectionNode(string operation, List<QueryInspectionNode> children = null, Dictionary<string, string> parameters = null)
-        {
-            Operation = operation;
-            Parameters = parameters ?? new Dictionary<string, string>();            
-            Children = children ?? new List<QueryInspectionNode>();
-        }
+        public readonly string Operation = operation;
+        public readonly Dictionary<string, string> Parameters = parameters ?? new Dictionary<string, string>();
+        public readonly List<QueryInspectionNode> Children = children ?? new List<QueryInspectionNode>();
 
         public DynamicJsonValue ToJson()
         {

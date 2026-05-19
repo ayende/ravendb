@@ -12,7 +12,7 @@ using Voron.Impl;
 namespace Corax.Querying.Matches;
 
 /// <summary>Sort seek hint — value to seek to in the sort field, plus whether the bound is inclusive.</summary>
-public sealed record SortHint(string FieldName, object Value, bool Inclusive);
+public sealed record SortHint(string FieldName, object Value);
 
 public class CompiledQueryMatch(
     CompiledPlan compiledPlan,
@@ -37,29 +37,11 @@ public class CompiledQueryMatch(
     public readonly PostingSource[] PostingSources = postingSources;
     public readonly ITermsProvider[] TermsProviders = termsProviders;
 
-    /// <summary>Per-execution term counts for OrRange/AndRange ops. Each range op
-    /// stores its index into this array instead of a hardcoded count in the IL.
-    /// Set during resolution — different executions of the same query can have
-    /// different IN term counts without needing different compiled delegates.</summary>
     public int[] InRangeCounts;
 
-    // Entry scan: predicates + parameters for CompiledQueryHelper.RunEntryScan
-    public ScanPredicateInfo[] ScanPredicateInfos;
-    public long[] ScanLongParams;
-    public double[] ScanDoubleParams;
-    public Slice[] ScanSliceParams;
-    public long[] ScanFieldRootPages;
-
-    long[] IPredicateEvaluationContext.ResidualLongParams => ScanLongParams;
-    double[] IPredicateEvaluationContext.ResidualDoubleParams => ScanDoubleParams;
-    Slice[] IPredicateEvaluationContext.ResidualSliceParams => ScanSliceParams;
-    long[] IPredicateEvaluationContext.ResidualFieldRootPages => ScanFieldRootPages;
-
-    // Entry scan telemetry (populated by IL/C# entry scan when it triggers)
-    public long EntryScanEntriesScanned;
+    public long EntryScanEntriesScanned; 
     public long EntryScanEntriesPassed;
 
-    private readonly Planning.CompiledPlan _compiledPlan = compiledPlan;
     public readonly IndexSearcher Searcher = searcher;
     public readonly CancellationToken Token = token;
 
@@ -68,22 +50,13 @@ public class CompiledQueryMatch(
     private bool _executed;
     private long _count = -1;
 
-    // Bitmap pool: [0] = main result, [1 ... N] = scratch.
-    // Allocated once in Execute(), then accessed by the compiled delegate via IL.
     public RoaringBitmap[] Bitmaps;
 
-    // LowLevelTransaction cached at Execute() time so the emitted IL does not re-fetch it per op.
     public LowLevelTransaction Llt;
 
-    /// <summary>Limit for early-exit during bitmap accumulation (unsorted queries only).
-    /// When set, FillFromPostings stops after limit entries and OR branches are
-    /// skipped once the bitmap has enough. Set to long.MaxValue when an ORDER BY
-    /// is present (sorting needs the full bitmap for Contains checks).
-    /// Stored as long to avoid casts when comparing with Count (long) in the IL-emitted code.</summary>
     public long Limit = long.MaxValue;
 
-    // Telemetry — populated during Execute if timings are requested
-    public long[] Timings;
+    public long[] Timings;  
     public long[] ResultCounts;
     public int EntryScanTakenAtOp;
 
@@ -181,8 +154,8 @@ public class CompiledQueryMatch(
     {
         var parameters = new Dictionary<string, string>
         {
-            ["CSharpSource"] = _compiledPlan?.Source ?? "N/A",
-            ["CSharpSourceFormatted"] = _compiledPlan?.FormattedSource ?? "N/A"
+            ["CSharpSource"] = compiledPlan?.Source ?? "N/A",
+            ["CSharpSourceFormatted"] = compiledPlan?.FormattedSource ?? "N/A"
         };
 
         if (EntryScanTakenAtOp >= 0)
@@ -260,4 +233,9 @@ public class CompiledQueryMatch(
         _bitmapData.Dispose();
         Llt = null; // release transaction reference so it is not kept alive longer than needed
     }
+
+    public long[] ResidualLongParams { get; init; }
+    public double[] ResidualDoubleParams { get; init;}
+    public Slice[] ResidualSliceParams { get; init;}
+    public long[] ResidualFieldRootPages { get; init;}
 }
