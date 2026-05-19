@@ -637,10 +637,14 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             };
                             queryMatch = QueryPlanBuilder.BuildCompileAndOptimize(
                                 planParams, builderParameters, out queryPlan, out compiledPlan,
-                                out orderByFields, out bool hasEmptySorts,
-                                highlightings.Terms, wantTimings: queryTimings != null, token);
+                                out orderByFields, out bool hasEmptySorts, out var innerMatch,
+                                highlightings.Terms, wantTimings: queryTimings != null, token: token);
 
-                            innerDisposableMatch = queryMatch as IDisposable;
+                            // The inner match is the unwrapped match returned by the optimization
+                            // chain — when SortingMatch / SortingMultiMatch wraps the result, the
+                            // wrapper is queryMatch and the wrapped match is innerMatch. When no
+                            // wrapping is applied, queryMatch == innerMatch.
+                            innerDisposableMatch = innerMatch as IDisposable;
 
                             if (orderByFields == null && take > 0 && query.Metadata.IsDistinct == false
                                 && query.SkipStatistics

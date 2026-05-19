@@ -95,7 +95,13 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
         Assert.NotNull(timings);
         var plan = timings.QueryPlan as Raven.Client.Documents.Queries.Timings.QueryInspectionNode;
         Assert.NotNull(plan);
-        var trailNode = plan.Children?.FirstOrDefault(c => c.Operation == "DecisionTrail");
+        // With ORDER BY, the plan root is the SortingMatch wrapper, and the compiled-query
+        // inspection (which carries the DecisionTrail) is its single child.
+        var compiledRoot = plan.Operation == "CompiledQuery"
+            ? plan
+            : plan.Children?.FirstOrDefault(c => c.Operation == "CompiledQuery");
+        Assert.NotNull(compiledRoot);
+        var trailNode = compiledRoot.Children?.FirstOrDefault(c => c.Operation == "DecisionTrail");
         Assert.NotNull(trailNode);
         Assert.True(trailNode.Children.Count >= 2);
         foreach (var child in trailNode.Children)

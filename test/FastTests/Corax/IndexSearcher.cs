@@ -1510,6 +1510,13 @@ namespace FastTests.Corax
         /// </summary>
         private List<string> ResolveDocumentIds(List<long> entryIds)
         {
+            // Verify the engine didn't return the same internal entry ID twice — distinct entries
+            // may legitimately share the same document Id field value (e.g. "entry/1" twice), but
+            // the underlying long entry IDs must be unique.
+            var seen = new HashSet<long>(entryIds.Count);
+            foreach (long id in entryIds)
+                Assert.True(seen.Add(id), $"Engine returned the same entry ID twice: {id}");
+
             using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
             var result = new List<string>(entryIds.Count);
             foreach (long id in entryIds)

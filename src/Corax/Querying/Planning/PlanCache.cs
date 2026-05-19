@@ -132,10 +132,10 @@ public class PlanCache
 
         public CompiledPlan TryLookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
         {
-            // SIMD pre-filter scans (Ordering, TypeSignature) — WhenFlags is zero for ~99%
-            // of queries (no WHEN clauses), so adding it to the SIMD compare would only
-            // slow the hot path. The chain walk below picks up WhenFlags + FullKinds
-            // as refinement.
+            // SIMD pre-filter scans (Ordering, TypeSignature) — WhenFlags is zero
+            // for ~99% of queries (no WHEN clauses), so adding it to the SIMD compare
+            // would only slow the hot path. The chain walk below picks up
+            // WhenFlags + FullKinds as refinement.
             if (Vector256.IsHardwareAccelerated)
                 return Vec256Lookup(ordering, typeSignature, kinds, whenFlags);
             if (Vector128.IsHardwareAccelerated)
