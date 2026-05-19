@@ -30,7 +30,7 @@ internal readonly struct LabelPair(Label il, string name)
 /// every IL "push" corresponds to a textual fragment push, every IL "pop"
 /// to a textual fragment pop.
 /// </summary>
-internal ref struct DualEmit
+internal ref partial struct DualEmit
 {
     public ILGenerator IL;
     public StringBuilder Cs;

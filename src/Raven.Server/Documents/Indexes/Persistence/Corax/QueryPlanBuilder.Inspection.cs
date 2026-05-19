@@ -37,8 +37,6 @@ internal static partial class QueryPlanBuilder
         var rootParams = new Dictionary<string, string>();
         if (scannedEntries >= 0)
             rootParams["ScannedEntries"] = scannedEntries.ToString();
-        if (compiledPlan.ExplainSource != null)
-            rootParams["Explain"] = compiledPlan.ExplainSource;
         rootParams["OptimizationHint"] = compiledPlan.Strategy.ToString();
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);

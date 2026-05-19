@@ -123,9 +123,6 @@ public sealed class CompiledPlan
     /// to limit chain growth — when depth exceeds MaxChainDepth, the chain is replaced.</summary>
     public int ChainDepth;
 
-    /// <summary>EXPLAIN pseudocode. Generated in the same pass as IL emission.</summary>
-    public string ExplainSource { get; init; }
-
     /// <summary>Compilable C# source string mirroring emitted IL.</summary>
     public string CSharpSource { get; init; }
 
