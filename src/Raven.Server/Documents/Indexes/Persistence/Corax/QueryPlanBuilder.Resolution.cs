@@ -1547,36 +1547,21 @@ internal static partial class QueryPlanBuilder
         {
             ClauseInfo clause = clauses[ci];
             ClauseExecution exec = execs[ci];
+            if (TryGetGroupFanOut(clause, exec, out var subClauses, out var subExecs))
+            {
+                for (int si = 0; si < subClauses.Count; si++)
+                {
+                    var sub = subClauses[si];
+                    var subExec = subExecs[si];
+                    var match = ResolveClause(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                    if (subExec.BoostFactor > 0)
+                        match = indexSearcher.Boost(match, subExec.BoostFactor);
+                    matches[matchIdx++] = match;
+                }
+                continue;
+            }
             switch (clause.ClauseType)
             {
-                case ClauseType.OrGroup when clause.OrSubClauses is { Count: > 0 }:
-                {
-                    for (int si = 0; si < clause.OrSubClauses.Count; si++)
-                    {
-                        var sub = clause.OrSubClauses[si];
-                        var subExec = exec.OrSubExecutions[si];
-                        var match = ResolveClause(sub, subExec, indexSearcher, plan, parameters, builderParams);
-                        if (subExec.BoostFactor > 0)
-                            match = indexSearcher.Boost(match, subExec.BoostFactor);
-                        matches[matchIdx++] = match;
-                    }
-
-                    break;
-                }
-                case ClauseType.AndGroup when clause.AndSubClauses is { Count : > 0 }:
-                {
-                    for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                    {
-                        var sub = clause.AndSubClauses[si];
-                        var subExec = exec.AndSubExecutions[si];
-                        var match = ResolveClause(sub, subExec, indexSearcher, plan, parameters, builderParams);
-                        if (subExec.BoostFactor > 0)
-                            match = indexSearcher.Boost(match, subExec.BoostFactor);
-                        matches[matchIdx++] = match;
-                    }
-
-                    break;
-                }
                 case ClauseType.AllIn or ClauseType.In:
                 {
                     for (int t = 0; t < exec.InTermCount; t++)
@@ -2064,40 +2049,23 @@ internal static partial class QueryPlanBuilder
         {
             ClauseInfo clause = clauses[ci];
             ClauseExecution exec = execs[ci];
+            if (TryGetGroupFanOut(clause, exec, out var subClauses, out var subExecs))
+            {
+                for (int si = 0; si < subClauses.Count; si++)
+                {
+                    var sub = subClauses[si];
+                    var subExec = subExecs[si];
+                    if (subExec.BoostFactor > 0)
+                    {
+                        matchIdx++;
+                        continue;
+                    }
+                    termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                }
+                continue;
+            }
             switch (clause.ClauseType)
             {
-                case ClauseType.OrGroup when clause.OrSubClauses is { Count: > 0 }:
-                {
-                    for (int si = 0; si < clause.OrSubClauses.Count; si++)
-                    {
-                        var sub = clause.OrSubClauses[si];
-                        var subExec = exec.OrSubExecutions[si];
-                        if (subExec.BoostFactor > 0)
-                        {
-                            matchIdx++;
-                            continue;
-                        }
-                        termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, indexSearcher, plan, parameters, builderParams);
-                    }
-
-                    break;
-                }
-                case ClauseType.AndGroup when clause.AndSubClauses is { Count: > 0 }:
-                {
-                    for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                    {
-                        var sub = clause.AndSubClauses[si];
-                        var subExec = exec.AndSubExecutions[si];
-                        if (subExec.BoostFactor > 0)
-                        {
-                            matchIdx++;
-                            continue;
-                        }
-                        termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, indexSearcher, plan, parameters, builderParams);
-                    }
-
-                    break;
-                }
                 case ClauseType.AllIn or ClauseType.In:
                 {
                     for (int t = 0; t < exec.InTermCount; t++)
@@ -2196,28 +2164,20 @@ internal static partial class QueryPlanBuilder
             ClauseInfo clause = clauses[ci];
             ClauseExecution exec = execs != null && ci < execs.Length ? execs[ci] : null;
 
+            if (TryGetGroupFanOut(clause, exec, out var subClauses, out var subExecs))
+            {
+                for (int si = 0; si < subClauses.Count; si++)
+                {
+                    var sub = subClauses[si];
+                    var subExec = subExecs?[si];
+                    providers[matchIdx] = ResolveSingleTermsProvider(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                    matchIdx++;
+                }
+                continue;
+            }
+
             switch (clause.ClauseType)
             {
-                case ClauseType.OrGroup when clause.OrSubClauses is { Count: > 0 }:
-                    for (int si = 0; si < clause.OrSubClauses.Count; si++)
-                    {
-                        var sub = clause.OrSubClauses[si];
-                        var subExec = exec?.OrSubExecutions?[si];
-                        providers[matchIdx] = ResolveSingleTermsProvider(sub, subExec, indexSearcher, plan, parameters, builderParams);
-                        matchIdx++;
-                    }
-                    break;
-
-                case ClauseType.AndGroup when clause.AndSubClauses is { Count: > 0 }:
-                    for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                    {
-                        var sub = clause.AndSubClauses[si];
-                        var subExec = exec?.AndSubExecutions?[si];
-                        providers[matchIdx] = ResolveSingleTermsProvider(sub, subExec, indexSearcher, plan, parameters, builderParams);
-                        matchIdx++;
-                    }
-                    break;
-
                 case ClauseType.AllIn or ClauseType.In:
                     // IN terms use PostingList dispatch, not TreeScan. +1 for null-term slot (always allocated).
                     matchIdx += (exec?.InTermCount ?? 0) + 1;
