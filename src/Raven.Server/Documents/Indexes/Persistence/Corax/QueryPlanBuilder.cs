@@ -2071,6 +2071,30 @@ internal static partial class QueryPlanBuilder
         return count;
     }
 
+    /// <summary>For an OrGroup or AndGroup clause, returns the parallel (sub-clauses, sub-executions)
+    /// arrays that callers iterate to fan out one match slot per sub-term. Returns false for any
+    /// other clause type, or for empty groups. <paramref name="subExecs"/> is null when
+    /// <paramref name="exec"/> is null (TermsProviders path tolerates that).</summary>
+    internal static bool TryGetGroupFanOut(ClauseInfo clause, ClauseExecution exec,
+        out List<ClauseInfo> subClauses, out ClauseExecution[] subExecs)
+    {
+        if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses is { Count: > 0 })
+        {
+            subClauses = clause.OrSubClauses;
+            subExecs = exec?.OrSubExecutions;
+            return true;
+        }
+        if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses is { Count: > 0 })
+        {
+            subClauses = clause.AndSubClauses;
+            subExecs = exec?.AndSubExecutions;
+            return true;
+        }
+        subClauses = null;
+        subExecs = null;
+        return false;
+    }
+
     // ── Dispatch classification ──────────────────────────────────────────
 
     /// <summary>Decide whether a clause type can be expressed as a single
