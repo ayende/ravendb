@@ -1157,20 +1157,21 @@ internal static partial class QueryPlanBuilder
         };
     }
 
+    /// <summary>Populate <paramref name="exec"/>'s typed-parameter slot for an IN/AllIn
+    /// clause. Two paths share the same tail (<see cref="EmitInTerms"/>): the
+    /// allocation-free literal fast path reads directly from <see cref="ParameterBinding"/>
+    /// when <see cref="ClauseInfo.InAllLiteral"/> is set (dominantType was pre-computed
+    /// by InPreClassify at template time); the parameter-bound slow path resolves each
+    /// binding (potentially array-expanding) into <see cref="List{T}"/> buffers, infers
+    /// the dominant type at runtime, and then runs the same emit logic.</summary>
     private static void ResolveInFromBindings(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings)
     {
-        // Fast path: all bindings are inline literals. No parameter resolution,
-        // no array-expansion, dominantType was pre-computed by InPreClassify at template
-        // time — so we can read straight from bindings[i] without materializing any
-        // intermediate buffer. Skips two List<> allocations per IN execution.
         if (clause.InAllLiteral)
         {
-            ResolveInAllLiteral(clause, exec, writer, bindings);
+            EmitInTerms(exec, writer, clause.InDominantType, bindings, hasNullTerm: false);
             return;
         }
 
-        // Slow path: parameter-bound IN. Array parameters may expand to N elements,
-        // so total count isn't known up front — use List<> backing.
         var resolvedValues = new List<object>(bindings.Length);
         var termTypes = new List<ParamValueType>(bindings.Length);
         bool hasNullTerm = false;
@@ -1228,58 +1229,26 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        int count = resolvedValues.Count;
         ParamValueType dominantType = ParamValueType.Null;
-        for (int i = 0; i < count; i++)
+        for (int i = 0; i < resolvedValues.Count; i++)
         {
             if (resolvedValues[i] == null) continue;
             if (dominantType == ParamValueType.Null)
+            {
                 dominantType = termTypes[i];
+                break;
+            }
         }
         if (dominantType == ParamValueType.Null)
             dominantType = ParamValueType.String;
 
-        int packedType = dominantType switch
-        {
-            ParamValueType.Long => PackedParam.TypeLong,
-            ParamValueType.Double => PackedParam.TypeDouble,
-            _ => PackedParam.TypeString
-        };
-        int startIdx = packedType switch
-        {
-            PackedParam.TypeLong => writer.LongCount,
-            PackedParam.TypeDouble => writer.DoubleCount,
-            _ => writer.StringCount
-        };
-        // Only store non-null values in the typed array. Null terms are handled
-        // separately via HasNullTerm — one null-term lookup covers all nulls.
-        //
-        // Skip values whose individual type can't be coerced to the dominant type.
-        // Example: IN(DateTime, "Shalom") on a DateTime-indexed field — the dominant
-        // type is Long (DateTime.Ticks); "Shalom" can never match a long-indexed term,
-        // so dropping it produces the correct empty/partial result (matches Lucene).
-        // Without this guard, Convert.ToInt64("Shalom") would throw FormatException.
-        int nonNullCount = 0;
-        for (int i = 0; i < count; i++)
-        {
-            if (resolvedValues[i] == null) continue;
-            if (termTypes[i] != dominantType && IsTypeIncompatible(termTypes[i], dominantType))
-                continue;
-            writer.Add(resolvedValues[i], ToValueTokenType(dominantType));
-            nonNullCount++;
-        }
-
-        exec.PackedParamValue = new PackedParam(packedType, startIdx);
-        exec.InTermCount = nonNullCount;
-        exec.HasNullTerm = hasNullTerm;
+        EmitInTerms(exec, writer, dominantType, resolvedValues, termTypes, hasNullTerm);
     }
 
-    /// <summary>Allocation-free IN resolution for the all-literal fast path. dominantType
-    /// is pre-computed at template time; bindings[] carries final values and types — no
-    /// intermediate buffering is needed.</summary>
-    private static void ResolveInAllLiteral(ClauseInfo clause, ClauseExecution exec, ValueWriter writer, ParameterBinding[] bindings)
+    /// <summary>Compute the (packedType, startIdx) pair for a writer slot keyed by
+    /// <paramref name="dominantType"/>. Shared header for both IN emit paths.</summary>
+    private static (int PackedType, int StartIdx) ResolveInWriterSlot(ValueWriter writer, ParamValueType dominantType)
     {
-        var dominantType = clause.InDominantType;
         int packedType = dominantType switch
         {
             ParamValueType.Long => PackedParam.TypeLong,
@@ -1292,9 +1261,18 @@ internal static partial class QueryPlanBuilder
             PackedParam.TypeDouble => writer.DoubleCount,
             _ => writer.StringCount
         };
+        return (packedType, startIdx);
+    }
+
+    /// <summary>All-literal fast-path emit: read values straight from
+    /// <paramref name="bindings"/>, write each dominantType-compatible non-null
+    /// value into <paramref name="writer"/>, then stamp the exec slot.</summary>
+    private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType,
+        ParameterBinding[] bindings, bool hasNullTerm)
+    {
+        var (packedType, startIdx) = ResolveInWriterSlot(writer, dominantType);
         var dominantTokenType = ToValueTokenType(dominantType);
 
-        bool hasNullTerm = false;
         int nonNullCount = 0;
         for (int bi = 0; bi < bindings.Length; bi++)
         {
@@ -1306,6 +1284,38 @@ internal static partial class QueryPlanBuilder
                 continue;
             }
             if (it.LiteralType != dominantType && IsTypeIncompatible(it.LiteralType, dominantType))
+                continue;
+            writer.Add(value, dominantTokenType);
+            nonNullCount++;
+        }
+
+        exec.PackedParamValue = new PackedParam(packedType, startIdx);
+        exec.InTermCount = nonNullCount;
+        exec.HasNullTerm = hasNullTerm;
+    }
+
+    /// <summary>Parameter-bound slow-path emit: iterate the pre-resolved
+    /// <paramref name="values"/> / <paramref name="types"/> buffers, filter to the
+    /// inferred dominant type, write into <paramref name="writer"/>, then stamp the
+    /// exec slot.
+    ///
+    /// Values whose individual type can't be coerced to the dominant type are dropped
+    /// (e.g. IN(DateTime, "Shalom") on a DateTime-indexed field — dominant = Long,
+    /// "Shalom" never matches a long-indexed term, so dropping it produces the correct
+    /// empty/partial result matching Lucene). Without this guard, Convert.ToInt64
+    /// would throw FormatException.</summary>
+    private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType,
+        List<object> values, List<ParamValueType> types, bool hasNullTerm)
+    {
+        var (packedType, startIdx) = ResolveInWriterSlot(writer, dominantType);
+        var dominantTokenType = ToValueTokenType(dominantType);
+
+        int nonNullCount = 0;
+        for (int i = 0; i < values.Count; i++)
+        {
+            var value = values[i];
+            if (value == null) continue;
+            if (types[i] != dominantType && IsTypeIncompatible(types[i], dominantType))
                 continue;
             writer.Add(value, dominantTokenType);
             nonNullCount++;
