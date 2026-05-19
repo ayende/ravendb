@@ -3658,6 +3658,7 @@ internal static partial class QueryPlanBuilder
         // ── Discovery: drivingIdx + cost gate ──
         int drivingIdx = -1;
         long entriesToScan = 0, bitmapCost = 0;
+        List<ScanPredicateInfo> preBuiltResiduals = null;
         if (isFullScan == false)
         {
             // SortDrivingClauseIndex pre-identified at template time and remapped to
@@ -3695,8 +3696,9 @@ internal static partial class QueryPlanBuilder
                 return false;
 
             // Residual scannability + bitmap cost summation in one pass.
+            // The ScanPredicateInfo array built here is the same array ConstructDirectScan
+            // needs, so we collect it now and pass it forward instead of rebuilding.
             int rlongIdx = 0, rdoubleIdx = 0, rsliceIdx = 0;
-            int residualCount = 0;
             for (int i = 0; i < clauses.Count; i++)
             {
                 bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
@@ -3706,12 +3708,13 @@ internal static partial class QueryPlanBuilder
                 var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref rlongIdx, ref rdoubleIdx, ref rsliceIdx);
                 if (pred == null)
                     return false;
-                residualCount++;
+                preBuiltResiduals ??= new List<ScanPredicateInfo>();
+                preBuiltResiduals.Add(pred.Value);
             }
 
             long drivingCard = execs[drivingIdx].Cardinality > 0 ? execs[drivingIdx].Cardinality : indexSearcher.NumberOfEntries;
             entriesToScan = drivingCard;
-            if (residualCount > 0)
+            if (preBuiltResiduals is { Count: > 0 })
             {
                 long minResidual = long.MaxValue;
                 for (int i = 0; i < clauses.Count; i++)
@@ -3741,7 +3744,7 @@ internal static partial class QueryPlanBuilder
         }
 
         directMatch = ConstructDirectScan(plan, orderByFields, planParams, builderParams, compiledPlan,
-            drivingIdx, isFullScan, hasTieBreak, entriesToScan, bitmapCost);
+            drivingIdx, isFullScan, hasTieBreak, entriesToScan, bitmapCost, preBuiltResiduals);
         return directMatch != null;
     }
 
@@ -3755,7 +3758,8 @@ internal static partial class QueryPlanBuilder
         QueryExecution plan, OrderMetadata[] orderByFields,
         PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
         int drivingIdx, bool isFullScan, bool hasTieBreak,
-        long entriesToScan, long bitmapCost)
+        long entriesToScan, long bitmapCost,
+        List<ScanPredicateInfo> preBuiltResiduals = null)
     {
         var indexSearcher = planParams.IndexSearcher;
         string sortFieldName = orderByFields[0].Field.FieldName.ToString();
@@ -3812,17 +3816,19 @@ internal static partial class QueryPlanBuilder
             drivingClauseDescription = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
         }
 
-        // Rebuild residual predicates structurally (same shape as discovery's pre-check).
-        int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
-        var residualPreds = new List<ScanPredicateInfo>();
-        if (isFullScan == false)
+        // Residual predicates: reuse the list built during discovery when available;
+        // the cached strategy dispatch path passes null and we build it here.
+        List<ScanPredicateInfo> residualPreds = preBuiltResiduals;
+        if (residualPreds == null && isFullScan == false)
         {
+            int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
             for (int i = 0; i < clauses.Count; i++)
             {
                 if (i == drivingIdx) continue;
                 var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
                 if (pred == null)
                     return null;
+                residualPreds ??= new List<ScanPredicateInfo>();
                 residualPreds.Add(pred.Value);
             }
         }
@@ -3855,7 +3861,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // ── Residual scan parameters ──
-        ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
+        ScanPredicateInfo[] residualArray = residualPreds is { Count: > 0 } ? residualPreds.ToArray() : null;
         long[] longParams = null;
         double[] doubleParams = null;
         Voron.Slice[] sliceParams = null;
