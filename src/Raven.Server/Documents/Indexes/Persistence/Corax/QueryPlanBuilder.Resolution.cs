@@ -1103,7 +1103,7 @@ internal static partial class QueryPlanBuilder
                 bool highIsSentinel = high is string highStr && highStr == RavenConstants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
                 if (lowIsSentinel && highIsSentinel) { exec.SentinelRewriteType = ClauseType.Exists; return; }
                 if (lowIsSentinel) { exec.SentinelRewriteType = ClauseType.LessThanOrEqual; exec.TermValueType = highType; exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType)); return; }
-                if (highIsSentinel) { exec.SentinelRewriteType = ClauseType.LessThan; exec.SentinelRewriteNegated = true; exec.TermValueType = lowType; exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType)); return; }
+                if (highIsSentinel) { exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual; exec.TermValueType = lowType; exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType)); return; }
                 exec.TermValueType = lowType;
                 exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
                 return;
@@ -1672,19 +1672,13 @@ internal static partial class QueryPlanBuilder
                 _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.StringValues[idx])
             };
         }
-        Debug.Assert(exec.SentinelRewriteType == ClauseType.LessThan && exec.SentinelRewriteNegated);
-        IQueryMatch lessThanMatch = packed.ValueType switch
+        Debug.Assert(exec.SentinelRewriteType == ClauseType.GreaterThanOrEqual);
+        return packed.ValueType switch
         {
-            PackedParam.TypeLong => indexSearcher.LessThanQuery(fieldMeta, plan.LongValues[idx]),
-            PackedParam.TypeDouble => indexSearcher.LessThanQuery(fieldMeta, plan.DoubleValues[idx]),
-            _ => indexSearcher.LessThanQuery(fieldMeta, plan.StringValues[idx])
+            PackedParam.TypeLong => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.LongValues[idx]),
+            PackedParam.TypeDouble => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.DoubleValues[idx]),
+            _ => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.StringValues[idx])
         };
-        var bitmap = new BitmapMatch(indexSearcher.Allocator);
-        var temp = new RoaringBitmap(indexSearcher.Allocator);
-        QueryPrimitives.OrWithMatch(indexSearcher.AllEntries(), ref bitmap.BitmapState);
-        QueryPrimitives.AndNotWithMatch(lessThanMatch, ref bitmap.BitmapState, ref temp);
-        temp.Dispose();
-        return bitmap;
     }
 
     /// <summary>Converts an Equals clause into a BetweenQuery(low==high==value) so

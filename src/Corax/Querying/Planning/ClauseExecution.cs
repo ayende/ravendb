@@ -15,7 +15,6 @@ public sealed class ClauseExecution
     public VectorParams Vector;
 
     public ClauseType? SentinelRewriteType;
-    public bool SentinelRewriteNegated;
 
     /// <summary>Per-execution state for OrGroup subclauses. Parallel to <see cref="ClauseInfo.OrSubClauses"/>.</summary>
     public ClauseExecution[] OrSubExecutions;
