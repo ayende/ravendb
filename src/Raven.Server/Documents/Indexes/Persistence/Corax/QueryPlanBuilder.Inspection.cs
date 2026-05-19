@@ -39,7 +39,7 @@ internal static partial class QueryPlanBuilder
             rootParams["ScannedEntries"] = scannedEntries.ToString();
         if (compiledPlan.ExplainSource != null)
             rootParams["Explain"] = compiledPlan.ExplainSource;
-        rootParams["OptimizationHint"] = compiledPlan.Hint.ToString();
+        rootParams["OptimizationHint"] = compiledPlan.Strategy.ToString();
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
         QueryInspectionNode orGroupNode = null;

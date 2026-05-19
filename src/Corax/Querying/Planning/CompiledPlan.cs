@@ -1,21 +1,41 @@
 namespace Corax.Querying.Planning;
 
-/// <summary>Records which ORDER BY optimization succeeded on the first execution of a
-/// compiled plan. Subsequent executions with the same cache key skip the full Try* chain
-/// and go directly to the recorded path — or to the bitmap+sort fallback if None.</summary>
-public enum InstantiateHint : byte
+/// <summary>Execution strategy chosen for a CompiledPlan. Determined once at cache-miss time
+/// (when Try* discovery runs in Build) and baked into the CompiledPlan. On every subsequent
+/// cache hit, Instantiate dispatches directly on Strategy without re-running Try*.</summary>
+public enum ExecutionStrategy : byte
 {
-    /// <summary>First execution hasn't completed yet. Run the full Try* chain.</summary>
+    /// <summary>First execution hasn't completed yet — Try* discovery has not run.
+    /// Treated as "run discovery" by the dispatch path.</summary>
     NotEvaluated = 0,
-    /// <summary>No ORDER BY optimization applies. Go directly to bitmap + SortingMatch.</summary>
-    None,
-    /// <summary>TryCreateCompoundExactMatch succeeded (no ORDER BY needed).</summary>
+    /// <summary>No ORDER BY optimization applies. Use the bitmap pipeline (CompiledQueryMatch)
+    /// and wrap with SortingMatch when an ORDER BY is present.</summary>
+    BitmapSort,
+    /// <summary>Single compound-tree exact-term lookup. No ORDER BY — replaces an AND of two
+    /// Equals on the compound field's component clauses with one TermQuery on the composite key.</summary>
     CompoundExact,
-    /// <summary>TryCreateCompoundFieldMatch succeeded.</summary>
+    /// <summary>Compound-tree range scan that emits docs in ORDER BY order. Driving clause is
+    /// an Equals on the prefix field of a compound (Equals + ORDER BY sort field).</summary>
     CompoundField,
-    /// <summary>TryCreateSimpleFieldDirectScan succeeded.</summary>
+    /// <summary>SortedDrivingMatch on the sort field. Streams entries in sort order from a
+    /// single-field tree without materializing a bitmap.</summary>
     DirectScan,
 }
+
+/// <summary>Cache-level plan data for the CompoundExact strategy. Captures the structural
+/// facts the Try*Discover step established once at cache-miss time, so that Instantiate on
+/// each subsequent execution can build the live TermQuery directly.</summary>
+public readonly record struct CompoundExactPlan(int ClauseA, int ClauseB, bool AFirst);
+
+/// <summary>Cache-level plan data for the CompoundField strategy. Captures the driving
+/// clause's runtime index plus the sort-field/multi-sort facts that were validated at
+/// cache-miss time.</summary>
+public readonly record struct CompoundFieldPlan(int DrivingClauseIdx, string SortFieldName, bool IsMultiSort);
+
+/// <summary>Cache-level plan data for the DirectScan strategy. The driving clause index
+/// is the sole structural fact needed at Instantiate time; the clause itself (boost/IsNone)
+/// is still re-validated per execution because parameter values can shift.</summary>
+public readonly record struct DirectScanPlan(int DrivingClauseIdx);
 
 public sealed class CompiledPlan
 {
@@ -77,10 +97,22 @@ public sealed class CompiledPlan
     /// evaluated true under the bound parameters."</summary>
     public int WhenFlags { get; init; }
 
-    /// <summary>ORDER BY optimization hint, recorded on the first Instantiate call for this
-    /// compiled plan. Subsequent cache hits read the hint to skip the Try* chain. Written once
-    /// (volatile store), then read-only — safe for concurrent readers.</summary>
-    public volatile InstantiateHint Hint;
+    /// <summary>Execution strategy chosen for this compiled plan. Set once at cache-miss
+    /// time after Try* discovery (volatile store), then read-only — safe for concurrent readers.
+    /// Cache hits dispatch on this field without re-running Try*.</summary>
+    public volatile ExecutionStrategy Strategy;
+
+    /// <summary>Cache-level plan data for the CompoundExact strategy. Populated only when
+    /// <see cref="Strategy"/> is <see cref="ExecutionStrategy.CompoundExact"/>.</summary>
+    public CompoundExactPlan CompoundExactData;
+
+    /// <summary>Cache-level plan data for the CompoundField strategy. Populated only when
+    /// <see cref="Strategy"/> is <see cref="ExecutionStrategy.CompoundField"/>.</summary>
+    public CompoundFieldPlan CompoundFieldData;
+
+    /// <summary>Cache-level plan data for the DirectScan strategy. Populated only when
+    /// <see cref="Strategy"/> is <see cref="ExecutionStrategy.DirectScan"/>.</summary>
+    public DirectScanPlan DirectScanData;
 
     public PlanDecisionTrail DecisionTrail;
 
