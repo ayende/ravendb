@@ -2,7 +2,6 @@
 using Corax.Mappings;
 using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Utils.Spatial;
-using Spatial4n.Shapes;
 
 namespace Corax.Utils;
 
@@ -12,7 +11,7 @@ public readonly struct OrderMetadata
     public readonly bool HasBoost;
     public readonly bool Ascending;
     public readonly MatchCompareFieldType FieldType;
-    public readonly IPoint Point;
+    public readonly SpatialPoint Point;
     public readonly double Round;
     public readonly SpatialUnits Units;
     public readonly int RandomSeed;
@@ -84,7 +83,7 @@ public readonly struct OrderMetadata
         MayHaveMissingEntries = mayHaveMissingEntries;
     }
 
-    public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, IPoint point, double round, SpatialUnits units, bool fieldHasNoTerms, NullsSortMode? nullsSortMode = null)
+    public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, SpatialPoint point, double round, SpatialUnits units, bool fieldHasNoTerms, NullsSortMode? nullsSortMode = null)
     {
         Unsafe.SkipInit(out HasBoost);
         Unsafe.SkipInit(out RandomSeed);

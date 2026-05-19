@@ -134,12 +134,11 @@ public static class QueryPrimitives
         long total = 0;
         while (iterator.Fill(buffer, out int read) && read > 0)
         {
-            EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
-
             long remaining = limit - total;
             read = (int)Math.Min(read, remaining);
             if (read <= 0)
                 break;
+            EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
             bitmap.AddRange(buffer[..read]);
             total += read;
         }
@@ -537,11 +536,11 @@ public static class QueryPrimitives
             long total = 0;
             while (total < limit && (read = reader.Fill(buffer, FillBufferSize)) > 0)
             {
-                var results = new Span<long>(buffer, read);
-                EntryIdEncodings.DecodeAndDiscardFrequency(results, read);
                 long remaining = limit - total;
                 read = (int)Math.Min(read, remaining);
                 if (read <= 0) break;
+                var results = new Span<long>(buffer, read);
+                EntryIdEncodings.DecodeAndDiscardFrequency(results, read);
                 bitmap.AddRange(results[..read]);
                 total += read;
             }
