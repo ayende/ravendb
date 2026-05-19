@@ -37,6 +37,8 @@ public partial class IndexSearcher
         };
     }
 
+    // ── Shared search helpers ───────────────────────────────────────────
+
     /// <summary>
     /// Accumulate <paramref name="match"/> into <paramref name="searchBitmap"/>, allocating the
     /// bitmap and its scratch buffer on first use. The first accumulation always uses OR
@@ -65,9 +67,106 @@ public partial class IndexSearcher
         }
     }
 
+    /// <summary>AND or OR the accumulated single-term matches into the search bitmap.
+    /// Shared by all three SearchQuery variants.</summary>
+    private void MergeTermMatches(List<Slice> termMatches, FieldMetadata field,
+        ref BitmapMatch searchBitmap, ref Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData,
+        Constants.Search.Operator @operator)
+    {
+        if (termMatches is not { Count: > 0 })
+            return;
+
+        var termBitmap = new BitmapMatch(Allocator);
+        var tempTermBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
+
+        if (@operator == Constants.Search.Operator.And)
+        {
+            bool first = true;
+            foreach (var term in termMatches)
+            {
+                var termQuery = TermQuery(field, term);
+                if (first)
+                {
+                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
+                    first = false;
+                }
+                else
+                {
+                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData);
+                }
+            }
+        }
+        else
+        {
+            foreach (var term in termMatches)
+                Primitives.QueryPrimitives.OrWithMatch(TermQuery(field, term), ref termBitmap.BitmapState);
+        }
+
+        AccumulateIntoSearchBitmap(termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
+        tempTermBitmapData.Dispose();
+        termBitmap.Dispose();
+    }
+
+    /// <summary>AND all phrase terms together, wrap in PhraseQuery for proximity verification,
+    /// then accumulate. Shared by PhraseQuery and WildcardAdjustments variants.</summary>
+    private void AccumulatePhraseQuery(FieldMetadata field, ContextBoundNativeList<Slice> terms,
+        ref BitmapMatch searchBitmap, ref Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData,
+        Constants.Search.Operator @operator)
+    {
+        var phraseBitmap = new BitmapMatch(Allocator);
+        var tempPhraseBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
+        bool first = true;
+        foreach (var term in terms)
+        {
+            var termQuery = TermQuery(field, term);
+            if (first)
+            {
+                Primitives.QueryPrimitives.OrWithMatch(termQuery, ref phraseBitmap.BitmapState);
+                first = false;
+            }
+            else
+            {
+                Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData);
+            }
+        }
+
+        var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
+        phraseBitmap.Dispose();
+        tempPhraseBitmapData.Dispose();
+        AccumulateIntoSearchBitmap(phraseMatch, ref searchBitmap, ref tempBitmapData, @operator);
+    }
+
+    /// <summary>Create a wildcard/exists query from the resolved term type and analyzed term.</summary>
+    private IQueryMatch CreateWildcardOrExistsQuery(FieldMetadata field,
+        Constants.Search.SearchMatchOptions termType, Slice analyzedTerm,
+        CancellationToken cancellationToken)
+    {
+        return termType switch
+        {
+            Constants.Search.SearchMatchOptions.Exists => ExistsQuery(field, token: cancellationToken),
+            Constants.Search.SearchMatchOptions.StartsWith => StartWithQuery(field, analyzedTerm, token: cancellationToken),
+            Constants.Search.SearchMatchOptions.EndsWith => EndsWithQuery(field, analyzedTerm, token: cancellationToken),
+            Constants.Search.SearchMatchOptions.Contains => ContainsQuery(field, analyzedTerm, token: cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
+        };
+    }
+
+    /// <summary>Dispose temporaries and return the final search result.</summary>
+    private IQueryMatch FinalizeSearchResult(ref BitmapMatch searchBitmap,
+        ref Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData)
+    {
+        tempBitmapData.Dispose();
+        if (searchBitmap.IsAllocated == false)
+        {
+            searchBitmap.Dispose();
+            return TermMatch.CreateEmpty(this, Allocator);
+        }
+        return searchBitmap;
+    }
+
     private IQueryMatch SearchQueryLegacy(FieldMetadata field, IEnumerable<string> values, Constants.Search.Operator @operator, in CancellationToken cancellationToken)
     {
-        AssertFieldIsSearched();
+        AssertFieldIsSearched(field);
         var searchAnalyzer = field.IsDynamic
             ? _fieldMapping.SearchAnalyzer(field.FieldName.ToString())
             : field.Analyzer;
@@ -75,9 +174,6 @@ public partial class IndexSearcher
         field = field.ChangeAnalyzer(field.Mode, searchAnalyzer);
 
         Analyzer wildcardAnalyzer = null;
-        // searchBitmap and tempBitmapData are allocated lazily on the first term that
-        // needs accumulation. A default-initialized BitmapMatch holds no native memory,
-        // so it is safe to Dispose unconditionally without a separate empty-match path.
         BitmapMatch searchBitmap = default;
         Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData = default;
 
@@ -104,101 +200,36 @@ public partial class IndexSearcher
                 if (termType is Constants.Search.SearchMatchOptions.TermMatch)
                 {
                     termMatches ??= [];
-
-                    terms.Clear(); // Clear the terms' list.
+                    terms.Clear();
                     EncodeAndApplyAnalyzerForMultipleTerms(field, termReadyToAnalyze, ref terms);
                     foreach (var term in terms)
                     {
                         if (term.Size == 0)
-                            continue; //skip empty results
-
+                            continue;
                         termMatches.Add(term);
                     }
                     continue;
                 }
 
                 Slice analyzedTerm = default;
-
                 if (termType is not Constants.Search.SearchMatchOptions.Exists)
                 {
                     analyzedTerm = EncodeAndApplyAnalyzer(field, analyzer, termReadyToAnalyze);
                     if (analyzedTerm.Size == 0)
-                        continue; //skip empty results
+                        continue;
                 }
 
-                var query = termType switch
-                {
-                    Constants.Search.SearchMatchOptions.TermMatch => throw new InvalidDataException(
-                        $"{nameof(TermMatch)} is handled in different part of evaluator. This is a bug."),
-                    Constants.Search.SearchMatchOptions.Exists => ExistsQuery(field, token: cancellationToken),
-                    Constants.Search.SearchMatchOptions.StartsWith => StartWithQuery(field, analyzedTerm, token: cancellationToken),
-                    Constants.Search.SearchMatchOptions.EndsWith => EndsWithQuery(field, analyzedTerm, token: cancellationToken),
-                    Constants.Search.SearchMatchOptions.Contains => ContainsQuery(field, analyzedTerm, token: cancellationToken),
-                    _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
-                };
-
-                AccumulateIntoSearchBitmap(query, ref searchBitmap, ref tempBitmapData, @operator);
+                AccumulateIntoSearchBitmap(
+                    CreateWildcardOrExistsQuery(field, termType, analyzedTerm, cancellationToken),
+                    ref searchBitmap, ref tempBitmapData, @operator);
             }
         }
 
-        if (termMatches?.Count > 0)
-        {
-            // Build bitmap directly from term posting lists instead of calling AllInQuery/InQuery
-            var termBitmap = new BitmapMatch(Allocator);
-            var tempTermBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
-
-            if (@operator == Constants.Search.Operator.And)
-            {
-                // AND all terms together
-                bool first = true;
-                foreach (var term in termMatches)
-                {
-                    var termQuery = TermQuery(field, term);
-                    if (first)
-                    {
-                        Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
-                        first = false;
-                    }
-                    else
-                    {
-                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData);
-                    }
-                }
-            }
-            else
-            {
-                // OR all terms together
-                foreach (var term in termMatches)
-                {
-                    var termQuery = TermQuery(field, term);
-                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
-                }
-            }
-
-            AccumulateIntoSearchBitmap(termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
-
-            tempTermBitmapData.Dispose();
-            termBitmap.Dispose();
-        }
-
-        void AssertFieldIsSearched()
-        {
-            if (field.Analyzer == null && field.IsDynamic == false)
-                throw new InvalidOperationException($"{nameof(SearchQuery)} requires analyzer.");
-        }
-
+        MergeTermMatches(termMatches, field, ref searchBitmap, ref tempBitmapData, @operator);
         wildcardAnalyzer?.Dispose();
-        tempBitmapData.Dispose();
+        return FinalizeSearchResult(ref searchBitmap, ref tempBitmapData);
 
-        if (searchBitmap.IsAllocated == false)
-        {
-            searchBitmap.Dispose();
-            return TermMatch.CreateEmpty(this, Allocator);
-        }
-
-        return searchBitmap;
-
-        IEnumerable<Token> GetTokens(string source)
+        static IEnumerable<Token> GetTokens(string source)
         {
             if (string.IsNullOrEmpty(source))
             {
@@ -207,7 +238,6 @@ public partial class IndexSearcher
             }
 
             int i = 0;
-
             while (i < source.Length)
             {
                 while (i < source.Length && source[i] == ' ')
@@ -218,18 +248,15 @@ public partial class IndexSearcher
                     i++;
 
                 if (start != i)
-                {
                     yield return new Token() {Offset = start, Length = (uint)(i - start), Type = TokenType.Word};
-                }
             }
         }
-
     }
 
 
     private IQueryMatch SearchQueryWithPhraseQuery(FieldMetadata field, IEnumerable<string> values, Constants.Search.Operator @operator, in CancellationToken cancellationToken = default)
     {
-        AssertFieldIsSearched();
+        AssertFieldIsSearched(field);
         var searchAnalyzer = field.IsDynamic
             ? _fieldMapping.SearchAnalyzer(field.FieldName.ToString())
             : field.Analyzer;
@@ -237,9 +264,6 @@ public partial class IndexSearcher
         field = field.ChangeAnalyzer(field.Mode, searchAnalyzer);
 
         Analyzer wildcardAnalyzer = null;
-        // searchBitmap and tempBitmapData are allocated lazily on the first term that
-        // needs accumulation. A default-initialized BitmapMatch holds no native memory,
-        // so it is safe to Dispose unconditionally without a separate empty-match path.
         BitmapMatch searchBitmap = default;
         Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData = default;
 
@@ -252,7 +276,7 @@ public partial class IndexSearcher
             if (tokensInWord == 0)
                 continue;
 
-            //Single word
+            // Single word
             if (tokensInWord == 1)
             {
                 var value = word.AsSpan(token.Offset, (int)token.Length);
@@ -272,139 +296,51 @@ public partial class IndexSearcher
                 if (termType is Constants.Search.SearchMatchOptions.TermMatch)
                 {
                     termMatches ??= [];
-                    terms.Clear(); // Clear the terms' list.
+                    terms.Clear();
                     EncodeAndApplyAnalyzerForMultipleTerms(field, word, ref terms);
 
-                    //When single term outputs multiple terms, we've to jump into phraseQuery
+                    // When single term outputs multiple terms, promote to phrase query
                     if (terms.Count > 1)
                         goto PhraseQuery;
 
                     foreach (var term in terms)
                     {
                         if (term.Size == 0)
-                            continue; //skip empty results
-
+                            continue;
                         termMatches.Add(term);
                     }
                     continue;
                 }
 
                 Slice analyzedTerm = default;
-
                 if (termType is not Constants.Search.SearchMatchOptions.Exists)
                 {
                     analyzedTerm = EncodeAndApplyAnalyzer(field, analyzer, termReadyToAnalyze);
                     if (analyzedTerm.Size == 0)
-                        continue; //skip empty results
+                        continue;
                 }
 
-                var query = termType switch
-                {
-                    Constants.Search.SearchMatchOptions.TermMatch => throw new InvalidDataException(
-                        $"{nameof(TermMatch)} is handled in different part of evaluator. This is a bug."),
-                    Constants.Search.SearchMatchOptions.Exists => ExistsQuery(field, token: cancellationToken),
-                    Constants.Search.SearchMatchOptions.StartsWith => StartWithQuery(field, analyzedTerm, token: cancellationToken),
-                    Constants.Search.SearchMatchOptions.EndsWith => EndsWithQuery(field, analyzedTerm, token: cancellationToken),
-                    Constants.Search.SearchMatchOptions.Contains => ContainsQuery(field, analyzedTerm, token: cancellationToken),
-                    _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
-                };
-
-                AccumulateIntoSearchBitmap(query, ref searchBitmap, ref tempBitmapData, @operator);
-
+                AccumulateIntoSearchBitmap(
+                    CreateWildcardOrExistsQuery(field, termType, analyzedTerm, cancellationToken),
+                    ref searchBitmap, ref tempBitmapData, @operator);
                 continue;
             }
 
-            //Phrase query
+            // Phrase query (multi-word input)
             terms.Clear();
             EncodeAndApplyAnalyzerForMultipleTerms(field, word, ref terms);
 
             if (terms.Count == 0)
-                continue; //sentence contained only stop-words
+                continue; // sentence contained only stop-words
             PhraseQuery:
-            // Build bitmap directly from term posting lists for phrase query
-            var phraseBitmap = new BitmapMatch(Allocator);
-            var tempPhraseBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
-            bool firstPhraseTerm = true;
-            foreach (var term in terms)
-            {
-                var termQuery = TermQuery(field, term);
-                if (firstPhraseTerm)
-                {
-                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref phraseBitmap.BitmapState);
-                    firstPhraseTerm = false;
-                }
-                else
-                {
-                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData);
-                }
-            }
-
-            var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
-            phraseBitmap.Dispose();
-            tempPhraseBitmapData.Dispose();
-
-            AccumulateIntoSearchBitmap(phraseMatch, ref searchBitmap, ref tempBitmapData, @operator);
+            AccumulatePhraseQuery(field, terms, ref searchBitmap, ref tempBitmapData, @operator);
         }
 
-        if (termMatches?.Count > 0)
-        {
-            // Build bitmap directly from term posting lists instead of calling AllInQuery/InQuery
-            var termBitmap = new BitmapMatch(Allocator);
-            var tempTermBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
-
-            if (@operator == Constants.Search.Operator.And)
-            {
-                // AND all terms together
-                bool first = true;
-                foreach (var term in termMatches)
-                {
-                    var termQuery = TermQuery(field, term);
-                    if (first)
-                    {
-                        Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
-                        first = false;
-                    }
-                    else
-                    {
-                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData);
-                    }
-                }
-            }
-            else
-            {
-                // OR all terms together
-                foreach (var term in termMatches)
-                {
-                    var termQuery = TermQuery(field, term);
-                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
-                }
-            }
-
-            AccumulateIntoSearchBitmap(termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
-
-            tempTermBitmapData.Dispose();
-            termBitmap.Dispose();
-        }
-
-        void AssertFieldIsSearched()
-        {
-            if (field.Analyzer == null && field.IsDynamic == false)
-                throw new InvalidOperationException($"{nameof(SearchQueryWithPhraseQuery)} requires analyzer.");
-        }
-
+        MergeTermMatches(termMatches, field, ref searchBitmap, ref tempBitmapData, @operator);
         wildcardAnalyzer?.Dispose();
-        tempBitmapData.Dispose();
+        return FinalizeSearchResult(ref searchBitmap, ref tempBitmapData);
 
-        if (searchBitmap.IsAllocated == false)
-        {
-            searchBitmap.Dispose();
-            return TermMatch.CreateEmpty(this, Allocator);
-        }
-
-        return searchBitmap;
-
-        //In pharse query we expect to have multiple tokens, for most cases
-        int CountTokens(in string source, out Token termToken)
+        static int CountTokens(in string source, out Token termToken)
         {
             int count = 0;
             termToken = default;
@@ -435,10 +371,7 @@ public partial class IndexSearcher
 
     private IQueryMatch SearchQueryWithPhraseQueryWithWildcardQueriesAdjustments(FieldMetadata field, IEnumerable<string> values, Constants.Search.Operator @operator, in CancellationToken cancellationToken = default)
     {
-        AssertFieldIsSearched();
-        // searchBitmap and tempBitmapData are allocated lazily on the first term that
-        // needs accumulation. A default-initialized BitmapMatch holds no native memory,
-        // so it is safe to Dispose unconditionally without a separate empty-match path.
+        AssertFieldIsSearched(field);
         BitmapMatch searchBitmap = default;
         Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData = default;
         List<Slice> termMatches = null;
@@ -454,13 +387,13 @@ public partial class IndexSearcher
             if (tokensInWord == 0)
                 continue;
 
-            //single word
+            // Single word (or wildcard StartsWith which is always single-term)
             if (tokensInWord is 1 || termType is Constants.Search.SearchMatchOptions.StartsWith)
             {
                 var value = terms[0];
                 var valueAsSpan = value.AsSpan();
 
-                //Adjustment to Lucene builder.
+                // Adjustment to Lucene builder: re-detect term type on analyzed output.
                 if (termType is not Constants.Search.SearchMatchOptions.StartsWith)
                     termType = GetTermType(valueAsSpan);
 
@@ -475,11 +408,9 @@ public partial class IndexSearcher
                     _ => throw new InvalidExpressionException("Unknown flag inside Search match.")
                 };
 
-                //Rewrite term without asterisks.
+                // Rewrite term without asterisks.
                 if (termType is not (Constants.Search.SearchMatchOptions.Exists or Constants.Search.SearchMatchOptions.TermMatch))
-                {
                     Slice.From(Allocator, valueAsSpan.Slice(startIncrement, valueAsSpan.Length - startIncrement + lengthIncrement), ByteStringType.Immutable, out value);
-                }
 
                 if (termType is Constants.Search.SearchMatchOptions.TermMatch)
                 {
@@ -488,102 +419,24 @@ public partial class IndexSearcher
                     continue;
                 }
 
-                var query = termType switch
-                {
-                    Constants.Search.SearchMatchOptions.TermMatch => throw new InvalidDataException(
-                        $"{nameof(TermMatch)} is handled in different part of evaluator. This is a bug."),
-                    Constants.Search.SearchMatchOptions.Exists => ExistsQuery(field, token: cancellationToken),
-                    Constants.Search.SearchMatchOptions.StartsWith => StartWithQuery(field, value, token: cancellationToken),
-                    Constants.Search.SearchMatchOptions.EndsWith => EndsWithQuery(field, value, token: cancellationToken),
-                    Constants.Search.SearchMatchOptions.Contains => ContainsQuery(field, value, token: cancellationToken),
-                    _ => throw new ArgumentOutOfRangeException(nameof(termType), termType.ToString())
-                };
-
-                AccumulateIntoSearchBitmap(query, ref searchBitmap, ref tempBitmapData, @operator);
-
+                AccumulateIntoSearchBitmap(
+                    CreateWildcardOrExistsQuery(field, termType, value, cancellationToken),
+                    ref searchBitmap, ref tempBitmapData, @operator);
                 continue;
             }
 
-            // Phrase query part (wildcards are not supported in phrase queries).
-            // Build bitmap directly from term posting lists for a phrase query
-            var phraseBitmap = new BitmapMatch(Allocator);
-            var tempPhraseBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
-            bool firstPhraseTerm = true;
-            foreach (var term in terms)
-            {
-                var termQuery = TermQuery(field, term);
-                if (firstPhraseTerm)
-                {
-                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref phraseBitmap.BitmapState);
-                    firstPhraseTerm = false;
-                }
-                else
-                {
-                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData);
-                }
-            }
-
-            var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
-            phraseBitmap.Dispose();
-            tempPhraseBitmapData.Dispose();
-
-            AccumulateIntoSearchBitmap(phraseMatch, ref searchBitmap, ref tempBitmapData, @operator);
+            // Phrase query (wildcards are not supported in phrase queries)
+            AccumulatePhraseQuery(field, terms, ref searchBitmap, ref tempBitmapData, @operator);
         }
 
-        if (termMatches?.Count > 0)
-        {
-            // Build bitmap directly from term posting lists instead of calling AllInQuery/InQuery
-            var termBitmap = new BitmapMatch(Allocator);
-            var tempTermBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
+        MergeTermMatches(termMatches, field, ref searchBitmap, ref tempBitmapData, @operator);
+        return FinalizeSearchResult(ref searchBitmap, ref tempBitmapData);
+    }
 
-            if (@operator == Constants.Search.Operator.And)
-            {
-                // AND all terms together
-                bool first = true;
-                foreach (var term in termMatches)
-                {
-                    var termQuery = TermQuery(field, term);
-                    if (first)
-                    {
-                        Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
-                        first = false;
-                    }
-                    else
-                    {
-                        Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData);
-                    }
-                }
-            }
-            else
-            {
-                // OR all terms together
-                foreach (var term in termMatches)
-                {
-                    var termQuery = TermQuery(field, term);
-                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
-                }
-            }
-
-            AccumulateIntoSearchBitmap(termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
-
-            tempTermBitmapData.Dispose();
-        }
-
-        tempBitmapData.Dispose();
-
-        if (searchBitmap.IsAllocated == false)
-        {
-            searchBitmap.Dispose();
-            return TermMatch.CreateEmpty(this, Allocator);
-        }
-
-        return searchBitmap;
-
-        void AssertFieldIsSearched()
-        {
-            if (field.Analyzer == null && field.IsDynamic == false)
-                throw new InvalidOperationException($"{nameof(SearchQueryWithPhraseQuery)} requires analyzer.");
-        }
+    private static void AssertFieldIsSearched(in FieldMetadata field)
+    {
+        if (field.Analyzer == null && field.IsDynamic == false)
+            throw new InvalidOperationException($"{nameof(SearchQuery)} requires analyzer.");
     }
 
     private Constants.Search.SearchMatchOptions GetTermType(ReadOnlySpan<char> termValue)
