@@ -478,7 +478,7 @@ internal static partial class QueryPlanBuilder
             {
                 // Rent padded to a multiple of 8 for RoaringBitmap.InitializeIndices
                 // (AVX2 Vector256 stores write 8 ints at a time).
-                int paddedLen = (n + 7) & ~7;
+                int paddedLen = RoaringBitmap.PadToVector256Width(n);
                 rented = ArrayPool<int>.Shared.Rent(paddedLen);
                 indices = rented.AsSpan(0, paddedLen);
             }

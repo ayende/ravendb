@@ -599,9 +599,25 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 {
                     var compactKey = llt.AcquireCompactKey();
                     int byteCount = System.Text.Encoding.UTF8.GetByteCount(strVal);
-                    Span<byte> buffer = byteCount <= Utf8StackAllocThreshold ? stackalloc byte[Utf8StackAllocThreshold] : new byte[byteCount];
-                    int written = System.Text.Encoding.UTF8.GetBytes(strVal, buffer);
-                    compactKey.Set(buffer[..written]);
+                    if (byteCount <= Utf8StackAllocThreshold)
+                    {
+                        Span<byte> stackBuf = stackalloc byte[Utf8StackAllocThreshold];
+                        int written = System.Text.Encoding.UTF8.GetBytes(strVal, stackBuf);
+                        compactKey.Set(stackBuf[..written]);
+                    }
+                    else
+                    {
+                        ref byte[] threadBuf = ref Utf8ThreadBuffer;
+                        if (threadBuf == null || threadBuf.Length < byteCount)
+                        {
+                            int newLen = threadBuf == null ? Utf8StackAllocThreshold : threadBuf.Length;
+                            while (newLen < byteCount)
+                                newLen <<= 1;
+                            threadBuf = new byte[newLen];
+                        }
+                        int written = System.Text.Encoding.UTF8.GetBytes(strVal, threadBuf);
+                        compactKey.Set(((Span<byte>)threadBuf)[..written]);
+                    }
                     compactKey.ChangeDictionary(termsTree.DictionaryId);
                     it.Seek(new CompactTree.CompactKeyLookup(compactKey));
                 }
@@ -637,15 +653,29 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// <summary>Compare a Slice's bytes to a string's UTF-8 encoding without allocating.
     /// Used for sort-hint field-name matching where the slice comes from the index
     /// and the hint field name comes from the query AST.</summary>
+    [System.Runtime.CompilerServices.SkipLocalsInit]
     private static bool SliceEqualsUtf8(Slice slice, string s)
     {
         var sliceSpan = slice.AsReadOnlySpan();
         int byteCount = System.Text.Encoding.UTF8.GetByteCount(s);
         if (byteCount != sliceSpan.Length)
             return false;
-        Span<byte> buffer = byteCount <= Utf8StackAllocThreshold ? stackalloc byte[Utf8StackAllocThreshold] : new byte[byteCount];
-        int written = System.Text.Encoding.UTF8.GetBytes(s, buffer);
-        return sliceSpan.SequenceEqual(buffer[..written]);
+        if (byteCount <= Utf8StackAllocThreshold)
+        {
+            Span<byte> stackBuf = stackalloc byte[Utf8StackAllocThreshold];
+            int written = System.Text.Encoding.UTF8.GetBytes(s, stackBuf);
+            return sliceSpan.SequenceEqual(stackBuf[..written]);
+        }
+        ref byte[] threadBuf = ref Utf8ThreadBuffer;
+        if (threadBuf == null || threadBuf.Length < byteCount)
+        {
+            int newLen = threadBuf == null ? Utf8StackAllocThreshold : threadBuf.Length;
+            while (newLen < byteCount)
+                newLen <<= 1;
+            threadBuf = new byte[newLen];
+        }
+        int written2 = System.Text.Encoding.UTF8.GetBytes(s, threadBuf);
+        return sliceSpan.SequenceEqual(((Span<byte>)threadBuf)[..written2]);
     }
 
     /// <summary>

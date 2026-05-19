@@ -797,7 +797,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
         // Allocate parallel index array (padded to AVX2 width for InitializeIndices).
         // Use the bitmap's own ByteStringContext — same allocator as container memory.
-        int paddedLen = (count + 7) & ~7;
+        int paddedLen = PadToVector256Width(count);
         using var _ = _ctx.Allocate(paddedLen * sizeof(int), out ByteString work);
         Span<int> indices = new Span<int>(work.Ptr, paddedLen);
 
@@ -989,7 +989,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
         // store full Vector256<int> chunks without a scalar tail. Only indexes[0..n) is
         // ever read after init; we slice back to n for Sort (parallel-keys API requires
         // matching lengths) and subsequent reads.
-        int paddedLen = (n + 7) & ~7;
+        int paddedLen = PadToVector256Width(n);
         using var _ = allocator.Allocate(paddedLen * sizeof(int), out ByteString work);
         InitializeIndices(new Span<int>(work.Ptr, paddedLen), n);
         var indexes = new Span<int>(work.Ptr, n);
@@ -1054,15 +1054,22 @@ public unsafe partial struct RoaringBitmap : IDisposable
         }
     }
 
+    /// <summary>Round <paramref name="n"/> up to the next multiple of 8 (the AVX2 Vector256&lt;int&gt;
+    /// lane width). Use this whenever allocating an int buffer that will be passed to
+    /// <see cref="InitializeIndices"/> so the SIMD loop can store full 256-bit chunks
+    /// without a scalar tail.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal static int PadToVector256Width(int n) => (n + 7) & ~7;
+
     /// <summary>Fill <paramref name="indices"/> with 0..read-1 using AVX2 256-bit stores.
     /// <paramref name="indices"/> must be padded to a multiple of 8 — i.e.
-    /// <c>indices.Length &gt;= ((read + 7) &amp; ~7)</c> — so the unrolled SIMD loop can store
+    /// <c>indices.Length &gt;= PadToVector256Width(read)</c> — so the unrolled SIMD loop can store
     /// full Vector256&lt;int&gt; chunks without a scalar tail. Used by RoaringBitmap.Select
     /// here and by Corax's DirectScanMatch via InternalsVisibleTo.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static void InitializeIndices(Span<int> indices, int read)
     {
-        Debug.Assert(((read + 7) & ~7) <= indices.Length, "SIMD write past indices span");
+        Debug.Assert(PadToVector256Width(read) <= indices.Length, "SIMD write past indices span");
         ref int ptr = ref MemoryMarshal.GetReference(indices);
 
         var countVec = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
