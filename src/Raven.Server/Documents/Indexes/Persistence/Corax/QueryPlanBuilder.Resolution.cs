@@ -3904,8 +3904,8 @@ internal static partial class QueryPlanBuilder
         if (orderByFields.Length > MaxSortFields)
             throw new InvalidOperationException($"Corax does not support ordering by more than {MaxSortFields} properties.");
 
-        // OrderMetadata contains FieldMetadata, which holds an Analyzer class reference,
-        // so stackalloc is not possible (only fully unmanaged structs may be stack-allocated).
+        // OrderMetadata contains a managed IPoint reference field, so stackalloc is not
+        // possible here (only unmanaged structs may be stack-allocated in C#).
         int sortIndex = 0;
         var sortArray = new OrderMetadata[MaxSortFields];
 
@@ -3955,15 +3955,14 @@ internal static partial class QueryPlanBuilder
                 var spatialField = getSpatialField(field.Name);
 
                 int lastArgument;
-                global::Corax.Utils.Spatial.SpatialPoint point;
+                IPoint point;
                 switch (field.Method)
                 {
                     case MethodType.Spatial_Circle:
                         var cLatitude = field.Arguments[1].GetDouble(query.QueryParameters);
                         var cLongitude = field.Arguments[2].GetDouble(query.QueryParameters);
                         lastArgument = 2;
-                        var cp = spatialField.ReadPoint(cLatitude, cLongitude).Center;
-                        point = new global::Corax.Utils.Spatial.SpatialPoint(cp.X, cp.Y);
+                        point = spatialField.ReadPoint(cLatitude, cLongitude).Center;
                         break;
                     case MethodType.Spatial_Wkt:
                         var wkt = field.Arguments[0].GetString(query.QueryParameters);
@@ -3975,15 +3974,13 @@ internal static partial class QueryPlanBuilder
                             lastArgument = 2;
                         }
 
-                        var wp = spatialField.ReadShape(wkt, spatialUnits).Center;
-                        point = new global::Corax.Utils.Spatial.SpatialPoint(wp.X, wp.Y);
+                        point = spatialField.ReadShape(wkt, spatialUnits).Center;
                         break;
                     case MethodType.Spatial_Point:
                         var pLatitude = field.Arguments[0].GetDouble(query.QueryParameters);
                         var pLongitude = field.Arguments[1].GetDouble(query.QueryParameters);
                         lastArgument = 2;
-                        var pp = spatialField.ReadPoint(pLatitude, pLongitude).Center;
-                        point = new global::Corax.Utils.Spatial.SpatialPoint(pp.X, pp.Y);
+                        point = spatialField.ReadPoint(pLatitude, pLongitude).Center;
                         break;
                     default:
                         throw new ArgumentOutOfRangeException();
