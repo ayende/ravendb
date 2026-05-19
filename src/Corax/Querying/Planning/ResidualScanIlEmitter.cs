@@ -20,14 +20,9 @@ namespace Corax.Querying.Planning;
 /// harmless, and it eliminates the need for a separate delegate-per-path or a
 /// runtime predicate-count parameter. The extra cost is negligible: a handful
 /// of FindNext + compare operations per entry against already-cached stored fields.
-///
-/// IL and the diagnostic C# source are emitted in lockstep through <see cref="DualEmit"/>:
-/// each predicate primitive pushes to both the IL evaluation stack and a parallel
-/// textual operand stack, so the two backends cannot drift.
 /// </summary>
 public static class ResidualScanIlEmitter
 {
-    /// <summary>Compiled predicate that filters and compacts a batch of entry IDs in-place.</summary>
     public delegate int ResidualScanPredicate(
         IPredicateEvaluationContext ctx,
         Span<EntryTermsReader> readers,
@@ -109,7 +104,7 @@ public static class ResidualScanIlEmitter
 
         // DualEmit drives per-predicate emission: every primitive pushes IL + C# fragment
         // so the two outputs cannot drift. Indent matches the C# loop body opened above.
-        var d = new DualEmit(il, cs, indent: "        ");
+        var d = new DualEmit(il, cs);
         int rootIdx = 0;
         for (int p = 0; p < predicates.Length; p++)
         {
@@ -202,14 +197,14 @@ public static class ResidualScanIlEmitter
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
                     var nextSub = d.DefineLabelPair("nextBranch");
-                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], nextSub.IL, nextSub.Name, rootIdx, readerRefLocal);
+                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], nextSub.Il, nextSub.Name, rootIdx, readerRefLocal);
                     // Branch succeeded — skip remaining alternatives.
                     d.GotoAlways(groupPassed);
                     d.MarkLabel(nextSub);
                     rootIdx++;
                 }
                 // All branches fell through → group fails.
-                d.IL.Emit(OpCodes.Br, failLabel);
+                d.Il.Emit(OpCodes.Br, failLabel);
                 d.CsLine("goto rejected;");
                 d.MarkLabel(groupPassed);
             }
@@ -240,8 +235,8 @@ public static class ResidualScanIlEmitter
         LocalBuilder readerRefLocal)
     {
         // reader.Reset();
-        d.IL.Emit(OpCodes.Ldloc, readerRefLocal);
-        d.IL.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);
+        d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);
         d.CsLine("reader.Reset();");
 
         // StartsWith / EndsWith are full-field scans rather than positioning calls — they
@@ -256,7 +251,7 @@ public static class ResidualScanIlEmitter
                 : "CompiledQueryHelper.CheckFieldTermEndsWith";
 
             // ref reader, fieldRootPage, paramSpan
-            d.IL.Emit(OpCodes.Ldloc, readerRefLocal);
+            d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
             d.CsStack.Push("ref reader");
             d.LoadFieldRootPage(rootIdx);
             d.LoadSliceSpan(pred.ParamIndex);
@@ -267,7 +262,7 @@ public static class ResidualScanIlEmitter
         }
 
         // FindNext(ctx.ResidualFieldRootPages[rootIdx]) leaves a bool on both stacks.
-        d.IL.Emit(OpCodes.Ldloc, readerRefLocal);
+        d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
         d.CsStack.Push("reader");
         d.LoadFieldRootPage(rootIdx);
         d.CallReturning(IlEmitterShared.ReaderFindNext, arity: 2, csTemplate: "{0}.FindNext({1})");
@@ -288,22 +283,19 @@ public static class ResidualScanIlEmitter
                 // matching the IL exactly. (The previous textual emitter emitted
                 // `if (!FindNext) goto rejected;` here — wrong for NotEqual; C# is
                 // diagnostic-only, but the lockstep emitter now mirrors the real IL.)
-                var notFoundIl = d.IL.DefineLabel();
+                var notFoundIl = d.Il.DefineLabel();
                 // The DualEmit branch helpers would write IF (!found) goto notFound; here
                 // we want a `goto skip` C# but no jump back — so we open a C# `if (found)`
                 // block by hand around the equality compare.
                 var foundFragment = d.CsStack.Pop();
-                d.IL.Emit(OpCodes.Brfalse, notFoundIl);
+                d.Il.Emit(OpCodes.Brfalse, notFoundIl);
                 d.CsLine($"if ({foundFragment})");
                 d.CsLine("{");
-                var prev = d.Indent;
-                d.Indent = prev + "    ";
                 EmitTypedComparison(ref d, in pred, readerRefLocal);
                 // FAIL if comparison is true (value equals).
                 EmitBranchTrue(ref d, failIl, failName);
-                d.Indent = prev;
                 d.CsLine("}");
-                d.IL.MarkLabel(notFoundIl);
+                d.Il.MarkLabel(notFoundIl);
                 break;
             }
 
@@ -429,8 +421,8 @@ public static class ResidualScanIlEmitter
                 break;
             default:
                 // Unknown compare → constant false. Discard the two operands first.
-                d.IL.Emit(OpCodes.Pop);
-                d.IL.Emit(OpCodes.Pop);
+                d.Il.Emit(OpCodes.Pop);
+                d.Il.Emit(OpCodes.Pop);
                 d.CsStack.Pop();
                 d.CsStack.Pop();
                 d.PushConstBool(false);
@@ -479,12 +471,12 @@ public static class ResidualScanIlEmitter
     private static void EmitBetweenTail(ref DualEmit d, LabelPair fail, LabelPair done)
     {
         var tmp = d.DeclareTempBool("between");
-        d.IL.Emit(OpCodes.Ldc_I4_1);
+        d.Il.Emit(OpCodes.Ldc_I4_1);
         d.CsLine($"{tmp} = true;");
         d.GotoAlways(done);
 
         d.MarkLabel(fail);
-        d.IL.Emit(OpCodes.Ldc_I4_0);
+        d.Il.Emit(OpCodes.Ldc_I4_0);
         d.CsLine($"{tmp} = false;");
 
         d.MarkLabel(done);
@@ -497,14 +489,14 @@ public static class ResidualScanIlEmitter
     /// raw string rather than a LabelPair.</summary>
     private static void EmitBranchFalse(ref DualEmit d, Label ilLabel, string csName)
     {
-        d.IL.Emit(OpCodes.Brfalse, ilLabel);
+        d.Il.Emit(OpCodes.Brfalse, ilLabel);
         var a = d.CsStack.Pop();
         d.CsLine($"if (!{a}) goto {csName};");
     }
 
     private static void EmitBranchTrue(ref DualEmit d, Label ilLabel, string csName)
     {
-        d.IL.Emit(OpCodes.Brtrue, ilLabel);
+        d.Il.Emit(OpCodes.Brtrue, ilLabel);
         var a = d.CsStack.Pop();
         d.CsLine($"if ({a}) goto {csName};");
     }

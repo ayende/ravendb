@@ -79,9 +79,9 @@ public static class CompiledQueryHelper
         var predicate = ctx.CompiledEntryPredicate;
         var llt = searcher.Transaction.LowLevelTransaction;
 
-        int read;
         try
         {
+            int read;
             while ((read = iterator.Fill(ref sourceBitmap, buffer)) > 0)
             {
                 ctx.Token.ThrowIfCancellationRequested();

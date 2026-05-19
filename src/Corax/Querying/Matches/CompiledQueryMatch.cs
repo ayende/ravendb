@@ -181,8 +181,8 @@ public class CompiledQueryMatch(
     {
         var parameters = new Dictionary<string, string>
         {
-            ["CSharpSource"] = _compiledPlan?.CSharpSource ?? "N/A",
-            ["CSharpSourceFormatted"] = _compiledPlan?.CSharpSourceFormatted ?? "N/A"
+            ["CSharpSource"] = _compiledPlan?.Source ?? "N/A",
+            ["CSharpSourceFormatted"] = _compiledPlan?.FormattedSource ?? "N/A"
         };
 
         if (EntryScanTakenAtOp >= 0)

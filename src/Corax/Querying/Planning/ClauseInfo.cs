@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using Sparrow;
 using Sparrow.Json;
 
 namespace Corax.Querying.Planning;
@@ -32,31 +31,18 @@ namespace Corax.Querying.Planning;
 /// </summary>
 public sealed class ClauseInfo
 {
-    private bool _frozen;
-
-    private string _fieldName;
     private string _resolvedFieldName;
     private ClauseType _clauseType;
-    private int _originalIndex;
     private bool _isNegated;
     private bool _isExact;
-    private int _searchOperator;
-    private SpatialOperationType _spatialMethodType;
-    private VectorSourceKind _vectorMethod;
     private bool _isOrChainNotEquals;
-    private List<ClauseInfo> _orSubClauses;
-    private List<ClauseInfo> _andSubClauses;
     private ParameterBinding[] _bindings;
     private bool _hasBoost;
     private ParamValueType _inDominantType;
     private bool _inAllLiteral;
     private Func<BlittableJsonReaderObject, bool> _whenCondition;
 
-    public string FieldName
-    {
-        get => _fieldName;
-        set { ThrowIfFrozen(); _fieldName = value; }
-    }
+    public string FieldName { get; init; }
 
     /// <summary>Pre-resolved dynamic-index field name variant (e.g. <c>exact(Name)</c> or
     /// <c>search(Name)</c>). Set by the DynamicFieldNameResolve walker step for auto-indexes.
@@ -75,11 +61,7 @@ public sealed class ClauseInfo
         set { ThrowIfFrozen(); _clauseType = value; }
     }
 
-    public int OriginalIndex
-    {
-        get => _originalIndex;
-        set { ThrowIfFrozen(); _originalIndex = value; }
-    }
+    public int OriginalIndex { get; init; }
 
     public bool IsNegated
     {
@@ -94,23 +76,11 @@ public sealed class ClauseInfo
     }
 
     /// <summary>for Search (AND=1/OR=0)</summary>
-    public int SearchOperator
-    {
-        get => _searchOperator;
-        set { ThrowIfFrozen(); _searchOperator = value; }
-    }
+    public int SearchOperator { get; init; }
 
-    public SpatialOperationType SpatialMethodType
-    {
-        get => _spatialMethodType;
-        set { ThrowIfFrozen(); _spatialMethodType = value; }
-    }
+    public SpatialOperationType SpatialMethodType { get; init; }
 
-    public VectorSourceKind VectorMethod
-    {
-        get => _vectorMethod;
-        set { ThrowIfFrozen(); _vectorMethod = value; }
-    }
+    public VectorSourceKind VectorMethod { get; init; }
 
     /// <summary>Set for any negated clause appearing in an OR chain — NotEquals,
     /// NOT IN, NOT AllIn, NOT exists(), NOT startsWith(), etc.
@@ -126,17 +96,9 @@ public sealed class ClauseInfo
         set { ThrowIfFrozen(); _isOrChainNotEquals = value; }
     }
 
-    public List<ClauseInfo> OrSubClauses
-    {
-        get => _orSubClauses;
-        set { ThrowIfFrozen(); _orSubClauses = value; }
-    }
+    public List<ClauseInfo> OrSubClauses { get; init; }
 
-    public List<ClauseInfo> AndSubClauses
-    {
-        get => _andSubClauses;
-        set { ThrowIfFrozen(); _andSubClauses = value; }
-    }
+    public List<ClauseInfo> AndSubClauses { get; init; }
 
     /// <summary>Parameter bindings indexed by <see cref="BindingIndex"/> constants.
     /// If <see cref="HasBoost"/> is true, the last entry is the boost factor binding.</summary>
@@ -184,13 +146,13 @@ public sealed class ClauseInfo
 
     /// <summary>True once <see cref="Freeze"/> has been called. Frozen instances reject
     /// all property mutations with <see cref="InvalidOperationException"/>.</summary>
-    public bool IsFrozen => _frozen;
+    public bool IsFrozen { get; private set; }
 
     /// <summary>Mark this ClauseInfo as part of an immutable plan-cache template. After
     /// freezing, any property write throws. Idempotent — calling Freeze() on an already
     /// frozen instance is a no-op. Sub-clauses (OrSubClauses, AndSubClauses) are NOT
     /// auto-frozen; callers must freeze each sub-clause individually.</summary>
-    public void Freeze() => _frozen = true;
+    public void Freeze() => IsFrozen = true;
 
     /// <summary>Create a mutable (un-frozen) copy of this ClauseInfo. Used by per-execution
     /// rewrite paths that need to override a field for a single query without disturbing
@@ -202,18 +164,18 @@ public sealed class ClauseInfo
     {
         return new ClauseInfo
         {
-            _fieldName = _fieldName,
+            FieldName = FieldName,
             _resolvedFieldName = _resolvedFieldName,
             _clauseType = _clauseType,
-            _originalIndex = _originalIndex,
+            OriginalIndex = OriginalIndex,
             _isNegated = _isNegated,
             _isExact = _isExact,
-            _searchOperator = _searchOperator,
-            _spatialMethodType = _spatialMethodType,
-            _vectorMethod = _vectorMethod,
+            SearchOperator = SearchOperator,
+            SpatialMethodType = SpatialMethodType,
+            VectorMethod = VectorMethod,
             _isOrChainNotEquals = _isOrChainNotEquals,
-            _orSubClauses = _orSubClauses,
-            _andSubClauses = _andSubClauses,
+            OrSubClauses = OrSubClauses,
+            AndSubClauses = AndSubClauses,
             _bindings = _bindings,
             _hasBoost = _hasBoost,
             _inDominantType = _inDominantType,
@@ -225,7 +187,7 @@ public sealed class ClauseInfo
 
     private void ThrowIfFrozen()
     {
-        if (_frozen)
+        if (IsFrozen)
             throw new InvalidOperationException(
                 "ClauseInfo is frozen as part of the plan-cache template. Mutations would corrupt " +
                 "cached plans shared across executions. Use Clone() to get a mutable copy.");

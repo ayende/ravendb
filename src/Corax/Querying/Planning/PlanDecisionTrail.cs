@@ -3,38 +3,26 @@ using Sparrow.Json.Parsing;
 
 namespace Corax.Querying.Planning;
 
-public sealed class PlanDecisionTrail
+public sealed class PlanDecisionTrail : IDynamicJson
 {
-    private readonly List<PlanDecisionEntry> _entries = new();
-    public IReadOnlyList<PlanDecisionEntry> Entries => _entries;
+    public List<PlanDecisionEntry> Entries { get; } = [];
 
     public void Record(string optimization, bool accepted, string reason)
     {
-        _entries.Add(new PlanDecisionEntry(optimization, accepted, reason));
+        Entries.Add(new PlanDecisionEntry(optimization, accepted, reason));
     }
 
     public DynamicJsonValue ToJson()
     {
         var arr = new DynamicJsonArray();
-        foreach (var entry in _entries)
+        foreach (var entry in Entries)
             arr.Add(entry.ToJson());
         return new DynamicJsonValue { [nameof(Entries)] = arr };
     }
 }
 
-public sealed class PlanDecisionEntry
+public record PlanDecisionEntry(string Optimization, bool Accepted, string Reason)
 {
-    public string Optimization { get; }
-    public bool Accepted { get; }
-    public string Reason { get; }
-
-    public PlanDecisionEntry(string optimization, bool accepted, string reason)
-    {
-        Optimization = optimization;
-        Accepted = accepted;
-        Reason = reason;
-    }
-
     public DynamicJsonValue ToJson()
     {
         return new DynamicJsonValue
