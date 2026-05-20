@@ -68,7 +68,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     private bool _nonExistingExhausted;
 
     public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator,
-        IndexSearcher searcher, FieldMetadata field, bool nullFirst, bool drainNulls = true)
+        IndexSearcher searcher, FieldMetadata field, bool nullFirst)
     {
         _provider = provider;
         _llt = llt;
@@ -76,23 +76,16 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         _nullFirst = nullFirst;
         _emittedBitmap = new RoaringBitmap(allocator);
 
-        if (drainNulls)
-        {
-            _hasNullPostingList = searcher.TryGetPostingListForNull(in field, out var nullPostingListId);
-            _nullExhausted = !_hasNullPostingList;
-            if (_hasNullPostingList)
-                InitPostingList(out _nullPostingList, out _nullIterator, nullPostingListId);
+        _hasNullPostingList = searcher.TryGetPostingListForNull(in field, out var nullPostingListId);
+        _nullExhausted = !_hasNullPostingList;
+        if (_hasNullPostingList)
+            InitPostingList(out _nullPostingList, out _nullIterator, nullPostingListId);
 
-            _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in field, out var nonExistingPostingListId);
-            _nonExistingExhausted = !_hasNonExistingPostingList;
-            if (_hasNonExistingPostingList)
-                InitPostingList(out _nonExistingPostingList, out _nonExistingIterator, nonExistingPostingListId);
-        }
-        else
-        {
-            _nullExhausted = true;
-            _nonExistingExhausted = true;
-        }
+        _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in field, out var nonExistingPostingListId);
+        _nonExistingExhausted = !_hasNonExistingPostingList;
+        if (_hasNonExistingPostingList)
+            InitPostingList(out _nonExistingPostingList, out _nonExistingIterator, nonExistingPostingListId);
+      
     }
 
     public long Count => -1;

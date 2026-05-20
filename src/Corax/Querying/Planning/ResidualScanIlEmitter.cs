@@ -59,10 +59,10 @@ public static class ResidualScanIlEmitter
         var d = new DualEmit(il, cs);
 
         // Register arguments for C# name tracking.
-        d.RegisterArg(0, "ctx");
-        d.RegisterArg(1, "readers");
-        d.RegisterArg(2, "entryIds");
-        d.RegisterArg(3, "originalIndexes");
+        var ctxIdx = d.RegisterArg("ctx");
+        var readersIdx = d.RegisterArg("readers");
+        var entryIdsIdx =  d.RegisterArg("entryIds");
+        var originalIndexesIdx = d.RegisterArg("originalIndexes");
 
         // C# function signature (no IL equivalent).
         d.CsLine("static int ResidualScan(IPredicateEvaluationContext ctx, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
@@ -76,9 +76,9 @@ public static class ResidualScanIlEmitter
         var origIdxLengthLocal = d.DeclareLocal(typeof(int), "origIdxLength");
 
         // length = entryIds.Length
-        EmitSpanLengthToLocal(ref d, 2, IlEmitterShared.SpanLongLength, lengthLocal);
+        EmitSpanLengthToLocal(ref d, entryIdsIdx, IlEmitterShared.SpanLongLength, lengthLocal);
         // origIdxLength = originalIndexes.Length
-        EmitSpanLengthToLocal(ref d, 3, IlEmitterShared.SpanIntLength, origIdxLengthLocal);
+        EmitSpanLengthToLocal(ref d, originalIndexesIdx, IlEmitterShared.SpanIntLength, origIdxLengthLocal);
         // writeIdx = 0; i = 0
         d.StoreLocalConst(writeIdxLocal, 0);
         d.StoreLocalConst(iLocal, 0);
@@ -94,7 +94,7 @@ public static class ResidualScanIlEmitter
         d.MarkLabel(loopBody);
 
         // ref reader = ref readers[i]
-        EmitSpanGetItemRef(ref d, 1, IlEmitterShared.SpanEntryTermsReaderGetItem, iLocal, readerRefLocal);
+        EmitSpanGetItemRef(ref d, readersIdx, IlEmitterShared.SpanEntryTermsReaderGetItem, iLocal, readerRefLocal);
 
         // Per-predicate emission (already through DualEmit).
         int rootIdx = 0;
@@ -105,14 +105,14 @@ public static class ResidualScanIlEmitter
         }
 
         // All passed: entryIds[writeIdx] = entryIds[i]
-        EmitSpanElementCopy(ref d, 2, IlEmitterShared.SpanLongGetItem, writeIdxLocal, iLocal, OpCodes.Ldind_I8, OpCodes.Stind_I8);
+        EmitSpanElementCopy(ref d, entryIdsIdx, IlEmitterShared.SpanLongGetItem, writeIdxLocal, iLocal, OpCodes.Ldind_I8, OpCodes.Stind_I8);
 
         // if (originalIndexes.Length == 0) skip copy
         var noOrigIdx = d.DefineLabelPair("noOrigIdx");
-        EmitSpanLengthBranchIfZero(ref d, 3, IlEmitterShared.SpanIntLength, noOrigIdx);
+        EmitSpanLengthBranchIfZero(ref d, originalIndexesIdx, IlEmitterShared.SpanIntLength, noOrigIdx);
 
         // originalIndexes[writeIdx] = originalIndexes[i]
-        EmitSpanElementCopy(ref d, 3, IlEmitterShared.SpanIntGetItem, writeIdxLocal, iLocal, OpCodes.Ldind_I4, OpCodes.Stind_I4);
+        EmitSpanElementCopy(ref d, originalIndexesIdx, IlEmitterShared.SpanIntGetItem, writeIdxLocal, iLocal, OpCodes.Ldind_I4, OpCodes.Stind_I4);
 
         d.MarkLabel(noOrigIdx);
 
@@ -142,9 +142,6 @@ public static class ResidualScanIlEmitter
 
         return (ResidualScanPredicate)dm.CreateDelegate(typeof(ResidualScanPredicate));
     }
-
-    // ── Span scaffolding helpers ─────────────────────────────────────
-    // Statement-level: emit complete IL + C# for one Span operation.
 
     /// <summary>target = arg.Length</summary>
     private static void EmitSpanLengthToLocal(ref DualEmit d, byte argIdx, MethodInfo lengthGetter, LocalBuilder target)
