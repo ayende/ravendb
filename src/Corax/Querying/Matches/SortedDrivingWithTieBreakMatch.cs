@@ -353,8 +353,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private void AddToGroup(Span<long> entryBuffer, int read)
     {
         EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer[..read], read);
-        // Allocate for the full batch — may briefly overshoot _maxGroupSize by up to
-        // EntryScanBatchSize (256) entries. Truncation fires after the loop.
+        if (_groupSize + read >= _maxGroupSize)
+            TruncateGroupToTopTake();
         EnsureGroupCapacity(_groupSize + read);
         for (int j = 0; j < read; j++)
         {
@@ -364,8 +364,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             _emittedBitmap.Add(entryId);
             _groupEntries.RawItems[_groupSize++] = entryId;
         }
-        if (_groupSize >= _maxGroupSize)
-            TruncateGroupToTopTake();
     }
 
     /// <summary>Sort the current group by secondary and keep only the top <see cref="_take"/>
