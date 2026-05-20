@@ -946,22 +946,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
         using var _ = _ctx.Allocate(PadToVector256Width(count), out Span<int> indices);
         InitializeIndices(indices, count);
         buffer[..count].Sort(indices[..count]);
-
-        // Remove within-batch duplicates (buffer is sorted, so they're adjacent).
-        // Keep the first occurrence of each value, maintaining the indices in parallel.
-        {
-            int unique = 1;
-            for (int d = 1; d < count; d++)
-            {
-                if (buffer[d] != buffer[d - 1])
-                {
-                    buffer[unique] = buffer[d];
-                    indices[unique] = indices[d];
-                    unique++;
-                }
-            }
-            count = unique;
-        }
+        count = RemoveDuplicates(buffer, indices, count);
 
         int kept = 0;
         int i = 0;
@@ -1099,6 +1084,24 @@ public unsafe partial struct RoaringBitmap : IDisposable
         // Restore original order.
         indices[..kept].Sort(buffer[..kept]);
         return kept;
+    }
+
+    private static int RemoveDuplicates(Span<long> buffer, Span<int> indices, int count)
+    {
+        // Remove within-batch duplicates (buffer is sorted, so they're adjacent).
+        // Keep the first occurrence of each value, maintaining the indices in parallel.
+        int unique = 1;
+        for (int d = 1; d < count; d++)
+        {
+            if (buffer[d] == buffer[d - 1]) 
+                continue;
+            
+            buffer[unique] = buffer[d];
+            indices[unique] = indices[d];
+            unique++;
+        }
+
+        return unique;
     }
 
     /// <summary>Returns the first index in <c>[lo, hi)</c> where <c>buffer[index] &gt;= sentinel</c>,
