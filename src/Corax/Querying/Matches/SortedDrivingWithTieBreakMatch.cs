@@ -46,8 +46,6 @@ namespace Corax.Querying.Matches;
 /// </summary>
 public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDisposable
 {
-    public const int MaxGroupSize = 16384;
-
     private readonly ITermsProvider _provider;
     private readonly LowLevelTransaction _llt;
     private readonly ByteStringContext _allocator;
@@ -55,6 +53,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private readonly MatchCompareFieldType _secondaryType;
     private readonly bool _secondaryDescending;
     private readonly long _missingSecondaryValue;
+    private readonly int _take;
+    private readonly int _maxGroupSize;
 
     // String tie-break: container IDs for null/non-existing terms, resolved once in ctor.
     private readonly long _nullTermContainerId;
@@ -107,7 +107,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         MatchCompareFieldType secondaryType,
         bool secondaryDescending,
         bool nullFirst,
-        bool nullIsSmallest)
+        bool nullIsSmallest,
+        int take)
     {
         if (secondaryType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating or MatchCompareFieldType.Sequence))
             throw new NotSupportedException($"SortedDrivingWithTieBreakMatch only supports Integer, Floating, or Sequence tie-break fields (got {secondaryType})");
@@ -118,6 +119,20 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _nullFirst = nullFirst;
         _secondaryType = secondaryType;
         _secondaryDescending = secondaryDescending;
+        // When take is unbounded (TakeAll = -1) or very large, disable the group truncation
+        // by setting _maxGroupSize to int.MaxValue — the group grows as needed without truncation.
+        if (take is Constants.IndexSearcher.TakeAll || take > int.MaxValue / 4)
+        {
+            _take = int.MaxValue;
+            _maxGroupSize = int.MaxValue;
+        }
+        else
+        {
+            _take = Math.Max(take, 1);
+            _maxGroupSize = Math.Max(
+                RoaringBitmap.PadToVector256Width(_take * 4),
+                QueryPrimitives.TieBreakGroupInitialCapacity);
+        }
         _emittedBitmap = new RoaringBitmap(allocator);
 
         // Resolve the secondary Lookup using the type-specific field name (long/double suffix).
@@ -295,16 +310,13 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
     private void EnsureGroupCapacity(int required)
     {
-        if (required > MaxGroupSize)
-            throw new InvalidOperationException($"SortedDrivingWithTieBreakMatch: per-term group exceeded cap of {MaxGroupSize}; the planner should not select this path when individual term cardinality can be that large.");
-
         int curCap = _groupEntries.Capacity;
         if (required <= curCap)
             return;
 
         int newCap = curCap;
         while (newCap < required)
-            newCap = (int)Math.Min((long)newCap * 2, MaxGroupSize);
+            newCap = (int)Math.Min((long)newCap * 2, _maxGroupSize);
         int addition = newCap - curCap;
 
         _groupEntries.Grow(_allocator, addition);
@@ -341,7 +353,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private void AddToGroup(Span<long> entryBuffer, int read)
     {
         EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer[..read], read);
-        EnsureGroupCapacity(_groupSize + read);
+        EnsureGroupCapacity(Math.Min(_groupSize + read, _maxGroupSize));
         for (int j = 0; j < read; j++)
         {
             long entryId = entryBuffer[j];
@@ -349,7 +361,32 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 continue;
             _emittedBitmap.Add(entryId);
             _groupEntries.RawItems[_groupSize++] = entryId;
+
+            if (_groupSize >= _maxGroupSize)
+                TruncateGroupToTopTake();
         }
+    }
+
+    /// <summary>Sort the current group by secondary and keep only the top <see cref="_take"/>
+    /// entries. Uses <see cref="_groupSecondary"/> as scratch for the compaction copy (it will
+    /// be overwritten by the next <see cref="SortGroupBySecondary"/> call anyway).</summary>
+    private void TruncateGroupToTopTake()
+    {
+        SortGroupBySecondary();
+        int keep = Math.Min(_take, _groupSize);
+        var entries = _groupEntries.RawItems;
+        var indexes = _groupSortedIndexes.RawItems;
+        var scratch = _groupSecondary.RawItems;
+
+        // For ascending: indexes[0..keep] are the smallest (emitted first).
+        // For descending: indexes[groupSize-keep..groupSize] are the largest (emitted first).
+        int start = _secondaryDescending ? _groupSize - keep : 0;
+        for (int i = 0; i < keep; i++)
+            scratch[i] = entries[indexes[start + i]];
+        for (int i = 0; i < keep; i++)
+            entries[i] = scratch[i];
+
+        _groupSize = keep;
     }
 
     private void SortGroupBySecondary()

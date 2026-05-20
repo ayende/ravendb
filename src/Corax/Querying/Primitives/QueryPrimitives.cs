@@ -104,7 +104,8 @@ public static class QueryPrimitives
     internal const int EntryScanBatchSize = 256;
 
     // Initial capacity for per-term group buffers in SortedDrivingWithTieBreakMatch.
-    internal const int TieBreakGroupInitialCapacity = 1024;
+    // Also used as the plan-cache cardinality cliff threshold for tie-break eligibility.
+    public const int TieBreakGroupInitialCapacity = 1024;
 
     // Entry scan vs. bitmap AND heuristic (tuned on typical NVMe workloads):
     // When the candidate bitmap is small enough, it's cheaper to read each entry's

@@ -982,9 +982,9 @@ internal static partial class QueryPlanBuilder
     /// single pass over the (already-sorted) clause list is enough to find the four targets.
     ///
     /// Sets <see cref="QueryExecution.CardinalityCliffBit"/> on <see cref="QueryExecution.OperandOrdering"/>
-    /// when the sort-driving clause's cardinality is within the SortedDrivingWithTieBreakMatch
-    /// MaxGroupSize cap — under/over the cliff get different compiled plans (different optimization
-    /// hints, different cache keys).</summary>
+    /// when the sort-driving clause's cardinality is small enough that per-term groups fit
+    /// without intermediate truncation — under/over the cliff get different compiled plans
+    /// (different optimization hints, different cache keys).</summary>
     private static void RemapOptimizationIndices(
         QueryExecution plan, PlanTemplate template,
         List<ClauseInfo> clauses, ClauseExecution[] executions)
@@ -1029,7 +1029,7 @@ internal static partial class QueryPlanBuilder
         if (plan.SortDrivingClauseIndex >= 0 && plan.SortDrivingClauseIndex < executions.Length)
         {
             long drivingCard = executions[plan.SortDrivingClauseIndex].Cardinality;
-            if (drivingCard >= 0 && drivingCard <= global::Corax.Querying.Matches.SortedDrivingWithTieBreakMatch.MaxGroupSize)
+            if (drivingCard >= 0 && drivingCard <= global::Corax.Querying.Primitives.QueryPrimitives.TieBreakGroupInitialCapacity)
                 plan.OperandOrdering |= QueryExecution.CardinalityCliffBit;
         }
     }
@@ -3826,17 +3826,15 @@ internal static partial class QueryPlanBuilder
         IQueryMatch drivingMatch;
         if (hasTieBreak)
         {
-            // Per-term group cap: bail if any single primary term could exceed the group
-            // buffer cap. Conservative gate: total driving cardinality must fit.
-            if (drivingCardinality > SortedDrivingWithTieBreakMatch.MaxGroupSize)
-                return null;
             // Secondary field uses its own NullsSortMode — distinct from the primary field's.
             bool secondaryNullIsSmallest = (orderByFields[1].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
+            int take = builderParams?.Take ?? Constants.IndexSearcher.TakeAll;
             drivingMatch = new SortedDrivingWithTieBreakMatch(
                 provider, llt, planParams.Allocator, indexSearcher,
                 orderByFields[0].Field, orderByFields[1].Field,
                 orderByFields[1].FieldType, secondaryDescending: orderByFields[1].Ascending == false,
-                nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest);
+                nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest,
+                take: take);
         }
         else
         {
