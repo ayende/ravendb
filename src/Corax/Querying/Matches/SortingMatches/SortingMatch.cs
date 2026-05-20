@@ -150,78 +150,47 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // we will just need to acquire via pages the totality of the results.
         if (match.TotalResults == NotStarted)
         {
-            // Bitmap-backed matches (CompiledQueryMatch) can avoid full materialization.
-            // Walk the CompactTree index and intersect batches via AndWith, stopping early
-            // when the LIMIT is reached — no full materialization needed.
-            if (match._inner is IBitmapQueryMatch bitmapMatch)
+            // Ensure we have a bitmap to work with. Non-bitmap matches (PostFilterMatch,
+            // VectorSearchMatch, etc.) are materialized into a BitmapMatch first — single code path.
+            BitmapMatch ownedBitmap = default;
+            IBitmapQueryMatch bitmapMatch;
+            if (match._inner is IBitmapQueryMatch bm)
             {
-                match.TotalResults = bitmapMatch.Count;
-                if (match.TotalResults == 0)
-                    return 0;
-
-                if (typeof(TDirection) == typeof(RandomDirection))
-                {
-                    // Bitmap path: reservoir-sample k entries from the bitmap iterator in one
-                    // O(N) pass. No need to materialize all N entries — only the k=_take
-                    // slots are ever live in memory at once.
-                    ReservoirSampleFromBitmap(match, bitmapMatch);
-                }
-                else if (typeof(TDirection) == typeof(NoIterationOptimization) || match._orderMetadata.MayHaveMissingEntries)
-                {
-                    // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort.
-                    // Also taken when MayHaveMissingEntries is set (e.g. dynamic CreateField sort fields):
-                    // StreamAndIntersect only walks tree terms + null/nonExisting posting lists, so
-                    // docs that didn't emit the field would be silently dropped. ExtractAndSort drains
-                    // the entire bitmap and uses the comparer's missing-value sentinel for those docs.
-                    ExtractAndSort<TEntryComparer>(match, bitmapMatch);
-                }
-                else
-                {
-                    // Index walk: intersect CompactTree batches with bitmap via AndWith
-                    StreamAndIntersect<TEntryComparer, TDirection>(match, bitmapMatch);
-                }
+                bitmapMatch = bm;
             }
             else
             {
-                // DrainAndSort: Non-bitmap path (PostFilterMatch, VectorSearchMatch, etc.)
-                // Drain all results by calling Fill repeatedly, then heap sort.
-                var count = match._inner.Count;
-                int bufferSize = count is > 0 and < MaxPreallocCount ? (int)count : DrainFallbackBufferSize;
-                // Note: scope cannot use 'using' here — GrowAllocation takes it as ref.
-                var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
-                var allMatches = new Span<long>(bs.Ptr, bufferSize);
-                int filled = 0;
-                int r;
-                if (count is > 0 and < MaxPreallocCount)
-                {
-                    // Count is known and reasonable — buffer is pre-sized, no growing needed.
-                    while ((r = match._inner.Fill(allMatches[filled..])) > 0)
-                        filled += r;
-                }
-                else
-                {
-                    // Count unknown or too large — use growing buffer pattern.
-                    while ((r = match._inner.Fill(allMatches[filled..])) > 0)
-                    {
-                        filled += r;
-                        if (filled >= allMatches.Length)
-                        {
-                            match._searcher.Allocator.GrowAllocation(ref bs, ref scope, allMatches.Length * sizeof(long));
-                            allMatches = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
-                        }
-                    }
-                }
-
-                match.TotalResults = filled;
-                if (match.TotalResults == 0)
-                {
-                    scope.Dispose();
-                    return 0;
-                }
-
-                SortResults<TEntryComparer>(match, allMatches[..filled]);
-                scope.Dispose();
+                ownedBitmap = new BitmapMatch(match._searcher.Allocator);
+                Primitives.QueryPrimitives.OrWithMatch(match._inner, ref ownedBitmap.BitmapState);
+                bitmapMatch = ownedBitmap;
             }
+
+            match.TotalResults = bitmapMatch.Count;
+            if (match.TotalResults == 0)
+            {
+                ownedBitmap.Dispose();
+                return 0;
+            }
+
+            if (typeof(TDirection) == typeof(RandomDirection))
+            {
+                ReservoirSampleFromBitmap(match, bitmapMatch);
+            }
+            else if (typeof(TDirection) == typeof(NoIterationOptimization) || match._orderMetadata.MayHaveMissingEntries)
+            {
+                // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort.
+                // Also taken when MayHaveMissingEntries is set (e.g. dynamic CreateField sort fields):
+                // StreamAndIntersect only walks tree terms + null/nonExisting posting lists, so
+                // docs that didn't emit the field would be silently dropped. ExtractAndSort drains
+                // the entire bitmap and uses the comparer's missing-value sentinel for those docs.
+                ExtractAndSort<TEntryComparer>(match, bitmapMatch);
+            }
+            else
+            {
+                StreamAndIntersect<TEntryComparer, TDirection>(match, bitmapMatch);
+            }
+
+            ownedBitmap.Dispose();
         }
 
 
@@ -570,19 +539,14 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             if (read == 0)
                 break;
 
-            // Intersect this batch of sorted IDs with the bitmap.
-            // AndWith filters in-place, keeping only IDs present in the bitmap.
+            // Intersect this batch with the WHERE bitmap, then dedup against the emitted
+            // bitmap in a single pass — filters + adds new entries to emittedBitmap at once.
             read = bitmapMatch.AndWith(sortedIdBuffer, read);
+            read = emittedBitmap.DedupAddNew(sortedIdBuffer, read);
 
-            for (int i = 0; i < read && match._results.Count < maxResults; i++)
-            {
-                long id = sortedIdBuffer[i];
-                if (emittedBitmap.Contains(id) == false)
-                {
-                    emittedBitmap.Add(id);
-                    match._results.Add(id);
-                }
-            }
+            int toAdd = Math.Min(read, maxResults - match._results.Count);
+            for (int i = 0; i < toAdd; i++)
+                match._results.Add(sortedIdBuffer[i]);
         }
 
         reader.Dispose();
