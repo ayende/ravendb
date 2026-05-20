@@ -9,7 +9,7 @@ namespace Corax.Querying.Matches.SortingMatches;
 /// Mirrors <see cref="SortingMatch"/> for the multi-comparator case so callers can
 /// pattern-match without referencing the <c>TInner</c> type parameter.
 /// </summary>
-public abstract class SortingMultiMatch : IQueryMatch, IDisposable
+public abstract class SortingMultiMatch : IQueryMatch, IDisposable, IRequireSortingDataTransfer
 {
     /// <summary>Total number of matching entries (set after the first Fill call).</summary>
     public long TotalResults;

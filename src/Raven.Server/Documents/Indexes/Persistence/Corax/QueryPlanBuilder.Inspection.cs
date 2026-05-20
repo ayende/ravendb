@@ -16,28 +16,28 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 internal static partial class QueryPlanBuilder
 {
     /// <summary>Build the inspection graph from the cached template and runtime telemetry.</summary>
-    public static QueryInspectionNode BuildInspectionGraph(CompiledPlan compiledPlan, IQueryMatch executedMatch, IQueryMatch sortingWrapper = null)
+    public static QueryInspectionNode BuildInspectionGraph(BuildCompileAndOptimizeResult result)
     {
         long[] timings = null;
         long[] resultCounts = null;
         int entryScanAt = -1;
         long scannedEntries = -1;
 
-        if (executedMatch is CompiledQueryMatch compiled)
+        if (result.ExecutedMatch is CompiledQueryMatch compiled)
         {
             compiled.GetTelemetry(out timings, out resultCounts, out entryScanAt);
             scannedEntries = compiled.Count;
         }
 
         double tickFreq = Stopwatch.Frequency / 1000.0;
-        var template = compiledPlan.InspectionTemplate;
+        var template = result.CompiledPlan.InspectionTemplate;
         if (template == null || template.Length == 0)
-            return executedMatch.Inspect();
+            return result.ExecutedMatch.Inspect();
 
         var rootParams = new Dictionary<string, string>();
         if (scannedEntries >= 0)
             rootParams["ScannedEntries"] = scannedEntries.ToString();
-        rootParams["OptimizationHint"] = compiledPlan.Strategy.ToString();
+        rootParams["OptimizationHint"] = result.CompiledPlan.Strategy.ToString();
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
         QueryInspectionNode orGroupNode = null;
@@ -91,12 +91,11 @@ internal static partial class QueryPlanBuilder
 
         if (orGroupNode != null) root.Children.Add(orGroupNode);
 
-        if (compiledPlan.DecisionTrail is { Entries.Count: > 0 } trail)
+        if (result.CompiledPlan.DecisionTrail is { Entries.Count: > 0 } trail)
         {
             var trailNode = new QueryInspectionNode("DecisionTrail");
-            for (int d = 0; d < trail.Entries.Count; d++)
+            foreach (var entry in trail.Entries)
             {
-                var entry = trail.Entries[d];
                 var entryParams = new Dictionary<string, string>
                 {
                     ["Accepted"] = entry.Accepted.ToString(),
@@ -108,12 +107,12 @@ internal static partial class QueryPlanBuilder
         }
 
         // Vector/spatial nodes from executed match
-        var matchInspection = executedMatch.Inspect();
+        var matchInspection = result.ExecutedMatch.Inspect();
         AppendPostFilterNodes(matchInspection, root);
 
-        if (sortingWrapper != null)
+        if (result.SortingWrapper != null)
         {
-            var sortNode = sortingWrapper.Inspect();
+            var sortNode = result.SortingWrapper.Inspect();
             sortNode.Children.Clear();
             sortNode.Children.Add(root);
             return sortNode;
@@ -165,7 +164,7 @@ internal static partial class QueryPlanBuilder
                         flatClauses.Add((clause.AndSubClauses[si], subExec));
                     }
                 }
-                else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && exec != null && exec.InTermCount > 0)
+                else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && exec is { InTermCount: > 0 })
                 {
                     var p = exec.PackedParamValue;
                     for (int t = 0; t < exec.InTermCount; t++)
