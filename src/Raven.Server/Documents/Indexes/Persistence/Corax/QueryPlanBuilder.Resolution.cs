@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
-using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -149,7 +148,6 @@ internal static partial class QueryPlanBuilder
 
         // Phase 3a: resolve ORDER BY metadata (needed by Instantiate's strategy dispatch).
         orderByFieldsOut = GetSortMetadata(builderParameters, out hasEmptySorts);
-        MethodBody body = compiledPlanOut.CompiledDelegate.GetMethodInfo().GetMethodBody();
         // Phase 3b: dispatch on the cached ExecutionStrategy (fast path) or run Try* discovery
         // (slow path, cache-miss only). Instantiate falls through to the bitmap pipeline as the
         // last resort. All four strategies — CompoundExact / CompoundField / DirectScan / BitmapSort
