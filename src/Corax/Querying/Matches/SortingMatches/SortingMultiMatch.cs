@@ -126,36 +126,46 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         {
             match._token.ThrowIfCancellationRequested();
 
-            // Ensure we have a bitmap. Non-bitmap inner matches are materialized first.
-            BitmapMatch ownedBitmap = default;
-            IBitmapQueryMatch bitmapMatch;
-            if (match._inner is IBitmapQueryMatch bm)
+            if (match._inner is IBitmapQueryMatch bitmapMatch)
             {
-                bitmapMatch = bm;
+                match.TotalResults = bitmapMatch.Count;
+                if (match.TotalResults == 0)
+                    return 0;
+
+                int total = (int)match.TotalResults;
+                var scope = match._searcher.Allocator.Allocate(total * sizeof(long), out var bs);
+                var allMatches = new Span<long>(bs.Ptr, total);
+                int filled = bitmapMatch.Fill(allMatches);
+                SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
+                scope.Dispose();
             }
             else
             {
-                ownedBitmap = new BitmapMatch(match._searcher.Allocator);
-                Primitives.QueryPrimitives.OrWithMatch(match._inner, ref ownedBitmap.BitmapState);
-                bitmapMatch = ownedBitmap;
+                // Non-bitmap path: drain via Fill to preserve match-specific state (scores, etc.)
+                var count = match._inner.Count;
+                int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
+                var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
+                var allMatches = new Span<long>(bs.Ptr, bufferSize);
+                int filled = 0;
+                int r;
+                while ((r = match._inner.Fill(allMatches[filled..])) > 0)
+                {
+                    filled += r;
+                    if (filled >= allMatches.Length)
+                    {
+                        match._searcher.Allocator.GrowAllocation(ref bs, ref scope, allMatches.Length * sizeof(long));
+                        allMatches = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
+                    }
+                }
+                match.TotalResults = filled;
+                if (match.TotalResults == 0)
+                {
+                    scope.Dispose();
+                    return 0;
+                }
+                SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
+                scope.Dispose();
             }
-
-            match.TotalResults = bitmapMatch.Count;
-            if (match.TotalResults == 0)
-            {
-                ownedBitmap.Dispose();
-                return 0;
-            }
-
-            // Extract all entry IDs from the bitmap into a flat buffer for sorting.
-            int total = (int)match.TotalResults;
-            var scope = match._searcher.Allocator.Allocate(total * sizeof(long), out var bs);
-            var allMatches = new Span<long>(bs.Ptr, total);
-            int filled = bitmapMatch.Fill(allMatches);
-
-            SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
-            scope.Dispose();
-            ownedBitmap.Dispose();
         }
 
         var read = match._results.CopyTo(matches, match._alreadyReadIdx);
