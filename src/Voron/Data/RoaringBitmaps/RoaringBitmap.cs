@@ -936,6 +936,8 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// if it is NOT already in the bitmap, keep it in the buffer and add it to the bitmap.
     /// If it IS already present, discard it. Returns the count of new (non-duplicate) entries.
     /// Buffer order is preserved (via the same index-tracking approach as <see cref="AndWith"/>).
+    /// Uses the same container-group batching as <see cref="AndWith"/> but with inverted logic:
+    /// entries absent from a container are kept; entries present are discarded.
     /// Used by SortingMatch.StreamAndIntersect to replace the per-entry Contains+Add loop.</summary>
     public int DedupAddNew(Span<long> buffer, int count)
     {
@@ -945,24 +947,154 @@ public unsafe partial struct RoaringBitmap : IDisposable
         InitializeIndices(indices, count);
         buffer[..count].Sort(indices[..count]);
 
+        // Remove within-batch duplicates (buffer is sorted, so they're adjacent).
+        // Keep the first occurrence of each value, maintaining the indices in parallel.
+        {
+            int unique = 1;
+            for (int d = 1; d < count; d++)
+            {
+                if (buffer[d] != buffer[d - 1])
+                {
+                    buffer[unique] = buffer[d];
+                    indices[unique] = indices[d];
+                    unique++;
+                }
+            }
+            count = unique;
+        }
+
         int kept = 0;
         int i = 0;
+        int* idx = _index.RawItems;
+        int idxLen = _index.Count;
+        ContainerEntry* entries = _entries.RawItems;
+        ContainerType* types = _types.RawItems;
 
         while (i < count)
         {
-            long val = buffer[i];
-            if (Contains(val))
+            long containerKey = buffer[i] >> ContainerKeyShift;
+
+            // Container absent — all entries in this group are new, keep them all.
+            if (containerKey < 0 || containerKey >= idxLen || idx[containerKey] < 0)
             {
-                i++;
+                int groupEnd = GallopRight(buffer, i, count, (containerKey + 1) << ContainerKeyShift);
+                for (int gi = i; gi < groupEnd; gi++)
+                {
+                    buffer[kept] = buffer[gi];
+                    indices[kept] = indices[gi];
+                    kept++;
+                }
+                i = groupEnd;
                 continue;
             }
-            // New entry — add to bitmap and keep in buffer.
-            Add(val);
-            buffer[kept] = val;
-            indices[kept] = indices[i];
-            kept++;
-            i++;
+
+            int slot = idx[containerKey];
+            ref ContainerEntry entry = ref entries[slot];
+            ref ContainerType type = ref types[slot];
+            long containerEnd = (containerKey + 1) << ContainerKeyShift;
+            int groupEnd2 = GallopRight(buffer, i, count, containerEnd);
+
+            switch (type)
+            {
+                case ContainerType.Bitmap:
+                {
+                    ulong* bmp = (ulong*)entry.Data;
+                    for (int gi = i; gi < groupEnd2; gi++)
+                    {
+                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
+                        if (BitmapContains(bmp, low) == false)
+                        {
+                            buffer[kept] = buffer[gi];
+                            indices[kept] = indices[gi];
+                            kept++;
+                        }
+                    }
+                    break;
+                }
+
+                case ContainerType.Range:
+                {
+                    int rangeStart = entry.RangeStart;
+                    int rangeEnd = rangeStart + entry.Cardinality;
+                    for (int gi = i; gi < groupEnd2; gi++)
+                    {
+                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
+                        if (low < rangeStart || low >= rangeEnd)
+                        {
+                            buffer[kept] = buffer[gi];
+                            indices[kept] = indices[gi];
+                            kept++;
+                        }
+                    }
+                    break;
+                }
+
+                case ContainerType.Array:
+                {
+                    ushort* arr = entry.ArrayData;
+                    int arrLen = entry.Cardinality;
+                    int ai = 0;
+                    for (int gi = i; gi < groupEnd2; gi++)
+                    {
+                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
+                        while (ai < arrLen && arr[ai] < low) ai++;
+                        if (ai < arrLen && arr[ai] == low)
+                        {
+                            ai++; // present — discard
+                        }
+                        else
+                        {
+                            buffer[kept] = buffer[gi];
+                            indices[kept] = indices[gi];
+                            kept++;
+                        }
+                    }
+                    break;
+                }
+
+                case ContainerType.ArrayUnsorted:
+                {
+                    int groupLen = groupEnd2 - i;
+                    if (groupLen == 1)
+                    {
+                        ushort low = (ushort)(buffer[i] & ContainerValueMask);
+                        if (SimdLinearContains(entry.ArrayData, entry.Cardinality, low) == false)
+                        {
+                            buffer[kept] = buffer[i];
+                            indices[kept] = indices[i];
+                            kept++;
+                        }
+                    }
+                    else
+                    {
+                        new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
+                        type = ContainerType.Array;
+                        goto case ContainerType.Array;
+                    }
+                    break;
+                }
+
+                case ContainerType.Free:
+                {
+                    // Tombstone — all entries are new, keep them all.
+                    for (int gi = i; gi < groupEnd2; gi++)
+                    {
+                        buffer[kept] = buffer[gi];
+                        indices[kept] = indices[gi];
+                        kept++;
+                    }
+                    break;
+                }
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in DedupAddNew");
+            }
+
+            i = groupEnd2;
         }
+
+        // Add the new entries to the bitmap while they're still sorted.
+        AddRange(buffer[..kept]);
 
         // Restore original order.
         indices[..kept].Sort(buffer[..kept]);
