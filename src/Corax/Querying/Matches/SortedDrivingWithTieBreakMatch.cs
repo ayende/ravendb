@@ -353,17 +353,15 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private void AddToGroup(Span<long> entryBuffer, int read)
     {
         EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer[..read], read);
-        if (_groupSize + read >= _maxGroupSize)
+        int newCount = _emittedBitmap.DedupAddNew(entryBuffer, read);
+        if (newCount == 0)
+            return;
+        if (_groupSize + newCount >= _maxGroupSize)
             TruncateGroupToTopTake();
-        EnsureGroupCapacity(_groupSize + read);
-        for (int j = 0; j < read; j++)
-        {
-            long entryId = entryBuffer[j];
-            if (_emittedBitmap.Contains(entryId))
-                continue;
-            _emittedBitmap.Add(entryId);
-            _groupEntries.RawItems[_groupSize++] = entryId;
-        }
+        EnsureGroupCapacity(_groupSize + newCount);
+        entryBuffer[..newCount].CopyTo(
+            new Span<long>(_groupEntries.RawItems + _groupSize, newCount));
+        _groupSize += newCount;
     }
 
     /// <summary>Sort the current group by secondary and keep only the top <see cref="_take"/>

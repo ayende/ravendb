@@ -248,27 +248,18 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         {
             while (count < matches.Length)
             {
-                // Cap request size to remaining matches slots, accounting for dedup the worst case
-                // is that every entry is new — so we can't request more than slots-left without risk
-                // of the iterator-consuming entries we have nowhere to store.
                 int slotsLeft = matches.Length - count;
                 int requestSize = Math.Min(entryBuffer.Length, slotsLeft);
                 int read = _smallListReader.Fill(pBuffer, requestSize);
                 if (read <= 0)
                 {
-                    _hasSmallListReader = false; // exhausted
+                    _hasSmallListReader = false;
                     break;
                 }
                 EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer, read);
-                for (int j = 0; j < read; j++)
-                {
-                    long entryId = entryBuffer[j];
-                    if (_emittedBitmap.Contains(entryId) == false)
-                    {
-                        _emittedBitmap.Add(entryId);
-                        matches[count++] = entryId;
-                    }
-                }
+                int newCount = _emittedBitmap.DedupAddNew(entryBuffer, read);
+                entryBuffer[..newCount].CopyTo(matches[count..]);
+                count += newCount;
             }
         }
         return count;
@@ -288,15 +279,9 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 break;
             }
             EntryIdEncodings.DecodeAndDiscardFrequency(request, read);
-            for (int j = 0; j < read; j++)
-            {
-                long entryId = request[j];
-                if (_emittedBitmap.Contains(entryId) == false)
-                {
-                    _emittedBitmap.Add(entryId);
-                    matches[count++] = entryId;
-                }
-            }
+            int newCount = _emittedBitmap.DedupAddNew(request, read);
+            request[..newCount].CopyTo(matches[count..]);
+            count += newCount;
         }
         return count;
     }
