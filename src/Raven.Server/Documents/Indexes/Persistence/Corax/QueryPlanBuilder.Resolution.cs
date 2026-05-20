@@ -611,7 +611,9 @@ internal static partial class QueryPlanBuilder
         CancellationToken token)
     {
         var indexSearcher = planParams.IndexSearcher;
-        var walkerCtx = new ResolutionContext(builderParameters);
+        var walkerCtx = builderParameters != null
+            ? new ResolutionContext(builderParameters)
+            : new ResolutionContext(planParams);
         var resolvedMatches = ResolveMatches(plan, walkerCtx);
         var termSources = ResolveTermSources(plan, walkerCtx);
         var termsProviders = ResolveTermsProviders(plan, walkerCtx);
@@ -1751,11 +1753,7 @@ internal static partial class QueryPlanBuilder
             && clause.ClauseType != ClauseType.Search;
         if (needsFieldMeta)
         {
-            // Dynamic field name variants (exact/search) are pre-resolved by the
-            // DynamicFieldNameResolve walker step at template time — no per-execution
-            // string allocation.
-            string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
-            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
+            fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
         }
 
         var packed = exec.PackedParamValue;
@@ -2215,6 +2213,13 @@ internal static partial class QueryPlanBuilder
         var builderParams = walkerCtx.BuilderParams;
         // Dynamic field name variants are pre-resolved by DynamicFieldNameResolve at template time.
         string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
+
+        if (builderParams == null)
+        {
+            // Direct-test path (no QueryBuilderParameters): use IndexSearcher's FieldMetadataBuilder directly.
+            return walkerCtx.IndexSearcher.FieldMetadataBuilder(resolvedFieldName);
+        }
+
         // When forceDefaultSearchAnalyzer is enabled for indexes with dynamic fields (CreateField),
         // non-exact non-search clauses should use the search analyzer (#4778 fix).
         bool forceSearchAnalyzer = builderParams.HasDynamics
