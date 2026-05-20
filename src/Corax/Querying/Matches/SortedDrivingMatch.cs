@@ -27,6 +27,22 @@ namespace Corax.Querying.Matches;
 ///
 /// The ITermsProvider enforces range bounds (TermsRangeProvider only yields terms in range).
 /// No separate bitmap phase needed.
+///
+/// Handles single-field ORDER BY queries where the sort field drives the scan, e.g.:
+///   FROM Users ORDER BY LastName
+///   FROM Orders WHERE CreatedAt &gt; '2024-01-01' ORDER BY CreatedAt
+///
+/// When the WHERE predicate targets the same field as ORDER BY, the planner creates
+/// a TermsRangeProvider that only yields terms within the predicate's range — so the
+/// range provider both filters and sorts in a single pass, with no bitmap intermediate.
+///
+/// This match does not apply WHERE predicates itself — it only yields entry IDs in
+/// term order. Additional WHERE predicates on other fields are applied by the wrapping
+/// <see cref="DirectScanMatch"/>, which runs the compiled ResidualScanPredicate delegate
+/// against each yielded entry's stored fields and rejects non-matching entries.
+/// The planner gates this path on estimated selectivity — it is efficient when the
+/// sort-driving field is selective (few entries per term) but degrades when the
+/// residual rejects most entries.
 /// </summary>
 public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 {

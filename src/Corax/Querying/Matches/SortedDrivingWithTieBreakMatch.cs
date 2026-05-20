@@ -33,6 +33,16 @@ namespace Corax.Querying.Matches;
 /// Supports Integer, Floating, and Sequence (string/Slice) tie-break fields.
 /// The planner must gate by per-term group size — this class caps groups at MaxGroupSize
 /// and throws if exceeded.
+///
+/// Handles two-field ORDER BY queries where the first field drives the term walk
+/// and the second field resolves ties within each primary term group, e.g.:
+///   FROM Orders ORDER BY Status, CreatedAt DESC
+///   FROM Users WHERE Age &gt; 18 ORDER BY Age, LastName
+///
+/// Same-field optimization applies as in SortedDrivingMatch: a WHERE on the primary
+/// sort field narrows the TermsRangeProvider. Additional predicates on other fields
+/// are not applied here — the wrapping <see cref="DirectScanMatch"/> handles residual
+/// predicate evaluation on each yielded entry.
 /// </summary>
 public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDisposable
 {
@@ -68,7 +78,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private NativeList<UnmanagedSpan> _groupTerms;
     private int _groupSize;
     private int _groupEmitIdx;
-    private bool _groupReady;
 
     // Non-existing entries (docs where the primary sort field was absent) are treated as null-adjacent:
     //   nullFirst=true → non-existing, then nulls, then normal values
@@ -146,6 +155,15 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _nonExistingExhausted = !_hasNonExistingPostingList;
         if (_hasNonExistingPostingList)
             InitPostingList(out _nonExistingPostingList, out _nonExistingIterator, nonExistingPostingListId);
+
+        // Allocate all persistent buffers up front — avoids 7 IsValid branches per Fill call.
+        _plIdsBuffer.Initialize(allocator, QueryPrimitives.EntryScanBatchSize);
+        _smallContainerItems.Initialize(allocator, QueryPrimitives.EntryScanBatchSize);
+        _groupEntries.Initialize(allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
+        _groupSecondary.Initialize(allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
+        _groupSortedIndexes.Initialize(allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
+        if (secondaryType == MatchCompareFieldType.Sequence)
+            _groupTerms.Initialize(allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
     }
 
     public long Count => -1;
@@ -164,26 +182,12 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             PrepareNullGroup(entryBuffer);
 
         // Emit any remaining entries from a previously-sorted group (null or regular).
-        if (_groupReady)
+        if (_groupSize > 0)
         {
             count += EmitFromSortedGroup(matches[count..]);
             if (count >= matches.Length)
                 return count;
         }
-
-        // Lazily allocate persistent buffers.
-        if (_plIdsBuffer.IsValid == false)
-            _plIdsBuffer.Initialize(_allocator, QueryPrimitives.EntryScanBatchSize);
-        if (_smallContainerItems.IsValid == false)
-            _smallContainerItems.Initialize(_allocator, QueryPrimitives.EntryScanBatchSize);
-        if (_groupEntries.IsValid == false)
-            _groupEntries.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
-        if (_groupSecondary.IsValid == false)
-            _groupSecondary.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
-        if (_groupSortedIndexes.IsValid == false)
-            _groupSortedIndexes.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
-        if (_secondaryType == MatchCompareFieldType.Sequence && _groupTerms.IsValid == false)
-            _groupTerms.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
 
         var pageLocator = _llt.PageLocator;
 
@@ -229,9 +233,12 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                     case TermIdMask.Single:
                     {
                         long entryId = (long)EntryIdEncodings.GetContainerId(plId);
-                        AddToGroup(entryId);
                         _plIdsIdx++;
-                        break;
+                        if (_emittedBitmap.Contains(entryId))
+                            continue;
+                        _emittedBitmap.Add(entryId);
+                        matches[count++] = entryId;
+                        continue; // skip the group sort/emit path
                     }
                     case TermIdMask.SmallPostingList:
                     {
@@ -272,7 +279,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                     SortGroupBySecondary();
                 else
                     _groupSortedIndexes.RawItems[0] = 0;
-                _groupReady = true;
                 _groupEmitIdx = 0;
                 count += EmitFromSortedGroup(matches[count..]);
                 if (count >= matches.Length)
@@ -284,7 +290,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         if (_providerExhausted && _nullFirst == false && _nullGroupPrepared == false)
         {
             PrepareNullGroup(entryBuffer);
-            if (_groupReady)
+            if (_groupSize > 0)
                 count += EmitFromSortedGroup(matches[count..]);
         }
 
@@ -381,33 +387,18 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
     private int EmitFromSortedGroup(Span<long> matches)
     {
-        int count = 0;
         var entries = _groupEntries.RawItems;
         var indexes = _groupSortedIndexes.RawItems;
-        if (_secondaryDescending)
-        {
-            // Kernels always sort ascending; descending order is achieved by reading
-            // the index array from the end, avoiding delegate-backed comparers.
-            while (_groupEmitIdx < _groupSize && count < matches.Length)
-            {
-                int pos = _groupSize - 1 - _groupEmitIdx;
-                matches[count++] = entries[indexes[pos]];
-                _groupEmitIdx++;
-            }
-        }
-        else
-        {
-            while (_groupEmitIdx < _groupSize && count < matches.Length)
-            {
-                matches[count++] = entries[indexes[_groupEmitIdx++]];
-            }
-        }
+        int remaining = _groupSize - _groupEmitIdx;
+        int toEmit = Math.Min(remaining, matches.Length);
+        int pos = _secondaryDescending ? _groupSize - 1 - _groupEmitIdx : _groupEmitIdx;
+        int step = _secondaryDescending ? -1 : 1;
+        for (int i = 0; i < toEmit; i++, pos += step)
+            matches[i] = entries[indexes[pos]];
+        _groupEmitIdx += toEmit;
         if (_groupEmitIdx >= _groupSize)
-        {
-            _groupReady = false;
             _groupSize = 0;
-        }
-        return count;
+        return toEmit;
     }
 
     // Loads all null-primary docs into the group buffer and sorts them by secondary value,
@@ -421,16 +412,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         bool hasNonExisting = _hasNonExistingPostingList && _nonExistingExhausted == false;
         if (hasNull == false && hasNonExisting == false)
             return;
-
-        // Ensure group buffers are allocated before we fill them.
-        if (_groupEntries.IsValid == false)
-            _groupEntries.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
-        if (_groupSecondary.IsValid == false)
-            _groupSecondary.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
-        if (_groupSortedIndexes.IsValid == false)
-            _groupSortedIndexes.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
-        if (_secondaryType == MatchCompareFieldType.Sequence && _groupTerms.IsValid == false)
-            _groupTerms.Initialize(_allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
 
         _groupSize = 0;
 
@@ -455,7 +436,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 SortGroupBySecondary();
             else
                 _groupSortedIndexes.RawItems[0] = 0;
-            _groupReady = true;
             _groupEmitIdx = 0;
         }
     }
