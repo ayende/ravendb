@@ -268,7 +268,10 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 if (_groupSize == 0)
                     continue;
 
-                SortGroupBySecondary();
+                if (_groupSize > 1)
+                    SortGroupBySecondary();
+                else
+                    _groupSortedIndexes.RawItems[0] = 0;
                 _groupReady = true;
                 _groupEmitIdx = 0;
                 count += EmitFromSortedGroup(matches[count..]);
@@ -448,7 +451,10 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
         if (_groupSize > 0)
         {
-            SortGroupBySecondary();
+            if (_groupSize > 1)
+                SortGroupBySecondary();
+            else
+                _groupSortedIndexes.RawItems[0] = 0;
             _groupReady = true;
             _groupEmitIdx = 0;
         }
