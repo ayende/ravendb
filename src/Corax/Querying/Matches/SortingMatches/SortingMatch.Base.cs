@@ -10,7 +10,7 @@ namespace Corax.Querying.Matches.SortingMatches;
 /// without referencing the <c>TInner</c> type parameter and read
 /// <see cref="TotalResults"/> after sorting completes.
 /// </summary>
-public abstract class SortingMatch : IQueryMatch, IDisposable
+public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDataTransfer
 {
     public const int SortBatchSize = 8192;
 
@@ -36,4 +36,9 @@ public abstract class SortingMatch : IQueryMatch, IDisposable
     public abstract QueryInspectionNode Inspect();
     public abstract void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer);
     public abstract void Dispose();
+}
+
+public interface IRequireSortingDataTransfer
+{
+    void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer);
 }

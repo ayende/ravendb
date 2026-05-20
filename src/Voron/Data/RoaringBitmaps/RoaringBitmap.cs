@@ -1220,7 +1220,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// <see cref="InitializeIndices"/> so the SIMD loop can store full 256-bit chunks
     /// without a scalar tail.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal static int PadToVector256Width(int n) => (n + 7) & ~7;
+    public static int PadToVector256Width(int n) => (n + 7) & ~7;
 
     /// <summary>Fill <paramref name="indices"/> with 0..read-1 using AVX2 256-bit stores.
     /// <paramref name="indices"/> must be padded to a multiple of 8 — i.e.

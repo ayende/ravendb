@@ -62,7 +62,7 @@ public sealed class QueryBuilderParameters
             ? new Lazy<List<string>>(() => IndexSearcher.GetFields())
             : null;
 
-        // in case when we've implicit boosting we've built primitives with scoring enabled
+        // in case when we've implicitly boosted, we've built primitives with scoring enabled
         HasBoost = index.HasBoostedFields
                    || query.Metadata.HasBoost
                    || IsVectorSingleClause

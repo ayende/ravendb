@@ -116,7 +116,10 @@ internal static partial class QueryPlanBuilder
             BetweenRewriteSentinels(clauses);
             InPreClassify(clauses);
             if (ctx.Metadata.IsDynamic)
+            {
                 DynamicFieldNameResolve(clauses);
+            }
+
             GroupCollapse(clauses, ctx);
             WhenRegister(clauses, ctx);
             ThrowIfErrors(ctx);
@@ -125,7 +128,9 @@ internal static partial class QueryPlanBuilder
         private static void ThrowIfErrors(ResolutionContext ctx)
         {
             if (ctx.Errors.Count == 0)
+            {
                 return;
+            }
 
             string combined = ctx.Errors.Count == 1
                 ? ctx.Errors[0]
@@ -147,10 +152,12 @@ internal static partial class QueryPlanBuilder
         private static void WhenRegister(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             int whenCount = 0;
-            for (int i = 0; i < clauses.Count; i++)
+            foreach (var t in clauses)
             {
-                if (clauses[i].WhenCondition != null)
+                if (t.WhenCondition != null)
+                {
                     whenCount++;
+                }
             }
             if (whenCount > PlanTemplate.MaxWhenClauses)
             {
@@ -170,42 +177,65 @@ internal static partial class QueryPlanBuilder
         /// </summary>
         private static void InPreClassify(List<ClauseInfo> clauses)
         {
-            for (int i = 0; i < clauses.Count; i++)
-                InPreClassifyRecursive(clauses[i]);
+            foreach (var t in clauses)
+            {
+                InPreClassifyRecursive(t);
+            }
         }
 
         private static void InPreClassifyRecursive(ClauseInfo clause)
         {
             if (clause.OrSubClauses != null)
-                for (int i = 0; i < clause.OrSubClauses.Count; i++)
-                    InPreClassifyRecursive(clause.OrSubClauses[i]);
+            {
+                foreach (var t in clause.OrSubClauses)
+                {
+                    InPreClassifyRecursive(t);
+                }
+            }
+
             if (clause.AndSubClauses != null)
-                for (int i = 0; i < clause.AndSubClauses.Count; i++)
-                    InPreClassifyRecursive(clause.AndSubClauses[i]);
+            {
+                foreach (var t in clause.AndSubClauses)
+                {
+                    InPreClassifyRecursive(t);
+                }
+            }
 
             if (clause.ClauseType is not (ClauseType.In or ClauseType.AllIn))
+            {
                 return;
-            if (clause.Bindings == null || clause.Bindings.Length == 0)
+            }
+
+            if (clause.Bindings is not { Length: not 0 })
                 return;
 
             // Check if all bindings are literals
-            for (int i = 0; i < clause.Bindings.Length; i++)
+            foreach (var t in clause.Bindings)
             {
-                if (clause.Bindings[i].Source != BindingSource.Literal)
+                if (t.Source != BindingSource.Literal)
+                {
                     return; // has parameter bindings — can't pre-classify
+                }
             }
 
             // All literal: compute dominant type
             ParamValueType dominant = ParamValueType.Null;
-            for (int i = 0; i < clause.Bindings.Length; i++)
+            foreach (var t in clause.Bindings)
             {
-                if (clause.Bindings[i].LiteralValue == null)
+                if (t.LiteralValue == null)
+                {
                     continue;
+                }
+
                 if (dominant == ParamValueType.Null)
-                    dominant = clause.Bindings[i].LiteralType;
+                {
+                    dominant = t.LiteralType;
+                }
             }
             if (dominant == ParamValueType.Null)
+            {
                 dominant = ParamValueType.String;
+            }
 
             clause.InAllLiteral = true;
             clause.InDominantType = dominant;
@@ -233,13 +263,16 @@ internal static partial class QueryPlanBuilder
         private static void NotCanonicalize(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             if (ctx.IsOr == false)
-                return;
-
-            for (int i = 0; i < clauses.Count; i++)
             {
-                var c = clauses[i];
+                return;
+            }
+
+            foreach (var c in clauses)
+            {
                 if (c.IsNegated || c.ClauseType == ClauseType.NotEquals)
+                {
                     c.IsOrChainNotEquals = true;
+                }
             }
         }
 
@@ -256,25 +289,40 @@ internal static partial class QueryPlanBuilder
         /// </summary>
         private static void DynamicFieldNameResolve(List<ClauseInfo> clauses)
         {
-            for (int i = 0; i < clauses.Count; i++)
-                DynamicFieldNameResolveRecursive(clauses[i]);
+            foreach (var t in clauses)
+            {
+                DynamicFieldNameResolveRecursive(t);
+            }
         }
 
         private static void DynamicFieldNameResolveRecursive(ClauseInfo clause)
         {
             if (clause.OrSubClauses != null)
-                for (int i = 0; i < clause.OrSubClauses.Count; i++)
-                    DynamicFieldNameResolveRecursive(clause.OrSubClauses[i]);
+            {
+                foreach (var t in clause.OrSubClauses)
+                {
+                    DynamicFieldNameResolveRecursive(t);
+                }
+            }
+
             if (clause.AndSubClauses != null)
-                for (int i = 0; i < clause.AndSubClauses.Count; i++)
-                    DynamicFieldNameResolveRecursive(clause.AndSubClauses[i]);
+            {
+                foreach (var t in clause.AndSubClauses)
+                {
+                    DynamicFieldNameResolveRecursive(t);
+                }
+            }
 
             if (clause.FieldName == null)
+            {
                 return;
+            }
 
             // Spatial and Vector clauses handle their own field resolution — skip them.
             if (clause.ClauseType is ClauseType.Spatial or ClauseType.Vector)
+            {
                 return;
+            }
 
             if (clause.ClauseType == ClauseType.Search)
             {
@@ -322,7 +370,9 @@ internal static partial class QueryPlanBuilder
                 if (TryRewriteBetweenSentinel(clauses[i], out bool bothSentinel))
                 {
                     if (bothSentinel)
+                    {
                         clauses.RemoveAt(i);
+                    }
                 }
             }
         }
@@ -335,7 +385,9 @@ internal static partial class QueryPlanBuilder
                 {
                     BetweenRewriteSubClauses(clause.OrSubClauses[i]);
                     if (TryRewriteBetweenSentinel(clause.OrSubClauses[i], out bool bothSentinel) && bothSentinel)
+                    {
                         clause.OrSubClauses.RemoveAt(i);
+                    }
                 }
             }
             if (clause.AndSubClauses != null)
@@ -344,7 +396,9 @@ internal static partial class QueryPlanBuilder
                 {
                     BetweenRewriteSubClauses(clause.AndSubClauses[i]);
                     if (TryRewriteBetweenSentinel(clause.AndSubClauses[i], out bool bothSentinel) && bothSentinel)
+                    {
                         clause.AndSubClauses.RemoveAt(i);
+                    }
                 }
             }
         }
@@ -355,18 +409,20 @@ internal static partial class QueryPlanBuilder
         {
             bothSentinel = false;
             if (clause.ClauseType != ClauseType.Between || clause.Bindings is not { Length: >= 2 })
+            {
                 return false;
+            }
 
             bool lowIsSentinel = clause.Bindings[BindingIndex.BetweenLow] is
-                { LiteralType: ParamValueType.String, LiteralValue: string ls }
-                && ls == Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
+                { LiteralType: ParamValueType.String, LiteralValue: string and Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery };
 
             bool highIsSentinel = clause.Bindings[BindingIndex.BetweenHigh] is
-                { LiteralType: ParamValueType.String, LiteralValue: string hs }
-                && hs == Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
+                { LiteralType: ParamValueType.String, LiteralValue: string and Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery };
 
             if (!lowIsSentinel && !highIsSentinel)
+            {
                 return false;
+            }
 
             if (lowIsSentinel && highIsSentinel)
             {
@@ -404,24 +460,29 @@ internal static partial class QueryPlanBuilder
         private static void BoostPropagate(ResolutionContext ctx)
         {
             if (ctx.PendingBoosts == null)
-                return;
-
-            for (int i = 0; i < ctx.PendingBoosts.Count; i++)
             {
-                var pending = ctx.PendingBoosts[i];
+                return;
+            }
+
+            foreach (var pending in ctx.PendingBoosts)
+            {
                 var inner = pending.InnerClauses;
-                for (int c = 0; c < inner.Length; c++)
+                foreach (var t in inner)
                 {
-                    if (inner[c].ClauseType == ClauseType.Vector)
+                    if (t.ClauseType == ClauseType.Vector)
                     {
                         throw new NotSupportedException("Boosting the VectorSearchMatch is not supported yet.");
                     }
-                    var old = inner[c].Bindings;
+                    var old = t.Bindings;
                     var extended = new ParameterBinding[(old?.Length ?? 0) + 1];
-                    if (old != null) Array.Copy(old, extended, old.Length);
+                    if (old != null)
+                    {
+                        Array.Copy(old, extended, old.Length);
+                    }
+
                     extended[^1] = pending.Factor;
-                    inner[c].Bindings = extended;
-                    inner[c].HasBoost = true;
+                    t.Bindings = extended;
+                    t.HasBoost = true;
                 }
             }
         }
@@ -441,7 +502,9 @@ internal static partial class QueryPlanBuilder
         private static void GroupCollapse(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             if (ctx.IsOr)
+            {
                 return;
+            }
 
             List<ClauseInfo> spatialList = null;
             List<ClauseInfo> vectorList = null;
@@ -517,7 +580,10 @@ internal static partial class QueryPlanBuilder
                 case OperatorType.Equal:
                 case OperatorType.NotEqual:
                     if (TryGetFieldName(be.Left, ctx.Metadata, ctx.QueryParameters, out _) == false)
+                    {
                         ctx.Report($"Comparison left side must be a field expression or id(), but got: {be.Left.Type}");
+                    }
+
                     return;
 
                 case OperatorType.LessThan:
@@ -525,7 +591,10 @@ internal static partial class QueryPlanBuilder
                 case OperatorType.GreaterThan:
                 case OperatorType.GreaterThanEqual:
                     if (TryGetFieldName(be.Left, ctx.Metadata, ctx.QueryParameters, out _) == false)
+                    {
                         ctx.Report($"Range comparison left side must be a field expression or id(), but got: {be.Left.Type}");
+                    }
+
                     return;
             }
         }
@@ -544,12 +613,9 @@ internal static partial class QueryPlanBuilder
             // away by BetweenRewriteSentinels; only the remaining bound's type matters.
             var minBinding = CreateBinding(between.Min, ctx.QueryParameters);
             var maxBinding = CreateBinding(between.Max, ctx.QueryParameters);
-            bool minIsSentinel = minBinding is { LiteralType: ParamValueType.String, LiteralValue: string minStr }
-                && minStr == Raven.Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
-            bool maxIsSentinel = maxBinding is { LiteralType: ParamValueType.String, LiteralValue: string maxStr }
-                && maxStr == Raven.Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
-            bool bothAstStrings = between.Min is ValueExpression { Value: ValueTokenType.String }
-                && between.Max is ValueExpression { Value: ValueTokenType.String };
+            bool minIsSentinel = minBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery };
+            bool maxIsSentinel = maxBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery };
+            bool bothAstStrings = between is { Min.Value : ValueTokenType.String, Max.Value : ValueTokenType.String };
             if (minIsSentinel == false && maxIsSentinel == false
                 && bothAstStrings == false
                 && minBinding is { LiteralType: not ParamValueType.Parameter }
@@ -565,9 +631,14 @@ internal static partial class QueryPlanBuilder
         private static void ValidateIn(InExpression inExpr, ResolutionContext ctx)
         {
             if (TryGetFieldName(inExpr.Source, ctx.Metadata, ctx.QueryParameters, out _) == false)
+            {
                 ctx.Report($"IN source must be a field expression or id(), but got: {inExpr.Source.Type}");
+            }
+
             if (inExpr.Values.Count == 0)
+            {
                 ctx.Report("IN/ALL IN with an empty value list is a syntax error.");
+            }
         }
 
         private static void ValidateMethod(MethodExpression method, ResolutionContext ctx)
@@ -582,7 +653,10 @@ internal static partial class QueryPlanBuilder
                         return;
                     }
                     if (TryGetFieldName(method.Arguments[0], ctx.Metadata, ctx.QueryParameters, out _) == false)
+                    {
                         ctx.Report($"search() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+                    }
+
                     return;
 
                 case MethodType.StartsWith:
@@ -600,7 +674,10 @@ internal static partial class QueryPlanBuilder
                         return;
                     }
                     if (TryGetFieldName(method.Arguments[0], ctx.Metadata, ctx.QueryParameters, out _) == false)
+                    {
                         ctx.Report($"exists() argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+                    }
+
                     return;
 
                 case MethodType.Regex:
@@ -610,13 +687,19 @@ internal static partial class QueryPlanBuilder
                         return;
                     }
                     if (TryGetFieldName(method.Arguments[0], ctx.Metadata, ctx.QueryParameters, out _) == false)
+                    {
                         ctx.Report($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+                    }
+
                     return;
 
                 case MethodType.Exact:
                 case MethodType.Boost:
                     if (method.Arguments.Count > 0)
+                    {
                         AstShapeValidate(method.Arguments[0], ctx);
+                    }
+
                     return;
 
                 case MethodType.When:
@@ -624,15 +707,21 @@ internal static partial class QueryPlanBuilder
                     // The condition is evaluated against query parameters at execution time
                     // and is not part of AST shape validation here.
                     if (method.Arguments.Count == 2)
+                    {
                         AstShapeValidate(method.Arguments[1], ctx);
+                    }
+
                     return;
 
                 case MethodType.Spatial_Within:
                 case MethodType.Spatial_Contains:
                 case MethodType.Spatial_Disjoint:
                 case MethodType.Spatial_Intersects:
-                    if (method.Arguments.Count >= 2 && method.Arguments[1] is not MethodExpression)
+                    if (method.Arguments is [_, not MethodExpression, ..])
+                    {
                         ctx.Report($"Spatial shape argument must be a method expression (spatial.circle or spatial.wkt), but got: {method.Arguments[1].Type}");
+                    }
+
                     return;
             }
         }
@@ -645,7 +734,9 @@ internal static partial class QueryPlanBuilder
                 return;
             }
             if (TryGetFieldName(method.Arguments[0], ctx.Metadata, ctx.QueryParameters, out _) == false)
+            {
                 ctx.Report($"{type}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+            }
         }
     }
 }
