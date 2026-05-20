@@ -1282,7 +1282,9 @@ internal static partial class QueryPlanBuilder
 
     private static long EstimateCardinality(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher, ValueWriter writer, QueryBuilderParameters builderParameters)
     {
-        var walkerCtx = new ResolutionContext(builderParameters);
+        var walkerCtx = builderParameters != null
+            ? new ResolutionContext(builderParameters)
+            : new ResolutionContext(null, null, indexSearcher);
         switch (clause.ClauseType)
         {
             case ClauseType.Equals:
