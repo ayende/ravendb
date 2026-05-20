@@ -275,11 +275,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 if (_groupSize == 0)
                     continue;
 
-                if (_groupSize > 1)
-                    SortGroupBySecondary();
-                else
-                    _groupSortedIndexes.RawItems[0] = 0;
-                _groupEmitIdx = 0;
+                SortGroupBySecondary();
                 count += EmitFromSortedGroup(matches[count..]);
                 if (count >= matches.Length)
                     return count;
@@ -295,16 +291,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         }
 
         return count;
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void AddToGroup(long entryId)
-    {
-        if (_emittedBitmap.Contains(entryId))
-            return;
-        _emittedBitmap.Add(entryId);
-        EnsureGroupCapacity(_groupSize + 1);
-        _groupEntries.RawItems[_groupSize++] = entryId;
     }
 
     private void EnsureGroupCapacity(int required)
@@ -337,9 +323,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 int read = reader.Fill(pBuffer, entryBuffer.Length);
                 if (read <= 0)
                     break;
-                EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer, read);
-                for (int j = 0; j < read; j++)
-                    AddToGroup(entryBuffer[j]);
+                AddToGroup(entryBuffer, read);
             }
         }
     }
@@ -350,9 +334,21 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         {
             if (iter.Fill(entryBuffer, out int read) == false || read == 0)
                 break;
-            EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer[..read], read);
-            for (int j = 0; j < read; j++)
-                AddToGroup(entryBuffer[j]);
+            AddToGroup(entryBuffer, read);
+        }
+    }
+
+    private void AddToGroup(Span<long> entryBuffer, int read)
+    {
+        EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer[..read], read);
+        EnsureGroupCapacity(_groupSize + read);
+        for (int j = 0; j < read; j++)
+        {
+            long entryId = entryBuffer[j];
+            if (_emittedBitmap.Contains(entryId))
+                continue;
+            _emittedBitmap.Add(entryId);
+            _groupEntries.RawItems[_groupSize++] = entryId;
         }
     }
 
@@ -364,7 +360,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         // which is always a multiple of 8 (TieBreakGroupInitialCapacity = 1024),
         // satisfying the SIMD padding contract of InitializeIndices.
         var indexesSpan = new Span<int>(_groupSortedIndexes.RawItems, _groupSortedIndexes.Capacity);
-
+        _groupEmitIdx = 0;
         switch (_secondaryType)
         {
             case MatchCompareFieldType.Integer:
@@ -430,14 +426,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             _nullExhausted = true;
         }
 
-        if (_groupSize > 0)
-        {
-            if (_groupSize > 1)
-                SortGroupBySecondary();
-            else
-                _groupSortedIndexes.RawItems[0] = 0;
-            _groupEmitIdx = 0;
-        }
+        if (_groupSize <= 0) return;
+        SortGroupBySecondary();
     }
 
     private void InitPostingList(out PostingList postingList, out PostingList.Iterator iterator, long postingListId)
