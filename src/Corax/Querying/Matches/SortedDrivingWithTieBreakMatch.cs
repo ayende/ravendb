@@ -98,8 +98,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         MatchCompareFieldType secondaryType,
         bool secondaryDescending,
         bool nullFirst,
-        bool nullIsSmallest,
-        bool drainNulls = true)
+        bool nullIsSmallest)
     {
         if (secondaryType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating or MatchCompareFieldType.Sequence))
             throw new NotSupportedException($"SortedDrivingWithTieBreakMatch only supports Integer, Floating, or Sequence tie-break fields (got {secondaryType})");
@@ -114,47 +113,39 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
         // Resolve the secondary Lookup using the type-specific field name (long/double suffix).
         Slice secondaryLookupName;
-        if (secondaryType == MatchCompareFieldType.Integer)
+        switch (secondaryType)
         {
-            IndexFieldsMappingBuilder.GetFieldNameForLongs(searcher.Allocator, secondaryField.FieldName, out secondaryLookupName);
-            _missingSecondaryValue = nullIsSmallest ? long.MinValue : long.MaxValue;
-        }
-        else if (secondaryType == MatchCompareFieldType.Floating)
-        {
-            IndexFieldsMappingBuilder.GetFieldNameForDoubles(searcher.Allocator, secondaryField.FieldName, out secondaryLookupName);
-            _missingSecondaryValue = BitConverter.DoubleToInt64Bits(nullIsSmallest ? double.MinValue : double.MaxValue);
-        }
-        else
-        {
-            // Sequence: the lookup maps entry IDs to term container IDs (no type suffix).
-            secondaryLookupName = secondaryField.FieldName;
-            _missingSecondaryValue = SortingHelpers.MissingTermId;
+            case MatchCompareFieldType.Integer:
+                IndexFieldsMappingBuilder.GetFieldNameForLongs(searcher.Allocator, secondaryField.FieldName, out secondaryLookupName);
+                _missingSecondaryValue = nullIsSmallest ? long.MinValue : long.MaxValue;
+                break;
+            case MatchCompareFieldType.Floating:
+                IndexFieldsMappingBuilder.GetFieldNameForDoubles(searcher.Allocator, secondaryField.FieldName, out secondaryLookupName);
+                _missingSecondaryValue = BitConverter.DoubleToInt64Bits(nullIsSmallest ? double.MinValue : double.MaxValue);
+                break;
+            default:
+                // Sequence: the lookup maps entry IDs to term container IDs (no type suffix).
+                secondaryLookupName = secondaryField.FieldName;
+                _missingSecondaryValue = SortingHelpers.MissingTermId;
 
-            // Resolve null/non-existing term container IDs for the string path.
-            if (searcher.TryGetPostingListForNull(secondaryField.FieldName, out _, out _nullTermContainerId) == false)
-                _nullTermContainerId = SortingHelpers.InvalidTermId;
-            if (searcher.TryGetPostingListForNonExisting(secondaryField.FieldName, out _, out _nonExistingTermContainerId) == false)
-                _nonExistingTermContainerId = SortingHelpers.InvalidTermId;
+                // Resolve null/non-existing term container IDs for the string path.
+                if (searcher.TryGetPostingListForNull(secondaryField.FieldName, out _, out _nullTermContainerId) == false)
+                    _nullTermContainerId = SortingHelpers.InvalidTermId;
+                if (searcher.TryGetPostingListForNonExisting(secondaryField.FieldName, out _, out _nonExistingTermContainerId) == false)
+                    _nonExistingTermContainerId = SortingHelpers.InvalidTermId;
+                break;
         }
         _secondaryLookup = searcher.EntriesToTermsReader(secondaryLookupName);
 
-        if (drainNulls)
-        {
-            _hasNullPostingList = searcher.TryGetPostingListForNull(in primaryField, out var nullPostingListId);
-            _nullExhausted = !_hasNullPostingList;
-            if (_hasNullPostingList)
-                InitPostingList(out _nullPostingList, out _nullIterator, nullPostingListId);
+        _hasNullPostingList = searcher.TryGetPostingListForNull(in primaryField, out var nullPostingListId);
+        _nullExhausted = !_hasNullPostingList;
+        if (_hasNullPostingList)
+            InitPostingList(out _nullPostingList, out _nullIterator, nullPostingListId);
 
-            _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in primaryField, out var nonExistingPostingListId);
-            _nonExistingExhausted = !_hasNonExistingPostingList;
-            if (_hasNonExistingPostingList)
-                InitPostingList(out _nonExistingPostingList, out _nonExistingIterator, nonExistingPostingListId);
-        }
-        else
-        {
-            _nullExhausted = true;
-            _nonExistingExhausted = true;
-        }
+        _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in primaryField, out var nonExistingPostingListId);
+        _nonExistingExhausted = !_hasNonExistingPostingList;
+        if (_hasNonExistingPostingList)
+            InitPostingList(out _nonExistingPostingList, out _nonExistingIterator, nonExistingPostingListId);
     }
 
     public long Count => -1;
@@ -271,9 +262,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                         break;
                     }
                     default:
-                        Debug.Assert(false, $"Unexpected TermIdMask value {termType} for plId {plId}");
-                        _plIdsIdx++;
-                        continue;
+                        throw new ArgumentException($"Unexpected TermIdMask value {termType} for plId {plId}");
                 }
 
                 if (_groupSize == 0)

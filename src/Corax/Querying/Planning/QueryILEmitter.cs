@@ -40,7 +40,7 @@ public static class QueryIlEmitter
         var d = new DualEmit(il, cs);
 
         // Register arguments.
-        d.RegisterArg(0, "ctx");
+        var ctxIdx = d.RegisterArg("ctx");
 
         // C# function header.
         d.CsLine("static void CompiledQuery(CompiledQueryMatch ctx)");
@@ -212,8 +212,6 @@ public static class QueryIlEmitter
         csharpSource = cs.ToString();
         return (CompiledExecuteDelegate)dm.CreateDelegate(typeof(CompiledExecuteDelegate));
     }
-
-    // ── Scaffolding helpers ──────────────────────────────────────────
 
     /// <summary>stackalloc long[FillBufferSize] → bufferLocal</summary>
     private static void EmitStackAlloc(ref DualEmit d, LocalBuilder bufferLocal)

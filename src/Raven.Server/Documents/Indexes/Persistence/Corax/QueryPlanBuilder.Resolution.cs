@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Reflection;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -148,7 +149,7 @@ internal static partial class QueryPlanBuilder
 
         // Phase 3a: resolve ORDER BY metadata (needed by Instantiate's strategy dispatch).
         orderByFieldsOut = GetSortMetadata(builderParameters, out hasEmptySorts);
-
+        MethodBody body = compiledPlanOut.CompiledDelegate.GetMethodInfo().GetMethodBody();
         // Phase 3b: dispatch on the cached ExecutionStrategy (fast path) or run Try* discovery
         // (slow path, cache-miss only). Instantiate falls through to the bitmap pipeline as the
         // last resort. All four strategies — CompoundExact / CompoundField / DirectScan / BitmapSort
@@ -3824,7 +3825,6 @@ internal static partial class QueryPlanBuilder
         // so SortedDrivingMatch must drain them itself (respecting nullFirst direction).
         bool nullIsSmallest = (orderByFields[0].NullsSortMode ?? builderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
         bool nullFirst = forward ? nullIsSmallest : !nullIsSmallest;
-        bool drainNulls = true;
         IQueryMatch drivingMatch;
         if (hasTieBreak)
         {
@@ -3838,12 +3838,12 @@ internal static partial class QueryPlanBuilder
                 provider, llt, planParams.Allocator, indexSearcher,
                 orderByFields[0].Field, orderByFields[1].Field,
                 orderByFields[1].FieldType, secondaryDescending: orderByFields[1].Ascending == false,
-                nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest, drainNulls: drainNulls);
+                nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest,);
         }
         else
         {
             drivingMatch = new SortedDrivingMatch(provider, llt, planParams.Allocator,
-                indexSearcher, orderByFields[0].Field, nullFirst, drainNulls);
+                indexSearcher, orderByFields[0].Field, nullFirst);
         }
 
         // ── Residual scan parameters ──
