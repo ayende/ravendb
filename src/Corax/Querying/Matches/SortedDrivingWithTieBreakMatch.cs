@@ -387,8 +387,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         var indexes = _groupSortedIndexes.RawItems;
         int remaining = _groupSize - _groupEmitIdx;
         int toEmit = Math.Min(remaining, matches.Length);
-        int pos = _secondaryDescending ? _groupSize - 1 - _groupEmitIdx : _groupEmitIdx;
-        int step = _secondaryDescending ? -1 : 1;
+        var (pos, step) = _secondaryDescending ? (_groupSize - 1 - _groupEmitIdx, -1) : (_groupEmitIdx, 1);
         for (int i = 0; i < toEmit; i++, pos += step)
             matches[i] = entries[indexes[pos]];
         _groupEmitIdx += toEmit;
