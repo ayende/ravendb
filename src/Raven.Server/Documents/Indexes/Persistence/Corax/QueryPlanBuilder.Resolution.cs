@@ -3838,7 +3838,7 @@ internal static partial class QueryPlanBuilder
                 provider, llt, planParams.Allocator, indexSearcher,
                 orderByFields[0].Field, orderByFields[1].Field,
                 orderByFields[1].FieldType, secondaryDescending: orderByFields[1].Ascending == false,
-                nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest,);
+                nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest);
         }
         else
         {
