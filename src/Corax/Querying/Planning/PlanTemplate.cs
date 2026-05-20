@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Corax.Querying.Planning;
 
@@ -35,14 +36,13 @@ public sealed class PlanTemplate
     /// optional-filter LINQ shapes).</summary>
     public const int MaxWhenClauses = 32;
 
-    public ClauseInfo[] Clauses;
-    public bool IsAllEntries;
+    public List<ClauseInfo> Clauses;
     public bool IsOr;              // root boolean operator
 
     /// <summary>Spatial clauses separated from the main filter chain (AND queries only).</summary>
-    public ClauseInfo[] SpatialClauses;
+    public List<ClauseInfo> SpatialClauses;
     /// <summary>Vector clauses separated from the main filter chain (AND queries only).</summary>
-    public ClauseInfo[] VectorClauses;
+    public List<ClauseInfo> VectorClauses;
 
     /// <summary>Plan-time structural optimization flags. Computed at template
     /// construction and checked at Instantiate time to skip inapplicable Try* methods.</summary>
