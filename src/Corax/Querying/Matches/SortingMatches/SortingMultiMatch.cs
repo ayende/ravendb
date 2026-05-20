@@ -126,34 +126,36 @@ public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
         {
             match._token.ThrowIfCancellationRequested();
 
-            // Use Count as a buffer size hint, but don't trust it for early-exit:
-            // some matches (VectorSearchMatch) report Count=0 with Low confidence
-            // because their results are computed lazily during Fill.
-            var countHint = match._inner.Count;
-            int bufferSize = countHint > 0 && countHint < 1024 * 1024 ? (int)countHint : 4096;
-            var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
-            var allMatches = new Span<long>(bs.Ptr, bufferSize);
-            int filled = 0;
-            int r;
-            while ((r = match._inner.Fill(allMatches[filled..])) > 0)
+            // Ensure we have a bitmap. Non-bitmap inner matches are materialized first.
+            BitmapMatch ownedBitmap = default;
+            IBitmapQueryMatch bitmapMatch;
+            if (match._inner is IBitmapQueryMatch bm)
             {
-                filled += r;
-                if (filled >= allMatches.Length)
-                {
-                    match._searcher.Allocator.GrowAllocation(ref bs, ref scope, allMatches.Length * sizeof(long));
-                    allMatches = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
-                }
+                bitmapMatch = bm;
+            }
+            else
+            {
+                ownedBitmap = new BitmapMatch(match._searcher.Allocator);
+                Primitives.QueryPrimitives.OrWithMatch(match._inner, ref ownedBitmap.BitmapState);
+                bitmapMatch = ownedBitmap;
             }
 
-            if (filled == 0)
+            match.TotalResults = bitmapMatch.Count;
+            if (match.TotalResults == 0)
             {
-                scope.Dispose();
+                ownedBitmap.Dispose();
                 return 0;
             }
 
-            match.TotalResults = filled;
+            // Extract all entry IDs from the bitmap into a flat buffer for sorting.
+            int total = (int)match.TotalResults;
+            var scope = match._searcher.Allocator.Allocate(total * sizeof(long), out var bs);
+            var allMatches = new Span<long>(bs.Ptr, total);
+            int filled = bitmapMatch.Fill(allMatches);
+
             SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
             scope.Dispose();
+            ownedBitmap.Dispose();
         }
 
         var read = match._results.CopyTo(matches, match._alreadyReadIdx);
