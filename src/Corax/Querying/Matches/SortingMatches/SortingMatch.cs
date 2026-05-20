@@ -38,11 +38,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     private readonly delegate*<SortingMatch<TInner>, Span<long>, int> _fillFunc;
     private readonly int _take;
     private const int NotStarted = -1;
-    /// <summary>Threshold for DrainAndSort pre-allocation: counts above this are unknown/unbounded
-    /// and use the growing-buffer pattern instead of a fixed pre-sized allocation.</summary>
-    private const int MaxPreallocCount = 1024 * 1024;
-    /// <summary>Fallback buffer size for DrainAndSort when count is unknown or exceeds <see cref="MaxPreallocCount"/>.</summary>
-    private const int DrainFallbackBufferSize = 4096;
+
     /// <summary>UTF-8 byte buffer size for stackalloc encode/compare in sort-hint seek and SliceEqualsUtf8.
     /// Strings longer than this fall back to heap allocation.</summary>
     private const int Utf8StackAllocThreshold = 256;
