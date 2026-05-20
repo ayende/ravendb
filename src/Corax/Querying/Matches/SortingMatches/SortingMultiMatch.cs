@@ -15,7 +15,7 @@ using Voron.Util;
 namespace Corax.Querying.Matches.SortingMatches;
 
 [DebuggerDisplay("{DebugView,nq}")]
-public unsafe sealed partial class SortingMultiMatch<TInner> : SortingMultiMatch
+public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
     where TInner : IQueryMatch
 {
     private const int NextComparerOffset = 3;
