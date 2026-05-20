@@ -519,7 +519,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // The hint value is matched against the sort field at the per-direction branch in GetReader,
         // where the concrete key type is known.
         object hintValue = null;
-        if (bitmapMatch is CompiledQueryMatch cm && cm.SortHint is { } hint &&
+        if (bitmapMatch is CompiledQueryMatch { SortHint: { } hint } &&
             SliceEqualsUtf8(entryCmp.GetSortFieldName(match), hint.FieldName))
         {
             hintValue = hint.Value;
