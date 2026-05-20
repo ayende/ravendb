@@ -146,47 +146,36 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // we will just need to acquire via pages the totality of the results.
         if (match.TotalResults == NotStarted)
         {
-            // Ensure we have a bitmap to work with. Non-bitmap matches (PostFilterMatch,
-            // VectorSearchMatch, etc.) are materialized into a BitmapMatch first — single code path.
-            BitmapMatch ownedBitmap = default;
-            IBitmapQueryMatch bitmapMatch;
-            if (match._inner is IBitmapQueryMatch bm)
+            if (match._inner is IBitmapQueryMatch bitmapMatch)
             {
-                bitmapMatch = bm;
+                match.TotalResults = bitmapMatch.Count;
+                if (match.TotalResults == 0)
+                    return 0;
+
+                if (typeof(TDirection) == typeof(RandomDirection))
+                {
+                    ReservoirSampleFromBitmap(match, bitmapMatch);
+                }
+                else if (typeof(TDirection) == typeof(NoIterationOptimization) || match._orderMetadata.MayHaveMissingEntries)
+                {
+                    // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort.
+                    // Also taken when MayHaveMissingEntries is set (e.g. dynamic CreateField sort fields):
+                    // StreamAndIntersect only walks tree terms + null/nonExisting posting lists, so
+                    // docs that didn't emit the field would be silently dropped. ExtractAndSort drains
+                    // the entire bitmap and uses the comparer's missing-value sentinel for those docs.
+                    ExtractAndSort<TEntryComparer>(match, bitmapMatch);
+                }
+                else
+                {
+                    StreamAndIntersect<TEntryComparer, TDirection>(match, bitmapMatch);
+                }
             }
             else
             {
-                ownedBitmap = new BitmapMatch(match._searcher.Allocator);
-                Primitives.QueryPrimitives.OrWithMatch(match._inner, ref ownedBitmap.BitmapState);
-                bitmapMatch = ownedBitmap;
+                // Non-bitmap path (VectorSearchMatch, PostFilterMatch, scoring matches, etc.)
+                // Must drain via Fill to preserve match-specific state (vector distances, scores).
+                DrainAndSort<TEntryComparer>(match);
             }
-
-            match.TotalResults = bitmapMatch.Count;
-            if (match.TotalResults == 0)
-            {
-                ownedBitmap.Dispose();
-                return 0;
-            }
-
-            if (typeof(TDirection) == typeof(RandomDirection))
-            {
-                ReservoirSampleFromBitmap(match, bitmapMatch);
-            }
-            else if (typeof(TDirection) == typeof(NoIterationOptimization) || match._orderMetadata.MayHaveMissingEntries)
-            {
-                // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort.
-                // Also taken when MayHaveMissingEntries is set (e.g. dynamic CreateField sort fields):
-                // StreamAndIntersect only walks tree terms + null/nonExisting posting lists, so
-                // docs that didn't emit the field would be silently dropped. ExtractAndSort drains
-                // the entire bitmap and uses the comparer's missing-value sentinel for those docs.
-                ExtractAndSort<TEntryComparer>(match, bitmapMatch);
-            }
-            else
-            {
-                StreamAndIntersect<TEntryComparer, TDirection>(match, bitmapMatch);
-            }
-
-            ownedBitmap.Dispose();
         }
 
 
@@ -662,7 +651,40 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         SortResults<TEntryComparer>(match, allMatches[..filled]);
     }
     
-    private static void SortResults<TEntryComparer>(SortingMatch<TInner> match, Span<long> batchResults) 
+    /// <summary>Drain all results from the inner match via Fill, then heap sort.
+    /// Used for non-bitmap matches (VectorSearchMatch, PostFilterMatch, scoring matches)
+    /// where materializing into a bitmap would lose match-specific state.</summary>
+    private static void DrainAndSort<TEntryComparer>(SortingMatch<TInner> match)
+        where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
+    {
+        var count = match._inner.Count;
+        int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
+        var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
+        var allMatches = new Span<long>(bs.Ptr, bufferSize);
+        int filled = 0;
+        int r;
+        while ((r = match._inner.Fill(allMatches[filled..])) > 0)
+        {
+            filled += r;
+            if (filled >= allMatches.Length)
+            {
+                match._searcher.Allocator.GrowAllocation(ref bs, ref scope, allMatches.Length * sizeof(long));
+                allMatches = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
+            }
+        }
+
+        match.TotalResults = filled;
+        if (match.TotalResults == 0)
+        {
+            scope.Dispose();
+            return;
+        }
+
+        SortResults<TEntryComparer>(match, allMatches[..filled]);
+        scope.Dispose();
+    }
+
+    private static void SortResults<TEntryComparer>(SortingMatch<TInner> match, Span<long> batchResults)
         where TEntryComparer : struct,  IEntryComparer, IComparer<UnmanagedSpan>
     {
         var llt = match._searcher.Transaction.LowLevelTransaction;
