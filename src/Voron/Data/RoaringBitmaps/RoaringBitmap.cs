@@ -932,6 +932,43 @@ public unsafe partial struct RoaringBitmap : IDisposable
         return kept;
     }
 
+    /// <summary>Dedup + add in a single pass: for each entry in <paramref name="buffer"/>,
+    /// if it is NOT already in the bitmap, keep it in the buffer and add it to the bitmap.
+    /// If it IS already present, discard it. Returns the count of new (non-duplicate) entries.
+    /// Buffer order is preserved (via the same index-tracking approach as <see cref="AndWith"/>).
+    /// Used by SortingMatch.StreamAndIntersect to replace the per-entry Contains+Add loop.</summary>
+    public int DedupAddNew(Span<long> buffer, int count)
+    {
+        if (count == 0) return 0;
+
+        using var _ = _ctx.Allocate(PadToVector256Width(count), out Span<int> indices);
+        InitializeIndices(indices, count);
+        buffer[..count].Sort(indices[..count]);
+
+        int kept = 0;
+        int i = 0;
+
+        while (i < count)
+        {
+            long val = buffer[i];
+            if (Contains(val))
+            {
+                i++;
+                continue;
+            }
+            // New entry — add to bitmap and keep in buffer.
+            Add(val);
+            buffer[kept] = val;
+            indices[kept] = indices[i];
+            kept++;
+            i++;
+        }
+
+        // Restore original order.
+        indices[..kept].Sort(buffer[..kept]);
+        return kept;
+    }
+
     /// <summary>Returns the first index in <c>[lo, hi)</c> where <c>buffer[index] &gt;= sentinel</c>,
     /// using exponential probing then binary search — O(log d) where d is the run length.</summary>
     private static int GallopRight(Span<long> buffer, int lo, int hi, long sentinel)
