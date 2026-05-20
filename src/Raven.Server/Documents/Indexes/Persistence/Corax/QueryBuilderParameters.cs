@@ -32,7 +32,6 @@ public sealed class QueryBuilderParameters
     public readonly Lazy<List<string>> DynamicFields;
     public readonly ByteStringContext Allocator;
     public readonly bool HasBoost;
-    public readonly bool DeduplicationDisabled;
     public readonly IndexReadOperationBase IndexReadOperation;
     public readonly bool IsVectorSingleClause;
     public readonly QueryTimeScope QueryTime;
@@ -70,7 +69,6 @@ public sealed class QueryBuilderParameters
                    || HasBoostingAsOrderingType(query.Metadata.OrderBy);
         Allocator = allocator;
         IndexReadOperation = indexReadOperation;
-        DeduplicationDisabled = deduplicationDisabled;
     }
 
     public bool NeedsScoresBuffer() => HasBoost

@@ -175,22 +175,12 @@ internal static partial class QueryPlanBuilder
     /// lists: a string term in an otherwise-numeric IN list (e.g. IN(DateTime, "Shalom")
     /// on a DateTime-indexed field) can never match a numeric-indexed term and would
     /// throw on Convert.ToInt64, so it is dropped instead.</summary>
-    private static bool IsTypeIncompatible(ParamValueType termType, ParamValueType dominantType)
+    private static bool AreTypesIncompatible(ParamValueType termType, ParamValueType dominantType)
     {
-        if (termType == dominantType)
-        {
-            return false;
-        }
-
-        // Long and Double are mutually coercible.
-        if ((termType == ParamValueType.Long || termType == ParamValueType.Double) &&
-            (dominantType == ParamValueType.Long || dominantType == ParamValueType.Double))
-        {
-            return false;
-        }
-
-        // Anything else (string vs numeric, or vice versa) is incompatible.
-        return true;
+        return termType != dominantType && (
+            // Long and Double are mutually coercible.
+            termType is not (ParamValueType.Long or ParamValueType.Double) ||
+            dominantType is not (ParamValueType.Long or ParamValueType.Double));
     }
 
     private static SpatialOperationType ToSpatialOp(MethodType t) => t switch
@@ -215,9 +205,7 @@ internal static partial class QueryPlanBuilder
         var queryParameters = p.QueryParameters;
         var metadata = p.Metadata;
         if (query.Where == null)
-        {
             return new PlanTemplate { IsAllEntries = true, Clauses = [] };
-        }
 
         // Phase 1: walker — validate AST shape. Accumulates every shape error into
         // walkerCtx.Errors so the user sees them all at once.
@@ -225,21 +213,17 @@ internal static partial class QueryPlanBuilder
         PlanWalker.ValidateAst(query.Where, walkerCtx);
 
         // Phase 2: materialize the AST into ClauseInfo[]. walkerCtx is threaded
-        // through the recursive helpers so deferred steps (e.g. BoostPropagate)
+        // through the recursive helpers, so deferred steps (e.g. BoostPropagate)
         // can record per-template metadata for later processing.
         bool hasMixedAndOr = false;
         var clauses = new List<ClauseInfo>();
         var rootOp = ParseExpression(query.Where, indexSearcher, clauses, queryParameters, metadata, walkerCtx, ref hasMixedAndOr);
 
         if (rootOp == BooleanOp.True || clauses.Count == 0)
-        {
             return new PlanTemplate { IsAllEntries = true, Clauses = [] };
-        }
 
         if (rootOp == BooleanOp.False)
-        {
             return new PlanTemplate { Clauses = [] };
-        }
 
         bool isOr = rootOp == BooleanOp.Or;
         walkerCtx.IsOr = isOr;
