@@ -428,7 +428,7 @@ internal static partial class QueryPlanBuilder
         for (int ci = 0; ci < clauses.Count; ci++)
         {
             if (execList[ci].Cardinality < 0)
-                execList[ci].Cardinality = EstimateCardinality(clauses[ci], execList[ci], indexSearcher, writer, planParams, builderParameters);
+                execList[ci].Cardinality = EstimateCardinality(clauses[ci], execList[ci], indexSearcher, writer, builderParameters);
         }
 
         // Step 5: Sort operands by cardinality (sort clauses and executions in lockstep).
@@ -611,9 +611,10 @@ internal static partial class QueryPlanBuilder
         CancellationToken token)
     {
         var indexSearcher = planParams.IndexSearcher;
-        var resolvedMatches = ResolveMatches(plan, indexSearcher, planParams, builderParameters);
-        var termSources = ResolveTermSources(plan, indexSearcher, planParams, builderParameters);
-        var termsProviders = ResolveTermsProviders(plan, indexSearcher, planParams, builderParameters);
+        var walkerCtx = new ResolutionContext(builderParameters);
+        var resolvedMatches = ResolveMatches(plan, walkerCtx);
+        var termSources = ResolveTermSources(plan, walkerCtx);
+        var termsProviders = ResolveTermsProviders(plan, walkerCtx);
         ExtractScanParameters(plan, indexSearcher,
             out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
 
@@ -661,28 +662,26 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     public static IQueryMatch BuildFromSubExpression(QueryBuilderParameters builderParams, QueryExpression expression)
     {
-        var indexSearcher = builderParams.IndexSearcher;
-        var clauses = new List<ClauseInfo>();
-        bool hasMixed = false;
         // Sub-expression entry point: run the same walker phases as ParseTemplate
         // (ValidateAst pre-materialize, RewriteClauses post-materialize) so boost()
         // and other deferred rewrites apply consistently here too.
-        var walkerCtx = new ResolutionContext(builderParams.QueryParameters, builderParams.Metadata);
+        var walkerCtx = new ResolutionContext(builderParams);
+        var indexSearcher = walkerCtx.IndexSearcher;
         PlanWalker.ValidateAst(expression, walkerCtx);
-        ParseExpression(expression, indexSearcher, clauses, builderParams.QueryParameters,
-            builderParams.Metadata, walkerCtx, ref hasMixed);
-        PlanWalker.RewriteClauses(clauses, walkerCtx);
+        walkerCtx.Clauses = [];
+        ParseExpression(expression, walkerCtx);
+        PlanWalker.RewriteClauses(walkerCtx);
 
-        if (clauses.Count == 0)
+        if (walkerCtx.Clauses.Count == 0)
             return indexSearcher.AllEntries();
 
         // Populate parameters for the sub-expression clauses
         var writer = new ValueWriter();
-        var subExecs = new ClauseExecution[clauses.Count];
-        for (int ci = 0; ci < clauses.Count; ci++)
+        var subExecs = new ClauseExecution[walkerCtx.Clauses.Count];
+        for (int ci = 0; ci < walkerCtx.Clauses.Count; ci++)
         {
-            subExecs[ci] = CreateExecution(clauses[ci]);
-            PopulateClauseValues(clauses[ci], subExecs[ci], builderParams.QueryParameters, writer, builderParams);
+            subExecs[ci] = CreateExecution(walkerCtx.Clauses[ci]);
+            PopulateClauseValues(walkerCtx.Clauses[ci], subExecs[ci], builderParams.QueryParameters, writer, builderParams);
         }
 
         var subPlan = new QueryExecution
@@ -693,8 +692,8 @@ internal static partial class QueryPlanBuilder
             Executions = subExecs
         };
 
-        if (clauses.Count == 1)
-            return ResolveClause(clauses[0], subExecs[0], indexSearcher, subPlan, parameters: null, builderParams: builderParams);
+        if (walkerCtx.Clauses.Count == 1)
+            return ResolveClause(walkerCtx.Clauses[0], subExecs[0], subPlan, walkerCtx);
 
         // Multiple clauses (AND chain) — resolve each and AND them via bitmap.
         // RoaringBitmap is passed as `ref` to AndWithMatch, so using var is not legal here;
@@ -704,10 +703,10 @@ internal static partial class QueryPlanBuilder
         try
         {
             bool first = true;
-            for (int ci2 = 0; ci2 < clauses.Count; ci2++)
+            for (int ci2 = 0; ci2 < walkerCtx.Clauses.Count; ci2++)
             {
-                var clause = clauses[ci2];
-                var match = ResolveClause(clause, subExecs[ci2], indexSearcher, subPlan, parameters: null, builderParams: builderParams);
+                var clause = walkerCtx.Clauses[ci2];
+                var match = ResolveClause(clause, subExecs[ci2], subPlan, walkerCtx);
                 if (first)
                 {
                     QueryPrimitives.OrWithMatch(match, ref bitmap.BitmapState);
@@ -743,8 +742,8 @@ internal static partial class QueryPlanBuilder
     private static (List<ClauseInfo> Clauses, List<ClauseExecution> ExecList, int WhenFlags)
         EvaluateWhenAndFilterClauses(PlanTemplate template, PlanParameters planParams)
     {
-        var clauses = new List<ClauseInfo>(template.Clauses.Length);
-        var execList = new List<ClauseExecution>(template.Clauses.Length);
+        var clauses = new List<ClauseInfo>(template.Clauses.Count);
+        var execList = new List<ClauseExecution>(template.Clauses.Count);
         int whenFlags = 0;
         if (template.WhenCount == 0)
         {
@@ -941,7 +940,7 @@ internal static partial class QueryPlanBuilder
 
         if (template.SpatialClauses != null)
         {
-            int sLen = template.SpatialClauses.Length;
+            int sLen = template.SpatialClauses.Count;
             spatialArr = new ClauseInfo[sLen];
             spatialExecs = new ClauseExecution[sLen];
             for (int si = 0; si < sLen; si++)
@@ -955,7 +954,7 @@ internal static partial class QueryPlanBuilder
         }
         if (template.VectorClauses != null)
         {
-            int vLen = template.VectorClauses.Length;
+            int vLen = template.VectorClauses.Count;
             vectorArr = new ClauseInfo[vLen];
             vectorExecs = new ClauseExecution[vLen];
             for (int vi = 0; vi < vLen; vi++)
@@ -1501,9 +1500,9 @@ internal static partial class QueryPlanBuilder
     /// all the complexity of analyzer application, CompactKey encoding,
     /// posting list resolution, etc.
     /// </summary>
-    private static IQueryMatch[] ResolveMatches(QueryExecution plan, IndexSearcher indexSearcher,
-        PlanParameters parameters, QueryBuilderParameters builderParams)
+    private static IQueryMatch[] ResolveMatches(QueryExecution plan, ResolutionContext walkerCtx)
     {
+        var indexSearcher = walkerCtx.IndexSearcher;
         var clauses = plan.Clauses ?? [];
         // IsAllEntries + spatial/vector occurs when the query's only predicates are
         // vector.search() or spatial clauses with no other WHERE terms. GroupCollapse
@@ -1524,12 +1523,12 @@ internal static partial class QueryPlanBuilder
             if (plan.SpatialFilters != null)
             {
                 for (int i = 0; i < plan.SpatialFilters.Length; i++)
-                    allEntriesMatches[matchOfs++] = ResolveClause(plan.SpatialFilters[i].Clause, plan.SpatialFilters[i].Exec ?? new ClauseExecution(), indexSearcher, plan, parameters, builderParams);
+                    allEntriesMatches[matchOfs++] = ResolveClause(plan.SpatialFilters[i].Clause, plan.SpatialFilters[i].Exec ?? new ClauseExecution(), plan, walkerCtx);
             }
             if (plan.VectorSelects != null)
             {
                 for (int i = 0; i < plan.VectorSelects.Length; i++)
-                    allEntriesMatches[matchOfs++] = ResolveClause(plan.VectorSelects[i].Clause, plan.VectorSelects[i].Exec ?? new ClauseExecution(), indexSearcher, plan, parameters, builderParams);
+                    allEntriesMatches[matchOfs++] = ResolveClause(plan.VectorSelects[i].Clause, plan.VectorSelects[i].Exec ?? new ClauseExecution(), plan, walkerCtx);
             }
             return allEntriesMatches;
         }
@@ -1563,7 +1562,7 @@ internal static partial class QueryPlanBuilder
                 {
                     var sub = subClauses[si];
                     var subExec = subExecs[si];
-                    var match = ResolveClause(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                    var match = ResolveClause(sub, subExec, plan, walkerCtx);
                     if (subExec.BoostFactor > 0)
                         match = indexSearcher.Boost(match, subExec.BoostFactor);
                     matches[matchIdx++] = match;
@@ -1575,12 +1574,12 @@ internal static partial class QueryPlanBuilder
                 case ClauseType.AllIn or ClauseType.In:
                 {
                     for (int t = 0; t < exec.InTermCount; t++)
-                        matches[matchIdx++] = ResolveInTerm(clause, exec, t, indexSearcher, plan, parameters, builderParams);
+                        matches[matchIdx++] = ResolveInTerm(clause, exec, t, plan, walkerCtx);
                     // Always allocate the null-term slot (plan structure is parameter-independent).
                     // When HasNullTerm is false, fill with a TermQuery(null) that resolves to an
                     // empty posting list — the OR with an empty match is a no-op.
                     {
-                        FieldMetadata nullMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+                        FieldMetadata nullMeta = ResolveFieldMetadata(clause, walkerCtx);
                         matches[matchIdx++] = exec.HasNullTerm
                             ? indexSearcher.TermQuery(nullMeta, null)
                             : TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
@@ -1591,8 +1590,8 @@ internal static partial class QueryPlanBuilder
                 {
                     IQueryMatch match = clause.IsOrChainNotEquals switch
                     {
-                        true => CreateNotEqualsOrMatch(clause, exec, indexSearcher, plan, parameters, builderParams),
-                        false => ResolveClause(clause, exec, indexSearcher, plan, parameters, builderParams)
+                        true => CreateNotEqualsOrMatch(clause, exec, plan, walkerCtx),
+                        false => ResolveClause(clause, exec, plan, walkerCtx)
                     };
                     if (exec.BoostFactor > 0)
                         match = indexSearcher.Boost(match, exec.BoostFactor);
@@ -1608,9 +1607,10 @@ internal static partial class QueryPlanBuilder
     }
 
     private static IQueryMatch ResolveRangeClauseWithDirection(ClauseInfo clause, ClauseExecution exec,
-        IndexSearcher indexSearcher, QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams, bool forward)
+        QueryExecution plan, bool forward, ResolutionContext walkerCtx)
     {
-        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+        var indexSearcher = walkerCtx.IndexSearcher;
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
         var packed = exec.PackedParamValue;
 
         return clause.ClauseType switch
@@ -1642,7 +1642,7 @@ internal static partial class QueryPlanBuilder
             ClauseType.Between when exec.SentinelRewriteType != null =>
                 ResolveSentinelRewrittenBetween(exec, fieldMeta, indexSearcher, plan),
             ClauseType.Between => ResolveBetweenWithDirection(exec, fieldMeta, indexSearcher, plan, forward),
-            _ => ResolveClause(clause, exec, indexSearcher, plan, parameters, builderParams) // fallback
+            _ => ResolveClause(clause, exec, plan, walkerCtx) // fallback
         };
     }
 
@@ -1689,9 +1689,10 @@ internal static partial class QueryPlanBuilder
     /// <summary>Converts an Equals clause into a BetweenQuery(low==high==value) so
     /// it produces a TermsProviderMatch that SortedDrivingMatch can walk in sort order.</summary>
     private static IQueryMatch ResolveEqualsClauseWithDirection(ClauseInfo clause, ClauseExecution exec,
-        IndexSearcher indexSearcher, QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams, bool forward)
+        QueryExecution plan, bool forward, ResolutionContext walkerCtx)
     {
-        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+        var indexSearcher = walkerCtx.IndexSearcher;
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
         var packed = exec.PackedParamValue;
         return packed.ValueType switch
         {
@@ -1701,9 +1702,11 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
-        QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
+    private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution exec,
+        QueryExecution plan, ResolutionContext walkerCtx)
     {
+        var indexSearcher = walkerCtx.IndexSearcher;
+        var builderParams = walkerCtx.BuilderParams;
         if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
         {
             var bm = new BitmapMatch(indexSearcher.Allocator);
@@ -1711,7 +1714,7 @@ internal static partial class QueryPlanBuilder
             for (int si = 0; si < clause.OrSubClauses.Count; si++)
             {
                 var subExec = exec.OrSubExecutions[si];
-                var subMatch = ResolveClause(clause.OrSubClauses[si], subExec, indexSearcher, plan, parameters, builderParams);
+                var subMatch = ResolveClause(clause.OrSubClauses[si], subExec, plan, walkerCtx);
                 QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
             }
             temp.Dispose();
@@ -1726,7 +1729,7 @@ internal static partial class QueryPlanBuilder
             {
                 var sub = clause.AndSubClauses[si];
                 var subExec = exec.AndSubExecutions[si];
-                var subMatch = ResolveClause(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                var subMatch = ResolveClause(sub, subExec, plan, walkerCtx);
                 if (first)
                 {
                     QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
@@ -1748,18 +1751,11 @@ internal static partial class QueryPlanBuilder
             && clause.ClauseType != ClauseType.Search;
         if (needsFieldMeta)
         {
-            if (builderParams != null)
-            {
-                // Dynamic field name variants (exact/search) are pre-resolved by the
-                // DynamicFieldNameResolve walker step at template time — no per-execution
-                // string allocation.
-                string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
-                fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
-            }
-            else
-            {
-                fieldMeta = indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
-            }
+            // Dynamic field name variants (exact/search) are pre-resolved by the
+            // DynamicFieldNameResolve walker step at template time — no per-execution
+            // string allocation.
+            string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
+            fieldMeta = QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact, hasBoost: builderParams.HasBoost);
         }
 
         var packed = exec.PackedParamValue;
@@ -1840,7 +1836,7 @@ internal static partial class QueryPlanBuilder
                 var temp = new RoaringBitmap(indexSearcher.Allocator);
                 for (int t = 0; t < exec.InTermCount; t++)
                 {
-                    var termMatch = ResolveInTerm(clause, exec, t, indexSearcher, plan, parameters, builderParams);
+                    var termMatch = ResolveInTerm(clause, exec, t, plan, walkerCtx);
                     if (clause.ClauseType == ClauseType.AllIn && t > 0)
                         QueryPrimitives.AndWithMatch(termMatch, ref bm.BitmapState, ref temp);
                     else
@@ -1865,7 +1861,6 @@ internal static partial class QueryPlanBuilder
                 // Dynamic field name variants (search(FieldName) for auto-indexes) are
                 // pre-resolved by the DynamicFieldNameResolve walker step at template time.
                 string searchFieldName = clause.ResolvedFieldName ?? clause.FieldName;
-                if (builderParams != null)
                 {
                     bool forceSearch = builderParams.HasDynamics
                         && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
@@ -1876,23 +1871,8 @@ internal static partial class QueryPlanBuilder
                         handleSearch: true, hasBoost: builderParams.HasBoost,
                         forceDefaultSearchAnalyzer: forceSearch);
                 }
-                else if (parameters is { Index: not null, IndexFieldsMapping: not null })
-                {
-                    bool forceSearch = parameters.HasDynamics
-                        && (parameters.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
-                    searchMeta = QueryBuilderHelper.GetFieldMetadata(
-                        parameters.Allocator, searchFieldName, parameters.Index,
-                        parameters.IndexFieldsMapping, parameters.FieldsToFetch,
-                        parameters.HasDynamics, parameters.DynamicFields,
-                        handleSearch: true, hasBoost: parameters.HasBoost,
-                        forceDefaultSearchAnalyzer: forceSearch);
-                }
-                else
-                {
-                    searchMeta = fieldMeta;
-                }
 
-                var indexDef = builderParams?.Index?.Definition ?? parameters?.Index?.Definition;
+                var indexDef = builderParams.Index?.Definition;
                 IndexSearcher.SearchQueryOptions searchQueryOptions;
                 if (indexDef != null && IndexDefinitionBaseServerSide.IndexVersion.IsCoraxSearchWildcardAdjustmentSupported(indexDef.Version))
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments;
@@ -1906,7 +1886,7 @@ internal static partial class QueryPlanBuilder
                     && searchTerm is { Length: >= 1 }
                     && (searchTerm[0] == '*' || (searchTerm.Length >= 2 && searchTerm[^1] == '*')))
                 {
-                    searchMeta = ReplaceAnalyzerForWildcardQueries(searchMeta, builderParams, parameters);
+                    searchMeta = ReplaceAnalyzerForWildcardQueries(searchMeta, walkerCtx);
                 }
 
                 var searchValues = QueryBuilderHelper.SplitSearchValue(searchTerm);
@@ -1923,15 +1903,11 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Spatial:
             {
-                if (builderParams == null)
-                    throw new InvalidOperationException("Spatial resolution requires builder parameters");
                 return HandleSpatial(builderParams, clause, exec, clause.SpatialMethodType);
             }
 
             case ClauseType.Vector:
             {
-                if (builderParams == null)
-                    throw new InvalidOperationException("Vector resolution requires builder parameters");
                 var vectorItem = HandleVector(builderParams, clause, exec, false);
                 return vectorItem.Materialize(null);
             }
@@ -1953,11 +1929,10 @@ internal static partial class QueryPlanBuilder
     /// Shared by <see cref="ResolveInTerm"/> (bitmap path) and <see cref="ResolveInTermSource"/>
     /// (posting-list path) to ensure field resolution and index arithmetic stay in sync.</summary>
     private static (FieldMetadata FieldMeta, PackedParam TermPacked) ResolveInTermParam(
-        ClauseInfo clause, ClauseExecution exec, int termIndex,
-        IndexSearcher indexSearcher, PlanParameters parameters, QueryBuilderParameters builderParams)
+        ClauseInfo clause, ClauseExecution exec, int termIndex, ResolutionContext walkerCtx)
     {
         // ResolveFieldMetadata picks up the exact/search field name variant for dynamic indexes (#4777 fix).
-        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
         var p = exec.PackedParamValue;
         return (fieldMeta, new PackedParam(p.ValueType, p.Param1 + termIndex));
     }
@@ -1966,11 +1941,10 @@ internal static partial class QueryPlanBuilder
     /// IN terms are stored contiguously: PackedParamValue.Param1 = start index, InTermCount = count.
     /// Only non-null terms are in the typed array. Null is handled separately via HasNullTerm.</summary>
     private static IQueryMatch ResolveInTerm(ClauseInfo clause, ClauseExecution exec, int termIndex,
-        IndexSearcher indexSearcher, QueryExecution plan,
-        PlanParameters parameters, QueryBuilderParameters builderParams)
+        QueryExecution plan, ResolutionContext walkerCtx)
     {
-        var (fieldMeta, termPacked) = ResolveInTermParam(clause, exec, termIndex, indexSearcher, parameters, builderParams);
-        return TermQueryFromParam(termPacked, fieldMeta, indexSearcher, plan);
+        var (fieldMeta, termPacked) = ResolveInTermParam(clause, exec, termIndex, walkerCtx);
+        return TermQueryFromParam(termPacked, fieldMeta, walkerCtx.IndexSearcher, plan);
     }
 
     /// <summary>Create a pre-materialized <see cref="BitmapMatch"/> for a negated clause
@@ -1979,25 +1953,26 @@ internal static partial class QueryPlanBuilder
     /// pre-compute AllEntries ANDNOT (positive form) into a BitmapMatch so that OrWithMatch
     /// during execution correctly ORs in the set of entries NOT matching the positive predicate.
     /// Handles NOT EQUALS (single term), NOT EXISTS (ExistsQuery), and single-term NOT IN/AllIn.</summary>
-    private static IQueryMatch CreateNotEqualsOrMatch(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
-        QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
+    private static IQueryMatch CreateNotEqualsOrMatch(ClauseInfo clause, ClauseExecution exec,
+        QueryExecution plan, ResolutionContext walkerCtx)
     {
         // Resolve the positive form of the match. For IN/AllIn clauses, ResolveClause
         // handles multi-term expansion correctly. For simple Equals/NotEquals, the
         // single-term TermQueryFromParam suffices. EXISTS clauses carry no PackedParam.
+        var indexSearcher = walkerCtx.IndexSearcher;
         IQueryMatch termMatch;
         if (clause.ClauseType is ClauseType.In or ClauseType.AllIn)
         {
-            termMatch = ResolveClause(clause, exec, indexSearcher, plan, parameters, builderParams);
+            termMatch = ResolveClause(clause, exec, plan, walkerCtx);
         }
         else if (clause.ClauseType == ClauseType.Exists)
         {
-            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
             termMatch = indexSearcher.ExistsQuery(fieldMeta);
         }
         else
         {
-            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
             termMatch = TermQueryFromParam(exec.PackedParamValue, fieldMeta, indexSearcher, plan);
         }
 
@@ -2021,9 +1996,9 @@ internal static partial class QueryPlanBuilder
     /// The IL emitter consults <see cref="PlanOp.Dispatch"/> to decide which
     /// array to read.
     /// </summary>
-    private static PostingSource[] ResolveTermSources(QueryExecution plan, IndexSearcher indexSearcher,
-        PlanParameters parameters, QueryBuilderParameters builderParams)
+    private static PostingSource[] ResolveTermSources(QueryExecution plan, ResolutionContext walkerCtx)
     {
+        var indexSearcher = walkerCtx.IndexSearcher;
         // IsAllEntries plans never emit term ops (FillFromPostings / AndWith / etc.) —
         // their match[0] is AllEntries, post-filter slots are spatial/vector. No
         // PostingSource population is needed.
@@ -2040,7 +2015,7 @@ internal static partial class QueryPlanBuilder
         if (clauses.Count == 1 && clauses[0].IsNegated && !plan.AllNegated)
         {
             var sources = new PostingSource[2];
-            sources[1] = ResolveSingleTermSource(clauses[0], execs[0], indexSearcher, plan, parameters, builderParams);
+            sources[1] = ResolveSingleTermSource(clauses[0], execs[0], plan, walkerCtx);
             return sources;
         }
 
@@ -2061,7 +2036,7 @@ internal static partial class QueryPlanBuilder
                         matchIdx++;
                         continue;
                     }
-                    termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                    termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, plan, walkerCtx);
                 }
                 continue;
             }
@@ -2070,13 +2045,13 @@ internal static partial class QueryPlanBuilder
                 case ClauseType.AllIn or ClauseType.In:
                 {
                     for (int t = 0; t < exec.InTermCount; t++)
-                        termSources[matchIdx++] = ResolveInTermSource(clause, exec, t, indexSearcher, plan, parameters, builderParams);
+                        termSources[matchIdx++] = ResolveInTermSource(clause, exec, t, plan, walkerCtx);
                     // Null-term slot: resolve via the null posting list so that the PostingList
                     // dispatch path (used by EmitInOps/EmitAllInOps) can read it.  When HasNullTerm
                     // is false the slot stays Empty and the compiled OR/AND step is a no-op.
                     if (exec.HasNullTerm)
                     {
-                        FieldMetadata nullMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
+                        FieldMetadata nullMeta = ResolveFieldMetadata(clause, walkerCtx);
                         if (indexSearcher.TryGetPostingListForNull(in nullMeta, out long nullPlId))
                             termSources[matchIdx] = DecodePostingListId(nullPlId, indexSearcher);
                     }
@@ -2090,7 +2065,7 @@ internal static partial class QueryPlanBuilder
                         matchIdx++;
                         continue;
                     }
-                    termSources[matchIdx++] = ResolveSingleTermSource(clause, exec, indexSearcher, plan, parameters, builderParams);
+                    termSources[matchIdx++] = ResolveSingleTermSource(clause, exec, plan, walkerCtx);
                     break;
                 }
             }
@@ -2102,8 +2077,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Resolve TreeScan-eligible clauses to ITermsProvider instances for direct
     /// tree-scan dispatch in the compiled pipeline. Slot indexing is parallel to
     /// ResolveMatches/ResolveTermSources. Returns null if no TreeScan clauses exist.</summary>
-    private static ITermsProvider[] ResolveTermsProviders(QueryExecution plan, IndexSearcher indexSearcher,
-        PlanParameters parameters, QueryBuilderParameters builderParams)
+    private static ITermsProvider[] ResolveTermsProviders(QueryExecution plan, ResolutionContext walkerCtx)
     {
         if (plan.IsAllEntries || plan.Clauses is not { Count: > 0 } clauses)
             return null;
@@ -2166,7 +2140,7 @@ internal static partial class QueryPlanBuilder
                 {
                     var sub = subClauses[si];
                     var subExec = subExecs?[si];
-                    providers[matchIdx] = ResolveSingleTermsProvider(sub, subExec, indexSearcher, plan, parameters, builderParams);
+                    providers[matchIdx] = ResolveSingleTermsProvider(sub, subExec, plan, walkerCtx);
                     matchIdx++;
                 }
                 continue;
@@ -2180,7 +2154,7 @@ internal static partial class QueryPlanBuilder
                     break;
 
                 default:
-                    providers[matchIdx] = ResolveSingleTermsProvider(clause, exec, indexSearcher, plan, parameters, builderParams);
+                    providers[matchIdx] = ResolveSingleTermsProvider(clause, exec, plan, walkerCtx);
                     matchIdx++;
                     break;
             }
@@ -2194,14 +2168,14 @@ internal static partial class QueryPlanBuilder
     /// index (factory method returned TermMatch.Empty instead of TermsProviderMatch).
     /// Null slots cause the IL to fall through to the QueryMatch dispatch path.</summary>
     private static ITermsProvider ResolveSingleTermsProvider(ClauseInfo clause, ClauseExecution exec,
-        IndexSearcher indexSearcher, QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
+        QueryExecution plan, ResolutionContext walkerCtx)
     {
         if (IsTreeScanEligibleClause(clause) == false)
             return null;
 
         // Create the match via the existing factory methods, then extract the provider.
         // The factory methods handle all complexity (analyzer, CompactKey, tree lookup).
-        var match = ResolveClause(clause, exec ?? new ClauseExecution(), indexSearcher, plan, parameters, builderParams);
+        var match = ResolveClause(clause, exec ?? new ClauseExecution(), plan, walkerCtx);
         if (match is TermsProviderMatch tpm)
             return tpm.Provider;
 
@@ -2214,46 +2188,41 @@ internal static partial class QueryPlanBuilder
     /// <summary>Resolve a single Equals / NotEquals clause to a posting-list ID and
     /// decode it into a <see cref="PostingSource"/>. Returns Empty when the clause
     /// is non-term-shaped or the term doesn't exist in the index.</summary>
-    private static PostingSource ResolveSingleTermSource(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher,
-        QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
+    private static PostingSource ResolveSingleTermSource(ClauseInfo clause, ClauseExecution exec,
+        QueryExecution plan, ResolutionContext walkerCtx)
     {
         if (IsTermSourceEligibleClause(clause) == false)
             return default; // Kind == Empty
 
-        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, indexSearcher, parameters, builderParams);
-        long postingListId = GetTermPostingListIdFromParam(exec.PackedParamValue, fieldMeta, indexSearcher, plan);
-        return DecodePostingListId(postingListId, indexSearcher);
+        FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
+        long postingListId = GetTermPostingListIdFromParam(exec.PackedParamValue, fieldMeta, walkerCtx.IndexSearcher, plan);
+        return DecodePostingListId(postingListId, walkerCtx.IndexSearcher);
     }
 
     /// <summary>Resolve a single In/AllIn term to a posting-list source (posting-list path).
     /// Uses <see cref="ResolveInTermParam"/> for field resolution and index arithmetic.</summary>
-    private static PostingSource ResolveInTermSource(ClauseInfo clause, ClauseExecution exec, int termIndex, IndexSearcher indexSearcher,
-        QueryExecution plan, PlanParameters parameters, QueryBuilderParameters builderParams)
+    private static PostingSource ResolveInTermSource(ClauseInfo clause, ClauseExecution exec, int termIndex,
+        QueryExecution plan, ResolutionContext walkerCtx)
     {
-        var (fieldMeta, termPacked) = ResolveInTermParam(clause, exec, termIndex, indexSearcher, parameters, builderParams);
-        return DecodePostingListId(GetTermPostingListIdFromParam(termPacked, fieldMeta, indexSearcher, plan), indexSearcher);
+        var (fieldMeta, termPacked) = ResolveInTermParam(clause, exec, termIndex, walkerCtx);
+        return DecodePostingListId(GetTermPostingListIdFromParam(termPacked, fieldMeta, walkerCtx.IndexSearcher, plan), walkerCtx.IndexSearcher);
     }
 
     /// <summary>Resolve field metadata for a term-source clause. Mirrors the
     /// non-Spatial/Vector/Search branch of <see cref="ResolveClause"/>.</summary>
-    private static FieldMetadata ResolveFieldMetadata(ClauseInfo clause, IndexSearcher indexSearcher,
-        PlanParameters parameters, QueryBuilderParameters builderParams)
+    private static FieldMetadata ResolveFieldMetadata(ClauseInfo clause, ResolutionContext walkerCtx)
     {
-        if (builderParams != null)
-        {
-            // Dynamic field name variants are pre-resolved by DynamicFieldNameResolve at template time.
-            string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
-            // When forceDefaultSearchAnalyzer is enabled for indexes with dynamic fields (CreateField),
-            // non-exact non-search clauses should use the search analyzer (#4778 fix).
-            bool forceSearchAnalyzer = builderParams.HasDynamics
-                && clause.IsExact == false
-                && clause.ClauseType != ClauseType.Search
-                && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
-            return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact,
-                hasBoost: builderParams.HasBoost, forceDefaultSearchAnalyzer: forceSearchAnalyzer);
-        }
-
-        return indexSearcher.FieldMetadataBuilder(clause.FieldName, hasBoost: parameters?.HasBoost ?? false);
+        var builderParams = walkerCtx.BuilderParams;
+        // Dynamic field name variants are pre-resolved by DynamicFieldNameResolve at template time.
+        string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
+        // When forceDefaultSearchAnalyzer is enabled for indexes with dynamic fields (CreateField),
+        // non-exact non-search clauses should use the search analyzer (#4778 fix).
+        bool forceSearchAnalyzer = builderParams.HasDynamics
+            && clause.IsExact == false
+            && clause.ClauseType != ClauseType.Search
+            && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
+        return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact,
+            hasBoost: builderParams.HasBoost, forceDefaultSearchAnalyzer: forceSearchAnalyzer);
     }
 
     /// <summary>Decode a raw posting-list ID (with TermIdMask bits) into a
@@ -3741,6 +3710,7 @@ internal static partial class QueryPlanBuilder
         List<ScanPredicateInfo> preBuiltResiduals = null)
     {
         var indexSearcher = planParams.IndexSearcher;
+        var walkerCtx = new ResolutionContext(builderParams);
         string sortFieldName = orderByFields[0].Field.FieldName.ToString();
         bool forward = orderByFields[0].Ascending;
         var sortFieldType = orderByFields[0].FieldType;
@@ -3775,14 +3745,14 @@ internal static partial class QueryPlanBuilder
             TermsProviderMatch tpm;
             if (drivingClause.ClauseType == ClauseType.Equals)
             {
-                var eqMatch = ResolveEqualsClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+                var eqMatch = ResolveEqualsClauseWithDirection(drivingClause, drivingExec, plan, forward, walkerCtx);
                 if (eqMatch is not TermsProviderMatch eq)
                     return null;
                 tpm = eq;
             }
             else
             {
-                var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, indexSearcher, plan, planParams, builderParams, forward);
+                var match = ResolveRangeClauseWithDirection(drivingClause, drivingExec, plan, forward, walkerCtx);
                 if (match is not TermsProviderMatch m)
                     return null;
                 tpm = m;
@@ -4173,11 +4143,10 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     private static FieldMetadata ReplaceAnalyzerForWildcardQueries(
         FieldMetadata searchMeta,
-        QueryBuilderParameters builderParams,
-        PlanParameters parameters)
+        ResolutionContext walkerCtx)
     {
         var result = searchMeta;
-        var indexFieldsMapping = builderParams?.IndexFieldsMapping ?? parameters?.IndexFieldsMapping;
+        var indexFieldsMapping = walkerCtx.BuilderParams.IndexFieldsMapping;
 
         if (searchMeta.IsDynamic && indexFieldsMapping != null)
             result = searchMeta.ChangeAnalyzer(searchMeta.Mode, indexFieldsMapping.SearchAnalyzer(searchMeta.FieldName.ToString()));

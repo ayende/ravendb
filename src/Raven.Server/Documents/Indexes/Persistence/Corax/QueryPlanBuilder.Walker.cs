@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Corax.Querying.Planning;
+using IndexSearcher = Corax.Querying.IndexSearcher;
 using Raven.Client.Exceptions;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
@@ -22,6 +23,8 @@ internal static partial class QueryPlanBuilder
         public readonly List<string> Errors = [];
         public readonly BlittableJsonReaderObject QueryParameters;
         public readonly QueryMetadata Metadata;
+        public readonly IndexSearcher IndexSearcher;
+        public readonly QueryBuilderParameters BuilderParams;
 
         /// <summary>Number of top-level WHEN-guarded clauses observed by
         /// <see cref="PlanWalker.RewriteClauses"/>. Drives <see cref="PlanTemplate.WhenCount"/>.</summary>
@@ -34,12 +37,18 @@ internal static partial class QueryPlanBuilder
         /// <summary>Spatial clauses partitioned out by <see cref="PlanWalker.RewriteClauses"/>
         /// (specifically the GroupCollapse step). Null when no spatial clauses are present
         /// or when the root is OR.</summary>
-        public ClauseInfo[] SpatialClauses;
+        public List<ClauseInfo> SpatialClauses;
 
         /// <summary>Vector clauses partitioned out by <see cref="PlanWalker.RewriteClauses"/>
         /// (specifically the GroupCollapse step). Null when no vector clauses are present
         /// or when the root is OR.</summary>
-        public ClauseInfo[] VectorClauses;
+        public List<ClauseInfo> VectorClauses;
+
+        /// <summary>The clause list currently being built by the materializer. Swapped
+        /// in/out by <see cref="QueryPlanBuilder.ParseBinaryExpression"/> when it creates
+        /// sub-lists for OrGroup/AndGroup, and by ParseNegated for its inner clause
+        /// collection. Callers must save and restore when pushing a sub-scope.</summary>
+        public List<ClauseInfo> Clauses;
 
         /// <summary>Pending boost factor propagations recorded by the materializer.
         /// Each entry pairs a snapshot of clauses inside a boost(...) wrapper with the
@@ -48,17 +57,24 @@ internal static partial class QueryPlanBuilder
         public List<PendingBoost> PendingBoosts;
 
         public ResolutionContext(PlanParameters p)
-            : this(p.QueryParameters, p.Metadata)
+            : this(p.QueryParameters, p.Metadata, p.IndexSearcher)
         {
+        }
+
+        public ResolutionContext(QueryBuilderParameters b)
+            : this(b.QueryParameters, b.Metadata, b.IndexSearcher)
+        {
+            BuilderParams = b;
         }
 
         /// <summary>Construct from raw bag/metadata. Used by sub-expression entry points
         /// (e.g. <see cref="BuildFromSubExpression"/>) that do not have a full
         /// <see cref="PlanParameters"/> available.</summary>
-        public ResolutionContext(BlittableJsonReaderObject queryParameters, QueryMetadata metadata)
+        private ResolutionContext(BlittableJsonReaderObject queryParameters, QueryMetadata metadata, IndexSearcher indexSearcher)
         {
             QueryParameters = queryParameters;
             Metadata = metadata;
+            IndexSearcher = indexSearcher;
         }
 
         public void Report(string error) => Errors.Add(error);
@@ -72,11 +88,40 @@ internal static partial class QueryPlanBuilder
             PendingBoosts ??= [];
             PendingBoosts.Add(new PendingBoost(innerClauses, factor));
         }
+
+        /// <summary>Pushes a fresh clause sub-list onto the context, returning a disposable
+        /// scope that restores the previous list when disposed. The sub-list is also exposed
+        /// via <paramref name="subClauses"/> so callers can reference it after the scope
+        /// ends.</summary>
+        public ClauseScope SubExpressionScope(out List<ClauseInfo> subClauses)
+        {
+            var saved = Clauses;
+            subClauses = Clauses = [];
+            return new ClauseScope(this, saved);
+        }
     }
 
     /// <summary>Snapshot of a boost() wrapper's inner clauses with the factor to apply.
     /// See <see cref="ResolutionContext.PendingBoosts"/>.</summary>
     private readonly record struct PendingBoost(ClauseInfo[] InnerClauses, ParameterBinding Factor);
+
+    /// <summary>Stack-frame scope returned by <see cref="ResolutionContext.SubExpressionScope"/>.
+    /// Saves the caller's <see cref="ResolutionContext.Clauses"/> list on construction and
+    /// restores it on <see cref="Dispose"/>, so Parse* helpers can collect a nested
+    /// expression's clauses into an isolated list without disturbing the outer context.</summary>
+    private ref struct ClauseScope
+    {
+        private readonly ResolutionContext _ctx;
+        private readonly List<ClauseInfo> _saved;
+
+        internal ClauseScope(ResolutionContext ctx, List<ClauseInfo> saved)
+        {
+            _ctx = ctx;
+            _saved = saved;
+        }
+
+        public void Dispose() => _ctx.Clauses = _saved;
+    }
 
     /// <summary>
     /// Walker pipeline orchestrator. Runs validation/rewrite steps over the RQL AST
@@ -109,17 +154,14 @@ internal static partial class QueryPlanBuilder
         /// / <see cref="ResolutionContext.VectorClauses"/>). Future commits add
         /// AnalyzerRewrite, TimeFieldTicks, InNormalize, and AllInNormalize.
         /// </summary>
-        public static void RewriteClauses(List<ClauseInfo> clauses, ResolutionContext ctx)
+        public static void RewriteClauses(ResolutionContext ctx)
         {
+            var clauses = ctx.Clauses;
             BoostPropagate(ctx);
             NotCanonicalize(clauses, ctx);
             BetweenRewriteSentinels(clauses);
             InPreClassify(clauses);
-            if (ctx.Metadata.IsDynamic)
-            {
-                DynamicFieldNameResolve(clauses);
-            }
-
+            if (ctx.Metadata.IsDynamic) DynamicFieldNameResolve(clauses);
             GroupCollapse(clauses, ctx);
             WhenRegister(clauses, ctx);
             ThrowIfErrors(ctx);
@@ -524,8 +566,8 @@ internal static partial class QueryPlanBuilder
                         break;
                 }
             }
-            ctx.SpatialClauses = spatialList?.ToArray();
-            ctx.VectorClauses = vectorList?.ToArray();
+            ctx.SpatialClauses = spatialList;
+            ctx.VectorClauses = vectorList;
         }
 
         /// <summary>
@@ -579,7 +621,7 @@ internal static partial class QueryPlanBuilder
 
                 case OperatorType.Equal:
                 case OperatorType.NotEqual:
-                    if (TryGetFieldName(be.Left, ctx.Metadata, ctx.QueryParameters, out _) == false)
+                    if (TryGetFieldName(be.Left, ctx, out _) == false)
                     {
                         ctx.Report($"Comparison left side must be a field expression or id(), but got: {be.Left.Type}");
                     }
@@ -590,7 +632,7 @@ internal static partial class QueryPlanBuilder
                 case OperatorType.LessThanEqual:
                 case OperatorType.GreaterThan:
                 case OperatorType.GreaterThanEqual:
-                    if (TryGetFieldName(be.Left, ctx.Metadata, ctx.QueryParameters, out _) == false)
+                    if (TryGetFieldName(be.Left, ctx, out _) == false)
                     {
                         ctx.Report($"Range comparison left side must be a field expression or id(), but got: {be.Left.Type}");
                     }
@@ -601,7 +643,7 @@ internal static partial class QueryPlanBuilder
 
         private static void ValidateBetween(BetweenExpression between, ResolutionContext ctx)
         {
-            if (TryGetFieldName(between.Source, ctx.Metadata, ctx.QueryParameters, out string field) == false)
+            if (TryGetFieldName(between.Source, ctx, out string field) == false)
             {
                 ctx.Report($"BETWEEN source must be a field expression or id(), but got: {between.Source.Type}");
                 return;
@@ -611,8 +653,8 @@ internal static partial class QueryPlanBuilder
             // bindings are validated later, in PopulateParameters, when the actual value is known.
             // Skip when either bound is a sentinel ("*" / "NULL") — the sentinel will be rewritten
             // away by BetweenRewriteSentinels; only the remaining bound's type matters.
-            var minBinding = CreateBinding(between.Min, ctx.QueryParameters);
-            var maxBinding = CreateBinding(between.Max, ctx.QueryParameters);
+            var minBinding = CreateBinding(between.Min, ctx);
+            var maxBinding = CreateBinding(between.Max, ctx);
             bool minIsSentinel = minBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery };
             bool maxIsSentinel = maxBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery };
             bool bothAstStrings = between is { Min.Value : ValueTokenType.String, Max.Value : ValueTokenType.String };
@@ -630,7 +672,7 @@ internal static partial class QueryPlanBuilder
 
         private static void ValidateIn(InExpression inExpr, ResolutionContext ctx)
         {
-            if (TryGetFieldName(inExpr.Source, ctx.Metadata, ctx.QueryParameters, out _) == false)
+            if (TryGetFieldName(inExpr.Source, ctx, out _) == false)
             {
                 ctx.Report($"IN source must be a field expression or id(), but got: {inExpr.Source.Type}");
             }
@@ -652,7 +694,7 @@ internal static partial class QueryPlanBuilder
                         ctx.Report($"search() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
                         return;
                     }
-                    if (TryGetFieldName(method.Arguments[0], ctx.Metadata, ctx.QueryParameters, out _) == false)
+                    if (TryGetFieldName(method.Arguments[0], ctx, out _) == false)
                     {
                         ctx.Report($"search() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
                     }
@@ -673,7 +715,7 @@ internal static partial class QueryPlanBuilder
                         ctx.Report("exists() requires a field argument.");
                         return;
                     }
-                    if (TryGetFieldName(method.Arguments[0], ctx.Metadata, ctx.QueryParameters, out _) == false)
+                    if (TryGetFieldName(method.Arguments[0], ctx, out _) == false)
                     {
                         ctx.Report($"exists() argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
                     }
@@ -686,7 +728,7 @@ internal static partial class QueryPlanBuilder
                         ctx.Report($"regex() requires at least 2 arguments (field, pattern), but got {method.Arguments.Count}.");
                         return;
                     }
-                    if (TryGetFieldName(method.Arguments[0], ctx.Metadata, ctx.QueryParameters, out _) == false)
+                    if (TryGetFieldName(method.Arguments[0], ctx, out _) == false)
                     {
                         ctx.Report($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
                     }
@@ -733,7 +775,7 @@ internal static partial class QueryPlanBuilder
                 ctx.Report($"{type}() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
                 return;
             }
-            if (TryGetFieldName(method.Arguments[0], ctx.Metadata, ctx.QueryParameters, out _) == false)
+            if (TryGetFieldName(method.Arguments[0], ctx, out _) == false)
             {
                 ctx.Report($"{type}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
             }
