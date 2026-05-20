@@ -1283,7 +1283,7 @@ internal static partial class QueryPlanBuilder
                 hasNullTerm = true;
                 continue;
             }
-            if (it.LiteralType != dominantType && IsTypeIncompatible(it.LiteralType, dominantType))
+            if (it.LiteralType != dominantType && AreTypesIncompatible(it.LiteralType, dominantType))
                 continue;
             writer.Add(value, dominantTokenType);
             nonNullCount++;
@@ -1315,7 +1315,7 @@ internal static partial class QueryPlanBuilder
         {
             var value = values[i];
             if (value == null) continue;
-            if (types[i] != dominantType && IsTypeIncompatible(types[i], dominantType))
+            if (types[i] != dominantType && AreTypesIncompatible(types[i], dominantType))
                 continue;
             writer.Add(value, dominantTokenType);
             nonNullCount++;
