@@ -205,16 +205,14 @@ internal static partial class QueryPlanBuilder
         if (query.Where == null)
             return new PlanTemplate { Clauses = [] };
 
-        // Phase 1: walker — validate AST shape. Accumulates every shape error into
-        // walkerCtx.Errors so the user sees them all at once.
+        // Phase 1: materialize the AST into ClauseInfo[]. Each Parse method validates
+        // its own preconditions (field name, argument count, type compatibility) and
+        // reports errors to walkerCtx.Errors — they are thrown as a single
+        // InvalidQueryException after materialization completes.
         var walkerCtx = new ResolutionContext(p);
-        PlanWalker.ValidateAst(query.Where, walkerCtx);
-
-        // Phase 2: materialize the AST into ClauseInfo[]. walkerCtx is threaded
-        // through the recursive helpers, so deferred steps (e.g. BoostPropagate)
-        // can record per-template metadata for later processing.
         walkerCtx.Clauses = [];
         var rootOp = ParseExpression(query.Where, walkerCtx);
+        PlanWalker.ThrowIfErrors(walkerCtx);
 
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
             return new PlanTemplate { Clauses = [] };
@@ -539,8 +537,11 @@ internal static partial class QueryPlanBuilder
 
     private static void ParseComparison(BinaryExpression be, ResolutionContext walkerCtx)
     {
-        TryGetFieldName(be.Left, walkerCtx, out string fieldName);
-        Debug.Assert(fieldName != null, "PlanWalker.AstShapeValidate must reject comparisons with non-field LHS before materialization");
+        if (TryGetFieldName(be.Left, walkerCtx, out string fieldName) == false)
+        {
+            walkerCtx.Report($"Comparison left side must be a field expression or id(), but got: {be.Left.Type}");
+            return;
+        }
 
         walkerCtx.Clauses.Add(new ClauseInfo
         {
@@ -553,8 +554,11 @@ internal static partial class QueryPlanBuilder
 
     private static void ParseRangeComparison(BinaryExpression be, ResolutionContext walkerCtx)
     {
-        TryGetFieldName(be.Left, walkerCtx, out string fieldName);
-        Debug.Assert(fieldName != null, "PlanWalker.AstShapeValidate must reject range comparisons with non-field LHS before materialization");
+        if (TryGetFieldName(be.Left, walkerCtx, out string fieldName) == false)
+        {
+            walkerCtx.Report($"Range comparison left side must be a field expression or id(), but got: {be.Left.Type}");
+            return;
+        }
 
         walkerCtx.Clauses.Add(new ClauseInfo
         {
@@ -574,13 +578,32 @@ internal static partial class QueryPlanBuilder
 
     private static void ParseBetween(BetweenExpression between, ResolutionContext walkerCtx)
     {
-        TryGetFieldName(between.Source, walkerCtx, out string resolvedFieldName);
-        Debug.Assert(resolvedFieldName != null, "PlanWalker.AstShapeValidate must reject BETWEEN with non-field source before materialization");
+        if (TryGetFieldName(between.Source, walkerCtx, out string resolvedFieldName) == false)
+        {
+            walkerCtx.Report($"BETWEEN source must be a field expression or id(), but got: {between.Source.Type}");
+            return;
+        }
 
         var minBinding = CreateBinding(between.Min, walkerCtx);
         var maxBinding = CreateBinding(between.Max, walkerCtx);
 
-        AssertBetweenBindingsCompatibility();
+        // Validate literal-type compatibility. Parameter-typed bindings are validated later
+        // in PopulateParameters, when the actual value is known. Sentinel bounds ("*"/"NULL")
+        // are allowed with any other type — they're rewritten away by BetweenRewriteSentinels.
+        bool minIsSentinel = minBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery };
+        bool maxIsSentinel = maxBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery };
+        bool bothAstStrings = between is { Min.Value: ValueTokenType.String, Max.Value: ValueTokenType.String };
+        if (minIsSentinel == false && maxIsSentinel == false
+            && bothAstStrings == false
+            && minBinding is { LiteralType: not ParamValueType.Parameter }
+            && maxBinding is { LiteralType: not ParamValueType.Parameter }
+            && minBinding.LiteralType != maxBinding.LiteralType)
+        {
+            walkerCtx.Report(
+                $"BETWEEN bounds for field '{resolvedFieldName}' have different types: " +
+                $"low is {minBinding.LiteralType}, high is {maxBinding.LiteralType}. Both must be the same type.");
+            return;
+        }
 
         walkerCtx.Clauses.Add(new ClauseInfo
         {
@@ -589,27 +612,20 @@ internal static partial class QueryPlanBuilder
             OriginalIndex = walkerCtx.Clauses.Count,
             Bindings = [minBinding, maxBinding]
         });
-
-        void AssertBetweenBindingsCompatibility()
-        {
-            // Literal-type symmetry is also enforced by AstShapeValidate; we only assert
-            // here as a defensive backstop. Parameter-typed bindings are validated later
-            // in PopulateParameters, when the actual value is known. Sentinel bounds ("*"/"NULL")
-            // are allowed with any other type — they're rewritten away by BetweenRewriteSentinels.
-            Debug.Assert(
-                minBinding is not { LiteralType: not ParamValueType.Parameter }
-                || maxBinding is not { LiteralType: not ParamValueType.Parameter }
-                || minBinding.LiteralType == maxBinding.LiteralType
-                || (minBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery })
-                || (maxBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery }),
-                "PlanWalker.AstShapeValidate must reject mixed-type BETWEEN literal bounds before materialization");
-        }
     }
 
     private static void ParseIn(InExpression inExpr, ResolutionContext walkerCtx)
     {
-        TryGetFieldName(inExpr.Source, walkerCtx, out string resolvedFieldName);
-        Debug.Assert(resolvedFieldName != null, "PlanWalker.AstShapeValidate must reject IN with non-field source before materialization");
+        if (TryGetFieldName(inExpr.Source, walkerCtx, out string resolvedFieldName) == false)
+        {
+            walkerCtx.Report($"IN source must be a field expression or id(), but got: {inExpr.Source.Type}");
+            return;
+        }
+        if (inExpr.Values.Count == 0)
+        {
+            walkerCtx.Report("IN/ALL IN with an empty value list is a syntax error.");
+            return;
+        }
 
         // Capture bindings for each IN term. Array parameters expand at PopulateParameters time.
         var inBindings = new List<ParameterBinding>();
@@ -662,9 +678,16 @@ internal static partial class QueryPlanBuilder
 
             case MethodType.Exists:
             {
-                Debug.Assert(method.Arguments.Count > 0, "PlanWalker.AstShapeValidate must reject exists() without a field argument before materialization");
-                TryGetFieldName(method.Arguments[0], walkerCtx, out var existsFieldName);
-                Debug.Assert(existsFieldName != null, "PlanWalker.AstShapeValidate must reject exists() with a non-field argument before materialization");
+                if (method.Arguments.Count == 0)
+                {
+                    walkerCtx.Report("exists() requires a field argument.");
+                    break;
+                }
+                if (TryGetFieldName(method.Arguments[0], walkerCtx, out var existsFieldName) == false)
+                {
+                    walkerCtx.Report($"exists() argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+                    break;
+                }
                 walkerCtx.Clauses.Add(new ClauseInfo
                 {
                     FieldName = existsFieldName,
@@ -720,9 +743,16 @@ internal static partial class QueryPlanBuilder
 
             case MethodType.Regex:
             {
-                Debug.Assert(method.Arguments.Count >= 2, "PlanWalker.AstShapeValidate must reject regex() with fewer than 2 arguments before materialization");
-                TryGetFieldName(method.Arguments[0], walkerCtx, out var regexFieldName);
-                Debug.Assert(regexFieldName != null, "PlanWalker.AstShapeValidate must reject regex() with a non-field first argument before materialization");
+                if (method.Arguments.Count < 2)
+                {
+                    walkerCtx.Report($"regex() requires at least 2 arguments (field, pattern), but got {method.Arguments.Count}.");
+                    break;
+                }
+                if (TryGetFieldName(method.Arguments[0], walkerCtx, out var regexFieldName) == false)
+                {
+                    walkerCtx.Report($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+                    break;
+                }
                 walkerCtx.Clauses.Add(new ClauseInfo
                 {
                     FieldName = regexFieldName,
@@ -738,6 +768,11 @@ internal static partial class QueryPlanBuilder
             case MethodType.Spatial_Disjoint:
             case MethodType.Spatial_Intersects:
             {
+                if (method.Arguments is [_, not MethodExpression, ..])
+                {
+                    walkerCtx.Report($"Spatial shape argument must be a method expression (spatial.circle or spatial.wkt), but got: {method.Arguments[1].Type}");
+                    break;
+                }
                 // Capture bindings for all spatial sub-arguments.
                 // Shape type and field name are structural; parameter values resolved per-execution.
                 string spatialFieldName;
@@ -889,9 +924,16 @@ internal static partial class QueryPlanBuilder
 
     private static void ParseSearchMethod(MethodExpression method, ResolutionContext walkerCtx)
     {
-        Debug.Assert(method.Arguments.Count >= 2, "PlanWalker.AstShapeValidate must reject search() with fewer than 2 arguments before materialization");
-        TryGetFieldName(method.Arguments[0], walkerCtx, out var fieldName);
-        Debug.Assert(fieldName != null, "PlanWalker.AstShapeValidate must reject search() with a non-field first argument before materialization");
+        if (method.Arguments.Count < 2)
+        {
+            walkerCtx.Report($"search() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
+            return;
+        }
+        if (TryGetFieldName(method.Arguments[0], walkerCtx, out var fieldName) == false)
+        {
+            walkerCtx.Report($"search() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+            return;
+        }
 
         var searchOp = Constants.Search.Operator.Or;
         if (method.Arguments.Count >= 3 && method.Arguments[2] is FieldExpression opField
@@ -916,9 +958,16 @@ internal static partial class QueryPlanBuilder
 
     private static void ParsePrefixMethod(MethodExpression method, ClauseType type, ResolutionContext walkerCtx)
     {
-        Debug.Assert(method.Arguments.Count >= 2, "PlanWalker.AstShapeValidate must reject startsWith/endsWith with fewer than 2 arguments before materialization");
-        TryGetFieldName(method.Arguments[0], walkerCtx, out var fieldName);
-        Debug.Assert(fieldName != null, "PlanWalker.AstShapeValidate must reject startsWith/endsWith with a non-field first argument before materialization");
+        if (method.Arguments.Count < 2)
+        {
+            walkerCtx.Report($"{type.ToString().ToLowerInvariant()}() requires at least 2 arguments (field, prefix), but got {method.Arguments.Count}.");
+            return;
+        }
+        if (TryGetFieldName(method.Arguments[0], walkerCtx, out var fieldName) == false)
+        {
+            walkerCtx.Report($"{type.ToString().ToLowerInvariant()}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+            return;
+        }
 
         walkerCtx.Clauses.Add(new ClauseInfo
         {
