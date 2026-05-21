@@ -31,17 +31,6 @@ namespace Corax.Querying.Planning;
 /// </summary>
 public sealed class ClauseInfo
 {
-    private string _resolvedFieldName;
-    private ClauseType _clauseType;
-    private bool _isNegated;
-    private bool _isExact;
-    private bool _isOrChainNotEquals;
-    private ParameterBinding[] _bindings;
-    private bool _hasBoost;
-    private ParamValueType _inDominantType;
-    private bool _inAllLiteral;
-    private Func<BlittableJsonReaderObject, bool> _whenCondition;
-
     public string FieldName { get; init; }
 
     /// <summary>Pre-resolved dynamic-index field name variant (e.g. <c>exact(Name)</c> or
@@ -51,28 +40,28 @@ public sealed class ClauseInfo
     /// allocation per clause per query execution.</summary>
     public string ResolvedFieldName
     {
-        get => _resolvedFieldName;
-        set { ThrowIfFrozen(); _resolvedFieldName = value; }
+        get;
+        set { ThrowIfFrozen(); field = value; }
     }
 
     public ClauseType ClauseType
     {
-        get => _clauseType;
-        set { ThrowIfFrozen(); _clauseType = value; }
+        get;
+        set { ThrowIfFrozen(); field = value; }
     }
 
     public int OriginalIndex { get; init; }
 
     public bool IsNegated
     {
-        get => _isNegated;
-        set { ThrowIfFrozen(); _isNegated = value; }
+        get;
+        set { ThrowIfFrozen(); field = value; }
     }
 
     public bool IsExact
     {
-        get => _isExact;
-        set { ThrowIfFrozen(); _isExact = value; }
+        get;
+        set { ThrowIfFrozen(); field = value; }
     }
 
     /// <summary>for Search (AND=1/OR=0)</summary>
@@ -92,20 +81,28 @@ public sealed class ClauseInfo
     /// is always dispatched via QueryMatch, regardless of the underlying clause type.</summary>
     public bool IsOrChainNotEquals
     {
-        get => _isOrChainNotEquals;
-        set { ThrowIfFrozen(); _isOrChainNotEquals = value; }
+        get;
+        set { ThrowIfFrozen(); field = value; }
     }
 
-    public List<ClauseInfo> OrSubClauses { get; init; }
+    public List<ClauseInfo> OrSubClauses
+    {
+        get;
+        set { ThrowIfFrozen(); field = value; }
+    }
 
-    public List<ClauseInfo> AndSubClauses { get; init; }
+    public List<ClauseInfo> AndSubClauses
+    {
+        get;
+        set { ThrowIfFrozen(); field = value; }
+    }
 
     /// <summary>Parameter bindings indexed by <see cref="BindingIndex"/> constants.
     /// If <see cref="HasBoost"/> is true, the last entry is the boost factor binding.</summary>
     public ParameterBinding[] Bindings
     {
-        get => _bindings;
-        set { ThrowIfFrozen(); _bindings = value; }
+        get;
+        set { ThrowIfFrozen(); field = value; }
     }
 
     /// <summary>For IN/AllIn clauses: true when ALL bindings are literals (no parameters).
@@ -113,8 +110,8 @@ public sealed class ClauseInfo
     /// template time, skipping per-execution work in ResolveInFromBindings.</summary>
     public bool InAllLiteral
     {
-        get => _inAllLiteral;
-        set { ThrowIfFrozen(); _inAllLiteral = value; }
+        get;
+        set { ThrowIfFrozen(); field = value; }
     }
 
     /// <summary>Pre-computed dominant type for all-literal IN/AllIn clauses. Only valid
@@ -122,16 +119,16 @@ public sealed class ClauseInfo
     /// array (Long/Double/String) receives the resolved values.</summary>
     public ParamValueType InDominantType
     {
-        get => _inDominantType;
-        set { ThrowIfFrozen(); _inDominantType = value; }
+        get;
+        set { ThrowIfFrozen(); field = value; }
     }
 
     /// <summary>True if this clause is wrapped in boost(). When set, Bindings[^1] is the
     /// boost factor binding and exec.BoostFactor is resolved from it per-execution.</summary>
     public bool HasBoost
     {
-        get => _hasBoost;
-        set { ThrowIfFrozen(); _hasBoost = value; }
+        get;
+        set { ThrowIfFrozen(); field = value; }
     }
 
     /// <summary>Optional WHEN condition delegate. Null when no WHEN wraps this clause.
@@ -140,8 +137,8 @@ public sealed class ClauseInfo
     /// parameters; returns true to keep the clause, false to eliminate it.</summary>
     public Func<BlittableJsonReaderObject, bool> WhenCondition
     {
-        get => _whenCondition;
-        set { ThrowIfFrozen(); _whenCondition = value; }
+        get;
+        set { ThrowIfFrozen(); field = value; }
     }
 
     /// <summary>True once <see cref="Freeze"/> has been called. Frozen instances reject
@@ -162,27 +159,9 @@ public sealed class ClauseInfo
     /// those first too.</summary>
     public ClauseInfo Clone()
     {
-        return new ClauseInfo
-        {
-            FieldName = FieldName,
-            _resolvedFieldName = _resolvedFieldName,
-            _clauseType = _clauseType,
-            OriginalIndex = OriginalIndex,
-            _isNegated = _isNegated,
-            _isExact = _isExact,
-            SearchOperator = SearchOperator,
-            SpatialMethodType = SpatialMethodType,
-            VectorMethod = VectorMethod,
-            _isOrChainNotEquals = _isOrChainNotEquals,
-            OrSubClauses = OrSubClauses,
-            AndSubClauses = AndSubClauses,
-            _bindings = _bindings,
-            _hasBoost = _hasBoost,
-            _inDominantType = _inDominantType,
-            _inAllLiteral = _inAllLiteral,
-            _whenCondition = _whenCondition,
-            // _frozen intentionally left false — clones are mutable
-        };
+        var other = (ClauseInfo)MemberwiseClone();
+        other.IsFrozen = false;
+        return other;
     }
 
     private void ThrowIfFrozen()
