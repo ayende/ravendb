@@ -267,7 +267,7 @@ internal static partial class QueryPlanBuilder
 
         if (plan == null)
             trail.Record("CompoundExact", false, "no plan available");
-        else if ((plan.OptimizationFlags & PlanOptFlags.CompoundExactCandidate) == 0)
+        else if ((plan.OptimizationFlags & PlanOptimizationFlags.CompoundExactCandidate) == 0)
             trail.Record("CompoundExact", false, "template has no compound-exact candidate");
         else if (TryCreateCompoundExactMatch(plan, planParams, builderParameters, out var compoundExact, out var ceReason))
         {
@@ -286,7 +286,7 @@ internal static partial class QueryPlanBuilder
             {
                 if (plan == null)
                     trail.Record("CompoundField", false, "no plan available");
-                else if ((plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) == 0)
+                else if ((plan.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
                     trail.Record("CompoundField", false, "template has no direct-scan candidate");
                 else if (TryCreateCompoundFieldMatch(plan, orderByFields, planParams, builderParameters, compiledPlan, out var compoundMatch, out var cfReason))
                 {
@@ -304,7 +304,7 @@ internal static partial class QueryPlanBuilder
             {
                 if (plan == null)
                     trail.Record("DirectScan", false, "no plan available");
-                else if ((plan.OptimizationFlags & PlanOptFlags.DirectScanCandidate) == 0)
+                else if ((plan.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
                     trail.Record("DirectScan", false, "template has no direct-scan candidate");
                 else if (TryCreateSimpleFieldDirectScan(plan, orderByFields, planParams, builderParameters, compiledPlan, out var directMatch, out var dsReason))
                 {

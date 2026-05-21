@@ -203,8 +203,7 @@ internal static partial class QueryPlanBuilder
     {
         var query = p.Metadata.Query;
         if (query.Where == null)
-            return new PlanTemplate {
-                Clauses = [] };
+            return new PlanTemplate { Clauses = [] };
 
         // Phase 1: walker — validate AST shape. Accumulates every shape error into
         // walkerCtx.Errors so the user sees them all at once.
@@ -232,7 +231,7 @@ internal static partial class QueryPlanBuilder
 
         // Spatial-only or vector-only AND query with no remaining filter clauses
         // returns an IsAllEntries template that carries the aux arrays only.
-        if (walkerCtx.Clauses.Count == 0 && (walkerCtx.SpatialClauses != null || walkerCtx.VectorClauses != null))
+        if (walkerCtx.Clauses.Count == 0 && (walkerCtx.SpatialClauses ?? walkerCtx.VectorClauses) is not null)
         {
             FreezeAll(walkerCtx.SpatialClauses);
             FreezeAll(walkerCtx.VectorClauses);
@@ -254,7 +253,7 @@ internal static partial class QueryPlanBuilder
             ? p.Metadata.OrderBy[0].Name?.Value
             : null;
 
-        var optFlags = ComputeOptFlags(walkerCtx.Clauses, orderByPrimaryField, out int sortDrivingIdx);
+        var optFlags = ComputeOptimizationsFlags(walkerCtx.Clauses, orderByPrimaryField, out int sortDrivingIdx);
         // Compound optimizations (compound-exact, compound-field) are AND-only.
         // OR queries use bitmap union, which compound tree lookups can't serve.
         int cexA = -1, cexB = -1;
@@ -264,7 +263,6 @@ internal static partial class QueryPlanBuilder
         bool cfMultiSort = false;
         if (walkerCtx.IsOr == false)
         {
-            FindCompoundExactPair(walkerCtx.Clauses, p, out cexA, out cexB, out cexAFirst);
             FindCompoundFieldCandidate(walkerCtx.Clauses, p, p.Metadata, out cfDriving, out cfSortName, out cfMultiSort);
         }
         return new PlanTemplate
@@ -290,148 +288,55 @@ internal static partial class QueryPlanBuilder
     /// <paramref name="orderByPrimaryField"/> is the raw field name from the first ORDER BY
     /// (null if no ORDER BY). <paramref name="sortDrivingIdx"/> receives the template-position
     /// index of the clause that can drive a sorted scan, or -1 if none.</summary>
-    private static PlanOptFlags ComputeOptFlags(List<ClauseInfo> clauses, string orderByPrimaryField,
+    private static PlanOptimizationFlags ComputeOptimizationsFlags(List<ClauseInfo> clauses, string orderByPrimaryField,
         out int sortDrivingIdx)
     {
         sortDrivingIdx = -1;
-        var flags = PlanOptFlags.None;
+        var flags = PlanOptimizationFlags.None;
         int equalsCount = 0;
-        // Any boost — anywhere in the clause tree — rules out DirectScan and
-        // CompoundField. Both strategies stream terms straight off the tree in
-        // sort order, with no scoring stage, so a boosted query cannot use them.
-        // Gating here at template time means runtime never re-checks BoostFactor.
-        bool anyBoost = HasAnyBoost(clauses);
         for (int i = 0; i < clauses.Count; i++)
         {
             var c = clauses[i];
-            if (c.IsNegated || c.HasBoost)
+            
+            // Any boost — anywhere in the clause tree — rules out DirectScan and
+            // CompoundField. Both strategies stream terms straight off the tree in
+            // sort order, with no scoring stage, so a boosted query cannot use them.
+            // Gating here at template time means runtime never re-checks BoostFactor.
+            if (HasBoostRecursive(c))
+                return PlanOptimizationFlags.None;
+
+            if (c.ClauseType == ClauseType.Equals)
+                equalsCount++;
+            
+            if (orderByPrimaryField is null || c.IsNegated || c.FieldName != orderByPrimaryField)
                 continue;
 
-            if (c.ClauseType == ClauseType.Equals) equalsCount++;
-
-            if (anyBoost)
+            if (c.ClauseType is not (ClauseType.Equals or ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between)) 
                 continue;
-
-            switch (c.ClauseType)
-            {
-                case ClauseType.Equals:
-                case ClauseType.GreaterThan:
-                case ClauseType.GreaterThanOrEqual:
-                case ClauseType.LessThan:
-                case ClauseType.LessThanOrEqual:
-                case ClauseType.Between:
-                    flags |= PlanOptFlags.DirectScanCandidate;
-                    if (sortDrivingIdx == -1 && orderByPrimaryField != null
-                        && c.FieldName == orderByPrimaryField)
-                    {
-                        sortDrivingIdx = i;
-                    }
-
-                    break;
-            }
+            
+            flags |= PlanOptimizationFlags.DirectScanCandidate;
+            if (sortDrivingIdx == -1) sortDrivingIdx = i;
         }
+
         if (equalsCount >= 2)
         {
-            flags |= PlanOptFlags.CompoundExactCandidate;
+            flags |= PlanOptimizationFlags.CompoundExactCandidate;
         }
 
         return flags;
-    }
 
-    /// <summary>True if any clause anywhere in the tree carries a boost wrapper.
-    /// Recurses into Or/And subclauses; boost propagation in the walker may set
-    /// HasBoost on inner clauses without lifting it to the outer group.</summary>
-    private static bool HasAnyBoost(List<ClauseInfo> clauses)
-    {
-        foreach (var t in clauses)
+        static bool HasBoostRecursive(ClauseInfo c)
         {
-            if (HasBoostRecursive(t))
+            if (c.HasBoost)
                 return true;
-        }
 
-        return false;
-    }
-
-    private static bool HasBoostRecursive(ClauseInfo c)
-    {
-        if (c.HasBoost)
-        {
-            return true;
-        }
-
-        if (c.OrSubClauses != null)
-        {
-            foreach (var t in c.OrSubClauses)
+            foreach (var t in c.OrSubClauses ?? c.AndSubClauses ?? [])
             {
                 if (HasBoostRecursive(t))
-                {
                     return true;
-                }
             }
-        }
 
-        if (c.AndSubClauses != null)
-        {
-            foreach (var t in c.AndSubClauses)
-            {
-                if (HasBoostRecursive(t))
-                {
-                    return true;
-                }
-            }
-        }
-
-        return false;
-    }
-
-    /// <summary>Find the first pair of non-negated, non-boosted Equals clauses whose field names
-    /// match a compound field in the index. Stores the template-position indices and the compound
-    /// field ordering. Called once per template at construction time.</summary>
-    private static void FindCompoundExactPair(List<ClauseInfo> clauses, PlanParameters p,
-        out int clauseA, out int clauseB, out bool aFirst)
-    {
-        clauseA = -1;
-        clauseB = -1;
-        aFirst = false;
-        if (p.Index == null || clauses.Count < 2)
-        {
-            return;
-        }
-
-        for (int i = 0; i < clauses.Count; i++)
-        {
-            var c1 = clauses[i];
-            if (c1.ClauseType != ClauseType.Equals || c1.IsNegated || c1.HasBoost)
-                continue;
-
-            for (int j = i + 1; j < clauses.Count; j++)
-            {
-                var c2 = clauses[j];
-                if (c2.ClauseType != ClauseType.Equals || c2.IsNegated || c2.HasBoost)
-                    continue;
-
-                // Use ResolvedFieldName (dynamic auto-index variants) if available.
-                string f1 = c1.ResolvedFieldName ?? c1.FieldName;
-                string f2 = c2.ResolvedFieldName ?? c2.FieldName;
-                using (Voron.Slice.From(p.Allocator, f1, out var s1))
-                using (Voron.Slice.From(p.Allocator, f2, out var s2))
-                {
-                    if (p.Index.HasCompoundField(s1, s2, out _))
-                    {
-                        clauseA = i;
-                        clauseB = j;
-                        aFirst = true;
-                        return;
-                    }
-                    if (p.Index.HasCompoundField(s2, s1, out _))
-                    {
-                        clauseA = i;
-                        clauseB = j;
-                        aFirst = false;
-                        return;
-                    }
-                }
-            }
+            return false;
         }
     }
 

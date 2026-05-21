@@ -91,7 +91,7 @@ public class QueryExecution
 
     /// <summary>Structural optimization flags inherited from the PlanTemplate.
     /// Checked by CoraxIndexReadOperation to skip inapplicable Try* methods.</summary>
-    public PlanOptFlags OptimizationFlags;
+    public PlanOptimizationFlags OptimizationFlags;
 
     /// <summary>Template-position index of the clause identified at plan time as the
     /// sort-driving candidate (range/eq on ORDER BY field). -1 when none. Remapped to
