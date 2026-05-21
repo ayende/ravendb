@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using Corax.Querying.Planning;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 using Raven.Client.Exceptions;
@@ -129,7 +130,7 @@ internal static partial class QueryPlanBuilder
             var clauses = ctx.Clauses;
             BoostPropagate(ctx);
             NotCanonicalize(clauses, ctx);
-            BetweenRewriteSentinels(clauses);
+            BetweenRewriteSentinels(clauses, ctx.IsOr);
             InPreClassify(clauses);
             if (ctx.Metadata.IsDynamic) 
                 DynamicFieldNameResolve(clauses);
@@ -308,91 +309,84 @@ internal static partial class QueryPlanBuilder
         /// <list type="bullet">
         ///   <item>Low sentinel only → <see cref="ClauseType.LessThanOrEqual"/> on the high bound.</item>
         ///   <item>High sentinel only → <see cref="ClauseType.GreaterThanOrEqual"/> on the low bound.</item>
-        ///   <item>Both sentinels → clause removed (matches everything; tautological in AND,
-        ///     dominates in OR).</item>
+        ///   <item>Both sentinels → clause removed (matches everything; tautological in AND, dominates in OR).</item>
         /// </list>
         ///
         /// Recurses into OrGroup/AndGroup sub-clauses. For both-sentinel sub-clauses inside
         /// a group, the sub-clause is removed from the group's list.
         /// </summary>
-        private static void BetweenRewriteSentinels(List<ClauseInfo> clauses)
+        private static void BetweenRewriteSentinels(List<ClauseInfo> clauses, bool isOr)
         {
+            RuntimeHelpers.EnsureSufficientExecutionStack();
+            if (clauses is null) return;
             for (int i = clauses.Count - 1; i >= 0; i--)
             {
-                BetweenRewriteSubClauses(clauses[i]);
-                if (TryRewriteBetweenSentinel(clauses[i], out bool bothSentinel) == false || bothSentinel is false)
+                ClauseInfo it = clauses[i];
+                BetweenRewriteSentinels(it.OrSubClauses, isOr: true);
+                BetweenRewriteSentinels(it.AndSubClauses, isOr: false);
+                    
+                // After recursion, remove groups that became empty (tautological OR cleared by a child both-sentinel).
+                if (it is { ClauseType: ClauseType.OrGroup, OrSubClauses.Count: 0 })
+                {
+                    if (isOr is false)
+                    {
+                        clauses.RemoveAt(i); // tautological in AND = remove
+                        continue;
+                    }
+                    // tautological propagates up
+                    clauses.Clear(); 
+                    return;
+                }
+        
+                if (TryRewriteBetweenSentinel(it) == false)
                     continue;
-                clauses.RemoveAt(i);
+                if (!isOr)
+                {
+                    clauses.RemoveAt(i); // "everything" in AND = tautological, remove
+                    continue;
+                }
+
+                clauses.Clear(); // "everything" dominates OR → whole OR is tautological
+                return;
             }
         }
-
-        private static void BetweenRewriteSubClauses(ClauseInfo clause)
-        {
-            if (clause.OrSubClauses != null)
-            {
-                for (int i = clause.OrSubClauses.Count - 1; i >= 0; i--)
-                {
-                    BetweenRewriteSubClauses(clause.OrSubClauses[i]);
-                    if (TryRewriteBetweenSentinel(clause.OrSubClauses[i], out bool bothSentinel) && bothSentinel)
-                    {
-                        clause.OrSubClauses.RemoveAt(i);
-                    }
-                }
-            }
-            if (clause.AndSubClauses != null)
-            {
-                for (int i = clause.AndSubClauses.Count - 1; i >= 0; i--)
-                {
-                    BetweenRewriteSubClauses(clause.AndSubClauses[i]);
-                    if (TryRewriteBetweenSentinel(clause.AndSubClauses[i], out bool bothSentinel) && bothSentinel)
-                    {
-                        clause.AndSubClauses.RemoveAt(i);
-                    }
-                }
-            }
-        }
-
+        
         /// <summary>Rewrite a single BETWEEN clause with literal sentinel bounds.
-        /// Returns true if the clause was rewritten (caller should remove if bothSentinel).</summary>
-        private static bool TryRewriteBetweenSentinel(ClauseInfo clause, out bool bothSentinel)
+        /// Returns true if the caller should remove because both are sentinels.</summary>
+        private static bool TryRewriteBetweenSentinel(ClauseInfo clause)
         {
-            bothSentinel = false;
             if (clause.ClauseType != ClauseType.Between || clause.Bindings is not { Length: >= 2 })
-            {
                 return false;
-            }
 
             bool lowIsSentinel = clause.Bindings[BindingIndex.BetweenLow] is
-                { LiteralType: ParamValueType.String, LiteralValue: string and Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery };
+            {
+                LiteralType: ParamValueType.String, 
+                LiteralValue: Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery
+            };
 
             bool highIsSentinel = clause.Bindings[BindingIndex.BetweenHigh] is
-                { LiteralType: ParamValueType.String, LiteralValue: string and Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery };
-
-            if (!lowIsSentinel && !highIsSentinel)
             {
-                return false;
-            }
+                LiteralType: ParamValueType.String, 
+                LiteralValue: Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery
+            };
 
-            if (lowIsSentinel && highIsSentinel)
+            switch (lowIsSentinel, highIsSentinel)
             {
-                bothSentinel = true;
-                return true;
+                case (true,true):
+                    return true; // we should remove it entirely
+                case (false, false):
+                    return false;
+                case (true, false):
+                    // BETWEEN '*' AND high → field <= high
+                    clause.ClauseType = ClauseType.LessThanOrEqual;
+                    clause.Bindings = [clause.Bindings[BindingIndex.BetweenHigh]];
+                    return false;
+                case(false, true):
+                    // BETWEEN low AND 'NULL' → field >= low
+                    clause.ClauseType = ClauseType.GreaterThanOrEqual;
+                    clause.Bindings = [clause.Bindings[BindingIndex.BetweenLow]];
+                    return false;
             }
-
-            if (lowIsSentinel)
-            {
-                // BETWEEN '*' AND high → field <= high
-                clause.ClauseType = ClauseType.LessThanOrEqual;
-                clause.Bindings = [clause.Bindings[BindingIndex.BetweenHigh]];
-            }
-            else
-            {
-                // BETWEEN low AND 'NULL' → field >= low
-                clause.ClauseType = ClauseType.GreaterThanOrEqual;
-                clause.Bindings = [clause.Bindings[BindingIndex.BetweenLow]];
-            }
-
-            return true;
         }
 
         /// <summary>
