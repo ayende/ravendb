@@ -82,4 +82,10 @@ public sealed class PlanTemplate
     /// <see cref="System.NotSupportedException"/> — the bit position used in
     /// <see cref="QueryExecution.WhenFlags"/> would otherwise wrap silently.</summary>
     public int WhenCount;
+
+    /// <summary>True when the WHERE clause reduces to a contradiction at template time
+    /// (e.g. <c>WHERE true AND false</c>). The query can never match any documents —
+    /// <see cref="QueryPlanBuilder"/> short-circuits to an empty result without building
+    /// or caching a compiled plan.</summary>
+    public bool AlwaysEmpty;
 }
