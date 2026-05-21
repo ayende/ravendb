@@ -93,7 +93,7 @@ internal static partial class QueryPlanBuilder
 
         /// <summary>Record a boost() wrapper for later application by
         /// <see cref="PlanWalker.BoostPropagate"/>. Captures the inner clauses by
-        /// reference so subsequent list manipulation (e.g. GroupCollapse) does not
+        /// reference, so subsequent list manipulation (e.g. GroupCollapse) does not
         /// invalidate the propagation target.</summary>
         public void RecordPendingBoost(ClauseInfo[] innerClauses, ParameterBinding factor)
         {
@@ -513,25 +513,17 @@ internal static partial class QueryPlanBuilder
         /// </summary>
         private static void BoostPropagate(ResolutionContext ctx)
         {
-            if (ctx.PendingBoosts == null)
+            foreach (var pending in ctx.PendingBoosts ?? [])
             {
-                return;
-            }
-
-            foreach (var pending in ctx.PendingBoosts)
-            {
-                var inner = pending.InnerClauses;
-                foreach (var t in inner)
+                foreach (var t in pending.InnerClauses)
                 {
                     if (t.ClauseType == ClauseType.Vector)
-                    {
                         throw new NotSupportedException("Boosting the VectorSearchMatch is not supported yet.");
-                    }
-                    var old = t.Bindings;
-                    var extended = new ParameterBinding[(old?.Length ?? 0) + 1];
-                    if (old != null)
+
+                    var extended = new ParameterBinding[(t.Bindings?.Length ?? 0) + 1];
+                    if (t.Bindings != null)
                     {
-                        Array.Copy(old, extended, old.Length);
+                        Array.Copy(t.Bindings, extended, t.Bindings.Length);
                     }
 
                     extended[^1] = pending.Factor;

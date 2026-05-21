@@ -319,7 +319,7 @@ internal static partial class QueryPlanBuilder
             flags |= PlanOptimizationFlags.CompoundExactCandidate;
 
         if (walkerCtx.IsOr || // cannot optimize: `where a OR b`  
-            p.Index.HasCompoundFields is false || 
+            p.Index is not {HasCompoundFields: true} || 
             eqCount is 0)
             return flags;
         
@@ -418,10 +418,9 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static BooleanOp ParseExpression(
-        QueryExpression expr,
-        ResolutionContext walkerCtx)
+    private static BooleanOp ParseExpression(QueryExpression expr, ResolutionContext walkerCtx)
     {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
         switch (expr)
         {
             case BinaryExpression be:
@@ -451,111 +450,47 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static BooleanOp ParseBinaryExpression(
-        BinaryExpression be,
-        ResolutionContext walkerCtx)
+    private static BooleanOp ParseBinaryExpression(BinaryExpression be, ResolutionContext walkerCtx)
     {
         switch (be.Operator)
         {
             case OperatorType.And:
             {
                 // For AND, handle OR sub-expressions as grouped clauses
-                BooleanOp left, right;
-
-                if (be.Left is BinaryExpression { Operator: OperatorType.Or })
-                {
-                    List<ClauseInfo> orClauses;
-                    using (walkerCtx.SubExpressionScope(out orClauses))
-                        left = ParseExpression(be.Left, walkerCtx);
-                    walkerCtx.Clauses.Add(new ClauseInfo
-                    {
-                        ClauseType = ClauseType.OrGroup,
-                        OrSubClauses = orClauses,
-                        OriginalIndex = walkerCtx.Clauses.Count
-                    });
-                }
-                else
-                {
-                    left = ParseExpression(be.Left, walkerCtx);
-                }
-
-                if (be.Right is BinaryExpression { Operator: OperatorType.Or })
-                {
-                    List<ClauseInfo> orClauses;
-                    using (walkerCtx.SubExpressionScope(out orClauses))
-                        right = ParseExpression(be.Right, walkerCtx);
-                    walkerCtx.Clauses.Add(new ClauseInfo
-                    {
-                        ClauseType = ClauseType.OrGroup,
-                        OrSubClauses = orClauses,
-                        OriginalIndex = walkerCtx.Clauses.Count
-                    });
-                }
-                else
-                {
-                    right = ParseExpression(be.Right, walkerCtx);
-                }
+                var left = be.Left is BinaryExpression { Operator: OperatorType.Or }  ? 
+                    HandleGroupGroup(be.Left, ClauseType.OrGroup) : 
+                    ParseExpression(be.Left, walkerCtx);
                 
-                if (left == BooleanOp.True)
-                    return right;
+                var right = be.Right is BinaryExpression { Operator: OperatorType.Or }  ? 
+                    HandleGroupGroup(be.Right, ClauseType.OrGroup) : 
+                    ParseExpression(be.Right, walkerCtx);
 
-                if (right == BooleanOp.True)
-                    return left;
-
-                if (left == BooleanOp.False || right == BooleanOp.False)
-                    return BooleanOp.False;
-
-                return BooleanOp.And;
+                return (left, right) switch
+                {
+                    (BooleanOp.True, _) => right,
+                    (_, BooleanOp.True) => left,
+                    (BooleanOp.False, BooleanOp.False) => BooleanOp.False,
+                    _ => BooleanOp.And
+                };
             }
 
             case OperatorType.Or:
             {
-                BooleanOp left, right;
+                var left = be.Left is BinaryExpression { Operator: OperatorType.And } ? 
+                    HandleGroupGroup(be.Left, ClauseType.AndGroup) :
+                    ParseExpression(be.Left, walkerCtx);
 
-                if (be.Left is BinaryExpression { Operator: OperatorType.And })
+                var right = be.Right is BinaryExpression { Operator: OperatorType.And } ? 
+                    HandleGroupGroup(be.Right, ClauseType.AndGroup) :
+                    ParseExpression(be.Right, walkerCtx);
+
+                return (left, right) switch
                 {
-                    List<ClauseInfo> andClauses;
-                    using (walkerCtx.SubExpressionScope(out andClauses))
-                        left = ParseExpression(be.Left, walkerCtx);
-                    walkerCtx.Clauses.Add(new ClauseInfo
-                    {
-                        ClauseType = ClauseType.AndGroup,
-                        AndSubClauses = andClauses,
-                        OriginalIndex = walkerCtx.Clauses.Count
-                    });
-                }
-                else
-                {
-                    left = ParseExpression(be.Left, walkerCtx);
-                }
-
-                if (be.Right is BinaryExpression { Operator: OperatorType.And })
-                {
-                    List<ClauseInfo> andClauses;
-                    using (walkerCtx.SubExpressionScope(out andClauses))
-                        right = ParseExpression(be.Right, walkerCtx);
-                    walkerCtx.Clauses.Add(new ClauseInfo
-                    {
-                        ClauseType = ClauseType.AndGroup,
-                        AndSubClauses = andClauses,
-                        OriginalIndex = walkerCtx.Clauses.Count
-                    });
-                }
-                else
-                {
-                    right = ParseExpression(be.Right, walkerCtx);
-                }
-
-                if (left == BooleanOp.True || right == BooleanOp.True)
-                    return BooleanOp.True;
-
-                if (left == BooleanOp.False)
-                    return right;
-
-                if (right == BooleanOp.False)
-                    return left;
-
-                return BooleanOp.Or;
+                    (BooleanOp.True, _) => BooleanOp.True,
+                    (_, BooleanOp.True) => BooleanOp.True,
+                    (BooleanOp.False, BooleanOp.False) => BooleanOp.False,
+                    _ => BooleanOp.Or
+                };
             }
 
             case OperatorType.Equal:
@@ -576,6 +511,22 @@ internal static partial class QueryPlanBuilder
             default:
                 throw new InvalidOperationException(
                     $"Unexpected binary operator {be.Operator} in WHERE clause.");
+        }
+
+        BooleanOp HandleGroupGroup(QueryExpression queryExpression, ClauseType clauseType)
+        {
+            BooleanOp expr;
+            List<ClauseInfo> orClauses;
+            using (walkerCtx.SubExpressionScope(out orClauses)) 
+                expr = ParseExpression(queryExpression, walkerCtx);
+
+            walkerCtx.Clauses.Add(new ClauseInfo
+            {
+                ClauseType = clauseType,
+                OrSubClauses = orClauses,
+                OriginalIndex = walkerCtx.Clauses.Count
+            });
+            return expr;
         }
     }
 
@@ -622,17 +573,7 @@ internal static partial class QueryPlanBuilder
         var minBinding = CreateBinding(between.Min, walkerCtx);
         var maxBinding = CreateBinding(between.Max, walkerCtx);
 
-        // Literal-type symmetry is also enforced by AstShapeValidate; we only assert
-        // here as a defensive backstop. Parameter-typed bindings are validated later
-        // in PopulateParameters, when the actual value is known. Sentinel bounds ("*"/"NULL")
-        // are allowed with any other type — they're rewritten away by BetweenRewriteSentinels.
-        Debug.Assert(
-            minBinding is not { LiteralType: not ParamValueType.Parameter }
-            || maxBinding is not { LiteralType: not ParamValueType.Parameter }
-            || minBinding.LiteralType == maxBinding.LiteralType
-            || (minBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery })
-            || (maxBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery }),
-            "PlanWalker.AstShapeValidate must reject mixed-type BETWEEN literal bounds before materialization");
+        AssertBetweenBindingsCompatibility();
 
         walkerCtx.Clauses.Add(new ClauseInfo
         {
@@ -641,6 +582,21 @@ internal static partial class QueryPlanBuilder
             OriginalIndex = walkerCtx.Clauses.Count,
             Bindings = [minBinding, maxBinding]
         });
+
+        void AssertBetweenBindingsCompatibility()
+        {
+            // Literal-type symmetry is also enforced by AstShapeValidate; we only assert
+            // here as a defensive backstop. Parameter-typed bindings are validated later
+            // in PopulateParameters, when the actual value is known. Sentinel bounds ("*"/"NULL")
+            // are allowed with any other type — they're rewritten away by BetweenRewriteSentinels.
+            Debug.Assert(
+                minBinding is not { LiteralType: not ParamValueType.Parameter }
+                || maxBinding is not { LiteralType: not ParamValueType.Parameter }
+                || minBinding.LiteralType == maxBinding.LiteralType
+                || (minBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery })
+                || (maxBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery }),
+                "PlanWalker.AstShapeValidate must reject mixed-type BETWEEN literal bounds before materialization");
+        }
     }
 
     private static void ParseIn(InExpression inExpr, ResolutionContext walkerCtx)
@@ -652,11 +608,8 @@ internal static partial class QueryPlanBuilder
         var inBindings = new List<ParameterBinding>();
         foreach (var value in inExpr.Values)
         {
-            var binding = CreateBinding(value, walkerCtx);
-            if (binding != null)
-            {
+            if (CreateBinding(value, walkerCtx) is {} binding) 
                 inBindings.Add(binding);
-            }
         }
 
         // Empty IN() with no bindings still creates an In clause —
@@ -670,8 +623,7 @@ internal static partial class QueryPlanBuilder
         });
     }
 
-    private static void ParseNegated(NegatedExpression negated,
-        ResolutionContext walkerCtx)
+    private static void ParseNegated(NegatedExpression negated, ResolutionContext walkerCtx)
     {
         List<ClauseInfo> innerClauses;
         using (walkerCtx.SubExpressionScope(out innerClauses))
@@ -684,8 +636,7 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static BooleanOp ParseMethod(MethodExpression method,
-        ResolutionContext walkerCtx)
+    private static BooleanOp ParseMethod(MethodExpression method, ResolutionContext walkerCtx)
     {
         var methodType = QueryMethod.GetMethodType(method.Name.Value);
         switch (methodType)
@@ -739,37 +690,24 @@ internal static partial class QueryPlanBuilder
 
             case MethodType.Boost:
             {
-                // boost(expr, factor) → recurse, then record the wrapper for the walker's
-                // BoostPropagate step to apply. Recording (rather than mutating inline) keeps
-                // boost propagation centralised in PlanWalker.RewriteClauses so future
-                // rewrites that reshape the clause list (e.g. GroupCollapse, AnalyzerRewrite)
-                // observe a stable post-materialize tree before propagation runs.
-                //
-                // Propagate the inner BooleanOp so that boost(A OR B, n) is still detected as OR
-                // at the root — otherwise the outer ParseExpression would see Leaf and compile in
-                // AND mode, intersecting the OR branches (RavenDB-25281 / OrBoosting regression).
+                // boost(expr, factor) → recurse, then capture the clauses' instances for later call to BoostPropagate.
+                // even if they are moved by GroupCollapse or AnalyzerRewrite later on, the instances are the same
                 int beforeCount = walkerCtx.Clauses.Count;
-                BooleanOp innerOp = BooleanOp.Leaf;
-                if (method.Arguments.Count > 0)
+                if (method.Arguments.Count is 0)
+                    return BooleanOp.Leaf;
+                var innerOp = ParseExpression(method.Arguments[0], walkerCtx);
+                if(method.Arguments.Count is 1 || 
+                   walkerCtx.Clauses.Count  == beforeCount || 
+                   CreateBinding(method.Arguments[1], walkerCtx) is not {} boostBinding)
+                    return innerOp;
+
+                var inner = new ClauseInfo[walkerCtx.Clauses.Count - beforeCount];
+                for (int c = 0; c < inner.Length; c++)
                 {
-                    innerOp = ParseExpression(method.Arguments[0], walkerCtx);
+                    inner[c] = walkerCtx.Clauses[beforeCount + c];
                 }
 
-                ParameterBinding boostBinding = method.Arguments.Count > 1
-                    ? CreateBinding(method.Arguments[1], walkerCtx) : null;
-                if (boostBinding != null && walkerCtx.Clauses.Count > beforeCount)
-                {
-                    // Snapshot the inner clauses by reference. ClauseInfo identities are stable
-                    // across subsequent list rearrangement (GroupCollapse may extract spatial/vector
-                    // entries, but the underlying object reference remains valid for propagation).
-                    var inner = new ClauseInfo[walkerCtx.Clauses.Count - beforeCount];
-                    for (int c = 0; c < inner.Length; c++)
-                    {
-                        inner[c] = walkerCtx.Clauses[beforeCount + c];
-                    }
-
-                    walkerCtx.RecordPendingBoost(inner, boostBinding);
-                }
+                walkerCtx.RecordPendingBoost(inner, boostBinding);
                 return innerOp;
             }
 
