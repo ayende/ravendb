@@ -127,10 +127,10 @@ internal static partial class QueryPlanBuilder
     }
 
     public static BuildCompileAndOptimizeResult BuildCompileAndOptimize(PlanParameters planParams,
-            QueryBuilderParameters builderParameters,
-            Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
-            bool wantTimings,
-            CancellationToken token)
+        QueryBuilderParameters builderParameters,
+        Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
+        bool wantTimings,
+        CancellationToken token)
     {
         var indexSearcher = planParams.IndexSearcher;
 
@@ -199,6 +199,7 @@ internal static partial class QueryPlanBuilder
                         innerMatch = built;
                         return built;
                     }
+
                     break;
                 case ExecutionStrategy.CompoundField:
                     if (plan != null && orderByFields != null)
@@ -210,11 +211,13 @@ internal static partial class QueryPlanBuilder
                         built = ConstructCompoundField(plan, orderByFields, planParams, builderParameters,
                             compiledPlan, f2, entriesToScan: 0, bitmapCost: 0);
                     }
+
                     if (built != null)
                     {
                         innerMatch = built;
                         return OrderBy(builderParameters, built, orderByFields, hasEmptySorts);
                     }
+
                     break;
                 case ExecutionStrategy.DirectScan:
                     if (plan != null && orderByFields is { Length: <= 2 })
@@ -235,16 +238,19 @@ internal static partial class QueryPlanBuilder
                             if (drivingIdx >= 0 && plan.Executions[drivingIdx].PackedParamValue.IsNone)
                                 drivingIdx = -1;
                         }
+
                         if (isFullScan || drivingIdx >= 0)
                             built = ConstructDirectScan(plan, orderByFields, planParams, builderParameters,
                                 compiledPlan, drivingIdx, isFullScan, hasTieBreak,
                                 entriesToScan: 0, bitmapCost: 0);
                     }
+
                     if (built != null)
                     {
                         innerMatch = built;
                         return built;
                     }
+
                     break;
             }
 
@@ -369,6 +375,7 @@ internal static partial class QueryPlanBuilder
                 TrySetSortSeekHint(seekMatch, plan, orderByFields);
             return OrderBy(builderParameters, fallbackMatch, orderByFields, hasEmptySorts);
         }
+
         return fallbackMatch;
     }
 
@@ -446,6 +453,7 @@ internal static partial class QueryPlanBuilder
                 plan = default;
                 return null;
             }
+
             // Genuine no-WHERE → match all entries.
             plan = BuildAllEntriesPlan();
             plan.Executions = executions;
@@ -462,6 +470,7 @@ internal static partial class QueryPlanBuilder
                 emitCardinalities[ei] = executions[ei].Cardinality;
                 emitTermTypes[ei] = executions[ei].TermValueType;
             }
+
             plan = EmitPlan(clauses, emitCardinalities, emitTermTypes, isOr, executions);
             plan.Executions = executions;
 
@@ -503,6 +512,7 @@ internal static partial class QueryPlanBuilder
                             // Non-seed AND AllIn: range = InTermCount (direct AndRange)
                             plan.InRangeCounts[rangeIdx] = inCount;
                         }
+
                         rangeIdx++;
                     }
                 }
@@ -523,6 +533,7 @@ internal static partial class QueryPlanBuilder
                     if (pred != null)
                         scanPreds[scanPredCount++] = pred.Value;
                 }
+
                 if (scanPredCount > 0)
                 {
                     if (scanPredCount < maxPreds)
@@ -532,6 +543,7 @@ internal static partial class QueryPlanBuilder
                 }
             }
         }
+
         // Empty-IN short-circuit: EmitPlan returns Ops=[] for an AND chain containing
         // an empty IN clause (e.g. `Names in ()`), and the resulting QueryExecution has
         // the default OperandOrdering=0 and TypeSignature=0. That cache key collides
@@ -543,7 +555,7 @@ internal static partial class QueryPlanBuilder
         // run (AND with empty is empty for spatial, but vector with a null filter
         // would otherwise return unfiltered top-K).
         if (plan.Ops is { Length: 0 } && plan.IsAllEntries == false
-            && template.SpatialClauses == null && template.VectorClauses == null)
+                                      && template.SpatialClauses == null && template.VectorClauses == null)
         {
             // Caller (BuildAndCompile facade) converts null into TermMatch.CreateEmpty.
             return null;
@@ -730,6 +742,7 @@ internal static partial class QueryPlanBuilder
         {
             temp.Dispose();
         }
+
         return bitmap;
     }
 
@@ -775,13 +788,16 @@ internal static partial class QueryPlanBuilder
                         whenBit++;
                         continue;
                     }
+
                     whenFlags |= 1 << whenBit;
                     whenBit++;
                 }
+
                 clauses.Add(cached);
                 execList.Add(CreateExecution(cached));
             }
         }
+
         return (clauses, execList, whenFlags);
     }
 
@@ -894,6 +910,7 @@ internal static partial class QueryPlanBuilder
                     indices[j] = j; // mark settled
                     j = next;
                 }
+
                 clausesSpan[j] = savedClause;
                 execSpan[j] = savedExec;
                 indices[j] = j; // mark settled
@@ -923,10 +940,12 @@ internal static partial class QueryPlanBuilder
                         Array.Copy(executions, insertPos, executions, insertPos + 1, j - insertPos);
                         executions[insertPos] = agExec;
                     }
+
                     insertPos++;
                 }
             }
         }
+
         return executions;
     }
 
@@ -960,6 +979,7 @@ internal static partial class QueryPlanBuilder
                 spatialExecs[si] = scExec;
             }
         }
+
         if (template.VectorClauses != null)
         {
             int vLen = template.VectorClauses.Count;
@@ -974,6 +994,7 @@ internal static partial class QueryPlanBuilder
                 vectorExecs[vi] = vcExec;
             }
         }
+
         AttachPostFilterPhases(plan, spatialArr, spatialExecs, vectorArr, vectorExecs);
     }
 
@@ -1011,6 +1032,7 @@ internal static partial class QueryPlanBuilder
                 plan.SortDrivingClauseIndex = i;
                 remaining--;
             }
+
             if (needExactA > 0 && origIdx == template.CompoundExactClauseA)
             {
                 plan.CompoundExactClauseA = i;
@@ -1021,6 +1043,7 @@ internal static partial class QueryPlanBuilder
                 plan.CompoundExactClauseB = i;
                 remaining--;
             }
+
             if (needField > 0 && origIdx == template.CompoundFieldDrivingClause)
             {
                 plan.CompoundFieldDrivingClause = i;
@@ -1046,12 +1069,14 @@ internal static partial class QueryPlanBuilder
             for (int i = 0; i < clause.OrSubClauses.Count; i++)
                 exec.OrSubExecutions[i] = CreateExecution(clause.OrSubClauses[i]);
         }
+
         if (clause.AndSubClauses is { Count: > 0 })
         {
             exec.AndSubExecutions = new ClauseExecution[clause.AndSubClauses.Count];
             for (int i = 0; i < clause.AndSubClauses.Count; i++)
                 exec.AndSubExecutions[i] = CreateExecution(clause.AndSubClauses[i]);
         }
+
         return exec;
     }
 
@@ -1102,25 +1127,26 @@ internal static partial class QueryPlanBuilder
                 bool highIsSentinel = high is RavenConstants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
                 if (lowIsSentinel && highIsSentinel)
                 {
-                    exec.SentinelRewriteType = ClauseType.Exists; 
+                    exec.SentinelRewriteType = ClauseType.Exists;
                     return;
                 }
 
                 if (lowIsSentinel)
                 {
                     exec.SentinelRewriteType = ClauseType.LessThanOrEqual;
-                    exec.TermValueType = highType; 
-                    exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType)); 
+                    exec.TermValueType = highType;
+                    exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType));
                     return;
                 }
 
                 if (highIsSentinel)
                 {
-                    exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual; 
-                    exec.TermValueType = lowType; 
-                    exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType)); 
+                    exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual;
+                    exec.TermValueType = lowType;
+                    exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType));
                     return;
                 }
+
                 exec.TermValueType = lowType;
                 exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
                 return;
@@ -1146,6 +1172,7 @@ internal static partial class QueryPlanBuilder
                     throw new InvalidQueryException(
                         $"Method {methodName}() expects to get an argument of type String while it got Null");
                 }
+
                 exec.TermValueType = valueType;
                 exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
                 break;
@@ -1227,6 +1254,7 @@ internal static partial class QueryPlanBuilder
                         termTypes.Add(ParamValueType.Null);
                         hasNullTerm = true;
                     }
+
                     break;
                 }
 
@@ -1247,6 +1275,7 @@ internal static partial class QueryPlanBuilder
             dominantType = termTypes[i];
             break;
         }
+
         if (dominantType == ParamValueType.Null)
             dominantType = ParamValueType.String;
 
@@ -1290,6 +1319,7 @@ internal static partial class QueryPlanBuilder
                 hasNullTerm = true;
                 continue;
             }
+
             if (it.LiteralType != dominantType && AreTypesIncompatible(it.LiteralType, dominantType))
                 continue;
             writer.Add(value, dominantTokenType);
@@ -1362,8 +1392,8 @@ internal static partial class QueryPlanBuilder
                 var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialUnits], queryParameters, builderParameters: null);
                 if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
                     sp.Units = (SpatialUnits)su == SpatialUnits.Kilometers
-                            ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
-                            : global::Corax.Utils.Spatial.SpatialUnits.Miles;
+                        ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
+                        : global::Corax.Utils.Spatial.SpatialUnits.Miles;
             }
         }
         else // WKT: distErrPct, wkt, [units]
@@ -1401,12 +1431,14 @@ internal static partial class QueryPlanBuilder
                 vec.MinimumMatch = simType == ParamValueType.Double ? (float)(double)simVal
                     : simType == ParamValueType.Long ? (long)simVal : -1;
         }
+
         if (bindings.Length > BindingIndex.VectorCandidates && bindings[BindingIndex.VectorCandidates] != null)
         {
             var (candVal, candType) = ResolveBindingScalar(bindings[BindingIndex.VectorCandidates], queryParameters, builderParameters: null);
             if (candVal != null && candType != ParamValueType.Null)
                 vec.NumberOfCandidates = Convert.ToInt32(candVal);
         }
+
         if (bindings.Length > BindingIndex.VectorAiTask && bindings[BindingIndex.VectorAiTask] != null)
         {
             var (taskVal, _) = ResolveBindingScalar(bindings[BindingIndex.VectorAiTask], queryParameters, builderParameters: null);
@@ -1468,6 +1500,7 @@ internal static partial class QueryPlanBuilder
                     var (val, type) = ResolveParameterValue(raw);
                     return (val, ToParamValueType(type));
                 }
+
                 return (null, ParamValueType.Null);
         }
     }
@@ -1533,11 +1566,13 @@ internal static partial class QueryPlanBuilder
                 for (int i = 0; i < plan.SpatialFilters.Length; i++)
                     allEntriesMatches[matchOfs++] = ResolveClause(plan.SpatialFilters[i].Clause, plan.SpatialFilters[i].Exec ?? new ClauseExecution(), plan, walkerCtx);
             }
+
             if (plan.VectorSelects != null)
             {
                 for (int i = 0; i < plan.VectorSelects.Length; i++)
                     allEntriesMatches[matchOfs++] = ResolveClause(plan.VectorSelects[i].Clause, plan.VectorSelects[i].Exec ?? new ClauseExecution(), plan, walkerCtx);
             }
+
             return allEntriesMatches;
         }
 
@@ -1575,8 +1610,10 @@ internal static partial class QueryPlanBuilder
                         match = indexSearcher.Boost(match, subExec.BoostFactor);
                     matches[matchIdx++] = match;
                 }
+
                 continue;
             }
+
             switch (clause.ClauseType)
             {
                 case ClauseType.AllIn or ClauseType.In:
@@ -1685,6 +1722,7 @@ internal static partial class QueryPlanBuilder
                 _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, plan.StringValues[idx])
             };
         }
+
         Debug.Assert(exec.SentinelRewriteType == ClauseType.GreaterThanOrEqual);
         return packed.ValueType switch
         {
@@ -1725,9 +1763,11 @@ internal static partial class QueryPlanBuilder
                 var subMatch = ResolveClause(clause.OrSubClauses[si], subExec, plan, walkerCtx);
                 QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
             }
+
             temp.Dispose();
             return bm;
         }
+
         if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
         {
             var bm = new BitmapMatch(indexSearcher.Allocator);
@@ -1748,6 +1788,7 @@ internal static partial class QueryPlanBuilder
                 else
                     QueryPrimitives.AndWithMatch(subMatch, ref bm.BitmapState, ref temp);
             }
+
             temp.Dispose();
             return bm;
         }
@@ -1755,8 +1796,8 @@ internal static partial class QueryPlanBuilder
         // Spatial/Vector/Search have their own field resolution paths.
         FieldMetadata fieldMeta = default;
         bool needsFieldMeta = clause.ClauseType != ClauseType.Spatial
-            && clause.ClauseType != ClauseType.Vector
-            && clause.ClauseType != ClauseType.Search;
+                              && clause.ClauseType != ClauseType.Vector
+                              && clause.ClauseType != ClauseType.Search;
         if (needsFieldMeta)
         {
             fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
@@ -1846,6 +1887,7 @@ internal static partial class QueryPlanBuilder
                     else
                         QueryPrimitives.OrWithMatch(termMatch, ref bm.BitmapState);
                 }
+
                 temp.Dispose();
                 return bm;
             }
@@ -1867,7 +1909,7 @@ internal static partial class QueryPlanBuilder
                 string searchFieldName = clause.ResolvedFieldName ?? clause.FieldName;
                 {
                     bool forceSearch = builderParams.HasDynamics
-                        && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
+                                       && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
                         builderParams.Allocator, searchFieldName, builderParams.Index,
                         builderParams.IndexFieldsMapping, builderParams.FieldsToFetch,
@@ -2040,10 +2082,13 @@ internal static partial class QueryPlanBuilder
                         matchIdx++;
                         continue;
                     }
+
                     termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, plan, walkerCtx);
                 }
+
                 continue;
             }
+
             switch (clause.ClauseType)
             {
                 case ClauseType.AllIn or ClauseType.In:
@@ -2059,6 +2104,7 @@ internal static partial class QueryPlanBuilder
                         if (indexSearcher.TryGetPostingListForNull(in nullMeta, out long nullPlId))
                             termSources[matchIdx] = DecodePostingListId(nullPlId, indexSearcher);
                     }
+
                     matchIdx++;
                     break;
                 }
@@ -2069,11 +2115,13 @@ internal static partial class QueryPlanBuilder
                         matchIdx++;
                         continue;
                     }
+
                     termSources[matchIdx++] = ResolveSingleTermSource(clause, exec, plan, walkerCtx);
                     break;
                 }
             }
         }
+
         // AllNegated extra slot is AllEntries — stays Empty in TermSources.
         return termSources;
     }
@@ -2110,6 +2158,7 @@ internal static partial class QueryPlanBuilder
                     }
                 }
             }
+
             if (hasAnyTreeScan) break;
 
             if (clause.AndSubClauses != null)
@@ -2123,6 +2172,7 @@ internal static partial class QueryPlanBuilder
                     }
                 }
             }
+
             if (hasAnyTreeScan) break;
         }
 
@@ -2147,6 +2197,7 @@ internal static partial class QueryPlanBuilder
                     providers[matchIdx] = ResolveSingleTermsProvider(sub, subExec, plan, walkerCtx);
                     matchIdx++;
                 }
+
                 continue;
             }
 
@@ -2229,9 +2280,9 @@ internal static partial class QueryPlanBuilder
         // When forceDefaultSearchAnalyzer is enabled for indexes with dynamic fields (CreateField),
         // non-exact non-search clauses should use the search analyzer (#4778 fix).
         bool forceSearchAnalyzer = builderParams.HasDynamics
-            && clause.IsExact == false
-            && clause.ClauseType != ClauseType.Search
-            && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
+                                   && clause.IsExact == false
+                                   && clause.ClauseType != ClauseType.Search
+                                   && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
         return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact,
             hasBoost: builderParams.HasBoost, forceDefaultSearchAnalyzer: forceSearchAnalyzer);
     }
@@ -2364,7 +2415,12 @@ internal static partial class QueryPlanBuilder
             if (i == skipClauseIdx1 || i == skipClauseIdx2) continue;
             roots.Add(indexSearcher.FieldCache.GetLookupRootPage(clauses[i].FieldName));
             var packed = execs[i].PackedParamValue;
-            if (packed.IsNone) { residualIdx++; continue; }
+            if (packed.IsNone)
+            {
+                residualIdx++;
+                continue;
+            }
+
             int idx1 = packed.Param1;
             int idx2 = packed.Param2;
             bool hasBetween = idx2 != PackedParam.NoParamValue;
@@ -2387,8 +2443,10 @@ internal static partial class QueryPlanBuilder
                         Voron.Slice.From(allocator, plan.StringValues[idx2], out var s2);
                         slices.Add(s2);
                     }
+
                     break;
             }
+
             residualIdx++;
         }
 
@@ -2414,6 +2472,7 @@ internal static partial class QueryPlanBuilder
                 ClauseExecution subExec = (subExecs != null && b < subExecs.Length) ? subExecs[b] : null;
                 ExtractParamsFromPredicate(pred.SubPredicates[b], subClause, subExec, indexSearcher, plan, longs, doubles, slices, roots);
             }
+
             return;
         }
 
@@ -2483,6 +2542,7 @@ internal static partial class QueryPlanBuilder
                         var subExec = exec?.OrSubExecutions != null && si < exec.OrSubExecutions.Length ? exec.OrSubExecutions[si] : null;
                         PopulateHighlightingForClause(clauseObj.OrSubClauses[si], subExec, highlightingTerms, metadata, plan);
                     }
+
                     break;
                 }
                 case ClauseType.AndGroup when clauseObj.AndSubClauses is { Count: > 0 }:
@@ -2492,6 +2552,7 @@ internal static partial class QueryPlanBuilder
                         var subExec = exec?.AndSubExecutions != null && si < exec.AndSubExecutions.Length ? exec.AndSubExecutions[si] : null;
                         PopulateHighlightingForClause(clauseObj.AndSubClauses[si], subExec, highlightingTerms, metadata, plan);
                     }
+
                     break;
                 }
             }
@@ -2595,6 +2656,7 @@ internal static partial class QueryPlanBuilder
 
             items[i] = HandleVector(builderParams, clause, exec, false);
         }
+
         return items;
     }
 
@@ -2605,7 +2667,7 @@ internal static partial class QueryPlanBuilder
 
         // Field name was pre-resolved during parsing.
         string fieldName = clause.FieldName
-            ?? throw new InvalidOperationException("Spatial clause has no pre-resolved field name.");
+                           ?? throw new InvalidOperationException("Spatial clause has no pre-resolved field name.");
 
         var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, builderParameters.IndexFieldsMapping,
             builderParameters.FieldsToFetch, builderParameters.HasDynamics, builderParameters.DynamicFields, hasBoost: builderParameters.HasBoost);
@@ -2651,7 +2713,7 @@ internal static partial class QueryPlanBuilder
             : builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying;
 
         var fieldName = clause.FieldName
-            ?? throw new InvalidOperationException("Vector clause has no pre-resolved field name.");
+                        ?? throw new InvalidOperationException("Vector clause has no pre-resolved field name.");
 
         var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(builderParameters, fieldName, hasBoost: builderParameters.HasBoost);
 
@@ -2674,8 +2736,10 @@ internal static partial class QueryPlanBuilder
                 {
                     (method: VectorHelpers.MethodVectorValue.ForDocument, string docId) => CoraxVectorItem.BuildForDocVector(builderParameters, fieldMetadata, docId, numberOfCandidates, minimumMatch, exact),
                     (method: VectorHelpers.MethodVectorValue.ForDocument, StringSegment docIdSegment) => CoraxVectorItem.BuildForDocVector(builderParameters, fieldMetadata, docIdSegment.Value, numberOfCandidates, minimumMatch, exact),
-                    (method: VectorHelpers.MethodVectorValue.ForRaw, string vectorAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, vectorAsBase64), numberOfCandidates, minimumMatch, exact),
-                    (method: VectorHelpers.MethodVectorValue.ForRaw, StringSegment stringSegmentAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, stringSegmentAsBase64.ToString()), numberOfCandidates, minimumMatch, exact),
+                    (method: VectorHelpers.MethodVectorValue.ForRaw, string vectorAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata,
+                        GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, vectorAsBase64), numberOfCandidates, minimumMatch, exact),
+                    (method: VectorHelpers.MethodVectorValue.ForRaw, StringSegment stringSegmentAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata,
+                        GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, stringSegmentAsBase64.ToString()), numberOfCandidates, minimumMatch, exact),
                     (_, BlittableJsonReaderArray { Length: > 0 }) => throw new InvalidDataException("Cannot perform search on empty value."),
                     _ => throw new InvalidQueryException(
                         $"Unknown method in value ({vec.Method}. Parameter type: {methodParameter?.GetType().FullName}, Value: {methodParameter}")
@@ -2795,6 +2859,7 @@ internal static partial class QueryPlanBuilder
                 foreach (var vector in multiVector)
                     AssertDimensions(vector);
             }
+
             return CoraxVectorItem.BuildMultiVector(builderParameters, fieldMetadata, multiVector, numberOfCandidates, minimumMatch, exact);
         }
 
@@ -2828,7 +2893,8 @@ internal static partial class QueryPlanBuilder
             if (builderParameters.Metadata.IsDynamic == false)
                 return existsInPersistence;
 
-            if (((builderParameters.FieldsToFetch != null && builderParameters.FieldsToFetch.IndexFields.TryGetValue(fieldName, out var indexField)) || (builderParameters.Index.Definition.IndexFields.TryGetValue(fieldName, out indexField))) && indexField.Vector is AutoVectorOptions avo)
+            if (((builderParameters.FieldsToFetch != null && builderParameters.FieldsToFetch.IndexFields.TryGetValue(fieldName, out var indexField)) || (builderParameters.Index.Definition.IndexFields.TryGetValue(fieldName, out indexField))) &&
+                indexField.Vector is AutoVectorOptions avo)
             {
                 embeddingsGenerationTaskIdentifier = avo.EmbeddingsGenerationTaskIdentifier;
                 return string.IsNullOrEmpty(avo.EmbeddingsGenerationTaskIdentifier) == false;
@@ -2982,9 +3048,7 @@ internal static partial class QueryPlanBuilder
             VectorEmbeddingType destinationEmbeddingType;
             if (builderParameters.Metadata.IsDynamic)
             {
-                destinationEmbeddingType = sourceEmbeddingType is not VectorEmbeddingType.Single ? 
-                    sourceEmbeddingType : 
-                    vectorOptions!.DestinationEmbeddingType;
+                destinationEmbeddingType = sourceEmbeddingType is not VectorEmbeddingType.Single ? sourceEmbeddingType : vectorOptions!.DestinationEmbeddingType;
             }
             else
             {
@@ -3068,6 +3132,7 @@ internal static partial class QueryPlanBuilder
             else
                 rejectReason = "composite key encoding failed or exceeded max term length";
         }
+
         return result;
     }
 
@@ -3126,13 +3191,15 @@ internal static partial class QueryPlanBuilder
         {
             firstField = clauses[idxA].ResolvedFieldName ?? clauses[idxA].FieldName;
             secondField = clauses[idxB].ResolvedFieldName ?? clauses[idxB].FieldName;
-            firstExec = eA; secondExec = eB;
+            firstExec = eA;
+            secondExec = eB;
         }
         else
         {
             firstField = clauses[idxB].ResolvedFieldName ?? clauses[idxB].FieldName;
             secondField = clauses[idxA].ResolvedFieldName ?? clauses[idxA].FieldName;
-            firstExec = eB; secondExec = eA;
+            firstExec = eB;
+            secondExec = eA;
         }
 
         byte[] field1Bytes = BuildCompoundFieldBytes(firstField, firstExec, indexSearcher, plan);
@@ -3169,6 +3236,7 @@ internal static partial class QueryPlanBuilder
             analyzed.CopyTo(bytes);
             return bytes;
         }
+
         if (p.ValueType == PackedParam.TypeLong)
         {
             var bytes = new byte[sizeof(long)];
@@ -3176,6 +3244,7 @@ internal static partial class QueryPlanBuilder
                 bytes, Sparrow.Binary.Bits.SwapBytes(plan.LongValues[p.Param1]));
             return bytes;
         }
+
         if (p.ValueType == PackedParam.TypeDouble)
         {
             var bytes = new byte[sizeof(long)];
@@ -3184,6 +3253,7 @@ internal static partial class QueryPlanBuilder
                 bytes, Sparrow.Binary.Bits.SwapBytes(sortable));
             return bytes;
         }
+
         return null;
     }
 
@@ -3209,7 +3279,7 @@ internal static partial class QueryPlanBuilder
             rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or prefix too long";
         return false;
     }
-    
+
     /// <summary>compound(field1, field2) exists in the index, and any residual clauses are
     /// entry-scan eligible.
     /// Returns a DirectScanMatch wrapping a compound tree StartsWith with optional
@@ -3274,6 +3344,7 @@ internal static partial class QueryPlanBuilder
                 if (card < minResidualCardinality)
                     minResidualCardinality = card;
             }
+
             if (minResidualCardinality > 0 && minResidualCardinality < indexSearcher.NumberOfEntries)
             {
                 double passRate = (double)minResidualCardinality / indexSearcher.NumberOfEntries;
@@ -3305,6 +3376,7 @@ internal static partial class QueryPlanBuilder
                 or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between)
                 return i;
         }
+
         return -1;
     }
 
@@ -3535,6 +3607,7 @@ internal static partial class QueryPlanBuilder
                 isNegated: false, forward: orderByFields[0].Ascending,
                 validatePostfixLen: true);
         }
+
         DrivingMatchReady:
 
         // Extract scan parameters for residual predicates
@@ -3579,6 +3652,7 @@ internal static partial class QueryPlanBuilder
             else
                 rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or cardinality too high for tie-break";
         }
+
         return result;
     }
 
@@ -3682,6 +3756,7 @@ internal static partial class QueryPlanBuilder
                     long c = execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
                     if (c < minResidual) minResidual = c;
                 }
+
                 if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
                 {
                     double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
@@ -3768,6 +3843,7 @@ internal static partial class QueryPlanBuilder
                     return null;
                 tpm = m;
             }
+
             provider = tpm.Provider;
             llt = tpm.Llt;
             drivingClauseDescription = $"{drivingClause.FieldName} {drivingClause.ClauseType}";
@@ -3974,9 +4050,7 @@ internal static partial class QueryPlanBuilder
 
             if (field.OrderingType == OrderByFieldType.Random)
             {
-                var seed = field.Arguments is { Length: > 0 } ?
-                    (int)Hashing.XXHash32.CalculateRaw(field.Arguments[0].NameOrValue) :
-                    Random.Shared.Next();
+                var seed = field.Arguments is { Length: > 0 } ? (int)Hashing.XXHash32.CalculateRaw(field.Arguments[0].NameOrValue) : Random.Shared.Next();
                 sortArray[sortIndex++] = new OrderMetadata(seed);
                 continue;
             }
@@ -4190,9 +4264,9 @@ internal static partial class QueryPlanBuilder
         ResidualScanIlEmitter.ResidualScanPredicate residualDelegate,
         ScanPredicateInfo[] residualArray)
     {
-        if (residualArray == null) 
+        if (residualArray == null)
             return new DirectScanSimpleMatch(searcher, drivingMatch, take: -1);
-        
+
         return new DirectScanFilteredMatch(
             searcher, drivingMatch, longParams, doubleParams, sliceParams, fieldRootPages,
             take: -1, precompiledDelegate: residualDelegate);
@@ -4205,11 +4279,17 @@ internal static partial class QueryPlanBuilder
         public static readonly EmptyTermsProviderInstance Instance = new();
         public int FillPostingListIds(Span<long> postingListIds) => 0;
         public void Reset() { }
-        public bool Next(out TermMatch term) { term = default; return false; }
+
+        public bool Next(out TermMatch term)
+        {
+            term = default;
+            return false;
+        }
+
         public QueryInspectionNode Inspect() => new("EmptyTermsProvider");
     }
-    
-    
+
+
 
     private static long EstimateCardinality(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher, ValueWriter writer, ResolutionContext walkerCtx)
     {
@@ -4255,9 +4335,9 @@ internal static partial class QueryPlanBuilder
                 long sum = 0;
                 var meta = ResolveFieldMetadata(clause, walkerCtx);
                 var ip = exec.PackedParamValue;
-                if (ip.IsNone) 
+                if (ip.IsNone)
                     return indexSearcher.NumberOfEntries;
-                
+
                 int start = ip.Param1;
                 int count = exec.InTermCount;
                 for (int t = 0; t < count; t++)
@@ -4291,6 +4371,7 @@ internal static partial class QueryPlanBuilder
                         orSum += subExec.Cardinality;
                     }
                 }
+
                 return Math.Min(orSum, indexSearcher.NumberOfEntries);
 
             case ClauseType.AndGroup:
@@ -4311,6 +4392,7 @@ internal static partial class QueryPlanBuilder
                         }
                     }
                 }
+
                 return andMin;
 
             default:
@@ -4325,7 +4407,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Format the second value (BETWEEN high bound) from the plan's typed arrays.</summary>
     internal static string FormatValue2FromPlan(PackedParam packed, QueryExecution plan) => FormatValueFromPlanInternal(packed, plan, packed.Param2);
-    
+
     private static string FormatValueFromPlanInternal(PackedParam packed, QueryExecution plan, int idx)
     {
         if (idx is PackedParam.NoParamValue)
@@ -4335,7 +4417,7 @@ internal static partial class QueryPlanBuilder
         // Bounds-check before indexing — return null to indicate "no displayable value".
         return packed.ValueType switch
         {
-            PackedParam.TypeLong => idx < plan.LongValues?.Length  ? plan.LongValues[idx].ToString() : null,
+            PackedParam.TypeLong => idx < plan.LongValues?.Length ? plan.LongValues[idx].ToString() : null,
             PackedParam.TypeDouble => idx < plan.DoubleValues?.Length ? plan.DoubleValues[idx].ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
             _ => idx < plan.StringValues?.Length ? plan.StringValues[idx] : null
         };
@@ -4405,6 +4487,7 @@ internal static partial class QueryPlanBuilder
 
                 write++;
             }
+
             if (write < clauses.Count)
             {
                 clauses.RemoveRange(write, clauses.Count - write);
@@ -4459,7 +4542,7 @@ internal static partial class QueryPlanBuilder
                         EmitInOps(ops, it, cardinalities[ci], bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
                         break;
                     }
-                    case ClauseType.OrGroup when it.OrSubClauses is {Count: > 0}:
+                    case ClauseType.OrGroup when it.OrSubClauses is { Count: > 0 }:
                     {
                         int subCount = it.OrSubClauses.Count;
                         for (int si = 0; si < subCount; si++)
@@ -4477,7 +4560,7 @@ internal static partial class QueryPlanBuilder
 
                         break;
                     }
-                    case ClauseType.AndGroup when it.AndSubClauses is { Count: > 0}:
+                    case ClauseType.AndGroup when it.AndSubClauses is { Count: > 0 }:
                     {
                         // AND sub-expression inside an OR chain.
                         // Only supported when the AND group is the first element (matchIndex == 0)
@@ -4544,6 +4627,7 @@ internal static partial class QueryPlanBuilder
                                     SkipEarlyExit = true // don't abort — OR chain continues
                                 });
                             }
+
                             ops.Add(new PlanOp
                             {
                                 Kind = PlanOpKind.OrBitmaps,
@@ -4552,6 +4636,7 @@ internal static partial class QueryPlanBuilder
                             });
                             ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 2 });
                         }
+
                         matchIndex += subClauses.Count;
                         break;
                     }
@@ -4569,6 +4654,7 @@ internal static partial class QueryPlanBuilder
                     }
                 }
             }
+
             ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
         }
         else
@@ -4664,6 +4750,7 @@ internal static partial class QueryPlanBuilder
                                         Dispatch = GetDispatch(subClauses[s])
                                     });
                                 }
+
                                 matchIndex += subCount;
                                 break;
                             }
@@ -4690,6 +4777,7 @@ internal static partial class QueryPlanBuilder
                                 break;
                         }
                     }
+
                     // Precheck: can all remaining clauses be converted to entry scan predicates?
                     bool allScanEligible = AreAllScanEligible(clauses, termTypes, startIndex);
 
@@ -4734,8 +4822,8 @@ internal static partial class QueryPlanBuilder
                                 ops.Add(new PlanOp
                                 {
                                     Kind = PlanOpKind.AndBitmaps,
-                                    BitmapLocal = 0,   // target
-                                    ParamIndex2 = 1    // source (reuse ParamIndex2 for source bitmap)
+                                    BitmapLocal = 0, // target
+                                    ParamIndex2 = 1 // source (reuse ParamIndex2 for source bitmap)
                                 });
 
                                 // Early exit check
@@ -4824,7 +4912,7 @@ internal static partial class QueryPlanBuilder
 
         // Check if all clauses are negated (if first clause after sort is negated, all the rest are too)
         bool allNegated = clauses.Count > 0
-            && (clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals);
+                          && (clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals);
 
         return new QueryExecution
         {
@@ -4892,6 +4980,7 @@ internal static partial class QueryPlanBuilder
                 return ScanValueType.SliceLong;
             }
         }
+
         return ScanValueType.Slice;
     }
 
@@ -4901,13 +4990,16 @@ internal static partial class QueryPlanBuilder
         int dummyL = 0, dummyD = 0, dummyS = 0;
         for (int j = startIndex; j < clauses.Count; j++)
         {
-            if (BuildScanPredicateInfo(clauses[j], termTypes[j], ref dummyL, ref dummyD, ref dummyS) != null)
+            ParamValueType termType = termTypes[j];
+            if (BuildScanPredicateInfoCore(clauses[j], exec: null, termType,
+                    ref dummyL, ref dummyD, ref dummyS) != null)
             {
                 continue;
             }
 
             return false;
         }
+
         return true;
     }
 
@@ -5036,8 +5128,10 @@ internal static partial class QueryPlanBuilder
                 clauses.Add(vectorClauses[i]);
                 var exec = vectorExecs?[i] ?? new ClauseExecution();
                 execs[execIdx++] = exec;
-                plan.VectorSelects[i] = new VectorSearchOp {
-                    Clause = vectorClauses[i], Exec = exec };
+                plan.VectorSelects[i] = new VectorSearchOp
+                {
+                    Clause = vectorClauses[i], Exec = exec
+                };
             }
         }
 
@@ -5062,6 +5156,7 @@ internal static partial class QueryPlanBuilder
                 count += 1;
                 continue;
             }
+
             count += clause.ClauseType switch
             {
                 ClauseType.OrGroup when clause.OrSubClauses != null => clause.OrSubClauses.Count,
@@ -5070,6 +5165,7 @@ internal static partial class QueryPlanBuilder
                 _ => 1
             };
         }
+
         if (allNegated)
         {
             count++;
@@ -5091,14 +5187,265 @@ internal static partial class QueryPlanBuilder
             subExecs = exec?.OrSubExecutions;
             return true;
         }
+
         if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses is { Count: > 0 })
         {
             subClauses = clause.AndSubClauses;
             subExecs = exec?.AndSubExecutions;
             return true;
         }
+
         subClauses = null;
         subExecs = null;
         return false;
+    }
+
+
+    /// <summary>Decide whether a clause type can be expressed as a single
+    /// <see cref="PostingSource"/>. Boosted clauses go through the IQueryMatch path
+    /// even when they're term-shaped, so scoring still works.</summary>
+    internal static bool IsTermSourceEligibleClause(ClauseInfo clause)
+    {
+        return clause is { HasBoost: true, ClauseType: ClauseType.Equals or ClauseType.NotEquals };
+    }
+
+    /// <summary>TreeScan-eligible: multi-term clauses that have a direct ITermsProvider
+    /// (StartsWith, EndsWith, Exists, Regex, ranges). Boosted clauses go through QueryMatch
+    /// for scoring. Contains is excluded because its tree walk pattern doesn't benefit
+    /// from the direct dispatch (it walks the full tree regardless).</summary>
+    internal static bool IsTreeScanEligibleClause(ClauseInfo clause)
+    {
+        if (clause is null or { HasBoost: true })
+            return false;
+
+        if (clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith
+            or ClauseType.Exists or ClauseType.Regex
+            or ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+            or ClauseType.LessThan or ClauseType.LessThanOrEqual)
+            return true;
+
+        if (clause.ClauseType != ClauseType.Between)
+            return false;
+
+        // Parameter-bound BETWEEN sentinels use QueryMatch dispatch, not TreeScan.
+        // Because we have to deal with sentinals (NULL/*) in the parameters, which change how
+        // we process the query (may need to also include from the null posting list, etc. 
+        foreach (var t in clause.Bindings)
+        {
+            if (t is { Source: BindingSource.QueryParameter })
+                return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause at plan-build time.
+    /// Equals / NotEquals (unboosted) → <c>PostingList</c> (native posting-list).
+    /// Multi-term (unboosted) → <c>TreeScan</c> (direct ITermsProvider, no IQueryMatch wrapper).
+    /// All other clause types → <c>QueryMatch</c> (IQueryMatch interface dispatch).</summary>
+    private static MatchDispatch GetDispatch(ClauseInfo clause)
+    {
+        if (IsTermSourceEligibleClause(clause))
+            return MatchDispatch.PostingList;
+
+        if (IsTreeScanEligibleClause(clause))
+            return MatchDispatch.TreeScan;
+
+        return MatchDispatch.QueryMatch;
+    }
+    
+    /// <summary>Resolution-time overload: derives term type from <paramref name="exec"/>
+    /// and recurses into subclauses using sub-execution types. Used when actual resolved
+    /// types are available (per-execution, after PopulateClauseValues).</summary>
+    internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseInfo clause, ClauseExecution exec,
+        ref int longIndex, ref int doubleIndex, ref int sliceIndex)
+        => BuildScanPredicateInfoCore(clause, exec, exec?.TermValueType ?? ParamValueType.String,
+            ref longIndex, ref doubleIndex, ref sliceIndex);
+
+    
+    /// <summary>Single walker shared by both overloads. <paramref name="exec"/> is non-null on
+    /// the resolution path and supplies per-sub TermValueType during group recursion; on the
+    /// template path it is null and recursion falls back to InferTermType.</summary>
+    private static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseInfo clause, ClauseExecution exec,
+        ParamValueType termType, ref int longIndex, ref int doubleIndex, ref int sliceIndex)
+    {
+        switch (clause.ClauseType)
+        {
+            case ClauseType.Search:
+            case ClauseType.Regex:
+            case ClauseType.Spatial:
+            case ClauseType.Vector:
+            case ClauseType.StartsWith:
+            {
+                if (termType != ParamValueType.String)
+                {
+                    return null;
+                }
+
+                sliceIndex++;
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = ScanValueType.Slice,
+                    CompareOp = ScanCompareOp.StartsWith,
+                    ParamIndex = sliceIndex - 1
+                };
+            }
+            case ClauseType.In:
+            case ClauseType.AllIn:
+                // IN/AllIn cannot use the single-slot StartsWith fallback above — they
+                // need multi-term OR/AND semantics. Returning null forces these clauses
+                // through the regular posting-list pipeline; AreAllScanEligible will see
+                // null and disable entry-scan for any AND chain that contains them.
+                return null;
+            case ClauseType.EndsWith:
+            {
+                if (termType != ParamValueType.String)
+                {
+                    return null;
+                }
+
+                sliceIndex++;
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = ScanValueType.Slice,
+                    CompareOp = ScanCompareOp.EndsWith,
+                    ParamIndex = sliceIndex - 1
+                };
+            }
+            case ClauseType.AndGroup:
+            {
+                if (clause.AndSubClauses is not { Count: > 0 } subs)
+                {
+                    return null;
+                }
+
+                var subExecs = exec?.AndSubExecutions;
+                var branches = new List<ScanPredicateInfo>();
+                for (int si = 0; si < subs.Count; si++)
+                {
+                    var sub = subs[si];
+                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
+                    var subTermType = subExec?.TermValueType ?? InferTermType(sub);
+                    var subPred = BuildScanPredicateInfoCore(sub, subExec, subTermType,
+                        ref longIndex, ref doubleIndex, ref sliceIndex);
+                    if (subPred == null)
+                    {
+                        return null;
+                    }
+
+                    branches.Add(subPred.Value);
+                }
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName ?? subs[0].FieldName,
+                    ValueType = ScanValueType.Long,
+                    CompareOp = ScanCompareOp.Equal,
+                    SubPredicates = branches.ToArray(),
+                    Group = GroupKind.And
+                };
+            }
+
+            case ClauseType.Exists:
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = ScanValueType.Long, // unused for Exists but must be set
+                    CompareOp = ScanCompareOp.Exists,
+                    ParamIndex = 0 // unused
+                };
+
+            case ClauseType.OrGroup:
+            {
+                if (clause.OrSubClauses is not { Count: > 0 } subs)
+                {
+                    return null;
+                }
+
+                var subExecs = exec?.OrSubExecutions;
+                var branches = new List<ScanPredicateInfo>();
+                int li = longIndex, di = doubleIndex, slc = sliceIndex;
+                for (int si = 0; si < subs.Count; si++)
+                {
+                    var sub = subs[si];
+                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
+                    var subTermType = subExec?.TermValueType ?? InferTermType(sub);
+                    var subPred = BuildScanPredicateInfoCore(sub, subExec, subTermType,
+                        ref li, ref di, ref slc);
+                    if (subPred == null)
+                    {
+                        return null; // Any complex subclause → can't entry-scan the whole group
+                    }
+
+                    branches.Add(subPred.Value);
+                }
+                longIndex = li; doubleIndex = di; sliceIndex = slc;
+                return new ScanPredicateInfo
+                {
+                    FieldName = subs[0].FieldName,
+                    SubPredicates = branches.ToArray(),
+                    Group = GroupKind.Or
+                };
+            }
+        }
+
+        // Determine value type and comparison op
+        ScanCompareOp compareOp = clause.ClauseType switch
+        {
+            ClauseType.Equals => ScanCompareOp.Equal,
+            ClauseType.NotEquals => ScanCompareOp.NotEqual,
+            ClauseType.GreaterThan => ScanCompareOp.GreaterThan,
+            ClauseType.GreaterThanOrEqual => ScanCompareOp.GreaterThanOrEqual,
+            ClauseType.LessThan => ScanCompareOp.LessThan,
+            ClauseType.LessThanOrEqual => ScanCompareOp.LessThanOrEqual,
+            ClauseType.Between => ScanCompareOp.Between,
+            _ => ScanCompareOp.Equal
+        };
+
+        // Strong typing: termType is set by GetTermValue from the parser's literal
+        // type (for inline values) or the resolved JSON-blittable runtime type (for params).
+        // Switch on it directly — no string round-trip / TryParse fallback.
+        ScanValueType valueType;
+        switch (termType)
+        {
+            case ParamValueType.Long:
+                valueType = ScanValueType.Long;
+                break;
+            case ParamValueType.Double:
+                valueType = ScanValueType.Double;
+                break;
+            default:
+                // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
+                valueType = ScanValueType.Slice;
+                break;
+        }
+
+        bool isBetween = clause.ClauseType == ClauseType.Between;
+        int idx, idx2;
+        switch (valueType)
+        {
+            case ScanValueType.Long:
+                idx = longIndex++;
+                idx2 = isBetween ? longIndex++ : -1;
+                break;
+            case ScanValueType.Double:
+                idx = doubleIndex++;
+                idx2 = isBetween ? doubleIndex++ : -1;
+                break;
+            default:
+                idx = sliceIndex++;
+                idx2 = isBetween ? sliceIndex++ : -1;
+                break;
+        }
+
+        return new ScanPredicateInfo
+        {
+            FieldName = clause.FieldName,
+            ValueType = valueType,
+            CompareOp = compareOp,
+            ParamIndex = idx,
+            ParamIndex2 = idx2
+        };
     }
 }
