@@ -275,134 +275,84 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    /// <summary>Single-pass template analysis: computes optimization flags, identifies the
-    /// sort-driving clause, finds compound-exact pairs, and finds compound-field ORDER BY
-    /// candidates — all from one clause-list scan plus targeted HasCompoundField lookups.
-    /// Called once per template at construction time. Results stored on <paramref name="walkerCtx"/>.</summary>
+    [SkipLocalsInit]
     private static PlanOptimizationFlags ComputeTemplateOptimizations(
         ResolutionContext walkerCtx, PlanParameters p, string orderByPrimaryField, out int sortDrivingIdx)
     {
         sortDrivingIdx = -1;
         var flags = PlanOptimizationFlags.None;
         var clauses = walkerCtx.Clauses;
-        bool canCompound = walkerCtx.IsOr == false && p.Index != null;
 
         // Collect non-negated, non-boosted Equals clause indices for compound lookups.
-        Span<int> eqBuf = clauses.Count <= 16 ? stackalloc int[16] : new int[clauses.Count];
+        const int maxStackAllocSize = 64;
+        Span<int> eqBuf = clauses.Count <= maxStackAllocSize ? stackalloc int[maxStackAllocSize] : new int[clauses.Count];
         int eqCount = 0;
 
         for (int i = 0; i < clauses.Count; i++)
         {
             var c = clauses[i];
-
-            // Any boost anywhere rules out DirectScan and CompoundField (no scoring stage).
-            if (HasBoostRecursive(c))
+            
+            if (HasBoostRecursive(c)) // Any boost anywhere rules out DirectScan and CompoundField (no scoring stage).
                 return PlanOptimizationFlags.None;
+            
+            if(c.IsNegated == false)
+                continue;
 
-            if (c.ClauseType == ClauseType.Equals && c.IsNegated == false && c.HasBoost == false)
+            if (c.ClauseType == ClauseType.Equals)
                 eqBuf[eqCount++] = i;
+            
+            if(orderByPrimaryField is null || c.FieldName != orderByPrimaryField)
+                continue;
+            
+            if(c.ClauseType is not (
+                ClauseType.Equals or ClauseType.GreaterThan or 
+                ClauseType.GreaterThanOrEqual or ClauseType.LessThan or 
+                ClauseType.LessThanOrEqual or ClauseType.Between)
+                )
+                continue;
 
-            if (orderByPrimaryField != null && c.IsNegated == false && c.FieldName == orderByPrimaryField
-                && c.ClauseType is ClauseType.Equals or ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                    or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between)
-            {
-                flags |= PlanOptimizationFlags.DirectScanCandidate;
-                if (sortDrivingIdx == -1) sortDrivingIdx = i;
-            }
+            flags |= PlanOptimizationFlags.DirectScanCandidate;
+            if (sortDrivingIdx == -1) sortDrivingIdx = i;
         }
 
         if (eqCount >= 2)
             flags |= PlanOptimizationFlags.CompoundExactCandidate;
 
-        if (canCompound && eqCount > 0)
+        if (walkerCtx.IsOr || // cannot optimize: `where a OR b`  
+            p.Index.HasCompoundFields is false || 
+            eqCount is 0)
+            return flags;
+        
+        // Compound-exact pair: two Equals clauses whose fields form a compound field.
+        if (eqCount >= 2) TryFindCompoundFieldEqualMatches(eqBuf);
+
+        // Compound-field candidate: Equals clause + ORDER BY field forming a compound field.
+        switch (p.Metadata.OrderBy)
         {
-            // Compound-exact pair: two Equals clauses whose fields form a compound field.
-            if (eqCount >= 2)
-            {
-                for (int a = 0; a < eqCount && walkerCtx.CompoundExactClauseA < 0; a++)
+            // Case 1: OrderBy has exactly 2 elements with non-null names
+            case [{ Name.Value: { } f1 }, { Name.Value: { } f2 }] when p.Index.HasCompoundField(p.Allocator, f1, f2):
+                for (int e = 0; e < eqCount; e++)
                 {
-                    var c1 = clauses[eqBuf[a]];
-                    string f1 = c1.ResolvedFieldName ?? c1.FieldName;
-                    for (int b = a + 1; b < eqCount; b++)
-                    {
-                        var c2 = clauses[eqBuf[b]];
-                        string f2 = c2.ResolvedFieldName ?? c2.FieldName;
-                        using (Voron.Slice.From(p.Allocator, f1, out var s1))
-                        using (Voron.Slice.From(p.Allocator, f2, out var s2))
-                        {
-                            if (p.Index.HasCompoundField(s1, s2, out _))
-                            {
-                                walkerCtx.CompoundExactClauseA = eqBuf[a];
-                                walkerCtx.CompoundExactClauseB = eqBuf[b];
-                                walkerCtx.CompoundExactAFirst = true;
-                                break;
-                            }
-                            if (p.Index.HasCompoundField(s2, s1, out _))
-                            {
-                                walkerCtx.CompoundExactClauseA = eqBuf[a];
-                                walkerCtx.CompoundExactClauseB = eqBuf[b];
-                                walkerCtx.CompoundExactAFirst = false;
-                                break;
-                            }
-                        }
-                    }
+                    if (clauses[eqBuf[e]].FieldName != f1) continue;
+                    walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
+                    walkerCtx.CompoundFieldSortName = f2;
+                    walkerCtx.CompoundFieldIsMultiSort = true;
+                    break;
                 }
-            }
+                break;
 
-            // Compound-field candidate: Equals clause + ORDER BY field forming a compound field.
-            var orderBy = p.Metadata.OrderBy;
-            if (orderBy is { Length: 1 or 2 })
-            {
-                if (orderBy.Length == 2)
+            // Case 2: OrderBy has exactly 1 element with a non-null name
+            case [{ Name.Value: { } sf }]:
+                for (int e = 0; e < eqCount; e++)
                 {
-                    string f1 = orderBy[0].Name?.Value;
-                    string f2 = orderBy[1].Name?.Value;
-                    if (f1 != null && f2 != null)
-                    {
-                        bool hasCompound;
-                        using (Voron.Slice.From(p.Allocator, f1, out var s1))
-                        using (Voron.Slice.From(p.Allocator, f2, out var s2))
-                            hasCompound = p.Index.HasCompoundField(s1, s2, out _);
-
-                        if (hasCompound)
-                        {
-                            for (int e = 0; e < eqCount; e++)
-                            {
-                                if (clauses[eqBuf[e]].FieldName == f1)
-                                {
-                                    walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
-                                    walkerCtx.CompoundFieldSortName = f2;
-                                    walkerCtx.CompoundFieldIsMultiSort = true;
-                                    break;
-                                }
-                            }
-                        }
-                    }
+                    string ef = clauses[eqBuf[e]].ResolvedFieldName ?? clauses[eqBuf[e]].FieldName;
+                    if (p.Index.HasCompoundField(p.Allocator, ef, sf) == false) continue;
+                    walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
+                    walkerCtx.CompoundFieldSortName = sf;
+                    break;
                 }
-                else
-                {
-                    string sf = orderBy[0].Name?.Value;
-                    if (sf != null)
-                    {
-                        for (int e = 0; e < eqCount; e++)
-                        {
-                            string ef = clauses[eqBuf[e]].ResolvedFieldName ?? clauses[eqBuf[e]].FieldName;
-                            using (Voron.Slice.From(p.Allocator, ef, out var efSlice))
-                            using (Voron.Slice.From(p.Allocator, sf, out var sfSlice))
-                            {
-                                if (p.Index.HasCompoundField(efSlice, sfSlice, out _))
-                                {
-                                    walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
-                                    walkerCtx.CompoundFieldSortName = sf;
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+                break;
         }
-
         return flags;
 
         static bool HasBoostRecursive(ClauseInfo c)
@@ -415,6 +365,38 @@ internal static partial class QueryPlanBuilder
                     return true;
             }
             return false;
+        }
+
+        void TryFindCompoundFieldEqualMatches(Span<int> eqBuf)
+        {
+            for (int a = 0; a < eqCount && walkerCtx.CompoundExactClauseA < 0; a++)
+            {
+                var c1 = clauses[eqBuf[a]];
+                string f1 = c1.ResolvedFieldName ?? c1.FieldName;
+                for (int b = a + 1; b < eqCount; b++)
+                {
+                    var c2 = clauses[eqBuf[b]];
+                    string f2 = c2.ResolvedFieldName ?? c2.FieldName;
+                    using (Voron.Slice.From(p.Allocator, f1, out var s1))
+                    using (Voron.Slice.From(p.Allocator, f2, out var s2))
+                    {
+                        if (p.Index.HasCompoundField(s1, s2))
+                        {
+                            walkerCtx.CompoundExactClauseA = eqBuf[a];
+                            walkerCtx.CompoundExactClauseB = eqBuf[b];
+                            walkerCtx.CompoundExactAFirst = true;
+                            break;
+                        }
+                        if (p.Index.HasCompoundField(s2, s1))
+                        {
+                            walkerCtx.CompoundExactClauseA = eqBuf[a];
+                            walkerCtx.CompoundExactClauseB = eqBuf[b];
+                            walkerCtx.CompoundExactAFirst = false;
+                            break;
+                        }
+                    }
+                }
+            }
         }
     }
 
