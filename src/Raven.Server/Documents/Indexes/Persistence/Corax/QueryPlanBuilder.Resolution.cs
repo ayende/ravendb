@@ -477,6 +477,7 @@ internal static partial class QueryPlanBuilder
             plan = EmitPlan(clauses, emitCardinalities, emitTermTypes, isOr, executions);
             plan.Executions = executions;
 
+
             // Fixup InRangeCounts from actual runtime InTermCount / HasNullTerm.
             // EmitPlan uses Bindings.Length (structural) for range counts, but runtime
             // InTermCount may differ when a single parameter binding expands to an array.
@@ -1577,16 +1578,12 @@ internal static partial class QueryPlanBuilder
 
         var execs = plan.Executions;
 
-        // Standalone NotEquals pattern: Fill(AllEntries) + ANDNOT(term).
+        // Standalone NotEquals pattern: FillAllEntries (no slot) + ANDNOT(term at slot 0).
         if (clauses.Count == 1 && clauses[0].IsNegated && !plan.AllNegated)
         {
             var clause = clauses[0];
             var exec0 = execs[0];
-            return
-            [
-                indexSearcher.AllEntries(),
-                TermQueryFromParam(exec0.PackedParamValue, indexSearcher.FieldMetadataBuilder(clause.FieldName), indexSearcher, plan)
-            ];
+            return [ResolveClause(clause, exec0, plan, walkerCtx)];
         }
 
         var matches = new IQueryMatch[CountMatchSlots(clauses, execs, plan.IsAllEntries, plan.AllNegated)];
@@ -2052,13 +2049,10 @@ internal static partial class QueryPlanBuilder
 
         var execs = plan.Executions;
 
-        // Standalone NotEquals: matches[0] = AllEntries (NOT a term source),
-        // matches[1] = the negated term. Mirror that layout.
+        // Standalone NotEquals: FillAllEntries (no slot) + ANDNOT at slot 0.
         if (clauses.Count == 1 && clauses[0].IsNegated && !plan.AllNegated)
         {
-            var sources = new PostingSource[2];
-            sources[1] = ResolveSingleTermSource(clauses[0], execs[0], plan, walkerCtx);
-            return sources;
+            return [ResolveSingleTermSource(clauses[0], execs[0], plan, walkerCtx)];
         }
 
         var termSources = new PostingSource[CountMatchSlots(clauses, execs, plan.IsAllEntries, plan.AllNegated)];
@@ -4659,14 +4653,12 @@ internal static partial class QueryPlanBuilder
                             || (clauses[0].ClauseType == ClauseType.Equals && clauses[0].IsNegated):
                     ops.Add(new PlanOp
                     {
-                        Kind = PlanOpKind.FillFromPostings,
-                        ParamIndex = 0, // Will be resolved to AllEntries
-                        EstimatedCardinality = long.MaxValue // AllEntries — exact count not needed for plan
+                        Kind = PlanOpKind.FillAllEntries,
+                        EstimatedCardinality = long.MaxValue
                     });
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.AndNotWithPostings,
-                        ParamIndex = 1, // Will be resolved to the negated term
                         EstimatedCardinality = cardinalities[0],
                         Dispatch = GetDispatch(clauses[0])
                     });
