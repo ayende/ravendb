@@ -425,7 +425,9 @@ internal static partial class QueryPlanBuilder
         // Step 3: Populate parameter values into typed arrays
         var writer = new ValueWriter();
         for (int ci = 0; ci < clauses.Count; ci++)
+        {
             PopulateClauseValues(clauses[ci], execList[ci], planParams.QueryParameters, writer, builderParameters);
+        }
 
         // Step 3b: Constant propagation — simplify trivially-false/simple clauses.
         bool isOr = template.IsOr;
@@ -451,7 +453,7 @@ internal static partial class QueryPlanBuilder
             {
                 // OR query with all clauses eliminated by WHEN → no branches left in the OR →
                 // nothing matches (identity for OR is the empty set).
-                plan = default;
+                plan = null;
                 return null;
             }
             // AND query with all clauses eliminated by WHEN → no filter → match all entries.
@@ -471,7 +473,7 @@ internal static partial class QueryPlanBuilder
                 emitCardinalities[ei] = executions[ei].Cardinality;
                 emitTermTypes[ei] = executions[ei].TermValueType;
             }
-
+ 
             plan = EmitPlan(clauses, emitCardinalities, emitTermTypes, isOr, executions);
             plan.Executions = executions;
 
@@ -824,18 +826,17 @@ internal static partial class QueryPlanBuilder
             var c = clauses[ci];
             var e = execList[ci];
 
-            if (c.ClauseType != ClauseType.Between || e.PackedParamValue.IsNone)
+            var p = e.PackedParamValue;
+
+            if (c.ClauseType != ClauseType.Between || p.Param2 is PackedParam.NoParamValue)
                 continue;
 
-            var p = e.PackedParamValue;
-            if (p.Param2 == PackedParam.NoParamValue)
-                continue;
 
             bool contradictory = p.ValueType switch
             {
                 PackedParam.TypeLong => writer.GetLongs()[p.Param1] > writer.GetLongs()[p.Param2],
                 PackedParam.TypeDouble => writer.GetDoubles()[p.Param1] > writer.GetDoubles()[p.Param2],
-                _ => false
+                _ => false // for strings, we have to consider analyzers, so we can't tell
             };
             if (contradictory == false)
                 continue;
@@ -878,15 +879,7 @@ internal static partial class QueryPlanBuilder
         {
             int n = clauses.Count;
             int[] rented = null;
-            scoped Span<int> indices;
-            if (n <= StackallocClauseThreshold)
-            {
-                indices = stackalloc int[StackallocClauseThreshold];
-            }
-            else
-            {
-                indices = rented = ArrayPool<int>.Shared.Rent(RoaringBitmap.PadToVector256Width(n));
-            }
+            Span<int> indices = n <= StackallocClauseThreshold ? stackalloc int[StackallocClauseThreshold] : rented = ArrayPool<int>.Shared.Rent(RoaringBitmap.PadToVector256Width(n));
 
             RoaringBitmap.InitializeIndices(indices, n);
             indices[..n].Sort(new ClauseCardinalityComparer(clauses, execList));
@@ -1112,10 +1105,10 @@ internal static partial class QueryPlanBuilder
                 return;
         }
 
-        var bindings = clause.Bindings;
-        if (bindings == null || bindings.Length == 0)
+        if (clause.Bindings is not { Length: 0 } )
             return;
-
+        
+        var bindings = clause.Bindings;
         switch (clause.ClauseType)
         {
             // BETWEEN: Literal sentinel bounds are rewritten at template time.
@@ -1126,31 +1119,26 @@ internal static partial class QueryPlanBuilder
                 var (high, highType) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
                 bool lowIsSentinel = low is RavenConstants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
                 bool highIsSentinel = high is RavenConstants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
-                if (lowIsSentinel && highIsSentinel)
+                switch (lowIsSentinel, highIsSentinel)
                 {
-                    exec.SentinelRewriteType = ClauseType.Exists;
-                    return;
+                    case (true, true):
+                        exec.SentinelRewriteType = ClauseType.Exists;
+                        return; 
+                    case (true, false):
+                        exec.SentinelRewriteType = ClauseType.LessThanOrEqual;
+                        exec.TermValueType = highType;
+                        exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType));
+                        return;
+                    case (false, true):
+                        exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual;
+                        exec.TermValueType = lowType;
+                        exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType));
+                        return;
+                    case (false,false):
+                        exec.TermValueType = lowType;
+                        exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
+                        return;
                 }
-
-                if (lowIsSentinel)
-                {
-                    exec.SentinelRewriteType = ClauseType.LessThanOrEqual;
-                    exec.TermValueType = highType;
-                    exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType));
-                    return;
-                }
-
-                if (highIsSentinel)
-                {
-                    exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual;
-                    exec.TermValueType = lowType;
-                    exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType));
-                    return;
-                }
-
-                exec.TermValueType = lowType;
-                exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
-                return;
             }
             case ClauseType.In or ClauseType.AllIn:
                 // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
@@ -1162,22 +1150,27 @@ internal static partial class QueryPlanBuilder
                 // startsWith/endsWith/search/regex require a String argument — reject Null (matches Lucene behavior).
                 if (value == null && clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith or ClauseType.Search or ClauseType.Regex)
                 {
-                    string methodName = clause.ClauseType switch
-                    {
-                        ClauseType.StartsWith => "startsWith",
-                        ClauseType.EndsWith => "endsWith",
-                        ClauseType.Search => "search",
-                        ClauseType.Regex => "regex",
-                        _ => clause.ClauseType.ToString()
-                    };
-                    throw new InvalidQueryException(
-                        $"Method {methodName}() expects to get an argument of type String while it got Null");
+                    ThrowInvalidMethodArgument(clause);
                 }
 
                 exec.TermValueType = valueType;
                 exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
                 break;
         }
+    }
+
+    private static void ThrowInvalidMethodArgument(ClauseInfo clause)
+    {
+        string methodName = clause.ClauseType switch
+        {
+            ClauseType.StartsWith => "startsWith",
+            ClauseType.EndsWith => "endsWith",
+            ClauseType.Search => "search",
+            ClauseType.Regex => "regex",
+            _ => clause.ClauseType.ToString()
+        };
+        throw new InvalidQueryException(
+            $"Method {methodName}() expects to get an argument of type String while it got Null");
     }
 
     private static void ResolveBoostFactor(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters)
@@ -1422,21 +1415,25 @@ internal static partial class QueryPlanBuilder
     private static void ResolveVectorFromBindings(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters)
     {
         var bindings = clause.Bindings;
-        var vec = new VectorParams { Method = clause.VectorMethod };
+
+        var vec = exec.Vector = new VectorParams { Method = clause.VectorMethod };
 
         // [1]=minimumMatch, [2]=numberOfCandidates, [3]=aiTask
         if (bindings.Length > BindingIndex.VectorMinMatch && bindings[BindingIndex.VectorMinMatch] != null)
         {
-            var (simVal, simType) = ResolveBindingScalar(bindings[BindingIndex.VectorMinMatch], queryParameters, builderParameters: null);
-            if (simVal != null && simType != ParamValueType.Null)
-                vec.MinimumMatch = simType == ParamValueType.Double ? (float)(double)simVal
-                    : simType == ParamValueType.Long ? (long)simVal : -1;
+            var (simVal, _) = ResolveBindingScalar(bindings[BindingIndex.VectorMinMatch], queryParameters, builderParameters: null);
+            vec.MinimumMatch = simVal switch
+            {
+                double d => (float)d,
+                long l => l,
+                _ => -1
+            };
         }
 
         if (bindings.Length > BindingIndex.VectorCandidates && bindings[BindingIndex.VectorCandidates] != null)
         {
             var (candVal, candType) = ResolveBindingScalar(bindings[BindingIndex.VectorCandidates], queryParameters, builderParameters: null);
-            if (candVal != null && candType != ParamValueType.Null)
+            if (candType != ParamValueType.Null)
                 vec.NumberOfCandidates = Convert.ToInt32(candVal);
         }
 
@@ -1460,8 +1457,6 @@ internal static partial class QueryPlanBuilder
                 vec.ResolvedValueType = ToParamValueType(resolvedType);
             }
         }
-
-        exec.Vector = vec;
     }
 
     /// <summary>Look up a binding's value from the blittable. Returns the RAW value —
@@ -4359,41 +4354,30 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.OrGroup:
                 long orSum = 0;
-                if (clause.OrSubClauses != null && exec.OrSubExecutions != null)
+                if (exec.OrSubExecutions == null)  return orSum;
+                for (int si = 0; si < clause.OrSubClauses.Count; si++)
                 {
-                    for (int si = 0; si < clause.OrSubClauses.Count; si++)
+                    var subExec = exec.OrSubExecutions[si];
+                    if (subExec.Cardinality < 0)
                     {
-                        var subExec = exec.OrSubExecutions[si];
-                        if (subExec.Cardinality < 0)
-                        {
-                            subExec.Cardinality = EstimateCardinality(clause.OrSubClauses[si], subExec, indexSearcher, writer, walkerCtx);
-                        }
-
-                        orSum += subExec.Cardinality;
+                        subExec.Cardinality = EstimateCardinality(clause.OrSubClauses[si], subExec, indexSearcher, writer, walkerCtx);
                     }
+                    orSum += subExec.Cardinality;
                 }
-
                 return Math.Min(orSum, indexSearcher.NumberOfEntries);
 
             case ClauseType.AndGroup:
                 long andMin = indexSearcher.NumberOfEntries;
-                if (clause.AndSubClauses != null && exec.AndSubExecutions != null)
+                if (exec.AndSubExecutions == null) return andMin;
+                for (int si = 0; si < clause.AndSubClauses.Count; si++)
                 {
-                    for (int si = 0; si < clause.AndSubClauses.Count; si++)
+                    var subExec = exec.AndSubExecutions[si];
+                    if (subExec.Cardinality < 0)
                     {
-                        var subExec = exec.AndSubExecutions[si];
-                        if (subExec.Cardinality < 0)
-                        {
-                            subExec.Cardinality = EstimateCardinality(clause.AndSubClauses[si], subExec, indexSearcher, writer, walkerCtx);
-                        }
-
-                        if (subExec.Cardinality < andMin)
-                        {
-                            andMin = subExec.Cardinality;
-                        }
+                        subExec.Cardinality = EstimateCardinality(clause.AndSubClauses[si], subExec, indexSearcher, writer, walkerCtx);
                     }
+                    andMin = Math.Min(andMin, subExec.Cardinality);
                 }
-
                 return andMin;
 
             default:
@@ -4419,7 +4403,7 @@ internal static partial class QueryPlanBuilder
         return packed.ValueType switch
         {
             PackedParam.TypeLong => idx < plan.LongValues?.Length ? plan.LongValues[idx].ToString() : null,
-            PackedParam.TypeDouble => idx < plan.DoubleValues?.Length ? plan.DoubleValues[idx].ToString(System.Globalization.CultureInfo.InvariantCulture) : null,
+            PackedParam.TypeDouble => idx < plan.DoubleValues?.Length ? plan.DoubleValues[idx].ToString(CultureInfo.InvariantCulture) : null,
             _ => idx < plan.StringValues?.Length ? plan.StringValues[idx] : null
         };
     }
@@ -5087,9 +5071,6 @@ internal static partial class QueryPlanBuilder
             IsAllEntries = true
         };
     }
-
-    /// <summary>Attach spatial and vector post-filter phases to a query plan.
-    /// Spatial/vector clauses are stored in the plan's Clauses array at known indices,
 
     private static void AttachPostFilterPhases(QueryExecution plan, ClauseInfo[] spatialClauses, ClauseExecution[] spatialExecs,
         ClauseInfo[] vectorClauses, ClauseExecution[] vectorExecs)
