@@ -509,10 +509,11 @@ internal static partial class QueryPlanBuilder
 
         BooleanOp HandleGroup(QueryExpression queryExpression, ClauseType clauseType)
         {
-            BooleanOp expr;
-            List<ClauseInfo> clauses;
-            using (walkerCtx.SubExpressionScope(out clauses))
-                expr = ParseExpression(queryExpression, walkerCtx);
+            var saved = walkerCtx.Clauses;
+            walkerCtx.Clauses = [];
+            var expr = ParseExpression(queryExpression, walkerCtx);
+            var clauses = walkerCtx.Clauses;
+            walkerCtx.Clauses = saved;
 
             ClauseInfo clauseInfo = new() { ClauseType = clauseType, OriginalIndex = walkerCtx.Clauses.Count };
             switch (clauseType)
@@ -646,10 +647,11 @@ internal static partial class QueryPlanBuilder
 
     private static void ParseNegated(NegatedExpression negated, ResolutionContext walkerCtx)
     {
-        List<ClauseInfo> innerClauses;
-        using (walkerCtx.SubExpressionScope(out innerClauses))
-            ParseExpression(negated.Expression, walkerCtx);
-
+        var saved = walkerCtx.Clauses;
+        walkerCtx.Clauses = [];
+        ParseExpression(negated.Expression, walkerCtx);
+        var innerClauses = walkerCtx.Clauses;
+        walkerCtx.Clauses = saved;
         foreach (var inner in innerClauses)
         {
             inner.IsNegated = true;

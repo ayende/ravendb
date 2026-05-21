@@ -56,7 +56,7 @@ internal static partial class QueryPlanBuilder
         /// Lazily allocated — null when no boost() wrapper has been seen.</summary>
         public List<PendingBoost> PendingBoosts;
 
-        public bool HasBoost;
+        public readonly bool HasBoost;
 
         // Compound optimization results — set by FindCompoundExactPair / FindCompoundFieldCandidate.
         public int CompoundExactClauseA = -1;
@@ -100,40 +100,11 @@ internal static partial class QueryPlanBuilder
             PendingBoosts ??= [];
             PendingBoosts.Add(new PendingBoost(innerClauses, factor));
         }
-
-        /// <summary>Pushes a fresh clause sub-list onto the context, returning a disposable
-        /// scope that restores the previous list when disposed. The sub-list is also exposed
-        /// via <paramref name="subClauses"/> so callers can reference it after the scope
-        /// ends.</summary>
-        public ClauseScope SubExpressionScope(out List<ClauseInfo> subClauses)
-        {
-            var saved = Clauses;
-            subClauses = Clauses = [];
-            return new ClauseScope(this, saved);
-        }
     }
 
     /// <summary>Snapshot of a boost() wrapper's inner clauses with the factor to apply.
     /// See <see cref="ResolutionContext.PendingBoosts"/>.</summary>
     private readonly record struct PendingBoost(ClauseInfo[] InnerClauses, ParameterBinding Factor);
-
-    /// <summary>Stack-frame scope returned by <see cref="ResolutionContext.SubExpressionScope"/>.
-    /// Saves the caller's <see cref="ResolutionContext.Clauses"/> list on construction and
-    /// restores it on <see cref="Dispose"/>, so Parse* helpers can collect a nested
-    /// expression's clauses into an isolated list without disturbing the outer context.</summary>
-    private ref struct ClauseScope
-    {
-        private readonly ResolutionContext _ctx;
-        private readonly List<ClauseInfo> _saved;
-
-        internal ClauseScope(ResolutionContext ctx, List<ClauseInfo> saved)
-        {
-            _ctx = ctx;
-            _saved = saved;
-        }
-
-        public void Dispose() => _ctx.Clauses = _saved;
-    }
 
     /// <summary>
     /// Walker pipeline orchestrator. Runs validation/rewrite steps over the RQL AST
@@ -160,7 +131,8 @@ internal static partial class QueryPlanBuilder
             NotCanonicalize(clauses, ctx);
             BetweenRewriteSentinels(clauses);
             InPreClassify(clauses);
-            if (ctx.Metadata.IsDynamic) DynamicFieldNameResolve(clauses);
+            if (ctx.Metadata.IsDynamic) 
+                DynamicFieldNameResolve(clauses);
             GroupCollapse(clauses, ctx);
             WhenRegister(clauses, ctx);
             ThrowIfErrors(ctx);
@@ -192,21 +164,17 @@ internal static partial class QueryPlanBuilder
         /// </summary>
         private static void WhenRegister(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
-            int whenCount = 0;
+            ctx.WhenCount = 0;
             foreach (var t in clauses)
             {
-                if (t.WhenCondition != null)
-                {
-                    whenCount++;
-                }
+                if (t.WhenCondition != null) 
+                    ctx.WhenCount++;
             }
-            if (whenCount > PlanTemplate.MaxWhenClauses)
-            {
-                throw new NotSupportedException(
-                    $"Query has {whenCount} WHEN-guarded clauses; the plan template supports at most " +
-                    $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
-            }
-            ctx.WhenCount = whenCount;
+
+            if (ctx.WhenCount <= PlanTemplate.MaxWhenClauses) return;
+            throw new NotSupportedException(
+                $"Query has {ctx.WhenCount} WHEN-guarded clauses; the plan template supports at most " +
+                $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
         }
 
         /// <summary>
@@ -226,37 +194,19 @@ internal static partial class QueryPlanBuilder
 
         private static void InPreClassifyRecursive(ClauseInfo clause)
         {
-            if (clause.OrSubClauses != null)
+            foreach (var t in clause.OrSubClauses ?? clause.AndSubClauses ?? [])
             {
-                foreach (var t in clause.OrSubClauses)
-                {
-                    InPreClassifyRecursive(t);
-                }
+                InPreClassifyRecursive(t);
             }
-
-            if (clause.AndSubClauses != null)
-            {
-                foreach (var t in clause.AndSubClauses)
-                {
-                    InPreClassifyRecursive(t);
-                }
-            }
-
-            if (clause.ClauseType is not (ClauseType.In or ClauseType.AllIn))
-            {
-                return;
-            }
-
-            if (clause.Bindings is not { Length: not 0 })
+            
+            if (clause.ClauseType is not (ClauseType.In or ClauseType.AllIn) || clause.Bindings is not { Length: not 0 })
                 return;
 
             // Check if all bindings are literals
             foreach (var t in clause.Bindings)
             {
                 if (t.Source != BindingSource.Literal)
-                {
                     return; // has parameter bindings — can't pre-classify
-                }
             }
 
             // All literal: compute dominant type
@@ -264,14 +214,9 @@ internal static partial class QueryPlanBuilder
             foreach (var t in clause.Bindings)
             {
                 if (t.LiteralValue == null)
-                {
                     continue;
-                }
-
-                if (dominant == ParamValueType.Null)
-                {
+                if (dominant == ParamValueType.Null) 
                     dominant = t.LiteralType;
-                }
             }
             if (dominant == ParamValueType.Null)
             {
@@ -284,13 +229,7 @@ internal static partial class QueryPlanBuilder
 
         /// <summary>
         /// For OR-rooted templates, mark every top-level negated clause with
-        /// <see cref="ClauseInfo.IsOrChainNotEquals"/> = true. This was previously a
-        /// per-execution decision in <see cref="EmitPlan"/> — observing a negated clause
-        /// inside an OR chain, it would <see cref="ClauseInfo.Clone"/> the template
-        /// ClauseInfo, flip the flag on the clone, and swap it into the per-execution
-        /// list because the template was frozen. Performing the flip here, before
-        /// <see cref="FreezeAll"/>, means the template already carries the canonical
-        /// value and the per-execution clone is unnecessary.
+        /// <see cref="ClauseInfo.IsOrChainNotEquals"/> = true. 
         ///
         /// Covers NotEquals, NOT IN, NOT AllIn, NOT exists(), NOT startsWith(), etc.
         /// The flag tells <c>CreateNotEqualsOrMatch</c> to pre-materialise
@@ -304,9 +243,7 @@ internal static partial class QueryPlanBuilder
         private static void NotCanonicalize(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             if (ctx.IsOr == false)
-            {
                 return;
-            }
 
             foreach (var c in clauses)
             {
@@ -338,32 +275,15 @@ internal static partial class QueryPlanBuilder
 
         private static void DynamicFieldNameResolveRecursive(ClauseInfo clause)
         {
-            if (clause.OrSubClauses != null)
+            foreach (var t in clause.OrSubClauses ?? clause.AndSubClauses ?? [])
             {
-                foreach (var t in clause.OrSubClauses)
-                {
-                    DynamicFieldNameResolveRecursive(t);
-                }
+                DynamicFieldNameResolveRecursive(t);
             }
 
-            if (clause.AndSubClauses != null)
-            {
-                foreach (var t in clause.AndSubClauses)
-                {
-                    DynamicFieldNameResolveRecursive(t);
-                }
-            }
-
-            if (clause.FieldName == null)
-            {
+            if (clause.FieldName == null || 
+                // Spatial and Vector clauses handle their own field resolution — skip them.
+                clause.ClauseType is ClauseType.Spatial or ClauseType.Vector)
                 return;
-            }
-
-            // Spatial and Vector clauses handle their own field resolution — skip them.
-            if (clause.ClauseType is ClauseType.Spatial or ClauseType.Vector)
-            {
-                return;
-            }
 
             if (clause.ClauseType == ClauseType.Search)
             {
@@ -394,12 +314,6 @@ internal static partial class QueryPlanBuilder
         ///     dominates in OR).</item>
         /// </list>
         ///
-        /// After this step, sentinel BETWEEN clauses no longer exist at execution time, so
-        /// <c>SentinelBetweenBit</c> (bit 31 of OperandOrdering) is unnecessary and the bit
-        /// is freed for future use. Sentinel constants are <c>internal</c> to Raven.Client and
-        /// only appear as literals in the RQL emitted by the .NET SDK — parameter-bound
-        /// sentinels are not supported and will be treated as normal string values.
-        ///
         /// Recurses into OrGroup/AndGroup sub-clauses. For both-sentinel sub-clauses inside
         /// a group, the sub-clause is removed from the group's list.
         /// </summary>
@@ -408,13 +322,9 @@ internal static partial class QueryPlanBuilder
             for (int i = clauses.Count - 1; i >= 0; i--)
             {
                 BetweenRewriteSubClauses(clauses[i]);
-                if (TryRewriteBetweenSentinel(clauses[i], out bool bothSentinel))
-                {
-                    if (bothSentinel)
-                    {
-                        clauses.RemoveAt(i);
-                    }
-                }
+                if (!TryRewriteBetweenSentinel(clauses[i], out bool bothSentinel) || bothSentinel is false) 
+                    continue;
+                clauses.RemoveAt(i);
             }
         }
 
