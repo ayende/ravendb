@@ -1455,8 +1455,35 @@ namespace FastTests.Corax
                 Assert.Equal(expected, results.Count);
             }
         }
-        
-        
+
+        [RavenFact(RavenTestCategory.Corax)]
+        public void NoWhereClauseIsNotAlwaysEmpty()
+        {
+            var entry1 = new IndexEntry { Id = "entry/1", Content = new string[] { "road", "lake" } };
+            var entry2 = new IndexEntry { Id = "entry/2", Content = new string[] { "muddy", "road" } };
+
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            IndexEntries(bsc, new[] { entry1, entry2 }, CreateKnownFields(bsc));
+
+            // A no-WHERE query produces an empty-clause template that is NOT marked AlwaysEmpty.
+            // This distinguishes "no filter → return all entries" from "contradiction → return nothing."
+            using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
+            var planParams = new QueryPlanBuilder.PlanParameters
+            {
+                IndexSearcher = searcher,
+                Metadata = new QueryMetadata("FROM TestIndex", null, 0),
+                Allocator = Allocator
+            };
+            var template = QueryPlanBuilder.BuildTemplate(planParams);
+            Assert.False(template.AlwaysEmpty);
+            Assert.Empty(template.Clauses);
+
+            // And it returns all entries.
+            var results = ExecuteRQLQuery("FROM TestIndex");
+            Assert.Equal(2, results.Count);
+        }
+
+
         /// <summary>
         /// Executes an RQL query through QueryPlanBuilder and returns matching entry IDs.
         /// This properly uses the new query execution pipeline: RQL → AST → QueryExecution → IL compilation → execution.

@@ -218,11 +218,10 @@ internal static partial class QueryPlanBuilder
         var rootOp = ParseExpression(query.Where, walkerCtx);
 
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
-            return new PlanTemplate {
-                Clauses = [] };
+            return new PlanTemplate { Clauses = [] };
 
         if (rootOp == BooleanOp.False)
-            return new PlanTemplate { Clauses = [] };
+            return new PlanTemplate { Clauses = [], AlwaysEmpty = true };
 
         walkerCtx.IsOr = rootOp == BooleanOp.Or;
 

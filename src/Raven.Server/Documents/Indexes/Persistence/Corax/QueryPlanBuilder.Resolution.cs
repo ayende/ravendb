@@ -411,6 +411,12 @@ internal static partial class QueryPlanBuilder
         var queryText = planParams.Metadata.Query.QueryText;
         var planCache = indexSearcher.PlanCache;
 
+        if (template.AlwaysEmpty)
+        {
+            plan = default;
+            return null; // caller produces TermMatch.CreateEmpty
+        }
+
         // Step 2: Build the per-execution clause/exec lists from the template, evaluating
         // WHEN clauses against bound parameters as we go.
         var (clauses, execList, whenFlags) = EvaluateWhenAndFilterClauses(template, planParams);
