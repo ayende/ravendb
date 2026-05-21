@@ -671,14 +671,13 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     public static IQueryMatch BuildFromSubExpression(QueryBuilderParameters builderParams, QueryExpression expression)
     {
-        // Sub-expression entry point: run the same walker phases as ParseTemplate
-        // (ValidateAst pre-materialize, RewriteClauses post-materialize) so boost()
-        // and other deferred rewrites apply consistently here too.
+        // Sub-expression entry point: run the same phases as ParseTemplate.
+        // Validation is inline in the Parse methods; errors accumulate in walkerCtx.Errors.
         var walkerCtx = new ResolutionContext(builderParams);
         var indexSearcher = walkerCtx.IndexSearcher;
-        PlanWalker.ValidateAst(expression, walkerCtx);
         walkerCtx.Clauses = [];
         ParseExpression(expression, walkerCtx);
+        PlanWalker.ThrowIfErrors(walkerCtx);
         PlanWalker.RewriteClauses(walkerCtx);
 
         if (walkerCtx.Clauses.Count == 0)
