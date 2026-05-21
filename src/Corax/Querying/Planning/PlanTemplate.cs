@@ -8,7 +8,7 @@ namespace Corax.Querying.Planning;
 /// <c>Try*</c> optimization methods that are guaranteed to fail for this template,
 /// avoiding per-query work (Slice allocations, compound-field lookups, etc.).</summary>
 [Flags]
-public enum PlanOptFlags : byte
+public enum PlanOptimizationFlags : byte
 {
     None = 0,
 
@@ -46,7 +46,7 @@ public sealed class PlanTemplate
 
     /// <summary>Plan-time structural optimization flags. Computed at template
     /// construction and checked at Instantiate time to skip inapplicable Try* methods.</summary>
-    public PlanOptFlags OptimizationFlags;
+    public PlanOptimizationFlags OptimizationFlags;
 
     /// <summary>Template-position index of the clause that can drive a sorted scan
     /// (range/eq on the primary ORDER BY field, non-negated, non-boosted). -1 when no
