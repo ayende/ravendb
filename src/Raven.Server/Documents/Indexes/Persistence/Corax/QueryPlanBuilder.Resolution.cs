@@ -2220,7 +2220,7 @@ internal static partial class QueryPlanBuilder
         if (builderParams == null)
         {
             // Direct-test path (no QueryBuilderParameters): use IndexSearcher's FieldMetadataBuilder directly.
-            return walkerCtx.IndexSearcher.FieldMetadataBuilder(resolvedFieldName);
+            return walkerCtx.IndexSearcher.FieldMetadataBuilder(resolvedFieldName, hasBoost: walkerCtx.HasBoost);
         }
 
         // When forceDefaultSearchAnalyzer is enabled for indexes with dynamic fields (CreateField),
