@@ -292,7 +292,7 @@ internal static partial class QueryPlanBuilder
             if (HasBoostRecursive(c)) // Any boost anywhere rules out DirectScan and CompoundField (no scoring stage).
                 return PlanOptimizationFlags.None;
 
-            if (c.IsNegated == false)
+            if (c.IsNegated)
                 continue;
 
             if (c.ClauseType == ClauseType.Equals)
