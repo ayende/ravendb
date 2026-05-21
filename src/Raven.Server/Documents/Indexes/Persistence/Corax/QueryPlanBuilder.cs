@@ -219,8 +219,10 @@ internal static partial class QueryPlanBuilder
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
             return new PlanTemplate { Clauses = [] };
 
-        if (rootOp == BooleanOp.False)
-            return new PlanTemplate { Clauses = [], AlwaysEmpty = true };
+        Debug.Assert(rootOp != BooleanOp.False,
+            "No RQL expression currently reduces to BooleanOp.False at template time. " +
+            "If a future rewrite introduces this, add an AlwaysEmpty flag to PlanTemplate " +
+            "and handle it in Build (return null → empty result, not AllEntries).");
 
         walkerCtx.IsOr = rootOp == BooleanOp.Or;
 
@@ -255,16 +257,10 @@ internal static partial class QueryPlanBuilder
 
         var optFlags = ComputeOptimizationsFlags(walkerCtx.Clauses, orderByPrimaryField, out int sortDrivingIdx);
         // Compound optimizations (compound-exact, compound-field) are AND-only.
-        // OR queries use bitmap union, which compound tree lookups can't serve.
-        int cexA = -1, cexB = -1;
-        bool cexAFirst = false;
-        int cfDriving = -1;
-        string cfSortName = null;
-        bool cfMultiSort = false;
-        if (walkerCtx.IsOr == false)
-        {
-            FindCompoundFieldCandidate(walkerCtx.Clauses, p, p.Metadata, out cfDriving, out cfSortName, out cfMultiSort);
-        }
+        // The IsOr check is inside each method.
+        FindCompoundExactPair(walkerCtx, p);
+        FindCompoundFieldCandidate(walkerCtx, p);
+
         return new PlanTemplate
         {
             Clauses = walkerCtx.Clauses,
@@ -274,12 +270,12 @@ internal static partial class QueryPlanBuilder
             WhenCount = walkerCtx.WhenCount,
             OptimizationFlags = optFlags,
             SortDrivingClauseIndex = sortDrivingIdx,
-            CompoundExactClauseA = cexA,
-            CompoundExactClauseB = cexB,
-            CompoundExactAFirst = cexAFirst,
-            CompoundFieldDrivingClause = cfDriving,
-            CompoundFieldSortName = cfSortName,
-            CompoundFieldIsMultiSort = cfMultiSort
+            CompoundExactClauseA = walkerCtx.CompoundExactClauseA,
+            CompoundExactClauseB = walkerCtx.CompoundExactClauseB,
+            CompoundExactAFirst = walkerCtx.CompoundExactAFirst,
+            CompoundFieldDrivingClause = walkerCtx.CompoundFieldDrivingClause,
+            CompoundFieldSortName = walkerCtx.CompoundFieldSortName,
+            CompoundFieldIsMultiSort = walkerCtx.CompoundFieldIsMultiSort
         };
     }
 
@@ -340,21 +336,64 @@ internal static partial class QueryPlanBuilder
         }
     }
 
+    /// <summary>Find the first pair of non-negated, non-boosted Equals clauses whose field names
+    /// match a compound field in the index. Stores the template-position indices and the compound
+    /// field ordering. Called once per template at construction time.</summary>
+    private static void FindCompoundExactPair(ResolutionContext walkerCtx, PlanParameters p)
+    {
+        if (walkerCtx.IsOr || p.Index == null || walkerCtx.Clauses.Count < 2)
+            return;
+
+        var clauses = walkerCtx.Clauses;
+
+        for (int i = 0; i < clauses.Count; i++)
+        {
+            var c1 = clauses[i];
+            if (c1.ClauseType != ClauseType.Equals || c1.IsNegated || c1.HasBoost)
+                continue;
+
+            for (int j = i + 1; j < clauses.Count; j++)
+            {
+                var c2 = clauses[j];
+                if (c2.ClauseType != ClauseType.Equals || c2.IsNegated || c2.HasBoost)
+                    continue;
+
+                // Use ResolvedFieldName (dynamic auto-index variants) if available.
+                string f1 = c1.ResolvedFieldName ?? c1.FieldName;
+                string f2 = c2.ResolvedFieldName ?? c2.FieldName;
+                using (Voron.Slice.From(p.Allocator, f1, out var s1))
+                using (Voron.Slice.From(p.Allocator, f2, out var s2))
+                {
+                    if (p.Index.HasCompoundField(s1, s2, out _))
+                    {
+                        walkerCtx.CompoundExactClauseA = i;
+                        walkerCtx.CompoundExactClauseB = j;
+                        walkerCtx.CompoundExactAFirst = true;
+                        return;
+                    }
+                    if (p.Index.HasCompoundField(s2, s1, out _))
+                    {
+                        walkerCtx.CompoundExactClauseA = i;
+                        walkerCtx.CompoundExactClauseB = j;
+                        walkerCtx.CompoundExactAFirst = false;
+                        return;
+                    }
+                }
+            }
+        }
+    }
+
     /// <summary>Find the Equals clause that can drive a compound-field ORDER BY scan.
     /// For single ORDER BY: finds compound(equalsField, sortField).
     /// For two ORDER BY: checks compound(orderBy[0], orderBy[1]), Equals must be on orderBy[0].
     /// Called once per template at construction time.</summary>
-    private static void FindCompoundFieldCandidate(List<ClauseInfo> clauses, PlanParameters p,
-        QueryMetadata metadata, out int drivingClause, out string sortFieldName, out bool isMultiSort)
+    private static void FindCompoundFieldCandidate(ResolutionContext walkerCtx, PlanParameters p)
     {
-        drivingClause = -1;
-        sortFieldName = null;
-        isMultiSort = false;
-
-        if (p.Index == null || clauses.Count == 0)
+        if (walkerCtx.IsOr || p.Index == null || walkerCtx.Clauses.Count == 0)
             return;
 
-        var orderBy = metadata.OrderBy;
+        var clauses = walkerCtx.Clauses;
+        var orderBy = p.Metadata.OrderBy;
         if (orderBy == null || orderBy.Length == 0 || orderBy.Length > 2)
             return;
 
@@ -380,9 +419,9 @@ internal static partial class QueryPlanBuilder
 
                 if (clauses[i].FieldName == f1)
                 {
-                    drivingClause = i;
-                    sortFieldName = f2;
-                    isMultiSort = true;
+                    walkerCtx.CompoundFieldDrivingClause = i;
+                    walkerCtx.CompoundFieldSortName = f2;
+                    walkerCtx.CompoundFieldIsMultiSort = true;
                     return;
                 }
             }
@@ -405,8 +444,8 @@ internal static partial class QueryPlanBuilder
                 {
                     if (p.Index.HasCompoundField(efSlice, sfSlice, out _))
                     {
-                        drivingClause = i;
-                        sortFieldName = sf;
+                        walkerCtx.CompoundFieldDrivingClause = i;
+                        walkerCtx.CompoundFieldSortName = sf;
                         return;
                     }
                 }

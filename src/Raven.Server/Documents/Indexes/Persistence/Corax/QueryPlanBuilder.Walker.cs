@@ -58,6 +58,14 @@ internal static partial class QueryPlanBuilder
 
         public bool HasBoost;
 
+        // Compound optimization results — set by FindCompoundExactPair / FindCompoundFieldCandidate.
+        public int CompoundExactClauseA = -1;
+        public int CompoundExactClauseB = -1;
+        public bool CompoundExactAFirst;
+        public int CompoundFieldDrivingClause = -1;
+        public string CompoundFieldSortName;
+        public bool CompoundFieldIsMultiSort;
+
         public ResolutionContext(PlanParameters p)
             : this(p.QueryParameters, p.Metadata, p.IndexSearcher)
         {
