@@ -256,10 +256,7 @@ internal static partial class QueryPlanBuilder
             : null;
 
         var optFlags = ComputeOptimizationsFlags(walkerCtx.Clauses, orderByPrimaryField, out int sortDrivingIdx);
-        // Compound optimizations (compound-exact, compound-field) are AND-only.
-        // The IsOr check is inside each method.
-        FindCompoundExactPair(walkerCtx, p);
-        FindCompoundFieldCandidate(walkerCtx, p);
+        FindCompoundOptimizations(walkerCtx, p, optFlags);
 
         return new PlanTemplate
         {
@@ -336,13 +333,20 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Find the first pair of non-negated, non-boosted Equals clauses whose field names
-    /// match a compound field in the index. Stores the template-position indices and the compound
-    /// field ordering. Called once per template at construction time.</summary>
+    /// <summary>Single entry point for compound-field optimizations. Checks shared preconditions
+    /// (AND-only, index exists) once, then dispatches to exact-pair and field-candidate discovery.</summary>
+    private static void FindCompoundOptimizations(ResolutionContext walkerCtx, PlanParameters p, PlanOptimizationFlags optFlags)
+    {
+        if (walkerCtx.IsOr || p.Index == null || walkerCtx.Clauses.Count == 0)
+            return;
+
+        if ((optFlags & PlanOptimizationFlags.CompoundExactCandidate) != 0)
+            FindCompoundExactPair(walkerCtx, p);
+        FindCompoundFieldCandidate(walkerCtx, p);
+    }
+
     private static void FindCompoundExactPair(ResolutionContext walkerCtx, PlanParameters p)
     {
-        if (walkerCtx.IsOr || p.Index == null || walkerCtx.Clauses.Count < 2)
-            return;
 
         var clauses = walkerCtx.Clauses;
 
@@ -389,9 +393,6 @@ internal static partial class QueryPlanBuilder
     /// Called once per template at construction time.</summary>
     private static void FindCompoundFieldCandidate(ResolutionContext walkerCtx, PlanParameters p)
     {
-        if (walkerCtx.IsOr || p.Index == null || walkerCtx.Clauses.Count == 0)
-            return;
-
         var clauses = walkerCtx.Clauses;
         var orderBy = p.Metadata.OrderBy;
         if (orderBy == null || orderBy.Length == 0 || orderBy.Length > 2)
