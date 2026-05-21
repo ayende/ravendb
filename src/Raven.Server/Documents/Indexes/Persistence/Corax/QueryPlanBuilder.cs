@@ -978,17 +978,10 @@ internal static partial class QueryPlanBuilder
         });
     }
 
-    // ── Value extraction helpers ─────────────────────────────────────────
-
     /// <summary>Extract the field name with proper alias resolution using query metadata.</summary>
     private static string GetFieldName(FieldExpression field, QueryMetadata metadata, BlittableJsonReaderObject queryParameters)
     {
-        if (metadata != null)
-        {
-            return metadata.GetIndexFieldName(field, queryParameters).Value;
-        }
-
-        return field.FieldValue;
+        return metadata != null ? metadata.GetIndexFieldName(field, queryParameters).Value : field.FieldValue;
     }
 
     /// <summary>Try to extract a field name from a query expression that may be a
@@ -1079,57 +1072,54 @@ internal static partial class QueryPlanBuilder
     /// stores the expression for deferred resolution at execution time.</summary>
     private static ParameterBinding CreateBinding(QueryExpression expr, ResolutionContext ctx)
     {
-        if (expr is MethodExpression me)
+        switch (expr)
         {
-            // Method expressions like cmpxchg(), now(), today() must be resolved at execution
-            // time (not template creation time) because their values can change between executions.
-            // Create a closure delegate that captures the AST node and evaluates it with
-            // the QueryBuilderParameters provided at invocation time (boxed as object).
-            return new ParameterBinding
-            {
-                Source = BindingSource.DeferredMethod,
-                DeferredExpression = (builderParamsObj, qp) =>
+            case MethodExpression me:
+                // Method expressions like cmpxchg(), now(), today() must be resolved at execution
+                // time (not template creation time) because their values can change between executions.
+                // Create a closure delegate that captures the AST node and evaluates it with
+                // the QueryBuilderParameters provided at invocation time (boxed as object).
+                return new ParameterBinding
                 {
-                    var bp = (QueryBuilderParameters)builderParamsObj;
-                    var resolvedExpr = QueryBuilderHelper.EvaluateMethod(
-                        bp.Query.Metadata.Query,
-                        bp.Metadata,
-                        bp.ServerContext,
-                        bp.DocumentsContext.DocumentDatabase.CompareExchangeStorage,
-                        me, qp, bp.QueryTime);
-                    if (resolvedExpr is not ValueExpression valueExpression || valueExpression.Value == ValueTokenType.Null) 
-                        return null;
+                    Source = BindingSource.DeferredMethod,
+                    DeferredExpression = (builderParamsObj, qp) =>
+                    {
+                        var bp = (QueryBuilderParameters)builderParamsObj;
+                        var resolvedExpr = QueryBuilderHelper.EvaluateMethod(
+                            bp.Query.Metadata.Query,
+                            bp.Metadata,
+                            bp.ServerContext,
+                            bp.DocumentsContext.DocumentDatabase.CompareExchangeStorage,
+                            me, qp, bp.QueryTime);
+                        if (resolvedExpr is not ValueExpression valueExpression || valueExpression.Value == ValueTokenType.Null) 
+                            return null;
                     
-                    return valueExpression.GetValue(qp);
-                },
-                LiteralType = ParamValueType.String
-            };
+                        return valueExpression.GetValue(qp);
+                    },
+                    LiteralType = ParamValueType.String
+                };
+            case ValueExpression ve:
+                if (ve.Value == ValueTokenType.Parameter)
+                {
+                    return new ParameterBinding { Source = BindingSource.QueryParameter, ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter };
+                }
+                var value = ve.GetValue(ctx.QueryParameters);
+
+                if (ve.Value == ValueTokenType.Null || value is null)
+                {
+                    return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = null, LiteralType = ParamValueType.String };
+                }
+
+                if (value is bool b)
+                {
+                    return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = b ? "true" : "false", LiteralType = ParamValueType.String };
+                }
+
+                var (resolved, resolvedType) = ResolveParameterValue(value);
+                return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) };
+            default:
+                return null;
         }
-
-        if (expr is not ValueExpression ve)
-        {
-            return null;
-        }
-
-        if (ve.Value == ValueTokenType.Parameter)
-        {
-            return new ParameterBinding { Source = BindingSource.QueryParameter, ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter };
-        }
-
-        var value = ve.GetValue(ctx.QueryParameters);
-
-        if (ve.Value == ValueTokenType.Null || value is null)
-        {
-            return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = null, LiteralType = ParamValueType.String };
-        }
-
-        if (value is bool b)
-        {
-            return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = b ? "true" : "false", LiteralType = ParamValueType.String };
-        }
-
-        var (resolved, resolvedType) = ResolveParameterValue(value);
-        return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) };
     }
 
     /// <summary>Format a value from the plan's typed arrays as a string for display/highlighting.</summary>
@@ -1141,10 +1131,7 @@ internal static partial class QueryPlanBuilder
     private static string FormatValueFromPlanInternal(PackedParam packed, QueryExecution plan, int idx)
     {
         if (idx is PackedParam.NoParamValue)
-        {
             return null;
-        }
-
         // An IN clause with all-null terms records InTermCount=0 and writes no values
         // to the typed arrays, but the packed Param1 still points at the (empty) slot.
         // Bounds-check before indexing — return null to indicate "no displayable value".
@@ -1155,116 +1142,6 @@ internal static partial class QueryPlanBuilder
             _ => idx < plan.StringValues?.Length ? plan.StringValues[idx] : null
         };
     }
-
-    private static long EstimateCardinality(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher, ValueWriter writer, ResolutionContext walkerCtx)
-    {
-        switch (clause.ClauseType)
-        {
-            case ClauseType.Equals:
-            {
-                // ResolveFieldMetadata attaches the field's analyzer; FieldMetadataBuilder
-                // does not. Without the analyzer, NumberOfDocumentsUnderSpecificTerm looks
-                // up the term verbatim and misses index-time-normalized matches (e.g.
-                // LowerCaseKeyword turns "Alpha" into "alpha" on the index side).
-                var fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
-                var p = exec.PackedParamValue;
-                return p.ValueType switch
-                {
-                    PackedParam.TypeLong => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetLong(p.Param1)),
-                    PackedParam.TypeDouble => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetDouble(p.Param1)),
-                    _ => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetString(p.Param1))
-                };
-            }
-
-            case ClauseType.NotEquals:
-            case ClauseType.GreaterThan:
-            case ClauseType.GreaterThanOrEqual:
-            case ClauseType.LessThan:
-            case ClauseType.LessThanOrEqual:
-            case ClauseType.Between:
-            case ClauseType.Exists:
-            case ClauseType.StartsWith:
-            case ClauseType.EndsWith:
-            case ClauseType.Search:
-            case ClauseType.Regex:
-                // Use field-level cardinality as upper bound
-                return indexSearcher.GetTermAmountInField(
-                    ResolveFieldMetadata(clause, walkerCtx));
-
-            case ClauseType.In:
-            case ClauseType.AllIn:
-                // Sum of individual term cardinalities. ResolveFieldMetadata picks up the
-                // field analyzer so case-folding/keyword normalization applies before the
-                // per-term posting-list lookup — otherwise IN over an analyzed field
-                // returns 0 for every term and the clause is misjudged as trivially small,
-                // which corrupts the cardinality-driven clause ordering.
-                long sum = 0;
-                var meta = ResolveFieldMetadata(clause, walkerCtx);
-                var ip = exec.PackedParamValue;
-                if (!ip.IsNone)
-                {
-                    int start = ip.Param1;
-                    int count = exec.InTermCount;
-                    for (int t = 0; t < count; t++)
-                    {
-                        sum += ip.ValueType switch
-                        {
-                            PackedParam.TypeLong => indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, writer.GetLong(start + t)),
-                            PackedParam.TypeDouble => indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, writer.GetDouble(start + t)),
-                            _ => indexSearcher.NumberOfDocumentsUnderSpecificTerm(meta, writer.GetString(start + t))
-                        };
-                    }
-                }
-
-                return Math.Min(sum, indexSearcher.NumberOfEntries);
-
-            case ClauseType.Spatial:
-            case ClauseType.Vector:
-                return indexSearcher.NumberOfEntries;
-
-            case ClauseType.OrGroup:
-                long orSum = 0;
-                if (clause.OrSubClauses != null && exec.OrSubExecutions != null)
-                {
-                    for (int si = 0; si < clause.OrSubClauses.Count; si++)
-                    {
-                        var subExec = exec.OrSubExecutions[si];
-                        if (subExec.Cardinality < 0)
-                        {
-                            subExec.Cardinality = EstimateCardinality(clause.OrSubClauses[si], subExec, indexSearcher, writer, walkerCtx);
-                        }
-
-                        orSum += subExec.Cardinality;
-                    }
-                }
-                return Math.Min(orSum, indexSearcher.NumberOfEntries);
-
-            case ClauseType.AndGroup:
-                long andMin = indexSearcher.NumberOfEntries;
-                if (clause.AndSubClauses != null && exec.AndSubExecutions != null)
-                {
-                    for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                    {
-                        var subExec = exec.AndSubExecutions[si];
-                        if (subExec.Cardinality < 0)
-                        {
-                            subExec.Cardinality = EstimateCardinality(clause.AndSubClauses[si], subExec, indexSearcher, writer, walkerCtx);
-                        }
-
-                        if (subExec.Cardinality < andMin)
-                        {
-                            andMin = subExec.Cardinality;
-                        }
-                    }
-                }
-                return andMin;
-
-            default:
-                return indexSearcher.NumberOfEntries;
-        }
-    }
-
-    // ── Plan emission: clause list → PlanOp[] ────────────────────────────
 
     /// <summary>Translate sorted clauses into a linear PlanOp[] sequence for IL emission.
     ///
