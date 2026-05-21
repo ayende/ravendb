@@ -5,7 +5,6 @@ using Corax.Querying.Planning;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 using Raven.Client.Exceptions;
 using Raven.Server.Documents.Queries;
-using Raven.Server.Documents.Queries.AST;
 using Sparrow.Json;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
@@ -390,10 +389,6 @@ internal static partial class QueryPlanBuilder
         }
 
         /// <summary>
-        /// Walks <see cref="ResolutionContext.PendingBoosts"/> and applies each recorded
-        /// factor binding to its inner clauses by appending the factor to
-        /// <see cref="ClauseInfo.Bindings"/> and flipping <see cref="ClauseInfo.HasBoost"/>.
-        ///
         /// The materializer records the wrapper at boost() encounter time; the actual
         /// propagation happens here so the rewrite is centralised in the walker rather
         /// than splintered across ParseMethod's recursive descent.
@@ -406,15 +401,7 @@ internal static partial class QueryPlanBuilder
                 {
                     if (t.ClauseType == ClauseType.Vector)
                         throw new NotSupportedException("Boosting the VectorSearchMatch is not supported yet.");
-
-                    var extended = new ParameterBinding[(t.Bindings?.Length ?? 0) + 1];
-                    if (t.Bindings != null)
-                    {
-                        Array.Copy(t.Bindings, extended, t.Bindings.Length);
-                    }
-
-                    extended[^1] = pending.Factor;
-                    t.Bindings = extended;
+                    t.Bindings = [..t.Bindings ?? [], pending.Factor];
                     t.HasBoost = true;
                 }
             }
@@ -426,40 +413,24 @@ internal static partial class QueryPlanBuilder
         /// dispatched on their own paths at execution time (separate IL emission and
         /// per-execution materialization), so they must not be intermixed with the
         /// regular filter chain.
-        ///
-        /// No-op on OR queries (<see cref="ResolutionContext.IsOr"/> = true), which
-        /// don't support spatial/vector partitioning today; any spatial or vector
-        /// clause in an OR query stays in the main list and follows the standard
-        /// dispatch path.
         /// </summary>
         private static void GroupCollapse(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             if (ctx.IsOr)
-            {
                 return;
-            }
 
-            List<ClauseInfo> spatialList = null;
-            List<ClauseInfo> vectorList = null;
             for (int i = clauses.Count - 1; i >= 0; i--)
             {
-                switch (clauses[i].ClauseType)
+                var list = clauses[i].ClauseType switch
                 {
-                    case ClauseType.Spatial:
-                        spatialList ??= [];
-                        spatialList.Add(clauses[i]);
-                        clauses.RemoveAt(i);
-                        break;
-                    case ClauseType.Vector:
-                        vectorList ??= [];
-                        vectorList.Add(clauses[i]);
-                        clauses.RemoveAt(i);
-                        break;
-                }
+                    ClauseType.Spatial => ctx.SpatialClauses ??= [],
+                    ClauseType.Vector => ctx.VectorClauses ??= [],
+                    _ => null
+                };
+                if(list is null) continue;
+                list.Add(clauses[i]);
+                list.RemoveAt(i);
             }
-            ctx.SpatialClauses = spatialList;
-            ctx.VectorClauses = vectorList;
         }
-
     }
 }

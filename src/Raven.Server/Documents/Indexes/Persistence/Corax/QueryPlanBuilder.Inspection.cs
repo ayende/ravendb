@@ -45,25 +45,15 @@ internal static partial class QueryPlanBuilder
         for (int i = 0; i < template.Length; i++)
         {
             var t = template[i];
-
-            // For queries like: WHERE (A AND B) OR (C AND D)
-            // the plan ops are:
-            //   ClearBitmap[2]           <- prepare scratch
-            //   SwapBitmaps[0,2]         <- save main, work in scratch  -> InsideAndGroup = true
-            //   FillFromPostings(A)      <- first AND-group
-            //   AndWithPostings(B)       <-
-            //   OrBitmaps[0,2]           <- merge scratch into main     -> InsideAndGroup = false
-            //   ClearBitmap[2]
-            //   SwapBitmaps[0,2]         <- second AND-group            -> InsideAndGroup = true
-            //   FillFromPostings(C)      <-
-            //   AndWithPostings(D)       <-
-            //   OrBitmaps[0,2]           <- merge                      -> InsideAndGroup = false
-            if (t.InsideAndGroup && orGroupNode == null)
-                orGroupNode = new QueryInspectionNode("AND-Group");
-            else if (!t.InsideAndGroup && orGroupNode != null)
+            switch (t.InsideAndGroup, orGroupNode)
             {
-                root.Children.Add(orGroupNode);
-                orGroupNode = null;
+                case (true ,null):
+                    orGroupNode = new QueryInspectionNode("AND-Group");
+                    break;
+                case (false, not null):
+                    root.Children.Add(orGroupNode);
+                    orGroupNode = null;
+                    break;
             }
 
             var parameters = new Dictionary<string, string>();
@@ -85,11 +75,11 @@ internal static partial class QueryPlanBuilder
                 parameters["EntryScan"] = "triggered";
 
             var node = new QueryInspectionNode(t.Name, parameters: parameters);
-            if (orGroupNode != null) orGroupNode.Children.Add(node);
-            else root.Children.Add(node);
+            (orGroupNode ?? root).Children.Add(node);
         }
 
-        if (orGroupNode != null) root.Children.Add(orGroupNode);
+        if (orGroupNode != null) 
+            root.Children.Add(orGroupNode);
 
         if (result.CompiledPlan.DecisionTrail is { Entries.Count: > 0 } trail)
         {
@@ -110,15 +100,14 @@ internal static partial class QueryPlanBuilder
         var matchInspection = result.ExecutedMatch.Inspect();
         AppendPostFilterNodes(matchInspection, root);
 
-        if (result.SortingWrapper != null)
-        {
-            var sortNode = result.SortingWrapper.Inspect();
-            sortNode.Children.Clear();
-            sortNode.Children.Add(root);
-            return sortNode;
-        }
+        if (result.SortingWrapper == null) 
+            return root;
+        
+        var sortNode = result.SortingWrapper.Inspect();
+        sortNode.Children.Clear();
+        sortNode.Children.Add(root);
+        return sortNode;
 
-        return root;
     }
 
     // Covers VectorSearch and Spatial post-filter ops — both expose Inspect() subtrees
@@ -131,7 +120,9 @@ internal static partial class QueryPlanBuilder
             return;
         }
         foreach (var child in source.Children)
+        {
             AppendPostFilterNodes(child, target);
+        }
     }
 
     /// <summary>Build an inspection template from plan ops + clauses. Created once, cached.</summary>
@@ -179,7 +170,9 @@ internal static partial class QueryPlanBuilder
                     }
                 }
                 else
+                {
                     flatClauses.Add((clause, exec));
+                }
             }
         }
 
@@ -188,19 +181,20 @@ internal static partial class QueryPlanBuilder
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
-            // OR chains like: (A AND B) OR (C AND D)
-            // are compiled as:
-            //   SwapBitmaps       <- save bitmap[0], start fresh in bitmap[2]
-            //   Fill(A)           <- these ops form an AND-group
-            //   And(B)            <-
-            //   OrBitmaps         <- merge bitmap[2] into bitmap[0]
-            //   SwapBitmaps       <- start next AND-group
-            //   Fill(C)           <-
-            //   And(D)            <-
-            //   OrBitmaps         <- merge
-            if (op.Kind == PlanOpKind.SwapBitmaps) { insideAndGroup = true; continue; }
-            if (op.Kind == PlanOpKind.OrBitmaps) { insideAndGroup = false; continue; }
-            if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.CheckEmpty or PlanOpKind.RepairAfterLazy or PlanOpKind.IterateInto) continue;
+
+            if (op.Kind == PlanOpKind.SwapBitmaps)
+            {
+                insideAndGroup = true; 
+                continue;
+            }
+
+            if (op.Kind == PlanOpKind.OrBitmaps)
+            {
+                insideAndGroup = false; 
+                continue;
+            }
+            if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.CheckEmpty or PlanOpKind.RepairAfterLazy or PlanOpKind.IterateInto) 
+                continue;
 
             var inspOp = new InspectionOp
             {
