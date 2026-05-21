@@ -1106,7 +1106,7 @@ internal static partial class QueryPlanBuilder
                 return;
         }
 
-        if (clause.Bindings is not { Length: 0 } )
+        if (clause.Bindings is not { Length: > 0 })
             return;
         
         var bindings = clause.Bindings;
