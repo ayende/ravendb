@@ -307,9 +307,7 @@ internal static partial class QueryPlanBuilder
         /// sentinel strings ("*" for low, "NULL" for high) into equivalent range clauses:
         /// <list type="bullet">
         ///   <item>Low sentinel only → <see cref="ClauseType.LessThanOrEqual"/> on the high bound.</item>
-        ///   <item>High sentinel only → negated <see cref="ClauseType.LessThan"/> on the low bound.
-        ///     The negation gives ANDNOT semantics at execution time, which preserves the Lucene
-        ///     quirk where <c>WhereBetween(field, low, null)</c> includes null-valued docs.</item>
+        ///   <item>High sentinel only → <see cref="ClauseType.GreaterThanOrEqual"/> on the low bound.</item>
         ///   <item>Both sentinels → clause removed (matches everything; tautological in AND,
         ///     dominates in OR).</item>
         /// </list>
@@ -322,7 +320,7 @@ internal static partial class QueryPlanBuilder
             for (int i = clauses.Count - 1; i >= 0; i--)
             {
                 BetweenRewriteSubClauses(clauses[i]);
-                if (!TryRewriteBetweenSentinel(clauses[i], out bool bothSentinel) || bothSentinel is false) 
+                if (TryRewriteBetweenSentinel(clauses[i], out bool bothSentinel) == false || bothSentinel is false)
                     continue;
                 clauses.RemoveAt(i);
             }
@@ -389,10 +387,8 @@ internal static partial class QueryPlanBuilder
             }
             else
             {
-                // BETWEEN low AND 'NULL' → NOT (field < low)
-                // ANDNOT semantics preserve the Lucene quirk: null-valued docs stay.
-                clause.ClauseType = ClauseType.LessThan;
-                clause.IsNegated = true;
+                // BETWEEN low AND 'NULL' → field >= low
+                clause.ClauseType = ClauseType.GreaterThanOrEqual;
                 clause.Bindings = [clause.Bindings[BindingIndex.BetweenLow]];
             }
 
