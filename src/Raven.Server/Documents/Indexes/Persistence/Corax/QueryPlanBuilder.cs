@@ -520,12 +520,9 @@ internal static partial class QueryPlanBuilder
             using (walkerCtx.SubExpressionScope(out orClauses)) 
                 expr = ParseExpression(queryExpression, walkerCtx);
 
-            walkerCtx.Clauses.Add(new ClauseInfo
-            {
-                ClauseType = clauseType,
-                OrSubClauses = orClauses,
-                OriginalIndex = walkerCtx.Clauses.Count
-            });
+            walkerCtx.Clauses.Add(clauseType == ClauseType.OrGroup
+                ? new ClauseInfo { ClauseType = clauseType, OrSubClauses = orClauses, OriginalIndex = walkerCtx.Clauses.Count }
+                : new ClauseInfo { ClauseType = clauseType, AndSubClauses = orClauses, OriginalIndex = walkerCtx.Clauses.Count });
             return expr;
         }
     }
