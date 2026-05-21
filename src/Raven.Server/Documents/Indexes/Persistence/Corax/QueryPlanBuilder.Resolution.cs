@@ -411,12 +411,6 @@ internal static partial class QueryPlanBuilder
         var queryText = planParams.Metadata.Query.QueryText;
         var planCache = indexSearcher.PlanCache;
 
-        if (template.AlwaysEmpty)
-        {
-            plan = default;
-            return null; // caller produces TermMatch.CreateEmpty
-        }
-
         // Step 2: Build the per-execution clause/exec lists from the template, evaluating
         // WHEN clauses against bound parameters as we go.
         var (clauses, execList, whenFlags) = EvaluateWhenAndFilterClauses(template, planParams);
@@ -444,11 +438,15 @@ internal static partial class QueryPlanBuilder
         ClauseExecution[] executions = SortClausesByCardinality(clauses, execList, isOr);
 
         // Step 6: Emit plan ops + attach spatial/vector post-filters.
-        // clauses.Count == 0 can happen either because the template is AllEntries (no WHERE)
-        // or because every WHERE clause was eliminated by a false WHEN condition — both reduce
-        // to "match all entries".
         if (clauses.Count == 0)
         {
+            if (template.Clauses.Count > 0)
+            {
+                // Every clause was eliminated by a false WHEN condition — return empty result.
+                plan = default;
+                return null;
+            }
+            // Genuine no-WHERE → match all entries.
             plan = BuildAllEntriesPlan();
             plan.Executions = executions;
         }
