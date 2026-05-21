@@ -1280,11 +1280,8 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static long EstimateCardinality(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher, ValueWriter writer, QueryBuilderParameters builderParameters)
+    private static long EstimateCardinality(ClauseInfo clause, ClauseExecution exec, IndexSearcher indexSearcher, ValueWriter writer, ResolutionContext walkerCtx)
     {
-        var walkerCtx = builderParameters != null
-            ? new ResolutionContext(builderParameters)
-            : new ResolutionContext(null, null, indexSearcher);
         switch (clause.ClauseType)
         {
             case ClauseType.Equals:
@@ -1358,7 +1355,7 @@ internal static partial class QueryPlanBuilder
                         var subExec = exec.OrSubExecutions[si];
                         if (subExec.Cardinality < 0)
                         {
-                            subExec.Cardinality = EstimateCardinality(clause.OrSubClauses[si], subExec, indexSearcher, writer, builderParameters);
+                            subExec.Cardinality = EstimateCardinality(clause.OrSubClauses[si], subExec, indexSearcher, writer, walkerCtx);
                         }
 
                         orSum += subExec.Cardinality;
@@ -1375,7 +1372,7 @@ internal static partial class QueryPlanBuilder
                         var subExec = exec.AndSubExecutions[si];
                         if (subExec.Cardinality < 0)
                         {
-                            subExec.Cardinality = EstimateCardinality(clause.AndSubClauses[si], subExec, indexSearcher, writer, builderParameters);
+                            subExec.Cardinality = EstimateCardinality(clause.AndSubClauses[si], subExec, indexSearcher, writer, walkerCtx);
                         }
 
                         if (subExec.Cardinality < andMin)

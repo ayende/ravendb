@@ -425,10 +425,13 @@ internal static partial class QueryPlanBuilder
         PropagateBetweenContradictions(clauses, execList, writer);
 
         // Step 4: Estimate cardinality (needs populated values)
+        var cardinalityCtx = builderParameters != null
+            ? new ResolutionContext(builderParameters)
+            : new ResolutionContext(planParams);
         for (int ci = 0; ci < clauses.Count; ci++)
         {
             if (execList[ci].Cardinality < 0)
-                execList[ci].Cardinality = EstimateCardinality(clauses[ci], execList[ci], indexSearcher, writer, builderParameters);
+                execList[ci].Cardinality = EstimateCardinality(clauses[ci], execList[ci], indexSearcher, writer, cardinalityCtx);
         }
 
         // Step 5: Sort operands by cardinality (sort clauses and executions in lockstep).
