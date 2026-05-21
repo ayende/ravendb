@@ -56,15 +56,19 @@ internal static partial class QueryPlanBuilder
         /// Lazily allocated — null when no boost() wrapper has been seen.</summary>
         public List<PendingBoost> PendingBoosts;
 
+        public bool HasBoost;
+
         public ResolutionContext(PlanParameters p)
             : this(p.QueryParameters, p.Metadata, p.IndexSearcher)
         {
+            HasBoost = p.HasBoost;
         }
 
         public ResolutionContext(QueryBuilderParameters b)
             : this(b.QueryParameters, b.Metadata, b.IndexSearcher)
         {
             BuilderParams = b;
+            HasBoost = b.HasBoost;
         }
 
         /// <summary>Construct from raw bag/metadata. Used by sub-expression entry points
