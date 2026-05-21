@@ -447,14 +447,15 @@ internal static partial class QueryPlanBuilder
         // Step 6: Emit plan ops + attach spatial/vector post-filters.
         if (clauses.Count == 0)
         {
-            if (template.Clauses.Count > 0)
+            if (isOr && template.Clauses.Count > 0)
             {
-                // Every clause was eliminated by a false WHEN condition — return empty result.
+                // OR query with all clauses eliminated by WHEN → no branches left in the OR →
+                // nothing matches (identity for OR is the empty set).
                 plan = default;
                 return null;
             }
-
-            // Genuine no-WHERE → match all entries.
+            // AND query with all clauses eliminated by WHEN → no filter → match all entries.
+            // Also: genuine no-WHERE (template.Clauses.Count == 0) → match all entries.
             plan = BuildAllEntriesPlan();
             plan.Executions = executions;
         }
