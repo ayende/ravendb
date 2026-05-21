@@ -458,11 +458,11 @@ internal static partial class QueryPlanBuilder
             {
                 // For AND, handle OR sub-expressions as grouped clauses
                 var left = be.Left is BinaryExpression { Operator: OperatorType.Or }  ? 
-                    HandleGroupGroup(be.Left, ClauseType.OrGroup) : 
+                    HandleGroup(be.Left, ClauseType.OrGroup) : 
                     ParseExpression(be.Left, walkerCtx);
                 
                 var right = be.Right is BinaryExpression { Operator: OperatorType.Or }  ? 
-                    HandleGroupGroup(be.Right, ClauseType.OrGroup) : 
+                    HandleGroup(be.Right, ClauseType.OrGroup) : 
                     ParseExpression(be.Right, walkerCtx);
 
                 return (left, right) switch
@@ -477,11 +477,11 @@ internal static partial class QueryPlanBuilder
             case OperatorType.Or:
             {
                 var left = be.Left is BinaryExpression { Operator: OperatorType.And } ? 
-                    HandleGroupGroup(be.Left, ClauseType.AndGroup) :
+                    HandleGroup(be.Left, ClauseType.AndGroup) :
                     ParseExpression(be.Left, walkerCtx);
 
                 var right = be.Right is BinaryExpression { Operator: OperatorType.And } ? 
-                    HandleGroupGroup(be.Right, ClauseType.AndGroup) :
+                    HandleGroup(be.Right, ClauseType.AndGroup) :
                     ParseExpression(be.Right, walkerCtx);
 
                 return (left, right) switch
@@ -513,16 +513,26 @@ internal static partial class QueryPlanBuilder
                     $"Unexpected binary operator {be.Operator} in WHERE clause.");
         }
 
-        BooleanOp HandleGroupGroup(QueryExpression queryExpression, ClauseType clauseType)
+        BooleanOp HandleGroup(QueryExpression queryExpression, ClauseType clauseType)
         {
             BooleanOp expr;
-            List<ClauseInfo> orClauses;
-            using (walkerCtx.SubExpressionScope(out orClauses)) 
+            List<ClauseInfo> clauses;
+            using (walkerCtx.SubExpressionScope(out clauses)) 
                 expr = ParseExpression(queryExpression, walkerCtx);
 
-            walkerCtx.Clauses.Add(clauseType == ClauseType.OrGroup
-                ? new ClauseInfo { ClauseType = clauseType, OrSubClauses = orClauses, OriginalIndex = walkerCtx.Clauses.Count }
-                : new ClauseInfo { ClauseType = clauseType, AndSubClauses = orClauses, OriginalIndex = walkerCtx.Clauses.Count });
+            ClauseInfo clauseInfo = new() { ClauseType = clauseType,OriginalIndex = walkerCtx.Clauses.Count };
+            switch (clauseType)
+            {
+                case ClauseType.OrGroup:
+                    clauseInfo.OrSubClauses = clauses;
+                    break;
+                case ClauseType.AndGroup:
+                    clauseInfo.AndSubClauses = clauses;
+                    break;
+                default:
+                    throw new InvalidOperationException($"Unexpected clause type: {clauseType}");
+            }
+            walkerCtx.Clauses.Add(clauseInfo);
             return expr;
         }
     }
@@ -744,8 +754,7 @@ internal static partial class QueryPlanBuilder
                     spatialFieldName = QueryBuilderHelper.ExtractIndexFieldName(walkerCtx.Metadata.Query, walkerCtx.QueryParameters, method.Arguments[0], walkerCtx.Metadata);
                 }
 
-                var shapeExpr = method.Arguments[1] as MethodExpression;
-                Debug.Assert(shapeExpr != null, "PlanWalker.AstShapeValidate must reject spatial calls without a method-expression shape before materialization");
+                var shapeExpr = (MethodExpression)method.Arguments[1];
                 var shapeType = QueryMethod.GetMethodType(shapeExpr.Name.Value);
 
                 // Build spatial bindings: [0]=distErrPct, then shape-specific args
@@ -756,20 +765,22 @@ internal static partial class QueryPlanBuilder
                         : null
                 ];
 
-                bool isCircle = shapeType == MethodType.Spatial_Circle;
-                if (isCircle && shapeExpr.Arguments.Count >= 3)
+                switch (shapeType, shapeExpr.Arguments.Count)
                 {
-                    spatialBindings.Add(CreateBinding(shapeExpr.Arguments[0], walkerCtx)); // radius
-                    spatialBindings.Add(CreateBinding(shapeExpr.Arguments[1], walkerCtx)); // lat
-                    spatialBindings.Add(CreateBinding(shapeExpr.Arguments[2], walkerCtx)); // lng
-                    spatialBindings.Add(shapeExpr.Arguments.Count == 4 // units (optional)
-                        ? CreateBinding(shapeExpr.Arguments[3], walkerCtx) : null);
-                }
-                else if (shapeType == MethodType.Spatial_Wkt && shapeExpr.Arguments.Count >= 1)
-                {
-                    spatialBindings.Add(CreateBinding(shapeExpr.Arguments[0], walkerCtx)); // wkt
-                    spatialBindings.Add(shapeExpr.Arguments.Count == 2 // units (optional)
-                        ? CreateBinding(shapeExpr.Arguments[1], walkerCtx) : null);
+                    case (MethodType.Spatial_Circle, >= 3):
+                        spatialBindings.Add(CreateBinding(shapeExpr.Arguments[0], walkerCtx)); // radius
+                        spatialBindings.Add(CreateBinding(shapeExpr.Arguments[1], walkerCtx)); // lat
+                        spatialBindings.Add(CreateBinding(shapeExpr.Arguments[2], walkerCtx)); // lng
+                        spatialBindings.Add(shapeExpr.Arguments.Count == 4 // units (optional)
+                            ? CreateBinding(shapeExpr.Arguments[3], walkerCtx)
+                            : null);
+                        break;
+                    case (MethodType.Spatial_Wkt, >= 1):
+                        spatialBindings.Add(CreateBinding(shapeExpr.Arguments[0], walkerCtx)); // wkt
+                        spatialBindings.Add(shapeExpr.Arguments.Count == 2 // units (optional)
+                            ? CreateBinding(shapeExpr.Arguments[1], walkerCtx)
+                            : null);
+                        break;
                 }
 
                 walkerCtx.Clauses.Add(new ClauseInfo
@@ -787,25 +798,13 @@ internal static partial class QueryPlanBuilder
             {
                 // Capture bindings for vector sub-arguments.
                 // Resolve field name (structural — uses metadata for dynamic index field naming).
-                string vectorFieldName = walkerCtx.Metadata.IsDynamic == false
-                    ? QueryBuilderHelper.ExtractIndexFieldName(walkerCtx.Metadata.Query, walkerCtx.QueryParameters, method.Arguments[0], walkerCtx.Metadata)
-                    : walkerCtx.Metadata.GetVectorFieldName(method, walkerCtx.QueryParameters);
+                string vectorFieldName = walkerCtx.Metadata.IsDynamic
+                    ? walkerCtx.Metadata.GetVectorFieldName(method, walkerCtx.QueryParameters)
+                    : QueryBuilderHelper.ExtractIndexFieldName(walkerCtx.Metadata.Query, walkerCtx.QueryParameters, method.Arguments[0], walkerCtx.Metadata);
 
                 VectorSourceKind vecMethod = VectorSourceKind.Inline;
                 ParameterBinding vectorValueBinding = null;
                 ParameterBinding aiTaskBinding = null;
-                ParameterBinding minimumMatchBinding = null;
-                ParameterBinding numberOfCandidatesBinding = null;
-
-                if (method.Arguments.Count > 2)
-                {
-                    minimumMatchBinding = CreateBinding(method.Arguments[2], walkerCtx);
-                }
-
-                if (method.Arguments.Count > 3)
-                {
-                    numberOfCandidatesBinding = CreateBinding(method.Arguments[3], walkerCtx);
-                }
 
                 QueryExpression srcVector = method.Arguments[1];
                 if (srcVector is MethodExpression methodValue)
@@ -815,6 +814,7 @@ internal static partial class QueryPlanBuilder
                         ClientConstants.VectorSearch.EmbeddingForDocument => VectorSourceKind.FromDocument,
                         ClientConstants.VectorSearch.EmbeddingForRaw => VectorSourceKind.Inline,
                         ClientConstants.VectorSearch.EmbeddingText => VectorSourceKind.FromText,
+                        
                         _ => VectorSourceKind.Inline
                     };
                     if (methodValue.Arguments.Count > 0)
@@ -833,6 +833,8 @@ internal static partial class QueryPlanBuilder
                     vectorValueBinding = CreateBinding(srcVector, walkerCtx);
                 }
 
+                ParameterBinding minimumMatchBinding = method.Arguments.Count <= 2 ? null : CreateBinding(method.Arguments[2], walkerCtx);
+                ParameterBinding numberOfCandidatesBinding = method.Arguments.Count <= 3 ? null : CreateBinding(method.Arguments[3], walkerCtx);
                 walkerCtx.Clauses.Add(new ClauseInfo
                 {
                     FieldName = vectorFieldName,
@@ -847,7 +849,7 @@ internal static partial class QueryPlanBuilder
             case MethodType.MoreLikeThis:
                 // MoreLikeThis method in a WHERE clause acts as "all entries" —
                 // the actual MLT logic is in the separate reader.MoreLikeThis() path.
-                // When it appears in a filter expression, treat as no-op (all entries match).
+                // When it appears in a filter expression, treat it as no-op (all entries match).
                 break;
 
             case MethodType.When:

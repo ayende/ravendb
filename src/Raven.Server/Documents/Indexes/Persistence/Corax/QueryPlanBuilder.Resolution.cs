@@ -1918,47 +1918,12 @@ internal static partial class QueryPlanBuilder
             }
 
             case ClauseType.OrGroup:
-            {
-                // OrGroup/AndGroup reaching ResolveClause means it wasn't expanded by
-                // ResolveMatches' TryGetGroupFanOut (e.g. nested group or empty sub-clauses).
-                // Resolve sub-clauses into a bitmap.
-                if (clause.OrSubClauses is not { Count: > 0 })
-                    return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-                var orBm = new BitmapMatch(indexSearcher.Allocator);
-                for (int si = 0; si < clause.OrSubClauses.Count; si++)
-                {
-                    var subExec = exec.OrSubExecutions[si];
-                    var subMatch = ResolveClause(clause.OrSubClauses[si], subExec, plan, walkerCtx);
-                    QueryPrimitives.OrWithMatch(subMatch, ref orBm.BitmapState);
-                }
-                return orBm;
-            }
+                throw new InvalidOperationException(
+                    "OrGroup should be expanded by ResolveMatches, not resolved as a single clause.");
 
             case ClauseType.AndGroup:
-            {
-                if (clause.AndSubClauses is not { Count: > 0 })
-                    return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-                var andBm = new BitmapMatch(indexSearcher.Allocator);
-                var temp = new RoaringBitmap(indexSearcher.Allocator);
-                bool first = true;
-                for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                {
-                    var sub = clause.AndSubClauses[si];
-                    var subExec = exec.AndSubExecutions[si];
-                    var subMatch = ResolveClause(sub, subExec, plan, walkerCtx);
-                    if (first)
-                    {
-                        QueryPrimitives.OrWithMatch(subMatch, ref andBm.BitmapState);
-                        first = false;
-                    }
-                    else if (sub.IsNegated)
-                        QueryPrimitives.AndNotWithMatch(subMatch, ref andBm.BitmapState, ref temp);
-                    else
-                        QueryPrimitives.AndWithMatch(subMatch, ref andBm.BitmapState, ref temp);
-                }
-                temp.Dispose();
-                return andBm;
-            }
+                throw new InvalidOperationException(
+                    "AndGroup should be expanded by ResolveMatches, not resolved as a single clause.");
 
             default:
                 throw new InvalidOperationException($"Unexpected ClauseType {clause.ClauseType} in ResolveClause.");
