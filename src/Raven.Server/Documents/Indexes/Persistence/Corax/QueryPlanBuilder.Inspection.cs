@@ -126,31 +126,30 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Build an inspection template from plan ops + clauses. Created once, cached.</summary>
-    private static InspectionOp[] BuildInspectionTemplate(QueryExecution plan)
+    private static InspectionOp[] BuildInspectionTemplate(PlanOp[] ops, QueryExecution exec)
     {
-        var ops = plan.Ops;
         if (ops == null || ops.Length == 0) return [];
 
         var flatClauses = new List<(ClauseInfo Clause, ClauseExecution Exec)>();
-        var execs = plan.Executions;
+        var execs = exec.Executions;
         if (execs is { Length: > 0 })
         {
             for (int ci = 0; ci < execs.Length; ci++)
             {
                 var clause = execs[ci].Clause;
-                var exec = execs[ci];
+                var clauseExec = execs[ci];
                 if (clause.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup && clause.SubClauses != null)
                 {
                     for (int si = 0; si < clause.SubClauses.Count; si++)
                     {
-                        var subExec = exec?.SubExecutions != null && si < exec.SubExecutions.Length ? exec.SubExecutions[si] : null;
+                        var subExec = clauseExec?.SubExecutions != null && si < clauseExec.SubExecutions.Length ? clauseExec.SubExecutions[si] : null;
                         flatClauses.Add((clause.SubClauses[si], subExec));
                     }
                 }
-                else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && exec is { InTermCount: > 0 })
+                else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clauseExec is { InTermCount: > 0 })
                 {
-                    var p = exec.PackedParamValue;
-                    for (int t = 0; t < exec.InTermCount; t++)
+                    var p = clauseExec.PackedParamValue;
+                    for (int t = 0; t < clauseExec.InTermCount; t++)
                     {
                         var termExec = new ClauseExecution(clause)
                         {
@@ -166,7 +165,7 @@ internal static partial class QueryPlanBuilder
                 }
                 else
                 {
-                    flatClauses.Add((clause, exec));
+                    flatClauses.Add((clause, clauseExec));
                 }
             }
         }
@@ -213,14 +212,14 @@ internal static partial class QueryPlanBuilder
 
             if (op.ParamIndex >= 0 && op.ParamIndex < flatClauses.Count)
             {
-                var (clause, exec) = flatClauses[op.ParamIndex];
+                var (clause, clauseExec) = flatClauses[op.ParamIndex];
                 if (clause != null)
                 {
-                    var packed = exec?.PackedParamValue ?? PackedParam.None;
-                    int inTermCount = exec?.InTermCount ?? 0;
+                    var packed = clauseExec?.PackedParamValue ?? PackedParam.None;
+                    int inTermCount = clauseExec?.InTermCount ?? 0;
                     inspOp.FieldName = clause.FieldName;
-                    inspOp.Term = FormatValueFromPlan(packed, plan);
-                    inspOp.Term2 = FormatValue2FromPlan(packed, plan);
+                    inspOp.Term = FormatValueFromPlan(packed, exec);
+                    inspOp.Term2 = FormatValue2FromPlan(packed, exec);
                     inspOp.IsNegated = clause.IsNegated;
                     if (clause.ClauseType != ClauseType.Equals) inspOp.ClauseType = clause.ClauseType.ToString();
                     if (inTermCount > 0)
@@ -229,7 +228,7 @@ internal static partial class QueryPlanBuilder
                         int displayCount = Math.Min(inTermCount, 5);
                         var displayTerms = new string[displayCount];
                         for (int t = 0; t < displayCount; t++)
-                            displayTerms[t] = FormatValueFromPlan(new PackedParam(p.ValueType, p.Param1 + t), plan);
+                            displayTerms[t] = FormatValueFromPlan(new PackedParam(p.ValueType, p.Param1 + t), exec);
                         inspOp.Terms = string.Join(", ", displayTerms) + (inTermCount > 5 ? $" ... ({inTermCount} total)" : "");
                     }
                 }

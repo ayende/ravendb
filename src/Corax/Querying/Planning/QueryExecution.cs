@@ -2,12 +2,6 @@ namespace Corax.Querying.Planning;
 
 public class QueryExecution
 {
-    /// <summary>Emitted plan operations. Populated only on cache miss by EmitPlan;
-    /// consumed by <see cref="QueryIlEmitter.EmitDelegate"/> and
-    /// <see cref="QueryPlanBuilder.BuildInspectionTemplate"/>. Transient — not
-    /// needed after compilation.</summary>
-    public PlanOp[] Ops;
-
     /// <summary>Bit 30 of <see cref="CompiledPlan.Ordering"/>. Set when any clause carries a boost factor.</summary>
     public const int HasBoostBit = 1 << 30;
 
@@ -52,8 +46,4 @@ public class QueryExecution
     /// so the same compiled delegate handles different IN parameter array sizes.</summary>
     public int[] InRangeCounts;
 
-    /// <summary>Transient: number of bitmaps this plan needs (2 or 3). Set by EmitPlan
-    /// on cache miss, read once to populate <see cref="CompiledPlan.RequiredBitmaps"/>.
-    /// Not used after compilation.</summary>
-    public int RequiredBitmaps = 2;
 }

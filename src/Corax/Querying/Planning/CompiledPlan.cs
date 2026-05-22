@@ -24,6 +24,10 @@ public enum ExecutionStrategy : byte
 
 public sealed class CompiledPlan
 {
+    /// <summary>The template this plan was compiled from. Provides access to structural
+    /// template-level data (OptimizationFlags, ParameterSlots, etc.) without copying.</summary>
+    public PlanTemplate Template { get; init; }
+
     /// <summary>IL-emitted delegate that executes the posting-list scan plan (no timing instrumentation).</summary>
     public QueryIlEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
 
@@ -131,12 +135,12 @@ public sealed class CompiledPlan
     // read-only on every subsequent cache hit. Not duplicated on QueryExecution.
 
     /// <summary>True when every clause in the execution is negated (NOT pattern).
-    /// Determines whether a trailing AllEntries slot is appended during resolution.</summary>
+    /// Determines whether a trailing AllEntries slot is appended during resolution.
+    /// This is per-CompiledPlan (not per-template) because WHEN elimination can remove
+    /// all non-negated clauses, leaving only negated ones. Different WHEN outcomes produce
+    /// different WhenFlags → different CompiledPlan entries, so AllNegated is stable
+    /// within a single cached plan.</summary>
     public bool AllNegated { get; init; }
-
-    /// <summary>Structural optimization flags inherited from the PlanTemplate.
-    /// Checked by Instantiate to skip inapplicable Try* methods.</summary>
-    public PlanOptimizationFlags OptimizationFlags { get; init; }
 
     /// <summary>Post-sort runtime index of the clause identified at plan time as the
     /// sort-driving candidate (range/eq on ORDER BY field). -1 when none.
