@@ -16,9 +16,8 @@ public static class QueryIlEmitter
     // Span<long>
     private static readonly ConstructorInfo SpanCtor = typeof(Span<long>).GetConstructor([typeof(void*), typeof(int)])!;
 
-    public static CompiledExecuteDelegate EmitDelegate(QueryExecution plan, out string csharpSource, bool emitTimings = true)
+    public static CompiledExecuteDelegate EmitDelegate(PlanOp[] ops, out string csharpSource, bool emitTimings = true)
     {
-        var ops = plan.Ops;
         if (ops == null || ops.Length == 0)
         {
             csharpSource = "// Empty plan.\n";
