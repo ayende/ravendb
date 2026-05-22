@@ -1535,7 +1535,9 @@ internal static partial class QueryPlanBuilder
             return [];
 
         // Standalone NotEquals pattern: FillAllEntries (no slot) + ANDNOT(term at slot 0).
-        if (execs.Length == 1 && execs[0].IsNegated && !plan.AllNegated)
+        // Exclude IN/AllIn — they need N+1 slots for multi-term OR+ANDNOT, not 1.
+        if (execs.Length == 1 && execs[0].IsNegated && !plan.AllNegated
+            && execs[0].Clause.ClauseType is not (ClauseType.In or ClauseType.AllIn))
         {
             var clause = execs[0].Clause;
             var exec0 = execs[0];
@@ -2014,7 +2016,9 @@ internal static partial class QueryPlanBuilder
             return [];
 
         // Standalone NotEquals: FillAllEntries (no slot) + ANDNOT at slot 0.
-        if (execs.Length == 1 && execs[0].IsNegated && !plan.AllNegated)
+        // Exclude IN/AllIn — they need N+1 slots for multi-term OR+ANDNOT, not 1.
+        if (execs.Length == 1 && execs[0].IsNegated && !plan.AllNegated
+            && execs[0].Clause.ClauseType is not (ClauseType.In or ClauseType.AllIn))
         {
             return [ResolveSingleTermSource(execs[0].Clause, execs[0], plan, walkerCtx)];
         }
