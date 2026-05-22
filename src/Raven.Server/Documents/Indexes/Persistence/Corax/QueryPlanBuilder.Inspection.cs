@@ -160,7 +160,10 @@ internal static partial class QueryPlanBuilder
                     var p = exec.PackedParamValue;
                     for (int t = 0; t < exec.InTermCount; t++)
                     {
-                        var termExec = new ClauseExecution { PackedParamValue = new PackedParam(p.ValueType, p.Param1 + t), EffectiveClauseType = clause.ClauseType, EffectiveIsNegated = clause.IsNegated };
+                        var termExec = new ClauseExecution(clause)
+                        {
+                            PackedParamValue = new PackedParam(p.ValueType, p.Param1 + t)
+                        };
                         flatClauses.Add((new ClauseInfo
                         {
                             FieldName = clause.FieldName,
