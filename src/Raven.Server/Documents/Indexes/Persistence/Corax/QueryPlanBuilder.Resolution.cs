@@ -1,5 +1,4 @@
 using System;
-using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -44,25 +43,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>Clause count at or below which we use stackalloc for the
-    /// indices buffer; larger counts fall back to ArrayPool.</summary>
-    private const int StackallocClauseThreshold = 32;
-
-    /// <summary>Sort comparer for clause cardinality ordering. Negated clauses
-    /// sort last (must run after the positive set is established); ties broken
-    /// by ascending cardinality so the cheapest clause runs first.
-    /// Struct comparer to keep the sort path JIT-inlineable.</summary>
-    private readonly struct ClauseCardinalityComparer(List<ClauseInfo> clauses, List<ClauseExecution> execList) : IComparer<int>
-    {
-        public int Compare(int a, int b)
-        {
-            bool aNeg = clauses[a].IsNegated || clauses[a].ClauseType == ClauseType.NotEquals;
-            bool bNeg = clauses[b].IsNegated || clauses[b].ClauseType == ClauseType.NotEquals;
-            if (aNeg != bNeg)
-                return aNeg ? 1 : -1;
-            return execList[a].Cardinality.CompareTo(execList[b].Cardinality);
-        }
-    }
 
     /// <summary>Maximum number of ORDER BY fields supported by Corax.</summary>
     private const int MaxSortFields = 16;
@@ -405,7 +385,6 @@ internal static partial class QueryPlanBuilder
     /// post-filters (e.g. an empty IN clause inside an AND chain) — the caller must produce
     /// an explicit empty result rather than caching this shape under the wrong key.
     /// </summary>
-    [SkipLocalsInit] // stackalloc int[StackallocClauseThreshold] is immediately overwritten by InitializeIndices
     private static CompiledPlan Build(
         PlanTemplate template,
         PlanParameters planParams,
@@ -848,12 +827,7 @@ internal static partial class QueryPlanBuilder
             e.Cardinality = 0;
             e.InTermCount = 0;
             e.HasNullTerm = false;
-            // Clone before mutating: c references the frozen template clause shared
-            // across executions. Mutating it in place would poison cached plans
-            // (RavenDB-17423 pattern).
-            c = c.Clone();
-            c.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
-            clauses[ci] = c;
+            e.EffectiveClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
         }
     }
 
@@ -862,78 +836,33 @@ internal static partial class QueryPlanBuilder
     /// list first), or so that AndGroup clauses are hoisted to the front of an OR chain
     /// (where they act as cheap mandatory pre-filters).
     ///
-    /// AND-chain sort uses an index-array permutation: build [0..n), sort by cardinality
-    /// via a struct comparer, then apply the forward permutation to both lists in-place
-    /// via cycle decomposition (O(n) time, O(1) extra space). The indices buffer is
-    /// stackalloc for small clause counts and ArrayPool-rented for larger; both share the
-    /// same <see cref="Span{T}.Sort"/> code path. The ArrayPool path is padded to a
-    /// multiple of 8 because <see cref="RoaringBitmap.InitializeIndices"/> writes via
-    /// AVX2 Vector256 stores (8 ints at a time).
+    /// Each <see cref="ClauseExecution"/> carries a back-reference to its
+    /// <see cref="ClauseExecution.Clause"/>, so sorting the execution list and rebuilding
+    /// the clause list from it keeps both in sync without parallel-array bookkeeping.
     ///
-    /// OR-chain "sort" is just a partition: AndGroup clauses are moved to the front in
-    /// their original relative order using in-place shifts on both collections.</summary>
+    /// AND-chain: sort executions via <see cref="ClauseExecution.CompareTo"/> (negated
+    /// last, ascending cardinality).
+    /// OR-chain: partition AndGroup clauses to the front (preserving relative order).</summary>
     private static ClauseExecution[] SortClausesByCardinality(
         List<ClauseInfo> clauses, List<ClauseExecution> execList, bool isOr)
     {
-        ClauseExecution[] executions;
         if (isOr == false)
         {
-            int n = clauses.Count;
-            int[] rented = null;
-            Span<int> indices = n <= StackallocClauseThreshold ? stackalloc int[StackallocClauseThreshold] : rented = ArrayPool<int>.Shared.Rent(RoaringBitmap.PadToVector256Width(n));
-
-            RoaringBitmap.InitializeIndices(indices, n);
-            indices[..n].Sort(new ClauseCardinalityComparer(clauses, execList));
-
-            // Apply the forward permutation (indices[sorted_pos] = original_pos) to both
-            // clauses and execList in-place via cycle decomposition. Each cycle: save the
-            // start element, rotate the chain, place saved at cycle end. Fixed points
-            // (indices[j]==j, already settled) are skipped.
-            Span<ClauseInfo> clausesSpan = CollectionsMarshal.AsSpan(clauses);
-            Span<ClauseExecution> execSpan = CollectionsMarshal.AsSpan(execList);
-            for (int start = 0; start < n; start++)
-            {
-                if (indices[start] == start) continue;
-                int j = start;
-                ClauseInfo savedClause = clausesSpan[j];
-                ClauseExecution savedExec = execSpan[j];
-                while (indices[j] != start)
-                {
-                    int next = indices[j];
-                    clausesSpan[j] = clausesSpan[next];
-                    execSpan[j] = execSpan[next];
-                    indices[j] = j; // mark settled
-                    j = next;
-                }
-
-                clausesSpan[j] = savedClause;
-                execSpan[j] = savedExec;
-                indices[j] = j; // mark settled
-            }
-
-            if (rented != null)
-                ArrayPool<int>.Shared.Return(rented);
-
-            executions = execList.ToArray();
+            CollectionsMarshal.AsSpan(execList).Sort();
         }
         else
         {
-            executions = execList.ToArray();
-            // Move AndGroup clauses to the front (preserving relative order) using in-place
-            // shifts on both the clause list and execution array.
+            // Move AndGroup clauses to the front (preserving relative order).
             int insertPos = 0;
-            for (int j = 0; j < clauses.Count; j++)
+            for (int j = 0; j < execList.Count; j++)
             {
-                if (clauses[j].ClauseType == ClauseType.AndGroup)
+                if (execList[j].Clause.ClauseType == ClauseType.AndGroup)
                 {
                     if (j != insertPos)
                     {
-                        ClauseInfo ag = clauses[j];
-                        ClauseExecution agExec = executions[j];
-                        clauses.RemoveAt(j);
-                        clauses.Insert(insertPos, ag);
-                        Array.Copy(executions, insertPos, executions, insertPos + 1, j - insertPos);
-                        executions[insertPos] = agExec;
+                        var ag = execList[j];
+                        execList.RemoveAt(j);
+                        execList.Insert(insertPos, ag);
                     }
 
                     insertPos++;
@@ -941,7 +870,11 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        return executions;
+        // Rebuild clauses list from sorted executions (exec.Clause back-references).
+        for (int i = 0; i < clauses.Count; i++)
+            clauses[i] = execList[i].Clause;
+
+        return execList.ToArray();
     }
 
     /// <summary>Populate ClauseExecution slots for any template-recorded spatial / vector
@@ -968,7 +901,7 @@ internal static partial class QueryPlanBuilder
             for (int si = 0; si < sLen; si++)
             {
                 var sc = template.SpatialClauses[si];
-                var scExec = new ClauseExecution();
+                var scExec = new ClauseExecution { Clause = sc };
                 PopulateClauseValues(sc, scExec, planParams.QueryParameters, writer, builderParameters);
                 spatialArr[si] = sc;
                 spatialExecs[si] = scExec;
@@ -983,7 +916,7 @@ internal static partial class QueryPlanBuilder
             for (int vi = 0; vi < vLen; vi++)
             {
                 var vc = template.VectorClauses[vi];
-                var vcExec = new ClauseExecution();
+                var vcExec = new ClauseExecution { Clause = vc };
                 PopulateClauseValues(vc, vcExec, planParams.QueryParameters, writer, builderParameters);
                 vectorArr[vi] = vc;
                 vectorExecs[vi] = vcExec;
@@ -1054,10 +987,11 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Create a ClauseExecution for a clause, including sub-executions for OrGroup/AndGroup.</summary>
+    /// <summary>Create a ClauseExecution for a clause, including sub-executions for OrGroup/AndGroup.
+    /// Sets the <see cref="ClauseExecution.Clause"/> back-reference on every instance.</summary>
     private static ClauseExecution CreateExecution(ClauseInfo clause)
     {
-        var exec = new ClauseExecution();
+        var exec = new ClauseExecution { Clause = clause };
         if (clause.OrSubClauses is { Count: > 0 })
         {
             exec.OrSubExecutions = new ClauseExecution[clause.OrSubClauses.Count];
@@ -1561,13 +1495,13 @@ internal static partial class QueryPlanBuilder
             if (plan.SpatialFilters != null)
             {
                 for (int i = 0; i < plan.SpatialFilters.Length; i++)
-                    allEntriesMatches[matchOfs++] = ResolveClause(plan.SpatialFilters[i].Clause, plan.SpatialFilters[i].Exec ?? new ClauseExecution(), plan, walkerCtx);
+                    allEntriesMatches[matchOfs++] = ResolveClause(plan.SpatialFilters[i].Clause, plan.SpatialFilters[i].Exec ?? new ClauseExecution { Clause = plan.SpatialFilters[i].Clause }, plan, walkerCtx);
             }
 
             if (plan.VectorSelects != null)
             {
                 for (int i = 0; i < plan.VectorSelects.Length; i++)
-                    allEntriesMatches[matchOfs++] = ResolveClause(plan.VectorSelects[i].Clause, plan.VectorSelects[i].Exec ?? new ClauseExecution(), plan, walkerCtx);
+                    allEntriesMatches[matchOfs++] = ResolveClause(plan.VectorSelects[i].Clause, plan.VectorSelects[i].Exec ?? new ClauseExecution { Clause = plan.VectorSelects[i].Clause }, plan, walkerCtx);
             }
 
             return allEntriesMatches;
@@ -1579,7 +1513,7 @@ internal static partial class QueryPlanBuilder
         var execs = plan.Executions;
 
         // Standalone NotEquals pattern: FillAllEntries (no slot) + ANDNOT(term at slot 0).
-        if (clauses.Count == 1 && clauses[0].IsNegated && !plan.AllNegated)
+        if (clauses.Count == 1 && (execs[0].EffectiveIsNegated ?? clauses[0].IsNegated) && !plan.AllNegated)
         {
             var clause = clauses[0];
             var exec0 = execs[0];
@@ -1717,12 +1651,21 @@ internal static partial class QueryPlanBuilder
         }
 
         Debug.Assert(exec.SentinelRewriteType == ClauseType.GreaterThanOrEqual);
-        return packed.ValueType switch
+        IQueryMatch rangeMatch = packed.ValueType switch
         {
             PackedParam.TypeLong => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.LongValues[idx]),
             PackedParam.TypeDouble => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.DoubleValues[idx]),
             _ => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, plan.StringValues[idx])
         };
+        // BETWEEN low AND 'NULL' must include null-valued docs (Lucene parity)
+        if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _))
+        {
+            var bm = new BitmapMatch(indexSearcher.Allocator);
+            QueryPrimitives.OrWithMatch(rangeMatch, ref bm.BitmapState);
+            QueryPrimitives.OrWithMatch(indexSearcher.TermQuery(fieldMeta, (string)null), ref bm.BitmapState);
+            return bm;
+        }
+        return rangeMatch;
     }
 
     /// <summary>Converts an Equals clause into a BetweenQuery(low==high==value) so
@@ -2050,7 +1993,7 @@ internal static partial class QueryPlanBuilder
         var execs = plan.Executions;
 
         // Standalone NotEquals: FillAllEntries (no slot) + ANDNOT at slot 0.
-        if (clauses.Count == 1 && clauses[0].IsNegated && !plan.AllNegated)
+        if (clauses.Count == 1 && (execs[0].EffectiveIsNegated ?? clauses[0].IsNegated) && !plan.AllNegated)
         {
             return [ResolveSingleTermSource(clauses[0], execs[0], plan, walkerCtx)];
         }
@@ -2220,7 +2163,7 @@ internal static partial class QueryPlanBuilder
 
         // Create the match via the existing factory methods, then extract the provider.
         // The factory methods handle all complexity (analyzer, CompactKey, tree lookup).
-        var match = ResolveClause(clause, exec ?? new ClauseExecution(), plan, walkerCtx);
+        var match = ResolveClause(clause, exec ?? new ClauseExecution { Clause = clause }, plan, walkerCtx);
         if (match is TermsProviderMatch tpm)
             return tpm.Provider;
 
@@ -4430,7 +4373,7 @@ internal static partial class QueryPlanBuilder
         // reads the null PL, OrRange/AndRange becomes a runtime no-op when
         // InRangeCounts[rangeIdx] resolves to 0).
         static bool IsEmptyIn(ClauseInfo c, ClauseExecution e) =>
-            c.ClauseType is ClauseType.In or ClauseType.AllIn &&
+            (e?.EffectiveClauseType ?? c.ClauseType) is ClauseType.In or ClauseType.AllIn &&
             ((e?.InTermCount ?? c.Bindings?.Length ?? 0) == 0) &&
             e?.HasNullTerm != true;
 
@@ -4664,14 +4607,12 @@ internal static partial class QueryPlanBuilder
                     });
                     ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
 
-                    // Mark clause so ResolveMatches produces [AllEntries, TermMatch].
-                    // The ClauseInfo here is shared with the template; clone before mutating
-                    // so the cached template stays untouched across executions.
-                    if (clauses[0].IsNegated == false)
+                    // Mark clause so ResolveMatches/ResolveTermSources see it as negated
+                    // and produce [AllEntries, TermMatch]. Use execution-level override to
+                    // avoid cloning the frozen template ClauseInfo.
+                    if (clauses[0].IsNegated == false && executions is { Length: > 0 })
                     {
-                        var cloned = clauses[0].Clone();
-                        cloned.IsNegated = true;
-                        clauses[0] = cloned;
+                        executions[0].EffectiveIsNegated = true;
                     }
 
                     return new QueryExecution
@@ -5088,7 +5029,7 @@ internal static partial class QueryPlanBuilder
             for (int i = 0; i < spatialClauses.Length; i++)
             {
                 clauses.Add(spatialClauses[i]);
-                var exec = spatialExecs?[i] ?? new ClauseExecution();
+                var exec = spatialExecs?[i] ?? new ClauseExecution { Clause = spatialClauses[i] };
                 execs[execIdx++] = exec;
                 plan.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i], Exec = exec };
             }
@@ -5100,7 +5041,7 @@ internal static partial class QueryPlanBuilder
             for (int i = 0; i < vectorClauses.Length; i++)
             {
                 clauses.Add(vectorClauses[i]);
-                var exec = vectorExecs?[i] ?? new ClauseExecution();
+                var exec = vectorExecs?[i] ?? new ClauseExecution { Clause = vectorClauses[i] };
                 execs[execIdx++] = exec;
                 plan.VectorSelects[i] = new VectorSearchOp
                 {

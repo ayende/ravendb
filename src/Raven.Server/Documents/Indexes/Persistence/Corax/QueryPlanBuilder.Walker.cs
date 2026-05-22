@@ -373,17 +373,7 @@ internal static partial class QueryPlanBuilder
             {
                 case (true,true):
                     return true; // we should remove it entirely
-                case (false, false):
-                    return false;
-                case (true, false):
-                    // BETWEEN '*' AND high → field <= high
-                    clause.ClauseType = ClauseType.LessThanOrEqual;
-                    clause.Bindings = [clause.Bindings[BindingIndex.BetweenHigh]];
-                    return false;
-                case(false, true):
-                    // BETWEEN low AND 'NULL' → field >= low
-                    clause.ClauseType = ClauseType.GreaterThanOrEqual;
-                    clause.Bindings = [clause.Bindings[BindingIndex.BetweenLow]];
+                default:
                     return false;
             }
         }
