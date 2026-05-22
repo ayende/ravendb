@@ -187,7 +187,7 @@ internal static partial class QueryPlanBuilder
                 case ExecutionStrategy.CompoundField:
                     if (plan != null && orderByFields != null)
                     {
-                        int f2 = FindCompoundFieldField2Range(plan.Executions, plan.CompoundFieldDrivingClause, plan.CompoundFieldSortName);
+                        int f2 = FindCompoundFieldField2Range(plan.Executions, plan.Plan.CompoundFieldDrivingClause, plan.Plan.CompoundFieldSortName);
                         // Cost facts (entriesToScan, bitmapCost) are diagnostic-only inside
                         // Construct (used for the Reason string). Pass zeros — the cliff bit
                         // in the cache key already segregates cost buckets.
@@ -214,7 +214,7 @@ internal static partial class QueryPlanBuilder
                         int drivingIdx = -1;
                         if (isFullScan == false)
                         {
-                            drivingIdx = plan.SortDrivingClauseIndex;
+                            drivingIdx = plan.Plan.SortDrivingClauseIndex;
                             // BoostFactor cannot land here: ComputeOptFlags clears
                             // DirectScanCandidate template-wide for any boost; only IsNone
                             // (parameter resolved to null) can still invalidate at runtime.
@@ -256,7 +256,7 @@ internal static partial class QueryPlanBuilder
 
         if (plan == null)
             trail.Record("CompoundExact", false, "no plan available");
-        else if ((plan.OptimizationFlags & PlanOptimizationFlags.CompoundExactCandidate) == 0)
+        else if ((compiledPlan.OptimizationFlags & PlanOptimizationFlags.CompoundExactCandidate) == 0)
             trail.Record("CompoundExact", false, "template has no compound-exact candidate");
         else if (TryCreateCompoundExactMatch(plan, planParams, builderParameters, out var compoundExact, out var ceReason))
         {
@@ -275,7 +275,7 @@ internal static partial class QueryPlanBuilder
             {
                 if (plan == null)
                     trail.Record("CompoundField", false, "no plan available");
-                else if ((plan.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
+                else if ((compiledPlan.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
                     trail.Record("CompoundField", false, "template has no direct-scan candidate");
                 else if (TryCreateCompoundFieldMatch(plan, orderByFields, planParams, builderParameters, compiledPlan, out var compoundMatch, out var cfReason))
                 {
@@ -293,7 +293,7 @@ internal static partial class QueryPlanBuilder
             {
                 if (plan == null)
                     trail.Record("DirectScan", false, "no plan available");
-                else if ((plan.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
+                else if ((compiledPlan.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
                     trail.Record("DirectScan", false, "template has no direct-scan candidate");
                 else if (TryCreateSimpleFieldDirectScan(plan, orderByFields, planParams, builderParameters, compiledPlan, out var directMatch, out var dsReason))
                 {
@@ -461,12 +461,8 @@ internal static partial class QueryPlanBuilder
 
         if(planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags) is {} compiledPlan)
         {
+            plan.Plan = compiledPlan;
             plan.Executions = executions;
-            plan.OperandOrdering = operandOrdering;
-            plan.AllNegated = allNegated;
-            plan.ScanPredicateInfos = compiledPlan.ScanPredicateInfos;
-            plan.WhenFlags = whenFlags;
-            plan.OptimizationFlags = template.OptimizationFlags;
 
             // Build InRangeCounts from executions (same fixup as cache-miss path
             // but without the structural array from EmitPlan).
@@ -477,13 +473,15 @@ internal static partial class QueryPlanBuilder
             if (isSingleNegatedEquals && executions[0].IsNegated == false)
                 executions[0].IsNegated = true;
 
-            AttachSpatialAndVectorClauses(plan, template, planParams, builderParameters, writer);
+            AttachSpatialAndVectorClauses(plan, compiledPlan.AllNegated, template, planParams, builderParameters, writer);
 
             plan.LongValues = writer.GetLongs();
             plan.DoubleValues = writer.GetDoubles();
             plan.StringValues = writer.GetStrings();
 
-            RemapOptimizationIndices(plan, template, executions);
+            // Structural fields (AllNegated, OptimizationFlags, SortDrivingClauseIndex,
+            // compound indices) are already on the cached compiledPlan — no
+            // RemapOptimizationIndices call needed on cache hit.
             return compiledPlan;
         }
 
@@ -522,8 +520,6 @@ internal static partial class QueryPlanBuilder
         {
             plan = EmitPlan(isOr, executions);
             plan.Executions = executions;
-            plan.OperandOrdering = operandOrdering;
-            plan.AllNegated = allNegated;
 
             // Fixup InRangeCounts from actual runtime InTermCount / HasNullTerm.
             // EmitPlan uses Bindings.Length (structural) for range counts, but runtime
@@ -553,8 +549,6 @@ internal static partial class QueryPlanBuilder
                     }
                 }
             }
-
-            plan.ScanPredicateInfos = scanPreds;
         }
 
         // Empty-IN short-circuit: EmitPlan returns Ops=[] for an AND chain containing
@@ -574,7 +568,7 @@ internal static partial class QueryPlanBuilder
             return null;
         }
 
-        AttachSpatialAndVectorClauses(plan, template, planParams, builderParameters, writer);
+        AttachSpatialAndVectorClauses(plan, allNegated, template, planParams, builderParameters, writer);
 
         // Store typed arrays once after all clauses (including spatial/vector) are populated.
         plan.LongValues = writer.GetLongs();
@@ -590,17 +584,15 @@ internal static partial class QueryPlanBuilder
                     ops[i].Dispatch = MatchDispatch.QueryMatch;
         }
 
-        plan.WhenFlags = whenFlags;
-        plan.OptimizationFlags = template.OptimizationFlags;
+        var remapped = RemapOptimizationIndices(template, executions);
 
-        RemapOptimizationIndices(plan, template, executions);
-
-        // Compile and cache.
+        // Compile and cache. Structural fields (AllNegated, OptimizationFlags, remapped
+        // indices, ScanPredicateInfos) are stored on the CompiledPlan, not on QueryExecution.
         compiledPlan = new CompiledPlan
         {
             CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var csharpText, emitTimings: false),
             CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
-            CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanCsharp),
+            CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(scanPreds, out var scanCsharp),
 
             Source = csharpText + "\n" + scanCsharp,
             Ordering = operandOrdering,
@@ -611,8 +603,18 @@ internal static partial class QueryPlanBuilder
             RequiredBitmaps = plan.RequiredBitmaps,
             InRangeSlotCount = plan.InRangeCounts?.Length ?? 0,
             InspectionTemplate = BuildInspectionTemplate(plan),
-            ScanPredicateInfos = scanPreds
+            ScanPredicateInfos = scanPreds,
+
+            AllNegated = allNegated,
+            OptimizationFlags = template.OptimizationFlags,
+            SortDrivingClauseIndex = remapped.SortDriving,
+            CompoundExactClauseA = remapped.ExactA,
+            CompoundExactClauseB = remapped.ExactB,
+            CompoundExactAFirst = remapped.ExactAFirst,
+            CompoundFieldDrivingClause = remapped.FieldDriving,
+            CompoundFieldSortName = remapped.FieldSortName
         };
+        plan.Plan = compiledPlan;
         planCache.Add(queryText, compiledPlan, template);
 
         return compiledPlan;
@@ -915,7 +917,7 @@ internal static partial class QueryPlanBuilder
     /// call <see cref="AttachPostFilterPhases"/> to wire them onto the plan. No-op when
     /// the template has neither.</summary>
     private static void AttachSpatialAndVectorClauses(
-        QueryExecution plan, PlanTemplate template, QueryPlanBuilder.PlanParameters planParams,
+        QueryExecution plan, bool allNegated, PlanTemplate template, QueryPlanBuilder.PlanParameters planParams,
         QueryBuilderParameters builderParameters, ValueWriter writer)
     {
         if (template.SpatialClauses == null && template.VectorClauses == null)
@@ -956,27 +958,26 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        AttachPostFilterPhases(plan, spatialArr, spatialExecs, vectorArr, vectorExecs);
+        AttachPostFilterPhases(plan, allNegated, spatialArr, spatialExecs, vectorArr, vectorExecs);
     }
 
     /// <summary>Remap template-position optimization indices (sort-driving, compound-exact pair,
-    /// compound-field driver) to post-sort runtime indices on the live <see cref="QueryExecution"/>.
-    /// After WHEN elimination + cardinality sort, clauses are reordered relative to the template;
-    /// each clause carries its template-position in <see cref="ClauseInfo.OriginalIndex"/> so a
-    /// single pass over the (already-sorted) clause list is enough to find the four targets.
+    /// compound-field driver) to post-sort runtime indices. After WHEN elimination + cardinality
+    /// sort, clauses are reordered relative to the template; each clause carries its
+    /// template-position in <see cref="ClauseInfo.OriginalIndex"/> so a single pass over the
+    /// (already-sorted) clause list is enough to find the four targets. Returns the remapped
+    /// values to be stored on <see cref="CompiledPlan"/>.
     ///
     /// Note: <see cref="QueryExecution.CardinalityCliffBit"/> is computed in <see cref="Build"/>
     /// before the cache lookup (it is part of the cache key).</summary>
-    private static void RemapOptimizationIndices(
-        QueryExecution plan, PlanTemplate template,
-        ClauseExecution[] executions)
+    private static (int SortDriving, int ExactA, int ExactB, bool ExactAFirst,
+                     int FieldDriving, string FieldSortName)
+        RemapOptimizationIndices(PlanTemplate template, ClauseExecution[] executions)
     {
-        plan.SortDrivingClauseIndex = -1;
-        plan.CompoundExactClauseA = -1;
-        plan.CompoundExactClauseB = -1;
-        plan.CompoundExactAFirst = template.CompoundExactAFirst;
-        plan.CompoundFieldDrivingClause = -1;
-        plan.CompoundFieldSortName = template.CompoundFieldSortName;
+        int sortDriving = -1;
+        int exactA = -1;
+        int exactB = -1;
+        int fieldDriving = -1;
 
         int needSort = template.SortDrivingClauseIndex >= 0 ? 1 : 0;
         int needExactA = template.CompoundExactClauseA >= 0 ? 1 : 0;
@@ -988,30 +989,32 @@ internal static partial class QueryPlanBuilder
             int origIdx = executions[i].Clause.OriginalIndex;
             if (needSort > 0 && origIdx == template.SortDrivingClauseIndex)
             {
-                plan.SortDrivingClauseIndex = i;
+                sortDriving = i;
                 remaining--;
             }
 
             if (needExactA > 0 && origIdx == template.CompoundExactClauseA)
             {
-                plan.CompoundExactClauseA = i;
+                exactA = i;
                 remaining--;
             }
             else if (needExactB > 0 && origIdx == template.CompoundExactClauseB)
             {
-                plan.CompoundExactClauseB = i;
+                exactB = i;
                 remaining--;
             }
 
             if (needField > 0 && origIdx == template.CompoundFieldDrivingClause)
             {
-                plan.CompoundFieldDrivingClause = i;
+                fieldDriving = i;
                 remaining--;
             }
         }
 
         // NOTE: CardinalityCliffBit is now computed in Build() before the cache lookup
         // (it's part of the cache key). RemapOptimizationIndices no longer sets it.
+        return (SortDriving: sortDriving, ExactA: exactA, ExactB: exactB, ExactAFirst: template.CompoundExactAFirst,
+                FieldDriving: fieldDriving, FieldSortName: template.CompoundFieldSortName);
     }
 
     /// <summary>Create a ClauseExecution for a clause, including sub-executions for OrGroup/AndGroup.
@@ -1535,7 +1538,7 @@ internal static partial class QueryPlanBuilder
 
         // Standalone NotEquals pattern: FillAllEntries (no slot) + ANDNOT(term at slot 0).
         // Exclude IN/AllIn — they need N+1 slots for multi-term OR+ANDNOT, not 1.
-        if (execs.Length == 1 && execs[0].IsNegated && !plan.AllNegated
+        if (execs.Length == 1 && execs[0].IsNegated && !plan.Plan.AllNegated
             && execs[0].Clause.ClauseType is not (ClauseType.In or ClauseType.AllIn))
         {
             var clause = execs[0].Clause;
@@ -1543,7 +1546,7 @@ internal static partial class QueryPlanBuilder
             return [ResolveClause(clause, exec0, plan, walkerCtx)];
         }
 
-        var matches = new IQueryMatch[CountMatchSlots(execs, plan.IsAllEntries, plan.AllNegated)];
+        var matches = new IQueryMatch[CountMatchSlots(execs, plan.IsAllEntries, plan.Plan.AllNegated)];
         int matchIdx = 0;
         for (int ci = 0; ci < execs.Length; ci++)
         {
@@ -1596,7 +1599,7 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        if (plan.AllNegated)
+        if (plan.Plan.AllNegated)
             matches[matchIdx] = indexSearcher.AllEntries();
         return matches;
     }
@@ -2016,13 +2019,13 @@ internal static partial class QueryPlanBuilder
 
         // Standalone NotEquals: FillAllEntries (no slot) + ANDNOT at slot 0.
         // Exclude IN/AllIn — they need N+1 slots for multi-term OR+ANDNOT, not 1.
-        if (execs.Length == 1 && execs[0].IsNegated && !plan.AllNegated
+        if (execs.Length == 1 && execs[0].IsNegated && !plan.Plan.AllNegated
             && execs[0].Clause.ClauseType is not (ClauseType.In or ClauseType.AllIn))
         {
             return [ResolveSingleTermSource(execs[0].Clause, execs[0], plan, walkerCtx)];
         }
 
-        var termSources = new PostingSource[CountMatchSlots(execs, plan.IsAllEntries, plan.AllNegated)];
+        var termSources = new PostingSource[CountMatchSlots(execs, plan.IsAllEntries, plan.Plan.AllNegated)];
         int matchIdx = 0;
         for (int ci = 0; ci < execs.Length; ci++)
         {
@@ -2123,7 +2126,7 @@ internal static partial class QueryPlanBuilder
         if (!hasAnyTreeScan)
             return null;
 
-        int totalSlots = CountMatchSlots(execs, plan.IsAllEntries, plan.AllNegated);
+        int totalSlots = CountMatchSlots(execs, plan.IsAllEntries, plan.Plan.AllNegated);
         var providers = new ITermsProvider[totalSlots];
         int matchIdx = 0;
 
@@ -2280,7 +2283,7 @@ internal static partial class QueryPlanBuilder
     private static void ExtractScanParameters(QueryExecution plan, IndexSearcher indexSearcher,
         out long[] longParams, out double[] doubleParams, out Voron.Slice[] sliceParams, out long[] fieldRootPages)
     {
-        var predicates = plan.ScanPredicateInfos;
+        var predicates = plan.Plan.ScanPredicateInfos;
         if (predicates == null || predicates.Length == 0)
         {
             longParams = [];
@@ -2298,7 +2301,7 @@ internal static partial class QueryPlanBuilder
         // Walk predicates and clauses in lock-step. BuildScanPredicateInfo skips non-eligible
         // clauses (Search, In, AllIn, Exists, StartsWith, EndsWith, Regex, Spatial, Vector,
         // AndGroup), so we must skip them here too to keep the 1:1 positional mapping.
-        int scanStart = plan.AllNegated ? 0 : 1;
+        int scanStart = plan.Plan.AllNegated ? 0 : 1;
         int clauseIdx = scanStart;
         var execs = plan.Executions;
         int dummyL = 0, dummyD = 0, dummyS = 0;
@@ -3055,11 +3058,11 @@ internal static partial class QueryPlanBuilder
         {
             if (plan.Executions == null || plan.Executions.Length < 2)
                 rejectReason = $"fewer than 2 clauses ({plan.Executions?.Length ?? 0})";
-            else if (plan.AllNegated)
+            else if (plan.Plan.AllNegated)
                 rejectReason = "all clauses are negated";
             else if (planParams.Index == null)
                 rejectReason = "no index available";
-            else if (plan.CompoundExactClauseA < 0 || plan.CompoundExactClauseB < 0)
+            else if (plan.Plan.CompoundExactClauseA < 0 || plan.Plan.CompoundExactClauseB < 0)
                 rejectReason = "no compound-exact clause pair identified at template time";
             else
                 rejectReason = "composite key encoding failed or exceeded max term length";
@@ -3079,13 +3082,13 @@ internal static partial class QueryPlanBuilder
         // Discovery: structural rejection. All structural facts (CompoundExactClauseA/B,
         // CompoundExactAFirst) were pre-classified at template time; this method only
         // confirms the runtime state is compatible.
-        if (plan.Executions == null || plan.Executions.Length < 2 || plan.AllNegated)
+        if (plan.Executions == null || plan.Executions.Length < 2 || plan.Plan.AllNegated)
             return false;
         if (planParams.Index == null)
             return false;
 
-        int idxA = plan.CompoundExactClauseA;
-        int idxB = plan.CompoundExactClauseB;
+        int idxA = plan.Plan.CompoundExactClauseA;
+        int idxB = plan.Plan.CompoundExactClauseB;
         if (idxA < 0 || idxB < 0 || idxA >= plan.Executions.Length || idxB >= plan.Executions.Length)
             return false;
 
@@ -3111,14 +3114,14 @@ internal static partial class QueryPlanBuilder
     {
         var execs = plan.Executions;
         var indexSearcher = planParams.IndexSearcher;
-        int idxA = plan.CompoundExactClauseA;
-        int idxB = plan.CompoundExactClauseB;
+        int idxA = plan.Plan.CompoundExactClauseA;
+        int idxB = plan.Plan.CompoundExactClauseB;
         var eA = execs[idxA];
         var eB = execs[idxB];
 
         string firstField, secondField;
         ClauseExecution firstExec, secondExec;
-        if (plan.CompoundExactAFirst)
+        if (plan.Plan.CompoundExactAFirst)
         {
             firstField = eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName;
             secondField = eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName;
@@ -3202,9 +3205,9 @@ internal static partial class QueryPlanBuilder
             return true;
         }
 
-        if (plan.CompoundFieldDrivingClause < 0 || plan.CompoundFieldSortName == null)
+        if (plan.Plan.CompoundFieldDrivingClause < 0 || plan.Plan.CompoundFieldSortName == null)
             rejectReason = "no compound-field candidate identified at template time";
-        else if (plan.AllNegated)
+        else if (plan.Plan.AllNegated)
             rejectReason = "all clauses are negated";
         else
             rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or prefix too long";
@@ -3227,12 +3230,12 @@ internal static partial class QueryPlanBuilder
         // template time. This method runs cost estimation and residual-scannability
         // checks that are deterministic for the cache key (cardinality cliff bit 31
         // in Ordering segregates cliff buckets, so cost outcome is stable per key).
-        int drivingClauseIdx = plan.CompoundFieldDrivingClause;
-        string sortFieldName = plan.CompoundFieldSortName;
+        int drivingClauseIdx = plan.Plan.CompoundFieldDrivingClause;
+        string sortFieldName = plan.Plan.CompoundFieldSortName;
         if (drivingClauseIdx < 0 || sortFieldName == null)
             return false;
         var execs = plan.Executions;
-        if (execs == null || drivingClauseIdx >= execs.Length || plan.AllNegated)
+        if (execs == null || drivingClauseIdx >= execs.Length || plan.Plan.AllNegated)
             return false;
 
         var indexSearcher = planParams.IndexSearcher;
@@ -3324,8 +3327,8 @@ internal static partial class QueryPlanBuilder
         var execs = plan.Executions;
         var indexSearcher = planParams.IndexSearcher;
         var allocator = planParams.Allocator;
-        int drivingClauseIdx = plan.CompoundFieldDrivingClause;
-        string sortFieldName = plan.CompoundFieldSortName;
+        int drivingClauseIdx = plan.Plan.CompoundFieldDrivingClause;
+        string sortFieldName = plan.Plan.CompoundFieldSortName;
 
         var drivingClause = execs[drivingClauseIdx].Clause;
         var drivingExec = execs[drivingClauseIdx];
@@ -3577,7 +3580,7 @@ internal static partial class QueryPlanBuilder
                 rejectReason = $"ORDER BY has {orderByFields.Length} fields (max 2 for direct scan)";
             else if (orderByFields.Length == 2 && orderByFields[1].FieldType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
                 rejectReason = $"tie-break field type {orderByFields[1].FieldType} is not numeric";
-            else if (plan.Executions is { Length: > 0 } && plan.SortDrivingClauseIndex < 0)
+            else if (plan.Executions is { Length: > 0 } && plan.Plan.SortDrivingClauseIndex < 0)
                 rejectReason = $"no range/equals clause on sort field '{orderByFields[0].Field.FieldName}'";
             else
                 rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or cardinality too high for tie-break";
@@ -3620,7 +3623,7 @@ internal static partial class QueryPlanBuilder
         var execs = plan.Executions;
         bool isFullScan = execs == null || execs.Length == 0;
 
-        if (isFullScan && plan.AllNegated)
+        if (isFullScan && plan.Plan.AllNegated)
             return false;
 
         // ── Discovery: drivingIdx + cost gate ──
@@ -3631,7 +3634,7 @@ internal static partial class QueryPlanBuilder
         {
             // SortDrivingClauseIndex pre-identified at template time and remapped to
             // post-sort index during Build — skip the per-execution clause scan.
-            drivingIdx = plan.SortDrivingClauseIndex;
+            drivingIdx = plan.Plan.SortDrivingClauseIndex;
             if (drivingIdx == -1)
             {
                 // Fallback: template didn't identify a candidate (e.g. WHEN eliminated the
@@ -4978,7 +4981,8 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static void AttachPostFilterPhases(QueryExecution plan, ClauseInfo[] spatialClauses, ClauseExecution[] spatialExecs,
+    private static void AttachPostFilterPhases(QueryExecution plan, bool allNegated,
+        ClauseInfo[] spatialClauses, ClauseExecution[] spatialExecs,
         ClauseInfo[] vectorClauses, ClauseExecution[] vectorExecs)
     {
         if (spatialClauses == null && vectorClauses == null)
@@ -4992,7 +4996,7 @@ internal static partial class QueryPlanBuilder
         int execIdx = execs.Length;
         Array.Resize(ref execs, execs.Length + extraCount);
 
-        int matchIndex = CountMatchSlots(execs, plan.IsAllEntries, plan.AllNegated);
+        int matchIndex = CountMatchSlots(execs, plan.IsAllEntries, allNegated);
 
         if (spatialClauses != null)
         {

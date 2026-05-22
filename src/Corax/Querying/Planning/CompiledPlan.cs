@@ -125,4 +125,35 @@ public sealed class CompiledPlan
     /// to avoid rebuilding the <see cref="ScanPredicateInfo"/> array per query.
     /// Null when the plan has no entry-scan predicates (single-clause, OR, etc.).</summary>
     public ScanPredicateInfo[] ScanPredicateInfos { get; init; }
+
+    // ── Structural fields moved from QueryExecution ─────────────────────
+    // Set once at cache-miss time (by Build + RemapOptimizationIndices) then
+    // read-only on every subsequent cache hit. Not duplicated on QueryExecution.
+
+    /// <summary>True when every clause in the execution is negated (NOT pattern).
+    /// Determines whether a trailing AllEntries slot is appended during resolution.</summary>
+    public bool AllNegated { get; init; }
+
+    /// <summary>Structural optimization flags inherited from the PlanTemplate.
+    /// Checked by Instantiate to skip inapplicable Try* methods.</summary>
+    public PlanOptimizationFlags OptimizationFlags { get; init; }
+
+    /// <summary>Post-sort runtime index of the clause identified at plan time as the
+    /// sort-driving candidate (range/eq on ORDER BY field). -1 when none.
+    /// Remapped from template position by RemapOptimizationIndices.</summary>
+    public int SortDrivingClauseIndex { get; init; } = -1;
+
+    /// <summary>Pre-identified compound-exact-match clause pair (runtime indices, remapped
+    /// from template via OriginalIndex). -1/-1 when no qualifying pair exists.</summary>
+    public int CompoundExactClauseA { get; init; } = -1;
+    /// <inheritdoc cref="CompoundExactClauseA"/>
+    public int CompoundExactClauseB { get; init; } = -1;
+    /// <summary>True when the compound field order is (A, B); false when (B, A).</summary>
+    public bool CompoundExactAFirst { get; init; }
+
+    /// <summary>Pre-identified compound-field-match (WHERE Equals + ORDER BY) driving clause
+    /// index (runtime, remapped from template). -1 when none.</summary>
+    public int CompoundFieldDrivingClause { get; init; } = -1;
+    /// <summary>Sort field name for compound-field match.</summary>
+    public string CompoundFieldSortName { get; init; }
 }

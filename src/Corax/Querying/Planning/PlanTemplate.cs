@@ -30,7 +30,7 @@ public enum PlanOptimizationFlags : byte
 public sealed class PlanTemplate
 {
     /// <summary>Hard cap on WHEN-bearing clauses per template. Bit <c>i</c> of
-    /// <see cref="QueryExecution.WhenFlags"/> tracks the <c>i</c>-th WHEN clause's
+    /// <see cref="CompiledPlan.WhenFlags"/> tracks the <c>i</c>-th WHEN clause's
     /// survival under bound params; with <c>int</c> as the carrier, the maximum
     /// safe count is 32. Realistic workloads have far fewer (~10 in the worst
     /// optional-filter LINQ shapes).</summary>
@@ -80,7 +80,7 @@ public sealed class PlanTemplate
     /// in template traversal order. Computed once at template construction. If this
     /// exceeds <see cref="MaxWhenClauses"/>, template construction throws
     /// <see cref="System.NotSupportedException"/> — the bit position used in
-    /// <see cref="QueryExecution.WhenFlags"/> would otherwise wrap silently.</summary>
+    /// <see cref="CompiledPlan.WhenFlags"/> would otherwise wrap silently.</summary>
     public int WhenCount;
 
     /// <summary>Deduplicated, ordered list of query parameter names referenced by this
