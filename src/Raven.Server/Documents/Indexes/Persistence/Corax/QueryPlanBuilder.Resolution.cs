@@ -184,7 +184,7 @@ internal static partial class QueryPlanBuilder
                 case ExecutionStrategy.CompoundField:
                     if (plan != null && orderByFields != null)
                     {
-                        int f2 = FindCompoundFieldField2Range(plan.Clauses, plan.CompoundFieldDrivingClause, plan.CompoundFieldSortName);
+                        int f2 = FindCompoundFieldField2Range(plan.Executions, plan.CompoundFieldDrivingClause, plan.CompoundFieldSortName);
                         // Cost facts (entriesToScan, bitmapCost) are diagnostic-only inside
                         // Construct (used for the Reason string). Pass zeros — the cliff bit
                         // in the cache key already segregates cost buckets.
@@ -202,8 +202,8 @@ internal static partial class QueryPlanBuilder
                 case ExecutionStrategy.DirectScan:
                     if (plan != null && orderByFields is { Length: <= 2 })
                     {
-                        var clauses = plan.Clauses;
-                        bool isFullScan = clauses == null || clauses.Count == 0;
+                        var execs2 = plan.Executions;
+                        bool isFullScan = execs2 == null || execs2.Length == 0;
                         bool hasTieBreak = orderByFields.Length == 2;
                         // Re-resolve drivingIdx (cheap structural lookup; cached at template time
                         // via SortDrivingClauseIndex). Skip cost gating — strategy cache encodes
@@ -397,36 +397,36 @@ internal static partial class QueryPlanBuilder
         var queryText = planParams.Metadata.Query.QueryText;
         var planCache = indexSearcher.PlanCache;
 
-        // Step 2: Build the per-execution clause/exec lists from the template, evaluating
+        // Step 2: Build the per-execution exec list from the template, evaluating
         // WHEN clauses against bound parameters as we go.
-        var (clauses, execList, whenFlags) = EvaluateWhenAndFilterClauses(template, planParams);
+        var (execList, whenFlags) = EvaluateWhenAndFilterClauses(template, planParams);
 
         // Step 3: Populate parameter values into typed arrays
         var writer = new ValueWriter();
-        for (int ci = 0; ci < clauses.Count; ci++)
+        for (int ci = 0; ci < execList.Count; ci++)
         {
-            PopulateClauseValues(clauses[ci], execList[ci], planParams.QueryParameters, writer, builderParameters);
+            PopulateClauseValues(execList[ci].Clause, execList[ci], planParams.QueryParameters, writer, builderParameters);
         }
 
         // Step 3b: Constant propagation — simplify trivially-false/simple clauses.
         bool isOr = template.IsOr;
-        PropagateBetweenContradictions(clauses, execList, writer);
+        PropagateBetweenContradictions(execList, writer);
 
         // Step 4: Estimate cardinality (needs populated values)
         var cardinalityCtx = builderParameters != null
             ? new ResolutionContext(builderParameters)
             : new ResolutionContext(planParams);
-        for (int ci = 0; ci < clauses.Count; ci++)
+        for (int ci = 0; ci < execList.Count; ci++)
         {
             if (execList[ci].Cardinality < 0)
-                execList[ci].Cardinality = EstimateCardinality(clauses[ci], execList[ci], indexSearcher, writer, cardinalityCtx);
+                execList[ci].Cardinality = EstimateCardinality(execList[ci].Clause, execList[ci], indexSearcher, writer, cardinalityCtx);
         }
 
-        // Step 5: Sort operands by cardinality (sort clauses and executions in lockstep).
-        ClauseExecution[] executions = SortClausesByCardinality(clauses, execList, isOr);
+        // Step 5: Sort operands by cardinality (sort executions by cardinality).
+        ClauseExecution[] executions = SortClausesByCardinality(execList, isOr);
 
         // Step 6: Emit plan ops + attach spatial/vector post-filters.
-        if (clauses.Count == 0)
+        if (executions.Length == 0)
         {
             if (isOr && template.Clauses.Count > 0)
             {
@@ -442,18 +442,7 @@ internal static partial class QueryPlanBuilder
         }
         else
         {
-            // Extract per-clause cardinalities and value types for EmitPlan.
-            // EmitPlan uses these for annotations (EstimatedCardinality, scan predicate types)
-            // but NOT for shape decisions.
-            var emitCardinalities = new long[executions.Length];
-            var emitTermTypes = new ParamValueType[executions.Length];
-            for (int ei = 0; ei < executions.Length; ei++)
-            {
-                emitCardinalities[ei] = executions[ei].Cardinality;
-                emitTermTypes[ei] = executions[ei].TermValueType;
-            }
- 
-            plan = EmitPlan(clauses, emitCardinalities, emitTermTypes, isOr, executions);
+            plan = EmitPlan(isOr, executions);
             plan.Executions = executions;
 
 
@@ -467,9 +456,9 @@ internal static partial class QueryPlanBuilder
                 int rangeIdx = 0;
                 // OR chain: every In/AllIn clause emits one range entry
                 // AND chain: seed In/AllIn at position 0 emits one entry, each non-seed In/AllIn emits one
-                for (int ci = 0; ci < clauses.Count && rangeIdx < plan.InRangeCounts.Length; ci++)
+                for (int ci = 0; ci < executions.Length && rangeIdx < plan.InRangeCounts.Length; ci++)
                 {
-                    var cl = clauses[ci];
+                    var cl = executions[ci].Clause;
                     if (cl.ClauseType == ClauseType.In)
                     {
                         // IN: range = InTermCount (OR with empty null-slot is no-op)
@@ -503,16 +492,16 @@ internal static partial class QueryPlanBuilder
 
             // Build scan predicate infos for entry scan — done here (not in EmitPlan)
             // because OrGroup/AndGroup subclauses need actual resolved types from executions.
-            if (isOr == false && clauses.Count > 1)
+            if (isOr == false && executions.Length > 1)
             {
                 int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
                 int scanStart = plan.AllNegated ? 0 : 1;
-                int maxPreds = clauses.Count - scanStart;
+                int maxPreds = executions.Length - scanStart;
                 var scanPreds = new ScanPredicateInfo[maxPreds];
                 int scanPredCount = 0;
-                for (int si2 = scanStart; si2 < clauses.Count; si2++)
+                for (int si2 = scanStart; si2 < executions.Length; si2++)
                 {
-                    var pred = BuildScanPredicateInfo(clauses[si2], executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex);
+                    var pred = BuildScanPredicateInfo(executions[si2].Clause, executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex);
                     if (pred != null)
                         scanPreds[scanPredCount++] = pred.Value;
                 }
@@ -567,7 +556,7 @@ internal static partial class QueryPlanBuilder
         plan.WhenFlags = whenFlags;
         plan.OptimizationFlags = template.OptimizationFlags;
 
-        RemapOptimizationIndices(plan, template, clauses, executions);
+        RemapOptimizationIndices(plan, template, executions);
 
         var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds, plan.WhenFlags);
         if (compiledPlan == null)
@@ -743,10 +732,9 @@ internal static partial class QueryPlanBuilder
     /// collides with the single-clause [Attach==true] survivor (also ord=1). WhenFlags
     /// joins (Ordering, TypeSignature, FullKinds) so each survival pattern gets its own
     /// cached compiled plan.</summary>
-    private static (List<ClauseInfo> Clauses, List<ClauseExecution> ExecList, int WhenFlags)
+    private static (List<ClauseExecution> ExecList, int WhenFlags)
         EvaluateWhenAndFilterClauses(PlanTemplate template, PlanParameters planParams)
     {
-        var clauses = new List<ClauseInfo>(template.Clauses.Count);
         var execList = new List<ClauseExecution>(template.Clauses.Count);
         int whenFlags = 0;
         if (template.WhenCount == 0)
@@ -755,7 +743,6 @@ internal static partial class QueryPlanBuilder
             // WhenCondition null check. Common case for non-conditional queries.
             foreach (var cached in template.Clauses)
             {
-                clauses.Add(cached);
                 execList.Add(CreateExecution(cached));
             }
         }
@@ -776,12 +763,11 @@ internal static partial class QueryPlanBuilder
                     whenBit++;
                 }
 
-                clauses.Add(cached);
                 execList.Add(CreateExecution(cached));
             }
         }
 
-        return (clauses, execList, whenFlags);
+        return (execList, whenFlags);
     }
 
     /// <summary>Step 3b of <see cref="Build"/>: constant propagation for trivially-false
@@ -799,12 +785,12 @@ internal static partial class QueryPlanBuilder
     /// (RavenDB-17423). The uniform IN shape lets EmitInOps emit a single OrRange whose
     /// term count is read from InRangeCounts at runtime.</summary>
     private static void PropagateBetweenContradictions(
-        List<ClauseInfo> clauses, List<ClauseExecution> execList, ValueWriter writer)
+        List<ClauseExecution> execList, ValueWriter writer)
     {
-        for (int ci = clauses.Count - 1; ci >= 0; ci--)
+        for (int ci = execList.Count - 1; ci >= 0; ci--)
         {
-            var c = clauses[ci];
             var e = execList[ci];
+            var c = e.Clause;
 
             var p = e.PackedParamValue;
 
@@ -844,7 +830,7 @@ internal static partial class QueryPlanBuilder
     /// last, ascending cardinality).
     /// OR-chain: partition AndGroup clauses to the front (preserving relative order).</summary>
     private static ClauseExecution[] SortClausesByCardinality(
-        List<ClauseInfo> clauses, List<ClauseExecution> execList, bool isOr)
+        List<ClauseExecution> execList, bool isOr)
     {
         if (isOr == false)
         {
@@ -869,10 +855,6 @@ internal static partial class QueryPlanBuilder
                 }
             }
         }
-
-        // Rebuild clauses list from sorted executions (exec.Clause back-references).
-        for (int i = 0; i < clauses.Count; i++)
-            clauses[i] = execList[i].Clause;
 
         return execList.ToArray();
     }
@@ -938,7 +920,7 @@ internal static partial class QueryPlanBuilder
     /// (different optimization hints, different cache keys).</summary>
     private static void RemapOptimizationIndices(
         QueryExecution plan, PlanTemplate template,
-        List<ClauseInfo> clauses, ClauseExecution[] executions)
+        ClauseExecution[] executions)
     {
         plan.SortDrivingClauseIndex = -1;
         plan.CompoundExactClauseA = -1;
@@ -952,9 +934,9 @@ internal static partial class QueryPlanBuilder
         int needExactB = template.CompoundExactClauseB >= 0 ? 1 : 0;
         int needField = template.CompoundFieldDrivingClause >= 0 ? 1 : 0;
         int remaining = needSort + needExactA + needExactB + needField;
-        for (int i = 0; i < clauses.Count && remaining > 0; i++)
+        for (int i = 0; i < executions.Length && remaining > 0; i++)
         {
-            int origIdx = clauses[i].OriginalIndex;
+            int origIdx = executions[i].Clause.OriginalIndex;
             if (needSort > 0 && origIdx == template.SortDrivingClauseIndex)
             {
                 plan.SortDrivingClauseIndex = i;
@@ -1475,7 +1457,7 @@ internal static partial class QueryPlanBuilder
     private static IQueryMatch[] ResolveMatches(QueryExecution plan, ResolutionContext walkerCtx)
     {
         var indexSearcher = walkerCtx.IndexSearcher;
-        var clauses = plan.Clauses ?? [];
+        var execs = plan.Executions ?? [];
         // IsAllEntries + spatial/vector occurs when the query's only predicates are
         // vector.search() or spatial clauses with no other WHERE terms. GroupCollapse
         // partitions them into SpatialClauses/VectorClauses, leaving the main clause
@@ -1507,24 +1489,22 @@ internal static partial class QueryPlanBuilder
             return allEntriesMatches;
         }
 
-        if (clauses.Count == 0)
+        if (execs.Length == 0)
             return [];
 
-        var execs = plan.Executions;
-
         // Standalone NotEquals pattern: FillAllEntries (no slot) + ANDNOT(term at slot 0).
-        if (clauses.Count == 1 && (execs[0].EffectiveIsNegated ?? clauses[0].IsNegated) && !plan.AllNegated)
+        if (execs.Length == 1 && (execs[0].EffectiveIsNegated ?? execs[0].Clause.IsNegated) && !plan.AllNegated)
         {
-            var clause = clauses[0];
+            var clause = execs[0].Clause;
             var exec0 = execs[0];
             return [ResolveClause(clause, exec0, plan, walkerCtx)];
         }
 
-        var matches = new IQueryMatch[CountMatchSlots(clauses, execs, plan.IsAllEntries, plan.AllNegated)];
+        var matches = new IQueryMatch[CountMatchSlots(execs, plan.IsAllEntries, plan.AllNegated)];
         int matchIdx = 0;
-        for (int ci = 0; ci < clauses.Count; ci++)
+        for (int ci = 0; ci < execs.Length; ci++)
         {
-            ClauseInfo clause = clauses[ci];
+            ClauseInfo clause = execs[ci].Clause;
             ClauseExecution exec = execs[ci];
             if (TryGetGroupFanOut(clause, exec, out var subClauses, out var subExecs))
             {
@@ -1987,22 +1967,21 @@ internal static partial class QueryPlanBuilder
         if (plan.IsAllEntries)
             return [];
 
-        if (plan.Clauses is not { Count: > 0 } clauses)
+        var execs = plan.Executions;
+        if (execs is not { Length: > 0 })
             return [];
 
-        var execs = plan.Executions;
-
         // Standalone NotEquals: FillAllEntries (no slot) + ANDNOT at slot 0.
-        if (clauses.Count == 1 && (execs[0].EffectiveIsNegated ?? clauses[0].IsNegated) && !plan.AllNegated)
+        if (execs.Length == 1 && (execs[0].EffectiveIsNegated ?? execs[0].Clause.IsNegated) && !plan.AllNegated)
         {
-            return [ResolveSingleTermSource(clauses[0], execs[0], plan, walkerCtx)];
+            return [ResolveSingleTermSource(execs[0].Clause, execs[0], plan, walkerCtx)];
         }
 
-        var termSources = new PostingSource[CountMatchSlots(clauses, execs, plan.IsAllEntries, plan.AllNegated)];
+        var termSources = new PostingSource[CountMatchSlots(execs, plan.IsAllEntries, plan.AllNegated)];
         int matchIdx = 0;
-        for (int ci = 0; ci < clauses.Count; ci++)
+        for (int ci = 0; ci < execs.Length; ci++)
         {
-            ClauseInfo clause = clauses[ci];
+            ClauseInfo clause = execs[ci].Clause;
             ClauseExecution exec = execs[ci];
             if (TryGetGroupFanOut(clause, exec, out var subClauses, out var subExecs))
             {
@@ -2064,25 +2043,26 @@ internal static partial class QueryPlanBuilder
     /// ResolveMatches/ResolveTermSources. Returns null if no TreeScan clauses exist.</summary>
     private static ITermsProvider[] ResolveTermsProviders(QueryExecution plan, ResolutionContext walkerCtx)
     {
-        if (plan.IsAllEntries || plan.Clauses is not { Count: > 0 } clauses)
+        var execs = plan.Executions;
+        if (plan.IsAllEntries || execs is not { Length: > 0 })
             return null;
 
-        var execs = plan.Executions;
         bool hasAnyTreeScan = false;
 
         // Quick check: do we have any TreeScan clauses at all?
-        foreach (var clause in clauses)
+        foreach (var ex in execs)
         {
-            if (IsTreeScanEligibleClause(clause))
+            var cl = ex.Clause;
+            if (IsTreeScanEligibleClause(cl))
             {
                 hasAnyTreeScan = true;
                 break;
             }
 
             // Check subclauses
-            if (clause.OrSubClauses != null)
+            if (cl.OrSubClauses != null)
             {
-                foreach (var t in clause.OrSubClauses)
+                foreach (var t in cl.OrSubClauses)
                 {
                     if (IsTreeScanEligibleClause(t))
                     {
@@ -2094,9 +2074,9 @@ internal static partial class QueryPlanBuilder
 
             if (hasAnyTreeScan) break;
 
-            if (clause.AndSubClauses != null)
+            if (cl.AndSubClauses != null)
             {
-                foreach (var t in clause.AndSubClauses)
+                foreach (var t in cl.AndSubClauses)
                 {
                     if (IsTreeScanEligibleClause(t))
                     {
@@ -2112,14 +2092,14 @@ internal static partial class QueryPlanBuilder
         if (!hasAnyTreeScan)
             return null;
 
-        int totalSlots = CountMatchSlots(clauses, execs, plan.IsAllEntries, plan.AllNegated);
+        int totalSlots = CountMatchSlots(execs, plan.IsAllEntries, plan.AllNegated);
         var providers = new ITermsProvider[totalSlots];
         int matchIdx = 0;
 
-        for (int ci = 0; ci < clauses.Count; ci++)
+        for (int ci = 0; ci < execs.Length; ci++)
         {
-            ClauseInfo clause = clauses[ci];
-            ClauseExecution exec = execs != null && ci < execs.Length ? execs[ci] : null;
+            ClauseInfo clause = execs[ci].Clause;
+            ClauseExecution exec = execs[ci];
 
             if (TryGetGroupFanOut(clause, exec, out var subClauses, out var subExecs))
             {
@@ -2289,21 +2269,20 @@ internal static partial class QueryPlanBuilder
         // AndGroup), so we must skip them here too to keep the 1:1 positional mapping.
         int scanStart = plan.AllNegated ? 0 : 1;
         int clauseIdx = scanStart;
-        var clauses = plan.Clauses;
         var execs = plan.Executions;
         int dummyL = 0, dummyD = 0, dummyS = 0;
         foreach (ScanPredicateInfo pred in predicates)
         {
             // Advance past clauses that BuildScanPredicateInfo would have skipped (returned null).
-            while (clauseIdx < clauses.Count &&
-                   BuildScanPredicateInfo(clauses[clauseIdx], execs != null && clauseIdx < execs.Length ? execs[clauseIdx] : null,
+            while (clauseIdx < execs.Length &&
+                   BuildScanPredicateInfo(execs[clauseIdx].Clause, clauseIdx < execs.Length ? execs[clauseIdx] : null,
                        ref dummyL, ref dummyD, ref dummyS) == null)
             {
                 clauseIdx++;
             }
 
-            ClauseInfo matchingClause = clauseIdx < clauses.Count ? clauses[clauseIdx] : null;
-            ClauseExecution matchingExec = execs != null && clauseIdx < execs.Length ? execs[clauseIdx] : null;
+            ClauseInfo matchingClause = clauseIdx < execs.Length ? execs[clauseIdx].Clause : null;
+            ClauseExecution matchingExec = clauseIdx < execs.Length ? execs[clauseIdx] : null;
             clauseIdx++;
             ExtractParamsFromPredicate(pred, matchingClause, matchingExec, indexSearcher, plan, longs, doubles, slices, roots);
         }
@@ -2332,21 +2311,20 @@ internal static partial class QueryPlanBuilder
         sliceParams = null;
         fieldRootPages = null;
 
-        var clauses = plan.Clauses;
-        if (residualArray == null || clauses == null)
+        var execs = plan.Executions;
+        if (residualArray == null || execs == null)
             return;
 
-        var execs = plan.Executions;
         var longs = new List<long>();
         var doubles = new List<double>();
         var slices = new List<Voron.Slice>();
         var roots = new List<long>();
 
         int residualIdx = 0;
-        for (int i = 0; i < clauses.Count; i++)
+        for (int i = 0; i < execs.Length; i++)
         {
             if (i == skipClauseIdx1 || i == skipClauseIdx2) continue;
-            roots.Add(indexSearcher.FieldCache.GetLookupRootPage(clauses[i].FieldName));
+            roots.Add(indexSearcher.FieldCache.GetLookupRootPage(execs[i].Clause.FieldName));
             var packed = execs[i].PackedParamValue;
             if (packed.IsNone)
             {
@@ -2454,14 +2432,14 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     private static void PopulateHighlightingTerms(QueryExecution plan, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
     {
-        if (highlightingTerms == null || plan.Clauses is not { Count: > 0 } clauses)
+        var execs = plan.Executions;
+        if (highlightingTerms == null || execs is not { Length: > 0 })
             return;
 
-        var execs = plan.Executions;
-        for (int ci = 0; ci < clauses.Count; ci++)
+        for (int ci = 0; ci < execs.Length; ci++)
         {
-            var clauseObj = clauses[ci];
-            var exec = execs != null && ci < execs.Length ? execs[ci] : null;
+            var clauseObj = execs[ci].Clause;
+            var exec = execs[ci];
 
             // Recurse into sub-clauses before checking FieldName: OrGroup/AndGroup have
             // FieldName==null (they are structural wrappers, not field clauses), so a
@@ -3054,8 +3032,8 @@ internal static partial class QueryPlanBuilder
         bool result = TryCreateCompoundExactMatch(plan, planParams, builderParams, out compoundMatch);
         if (!result)
         {
-            if (plan.Clauses == null || plan.Clauses.Count < 2)
-                rejectReason = $"fewer than 2 clauses ({plan.Clauses?.Count ?? 0})";
+            if (plan.Executions == null || plan.Executions.Length < 2)
+                rejectReason = $"fewer than 2 clauses ({plan.Executions?.Length ?? 0})";
             else if (plan.AllNegated)
                 rejectReason = "all clauses are negated";
             else if (planParams.Index == null)
@@ -3080,14 +3058,14 @@ internal static partial class QueryPlanBuilder
         // Discovery: structural rejection. All structural facts (CompoundExactClauseA/B,
         // CompoundExactAFirst) were pre-classified at template time; this method only
         // confirms the runtime state is compatible.
-        if (plan.Clauses == null || plan.Clauses.Count < 2 || plan.AllNegated)
+        if (plan.Executions == null || plan.Executions.Length < 2 || plan.AllNegated)
             return false;
         if (planParams.Index == null)
             return false;
 
         int idxA = plan.CompoundExactClauseA;
         int idxB = plan.CompoundExactClauseB;
-        if (idxA < 0 || idxB < 0 || idxA >= plan.Clauses.Count || idxB >= plan.Clauses.Count)
+        if (idxA < 0 || idxB < 0 || idxA >= plan.Executions.Length || idxB >= plan.Executions.Length)
             return false;
 
         var eA = plan.Executions[idxA];
@@ -3110,7 +3088,6 @@ internal static partial class QueryPlanBuilder
     /// in the plan-cache key (cardinality cliff bit 31 of Ordering).</summary>
     private static IQueryMatch ConstructCompoundExact(QueryExecution plan, PlanParameters planParams)
     {
-        var clauses = plan.Clauses;
         var execs = plan.Executions;
         var indexSearcher = planParams.IndexSearcher;
         int idxA = plan.CompoundExactClauseA;
@@ -3122,15 +3099,15 @@ internal static partial class QueryPlanBuilder
         ClauseExecution firstExec, secondExec;
         if (plan.CompoundExactAFirst)
         {
-            firstField = clauses[idxA].ResolvedFieldName ?? clauses[idxA].FieldName;
-            secondField = clauses[idxB].ResolvedFieldName ?? clauses[idxB].FieldName;
+            firstField = eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName;
+            secondField = eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName;
             firstExec = eA;
             secondExec = eB;
         }
         else
         {
-            firstField = clauses[idxB].ResolvedFieldName ?? clauses[idxB].FieldName;
-            secondField = clauses[idxA].ResolvedFieldName ?? clauses[idxA].FieldName;
+            firstField = eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName;
+            secondField = eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName;
             firstExec = eB;
             secondExec = eA;
         }
@@ -3233,11 +3210,10 @@ internal static partial class QueryPlanBuilder
         string sortFieldName = plan.CompoundFieldSortName;
         if (drivingClauseIdx < 0 || sortFieldName == null)
             return false;
-        if (plan.Clauses == null || drivingClauseIdx >= plan.Clauses.Count || plan.AllNegated)
+        var execs = plan.Executions;
+        if (execs == null || drivingClauseIdx >= execs.Length || plan.AllNegated)
             return false;
 
-        var clauses = plan.Clauses;
-        var execs = plan.Executions;
         var indexSearcher = planParams.IndexSearcher;
 
         var drivingExec = execs[drivingClauseIdx];
@@ -3246,20 +3222,20 @@ internal static partial class QueryPlanBuilder
 
         // Find optional field2 range narrowing clause (structural — same for all
         // executions of this template).
-        int field2RangeIdx = FindCompoundFieldField2Range(clauses, drivingClauseIdx, sortFieldName);
+        int field2RangeIdx = FindCompoundFieldField2Range(execs, drivingClauseIdx, sortFieldName);
 
         // Residual scannability + cost check
         int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
         long bitmapCost = 0;
         int residualCount = 0;
-        for (int i = 0; i < clauses.Count; i++)
+        for (int i = 0; i < execs.Length; i++)
         {
             bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
             if (i == drivingClauseIdx || i == field2RangeIdx)
                 continue;
-            if (clauses[i].HasBoost || (execs[i] is { BoostFactor: > 0 }))
+            if (execs[i].Clause.HasBoost || (execs[i] is { BoostFactor: > 0 }))
                 return false;
-            var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
+            var pred = BuildScanPredicateInfo(execs[i].Clause, execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
             if (pred == null)
                 return false;
             residualCount++;
@@ -3270,7 +3246,7 @@ internal static partial class QueryPlanBuilder
         if (residualCount > 0)
         {
             long minResidualCardinality = long.MaxValue;
-            for (int i = 0; i < clauses.Count; i++)
+            for (int i = 0; i < execs.Length; i++)
             {
                 if (i == drivingClauseIdx) continue;
                 long card = execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
@@ -3299,13 +3275,14 @@ internal static partial class QueryPlanBuilder
     /// that can narrow the compound prefix scan. Structural — same for all executions
     /// of a given template, but cheap enough to recompute on each Construct call
     /// rather than threading another field through QueryExecution.</summary>
-    private static int FindCompoundFieldField2Range(List<ClauseInfo> clauses, int drivingClauseIdx, string sortFieldName)
+    private static int FindCompoundFieldField2Range(ClauseExecution[] executions, int drivingClauseIdx, string sortFieldName)
     {
-        for (int i = 0; i < clauses.Count; i++)
+        for (int i = 0; i < executions.Length; i++)
         {
             if (i == drivingClauseIdx) continue;
-            if (clauses[i].FieldName != sortFieldName) continue;
-            if (clauses[i].ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+            var cl = executions[i].Clause;
+            if (cl.FieldName != sortFieldName) continue;
+            if (cl.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
                 or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between)
                 return i;
         }
@@ -3323,14 +3300,13 @@ internal static partial class QueryPlanBuilder
         PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
         int field2RangeIdx, long entriesToScan, long bitmapCost)
     {
-        var clauses = plan.Clauses;
         var execs = plan.Executions;
         var indexSearcher = planParams.IndexSearcher;
         var allocator = planParams.Allocator;
         int drivingClauseIdx = plan.CompoundFieldDrivingClause;
         string sortFieldName = plan.CompoundFieldSortName;
 
-        var drivingClause = clauses[drivingClauseIdx];
+        var drivingClause = execs[drivingClauseIdx].Clause;
         var drivingExec = execs[drivingClauseIdx];
         var packed = drivingExec.PackedParamValue;
 
@@ -3338,11 +3314,11 @@ internal static partial class QueryPlanBuilder
         // identical to what discovery just walked, so List growth is bounded).
         var residualPreds = new List<ScanPredicateInfo>();
         int rLongIdx = 0, rDoubleIdx = 0, rSliceIdx = 0;
-        for (int i = 0; i < clauses.Count; i++)
+        for (int i = 0; i < execs.Length; i++)
         {
             if (i == drivingClauseIdx || i == field2RangeIdx)
                 continue;
-            var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref rLongIdx, ref rDoubleIdx, ref rSliceIdx);
+            var pred = BuildScanPredicateInfo(execs[i].Clause, execs[i], ref rLongIdx, ref rDoubleIdx, ref rSliceIdx);
             if (pred == null)
                 return null;
             residualPreds.Add(pred.Value);
@@ -3401,7 +3377,7 @@ internal static partial class QueryPlanBuilder
         {
             // Compound range: build composite low/high keys incorporating the field2 bound
             var field2Exec = execs[field2RangeIdx];
-            var field2Clause = clauses[field2RangeIdx];
+            var field2Clause = field2Exec.Clause;
             var field2Packed = field2Exec.PackedParamValue;
 
             if (field2Packed.IsNone == false)
@@ -3580,7 +3556,7 @@ internal static partial class QueryPlanBuilder
                 rejectReason = $"ORDER BY has {orderByFields.Length} fields (max 2 for direct scan)";
             else if (orderByFields.Length == 2 && orderByFields[1].FieldType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
                 rejectReason = $"tie-break field type {orderByFields[1].FieldType} is not numeric";
-            else if (plan.Clauses is { Count: > 0 } && plan.SortDrivingClauseIndex < 0)
+            else if (plan.Executions is { Length: > 0 } && plan.SortDrivingClauseIndex < 0)
                 rejectReason = $"no range/equals clause on sort field '{orderByFields[0].Field.FieldName}'";
             else
                 rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or cardinality too high for tie-break";
@@ -3620,9 +3596,8 @@ internal static partial class QueryPlanBuilder
         string sortFieldName = orderByFields[0].Field.FieldName.ToString();
         var sortFieldType = orderByFields[0].FieldType;
 
-        var clauses = plan.Clauses;
         var execs = plan.Executions;
-        bool isFullScan = clauses == null || clauses.Count == 0;
+        bool isFullScan = execs == null || execs.Length == 0;
 
         if (isFullScan && plan.AllNegated)
             return false;
@@ -3641,15 +3616,16 @@ internal static partial class QueryPlanBuilder
                 // Fallback: template didn't identify a candidate (e.g. WHEN eliminated the
                 // clause, or sort field didn't match any template clause). Boost is ruled
                 // out at template time, so we don't recheck BoostFactor here.
-                for (int i = 0; i < clauses.Count; i++)
+                for (int i = 0; i < execs.Length; i++)
                 {
-                    if (clauses[i].FieldName != sortFieldName)
+                    var cl = execs[i].Clause;
+                    if (cl.FieldName != sortFieldName)
                         continue;
-                    if (clauses[i].ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+                    if (cl.ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
                         or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between
                         or ClauseType.Equals))
                         continue;
-                    if (clauses[i].IsNegated)
+                    if (cl.IsNegated)
                         continue;
                     drivingIdx = i;
                     break;
@@ -3666,12 +3642,12 @@ internal static partial class QueryPlanBuilder
             // The ScanPredicateInfo array built here is the same array ConstructDirectScan
             // needs, so we collect it now and pass it forward instead of rebuilding.
             int rlongIdx = 0, rdoubleIdx = 0, rsliceIdx = 0;
-            for (int i = 0; i < clauses.Count; i++)
+            for (int i = 0; i < execs.Length; i++)
             {
                 bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
                 if (i == drivingIdx) continue;
                 // Boost is ruled out at template time (see ComputeOptFlags).
-                var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref rlongIdx, ref rdoubleIdx, ref rsliceIdx);
+                var pred = BuildScanPredicateInfo(execs[i].Clause, execs[i], ref rlongIdx, ref rdoubleIdx, ref rsliceIdx);
                 if (pred == null)
                     return false;
                 preBuiltResiduals ??= new List<ScanPredicateInfo>();
@@ -3683,7 +3659,7 @@ internal static partial class QueryPlanBuilder
             if (preBuiltResiduals is { Count: > 0 })
             {
                 long minResidual = long.MaxValue;
-                for (int i = 0; i < clauses.Count; i++)
+                for (int i = 0; i < execs.Length; i++)
                 {
                     if (i == drivingIdx) continue;
                     long c = execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
@@ -3733,7 +3709,6 @@ internal static partial class QueryPlanBuilder
         string sortFieldName = orderByFields[0].Field.FieldName.ToString();
         bool forward = orderByFields[0].Ascending;
         var sortFieldType = orderByFields[0].FieldType;
-        var clauses = plan.Clauses;
         var execs = plan.Executions;
 
         ITermsProvider provider;
@@ -3758,7 +3733,7 @@ internal static partial class QueryPlanBuilder
         }
         else
         {
-            var drivingClause = clauses[drivingIdx];
+            var drivingClause = execs[drivingIdx].Clause;
             var drivingExec = execs[drivingIdx];
 
             TermsProviderMatch tpm;
@@ -3788,10 +3763,10 @@ internal static partial class QueryPlanBuilder
         if (residualPreds == null && isFullScan == false)
         {
             int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
-            for (int i = 0; i < clauses.Count; i++)
+            for (int i = 0; i < execs.Length; i++)
             {
                 if (i == drivingIdx) continue;
-                var pred = BuildScanPredicateInfo(clauses[i], execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
+                var pred = BuildScanPredicateInfo(execs[i].Clause, execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
                 if (pred == null)
                     return null;
                 residualPreds ??= new List<ScanPredicateInfo>();
@@ -3855,9 +3830,8 @@ internal static partial class QueryPlanBuilder
         if (orderByFields == null || orderByFields.Length == 0)
             return;
 
-        var clauses = plan.Clauses;
         var execs = plan.Executions;
-        if (clauses == null || clauses.Count == 0 || execs == null || execs.Length == 0)
+        if (execs == null || execs.Length == 0)
             return;
 
         // Only consider the first ORDER BY field
@@ -3865,9 +3839,9 @@ internal static partial class QueryPlanBuilder
 
         // Find a range clause on the same field (scan all clauses, not just first — the sort-eligible
         // clause may not be the cheapest and thus not clause[0]).
-        for (int i = 0; i < clauses.Count; i++)
+        for (int i = 0; i < execs.Length; i++)
         {
-            var clause = clauses[i];
+            var clause = execs[i].Clause;
             var exec = execs[i];
 
             if (clause.FieldName != sortField.ToString())
@@ -4359,7 +4333,7 @@ internal static partial class QueryPlanBuilder
     ///
     /// OR chain: all terms are ORed into slot 0. AND-groups within an OR use the three-bitmap
     /// swap pattern: save slot 0 → slot 2, build AND result in slot 0, OR slot 2 back.</summary>
-    private static QueryExecution EmitPlan(List<ClauseInfo> clauses, long[] cardinalities, ParamValueType[] termTypes, bool isOr, ClauseExecution[] executions)
+    private static QueryExecution EmitPlan(bool isOr, ClauseExecution[] executions)
     {
         // "Empty IN" check — must consult runtime InTermCount when executions are
         // available. Bindings.Length is the *structural* count (one slot per
@@ -4372,17 +4346,17 @@ internal static partial class QueryPlanBuilder
         // docs with a null in that field via the null-term posting list (Fill@0
         // reads the null PL, OrRange/AndRange becomes a runtime no-op when
         // InRangeCounts[rangeIdx] resolves to 0).
-        static bool IsEmptyIn(ClauseInfo c, ClauseExecution e) =>
-            (e?.EffectiveClauseType ?? c.ClauseType) is ClauseType.In or ClauseType.AllIn &&
-            ((e?.InTermCount ?? c.Bindings?.Length ?? 0) == 0) &&
-            e?.HasNullTerm != true;
+        static bool IsEmptyIn(ClauseExecution e) =>
+            (e.EffectiveClauseType ?? e.Clause.ClauseType) is ClauseType.In or ClauseType.AllIn &&
+            (e.InTermCount == 0) &&
+            e.HasNullTerm != true;
 
         if (isOr is false)
         {
             // Empty IN clauses: zero results in AND, no-op in OR.
-            for (int i = 0; i < clauses.Count; i++)
+            for (int i = 0; i < executions.Length; i++)
             {
-                if (IsEmptyIn(clauses[i], executions != null && i < executions.Length ? executions[i] : null))
+                if (IsEmptyIn(executions[i]))
                 {
                     return new QueryExecution { Ops = [], IsAllEntries = false };
                 }
@@ -4391,34 +4365,20 @@ internal static partial class QueryPlanBuilder
         else
         {
             int write = 0;
-            for (int i = 0; i < clauses.Count; i++)
+            for (int i = 0; i < executions.Length; i++)
             {
-                var execI = executions != null && i < executions.Length ? executions[i] : null;
-                if (IsEmptyIn(clauses[i], execI))
+                if (IsEmptyIn(executions[i]))
                 {
                     continue;
                 }
 
-                clauses[write] = clauses[i];
-                cardinalities[write] = cardinalities[i];
-                termTypes[write] = termTypes[i];
-                if (executions != null)
-                {
-                    executions[write] = executions[i];
-                }
-
+                executions[write] = executions[i];
                 write++;
             }
 
-            if (write < clauses.Count)
+            if (write < executions.Length)
             {
-                clauses.RemoveRange(write, clauses.Count - write);
-                cardinalities = cardinalities[..write];
-                termTypes = termTypes[..write];
-                if (executions != null)
-                {
-                    Array.Resize(ref executions, write);
-                }
+                Array.Resize(ref executions, write);
             }
         }
 
@@ -4430,9 +4390,9 @@ internal static partial class QueryPlanBuilder
         {
             // OR chain — expand In/OrGroup terms into individual OR ops
             int matchIndex = 0;
-            for (int ci = 0; ci < clauses.Count; ci++)
+            for (int ci = 0; ci < executions.Length; ci++)
             {
-                var it = clauses[ci];
+                var it = executions[ci].Clause;
 
                 // Negated clause in an OR chain: emit a single QueryMatch slot whose match
                 // is materialized at resolution time as AllEntries ANDNOT(positive form).
@@ -4449,7 +4409,7 @@ internal static partial class QueryPlanBuilder
                     {
                         Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                         ParamIndex = matchIndex,
-                        EstimatedCardinality = cardinalities[ci],
+                        EstimatedCardinality = executions[ci].Cardinality,
                         Dispatch = MatchDispatch.QueryMatch
                     });
                     matchIndex++;
@@ -4461,7 +4421,7 @@ internal static partial class QueryPlanBuilder
                     case ClauseType.In or ClauseType.AllIn:
                     {
                         // OR chain uses EmitInOps for both In and AllIn (range is OR'd regardless).
-                        EmitInOps(ops, it, cardinalities[ci], bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
+                        EmitInOps(ops, it, executions[ci].Cardinality, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
                         break;
                     }
                     case ClauseType.OrGroup when it.OrSubClauses is { Count: > 0 }:
@@ -4474,7 +4434,7 @@ internal static partial class QueryPlanBuilder
                             {
                                 Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                                 ParamIndex = matchIndex,
-                                EstimatedCardinality = cardinalities[ci] / subCount,
+                                EstimatedCardinality = executions[ci].Cardinality / subCount,
                                 Dispatch = GetDispatch(sub)
                             });
                             matchIndex++;
@@ -4489,7 +4449,7 @@ internal static partial class QueryPlanBuilder
                         // or can be merged into slot 0 via OrBitmaps after computing into slot 1.
                         var subClauses = it.AndSubClauses;
                         int subCount = subClauses.Count;
-                        long subCardinality = cardinalities[ci] / Math.Max(1, subCount);
+                        long subCardinality = executions[ci].Cardinality / Math.Max(1, subCount);
                         if (matchIndex == 0)
                         {
                             // First element: build the AND chain directly in slot 0.
@@ -4568,7 +4528,7 @@ internal static partial class QueryPlanBuilder
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
-                            EstimatedCardinality = cardinalities[ci],
+                            EstimatedCardinality = executions[ci].Cardinality,
                             Dispatch = GetDispatch(it)
                         });
                         matchIndex++;
@@ -4581,19 +4541,20 @@ internal static partial class QueryPlanBuilder
         }
         else
         {
-            switch (clauses.Count)
+            var c0 = executions[0].Clause;
+            switch (executions.Length)
             {
-                case 1 when clauses[0].ClauseType == ClauseType.Equals && clauses[0].IsNegated is false:
+                case 1 when c0.ClauseType == ClauseType.Equals && c0.IsNegated is false:
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.DirectIterate,
                         ParamIndex = 0,
-                        EstimatedCardinality = cardinalities[0],
-                        Dispatch = GetDispatch(clauses[0])
+                        EstimatedCardinality = executions[0].Cardinality,
+                        Dispatch = GetDispatch(c0)
                     });
                     break;
-                case 1 when clauses[0].ClauseType == ClauseType.NotEquals
-                            || (clauses[0].ClauseType == ClauseType.Equals && clauses[0].IsNegated):
+                case 1 when c0.ClauseType == ClauseType.NotEquals
+                            || (c0.ClauseType == ClauseType.Equals && c0.IsNegated):
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.FillAllEntries,
@@ -4602,15 +4563,15 @@ internal static partial class QueryPlanBuilder
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.AndNotWithPostings,
-                        EstimatedCardinality = cardinalities[0],
-                        Dispatch = GetDispatch(clauses[0])
+                        EstimatedCardinality = executions[0].Cardinality,
+                        Dispatch = GetDispatch(c0)
                     });
                     ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
 
                     // Mark clause so ResolveMatches/ResolveTermSources see it as negated
                     // and produce [AllEntries, TermMatch]. Use execution-level override to
                     // avoid cloning the frozen template ClauseInfo.
-                    if (clauses[0].IsNegated == false && executions is { Length: > 0 })
+                    if (c0.IsNegated == false)
                     {
                         executions[0].EffectiveIsNegated = true;
                     }
@@ -4618,15 +4579,14 @@ internal static partial class QueryPlanBuilder
                     return new QueryExecution
                     {
                         Ops = ops.ToArray(),
-                        OperandOrdering = 0,
-                        Clauses = clauses
+                        OperandOrdering = 0
                     };
                 default:
                 {
                     // AND chain: Fill the smallest non-negated, then AndWith/AndNotWith remaining.
                     // If the first clause is negated (all clauses are negated), we need to
                     // start from AllEntries and ANDNOT each one.
-                    bool firstIsNegated = clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals;
+                    bool firstIsNegated = c0.IsNegated || c0.ClauseType == ClauseType.NotEquals;
                     int startIndex;
 
                     if (firstIsNegated)
@@ -4651,11 +4611,11 @@ internal static partial class QueryPlanBuilder
                     int matchIndex = 0;
                     if (!firstIsNegated)
                     {
-                        switch (clauses[0].ClauseType)
+                        switch (c0.ClauseType)
                         {
-                            case ClauseType.OrGroup when clauses[0].OrSubClauses != null:
+                            case ClauseType.OrGroup when c0.OrSubClauses != null:
                             {
-                                var subClauses = clauses[0].OrSubClauses;
+                                var subClauses = c0.OrSubClauses;
                                 int subCount = subClauses.Count;
                                 for (int s = 0; s < subCount; s++)
                                 {
@@ -4664,7 +4624,7 @@ internal static partial class QueryPlanBuilder
                                         Kind = s == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                                         ParamIndex = matchIndex + s,
                                         BitmapLocal = 0,
-                                        EstimatedCardinality = cardinalities[0] / Math.Max(1, subCount),
+                                        EstimatedCardinality = executions[0].Cardinality / Math.Max(1, subCount),
                                         Dispatch = GetDispatch(subClauses[s])
                                     });
                                 }
@@ -4674,13 +4634,13 @@ internal static partial class QueryPlanBuilder
                             }
                             case ClauseType.In:
                             {
-                                EmitInOps(ops, clauses[0], cardinalities[0], bitmapLocal: 0, isSeed: true, ref matchIndex, rangeCounts);
+                                EmitInOps(ops, c0, executions[0].Cardinality, bitmapLocal: 0, isSeed: true, ref matchIndex, rangeCounts);
                                 break;
                             }
                             // Use the fixed-shape EmitAllInOps path for AllIn clauses.
                             case ClauseType.AllIn:
                             {
-                                EmitAllInOps(ops, clauses[0], cardinalities[0], ref matchIndex, rangeCounts);
+                                EmitAllInOps(ops, c0, executions[0].Cardinality, ref matchIndex, rangeCounts);
                                 break;
                             }
                             default:
@@ -4688,8 +4648,8 @@ internal static partial class QueryPlanBuilder
                                 {
                                     Kind = PlanOpKind.FillFromPostings,
                                     ParamIndex = 0,
-                                    EstimatedCardinality = cardinalities[0],
-                                    Dispatch = GetDispatch(clauses[0])
+                                    EstimatedCardinality = executions[0].Cardinality,
+                                    Dispatch = GetDispatch(c0)
                                 });
                                 matchIndex = 1;
                                 break;
@@ -4697,9 +4657,9 @@ internal static partial class QueryPlanBuilder
                     }
 
                     // Precheck: can all remaining clauses be converted to entry scan predicates?
-                    bool allScanEligible = AreAllScanEligible(clauses, termTypes, startIndex);
+                    bool allScanEligible = AreAllScanEligible(executions, startIndex);
 
-                    for (int i = startIndex; i < clauses.Count; i++)
+                    for (int i = startIndex; i < executions.Length; i++)
                     {
                         // Goto check before each AND step — only if all remaining clauses
                         // can be handled by entry scan predicates
@@ -4712,12 +4672,13 @@ internal static partial class QueryPlanBuilder
                             });
                         }
 
-                        switch (clauses[i].ClauseType)
+                        var ci2 = executions[i].Clause;
+                        switch (ci2.ClauseType)
                         {
-                            case ClauseType.OrGroup when clauses[i].OrSubClauses != null:
+                            case ClauseType.OrGroup when ci2.OrSubClauses != null:
                             {
                                 // OrGroup: OR subclauses into bitmap[1], then AND with bitmap[0]
-                                var subClauses = clauses[i].OrSubClauses;
+                                var subClauses = ci2.OrSubClauses;
                                 int subCount = subClauses.Count;
 
                                 // Clear bitmap[1] (OR accumulator)
@@ -4731,7 +4692,7 @@ internal static partial class QueryPlanBuilder
                                         Kind = PlanOpKind.OrWithPostings,
                                         ParamIndex = matchIndex + s,
                                         BitmapLocal = 1, // target bitmap[1]
-                                        EstimatedCardinality = cardinalities[i] / Math.Max(1, subCount),
+                                        EstimatedCardinality = executions[i].Cardinality / Math.Max(1, subCount),
                                         Dispatch = GetDispatch(subClauses[s])
                                     });
                                 }
@@ -4756,14 +4717,14 @@ internal static partial class QueryPlanBuilder
                                 // isSeed: false — FillFromPostings always targets bitmap[0], so we use
                                 // OrRange which respects bitmapLocal. Bitmap[1] is freshly cleared.
                                 ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                                EmitInOps(ops, clauses[i], cardinalities[i], bitmapLocal: 1, isSeed: false, ref matchIndex, rangeCounts);
+                                EmitInOps(ops, ci2, executions[i].Cardinality, bitmapLocal: 1, isSeed: false, ref matchIndex, rangeCounts);
                                 ops.Add(new PlanOp
                                 {
-                                    Kind = clauses[i].IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
+                                    Kind = ci2.IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
                                     BitmapLocal = 0,
                                     ParamIndex2 = 1
                                 });
-                                if (!clauses[i].IsNegated)
+                                if (!ci2.IsNegated)
                                 {
                                     ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
                                 }
@@ -4772,7 +4733,7 @@ internal static partial class QueryPlanBuilder
                             }
                             case ClauseType.AllIn:
                             {
-                                int inTermCount = (clauses[i].Bindings?.Length ?? 0);
+                                int inTermCount = (ci2.Bindings?.Length ?? 0);
                                 int rangeIdx = rangeCounts.Count;
                                 rangeCounts.Add(inTermCount);
                                 ops.Add(new PlanOp
@@ -4781,7 +4742,7 @@ internal static partial class QueryPlanBuilder
                                     ParamIndex = matchIndex,
                                     ParamIndex2 = rangeIdx,
                                     BitmapLocal = 0,
-                                    EstimatedCardinality = cardinalities[i],
+                                    EstimatedCardinality = executions[i].Cardinality,
                                     Dispatch = MatchDispatch.PostingList
                                 });
                                 matchIndex += inTermCount;
@@ -4790,15 +4751,15 @@ internal static partial class QueryPlanBuilder
                             default:
                             {
                                 // Simple clause: AND or ANDNOT with bitmap[0]
-                                var isNegated = clauses[i].IsNegated || clauses[i].ClauseType == ClauseType.NotEquals;
+                                var isNegated = ci2.IsNegated || ci2.ClauseType == ClauseType.NotEquals;
                                 var andKind = isNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings;
                                 ops.Add(new PlanOp
                                 {
                                     Kind = andKind,
                                     ParamIndex = matchIndex,
                                     BitmapLocal = 0,
-                                    EstimatedCardinality = cardinalities[i],
-                                    Dispatch = GetDispatch(clauses[i])
+                                    EstimatedCardinality = executions[i].Cardinality,
+                                    Dispatch = GetDispatch(ci2)
                                 });
 
                                 if (!isNegated)
@@ -4823,20 +4784,19 @@ internal static partial class QueryPlanBuilder
         // Variable-count IN terms use InRangeCounts (read at runtime by the IL).
         // Null-term slots are always allocated — the match is a no-op when null isn't present.
         int ordering = 0;
-        for (int i = 0; i < Math.Min(clauses.Count, 10); i++)
+        for (int i = 0; i < Math.Min(executions.Length, 10); i++)
         {
-            ordering |= (clauses[i].OriginalIndex & 0x7) << (i * 3);
+            ordering |= (executions[i].Clause.OriginalIndex & 0x7) << (i * 3);
         }
 
         // Check if all clauses are negated (if first clause after sort is negated, all the rest are too)
-        bool allNegated = clauses.Count > 0
-                          && (clauses[0].IsNegated || clauses[0].ClauseType == ClauseType.NotEquals);
+        bool allNegated = executions.Length > 0
+                          && (executions[0].Clause.IsNegated || executions[0].Clause.ClauseType == ClauseType.NotEquals);
 
         return new QueryExecution
         {
             Ops = ops.ToArray(),
             OperandOrdering = ordering,
-            Clauses = clauses,
             AllNegated = allNegated,
             RequiredBitmaps = needsThreeBitmaps ? 3 : 2,
             InRangeCounts = rangeCounts.Count > 0 ? rangeCounts.ToArray() : null
@@ -4902,14 +4862,14 @@ internal static partial class QueryPlanBuilder
         return ScanValueType.Slice;
     }
 
-    private static bool AreAllScanEligible(List<ClauseInfo> clauses, ParamValueType[] termTypes, int startIndex)
+    private static bool AreAllScanEligible(ClauseExecution[] executions, int startIndex)
     {
         // If any clause (In, AllIn, Spatial, Vector, Search, etc.) can't be scanned, we must not emit CheckAndMaybeEntryScan — entry scan would skip them entirely.
         int dummyL = 0, dummyD = 0, dummyS = 0;
-        for (int j = startIndex; j < clauses.Count; j++)
+        for (int j = startIndex; j < executions.Length; j++)
         {
-            ParamValueType termType = termTypes[j];
-            if (BuildScanPredicateInfoCore(clauses[j], exec: null, termType,
+            ParamValueType termType = executions[j].TermValueType;
+            if (BuildScanPredicateInfoCore(executions[j].Clause, exec: null, termType,
                     ref dummyL, ref dummyD, ref dummyS) != null)
             {
                 continue;
@@ -5013,22 +4973,19 @@ internal static partial class QueryPlanBuilder
             return;
         }
 
-        var clauses = plan.Clauses ??= [];
-
-        // Extend Executions array to match the clauses that will be added
+        // Extend Executions array to include spatial/vector post-filter clauses.
         int extraCount = (spatialClauses?.Length ?? 0) + (vectorClauses?.Length ?? 0);
         var execs = plan.Executions ??= [];
         int execIdx = execs.Length;
         Array.Resize(ref execs, execs.Length + extraCount);
 
-        int matchIndex = CountMatchSlots(clauses, execs, plan.IsAllEntries, plan.AllNegated);
+        int matchIndex = CountMatchSlots(execs, plan.IsAllEntries, plan.AllNegated);
 
         if (spatialClauses != null)
         {
             plan.SpatialFilters = new SpatialFilterOp[spatialClauses.Length];
             for (int i = 0; i < spatialClauses.Length; i++)
             {
-                clauses.Add(spatialClauses[i]);
                 var exec = spatialExecs?[i] ?? new ClauseExecution { Clause = spatialClauses[i] };
                 execs[execIdx++] = exec;
                 plan.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i], Exec = exec };
@@ -5040,7 +4997,6 @@ internal static partial class QueryPlanBuilder
             plan.VectorSelects = new VectorSearchOp[vectorClauses.Length];
             for (int i = 0; i < vectorClauses.Length; i++)
             {
-                clauses.Add(vectorClauses[i]);
                 var exec = vectorExecs?[i] ?? new ClauseExecution { Clause = vectorClauses[i] };
                 execs[execIdx++] = exec;
                 plan.VectorSelects[i] = new VectorSearchOp
@@ -5054,18 +5010,18 @@ internal static partial class QueryPlanBuilder
     }
 
 
-    internal static int CountMatchSlots(List<ClauseInfo> clauses, ClauseExecution[] executions, bool isAllEntries, bool allNegated)
+    internal static int CountMatchSlots(ClauseExecution[] executions, bool isAllEntries, bool allNegated)
     {
-        if (clauses == null)
+        if (executions == null || executions.Length == 0)
         {
             return isAllEntries ? 1 : 0;
         }
 
         int count = isAllEntries ? 1 : 0;
-        for (int ci = 0; ci < clauses.Count; ci++)
+        for (int ci = 0; ci < executions.Length; ci++)
         {
-            var clause = clauses[ci];
-            var exec = executions != null && ci < executions.Length ? executions[ci] : null;
+            var clause = executions[ci].Clause;
+            var exec = executions[ci];
             if (clause.IsOrChainNotEquals)
             {
                 count += 1;
@@ -5076,7 +5032,7 @@ internal static partial class QueryPlanBuilder
             {
                 ClauseType.OrGroup when clause.OrSubClauses != null => clause.OrSubClauses.Count,
                 ClauseType.AndGroup when clause.AndSubClauses != null => clause.AndSubClauses.Count,
-                ClauseType.In or ClauseType.AllIn => (exec?.InTermCount ?? clause.Bindings?.Length ?? 0) + 1,
+                ClauseType.In or ClauseType.AllIn => (exec.InTermCount > 0 ? exec.InTermCount : clause.Bindings?.Length ?? 0) + 1,
                 _ => 1
             };
         }

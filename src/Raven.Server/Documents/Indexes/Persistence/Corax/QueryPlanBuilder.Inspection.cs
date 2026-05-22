@@ -132,13 +132,13 @@ internal static partial class QueryPlanBuilder
         if (ops == null || ops.Length == 0) return [];
 
         var flatClauses = new List<(ClauseInfo Clause, ClauseExecution Exec)>();
-        if (plan.Clauses is { Count: > 0 } clauses)
+        var execs = plan.Executions;
+        if (execs is { Length: > 0 })
         {
-            var execs = plan.Executions;
-            for (int ci = 0; ci < clauses.Count; ci++)
+            for (int ci = 0; ci < execs.Length; ci++)
             {
-                var clause = clauses[ci];
-                var exec = execs != null && ci < execs.Length ? execs[ci] : null;
+                var clause = execs[ci].Clause;
+                var exec = execs[ci];
                 if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
                 {
                     for (int si = 0; si < clause.OrSubClauses.Count; si++)
