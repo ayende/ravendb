@@ -1187,7 +1187,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
             if (type == ContainerType.Free)
                 continue;
 
-            Debug.Assert(type is ContainerType.Bitmap);
+            Debug.Assert(type is not ContainerType.Free);
             int card = ResolveCardinality(ref entry);
 
             if (type == ContainerType.ArrayUnsorted)
