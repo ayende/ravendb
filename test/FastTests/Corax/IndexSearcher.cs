@@ -1471,7 +1471,7 @@ namespace FastTests.Corax
         }
 
         [RavenFact(RavenTestCategory.Corax)]
-        public void WhenFalseEliminatesAllClausesReturnsAllEntries()
+        public void WhenFalseEliminatesAllClausesReturnNoEntries()
         {
             var entry1 = new IndexEntry { Id = "entry/1", Content = new string[] { "road", "lake" } };
             var entry2 = new IndexEntry { Id = "entry/2", Content = new string[] { "muddy", "road" } };
@@ -1480,8 +1480,7 @@ namespace FastTests.Corax
             IndexEntries(bsc, new[] { entry1, entry2 }, CreateKnownFields(bsc));
 
             // when($p = true, Content = 'road') with $p = false → clause eliminated.
-            // WHEN elimination removes the clause from the filter — it doesn't negate the query.
-            // With all clauses removed, there's no filter → all entries returned.
+            // With all clauses removed, there is no selection, distinct from no filter, we always filter out all entries.
             using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
             var rql = "FROM TestIndex WHERE when($p = true, Content = 'road')";
             var queryMetadata = new QueryMetadata(rql, null, 0);
@@ -1500,7 +1499,7 @@ namespace FastTests.Corax
             var match = QueryPlanBuilder.BuildAndCompile(planParams, null, out _, out _, null, false, default);
             Span<long> buffer = stackalloc long[256];
             int count = match.Fill(buffer);
-            Assert.Equal(2, count); // all entries returned when WHEN eliminates all clauses
+            Assert.Equal(0, count);
         }
 
         /// <summary>
