@@ -21,14 +21,9 @@ namespace Corax.Querying.Planning;
 /// - Planning annotations (Cardinality, IsExact, BoostFactor, IsNegated) are attached per
 ///   clause for operand reordering, dispatch classification, and entry-scan eligibility.
 ///
-/// <para><b>Freeze contract:</b> ClauseInfo participates in the plan-cache template. Once
-/// <see cref="Freeze"/> has been called (at the end of plan-template construction), any
-/// subsequent attempt to mutate a property throws <see cref="InvalidOperationException"/>.
-/// This catches a regression class where post-build code rewrites a shared template in
-/// place — different executions of the same cached plan would then see inconsistent state.
-/// Execution-time overrides that used to require Clone+mutate are now stored on
-/// <see cref="ClauseExecution"/> via <c>EffectiveClauseType</c> / <c>EffectiveIsNegated</c>.
-/// See the RavenDB_17423 fix history for the original bug pattern.</para>
+/// <para><b>Freeze contract:</b> ClauseInfo is frozen at the end of template construction.
+/// After freezing, property writes throw <see cref="InvalidOperationException"/>.
+/// Per-execution mutable state lives on <see cref="ClauseExecution"/>.</para>
 /// </summary>
 public sealed class ClauseInfo
 {
@@ -156,8 +151,7 @@ public sealed class ClauseInfo
     {
         if (IsFrozen)
             throw new InvalidOperationException(
-                "ClauseInfo is frozen as part of the plan-cache template. Mutations would corrupt " +
-                "cached plans shared across executions. Use ClauseExecution.EffectiveClauseType / " +
-                "EffectiveIsNegated for per-execution overrides.");
+                "ClauseInfo is frozen (plan-cache template). " +
+                "Per-execution mutable state belongs on ClauseExecution.");
     }
 }
