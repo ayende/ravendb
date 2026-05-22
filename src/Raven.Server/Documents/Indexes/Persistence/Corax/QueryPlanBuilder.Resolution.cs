@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text;
 using System.Threading;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
@@ -456,42 +457,10 @@ internal static partial class QueryPlanBuilder
             operandOrdering |= SetCardinalityCliffBit(executions, template.SortDrivingClauseIndex);
         }
 
-        // Compute TypeSignature/FullKinds cheaply from ParameterSlots.
-        // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong).
-        // Literals are excluded — their types are fixed at template time.
-        bool needScanPreds = isOr == false && executions.Length > 1;
-        int typeSignature = 0;
-        byte[] fullKinds = null;
-        var paramSlots = template.ParameterSlots;
-        if (paramSlots != null)
-        {
-            for (int i = 0; i < paramSlots.Length; i++)
-            {
-                int kind = (int)ClassifyParamType(planParams.QueryParameters, paramSlots[i]) & 0x3;
-                if (i < 16)
-                    typeSignature |= kind << (i * 2);
-                else
-                {
-                    fullKinds ??= new byte[paramSlots.Length];
-                    fullKinds[i] = (byte)kind;
-                }
-            }
-            if (fullKinds != null)
-            {
-                for (int i = 0; i < Math.Min(paramSlots.Length, 16); i++)
-                    fullKinds[i] = (byte)((typeSignature >> (i * 2)) & 0x3);
-                Array.Resize(ref fullKinds, paramSlots.Length);
-            }
-        }
+        (int typeSignature, byte[] fullKinds) = ComputeTypeSignature(template, planParams);
 
-        // ── Step 7: Cache lookup ────────────────────────────────────────────
-        var compiledPlan = planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags);
-
-        if (compiledPlan != null)
+        if(planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags) is {} compiledPlan)
         {
-            // Cache hit — skip EmitPlan (the expensive PlanOp[] generation).
-            // Populate the QueryExecution with all fields needed by Instantiate
-            // and InstantiateBitmapPipeline.
             plan.Executions = executions;
             plan.OperandOrdering = operandOrdering;
             plan.AllNegated = allNegated;
@@ -523,6 +492,7 @@ internal static partial class QueryPlanBuilder
         // Build ScanPredicateInfo[] — structural metadata for the entry-scan path.
         // Only needed on cache miss: the array is cached on CompiledPlan for future hits.
         ScanPredicateInfo[] scanPreds = null;
+        bool needScanPreds = isOr == false && executions.Length > 1;
         if (needScanPreds)
         {
             int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
@@ -5353,6 +5323,22 @@ internal static partial class QueryPlanBuilder
             ParamIndex2 = idx2
         };
     }
+    
+    
+    private static (int TypeSignature, byte[] FullKinds) ComputeTypeSignature(PlanTemplate template, PlanParameters planParams)
+    {
+        // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong). Literals are excluded — their types are fixed at template time.
+        int typeSignature = 0;
+        var fullKinds = template.ParameterSlots.Length > 16 ? new byte[template.ParameterSlots.Length] : null;
+        for (int i = 0; i < template.ParameterSlots.Length; i++)
+        {
+            int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0x3;
+            fullKinds?[i] = (byte)kind;
+            if (i > 16) continue;
+            typeSignature |= kind << (i * 2); 
+        }
+        return (typeSignature, fullKinds);
+    }
 
     /// <summary>Classify a query parameter's runtime type from the blittable JSON value.
     /// Mirrors the type-branching in <see cref="ResolveParameterValue"/> — long, double,
@@ -5368,7 +5354,9 @@ internal static partial class QueryPlanBuilder
             long => ScanValueType.Long,
             double => ScanValueType.Double,
             LazyNumberValue lnv => lnv.TryParseLong(out _) ? ScanValueType.Long : ScanValueType.Double,
-            string s => System.Text.Encoding.UTF8.GetByteCount(s) > byte.MaxValue ? ScanValueType.SliceLong : ScanValueType.Slice,
+            string { Length: < 83 } => ScanValueType.Slice, // statically skip Encoding.UTF8.GetByteCount() < 255 here, since we _know_ it's < 255 regardless
+            string s when Encoding.UTF8.GetByteCount(s) < byte.MaxValue => ScanValueType.Slice, 
+            string s => ScanValueType.SliceLong,
             LazyStringValue lsv => lsv.Size > byte.MaxValue ? ScanValueType.SliceLong : ScanValueType.Slice,
             BlittableJsonReaderArray arr => arr.Length > 0 ? ClassifyParamTypeFirstElement(arr[0]) : ScanValueType.Slice,
             _ => ScanValueType.Slice
