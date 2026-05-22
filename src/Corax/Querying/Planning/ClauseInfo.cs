@@ -26,8 +26,9 @@ namespace Corax.Querying.Planning;
 /// subsequent attempt to mutate a property throws <see cref="InvalidOperationException"/>.
 /// This catches a regression class where post-build code rewrites a shared template in
 /// place — different executions of the same cached plan would then see inconsistent state.
-/// The fix in such cases is to <see cref="Clone"/> the ClauseInfo (clones are un-frozen)
-/// and mutate the copy. See the RavenDB_17423 fix history for the original bug pattern.</para>
+/// Execution-time overrides that used to require Clone+mutate are now stored on
+/// <see cref="ClauseExecution"/> via <c>EffectiveClauseType</c> / <c>EffectiveIsNegated</c>.
+/// See the RavenDB_17423 fix history for the original bug pattern.</para>
 /// </summary>
 public sealed class ClauseInfo
 {
@@ -151,24 +152,12 @@ public sealed class ClauseInfo
     /// auto-frozen; callers must freeze each sub-clause individually.</summary>
     public void Freeze() => IsFrozen = true;
 
-    /// <summary>Create a mutable (un-frozen) copy of this ClauseInfo. Used by per-execution
-    /// rewrite paths that need to override a field for a single query without disturbing
-    /// the shared template. Shallow-copies reference fields (Bindings array, OrSub/AndSub
-    /// lists, WhenCondition delegate); the copy may share those references with the original.
-    /// If a caller mutates the array/list contents (not just the reference), it must clone
-    /// those first too.</summary>
-    public ClauseInfo Clone()
-    {
-        var other = (ClauseInfo)MemberwiseClone();
-        other.IsFrozen = false;
-        return other;
-    }
-
     private void ThrowIfFrozen()
     {
         if (IsFrozen)
             throw new InvalidOperationException(
                 "ClauseInfo is frozen as part of the plan-cache template. Mutations would corrupt " +
-                "cached plans shared across executions. Use Clone() to get a mutable copy.");
+                "cached plans shared across executions. Use ClauseExecution.EffectiveClauseType / " +
+                "EffectiveIsNegated for per-execution overrides.");
     }
 }
