@@ -254,6 +254,17 @@ internal static partial class QueryPlanBuilder
 
         var optFlags = ComputeTemplateOptimizations(walkerCtx, p, orderByPrimaryField, out int sortDrivingIdx);
 
+        // Collect unique query-parameter names in first-appearance order.
+        // Literals are excluded — their types are fixed at template time and cannot
+        // vary across executions. ParameterSlots drives the cheap TypeSignature
+        // computation at execution time (classify blittable values directly, skip
+        // walking the full clause/execution list).
+        var paramNames = new List<string>();
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        CollectParameterNames(walkerCtx.Clauses, paramNames, seen);
+        CollectParameterNames(walkerCtx.SpatialClauses, paramNames, seen);
+        CollectParameterNames(walkerCtx.VectorClauses, paramNames, seen);
+
         return new PlanTemplate
         {
             Clauses = walkerCtx.Clauses,
@@ -268,8 +279,28 @@ internal static partial class QueryPlanBuilder
             CompoundExactAFirst = walkerCtx.CompoundExactAFirst,
             CompoundFieldDrivingClause = walkerCtx.CompoundFieldDrivingClause,
             CompoundFieldSortName = walkerCtx.CompoundFieldSortName,
-            CompoundFieldIsMultiSort = walkerCtx.CompoundFieldIsMultiSort
+            CompoundFieldIsMultiSort = walkerCtx.CompoundFieldIsMultiSort,
+            ParameterSlots = paramNames.Count > 0 ? paramNames.ToArray() : null
         };
+    }
+
+    /// <summary>Recursively walk clauses and their sub-clauses, collecting unique parameter
+    /// names from <see cref="BindingSource.QueryParameter"/> bindings in first-appearance order.</summary>
+    private static void CollectParameterNames(List<ClauseInfo> clauses, List<string> names, HashSet<string> seen)
+    {
+        if (clauses == null) return;
+        foreach (var clause in clauses)
+        {
+            if (clause.Bindings != null)
+            {
+                foreach (var binding in clause.Bindings)
+                {
+                    if (binding != null && binding.Source == BindingSource.QueryParameter && binding.ParameterName != null && seen.Add(binding.ParameterName))
+                        names.Add(binding.ParameterName);
+                }
+            }
+            CollectParameterNames(clause.SubClauses, names, seen); // recurse into groups
+        }
     }
 
     [SkipLocalsInit]

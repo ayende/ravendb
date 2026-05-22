@@ -456,16 +456,72 @@ internal static partial class QueryPlanBuilder
             operandOrdering |= SetCardinalityCliffBit(executions, template.SortDrivingClauseIndex);
         }
 
-        // Compute TypeSignature/FullKinds cheaply for the cache key
+        // Compute TypeSignature/FullKinds cheaply from ParameterSlots.
+        // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong).
+        // Literals are excluded — their types are fixed at template time.
         bool needScanPreds = isOr == false && executions.Length > 1;
-        (int typeSignature, byte[] fullKinds) = needScanPreds ? ComputeTypeSignatureFromExecs(executions, allNegated, writer) : (0, null);
+        int typeSignature = 0;
+        byte[] fullKinds = null;
+        var paramSlots = template.ParameterSlots;
+        if (paramSlots != null)
+        {
+            for (int i = 0; i < paramSlots.Length; i++)
+            {
+                int kind = (int)ClassifyParamType(planParams.QueryParameters, paramSlots[i]) & 0x3;
+                if (i < 16)
+                    typeSignature |= kind << (i * 2);
+                else
+                {
+                    fullKinds ??= new byte[paramSlots.Length];
+                    fullKinds[i] = (byte)kind;
+                }
+            }
+            if (fullKinds != null)
+            {
+                for (int i = 0; i < Math.Min(paramSlots.Length, 16); i++)
+                    fullKinds[i] = (byte)((typeSignature >> (i * 2)) & 0x3);
+                Array.Resize(ref fullKinds, paramSlots.Length);
+            }
+        }
 
         // ── Step 7: Cache lookup ────────────────────────────────────────────
         var compiledPlan = planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags);
 
-        // Build full ScanPredicateInfo[] now that the cache key is resolved.
-        // Both cache-hit (ExtractScanParameters) and cache-miss (ResidualScanIlEmitter)
-        // paths require the complete array.
+        if (compiledPlan != null)
+        {
+            // Cache hit — skip EmitPlan (the expensive PlanOp[] generation).
+            // Populate the QueryExecution with all fields needed by Instantiate
+            // and InstantiateBitmapPipeline.
+            plan.Executions = executions;
+            plan.OperandOrdering = operandOrdering;
+            plan.AllNegated = allNegated;
+            plan.ScanPredicateInfos = compiledPlan.ScanPredicateInfos;
+            plan.WhenFlags = whenFlags;
+            plan.OptimizationFlags = template.OptimizationFlags;
+
+            // Build InRangeCounts from executions (same fixup as cache-miss path
+            // but without the structural array from EmitPlan).
+            plan.InRangeCounts = BuildInRangeCounts(executions, isOr, compiledPlan.InRangeSlotCount);
+
+            // The single-clause NotEquals path in EmitPlan sets e0.IsNegated=true
+            // as a side effect needed by ResolveMatches/ResolveTermSources.
+            if (isSingleNegatedEquals && executions[0].IsNegated == false)
+                executions[0].IsNegated = true;
+
+            AttachSpatialAndVectorClauses(plan, template, planParams, builderParameters, writer);
+
+            plan.LongValues = writer.GetLongs();
+            plan.DoubleValues = writer.GetDoubles();
+            plan.StringValues = writer.GetStrings();
+
+            RemapOptimizationIndices(plan, template, executions);
+            return compiledPlan;
+        }
+
+        // ── Step 8: Cache miss — full plan emission ─────────────────────────
+
+        // Build ScanPredicateInfo[] — structural metadata for the entry-scan path.
+        // Only needed on cache miss: the array is cached on CompiledPlan for future hits.
         ScanPredicateInfo[] scanPreds = null;
         if (needScanPreds)
         {
@@ -492,40 +548,6 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        if (compiledPlan != null)
-        {
-            // Cache hit — skip EmitPlan (the expensive PlanOp[] generation).
-            // Populate the QueryExecution with all fields needed by Instantiate
-            // and InstantiateBitmapPipeline.
-            plan.Executions = executions;
-            plan.OperandOrdering = operandOrdering;
-            plan.AllNegated = allNegated;
-            plan.ScanPredicateInfos = scanPreds;
-            plan.TypeSignature = typeSignature;
-            plan.FullKinds = fullKinds;
-            plan.WhenFlags = whenFlags;
-            plan.OptimizationFlags = template.OptimizationFlags;
-
-            // Build InRangeCounts from executions (same fixup as cache-miss path
-            // but without the structural array from EmitPlan).
-            plan.InRangeCounts = BuildInRangeCounts(executions, isOr, compiledPlan.InRangeSlotCount);
-
-            // The single-clause NotEquals path in EmitPlan sets e0.IsNegated=true
-            // as a side effect needed by ResolveMatches/ResolveTermSources.
-            if (isSingleNegatedEquals && executions[0].IsNegated == false)
-                executions[0].IsNegated = true;
-
-            AttachSpatialAndVectorClauses(plan, template, planParams, builderParameters, writer);
-
-            plan.LongValues = writer.GetLongs();
-            plan.DoubleValues = writer.GetDoubles();
-            plan.StringValues = writer.GetStrings();
-
-            RemapOptimizationIndices(plan, template, executions);
-            return compiledPlan;
-        }
-
-        // ── Step 8: Cache miss — full plan emission ─────────────────────────
         if (executions.Length > 0)
         {
             plan = EmitPlan(isOr, executions);
@@ -563,13 +585,11 @@ internal static partial class QueryPlanBuilder
             }
 
             plan.ScanPredicateInfos = scanPreds;
-            plan.TypeSignature = typeSignature;
-            plan.FullKinds = fullKinds;
         }
 
         // Empty-IN short-circuit: EmitPlan returns Ops=[] for an AND chain containing
-        // an empty IN clause (e.g. `Names in ()`), and the resulting QueryExecution has
-        // the default OperandOrdering=0 and TypeSignature=0. That cache key collides
+        // an empty IN clause (e.g. `Names in ()`), and the resulting plan has
+        // the default OperandOrdering=0 and typeSignature=0. That cache key collides
         // with single-clause "default" plans (e.g. a one-term Equals after constant
         // propagation), so a subsequent execution against the same queryText would
         // receive the cached empty IL and produce zero results for a real query.
@@ -620,7 +640,8 @@ internal static partial class QueryPlanBuilder
             OpCount = plan.Ops?.Length ?? 0,
             RequiredBitmaps = plan.RequiredBitmaps,
             InRangeSlotCount = plan.InRangeCounts?.Length ?? 0,
-            InspectionTemplate = BuildInspectionTemplate(plan)
+            InspectionTemplate = BuildInspectionTemplate(plan),
+            ScanPredicateInfos = scanPreds
         };
         planCache.Add(queryText, compiledPlan, template);
 
@@ -792,8 +813,8 @@ internal static partial class QueryPlanBuilder
     /// queryText but different WHEN-survival subsets must end up with different cache
     /// keys — e.g. [Attach==true, Number!=1] sorted Attach-first gives ordering=1, which
     /// collides with the single-clause [Attach==true] survivor (also ord=1). WhenFlags
-    /// joins (Ordering, TypeSignature, FullKinds) so each survival pattern gets its own
-    /// cached compiled plan.</summary>
+    /// joins (Ordering, TypeSignature) in the plan-cache key so each survival pattern
+    /// gets its own cached compiled plan.</summary>
     private static (List<ClauseExecution> ExecList, int WhenFlags) EvaluateWhenAndFilterClauses(PlanTemplate template, QueryPlanBuilder.PlanParameters planParams)
     {
         var execList = new List<ClauseExecution>(template.Clauses.Count);
@@ -5147,169 +5168,6 @@ internal static partial class QueryPlanBuilder
         => BuildScanPredicateInfoCore(clause, exec, exec?.TermValueType ?? ParamValueType.String,
             ref longIndex, ref doubleIndex, ref sliceIndex);
 
-    /// <summary>Lightweight type classifier that mirrors <see cref="BuildScanPredicateInfoCore"/>
-    /// but returns only the <see cref="ScanValueType"/> (or null for unscannable clauses)
-    /// without allocating a <see cref="ScanPredicateInfo"/>. Used for computing the
-    /// TypeSignature cache-key component cheaply before the plan-cache lookup.</summary>
-    private static ScanValueType? ClassifyScanType(ClauseExecution exec, ParamValueType termType, ref int sliceIndex)
-    {
-        switch (exec.Clause.ClauseType)
-        {
-            case ClauseType.Search:
-            case ClauseType.Regex:
-            case ClauseType.Spatial:
-            case ClauseType.Vector:
-            case ClauseType.StartsWith:
-            {
-                if (termType != ParamValueType.String)
-                    return null;
-                sliceIndex++;
-                return ScanValueType.Slice;
-            }
-            case ClauseType.In:
-            case ClauseType.AllIn:
-                return null;
-            case ClauseType.EndsWith:
-            {
-                if (termType != ParamValueType.String)
-                    return null;
-                sliceIndex++;
-                return ScanValueType.Slice;
-            }
-            case ClauseType.AndGroup:
-            {
-                if (exec.Clause.SubClauses is not { Count: > 0 } subs)
-                    return null;
-                var subExecs = exec?.SubExecutions;
-                for (int si = 0; si < subs.Count; si++)
-                {
-                    var sub = subs[si];
-                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
-                    var subTermType = subExec?.TermValueType ?? InferTermType(sub);
-                    if (ClassifyScanType(subExec, subTermType, ref sliceIndex) == null)
-                        return null;
-                }
-                // AndGroup contributes ScanValueType.Long (struct default) to type signature
-                return ScanValueType.Long;
-            }
-            case ClauseType.Exists:
-                return ScanValueType.Long;
-            case ClauseType.OrGroup:
-            {
-                if (exec.Clause.SubClauses is not { Count: > 0 } subs)
-                    return null;
-                var subExecs = exec?.SubExecutions;
-                for (int si = 0; si < subs.Count; si++)
-                {
-                    var sub = subs[si];
-                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
-                    var subTermType = subExec?.TermValueType ?? InferTermType(sub);
-                    if (ClassifyScanType(subExec, subTermType, ref sliceIndex) == null)
-                        return null;
-                }
-                // OrGroup contributes ScanValueType.Long (struct default) to type signature
-                return ScanValueType.Long;
-            }
-        }
-
-        // Leaf clause — classify by term type
-        switch (termType)
-        {
-            case ParamValueType.Long:
-                return ScanValueType.Long;
-            case ParamValueType.Double:
-                return ScanValueType.Double;
-            default:
-                sliceIndex++;
-                if ( exec.Clause.ClauseType == ClauseType.Between)
-                    sliceIndex++;
-                return ScanValueType.Slice;
-        }
-    }
-
-    /// <summary>Compute the TypeSignature and FullKinds cache-key components from execution
-    /// metadata alone, without building the full <see cref="ScanPredicateInfo"/> array.
-    /// Only classifies each clause's value type and checks the string-length threshold
-    /// for Slice predicates (to distinguish compound-eligible from ineligible plans).
-    /// Returns <c>(0, null)</c> when no clauses are scan-eligible.</summary>
-    [SkipLocalsInit]
-    private static (int TypeSignature, byte[] FullKinds) ComputeTypeSignatureFromExecs(ClauseExecution[] executions, bool allNegated, ValueWriter writer)
-    {
-        int scanStart = allNegated ? 0 : 1;
-        int sliceIndex = 0;
-        int scanCount = 0;
-
-        // First pass: classify and count scannable clauses, building a compact list
-        // of (ScanValueType, sliceParamIndex) pairs.
-        int maxPreds = executions.Length - scanStart;
-        if (maxPreds <= 0)
-            return (0, null);
-
-        // Stack-allocate for the common case (≤16 predicates), heap for overflow.
-        Span<ScanValueType> types = maxPreds <= 16
-            ? stackalloc ScanValueType[maxPreds]
-            : new ScanValueType[maxPreds];
-        Span<int> sliceIndices = maxPreds <= 16
-            ? stackalloc int[maxPreds]
-            : new int[maxPreds];
-
-        for (int si = scanStart; si < executions.Length; si++)
-        {
-            int sliceBefore  = sliceIndex;
-            var classified = ClassifyScanType(executions[si], executions[si].TermValueType, ref sliceIndex);
-            if (classified == null)
-                continue;
-            types[scanCount] = classified.Value;
-            // For Slice types, record the slice param index used for the string-length check.
-            // For non-Slice types (and groups), sliceParamIndex is irrelevant.
-            sliceIndices[scanCount] = sliceBefore;
-            scanCount++;
-        }
-
-        if (scanCount == 0)
-            return (0, null);
-
-        // Build type signature: pack 2 bits per scannable predicate (first 16 into an int,
-        // overflow into fullKinds[]). Slice predicates check string-length threshold.
-        string[] stringValues = writer.GetStrings();
-        int typeSignature = 0;
-        int packCount = Math.Min(scanCount, 16);
-        for (int i = 0; i < packCount; i++)
-        {
-            int kind = (int)ResolveSliceKindLightweight(types[i], sliceIndices[i], stringValues) & 0x3;
-            typeSignature |= kind << (i * 2);
-        }
-
-        if (scanCount <= 16)
-            return (typeSignature, null);
-
-        var fullKinds = new byte[scanCount];
-        for (int i = 0; i < scanCount; i++)
-            fullKinds[i] = (byte)ResolveSliceKindLightweight(types[i], sliceIndices[i], stringValues);
-
-        return (typeSignature, fullKinds);
-    }
-
-    /// <summary>For Slice predicates, check if the resolved string exceeds 255 UTF-8 bytes.
-    /// Returns <see cref="ScanValueType.SliceLong"/> if so, separating compound-eligible
-    /// from ineligible plans in the cache key. Non-Slice types pass through unchanged.
-    /// Operates on the value type and slice param index directly, without requiring
-    /// a <see cref="ScanPredicateInfo"/> struct.</summary>
-    private static ScanValueType ResolveSliceKindLightweight(ScanValueType valueType, int sliceParamIndex, string[] stringValues)
-    {
-        if (valueType != ScanValueType.Slice)
-            return valueType;
-
-        if (stringValues != null && sliceParamIndex >= 0 && sliceParamIndex < stringValues.Length)
-        {
-            string val = stringValues[sliceParamIndex];
-            if (val != null && System.Text.Encoding.UTF8.GetByteCount(val) > byte.MaxValue)
-                return ScanValueType.SliceLong;
-        }
-
-        return ScanValueType.Slice;
-    }
-
     /// <summary>Single walker shared by both overloads. <paramref name="exec"/> is non-null on
     /// the resolution path and supplies per-sub TermValueType during group recursion; on the
     /// template path it is null and recursion falls back to InferTermType.</summary>
@@ -5493,6 +5351,40 @@ internal static partial class QueryPlanBuilder
             CompareOp = compareOp,
             ParamIndex = idx,
             ParamIndex2 = idx2
+        };
+    }
+
+    /// <summary>Classify a query parameter's runtime type from the blittable JSON value.
+    /// Mirrors the type-branching in <see cref="ResolveParameterValue"/> — long, double,
+    /// string, or SliceLong (string exceeding 255 UTF-8 bytes). Used to compute the
+    /// TypeSignature cache-key component cheaply from <see cref="PlanTemplate.ParameterSlots"/>
+    /// without walking the full clause/execution list.</summary>
+    private static ScanValueType ClassifyParamType(BlittableJsonReaderObject queryParams, string name)
+    {
+        if (queryParams == null || queryParams.TryGet(name, out object raw) == false || raw == null)
+            return ScanValueType.Slice;
+        return raw switch
+        {
+            long => ScanValueType.Long,
+            double => ScanValueType.Double,
+            LazyNumberValue lnv => lnv.TryParseLong(out _) ? ScanValueType.Long : ScanValueType.Double,
+            string s => System.Text.Encoding.UTF8.GetByteCount(s) > byte.MaxValue ? ScanValueType.SliceLong : ScanValueType.Slice,
+            LazyStringValue lsv => lsv.Size > byte.MaxValue ? ScanValueType.SliceLong : ScanValueType.Slice,
+            BlittableJsonReaderArray arr => arr.Length > 0 ? ClassifyParamTypeFirstElement(arr[0]) : ScanValueType.Slice,
+            _ => ScanValueType.Slice
+        };
+    }
+
+    /// <summary>Classify the first element of a parameter array (for IN/AllIn parameter bindings).
+    /// Arrays are typed by their first element in the same manner as <see cref="ResolveParameterValue"/>.</summary>
+    private static ScanValueType ClassifyParamTypeFirstElement(object element)
+    {
+        return element switch
+        {
+            long => ScanValueType.Long,
+            double => ScanValueType.Double,
+            LazyNumberValue lnv => lnv.TryParseLong(out _) ? ScanValueType.Long : ScanValueType.Double,
+            _ => ScanValueType.Slice
         };
     }
 }
