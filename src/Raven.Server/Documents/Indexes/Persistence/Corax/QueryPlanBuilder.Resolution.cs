@@ -19,6 +19,8 @@ using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Corax;
 using VectorOptions = Raven.Client.Documents.Indexes.Vector.VectorOptions;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
+using Raven.Server.Documents.Indexes;
+using Raven.Server.Documents.Indexes.Persistence.Corax;
 using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Indexes.VectorSearch;
 using Raven.Server.Documents.Queries;
@@ -69,7 +71,7 @@ internal static partial class QueryPlanBuilder
         var template = BuildTemplate(planParams);
 
         // Phase 2: parameter resolution, plan emission, IL compile (with cache miss handling).
-        compiledPlanOut = Build(template, planParams, builderParameters, out plan, wantTimings);
+        compiledPlanOut = Build(template, planParams, builderParameters, out plan);
         if (compiledPlanOut == null)
             return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
 
@@ -118,7 +120,7 @@ internal static partial class QueryPlanBuilder
         var template = BuildTemplate(planParams);
 
         // Phase 2: parameter resolution, plan emission, IL compile (with cache-miss handling).
-        var compiledPlan = Build(template, planParams, builderParameters, out var plan, wantTimings);
+        var compiledPlan = Build(template, planParams, builderParameters, out var plan);
         if (compiledPlan == null)
         {
             var emptyMatch = TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
@@ -385,14 +387,8 @@ internal static partial class QueryPlanBuilder
     /// post-filters (e.g. an empty IN clause inside an AND chain) — the caller must produce
     /// an explicit empty result rather than caching this shape under the wrong key.
     /// </summary>
-    private static CompiledPlan Build(
-        PlanTemplate template,
-        PlanParameters planParams,
-        QueryBuilderParameters builderParameters,
-        out QueryExecution plan,
-        bool wantTimings)
+    private static CompiledPlan Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, out QueryExecution plan)
     {
-        _ = wantTimings; // IL emission always produces both timed and untimed delegates today.
         var indexSearcher = planParams.IndexSearcher;
         var queryText = planParams.Metadata.Query.QueryText;
         var planCache = indexSearcher.PlanCache;
@@ -403,9 +399,9 @@ internal static partial class QueryPlanBuilder
 
         // Step 3: Populate parameter values into typed arrays
         var writer = new ValueWriter();
-        for (int ci = 0; ci < execList.Count; ci++)
+        foreach (var it in execList)
         {
-            PopulateClauseValues(execList[ci].Clause, execList[ci], planParams.QueryParameters, writer, builderParameters);
+            PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters);
         }
 
         // Step 3b: Constant propagation — simplify trivially-false/simple clauses.
@@ -416,82 +412,45 @@ internal static partial class QueryPlanBuilder
         var cardinalityCtx = builderParameters != null
             ? new ResolutionContext(builderParameters)
             : new ResolutionContext(planParams);
-        for (int ci = 0; ci < execList.Count; ci++)
+        
+        foreach (var it in execList)
         {
-            if (execList[ci].Cardinality < 0)
-                execList[ci].Cardinality = EstimateCardinality(execList[ci], indexSearcher, writer, cardinalityCtx);
+            if (it.Cardinality >= 0) continue;
+            it.Cardinality = EstimateCardinality(it, indexSearcher, writer, cardinalityCtx);
         }
 
         // Step 5: Sort operands by cardinality (sort executions by cardinality).
         ClauseExecution[] executions = SortClausesByCardinality(execList, isOr);
-
-        // ── Handle empty executions (WHEN elimination) ──────────────────────
-        if (executions.Length == 0)
+        
+        // Consider the following two queries, when both $a and $b are false:
+        // FROM Orders WHERE when($a, Name = 'x') AND when($b, Price > 10)
+        // FROM Orders WHERE when($a, Name = 'x') OR when($b, Price > 10)
+        // Regardless of the query, we have nothing _to_ select here, so we return nothing
+        if(executions.Length is 0 && template.Clauses.Count is not 0)
         {
-            if (isOr && template.Clauses.Count > 0)
-            {
-                // OR query with all clauses eliminated by WHEN → no branches left in the OR →
-                // nothing matches (identity for OR is the empty set).
-                plan = null;
-                return null;
-            }
-            // AND query with all clauses eliminated by WHEN → no filter → match all entries.
-            // Also: genuine no-WHERE (template.Clauses.Count == 0) → match all entries.
-            plan = BuildAllEntriesPlan();
-            plan.Executions = executions;
-
-            // AllEntries plan still needs a compiled delegate (the DirectIterate op).
-            // Fall through to cache lookup below.
+            plan = null; // indicates that we sould use TermMatch.CreateEmtpy();
+            return null;
         }
-        else
-        {
-            // Allocate a placeholder plan; Ops will be filled on cache miss.
-            plan = new QueryExecution();
-        }
+        
+        plan = new QueryExecution();
 
         // ── Step 6: Compute cache key components (cheap) ────────────────────
         int operandOrdering = ComputeOperandOrdering(executions);
 
-        // Single-clause NotEquals/negated-Equals uses AllNegated=false
-        // (the standalone code path in EmitPlan and ResolveMatches requires this).
-        bool isSingleNegatedEquals = executions.Length == 1
-            && (executions[0].ClauseType == ClauseType.NotEquals
-                || (executions[0].ClauseType == ClauseType.Equals && executions[0].IsNegated));
-        bool allNegated = isSingleNegatedEquals ? false : ComputeAllNegated(executions);
+        var (isSingleNegatedEquals, allNegated) = CheckNegatedClauses(executions);
 
         if (planParams.HasBoost)
             operandOrdering |= QueryExecution.HasBoostBit;
 
-        // Cardinality cliff bit: queries under vs. over the cliff get different
-        // compiled plans, so the bit is part of the cache key.
+        // Cardinality cliff bit: queries under vs. over the cliff get different compiled plans, so the bit is part of the cache key.
         if (template.SortDrivingClauseIndex >= 0)
         {
-            int templateIdx = template.SortDrivingClauseIndex;
-            for (int i = 0; i < executions.Length; i++)
-            {
-                if (executions[i].Clause.OriginalIndex == templateIdx)
-                {
-                    long drivingCard = executions[i].Cardinality;
-                    if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
-                        operandOrdering |= QueryExecution.CardinalityCliffBit;
-                    break;
-                }
-            }
+            operandOrdering |= SetCardinalityCliffBit(executions, template.SortDrivingClauseIndex);
         }
 
-        // Compute TypeSignature/FullKinds cheaply for the cache key without building
-        // the full ScanPredicateInfo[] array. The lightweight classifier only needs
-        // each clause's value type and slice-param index for the string-length check.
-        // The full ScanPredicateInfo[] (with parameter offsets, field names, compare ops)
-        // is deferred until after the cache lookup since both hit and miss paths need it
-        // for ExtractScanParameters / IL emission respectively.
-        int typeSignature = 0;
-        byte[] fullKinds = null;
+        // Compute TypeSignature/FullKinds cheaply for the cache key
         bool needScanPreds = isOr == false && executions.Length > 1;
-        if (needScanPreds)
-        {
-            (typeSignature, fullKinds) = ComputeTypeSignatureFromExecs(executions, allNegated, writer);
-        }
+        (int typeSignature, byte[] fullKinds) = needScanPreds ? ComputeTypeSignatureFromExecs(executions, allNegated, writer) : (0, null);
 
         // ── Step 7: Cache lookup ────────────────────────────────────────────
         var compiledPlan = planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags);
@@ -660,6 +619,21 @@ internal static partial class QueryPlanBuilder
         return compiledPlan;
     }
 
+    private static int SetCardinalityCliffBit(ClauseExecution[] executions, int templateIdx)
+    {
+        foreach (var t in executions)
+        {
+            if (t.Clause.OriginalIndex != templateIdx) 
+                continue;
+                
+            long drivingCard = t.Cardinality;
+            if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
+                return QueryExecution.CardinalityCliffBit;
+            break;
+        }
+        return 0;
+    }
+
     /// <summary>
     /// Bitmap-pipeline match allocator: resolves matches and term sources from the live
     /// transaction, extracts scan parameters, optionally populates highlighting terms,
@@ -675,7 +649,7 @@ internal static partial class QueryPlanBuilder
     private static IQueryMatch InstantiateBitmapPipeline(
         CompiledPlan compiledPlan,
         QueryExecution plan,
-        PlanParameters planParams,
+        QueryPlanBuilder.PlanParameters planParams,
         QueryBuilderParameters builderParameters,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         bool wantTimings,
@@ -753,7 +727,7 @@ internal static partial class QueryPlanBuilder
         for (int ci = 0; ci < walkerCtx.Clauses.Count; ci++)
         {
             subExecs[ci] = CreateExecution(walkerCtx.Clauses[ci]);
-            PopulateClauseValues(walkerCtx.Clauses[ci], subExecs[ci], builderParams.QueryParameters, writer, builderParams);
+            PopulateClauseValues(subExecs[ci], builderParams.QueryParameters, writer, builderParams);
         }
 
         var subPlan = new QueryExecution
@@ -812,8 +786,7 @@ internal static partial class QueryPlanBuilder
     /// collides with the single-clause [Attach==true] survivor (also ord=1). WhenFlags
     /// joins (Ordering, TypeSignature, FullKinds) so each survival pattern gets its own
     /// cached compiled plan.</summary>
-    private static (List<ClauseExecution> ExecList, int WhenFlags)
-        EvaluateWhenAndFilterClauses(PlanTemplate template, PlanParameters planParams)
+    private static (List<ClauseExecution> ExecList, int WhenFlags) EvaluateWhenAndFilterClauses(PlanTemplate template, QueryPlanBuilder.PlanParameters planParams)
     {
         var execList = new List<ClauseExecution>(template.Clauses.Count);
         int whenFlags = 0;
@@ -825,26 +798,25 @@ internal static partial class QueryPlanBuilder
             {
                 execList.Add(CreateExecution(cached));
             }
+            return (execList, whenFlags);
         }
-        else
-        {
-            int whenBit = 0;
-            foreach (var cached in template.Clauses)
-            {
-                if (cached.WhenCondition != null)
-                {
-                    if (cached.WhenCondition(planParams.QueryParameters) == false)
-                    {
-                        whenBit++;
-                        continue;
-                    }
 
-                    whenFlags |= 1 << whenBit;
+        int whenBit = 0;
+        foreach (var cached in template.Clauses)
+        {
+            if (cached.WhenCondition != null)
+            {
+                if (cached.WhenCondition(planParams.QueryParameters) == false)
+                {
                     whenBit++;
+                    continue;
                 }
 
-                execList.Add(CreateExecution(cached));
+                whenFlags |= 1 << whenBit;
+                whenBit++;
             }
+
+            execList.Add(CreateExecution(cached));
         }
 
         return (execList, whenFlags);
@@ -944,7 +916,7 @@ internal static partial class QueryPlanBuilder
     /// call <see cref="AttachPostFilterPhases"/> to wire them onto the plan. No-op when
     /// the template has neither.</summary>
     private static void AttachSpatialAndVectorClauses(
-        QueryExecution plan, PlanTemplate template, PlanParameters planParams,
+        QueryExecution plan, PlanTemplate template, QueryPlanBuilder.PlanParameters planParams,
         QueryBuilderParameters builderParameters, ValueWriter writer)
     {
         if (template.SpatialClauses == null && template.VectorClauses == null)
@@ -964,7 +936,7 @@ internal static partial class QueryPlanBuilder
             {
                 var sc = template.SpatialClauses[si];
                 var scExec = new ClauseExecution(sc);
-                PopulateClauseValues(sc, scExec, planParams.QueryParameters, writer, builderParameters);
+                PopulateClauseValues(scExec, planParams.QueryParameters, writer, builderParameters);
                 spatialArr[si] = sc;
                 spatialExecs[si] = scExec;
             }
@@ -979,7 +951,7 @@ internal static partial class QueryPlanBuilder
             {
                 var vc = template.VectorClauses[vi];
                 var vcExec = new ClauseExecution(vc);
-                PopulateClauseValues(vc, vcExec, planParams.QueryParameters, writer, builderParameters);
+                PopulateClauseValues(vcExec, planParams.QueryParameters, writer, builderParameters);
                 vectorArr[vi] = vc;
                 vectorExecs[vi] = vcExec;
             }
@@ -1061,36 +1033,36 @@ internal static partial class QueryPlanBuilder
     /// <summary>Resolve a single clause's parameter value using its cached binding.
     /// Called for each clause during parameter population (both first execution and cache hit).
     /// The optional builderParameters is needed to resolve deferred method expressions (cmpxchg, now, today).</summary>
-    private static void PopulateClauseValues(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters)
+    private static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
-        if (clause.SubClauses != null && exec.SubExecutions != null)
-            for (int si = 0; si < clause.SubClauses.Count; si++)
-                PopulateClauseValues(clause.SubClauses[si], exec.SubExecutions[si], queryParameters, writer, builderParameters);
+        foreach (var it in exec.SubExecutions ?? [])
+        {
+            PopulateClauseValues(it, queryParameters, writer, builderParameters);
+        }
 
         // Resolve boost factor if this clause is boosted
-        if (clause.HasBoost && clause.Bindings is { Length: > 0 })
+        if (exec.Clause is { HasBoost: true, Bindings.Length: > 0 })
         {
-            ResolveBoostFactor(clause, exec, queryParameters);
+            ResolveBoostFactor(exec, queryParameters);
         }
 
-        switch (clause.ClauseType)
+        switch (exec.Clause.ClauseType) // Spatial and vector resolve via their binding array. 
         {
-            // Spatial and vector resolve via their binding array.
-            case ClauseType.Spatial when clause.Bindings is { Length: > 0 }:
-                ResolveSpatialFromBindings(clause, exec, queryParameters);
+            case ClauseType.Spatial when exec.Clause.Bindings is { Length: > 0 }:
+                ResolveSpatialFromBindings(exec, queryParameters);
                 return;
-            case ClauseType.Vector when clause.Bindings is { Length: > 0 }:
-                ResolveVectorFromBindings(clause, exec, queryParameters);
+            case ClauseType.Vector when exec.Clause.Bindings is { Length: > 0 }:
+                ResolveVectorFromBindings(exec, queryParameters);
                 return;
         }
 
-        if (clause.Bindings is not { Length: > 0 })
+        if (exec.Clause.Bindings is not { Length: > 0 })
             return;
         
-        var bindings = clause.Bindings;
-        switch (clause.ClauseType)
+        var bindings = exec.Clause.Bindings;
+        switch (exec.Clause.ClauseType)
         {
             // BETWEEN: Literal sentinel bounds are rewritten at template time.
             // Parameter-bound sentinels are detected here at execution time.
@@ -1123,15 +1095,15 @@ internal static partial class QueryPlanBuilder
             }
             case ClauseType.In or ClauseType.AllIn:
                 // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
-                ResolveInFromBindings(clause, exec, queryParameters, writer, bindings);
+                ResolveInFromBindings(exec.Clause, exec, queryParameters, writer, bindings);
                 break;
             default:
                 // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
                 var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters, builderParameters);
                 // startsWith/endsWith/search/regex require a String argument — reject Null (matches Lucene behavior).
-                if (value == null && clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith or ClauseType.Search or ClauseType.Regex)
+                if (value == null && exec.Clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith or ClauseType.Search or ClauseType.Regex)
                 {
-                    ThrowInvalidMethodArgument(clause);
+                    ThrowInvalidMethodArgument(exec.Clause);
                 }
 
                 exec.TermValueType = valueType;
@@ -1154,9 +1126,9 @@ internal static partial class QueryPlanBuilder
             $"Method {methodName}() expects to get an argument of type String while it got Null");
     }
 
-    private static void ResolveBoostFactor(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters)
+    private static void ResolveBoostFactor(ClauseExecution exec, BlittableJsonReaderObject queryParameters)
     {
-        var (boostVal, boostType) = ResolveBindingScalar(clause.Bindings[^1], queryParameters, builderParameters: null);
+        var (boostVal, boostType) = ResolveBindingScalar(exec.Clause.Bindings[^1], queryParameters, builderParameters: null);
         if (boostVal == null) return;
 
         exec.BoostFactor = boostType switch
@@ -1339,9 +1311,9 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Resolve spatial parameters from cached bindings (no MethodExpression dependency).</summary>
-    private static void ResolveSpatialFromBindings(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters)
+    private static void ResolveSpatialFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters)
     {
-        var bindings = clause.Bindings;
+        var bindings = exec.Clause.Bindings;
         var sp = new SpatialParams();
 
         // [0] = distanceErrorPct
@@ -1393,11 +1365,11 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Resolve vector parameters from cached bindings (no MethodExpression dependency).</summary>
-    private static void ResolveVectorFromBindings(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters)
+    private static void ResolveVectorFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters)
     {
-        var bindings = clause.Bindings;
+        var bindings = exec.Clause.Bindings;
 
-        var vec = exec.Vector = new VectorParams { Method = clause.VectorMethod };
+        var vec = exec.Vector = new VectorParams { Method = exec.Clause.VectorMethod };
 
         // [1]=minimumMatch, [2]=numberOfCandidates, [3]=aiTask
         if (bindings.Length > BindingIndex.VectorMinMatch && bindings[BindingIndex.VectorMinMatch] != null)
@@ -3071,7 +3043,7 @@ internal static partial class QueryPlanBuilder
     // ── Compound field exact match (no ORDER BY) ─────────────────────────
 
     public static bool TryCreateCompoundExactMatch(
-        QueryExecution plan, PlanParameters planParams, QueryBuilderParameters builderParams,
+        QueryExecution plan, QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
         out IQueryMatch compoundMatch, out string rejectReason)
     {
         rejectReason = null;
@@ -3097,7 +3069,7 @@ internal static partial class QueryPlanBuilder
     /// If so, build a single TermQuery on the compound tree with the composite key.
     /// One tree lookup instead of two posting list intersections.</summary>
     public static bool TryCreateCompoundExactMatch(
-        QueryExecution plan, PlanParameters planParams, QueryBuilderParameters builderParams,
+        QueryExecution plan, QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
         out IQueryMatch compoundMatch)
     {
         compoundMatch = null;
@@ -3132,7 +3104,7 @@ internal static partial class QueryPlanBuilder
     /// Returns null when a per-execution byte-length check fails — the caller must fall
     /// back to the next optimization (or bitmap). No cost gates here — those are encoded
     /// in the plan-cache key (cardinality cliff bit 31 of Ordering).</summary>
-    private static IQueryMatch ConstructCompoundExact(QueryExecution plan, PlanParameters planParams)
+    private static IQueryMatch ConstructCompoundExact(QueryExecution plan, QueryPlanBuilder.PlanParameters planParams)
     {
         var execs = plan.Executions;
         var indexSearcher = planParams.IndexSearcher;
@@ -3218,7 +3190,7 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     public static bool TryCreateCompoundFieldMatch(
         QueryExecution plan, OrderMetadata[] orderByFields,
-        PlanParameters planParams, QueryBuilderParameters builderParams,
+        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
         CompiledPlan compiledPlan, out IQueryMatch compoundMatch, out string rejectReason)
     {
         if (TryCreateCompoundFieldMatch(plan, orderByFields, planParams, builderParams, compiledPlan, out compoundMatch))
@@ -3242,7 +3214,7 @@ internal static partial class QueryPlanBuilder
     /// residual predicate checking.</summary>
     public static bool TryCreateCompoundFieldMatch(
         QueryExecution plan, OrderMetadata[] orderByFields,
-        PlanParameters planParams, QueryBuilderParameters builderParams,
+        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
         CompiledPlan compiledPlan, out IQueryMatch compoundMatch)
     {
         compoundMatch = null;
@@ -3343,7 +3315,7 @@ internal static partial class QueryPlanBuilder
     /// caller falls back to the next optimization or bitmap.</summary>
     private static IQueryMatch ConstructCompoundField(
         QueryExecution plan, OrderMetadata[] orderByFields,
-        PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
+        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
         int field2RangeIdx, long entriesToScan, long bitmapCost)
     {
         var execs = plan.Executions;
@@ -3589,7 +3561,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Check if a range clause on the ORDER BY field can be served by a direct</summary>
     public static bool TryCreateSimpleFieldDirectScan(
         QueryExecution plan, OrderMetadata[] orderByFields,
-        PlanParameters planParams, QueryBuilderParameters builderParams,
+        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
         CompiledPlan compiledPlan, out IQueryMatch directMatch, out string rejectReason)
     {
         rejectReason = null;
@@ -3615,7 +3587,7 @@ internal static partial class QueryPlanBuilder
     /// in sort order, so no SortingMatch wrapper is needed.</summary>
     public static bool TryCreateSimpleFieldDirectScan(
         QueryExecution plan, OrderMetadata[] orderByFields,
-        PlanParameters planParams, QueryBuilderParameters builderParams,
+        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
         CompiledPlan compiledPlan, out IQueryMatch directMatch)
     {
         directMatch = null;
@@ -3745,7 +3717,7 @@ internal static partial class QueryPlanBuilder
     /// or tie-break group cap exceeded by current parameter cardinality).</summary>
     private static IQueryMatch ConstructDirectScan(
         QueryExecution plan, OrderMetadata[] orderByFields,
-        PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
+        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
         int drivingIdx, bool isFullScan, bool hasTieBreak,
         long entriesToScan, long bitmapCost,
         List<ScanPredicateInfo> preBuiltResiduals = null)
@@ -4149,7 +4121,7 @@ internal static partial class QueryPlanBuilder
     /// available (e.g., direct tests). Handles <c>ORDER BY score()</c> only — callers that need
     /// field / spatial / alphanumeric sorts must use the full
     /// <see cref="OrderBy(QueryBuilderParameters,IQueryMatch,in OrderMetadata[],bool)"/> overload.</summary>
-    public static IQueryMatch ApplyScoreOrdering(PlanParameters planParams, IQueryMatch match, long take, CancellationToken token = default)
+    public static IQueryMatch ApplyScoreOrdering(QueryPlanBuilder.PlanParameters planParams, IQueryMatch match, long take, CancellationToken token = default)
     {
         OrderByField[] orderByFields = planParams.Metadata.OrderBy;
         if (orderByFields == null || orderByFields.Length == 0)
@@ -4844,19 +4816,13 @@ internal static partial class QueryPlanBuilder
         return ordering;
     }
 
-    /// <summary>Check whether the plan starts from AllEntries (all clauses negated).
-    /// If the first clause after cardinality sort is negated, all remaining ones are too
-    /// (positive clauses sort before negated because their cardinality is lower).
-    ///
-    /// Important: must NOT be used for the single-clause NotEquals/negated-Equals case
-    /// (length == 1, ClauseType == NotEquals or Equals+IsNegated). That case uses a
-    /// special EmitPlan path (FillAllEntries + ANDNOT) with AllNegated = false so that
-    /// ResolveMatches takes the standalone-NotEquals code path. The caller must check
-    /// for that case and override to false.</summary>
-    private static bool ComputeAllNegated(ClauseExecution[] executions)
+    private static (bool IsSingleNegatedEquals, bool AllNegated) CheckNegatedClauses(ClauseExecution[] executions)
     {
-        return executions.Length > 0
-               && (executions[0].IsNegated || executions[0].ClauseType == ClauseType.NotEquals);
+        // Matches exactly 1 element that is negated (requires standalone optimization path)
+        var isSingleNegatedEquals = executions is [{ IsNegated: true }];
+        // Matches >= 2 elements where the first is negated (cardinality sort guarantees subsequent ones are too)
+        var allNegated = executions is [{ IsNegated: true }, _, ..]; // here we heck 
+        return (isSingleNegatedEquals, allNegated);
     }
 
     /// <summary>Count the number of IN/AllIn range-count slots in the given executions.
@@ -5173,10 +5139,9 @@ internal static partial class QueryPlanBuilder
     /// but returns only the <see cref="ScanValueType"/> (or null for unscannable clauses)
     /// without allocating a <see cref="ScanPredicateInfo"/>. Used for computing the
     /// TypeSignature cache-key component cheaply before the plan-cache lookup.</summary>
-    private static ScanValueType? ClassifyScanType(ClauseInfo clause, ClauseExecution exec,
-        ParamValueType termType, ref int sliceIndex)
+    private static ScanValueType? ClassifyScanType(ClauseExecution exec, ParamValueType termType, ref int sliceIndex)
     {
-        switch (clause.ClauseType)
+        switch (exec.Clause.ClauseType)
         {
             case ClauseType.Search:
             case ClauseType.Regex:
@@ -5201,7 +5166,7 @@ internal static partial class QueryPlanBuilder
             }
             case ClauseType.AndGroup:
             {
-                if (clause.SubClauses is not { Count: > 0 } subs)
+                if (exec.Clause.SubClauses is not { Count: > 0 } subs)
                     return null;
                 var subExecs = exec?.SubExecutions;
                 for (int si = 0; si < subs.Count; si++)
@@ -5209,7 +5174,7 @@ internal static partial class QueryPlanBuilder
                     var sub = subs[si];
                     var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
                     var subTermType = subExec?.TermValueType ?? InferTermType(sub);
-                    if (ClassifyScanType(sub, subExec, subTermType, ref sliceIndex) == null)
+                    if (ClassifyScanType(subExec, subTermType, ref sliceIndex) == null)
                         return null;
                 }
                 // AndGroup contributes ScanValueType.Long (struct default) to type signature
@@ -5219,7 +5184,7 @@ internal static partial class QueryPlanBuilder
                 return ScanValueType.Long;
             case ClauseType.OrGroup:
             {
-                if (clause.SubClauses is not { Count: > 0 } subs)
+                if (exec.Clause.SubClauses is not { Count: > 0 } subs)
                     return null;
                 var subExecs = exec?.SubExecutions;
                 for (int si = 0; si < subs.Count; si++)
@@ -5227,7 +5192,7 @@ internal static partial class QueryPlanBuilder
                     var sub = subs[si];
                     var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
                     var subTermType = subExec?.TermValueType ?? InferTermType(sub);
-                    if (ClassifyScanType(sub, subExec, subTermType, ref sliceIndex) == null)
+                    if (ClassifyScanType(subExec, subTermType, ref sliceIndex) == null)
                         return null;
                 }
                 // OrGroup contributes ScanValueType.Long (struct default) to type signature
@@ -5236,7 +5201,6 @@ internal static partial class QueryPlanBuilder
         }
 
         // Leaf clause — classify by term type
-        bool isBetween = clause.ClauseType == ClauseType.Between;
         switch (termType)
         {
             case ParamValueType.Long:
@@ -5245,7 +5209,7 @@ internal static partial class QueryPlanBuilder
                 return ScanValueType.Double;
             default:
                 sliceIndex++;
-                if (isBetween)
+                if ( exec.Clause.ClauseType == ClauseType.Between)
                     sliceIndex++;
                 return ScanValueType.Slice;
         }
@@ -5256,8 +5220,8 @@ internal static partial class QueryPlanBuilder
     /// Only classifies each clause's value type and checks the string-length threshold
     /// for Slice predicates (to distinguish compound-eligible from ineligible plans).
     /// Returns <c>(0, null)</c> when no clauses are scan-eligible.</summary>
-    private static (int TypeSignature, byte[] FullKinds) ComputeTypeSignatureFromExecs(
-        ClauseExecution[] executions, bool allNegated, ValueWriter writer)
+    [SkipLocalsInit]
+    private static (int TypeSignature, byte[] FullKinds) ComputeTypeSignatureFromExecs(ClauseExecution[] executions, bool allNegated, ValueWriter writer)
     {
         int scanStart = allNegated ? 0 : 1;
         int sliceIndex = 0;
@@ -5279,10 +5243,8 @@ internal static partial class QueryPlanBuilder
 
         for (int si = scanStart; si < executions.Length; si++)
         {
-            int sliceBefore = sliceIndex;
-            var classified = ClassifyScanType(
-                executions[si].Clause, executions[si],
-                executions[si].TermValueType, ref sliceIndex);
+            int sliceBefore  = sliceIndex;
+            var classified = ClassifyScanType(executions[si], executions[si].TermValueType, ref sliceIndex);
             if (classified == null)
                 continue;
             types[scanCount] = classified.Value;
