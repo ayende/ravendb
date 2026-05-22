@@ -425,7 +425,7 @@ internal static partial class QueryPlanBuilder
         // Step 5: Sort operands by cardinality (sort executions by cardinality).
         ClauseExecution[] executions = SortClausesByCardinality(execList, isOr);
 
-        // Step 6: Emit plan ops + attach spatial/vector post-filters.
+        // ── Handle empty executions (WHEN elimination) ──────────────────────
         if (executions.Length == 0)
         {
             if (isOr && template.Clauses.Count > 0)
@@ -439,29 +439,131 @@ internal static partial class QueryPlanBuilder
             // Also: genuine no-WHERE (template.Clauses.Count == 0) → match all entries.
             plan = BuildAllEntriesPlan();
             plan.Executions = executions;
+
+            // AllEntries plan still needs a compiled delegate (the DirectIterate op).
+            // Fall through to cache lookup below.
         }
         else
         {
+            // Allocate a placeholder plan; Ops will be filled on cache miss.
+            plan = new QueryExecution();
+        }
+
+        // ── Step 6: Compute cache key components (cheap) ────────────────────
+        int operandOrdering = ComputeOperandOrdering(executions);
+
+        // Single-clause NotEquals/negated-Equals uses AllNegated=false
+        // (the standalone code path in EmitPlan and ResolveMatches requires this).
+        bool isSingleNegatedEquals = executions.Length == 1
+            && (executions[0].ClauseType == ClauseType.NotEquals
+                || (executions[0].ClauseType == ClauseType.Equals && executions[0].IsNegated));
+        bool allNegated = isSingleNegatedEquals ? false : ComputeAllNegated(executions);
+
+        if (planParams.HasBoost)
+            operandOrdering |= QueryExecution.HasBoostBit;
+
+        // Cardinality cliff bit: queries under vs. over the cliff get different
+        // compiled plans, so the bit is part of the cache key.
+        if (template.SortDrivingClauseIndex >= 0)
+        {
+            int templateIdx = template.SortDrivingClauseIndex;
+            for (int i = 0; i < executions.Length; i++)
+            {
+                if (executions[i].Clause.OriginalIndex == templateIdx)
+                {
+                    long drivingCard = executions[i].Cardinality;
+                    if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
+                        operandOrdering |= QueryExecution.CardinalityCliffBit;
+                    break;
+                }
+            }
+        }
+
+        // Build scan predicate infos for entry scan (cache key component via TypeSignature).
+        // Only applicable for AND chains with 2+ clauses.
+        ScanPredicateInfo[] scanPreds = null;
+        int typeSignature = 0;
+        byte[] fullKinds = null;
+        if (isOr == false && executions.Length > 1)
+        {
+            int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
+            int scanStart = allNegated ? 0 : 1;
+            int maxPreds = executions.Length - scanStart;
+            scanPreds = new ScanPredicateInfo[maxPreds];
+            int scanPredCount = 0;
+            for (int si2 = scanStart; si2 < executions.Length; si2++)
+            {
+                var pred = BuildScanPredicateInfo(executions[si2].Clause, executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex);
+                if (pred != null)
+                    scanPreds[scanPredCount++] = pred.Value;
+            }
+
+            if (scanPredCount > 0)
+            {
+                if (scanPredCount < maxPreds)
+                    Array.Resize(ref scanPreds, scanPredCount);
+                (typeSignature, fullKinds) = GetTypeSignature(scanPreds, writer.GetStrings());
+            }
+            else
+            {
+                scanPreds = null;
+            }
+        }
+
+        // ── Step 7: Cache lookup ────────────────────────────────────────────
+        var compiledPlan = planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags);
+        if (compiledPlan != null)
+        {
+            // Cache hit — skip EmitPlan (the expensive PlanOp[] generation).
+            // Populate the QueryExecution with all fields needed by Instantiate
+            // and InstantiateBitmapPipeline.
+            plan.Executions = executions;
+            plan.OperandOrdering = operandOrdering;
+            plan.AllNegated = allNegated;
+            plan.ScanPredicateInfos = scanPreds;
+            plan.TypeSignature = typeSignature;
+            plan.FullKinds = fullKinds;
+            plan.WhenFlags = whenFlags;
+            plan.OptimizationFlags = template.OptimizationFlags;
+
+            // Build InRangeCounts from executions (same fixup as cache-miss path
+            // but without the structural array from EmitPlan).
+            plan.InRangeCounts = BuildInRangeCounts(executions, isOr, compiledPlan.InRangeSlotCount);
+
+            // The single-clause NotEquals path in EmitPlan sets e0.IsNegated=true
+            // as a side effect needed by ResolveMatches/ResolveTermSources.
+            if (isSingleNegatedEquals && executions[0].IsNegated == false)
+                executions[0].IsNegated = true;
+
+            AttachSpatialAndVectorClauses(plan, template, planParams, builderParameters, writer);
+
+            plan.LongValues = writer.GetLongs();
+            plan.DoubleValues = writer.GetDoubles();
+            plan.StringValues = writer.GetStrings();
+
+            RemapOptimizationIndices(plan, template, executions);
+            return compiledPlan;
+        }
+
+        // ── Step 8: Cache miss — full plan emission ─────────────────────────
+        if (executions.Length > 0)
+        {
             plan = EmitPlan(isOr, executions);
             plan.Executions = executions;
-
+            plan.OperandOrdering = operandOrdering;
+            plan.AllNegated = allNegated;
 
             // Fixup InRangeCounts from actual runtime InTermCount / HasNullTerm.
             // EmitPlan uses Bindings.Length (structural) for range counts, but runtime
             // InTermCount may differ when a single parameter binding expands to an array.
-            // For AllIn, the null-term slot must be excluded when HasNullTerm is false
-            // (ANDing with an empty PostingSource clears the bitmap).
             if (plan.InRangeCounts != null)
             {
                 int rangeIdx = 0;
-                // OR chain: every In/AllIn clause emits one range entry
-                // AND chain: seed In/AllIn at position 0 emits one entry, each non-seed In/AllIn emits one
                 for (int ci = 0; ci < executions.Length && rangeIdx < plan.InRangeCounts.Length; ci++)
                 {
                     var cl = executions[ci].Clause;
                     if (cl.ClauseType == ClauseType.In)
                     {
-                        // IN: range = InTermCount (OR with empty null-slot is no-op)
                         plan.InRangeCounts[rangeIdx] = executions[ci].InTermCount;
                         rangeIdx++;
                     }
@@ -470,50 +572,19 @@ internal static partial class QueryPlanBuilder
                         int inCount = executions[ci].InTermCount;
                         bool hasNull = executions[ci].HasNullTerm;
                         if (ci == 0 && !isOr)
-                        {
-                            // Seed AllIn (EmitAllInOps): exclude null-slot when !HasNullTerm
                             plan.InRangeCounts[rangeIdx] = Math.Max(0, inCount - 1 + (hasNull ? 1 : 0));
-                        }
                         else if (isOr)
-                        {
-                            // OR chain uses EmitInOps for AllIn too — range = InTermCount
                             plan.InRangeCounts[rangeIdx] = inCount;
-                        }
                         else
-                        {
-                            // Non-seed AND AllIn: range = InTermCount (direct AndRange)
                             plan.InRangeCounts[rangeIdx] = inCount;
-                        }
-
                         rangeIdx++;
                     }
                 }
             }
 
-            // Build scan predicate infos for entry scan — done here (not in EmitPlan)
-            // because OrGroup/AndGroup subclauses need actual resolved types from executions.
-            if (isOr == false && executions.Length > 1)
-            {
-                int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
-                int scanStart = plan.AllNegated ? 0 : 1;
-                int maxPreds = executions.Length - scanStart;
-                var scanPreds = new ScanPredicateInfo[maxPreds];
-                int scanPredCount = 0;
-                for (int si2 = scanStart; si2 < executions.Length; si2++)
-                {
-                    var pred = BuildScanPredicateInfo(executions[si2].Clause, executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex);
-                    if (pred != null)
-                        scanPreds[scanPredCount++] = pred.Value;
-                }
-
-                if (scanPredCount > 0)
-                {
-                    if (scanPredCount < maxPreds)
-                        Array.Resize(ref scanPreds, scanPredCount);
-                    plan.ScanPredicateInfos = scanPreds;
-                    (plan.TypeSignature, plan.FullKinds) = GetTypeSignature(plan.ScanPredicateInfos, writer.GetStrings());
-                }
-            }
+            plan.ScanPredicateInfos = scanPreds;
+            plan.TypeSignature = typeSignature;
+            plan.FullKinds = fullKinds;
         }
 
         // Empty-IN short-circuit: EmitPlan returns Ops=[] for an AND chain containing
@@ -540,42 +611,38 @@ internal static partial class QueryPlanBuilder
         plan.DoubleValues = writer.GetDoubles();
         plan.StringValues = writer.GetStrings();
 
-        // Step 7: Boost handling
+        // Boost handling: force every op to QueryMatch dispatch so scores are accumulated.
         if (planParams.HasBoost)
         {
             var ops = plan.Ops;
             if (ops != null)
                 for (int i = 0; i < ops.Length; i++)
                     ops[i].Dispatch = MatchDispatch.QueryMatch;
-            plan.OperandOrdering |= QueryExecution.HasBoostBit;
         }
 
-        // Step 8: Look up or compile the delegate for this ordering.
-        // WhenFlags (set above when building clauses/execList from template) is a
-        // first-class part of the cache key alongside Ordering / TypeSignature / FullKinds.
         plan.WhenFlags = whenFlags;
         plan.OptimizationFlags = template.OptimizationFlags;
 
         RemapOptimizationIndices(plan, template, executions);
 
-        var compiledPlan = planCache.Get(queryText, plan.OperandOrdering, plan.TypeSignature, plan.FullKinds, plan.WhenFlags);
-        if (compiledPlan == null)
+        // Compile and cache.
+        compiledPlan = new CompiledPlan
         {
-            compiledPlan = new CompiledPlan
-            {
-                CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var csharpText, emitTimings: false),
-                CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
-                CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanCsharp),
+            CompiledDelegate = QueryIlEmitter.EmitDelegate(plan, out var csharpText, emitTimings: false),
+            CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(plan, out _, emitTimings: true),
+            CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(plan.ScanPredicateInfos, out var scanCsharp),
 
-                Source = csharpText + "\n" + scanCsharp,
-                Ordering = plan.OperandOrdering,
-                TypeSignature = plan.TypeSignature,
-                FullKinds = plan.FullKinds,
-                WhenFlags = plan.WhenFlags,
-                InspectionTemplate = BuildInspectionTemplate(plan)
-            };
-            planCache.Add(queryText, compiledPlan, template);
-        }
+            Source = csharpText + "\n" + scanCsharp,
+            Ordering = operandOrdering,
+            TypeSignature = typeSignature,
+            FullKinds = fullKinds,
+            WhenFlags = whenFlags,
+            OpCount = plan.Ops?.Length ?? 0,
+            RequiredBitmaps = plan.RequiredBitmaps,
+            InRangeSlotCount = plan.InRangeCounts?.Length ?? 0,
+            InspectionTemplate = BuildInspectionTemplate(plan)
+        };
+        planCache.Add(queryText, compiledPlan, template);
 
         return compiledPlan;
     }
@@ -615,7 +682,7 @@ internal static partial class QueryPlanBuilder
             PopulateHighlightingTerms(plan, highlightingTerms, planParams.Metadata);
 
         var compiledMatch = new CompiledQueryMatch(
-            compiledPlan, plan.RequiredBitmaps, plan.Ops?.Length ?? 0, resolvedMatches, termSources, termsProviders,
+            compiledPlan, compiledPlan.RequiredBitmaps, compiledPlan.OpCount, resolvedMatches, termSources, termsProviders,
             indexSearcher, planParams.Allocator, wantTimings, token)
         {
             InRangeCounts = plan.InRangeCounts,
@@ -914,10 +981,8 @@ internal static partial class QueryPlanBuilder
     /// each clause carries its template-position in <see cref="ClauseInfo.OriginalIndex"/> so a
     /// single pass over the (already-sorted) clause list is enough to find the four targets.
     ///
-    /// Sets <see cref="QueryExecution.CardinalityCliffBit"/> on <see cref="QueryExecution.OperandOrdering"/>
-    /// when the sort-driving clause's cardinality is small enough that per-term groups fit
-    /// without intermediate truncation — under/over the cliff get different compiled plans
-    /// (different optimization hints, different cache keys).</summary>
+    /// Note: <see cref="QueryExecution.CardinalityCliffBit"/> is computed in <see cref="Build"/>
+    /// before the cache lookup (it is part of the cache key).</summary>
     private static void RemapOptimizationIndices(
         QueryExecution plan, PlanTemplate template,
         ClauseExecution[] executions)
@@ -961,12 +1026,8 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        if (plan.SortDrivingClauseIndex >= 0 && plan.SortDrivingClauseIndex < executions.Length)
-        {
-            long drivingCard = executions[plan.SortDrivingClauseIndex].Cardinality;
-            if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
-                plan.OperandOrdering |= QueryExecution.CardinalityCliffBit;
-        }
+        // NOTE: CardinalityCliffBit is now computed in Build() before the cache lookup
+        // (it's part of the cache key). RemapOptimizationIndices no longer sets it.
     }
 
     /// <summary>Create a ClauseExecution for a clause, including sub-executions for OrGroup/AndGroup.
@@ -4585,8 +4646,7 @@ internal static partial class QueryPlanBuilder
 
                     return new QueryExecution
                     {
-                        Ops = ops.ToArray(),
-                        OperandOrdering = 0
+                        Ops = ops.ToArray()
                     };
                 default:
                 {
@@ -4786,28 +4846,85 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // Pack operand ordering — encodes clause sort order after cardinality reordering.
-        // The plan structure must be the same for all parameter values of the same query text.
-        // Variable-count IN terms use InRangeCounts (read at runtime by the IL).
-        // Null-term slots are always allocated — the match is a no-op when null isn't present.
-        int ordering = 0;
-        for (int i = 0; i < Math.Min(executions.Length, 10); i++)
-        {
-            ordering |= (executions[i].Clause.OriginalIndex & 0x7) << (i * 3);
-        }
-
-        // Check if all clauses are negated (if first clause after sort is negated, all the rest are too)
-        bool allNegated = executions.Length > 0
-                          && (executions[0].IsNegated || executions[0].ClauseType == ClauseType.NotEquals);
-
         return new QueryExecution
         {
             Ops = ops.ToArray(),
-            OperandOrdering = ordering,
-            AllNegated = allNegated,
             RequiredBitmaps = needsThreeBitmaps ? 3 : 2,
             InRangeCounts = rangeCounts.Count > 0 ? rangeCounts.ToArray() : null
         };
+    }
+
+    /// <summary>Encode clause sort order into a 30-bit integer for the plan-cache key.
+    /// Up to 10 clauses × 3 bits each; slot <c>i</c> holds
+    /// <c>clauses[i].OriginalIndex &amp; 0x7</c> shifted by <c>i*3</c>.</summary>
+    private static int ComputeOperandOrdering(ClauseExecution[] executions)
+    {
+        int ordering = 0;
+        for (int i = 0; i < Math.Min(executions.Length, 10); i++)
+            ordering |= (executions[i].Clause.OriginalIndex & 0x7) << (i * 3);
+        return ordering;
+    }
+
+    /// <summary>Check whether the plan starts from AllEntries (all clauses negated).
+    /// If the first clause after cardinality sort is negated, all remaining ones are too
+    /// (positive clauses sort before negated because their cardinality is lower).
+    ///
+    /// Important: must NOT be used for the single-clause NotEquals/negated-Equals case
+    /// (length == 1, ClauseType == NotEquals or Equals+IsNegated). That case uses a
+    /// special EmitPlan path (FillAllEntries + ANDNOT) with AllNegated = false so that
+    /// ResolveMatches takes the standalone-NotEquals code path. The caller must check
+    /// for that case and override to false.</summary>
+    private static bool ComputeAllNegated(ClauseExecution[] executions)
+    {
+        return executions.Length > 0
+               && (executions[0].IsNegated || executions[0].ClauseType == ClauseType.NotEquals);
+    }
+
+    /// <summary>Count the number of IN/AllIn range-count slots in the given executions.
+    /// Mirrors the <c>rangeCounts</c> list built inside <see cref="EmitPlan"/>.</summary>
+    private static int CountInRangeSlots(ClauseExecution[] executions)
+    {
+        int count = 0;
+        for (int i = 0; i < executions.Length; i++)
+        {
+            if (executions[i].Clause.ClauseType is ClauseType.In or ClauseType.AllIn)
+                count++;
+        }
+        return count;
+    }
+
+    /// <summary>Build the per-execution InRangeCounts array from executions without
+    /// needing the structural array from EmitPlan. Returns null when there are no
+    /// IN/AllIn clauses.</summary>
+    private static int[] BuildInRangeCounts(ClauseExecution[] executions, bool isOr, int slotCount)
+    {
+        if (slotCount == 0)
+            return null;
+
+        var counts = new int[slotCount];
+        int rangeIdx = 0;
+        for (int ci = 0; ci < executions.Length && rangeIdx < counts.Length; ci++)
+        {
+            var cl = executions[ci].Clause;
+            if (cl.ClauseType == ClauseType.In)
+            {
+                counts[rangeIdx] = executions[ci].InTermCount;
+                rangeIdx++;
+            }
+            else if (cl.ClauseType == ClauseType.AllIn)
+            {
+                int inCount = executions[ci].InTermCount;
+                bool hasNull = executions[ci].HasNullTerm;
+                if (ci == 0 && !isOr)
+                    counts[rangeIdx] = Math.Max(0, inCount - 1 + (hasNull ? 1 : 0));
+                else if (isOr)
+                    counts[rangeIdx] = inCount;
+                else
+                    counts[rangeIdx] = inCount;
+                rangeIdx++;
+            }
+        }
+        return counts;
     }
 
     /// <summary>Compute TypeSignature from scan predicates. Packs 2 bits per predicate (first 16)
