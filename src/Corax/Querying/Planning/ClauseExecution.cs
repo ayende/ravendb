@@ -10,7 +10,7 @@ namespace Corax.Querying.Planning;
 public sealed class ClauseExecution(ClauseInfo clause) : IComparable<ClauseExecution>
 {
     /// <summary>Back-reference to the template clause this execution belongs to.</summary>
-    public ClauseInfo Clause = clause;
+    public readonly ClauseInfo Clause = clause;
 
     public PackedParam PackedParamValue = PackedParam.None;
     public ParamValueType TermValueType;

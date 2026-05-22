@@ -421,18 +421,26 @@ internal static partial class QueryPlanBuilder
 
         // Step 5: Sort operands by cardinality (sort executions by cardinality).
         ClauseExecution[] executions = SortClausesByCardinality(execList, isOr);
+
+        plan = new QueryExecution();
         
-        // Consider the following two queries, when both $a and $b are false:
-        // FROM Orders WHERE when($a, Name = 'x') AND when($b, Price > 10)
-        // FROM Orders WHERE when($a, Name = 'x') OR when($b, Price > 10)
-        // Regardless of the query, we have nothing _to_ select here, so we return nothing
-        if(executions.Length is 0 && template.Clauses.Count is not 0)
+        if(executions.Length is 0)
         {
-            plan = null; // indicates that we sould use TermMatch.CreateEmtpy();
-            return null;
+            if (template.Clauses.Count > 0)
+            {
+                // Consider the following two queries, when both $a and $b are false:
+                // FROM Orders WHERE when($a, Name = 'x') AND when($b, Price > 10)
+                // FROM Orders WHERE when($a, Name = 'x') OR when($b, Price > 10)
+                // Regardless of the query, we have nothing _to_ select here, so we return nothing
+                plan = null; // indicates that we should use TermMatch.CreateEmpty();
+                return null;
+            }
+
+            // FROM Post - i.e, query with no where clauses, still needs a compiled delegate, so we go generate a cached plan for it 
+            plan = BuildAllEntriesPlan();
+            plan.Executions = executions;
         }
         
-        plan = new QueryExecution();
 
         // ── Step 6: Compute cache key components (cheap) ────────────────────
         int operandOrdering = ComputeOperandOrdering(executions);
