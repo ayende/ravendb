@@ -369,13 +369,7 @@ internal static partial class QueryPlanBuilder
                 LiteralValue: Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery
             };
 
-            switch (lowIsSentinel, highIsSentinel)
-            {
-                case (true,true):
-                    return true; // we should remove it entirely
-                default:
-                    return false;
-            }
+            return lowIsSentinel &&  highIsSentinel;
         }
 
         /// <summary>

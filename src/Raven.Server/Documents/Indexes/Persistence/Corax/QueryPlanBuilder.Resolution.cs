@@ -813,7 +813,7 @@ internal static partial class QueryPlanBuilder
             e.Cardinality = 0;
             e.InTermCount = 0;
             e.HasNullTerm = false;
-            e.EffectiveClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
+            e.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
         }
     }
 
@@ -842,7 +842,7 @@ internal static partial class QueryPlanBuilder
             int insertPos = 0;
             for (int j = 0; j < execList.Count; j++)
             {
-                if (execList[j].EffectiveClauseType == ClauseType.AndGroup)
+                if (execList[j].ClauseType == ClauseType.AndGroup)
                 {
                     if (j != insertPos)
                     {
@@ -883,7 +883,7 @@ internal static partial class QueryPlanBuilder
             for (int si = 0; si < sLen; si++)
             {
                 var sc = template.SpatialClauses[si];
-                var scExec = new ClauseExecution { Clause = sc, EffectiveClauseType = sc.ClauseType, EffectiveIsNegated = sc.IsNegated };
+                var scExec = new ClauseExecution(sc);
                 PopulateClauseValues(sc, scExec, planParams.QueryParameters, writer, builderParameters);
                 spatialArr[si] = sc;
                 spatialExecs[si] = scExec;
@@ -898,7 +898,7 @@ internal static partial class QueryPlanBuilder
             for (int vi = 0; vi < vLen; vi++)
             {
                 var vc = template.VectorClauses[vi];
-                var vcExec = new ClauseExecution { Clause = vc, EffectiveClauseType = vc.ClauseType, EffectiveIsNegated = vc.IsNegated };
+                var vcExec = new ClauseExecution(vc);
                 PopulateClauseValues(vc, vcExec, planParams.QueryParameters, writer, builderParameters);
                 vectorArr[vi] = vc;
                 vectorExecs[vi] = vcExec;
@@ -973,7 +973,7 @@ internal static partial class QueryPlanBuilder
     /// Sets the <see cref="ClauseExecution.Clause"/> back-reference on every instance.</summary>
     private static ClauseExecution CreateExecution(ClauseInfo clause)
     {
-        var exec = new ClauseExecution { Clause = clause, EffectiveClauseType = clause.ClauseType, EffectiveIsNegated = clause.IsNegated };
+        var exec = new ClauseExecution(clause);
         if (clause.OrSubClauses is { Count: > 0 })
         {
             exec.OrSubExecutions = new ClauseExecution[clause.OrSubClauses.Count];
@@ -1477,13 +1477,19 @@ internal static partial class QueryPlanBuilder
             if (plan.SpatialFilters != null)
             {
                 for (int i = 0; i < plan.SpatialFilters.Length; i++)
-                    allEntriesMatches[matchOfs++] = ResolveClause(plan.SpatialFilters[i].Clause, plan.SpatialFilters[i].Exec ?? new ClauseExecution { Clause = plan.SpatialFilters[i].Clause, EffectiveClauseType = plan.SpatialFilters[i].Clause.ClauseType, EffectiveIsNegated = plan.SpatialFilters[i].Clause.IsNegated }, plan, walkerCtx);
+                {
+                    ClauseExecution exec = plan.SpatialFilters[i].Exec ?? new ClauseExecution(plan.SpatialFilters[i].Clause);
+                    allEntriesMatches[matchOfs++] = ResolveClause(plan.SpatialFilters[i].Clause, exec, plan, walkerCtx);
+                }
             }
 
             if (plan.VectorSelects != null)
             {
                 for (int i = 0; i < plan.VectorSelects.Length; i++)
-                    allEntriesMatches[matchOfs++] = ResolveClause(plan.VectorSelects[i].Clause, plan.VectorSelects[i].Exec ?? new ClauseExecution { Clause = plan.VectorSelects[i].Clause, EffectiveClauseType = plan.VectorSelects[i].Clause.ClauseType, EffectiveIsNegated = plan.VectorSelects[i].Clause.IsNegated }, plan, walkerCtx);
+                {
+                    ClauseExecution exec = plan.VectorSelects[i].Exec ?? new ClauseExecution(plan.VectorSelects[i].Clause);
+                    allEntriesMatches[matchOfs++] = ResolveClause(plan.VectorSelects[i].Clause, exec, plan, walkerCtx);
+                }
             }
 
             return allEntriesMatches;
@@ -1493,7 +1499,7 @@ internal static partial class QueryPlanBuilder
             return [];
 
         // Standalone NotEquals pattern: FillAllEntries (no slot) + ANDNOT(term at slot 0).
-        if (execs.Length == 1 && execs[0].EffectiveIsNegated && !plan.AllNegated)
+        if (execs.Length == 1 && execs[0].IsNegated && !plan.AllNegated)
         {
             var clause = execs[0].Clause;
             var exec0 = execs[0];
@@ -1642,7 +1648,7 @@ internal static partial class QueryPlanBuilder
         {
             var bm = new BitmapMatch(indexSearcher.Allocator);
             QueryPrimitives.OrWithMatch(rangeMatch, ref bm.BitmapState);
-            QueryPrimitives.OrWithMatch(indexSearcher.TermQuery(fieldMeta, (string)null), ref bm.BitmapState);
+            QueryPrimitives.OrWithMatch(indexSearcher.TermQuery(fieldMeta, null), ref bm.BitmapState);
             return bm;
         }
         return rangeMatch;
@@ -1972,7 +1978,7 @@ internal static partial class QueryPlanBuilder
             return [];
 
         // Standalone NotEquals: FillAllEntries (no slot) + ANDNOT at slot 0.
-        if (execs.Length == 1 && execs[0].EffectiveIsNegated && !plan.AllNegated)
+        if (execs.Length == 1 && execs[0].IsNegated && !plan.AllNegated)
         {
             return [ResolveSingleTermSource(execs[0].Clause, execs[0], plan, walkerCtx)];
         }
@@ -2143,7 +2149,7 @@ internal static partial class QueryPlanBuilder
 
         // Create the match via the existing factory methods, then extract the provider.
         // The factory methods handle all complexity (analyzer, CompactKey, tree lookup).
-        var match = ResolveClause(clause, exec ?? new ClauseExecution { Clause = clause, EffectiveClauseType = clause.ClauseType, EffectiveIsNegated = clause.IsNegated }, plan, walkerCtx);
+        var match = ResolveClause(clause, exec ?? new ClauseExecution(clause), plan, walkerCtx);
         if (match is TermsProviderMatch tpm)
             return tpm.Provider;
 
@@ -4348,7 +4354,7 @@ internal static partial class QueryPlanBuilder
         // reads the null PL, OrRange/AndRange becomes a runtime no-op when
         // InRangeCounts[rangeIdx] resolves to 0).
         static bool IsEmptyIn(ClauseExecution e) =>
-            e.EffectiveClauseType is ClauseType.In or ClauseType.AllIn &&
+            e.ClauseType is ClauseType.In or ClauseType.AllIn &&
             (e.InTermCount == 0) &&
             e.HasNullTerm != true;
 
@@ -4546,7 +4552,7 @@ internal static partial class QueryPlanBuilder
             var e0 = executions[0];
             switch (executions.Length)
             {
-                case 1 when e0.EffectiveClauseType == ClauseType.Equals && e0.EffectiveIsNegated is false:
+                case 1 when e0.ClauseType == ClauseType.Equals && e0.IsNegated is false:
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.DirectIterate,
@@ -4555,8 +4561,8 @@ internal static partial class QueryPlanBuilder
                         Dispatch = GetDispatch(c0)
                     });
                     break;
-                case 1 when e0.EffectiveClauseType == ClauseType.NotEquals
-                            || (e0.EffectiveClauseType == ClauseType.Equals && e0.EffectiveIsNegated):
+                case 1 when e0.ClauseType == ClauseType.NotEquals
+                            || (e0.ClauseType == ClauseType.Equals && e0.IsNegated):
                     ops.Add(new PlanOp
                     {
                         Kind = PlanOpKind.FillAllEntries,
@@ -4572,9 +4578,9 @@ internal static partial class QueryPlanBuilder
 
                     // Mark clause as negated so ResolveMatches/ResolveTermSources
                     // produce [AllEntries, TermMatch].
-                    if (e0.EffectiveIsNegated == false)
+                    if (e0.IsNegated == false)
                     {
-                        e0.EffectiveIsNegated = true;
+                        e0.IsNegated = true;
                     }
 
                     return new QueryExecution
@@ -4587,7 +4593,7 @@ internal static partial class QueryPlanBuilder
                     // AND chain: Fill the smallest non-negated, then AndWith/AndNotWith remaining.
                     // If the first clause is negated (all clauses are negated), we need to
                     // start from AllEntries and ANDNOT each one.
-                    bool firstIsNegated = e0.EffectiveIsNegated || e0.EffectiveClauseType == ClauseType.NotEquals;
+                    bool firstIsNegated = e0.IsNegated || e0.ClauseType == ClauseType.NotEquals;
                     int startIndex;
 
                     if (firstIsNegated)
@@ -4612,7 +4618,7 @@ internal static partial class QueryPlanBuilder
                     int matchIndex = 0;
                     if (!firstIsNegated)
                     {
-                        switch (e0.EffectiveClauseType)
+                        switch (e0.ClauseType)
                         {
                             case ClauseType.OrGroup when c0.OrSubClauses != null:
                             {
@@ -4792,7 +4798,7 @@ internal static partial class QueryPlanBuilder
 
         // Check if all clauses are negated (if first clause after sort is negated, all the rest are too)
         bool allNegated = executions.Length > 0
-                          && (executions[0].EffectiveIsNegated || executions[0].EffectiveClauseType == ClauseType.NotEquals);
+                          && (executions[0].IsNegated || executions[0].ClauseType == ClauseType.NotEquals);
 
         return new QueryExecution
         {
@@ -4987,7 +4993,7 @@ internal static partial class QueryPlanBuilder
             plan.SpatialFilters = new SpatialFilterOp[spatialClauses.Length];
             for (int i = 0; i < spatialClauses.Length; i++)
             {
-                var exec = spatialExecs?[i] ?? new ClauseExecution { Clause = spatialClauses[i], EffectiveClauseType = spatialClauses[i].ClauseType, EffectiveIsNegated = spatialClauses[i].IsNegated };
+                var exec = spatialExecs?[i] ?? new ClauseExecution(spatialClauses[i]);
                 execs[execIdx++] = exec;
                 plan.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i], Exec = exec };
             }
@@ -4998,7 +5004,7 @@ internal static partial class QueryPlanBuilder
             plan.VectorSelects = new VectorSearchOp[vectorClauses.Length];
             for (int i = 0; i < vectorClauses.Length; i++)
             {
-                var exec = vectorExecs?[i] ?? new ClauseExecution { Clause = vectorClauses[i], EffectiveClauseType = vectorClauses[i].ClauseType, EffectiveIsNegated = vectorClauses[i].IsNegated };
+                var exec = vectorExecs?[i] ?? new ClauseExecution(vectorClauses[i]);
                 execs[execIdx++] = exec;
                 plan.VectorSelects[i] = new VectorSearchOp
                 {
