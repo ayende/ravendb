@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Planning;
 using Corax.Mappings;
@@ -209,7 +210,7 @@ internal static partial class QueryPlanBuilder
         // its own preconditions (field name, argument count, type compatibility) and
         // reports errors to walkerCtx.Errors — they are thrown as a single
         // InvalidQueryException after materialization completes.
-        var walkerCtx = new ResolutionContext(p){ Clauses = [] };
+        var walkerCtx = new ResolutionContext(p) { Clauses = [] };
         var rootOp = ParseExpression(query.Where, walkerCtx);
         PlanWalker.ThrowIfErrors(walkerCtx);
 
@@ -238,7 +239,7 @@ internal static partial class QueryPlanBuilder
             {
                 Clauses = [],
                 SpatialClauses = walkerCtx.SpatialClauses,
-                VectorClauses = walkerCtx.VectorClauses
+                VectorClauses = walkerCtx.VectorClauses,
             };
         }
 
@@ -259,11 +260,10 @@ internal static partial class QueryPlanBuilder
         // vary across executions. ParameterSlots drives the cheap TypeSignature
         // computation at execution time (classify blittable values directly, skip
         // walking the full clause/execution list).
-        var paramNames = new List<string>();
         var seen = new HashSet<string>(StringComparer.Ordinal);
-        CollectParameterNames(walkerCtx.Clauses, paramNames, seen);
-        CollectParameterNames(walkerCtx.SpatialClauses, paramNames, seen);
-        CollectParameterNames(walkerCtx.VectorClauses, paramNames, seen);
+        CollectParameterNames(walkerCtx.Clauses, seen);
+        CollectParameterNames(walkerCtx.SpatialClauses, seen);
+        CollectParameterNames(walkerCtx.VectorClauses, seen);
 
         return new PlanTemplate
         {
@@ -280,26 +280,22 @@ internal static partial class QueryPlanBuilder
             CompoundFieldDrivingClause = walkerCtx.CompoundFieldDrivingClause,
             CompoundFieldSortName = walkerCtx.CompoundFieldSortName,
             CompoundFieldIsMultiSort = walkerCtx.CompoundFieldIsMultiSort,
-            ParameterSlots = paramNames.Count > 0 ? paramNames.ToArray() : null
+            ParameterSlots = seen.ToArray()
         };
     }
 
     /// <summary>Recursively walk clauses and their sub-clauses, collecting unique parameter
     /// names from <see cref="BindingSource.QueryParameter"/> bindings in first-appearance order.</summary>
-    private static void CollectParameterNames(List<ClauseInfo> clauses, List<string> names, HashSet<string> seen)
+    private static void CollectParameterNames(List<ClauseInfo> clauses, HashSet<string> seen)
     {
-        if (clauses == null) return;
-        foreach (var clause in clauses)
+        foreach (var clause in clauses ?? [])
         {
-            if (clause.Bindings != null)
+            foreach (var binding in clause.Bindings ?? [])
             {
-                foreach (var binding in clause.Bindings)
-                {
-                    if (binding != null && binding.Source == BindingSource.QueryParameter && binding.ParameterName != null && seen.Add(binding.ParameterName))
-                        names.Add(binding.ParameterName);
-                }
+                if (binding is { Source: BindingSource.QueryParameter, ParameterName: not null })
+                    seen.Add(binding.ParameterName);
             }
-            CollectParameterNames(clause.SubClauses, names, seen); // recurse into groups
+            CollectParameterNames(clause.SubClauses, seen); // recurse into groups
         }
     }
 

@@ -88,6 +88,6 @@ public sealed class PlanTemplate
     /// Literals are excluded since their types are fixed at template time.
     /// Used to compute the TypeSignature cache-key component cheaply at execution time
     /// by classifying each parameter's runtime blittable type, instead of walking the
-    /// full clause/execution list. Null when no parameter bindings exist.</summary>
-    public string[] ParameterSlots;
+    /// full clause/execution list.</summary>
+    public string[] ParameterSlots = [];
 }
