@@ -446,7 +446,7 @@ internal static partial class QueryPlanBuilder
         // ── Step 6: Compute cache key components (cheap) ────────────────────
         int operandOrdering = ComputeOperandOrdering(executions);
 
-        var (isSingleNegatedEquals, allNegated) = CheckNegatedClauses(executions);
+        var allNegated = CheckAllNegated(executions);
 
         if (planParams.HasBoost)
             operandOrdering |= QueryExecution.HasBoostBit;
@@ -467,11 +467,6 @@ internal static partial class QueryPlanBuilder
             // Build InRangeCounts from executions (same fixup as cache-miss path
             // but without the structural array from EmitPlan).
             exec.InRangeCounts = BuildInRangeCounts(executions, isOr, compiledPlan.InRangeSlotCount);
-
-            // The single-clause NotEquals path in EmitPlan sets e0.IsNegated=true
-            // as a side effect needed by ResolveMatches/ResolveTermSources.
-            if (isSingleNegatedEquals && executions[0].IsNegated == false)
-                executions[0].IsNegated = true;
 
             AttachSpatialAndVectorClauses(exec, compiledPlan.AllNegated, template, planParams, builderParameters, writer);
 
@@ -4828,14 +4823,11 @@ internal static partial class QueryPlanBuilder
         return ordering;
     }
 
-    private static (bool IsSingleNegatedEquals, bool AllNegated) CheckNegatedClauses(ClauseExecution[] executions)
-    {
-        // Matches exactly 1 element that is negated (requires standalone optimization path)
-        var isSingleNegatedEquals = executions is [{ IsNegated: true }];
-        // Matches >= 2 elements where the first is negated (cardinality sort guarantees subsequent ones are too)
-        var allNegated = executions is [{ IsNegated: true }, _, ..]; // here we heck 
-        return (isSingleNegatedEquals, allNegated);
-    }
+    /// <summary>True when all clauses are negated (2+ clauses, first is negated after
+    /// cardinality sort — since negated sort last, if the first is negated, all are).
+    /// Single negated clause returns false — handled by the standalone NotEquals path.</summary>
+    private static bool CheckAllNegated(ClauseExecution[] executions)
+        => executions is [{ IsNegated: true }, _, ..];
 
     /// <summary>Count the number of IN/AllIn range-count slots in the given executions.
     /// Mirrors the <c>rangeCounts</c> list built inside <see cref="EmitPlan"/>.</summary>
