@@ -139,20 +139,12 @@ internal static partial class QueryPlanBuilder
             {
                 var clause = execs[ci].Clause;
                 var exec = execs[ci];
-                if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+                if (clause.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup && clause.SubClauses != null)
                 {
-                    for (int si = 0; si < clause.OrSubClauses.Count; si++)
+                    for (int si = 0; si < clause.SubClauses.Count; si++)
                     {
-                        var subExec = exec?.OrSubExecutions != null && si < exec.OrSubExecutions.Length ? exec.OrSubExecutions[si] : null;
-                        flatClauses.Add((clause.OrSubClauses[si], subExec));
-                    }
-                }
-                else if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
-                {
-                    for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                    {
-                        var subExec = exec?.AndSubExecutions != null && si < exec.AndSubExecutions.Length ? exec.AndSubExecutions[si] : null;
-                        flatClauses.Add((clause.AndSubClauses[si], subExec));
+                        var subExec = exec?.SubExecutions != null && si < exec.SubExecutions.Length ? exec.SubExecutions[si] : null;
+                        flatClauses.Add((clause.SubClauses[si], subExec));
                     }
                 }
                 else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && exec is { InTermCount: > 0 })

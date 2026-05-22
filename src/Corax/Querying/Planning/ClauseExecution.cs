@@ -42,11 +42,8 @@ public sealed class ClauseExecution(ClauseInfo clause) : IComparable<ClauseExecu
     /// (e.g. standalone NotEquals marking).</summary>
     public bool IsNegated = clause.IsNegated;
 
-    /// <summary>Per-execution state for OrGroup subclauses. Parallel to <see cref="ClauseInfo.OrSubClauses"/>.</summary>
-    public ClauseExecution[] OrSubExecutions;
-
-    /// <summary>Per-execution state for AndGroup subclauses. Parallel to <see cref="ClauseInfo.AndSubClauses"/>.</summary>
-    public ClauseExecution[] AndSubExecutions;
+    /// <summary>Per-execution state for OrGroup/AndGroup subclauses. Parallel to <see cref="ClauseInfo.SubClauses"/>.</summary>
+    public ClauseExecution[] SubExecutions;
 
     /// <summary>Negated clauses sort last; ties broken by ascending cardinality.</summary>
     public int CompareTo(ClauseExecution other)

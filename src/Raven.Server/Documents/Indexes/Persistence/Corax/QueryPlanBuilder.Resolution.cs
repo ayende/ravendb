@@ -479,12 +479,28 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // Build scan predicate infos for entry scan (cache key component via TypeSignature).
-        // Only applicable for AND chains with 2+ clauses.
-        ScanPredicateInfo[] scanPreds = null;
+        // Compute TypeSignature/FullKinds cheaply for the cache key without building
+        // the full ScanPredicateInfo[] array. The lightweight classifier only needs
+        // each clause's value type and slice-param index for the string-length check.
+        // The full ScanPredicateInfo[] (with parameter offsets, field names, compare ops)
+        // is deferred until after the cache lookup since both hit and miss paths need it
+        // for ExtractScanParameters / IL emission respectively.
         int typeSignature = 0;
         byte[] fullKinds = null;
-        if (isOr == false && executions.Length > 1)
+        bool needScanPreds = isOr == false && executions.Length > 1;
+        if (needScanPreds)
+        {
+            (typeSignature, fullKinds) = ComputeTypeSignatureFromExecs(executions, allNegated, writer);
+        }
+
+        // ── Step 7: Cache lookup ────────────────────────────────────────────
+        var compiledPlan = planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags);
+
+        // Build full ScanPredicateInfo[] now that the cache key is resolved.
+        // Both cache-hit (ExtractScanParameters) and cache-miss (ResidualScanIlEmitter)
+        // paths require the complete array.
+        ScanPredicateInfo[] scanPreds = null;
+        if (needScanPreds)
         {
             int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
             int scanStart = allNegated ? 0 : 1;
@@ -502,7 +518,6 @@ internal static partial class QueryPlanBuilder
             {
                 if (scanPredCount < maxPreds)
                     Array.Resize(ref scanPreds, scanPredCount);
-                (typeSignature, fullKinds) = GetTypeSignature(scanPreds, writer.GetStrings());
             }
             else
             {
@@ -510,8 +525,6 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // ── Step 7: Cache lookup ────────────────────────────────────────────
-        var compiledPlan = planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags);
         if (compiledPlan != null)
         {
             // Cache hit — skip EmitPlan (the expensive PlanOp[] generation).
@@ -1035,18 +1048,11 @@ internal static partial class QueryPlanBuilder
     private static ClauseExecution CreateExecution(ClauseInfo clause)
     {
         var exec = new ClauseExecution(clause);
-        if (clause.OrSubClauses is { Count: > 0 })
+        if (clause.SubClauses is { Count: > 0 })
         {
-            exec.OrSubExecutions = new ClauseExecution[clause.OrSubClauses.Count];
-            for (int i = 0; i < clause.OrSubClauses.Count; i++)
-                exec.OrSubExecutions[i] = CreateExecution(clause.OrSubClauses[i]);
-        }
-
-        if (clause.AndSubClauses is { Count: > 0 })
-        {
-            exec.AndSubExecutions = new ClauseExecution[clause.AndSubClauses.Count];
-            for (int i = 0; i < clause.AndSubClauses.Count; i++)
-                exec.AndSubExecutions[i] = CreateExecution(clause.AndSubClauses[i]);
+            exec.SubExecutions = new ClauseExecution[clause.SubClauses.Count];
+            for (int i = 0; i < clause.SubClauses.Count; i++)
+                exec.SubExecutions[i] = CreateExecution(clause.SubClauses[i]);
         }
 
         return exec;
@@ -1059,12 +1065,9 @@ internal static partial class QueryPlanBuilder
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
-        if (clause.OrSubClauses != null && exec.OrSubExecutions != null)
-            for (int si = 0; si < clause.OrSubClauses.Count; si++)
-                PopulateClauseValues(clause.OrSubClauses[si], exec.OrSubExecutions[si], queryParameters, writer, builderParameters);
-        if (clause.AndSubClauses != null && exec.AndSubExecutions != null)
-            for (int si = 0; si < clause.AndSubClauses.Count; si++)
-                PopulateClauseValues(clause.AndSubClauses[si], exec.AndSubExecutions[si], queryParameters, writer, builderParameters);
+        if (clause.SubClauses != null && exec.SubExecutions != null)
+            for (int si = 0; si < clause.SubClauses.Count; si++)
+                PopulateClauseValues(clause.SubClauses[si], exec.SubExecutions[si], queryParameters, writer, builderParameters);
 
         // Resolve boost factor if this clause is boosted
         if (clause.HasBoost && clause.Bindings is { Length: > 0 })
@@ -1171,13 +1174,13 @@ internal static partial class QueryPlanBuilder
     /// <summary>Populate <paramref name="exec"/>'s typed-parameter slot for an IN/AllIn
     /// clause. Two paths share the same tail (<see cref="EmitInTerms"/>): the
     /// allocation-free literal fast path reads directly from <see cref="ParameterBinding"/>
-    /// when <see cref="ClauseInfo.InAllLiteral"/> is set (dominantType was pre-computed
+    /// when <see cref="ClauseInfo.AllBindingsAreLiteral"/> is set (dominantType was pre-computed
     /// by InPreClassify at template time); the parameter-bound slow path resolves each
     /// binding (potentially array-expanding) into <see cref="List{T}"/> buffers, infers
     /// the dominant type at runtime, and then runs the same emit logic.</summary>
     private static void ResolveInFromBindings(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings)
     {
-        if (clause.InAllLiteral)
+        if (clause.AllBindingsAreLiteral)
         {
             EmitInTerms(exec, writer, clause.InDominantType, bindings, hasNullTerm: false);
             return;
@@ -1736,14 +1739,14 @@ internal static partial class QueryPlanBuilder
     {
         var indexSearcher = walkerCtx.IndexSearcher;
         var builderParams = walkerCtx.BuilderParams;
-        if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses != null)
+        if (clause.ClauseType == ClauseType.OrGroup && clause.SubClauses != null)
         {
             var bm = new BitmapMatch(indexSearcher.Allocator);
             var temp = new RoaringBitmap(indexSearcher.Allocator);
-            for (int si = 0; si < clause.OrSubClauses.Count; si++)
+            for (int si = 0; si < clause.SubClauses.Count; si++)
             {
-                var subExec = exec.OrSubExecutions[si];
-                var subMatch = ResolveClause(clause.OrSubClauses[si], subExec, plan, walkerCtx);
+                var subExec = exec.SubExecutions[si];
+                var subMatch = ResolveClause(clause.SubClauses[si], subExec, plan, walkerCtx);
                 QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
             }
 
@@ -1751,15 +1754,15 @@ internal static partial class QueryPlanBuilder
             return bm;
         }
 
-        if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses != null)
+        if (clause.ClauseType == ClauseType.AndGroup && clause.SubClauses != null)
         {
             var bm = new BitmapMatch(indexSearcher.Allocator);
             var temp = new RoaringBitmap(indexSearcher.Allocator);
             bool first = true;
-            for (int si = 0; si < clause.AndSubClauses.Count; si++)
+            for (int si = 0; si < clause.SubClauses.Count; si++)
             {
-                var sub = clause.AndSubClauses[si];
-                var subExec = exec.AndSubExecutions[si];
+                var sub = clause.SubClauses[si];
+                var subExec = exec.SubExecutions[si];
                 var subMatch = ResolveClause(sub, subExec, plan, walkerCtx);
                 if (first)
                 {
@@ -2127,23 +2130,9 @@ internal static partial class QueryPlanBuilder
             }
 
             // Check subclauses
-            if (cl.OrSubClauses != null)
+            if (cl.SubClauses != null)
             {
-                foreach (var t in cl.OrSubClauses)
-                {
-                    if (IsTreeScanEligibleClause(t))
-                    {
-                        hasAnyTreeScan = true;
-                        break;
-                    }
-                }
-            }
-
-            if (hasAnyTreeScan) break;
-
-            if (cl.AndSubClauses != null)
-            {
-                foreach (var t in cl.AndSubClauses)
+                foreach (var t in cl.SubClauses)
                 {
                     if (IsTreeScanEligibleClause(t))
                     {
@@ -2442,8 +2431,8 @@ internal static partial class QueryPlanBuilder
         {
             // Each OrBranch corresponds to a subclause of the OrGroup.
             // Pass subclauses positionally to avoid the same field-name ambiguity.
-            List<ClauseInfo> subClauses = clause?.OrSubClauses;
-            ClauseExecution[] subExecs = exec?.OrSubExecutions;
+            List<ClauseInfo> subClauses = clause?.SubClauses;
+            ClauseExecution[] subExecs = exec?.SubExecutions;
             for (int b = 0; b < pred.SubPredicates.Length; b++)
             {
                 ClauseInfo subClause = (subClauses != null && b < subClauses.Count) ? subClauses[b] : null;
@@ -2513,22 +2502,12 @@ internal static partial class QueryPlanBuilder
             // FieldName-first guard would skip their children entirely.
             switch (clauseObj?.ClauseType)
             {
-                case ClauseType.OrGroup when clauseObj.OrSubClauses is { Count: > 0 }:
+                case ClauseType.OrGroup or ClauseType.AndGroup when clauseObj.SubClauses is { Count: > 0 }:
                 {
-                    for (int si = 0; si < clauseObj.OrSubClauses.Count; si++)
+                    for (int si = 0; si < clauseObj.SubClauses.Count; si++)
                     {
-                        var subExec = exec?.OrSubExecutions != null && si < exec.OrSubExecutions.Length ? exec.OrSubExecutions[si] : null;
-                        PopulateHighlightingForClause(clauseObj.OrSubClauses[si], subExec, highlightingTerms, metadata, plan);
-                    }
-
-                    break;
-                }
-                case ClauseType.AndGroup when clauseObj.AndSubClauses is { Count: > 0 }:
-                {
-                    for (int si = 0; si < clauseObj.AndSubClauses.Count; si++)
-                    {
-                        var subExec = exec?.AndSubExecutions != null && si < exec.AndSubExecutions.Length ? exec.AndSubExecutions[si] : null;
-                        PopulateHighlightingForClause(clauseObj.AndSubClauses[si], subExec, highlightingTerms, metadata, plan);
+                        var subExec = exec?.SubExecutions != null && si < exec.SubExecutions.Length ? exec.SubExecutions[si] : null;
+                        PopulateHighlightingForClause(clauseObj.SubClauses[si], subExec, highlightingTerms, metadata, plan);
                     }
 
                     break;
@@ -4333,10 +4312,10 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.OrGroup:
                 long orSum = 0;
-                if (exec.OrSubExecutions == null)  return orSum;
-                for (int si = 0; si < clause.OrSubClauses.Count; si++)
+                if (exec.SubExecutions == null)  return orSum;
+                for (int si = 0; si < clause.SubClauses.Count; si++)
                 {
-                    var subExec = exec.OrSubExecutions[si];
+                    var subExec = exec.SubExecutions[si];
                     if (subExec.Cardinality < 0)
                     {
                         subExec.Cardinality = EstimateCardinality(subExec, indexSearcher, writer, walkerCtx);
@@ -4347,10 +4326,10 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.AndGroup:
                 long andMin = indexSearcher.NumberOfEntries;
-                if (exec.AndSubExecutions == null) return andMin;
-                for (int si = 0; si < clause.AndSubClauses.Count; si++)
+                if (exec.SubExecutions == null) return andMin;
+                for (int si = 0; si < clause.SubClauses.Count; si++)
                 {
-                    var subExec = exec.AndSubExecutions[si];
+                    var subExec = exec.SubExecutions[si];
                     if (subExec.Cardinality < 0)
                     {
                         subExec.Cardinality = EstimateCardinality(subExec, indexSearcher, writer, walkerCtx);
@@ -4492,12 +4471,12 @@ internal static partial class QueryPlanBuilder
                         EmitInOps(ops, it, executions[ci].Cardinality, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
                         break;
                     }
-                    case ClauseType.OrGroup when it.OrSubClauses is { Count: > 0 }:
+                    case ClauseType.OrGroup when it.SubClauses is { Count: > 0 }:
                     {
-                        int subCount = it.OrSubClauses.Count;
+                        int subCount = it.SubClauses.Count;
                         for (int si = 0; si < subCount; si++)
                         {
-                            var sub = it.OrSubClauses[si];
+                            var sub = it.SubClauses[si];
                             ops.Add(new PlanOp
                             {
                                 Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
@@ -4510,12 +4489,12 @@ internal static partial class QueryPlanBuilder
 
                         break;
                     }
-                    case ClauseType.AndGroup when it.AndSubClauses is { Count: > 0 }:
+                    case ClauseType.AndGroup when it.SubClauses is { Count: > 0 }:
                     {
                         // AND sub-expression inside an OR chain.
                         // Only supported when the AND group is the first element (matchIndex == 0)
                         // or can be merged into slot 0 via OrBitmaps after computing into slot 1.
-                        var subClauses = it.AndSubClauses;
+                        var subClauses = it.SubClauses;
                         int subCount = subClauses.Count;
                         long subCardinality = executions[ci].Cardinality / Math.Max(1, subCount);
                         if (matchIndex == 0)
@@ -4680,9 +4659,9 @@ internal static partial class QueryPlanBuilder
                     {
                         switch (e0.ClauseType)
                         {
-                            case ClauseType.OrGroup when c0.OrSubClauses != null:
+                            case ClauseType.OrGroup when c0.SubClauses != null:
                             {
-                                var subClauses = c0.OrSubClauses;
+                                var subClauses = c0.SubClauses;
                                 int subCount = subClauses.Count;
                                 for (int s = 0; s < subCount; s++)
                                 {
@@ -4742,10 +4721,10 @@ internal static partial class QueryPlanBuilder
                         var ci2 = executions[i].Clause;
                         switch (ci2.ClauseType)
                         {
-                            case ClauseType.OrGroup when ci2.OrSubClauses != null:
+                            case ClauseType.OrGroup when ci2.SubClauses != null:
                             {
                                 // OrGroup: OR subclauses into bitmap[1], then AND with bitmap[0]
-                                var subClauses = ci2.OrSubClauses;
+                                var subClauses = ci2.SubClauses;
                                 int subCount = subClauses.Count;
 
                                 // Clear bitmap[1] (OR accumulator)
@@ -4927,65 +4906,6 @@ internal static partial class QueryPlanBuilder
         return counts;
     }
 
-    /// <summary>Compute TypeSignature from scan predicates. Packs 2 bits per predicate (first 16)
-    /// into an int. For Slice-typed predicates, checks the resolved string value's UTF-8 byte
-    /// count against the compound-index segment limit (255 bytes) to produce
-    /// <see cref="ScanValueType.Slice"/> (≤ 255) vs <see cref="ScanValueType.SliceLong"/> (&gt; 255).
-    /// This ensures compound-index-eligible string plans don't share a cache entry with
-    /// ineligible ones.</summary>
-    private static (int TypeSignature, byte[] FullKinds) GetTypeSignature(ScanPredicateInfo[] scanPredicateInfos, string[] stringValues)
-    {
-        if (scanPredicateInfos == null)
-        {
-            return (0, null);
-        }
-
-        int typeSignature = 0;
-
-        int n = scanPredicateInfos.Length;
-        int packCount = Math.Min(n, 16);
-        for (int i = 0; i < packCount; i++)
-        {
-            int kind = (int)ResolveSliceKind(scanPredicateInfos[i], stringValues) & 0x3;
-            typeSignature |= kind << (i * 2);
-        }
-
-        if (n <= 16)
-        {
-            return (typeSignature, null);
-        }
-
-        var fullKinds = new byte[n];
-        for (int i = 0; i < n; i++)
-        {
-            fullKinds[i] = (byte)ResolveSliceKind(scanPredicateInfos[i], stringValues);
-        }
-
-        return (typeSignature, fullKinds);
-    }
-
-    /// <summary>For Slice predicates, check if the resolved string exceeds 255 UTF-8 bytes.
-    /// Returns SliceLong if so — separating compound-eligible from ineligible in the cache key.
-    /// Non-Slice types pass through unchanged.</summary>
-    private static ScanValueType ResolveSliceKind(ScanPredicateInfo pred, string[] stringValues)
-    {
-        if (pred.ValueType != ScanValueType.Slice)
-        {
-            return pred.ValueType;
-        }
-
-        if (stringValues != null && pred.ParamIndex >= 0 && pred.ParamIndex < stringValues.Length)
-        {
-            string val = stringValues[pred.ParamIndex];
-            if (val != null && System.Text.Encoding.UTF8.GetByteCount(val) > byte.MaxValue)
-            {
-                return ScanValueType.SliceLong;
-            }
-        }
-
-        return ScanValueType.Slice;
-    }
-
     private static bool AreAllScanEligible(ClauseExecution[] executions, int startIndex)
     {
         // If any clause (In, AllIn, Spatial, Vector, Search, etc.) can't be scanned, we must not emit CheckAndMaybeEntryScan — entry scan would skip them entirely.
@@ -5154,8 +5074,7 @@ internal static partial class QueryPlanBuilder
 
             count += clause.ClauseType switch
             {
-                ClauseType.OrGroup when clause.OrSubClauses != null => clause.OrSubClauses.Count,
-                ClauseType.AndGroup when clause.AndSubClauses != null => clause.AndSubClauses.Count,
+                ClauseType.OrGroup or ClauseType.AndGroup when clause.SubClauses != null => clause.SubClauses.Count,
                 ClauseType.In or ClauseType.AllIn => (exec.InTermCount > 0 ? exec.InTermCount : clause.Bindings?.Length ?? 0) + 1,
                 _ => 1
             };
@@ -5176,17 +5095,10 @@ internal static partial class QueryPlanBuilder
     internal static bool TryGetGroupFanOut(ClauseInfo clause, ClauseExecution exec,
         out List<ClauseInfo> subClauses, out ClauseExecution[] subExecs)
     {
-        if (clause.ClauseType == ClauseType.OrGroup && clause.OrSubClauses is { Count: > 0 })
+        if (clause.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup && clause.SubClauses is { Count: > 0 })
         {
-            subClauses = clause.OrSubClauses;
-            subExecs = exec?.OrSubExecutions;
-            return true;
-        }
-
-        if (clause.ClauseType == ClauseType.AndGroup && clause.AndSubClauses is { Count: > 0 })
-        {
-            subClauses = clause.AndSubClauses;
-            subExecs = exec?.AndSubExecutions;
+            subClauses = clause.SubClauses;
+            subExecs = exec?.SubExecutions;
             return true;
         }
 
@@ -5257,7 +5169,173 @@ internal static partial class QueryPlanBuilder
         => BuildScanPredicateInfoCore(clause, exec, exec?.TermValueType ?? ParamValueType.String,
             ref longIndex, ref doubleIndex, ref sliceIndex);
 
-    
+    /// <summary>Lightweight type classifier that mirrors <see cref="BuildScanPredicateInfoCore"/>
+    /// but returns only the <see cref="ScanValueType"/> (or null for unscannable clauses)
+    /// without allocating a <see cref="ScanPredicateInfo"/>. Used for computing the
+    /// TypeSignature cache-key component cheaply before the plan-cache lookup.</summary>
+    private static ScanValueType? ClassifyScanType(ClauseInfo clause, ClauseExecution exec,
+        ParamValueType termType, ref int sliceIndex)
+    {
+        switch (clause.ClauseType)
+        {
+            case ClauseType.Search:
+            case ClauseType.Regex:
+            case ClauseType.Spatial:
+            case ClauseType.Vector:
+            case ClauseType.StartsWith:
+            {
+                if (termType != ParamValueType.String)
+                    return null;
+                sliceIndex++;
+                return ScanValueType.Slice;
+            }
+            case ClauseType.In:
+            case ClauseType.AllIn:
+                return null;
+            case ClauseType.EndsWith:
+            {
+                if (termType != ParamValueType.String)
+                    return null;
+                sliceIndex++;
+                return ScanValueType.Slice;
+            }
+            case ClauseType.AndGroup:
+            {
+                if (clause.SubClauses is not { Count: > 0 } subs)
+                    return null;
+                var subExecs = exec?.SubExecutions;
+                for (int si = 0; si < subs.Count; si++)
+                {
+                    var sub = subs[si];
+                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
+                    var subTermType = subExec?.TermValueType ?? InferTermType(sub);
+                    if (ClassifyScanType(sub, subExec, subTermType, ref sliceIndex) == null)
+                        return null;
+                }
+                // AndGroup contributes ScanValueType.Long (struct default) to type signature
+                return ScanValueType.Long;
+            }
+            case ClauseType.Exists:
+                return ScanValueType.Long;
+            case ClauseType.OrGroup:
+            {
+                if (clause.SubClauses is not { Count: > 0 } subs)
+                    return null;
+                var subExecs = exec?.SubExecutions;
+                for (int si = 0; si < subs.Count; si++)
+                {
+                    var sub = subs[si];
+                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
+                    var subTermType = subExec?.TermValueType ?? InferTermType(sub);
+                    if (ClassifyScanType(sub, subExec, subTermType, ref sliceIndex) == null)
+                        return null;
+                }
+                // OrGroup contributes ScanValueType.Long (struct default) to type signature
+                return ScanValueType.Long;
+            }
+        }
+
+        // Leaf clause — classify by term type
+        bool isBetween = clause.ClauseType == ClauseType.Between;
+        switch (termType)
+        {
+            case ParamValueType.Long:
+                return ScanValueType.Long;
+            case ParamValueType.Double:
+                return ScanValueType.Double;
+            default:
+                sliceIndex++;
+                if (isBetween)
+                    sliceIndex++;
+                return ScanValueType.Slice;
+        }
+    }
+
+    /// <summary>Compute the TypeSignature and FullKinds cache-key components from execution
+    /// metadata alone, without building the full <see cref="ScanPredicateInfo"/> array.
+    /// Only classifies each clause's value type and checks the string-length threshold
+    /// for Slice predicates (to distinguish compound-eligible from ineligible plans).
+    /// Returns <c>(0, null)</c> when no clauses are scan-eligible.</summary>
+    private static (int TypeSignature, byte[] FullKinds) ComputeTypeSignatureFromExecs(
+        ClauseExecution[] executions, bool allNegated, ValueWriter writer)
+    {
+        int scanStart = allNegated ? 0 : 1;
+        int sliceIndex = 0;
+        int scanCount = 0;
+
+        // First pass: classify and count scannable clauses, building a compact list
+        // of (ScanValueType, sliceParamIndex) pairs.
+        int maxPreds = executions.Length - scanStart;
+        if (maxPreds <= 0)
+            return (0, null);
+
+        // Stack-allocate for the common case (≤16 predicates), heap for overflow.
+        Span<ScanValueType> types = maxPreds <= 16
+            ? stackalloc ScanValueType[maxPreds]
+            : new ScanValueType[maxPreds];
+        Span<int> sliceIndices = maxPreds <= 16
+            ? stackalloc int[maxPreds]
+            : new int[maxPreds];
+
+        for (int si = scanStart; si < executions.Length; si++)
+        {
+            int sliceBefore = sliceIndex;
+            var classified = ClassifyScanType(
+                executions[si].Clause, executions[si],
+                executions[si].TermValueType, ref sliceIndex);
+            if (classified == null)
+                continue;
+            types[scanCount] = classified.Value;
+            // For Slice types, record the slice param index used for the string-length check.
+            // For non-Slice types (and groups), sliceParamIndex is irrelevant.
+            sliceIndices[scanCount] = sliceBefore;
+            scanCount++;
+        }
+
+        if (scanCount == 0)
+            return (0, null);
+
+        // Build type signature: pack 2 bits per scannable predicate (first 16 into an int,
+        // overflow into fullKinds[]). Slice predicates check string-length threshold.
+        string[] stringValues = writer.GetStrings();
+        int typeSignature = 0;
+        int packCount = Math.Min(scanCount, 16);
+        for (int i = 0; i < packCount; i++)
+        {
+            int kind = (int)ResolveSliceKindLightweight(types[i], sliceIndices[i], stringValues) & 0x3;
+            typeSignature |= kind << (i * 2);
+        }
+
+        if (scanCount <= 16)
+            return (typeSignature, null);
+
+        var fullKinds = new byte[scanCount];
+        for (int i = 0; i < scanCount; i++)
+            fullKinds[i] = (byte)ResolveSliceKindLightweight(types[i], sliceIndices[i], stringValues);
+
+        return (typeSignature, fullKinds);
+    }
+
+    /// <summary>For Slice predicates, check if the resolved string exceeds 255 UTF-8 bytes.
+    /// Returns <see cref="ScanValueType.SliceLong"/> if so, separating compound-eligible
+    /// from ineligible plans in the cache key. Non-Slice types pass through unchanged.
+    /// Operates on the value type and slice param index directly, without requiring
+    /// a <see cref="ScanPredicateInfo"/> struct.</summary>
+    private static ScanValueType ResolveSliceKindLightweight(ScanValueType valueType, int sliceParamIndex, string[] stringValues)
+    {
+        if (valueType != ScanValueType.Slice)
+            return valueType;
+
+        if (stringValues != null && sliceParamIndex >= 0 && sliceParamIndex < stringValues.Length)
+        {
+            string val = stringValues[sliceParamIndex];
+            if (val != null && System.Text.Encoding.UTF8.GetByteCount(val) > byte.MaxValue)
+                return ScanValueType.SliceLong;
+        }
+
+        return ScanValueType.Slice;
+    }
+
     /// <summary>Single walker shared by both overloads. <paramref name="exec"/> is non-null on
     /// the resolution path and supplies per-sub TermValueType during group recursion; on the
     /// template path it is null and recursion falls back to InferTermType.</summary>
@@ -5311,12 +5389,12 @@ internal static partial class QueryPlanBuilder
             }
             case ClauseType.AndGroup:
             {
-                if (clause.AndSubClauses is not { Count: > 0 } subs)
+                if (clause.SubClauses is not { Count: > 0 } subs)
                 {
                     return null;
                 }
 
-                var subExecs = exec?.AndSubExecutions;
+                var subExecs = exec?.SubExecutions;
                 var branches = new List<ScanPredicateInfo>();
                 for (int si = 0; si < subs.Count; si++)
                 {
@@ -5353,12 +5431,12 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.OrGroup:
             {
-                if (clause.OrSubClauses is not { Count: > 0 } subs)
+                if (clause.SubClauses is not { Count: > 0 } subs)
                 {
                     return null;
                 }
 
-                var subExecs = exec?.OrSubExecutions;
+                var subExecs = exec?.SubExecutions;
                 var branches = new List<ScanPredicateInfo>();
                 int li = longIndex, di = doubleIndex, slc = sliceIndex;
                 for (int si = 0; si < subs.Count; si++)

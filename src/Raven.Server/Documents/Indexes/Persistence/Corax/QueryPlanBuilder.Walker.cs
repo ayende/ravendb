@@ -179,7 +179,7 @@ internal static partial class QueryPlanBuilder
 
         /// <summary>
         /// For IN/AllIn clauses where ALL bindings are literals (no parameters), pre-compute
-        /// the dominant type at template time. Sets <see cref="ClauseInfo.InAllLiteral"/> and
+        /// the dominant type at template time. Sets <see cref="ClauseInfo.AllBindingsAreLiteral"/> and
         /// <see cref="ClauseInfo.InDominantType"/>. At execution time, <see cref="ResolveInFromBindings"/>
         /// skips the dominant-type scan and type-incompatible filtering for these clauses.
         /// Recurses into OrGroup/AndGroup sub-clauses.
@@ -194,7 +194,7 @@ internal static partial class QueryPlanBuilder
 
         private static void InPreClassifyRecursive(ClauseInfo clause)
         {
-            foreach (var t in clause.OrSubClauses ?? clause.AndSubClauses ?? [])
+            foreach (var t in clause.SubClauses ?? [])
             {
                 InPreClassifyRecursive(t);
             }
@@ -223,7 +223,7 @@ internal static partial class QueryPlanBuilder
                 dominant = ParamValueType.String;
             }
 
-            clause.InAllLiteral = true;
+            clause.AllBindingsAreLiteral = true;
             clause.InDominantType = dominant;
         }
 
@@ -275,7 +275,7 @@ internal static partial class QueryPlanBuilder
 
         private static void DynamicFieldNameResolveRecursive(ClauseInfo clause)
         {
-            foreach (var t in clause.OrSubClauses ?? clause.AndSubClauses ?? [])
+            foreach (var t in clause.SubClauses ?? [])
             {
                 DynamicFieldNameResolveRecursive(t);
             }
@@ -321,11 +321,10 @@ internal static partial class QueryPlanBuilder
             for (int i = clauses.Count - 1; i >= 0; i--)
             {
                 ClauseInfo it = clauses[i];
-                BetweenRewriteSentinels(it.OrSubClauses, isOr: true);
-                BetweenRewriteSentinels(it.AndSubClauses, isOr: false);
+                BetweenRewriteSentinels(it.SubClauses, isOr: it.ClauseType == ClauseType.OrGroup);
                     
                 // After recursion, remove groups that became empty (tautological OR cleared by a child both-sentinel).
-                if (it is { ClauseType: ClauseType.OrGroup, OrSubClauses.Count: 0 })
+                if (it is { ClauseType: ClauseType.OrGroup, SubClauses.Count: 0 })
                 {
                     if (isOr is false)
                     {
