@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace Corax.Querying.Planning;
 
 public class QueryExecution
@@ -39,10 +37,10 @@ public class QueryExecution
     /// large-cardinality one that needs a different dispatch path.</summary>
     public const int CardinalityCliffBit = 1 << 31;
 
-    /// <summary>Clause list from the query plan builder — structural template data.</summary>
-    public List<ClauseInfo> Clauses;
-
-    /// <summary>Per-execution state parallel to Clauses — parameter values, cardinality, etc.</summary>
+    /// <summary>Per-execution state — parameter values, cardinality, etc.
+    /// Each element carries a back-reference to its <see cref="ClauseInfo"/> via
+    /// <see cref="ClauseExecution.Clause"/>, so clause metadata is accessible as
+    /// <c>Executions[i].Clause</c> without a separate parallel list.</summary>
     public ClauseExecution[] Executions;
     public bool IsAllEntries;
     public bool AllNegated;
