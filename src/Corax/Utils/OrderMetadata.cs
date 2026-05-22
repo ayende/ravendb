@@ -19,6 +19,14 @@ public readonly struct OrderMetadata
     public readonly bool FieldHasNoTerms;
     public readonly NullsSortMode? NullsSortMode;
 
+    /// <summary>True when the sort field may be missing on some docs in the input bitmap —
+    /// e.g. dynamic CreateField fields, which write no entry (not even a NonExisting marker)
+    /// for docs that don't emit them. When true, SortingMatch must route through
+    /// ExtractAndSort (which drains the bitmap and uses the comparer's missing-value sentinel)
+    /// instead of StreamAndIntersect (which only walks tree terms + null/nonExisting posting
+    /// lists, silently dropping docs that lack the field). See RavenDB-22703.</summary>
+    public readonly bool MayHaveMissingEntries;
+
     public override string ToString()
     {
         return FieldType switch
@@ -60,7 +68,7 @@ public readonly struct OrderMetadata
 
     }
 
-    public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, bool fieldHasNoTerms, NullsSortMode? nullsSortMode = null)
+    public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, bool fieldHasNoTerms, NullsSortMode? nullsSortMode = null, bool mayHaveMissingEntries = false)
     {
         Unsafe.SkipInit(out HasBoost);
         Unsafe.SkipInit(out Point);
@@ -73,6 +81,7 @@ public readonly struct OrderMetadata
         FieldType = fieldType;
         FieldHasNoTerms = fieldHasNoTerms;
         NullsSortMode = nullsSortMode;
+        MayHaveMissingEntries = mayHaveMissingEntries;
     }
 
     public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, IPoint point, double round, SpatialUnits units, bool fieldHasNoTerms, NullsSortMode? nullsSortMode = null)
