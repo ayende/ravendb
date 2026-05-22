@@ -61,30 +61,14 @@ public class QueryExecution
     /// The bitmap-producing CompiledQueryMatch is passed as the filterQuery to VectorSearchMatch.</summary>
     public VectorSearchOp[] VectorSelects;
 
-    /// <summary>Packed parameter type signature from ScanPredicateInfos.
-    /// 2 bits per predicate (0=long, 1=double, 2=string) for the FIRST 16 predicates.
-    /// For ≤ 16 predicates this is the exact identity. For more, it acts as a lossy
-    /// hash and <see cref="FullKinds"/> carries the disambiguator.</summary>
-    public int TypeSignature;
-
-    /// <summary>Full per-predicate kind vector. Populated only when there are more than
-    /// 16 typed scan predicates. Null in the common case, so PlanCache lookups stay
-    /// branch-free on the hot path. When non-null, PlanCache.Add walks the slot chain
-    /// (CompiledPlan.Next) and SequenceEqual-compares this vs. existing FullKinds to
-    /// disambiguate plans whose <see cref="TypeSignature"/> ints collide.</summary>
-    public byte[] FullKinds;
-
     /// <summary>Survival bitmask for template WHEN clauses, evaluated against this
     /// execution's bound parameters. Bit <c>i</c> = "the <c>i</c>-th WHEN clause in
     /// template traversal order evaluated true." Cap at 32 WHEN clauses per template.
     ///
-    /// Joins (<see cref="OperandOrdering"/>, <see cref="TypeSignature"/>, <see cref="FullKinds"/>)
-    /// as part of the plan-cache key: plans built from the same queryText but different
-    /// WHEN-survival subsets can otherwise hash to the same (Ordering, TypeSignature)
-    /// slot and silently reuse the wrong IL — see the [Attach==true, Number!=1] vs.
-    /// single-[Attach==true] survivor example. Zero in the common case (no WHEN
-    /// clauses), so the SIMD pre-filter on (Ordering, TypeSignature) is unchanged
-    /// and the chain walk catches WhenFlags differences.</summary>
+    /// Part of the plan-cache key together with OperandOrdering and TypeSignature
+    /// (on <see cref="CompiledPlan"/>): plans built from the same queryText but different
+    /// WHEN-survival subsets can otherwise hash to the same slot and silently reuse
+    /// the wrong IL. Zero in the common case (no WHEN clauses).</summary>
     public int WhenFlags;
 
     /// <summary>Structural optimization flags inherited from the PlanTemplate.

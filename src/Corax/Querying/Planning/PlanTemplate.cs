@@ -83,4 +83,11 @@ public sealed class PlanTemplate
     /// <see cref="QueryExecution.WhenFlags"/> would otherwise wrap silently.</summary>
     public int WhenCount;
 
+    /// <summary>Deduplicated, ordered list of query parameter names referenced by this
+    /// template's clause bindings (<see cref="BindingSource.QueryParameter"/> only).
+    /// Literals are excluded since their types are fixed at template time.
+    /// Used to compute the TypeSignature cache-key component cheaply at execution time
+    /// by classifying each parameter's runtime blittable type, instead of walking the
+    /// full clause/execution list. Null when no parameter bindings exist.</summary>
+    public string[] ParameterSlots;
 }
