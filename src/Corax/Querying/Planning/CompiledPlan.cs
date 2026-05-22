@@ -103,4 +103,19 @@ public sealed class CompiledPlan
     /// At query time, cloned and populated with per-execution telemetry
     /// (timings, result counts, scanned entries) from CompiledQueryMatch.</summary>
     public InspectionOp[] InspectionTemplate { get; init; }
+
+    /// <summary>Number of PlanOps in the plan. Stored on the CompiledPlan so that
+    /// cache hits can size timing arrays without re-running EmitPlan.</summary>
+    public int OpCount { get; init; }
+
+    /// <summary>Number of bitmaps the plan needs at execution time (2 or 3).
+    /// Stored on the CompiledPlan so cache hits can allocate bitmaps without
+    /// re-running EmitPlan.</summary>
+    public int RequiredBitmaps { get; init; }
+
+    /// <summary>Number of IN/AllIn range-count slots in the plan. Each IN or AllIn
+    /// clause produces one slot whose runtime value comes from the fixup loop.
+    /// Zero when the plan has no IN/AllIn clauses. Stored on the CompiledPlan so
+    /// cache hits can allocate and fill InRangeCounts without EmitPlan.</summary>
+    public int InRangeSlotCount { get; init; }
 }
