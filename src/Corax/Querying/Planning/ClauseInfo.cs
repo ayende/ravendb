@@ -81,13 +81,10 @@ public sealed class ClauseInfo
         set { ThrowIfFrozen(); field = value; }
     }
 
-    public List<ClauseInfo> OrSubClauses
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
-
-    public List<ClauseInfo> AndSubClauses
+    /// <summary>Sub-clauses for OrGroup / AndGroup nodes. Mutually exclusive with other
+    /// group-type usage — a clause is either OrGroup or AndGroup (never both), determined
+    /// by <see cref="ClauseType"/>.</summary>
+    public List<ClauseInfo> SubClauses
     {
         get;
         set { ThrowIfFrozen(); field = value; }
@@ -104,14 +101,14 @@ public sealed class ClauseInfo
     /// <summary>For IN/AllIn clauses: true when ALL bindings are literals (no parameters).
     /// When set, the dominant type and type-incompatible filtering are pre-computed at
     /// template time, skipping per-execution work in ResolveInFromBindings.</summary>
-    public bool InAllLiteral
+    public bool AllBindingsAreLiteral
     {
         get;
         set { ThrowIfFrozen(); field = value; }
     }
 
     /// <summary>Pre-computed dominant type for all-literal IN/AllIn clauses. Only valid
-    /// when <see cref="InAllLiteral"/> is true. The dominant type determines which typed
+    /// when <see cref="AllBindingsAreLiteral"/> is true. The dominant type determines which typed
     /// array (Long/Double/String) receives the resolved values.</summary>
     public ParamValueType InDominantType
     {
@@ -143,7 +140,7 @@ public sealed class ClauseInfo
 
     /// <summary>Mark this ClauseInfo as part of an immutable plan-cache template. After
     /// freezing, any property write throws. Idempotent — calling Freeze() on an already
-    /// frozen instance is a no-op. Sub-clauses (OrSubClauses, AndSubClauses) are NOT
+    /// frozen instance is a no-op. Sub-clauses (<see cref="SubClauses"/>) are NOT
     /// auto-frozen; callers must freeze each sub-clause individually.</summary>
     public void Freeze() => IsFrozen = true;
 

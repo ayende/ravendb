@@ -359,7 +359,7 @@ internal static partial class QueryPlanBuilder
         {
             if (c.HasBoost)
                 return true;
-            foreach (var t in c.OrSubClauses ?? c.AndSubClauses ?? [])
+            foreach (var t in c.SubClauses ?? [])
             {
                 if (HasBoostRecursive(t))
                     return true;
@@ -414,8 +414,7 @@ internal static partial class QueryPlanBuilder
             if (c == null || c.IsFrozen)
                 continue;
 
-            FreezeAll(c.OrSubClauses);
-            FreezeAll(c.AndSubClauses);
+            FreezeAll(c.SubClauses);
             c.Freeze();
         }
     }
@@ -515,18 +514,7 @@ internal static partial class QueryPlanBuilder
             var clauses = walkerCtx.Clauses;
             walkerCtx.Clauses = saved;
 
-            ClauseInfo clauseInfo = new() { ClauseType = clauseType, OriginalIndex = walkerCtx.Clauses.Count };
-            switch (clauseType)
-            {
-                case ClauseType.OrGroup:
-                    clauseInfo.OrSubClauses = clauses;
-                    break;
-                case ClauseType.AndGroup:
-                    clauseInfo.AndSubClauses = clauses;
-                    break;
-                default:
-                    throw new InvalidOperationException($"Unexpected clause type: {clauseType}");
-            }
+            ClauseInfo clauseInfo = new() { ClauseType = clauseType, OriginalIndex = walkerCtx.Clauses.Count, SubClauses = clauses };
 
             walkerCtx.Clauses.Add(clauseInfo);
             return expr;
