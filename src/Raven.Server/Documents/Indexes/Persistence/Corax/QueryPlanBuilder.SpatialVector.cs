@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
@@ -240,22 +242,13 @@ internal static partial class QueryPlanBuilder
     /// These are NOT materialized yet — the caller materializes them with the bitmap-producing
     /// match as the filterQuery. Returns null if the plan has no vectors.
     /// </summary>
-    private static CoraxVectorItem[] ResolveVectorItems(QueryExecution exec, QueryBuilderParameters builderParams)
+    private static List<CoraxVectorItem> ResolveVectorItems(QueryExecution exec, QueryBuilderParameters builderParams)
     {
-        if (exec.VectorSelects == null || exec.VectorSelects.Length == 0)
-            return null;
-
-        var items = new CoraxVectorItem[exec.VectorSelects.Length];
-        for (int i = 0; i < exec.VectorSelects.Length; i++)
+        var items = new List<CoraxVectorItem>(exec.VectorSelects.Length);
+        foreach (var vec in exec.VectorSelects)
         {
-            var clause = exec.VectorSelects[i].Clause;
-            var vecExec = exec.VectorSelects[i].Exec;
-            if (clause == null || clause.ClauseType != ClauseType.Vector || builderParams == null)
-                throw new InvalidOperationException("Vector select references an invalid clause at index " + i);
-
-            items[i] = HandleVector(builderParams, clause, vecExec, false);
+            items.Add(HandleVector(builderParams, vec.Exec, false));
         }
-
         return items;
     }
 
@@ -297,8 +290,9 @@ internal static partial class QueryPlanBuilder
         return builderParameters.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), (SpatialRelation)spatialMethod, token: builderParameters.Token);
     }
 
-    private static CoraxVectorItem HandleVector(QueryBuilderParameters builderParameters, ClauseInfo clause, ClauseExecution exec, bool exact)
+    private static CoraxVectorItem HandleVector(QueryBuilderParameters builderParameters, ClauseExecution exec, bool exact)
     {
+        Debug.Assert(exec.ClauseType ==ClauseType.Vector);
         IndexField indexField;
         string embeddingsGenerationTaskIdentifier;
 
@@ -311,7 +305,7 @@ internal static partial class QueryPlanBuilder
             ? vec.NumberOfCandidates
             : builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying;
 
-        var fieldName = clause.FieldName
+        var fieldName = exec.Clause.FieldName
                         ?? throw new InvalidOperationException("Vector clause has no pre-resolved field name.");
 
         var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(builderParameters, fieldName, hasBoost: builderParameters.HasBoost);
