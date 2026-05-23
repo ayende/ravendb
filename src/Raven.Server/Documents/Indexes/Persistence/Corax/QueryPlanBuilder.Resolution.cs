@@ -1699,8 +1699,7 @@ internal static partial class QueryPlanBuilder
     {
         // ResolveFieldMetadata picks up the exact/search field name variant for dynamic indexes (#4777 fix).
         FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
-        var p = exec.PackedParamValue;
-        return (fieldMeta, new PackedParam(p.ValueType, p.Param1 + termIndex));
+        return (fieldMeta, exec.PackedParamValue.WithTermOffset(termIndex));
     }
 
     /// <summary>Resolve a single IN term to a typed TermQuery (bitmap path).

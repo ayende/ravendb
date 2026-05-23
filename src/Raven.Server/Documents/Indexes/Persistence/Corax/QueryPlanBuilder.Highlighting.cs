@@ -110,10 +110,9 @@ internal static partial class QueryPlanBuilder
         bool hasNullTerm = exec?.HasNullTerm ?? false;
         if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && (inTermCount > 0 || hasNullTerm))
         {
-            var p = packed;
             var terms = new List<string>(inTermCount + (hasNullTerm ? 1 : 0));
             for (int t = 0; t < inTermCount; t++)
-                terms.Add(FormatValueFromPlan(new PackedParam(p.ValueType, p.Param1 + t), queryExec));
+                terms.Add(FormatValueFromPlan(packed.WithTermOffset(t), queryExec));
             if (hasNullTerm)
                 terms.Add(null);
             return terms;
