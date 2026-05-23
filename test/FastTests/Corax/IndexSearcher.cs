@@ -1274,6 +1274,55 @@ namespace FastTests.Corax
         }
 
         [RavenFact(RavenTestCategory.Corax)]
+        public void EmptyInDoesNotPoisonCacheForNonEmptyExecution()
+        {
+            // Regression test: an empty IN parameter ($p=[]) in an AND chain must not
+            // cache a plan that subsequent non-empty executions ($p=['x']) would reuse,
+            // producing zero results instead of the correct matches.
+            var list = new[]
+            {
+                new IndexSingleEntry { Id = "entry/1", Content = "Alpha" },
+                new IndexSingleEntry { Id = "entry/2", Content = "Beta" },
+                new IndexSingleEntry { Id = "entry/3", Content = "Gamma" },
+            };
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            IndexEntries(bsc, list, CreateKnownFields(bsc));
+
+            const string rql = "FROM TestIndex WHERE Content IN ($p0)";
+
+            using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
+            using var ctx = global::Sparrow.Json.JsonOperationContext.ShortTermSingleUse();
+
+            // Execution 1: $p0 = [] (empty array) → should return 0 results
+            {
+                var emptyParams = ctx.ReadObject(new global::Sparrow.Json.Parsing.DynamicJsonValue { ["p0"] = new global::Sparrow.Json.Parsing.DynamicJsonArray() }, "params");
+                var queryMetadata = new QueryMetadata(rql, emptyParams, 0);
+                var planParams = new QueryPlanBuilder.PlanParameters
+                {
+                    IndexSearcher = searcher, Metadata = queryMetadata,
+                    QueryParameters = emptyParams, Allocator = Allocator
+                };
+                var match = QueryPlanBuilder.BuildAndCompile(planParams, null, out _, out _, null, false, default);
+                Span<long> buf = stackalloc long[64];
+                Assert.Equal(0, match.Fill(buf));
+            }
+
+            // Execution 2: $p0 = ['Alpha'] → should return 1 result (not 0)
+            {
+                var realParams = ctx.ReadObject(new global::Sparrow.Json.Parsing.DynamicJsonValue { ["p0"] = new global::Sparrow.Json.Parsing.DynamicJsonArray { "Alpha" } }, "params");
+                var queryMetadata = new QueryMetadata(rql, realParams, 0);
+                var planParams = new QueryPlanBuilder.PlanParameters
+                {
+                    IndexSearcher = searcher, Metadata = queryMetadata,
+                    QueryParameters = realParams, Allocator = Allocator
+                };
+                var match = QueryPlanBuilder.BuildAndCompile(planParams, null, out _, out _, null, false, default);
+                Span<long> buf = stackalloc long[64];
+                Assert.Equal(1, match.Fill(buf));
+            }
+        }
+
+        [RavenFact(RavenTestCategory.Corax)]
         public void SimpleAndNot()
         {
             var entry1 = new IndexSingleEntry {Id = "entry/1", Content = "Testing"};

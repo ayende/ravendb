@@ -13,6 +13,13 @@ public class QueryExecution
     /// large-cardinality one that needs a different dispatch path.</summary>
     public const int CardinalityCliffBit = 1 << 31;
 
+    /// <summary>Reserved ordering value for AND chains that contain an empty IN/AllIn
+    /// (InTermCount=0, no null term). Guaranteed zero results — uses a distinct cache
+    /// slot so the empty plan doesn't collide with real plans for the same query text.
+    /// Bits 0-29 set to all-ones, which no real clause ordering can produce (real orderings
+    /// use OriginalIndex &amp; 0x7 per 3-bit slot, leaving gaps).</summary>
+    public const int EmptyInOrdering = 0x3FFFFFFF;
+
     /// <summary>Back-reference to the compiled plan this execution belongs to.
     /// Structural fields (AllNegated, OptimizationFlags, SortDrivingClauseIndex,
     /// compound indices, etc.) live on the plan — not duplicated here.</summary>

@@ -425,35 +425,24 @@ internal static partial class QueryPlanBuilder
             exec.IsAllEntries = true;
         }
 
-        // Empty-IN in AND short-circuit. Must happen before the cache lookup to avoid
-        // poisoning the cache. Consider two executions of the same query text:
-        //
-        //   Execution 1: FROM Items WHERE Tags IN ($p) AND spatial.within(Loc, ...) — $p = []
-        //     Empty IN in an AND chain → guaranteed zero results (AND with empty = empty).
-        //     If we let this reach the cache, OperandOrdering=0 + TypeSignature=0 would
-        //     cache an empty plan.
-        //
-        //   Execution 2: same query — $p = ['news']
-        //     Same cache key → cache hit → reuses the empty plan → zero results. Wrong.
-        //
-        // By bailing out here, we never touch the cache and the next execution with real
-        // terms gets a clean cache miss. OR chains are fine — empty-IN clauses are
-        // compacted out inside EmitPlan (OR with nothing is a no-op).
-        if (!isOr && executions.Length > 0)
-        {
-            for (int i = 0; i < executions.Length; i++)
-            {
-                if (executions[i].ClauseType is ClauseType.In or ClauseType.AllIn
-                    && executions[i].InTermCount == 0
-                    && !executions[i].HasNullTerm)
-                {
-                    return null; // Caller will use TermMatch.CreateEmpty.
-                }
-            }
-        }
-
         // ── Step 6: Compute cache key components (cheap) ────────────────────
-        int operandOrdering = ComputeOperandOrdering(template, planParams, executions);
+        int operandOrdering;
+
+        // Empty-IN in AND: guaranteed zero results (AND with empty = empty).
+        // Use a reserved ordering value so the empty plan caches separately from
+        // real plans with the same query text. Without this, two executions:
+        //   $p = []      → empty plan cached at (Ordering=0, TypeSig=0)
+        //   $p = ['news'] → same cache key → reuses empty plan → zero results
+        // The reserved value ensures each gets its own cache slot.
+        // OR chains are unaffected — empty-IN clauses are compacted out in EmitPlan.
+        if (!isOr && HasEmptyIn(executions))
+        {
+            operandOrdering = QueryExecution.EmptyInOrdering;
+        }
+        else
+        {
+            operandOrdering = ComputeOperandOrdering(template, planParams, executions);
+        }
 
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature(template, planParams);
 
@@ -3190,10 +3179,13 @@ internal static partial class QueryPlanBuilder
 
         if (isOr is false)
         {
-            // AND empty-IN is caught before the cache lookup in Build.
-            // This assert guards against regressions — should never fire.
+            // Empty IN in AND → zero results. The reserved EmptyInOrdering cache key
+            // ensures this caches separately from real plans.
             for (int i = 0; i < executions.Length; i++)
-                Debug.Assert(IsEmptyIn(executions[i]) == false, "Empty IN in AND should have been caught before EmitPlan");
+            {
+                if (IsEmptyIn(executions[i]))
+                    return ([], 2, null);
+            }
         }
         else
         {
@@ -3670,6 +3662,20 @@ internal static partial class QueryPlanBuilder
     /// Single negated clause returns false — handled by the standalone NotEquals path.</summary>
     private static bool CheckAllNegated(ClauseExecution[] executions)
         => executions is [{ IsNegated: true }, _, ..];
+
+    /// <summary>True when any clause in the array is an empty IN/AllIn (InTermCount=0,
+    /// no null term). Used to detect guaranteed-empty AND chains before the cache lookup.</summary>
+    private static bool HasEmptyIn(ClauseExecution[] executions)
+    {
+        for (int i = 0; i < executions.Length; i++)
+        {
+            if (executions[i].ClauseType is ClauseType.In or ClauseType.AllIn
+                && executions[i].InTermCount == 0
+                && executions[i].HasNullTerm == false)
+                return true;
+        }
+        return false;
+    }
 
     /// <summary>Count the number of IN/AllIn range-count slots in the given executions.
     /// Mirrors the <c>rangeCounts</c> list built inside <see cref="EmitOrPlan"/> and <see cref="EmitAndPlan"/>.</summary>
