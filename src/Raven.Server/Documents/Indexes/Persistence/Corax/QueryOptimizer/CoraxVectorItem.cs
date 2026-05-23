@@ -2,7 +2,6 @@ using System;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
-using Raven.Server.Documents.Indexes.Persistence.Corax;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 

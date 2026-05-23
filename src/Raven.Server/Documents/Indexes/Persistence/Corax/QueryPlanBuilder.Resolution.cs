@@ -1,28 +1,34 @@
 using System;
+using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Threading;
+using Corax.Indexing;
+using Corax.Mappings;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
-using Corax.Querying.Primitives;
-using Voron.Data.RoaringBitmaps;
 using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Querying.Planning;
-using Corax.Mappings;
+using Corax.Querying.Primitives;
 using Corax.Utils;
 using Raven.Client.Exceptions;
-using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
-using Sparrow;
+using Sparrow.Binary;
 using Sparrow.Json;
+using Sparrow.Server;
+using Voron;
+using Voron.Data.RoaringBitmaps;
+using Voron.Impl;
 using Constants = Corax.Constants;
 using RavenConstants = Raven.Client.Constants;
 using IndexSearcher = Corax.Querying.IndexSearcher;
+using Range = Corax.Querying.Matches.Meta.Range;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
@@ -57,7 +63,7 @@ internal static partial class QueryPlanBuilder
         var template = BuildTemplate(planParams);
 
         // Phase 2: parameter resolution, exec emission, IL compile (with cache miss handling).
-        compiledPlanOut = Build(template, planParams, builderParameters, out exec);
+        (compiledPlanOut, exec) = Build(template, planParams, builderParameters);
         if (compiledPlanOut == null)
             return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
 
@@ -106,8 +112,8 @@ internal static partial class QueryPlanBuilder
         var template = BuildTemplate(planParams);
 
         // Phase 2: parameter resolution, plan emission, IL compile (with cache-miss handling).
-        var compiledPlan = Build(template, planParams, builderParameters, out var plan);
-        if (compiledPlan == null)
+        var (plan, exec) = Build(template, planParams, builderParameters);
+        if (plan == null)
         {
             var emptyMatch = TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
             return new BuildCompileAndOptimizeResult(emptyMatch, emptyMatch, null, null, builderParameters, null);
@@ -119,9 +125,9 @@ internal static partial class QueryPlanBuilder
         // (slow path, cache-miss only). Instantiate falls through to the bitmap pipeline as the
         // last resort. All four strategies — CompoundExact / CompoundField / DirectScan / BitmapSort
         // — are produced here.
-        var queryMatch = Instantiate(compiledPlan, plan, orderByFields, hasEmptySorts,
+        var queryMatch = Instantiate(plan, exec, orderByFields, hasEmptySorts,
             planParams, builderParameters, highlightingTerms, wantTimings, out var innerMatch, token);
-        return new BuildCompileAndOptimizeResult(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, compiledPlan, builderParameters, orderByFields);
+        return new BuildCompileAndOptimizeResult(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, builderParameters, orderByFields);
     }
 
     /// <summary>
@@ -197,7 +203,7 @@ internal static partial class QueryPlanBuilder
                         // via SortDrivingClauseIndex). Skip cost gating — strategy cache encodes
                         // the cost decision via cliff bit in Ordering.
                         int drivingIdx = -1;
-                        if (isFullScan == false)
+                        if (!isFullScan)
                         {
                             drivingIdx = exec.Plan.SortDrivingClauseIndex;
                             // BoostFactor cannot land here: ComputeOptFlags clears
@@ -373,7 +379,7 @@ internal static partial class QueryPlanBuilder
     /// post-filters (e.g. an empty IN clause inside an AND chain) — the caller must produce
     /// an explicit empty result rather than caching this shape under the wrong key.
     /// </summary>
-    private static CompiledPlan Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, out QueryExecution exec)
+    private static (CompiledPlan,  QueryExecution) Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters)
     {
         var indexSearcher = planParams.IndexSearcher;
         var queryText = planParams.Metadata.Query.QueryText;
@@ -408,7 +414,7 @@ internal static partial class QueryPlanBuilder
         // Step 5: Sort operands by cardinality (sort executions by cardinality).
         CollectionsMarshal.AsSpan(executions).Sort();
 
-        exec = new QueryExecution { Executions = executions };
+        var exec = new QueryExecution { Executions = executions };
  
         if(executions.Count is 0)
         {
@@ -418,7 +424,7 @@ internal static partial class QueryPlanBuilder
                 // FROM Orders WHERE when($a, Name = 'x') AND when($b, Price > 10)
                 // FROM Orders WHERE when($a, Name = 'x') OR when($b, Price > 10)
                 // Regardless of the query, we have nothing _to_ select here, so we return nothing
-                return null; // Caller will use TermMatch.CreateEmpty.
+                return default; // Caller will use TermMatch.CreateEmpty.
             }
 
             // FROM Post - i.e, query with no where clauses, still needs a compiled delegate, so we go generate a cached exec for it
@@ -431,41 +437,22 @@ internal static partial class QueryPlanBuilder
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature(template, planParams);
 
         if(planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags) is {} compiledPlan)
-        {
-            exec.Plan = compiledPlan;
-          
-            if(compiledPlan.InRangeSlotCount is not 0)
-                exec.InRangeCounts = BuildInRangeCounts(executions, isOr, compiledPlan.InRangeSlotCount);
-
-            AttachSpatialAndVectorClauses(exec, compiledPlan.AllNegated, template, planParams, builderParameters, writer);
-
-            writer.SetValues(exec);
-            return compiledPlan;
-        }
+            return FinalizePlan();
         
 
-        // ── Step 8: Cache miss — full exec emission ─────────────────────────
+        // ── Step 7: Cache miss — full exec emission ─────────────────────────
 
         // Entry scan is an optimization that only makes sense for a WHERE with multiple AND clauses
         ScanPredicateInfo[] scanPreds = isOr is false && executions.Count > 1 ? CreateScanPredicates(executions) : null;
-
-        (PlanOp[] emittedOps, int emittedRequiredBitmaps, int[] emittedInRangeCounts) = EmitPlan(isOr, executions);
-        exec.Executions = executions;
-        exec.InRangeCounts = emittedInRangeCounts is { Length: > 0 } ?
-            BuildInRangeCounts(executions, isOr, emittedInRangeCounts.Length) :
-            null;
-
-        var allNegated = CheckAllNegated(executions);
-        AttachSpatialAndVectorClauses(exec, allNegated, template, planParams, builderParameters, writer);
-
-        // Store typed arrays once after all clauses (including spatial/vector) are populated.
-        writer.SetValues(exec);
+        var (ops, requiredBitmaps, inRangeCounts) = EmitPlan(isOr, executions);
 
         // Boost handling: force every op to QueryMatch dispatch so scores are accumulated.
         if (planParams.HasBoost)
         {
-            for (int i = 0; i < emittedOps.Length; i++)
-                emittedOps[i].Dispatch = MatchDispatch.QueryMatch;
+            for (int i = 0; i < ops.Length; i++)
+            {
+                ops[i].Dispatch = MatchDispatch.QueryMatch;
+            }
         }
 
         var remapped = RemapOptimizationIndices(template, executions);
@@ -474,8 +461,8 @@ internal static partial class QueryPlanBuilder
         // indices, ScanPredicateInfos) are stored on the CompiledPlan, not on QueryExecution.
         compiledPlan = new CompiledPlan
         {
-            CompiledDelegate = QueryIlEmitter.EmitDelegate(emittedOps, out var csharpText, emitTimings: false),
-            CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(emittedOps, out _, emitTimings: true),
+            CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
+            CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
             CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(scanPreds, out var scanCsharp),
 
             Template = template,
@@ -484,13 +471,12 @@ internal static partial class QueryPlanBuilder
             TypeSignature = typeSignature,
             FullKinds = fullKinds,
             WhenFlags = whenFlags,
-            OpCount = emittedOps.Length,
-            RequiredBitmaps = emittedRequiredBitmaps,
-            InRangeSlotCount = emittedInRangeCounts?.Length ?? 0,
-            InspectionTemplate = BuildInspectionTemplate(emittedOps, exec),
+            OpCount = ops.Length,
+            RequiredBitmaps = requiredBitmaps,
+            InRangeSlotCount = inRangeCounts?.Length ?? 0,
+            InspectionTemplate = BuildInspectionTemplate(ops, exec),
             ScanPredicateInfos = scanPreds,
-
-            AllNegated = allNegated,
+            AllNegated =  CheckAllNegated(executions),
             SortDrivingClauseIndex = remapped.SortDriving,
             CompoundExactClauseA = remapped.ExactA,
             CompoundExactClauseB = remapped.ExactB,
@@ -498,10 +484,20 @@ internal static partial class QueryPlanBuilder
             CompoundFieldDrivingClause = remapped.FieldDriving,
             CompoundFieldSortName = remapped.FieldSortName
         };
-        exec.Plan = compiledPlan;
         planCache.Add(queryText, compiledPlan, template);
 
-        return compiledPlan;
+        return FinalizePlan();
+
+        (CompiledPlan, QueryExecution ) FinalizePlan()
+        {
+            exec.Plan = compiledPlan;
+            if(compiledPlan.InRangeSlotCount is not 0)
+                exec.InRangeCounts = BuildInRangeCounts(executions, compiledPlan.InRangeSlotCount);
+
+            AttachSpatialAndVectorClauses(exec, compiledPlan.AllNegated, template, planParams, builderParameters, writer);
+            writer.SetValues(exec);
+            return (compiledPlan, exec);
+        }
     }
 
     private static ScanPredicateInfo[] CreateScanPredicates(List<ClauseExecution> executions)
@@ -576,7 +572,7 @@ internal static partial class QueryPlanBuilder
     private static IQueryMatch InstantiateBitmapPipeline(
         CompiledPlan compiledPlan,
         QueryExecution exec,
-        QueryPlanBuilder.PlanParameters planParams,
+        PlanParameters planParams,
         QueryBuilderParameters builderParameters,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         bool wantTimings,
@@ -712,7 +708,7 @@ internal static partial class QueryPlanBuilder
     /// collides with the single-clause [Attach==true] survivor (also ord=1). WhenFlags
     /// joins (Ordering, TypeSignature) in the plan-cache key so each survival pattern
     /// gets its own cached compiled plan.</summary>
-    private static (List<ClauseExecution> ExecList, int WhenFlags) EvaluateWhenAndFilterClauses(PlanTemplate template, QueryPlanBuilder.PlanParameters planParams)
+    private static (List<ClauseExecution> ExecList, int WhenFlags) EvaluateWhenAndFilterClauses(PlanTemplate template, PlanParameters planParams)
     {
         var execList = new List<ClauseExecution>(template.Clauses.Count);
         int whenFlags = 0;
@@ -782,7 +778,7 @@ internal static partial class QueryPlanBuilder
                 PackedParam.TypeDouble => writer.GetDouble(p.Param1) > writer.GetDouble(p.Param2),
                 _ => false // for strings, we have to consider analyzers, so we can't tell
             };
-            if (contradictory == false)
+            if (!contradictory)
                 continue;
 
             // Mark with zero cardinality. EmitPlan handles:
@@ -1596,7 +1592,7 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Regex:
                 return indexSearcher.RegexQuery(fieldMeta,
-                    new System.Text.RegularExpressions.Regex(queryExec.StringValues[packed.Param1]));
+                    new Regex(queryExec.StringValues[packed.Param1]));
 
             case ClauseType.Spatial:
             {
@@ -1916,7 +1912,7 @@ internal static partial class QueryPlanBuilder
         // When forceDefaultSearchAnalyzer is enabled for indexes with dynamic fields (CreateField),
         // non-exact non-search clauses should use the search analyzer (#4778 fix).
         bool forceSearchAnalyzer = builderParams.HasDynamics
-                                   && clause.IsExact == false
+                                   && !clause.IsExact
                                    && clause.ClauseType != ClauseType.Search
                                    && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
         return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact,
@@ -1933,24 +1929,24 @@ internal static partial class QueryPlanBuilder
             return default; // Kind == Empty
         }
 
-        var termType = (global::Corax.Indexing.TermIdMask)postingListId & global::Corax.Indexing.TermIdMask.EnsureIsSingleMask;
+        var termType = (TermIdMask)postingListId & TermIdMask.EnsureIsSingleMask;
         switch (termType)
         {
-            case global::Corax.Indexing.TermIdMask.Single:
+            case TermIdMask.Single:
                 return new PostingSource
                 {
                     Kind = PostingSourceKind.Single,
                     SingleEntryId = (long)EntryIdEncodings.GetContainerId(postingListId),
                 };
 
-            case global::Corax.Indexing.TermIdMask.SmallPostingList:
+            case TermIdMask.SmallPostingList:
                 return new PostingSource
                 {
                     Kind = PostingSourceKind.SmallPostingList,
                     SmallPostingListId = (long)EntryIdEncodings.GetContainerId(postingListId),
                 };
 
-            case global::Corax.Indexing.TermIdMask.PostingList:
+            case TermIdMask.PostingList:
             {
                 var postingList = indexSearcher.GetPostingList(postingListId);
                 return new PostingSource
@@ -1970,7 +1966,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Extract typed parameter values from clauses for entry scan.
     /// Called per-query at execution time. The values populate the CompiledQueryMatch arrays.</summary>
     private static void ExtractScanParameters(QueryExecution exec, IndexSearcher indexSearcher,
-        out long[] longParams, out double[] doubleParams, out Voron.Slice[] sliceParams, out long[] fieldRootPages)
+        out long[] longParams, out double[] doubleParams, out Slice[] sliceParams, out long[] fieldRootPages)
     {
         var predicates = exec.Plan.ScanPredicateInfos;
         if (predicates == null || predicates.Length == 0)
@@ -1984,7 +1980,7 @@ internal static partial class QueryPlanBuilder
 
         var longs = new List<long>();
         var doubles = new List<double>();
-        var slices = new List<Voron.Slice>();
+        var slices = new List<Slice>();
         var roots = new List<long>();
 
         // Walk predicates and clauses in lock-step. BuildScanPredicateInfo skips non-eligible
@@ -2023,9 +2019,9 @@ internal static partial class QueryPlanBuilder
     /// use raw <c>Slice.From</c> (no analyzer) because the residual evaluator compares against
     /// the entry's stored term directly.</summary>
     private static void BuildResidualScanParams(
-        QueryExecution exec, IndexSearcher indexSearcher, Sparrow.Server.ByteStringContext allocator,
+        QueryExecution exec, IndexSearcher indexSearcher, ByteStringContext allocator,
         ScanPredicateInfo[] residualArray, int skipClauseIdx1, int skipClauseIdx2,
-        out long[] longParams, out double[] doubleParams, out Voron.Slice[] sliceParams, out long[] fieldRootPages)
+        out long[] longParams, out double[] doubleParams, out Slice[] sliceParams, out long[] fieldRootPages)
     {
         longParams = null;
         doubleParams = null;
@@ -2038,7 +2034,7 @@ internal static partial class QueryPlanBuilder
 
         var longs = new List<long>();
         var doubles = new List<double>();
-        var slices = new List<Voron.Slice>();
+        var slices = new List<Slice>();
         var roots = new List<long>();
 
         int residualIdx = 0;
@@ -2068,11 +2064,11 @@ internal static partial class QueryPlanBuilder
                     break;
                 case ScanValueType.Slice:
                 case ScanValueType.SliceLong:
-                    Voron.Slice.From(allocator, exec.StringValues[idx1], out var s1);
+                    Slice.From(allocator, exec.StringValues[idx1], out var s1);
                     slices.Add(s1);
                     if (hasBetween)
                     {
-                        Voron.Slice.From(allocator, exec.StringValues[idx2], out var s2);
+                        Slice.From(allocator, exec.StringValues[idx2], out var s2);
                         slices.Add(s2);
                     }
 
@@ -2090,7 +2086,7 @@ internal static partial class QueryPlanBuilder
 
     private static void ExtractParamsFromPredicate(ScanPredicateInfo pred, ClauseInfo clause, ClauseExecution exec,
         IndexSearcher indexSearcher, QueryExecution queryExec, List<long> longs, List<double> doubles,
-        List<Voron.Slice> slices, List<long> roots)
+        List<Slice> slices, List<long> roots)
     {
         if (pred.SubPredicates != null)
         {
@@ -2147,7 +2143,7 @@ internal static partial class QueryPlanBuilder
     // ── Compound field exact match (no ORDER BY) ─────────────────────────
 
     public static bool TryCreateCompoundExactMatch(
-        QueryExecution exec, QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
+        QueryExecution exec, PlanParameters planParams, QueryBuilderParameters builderParams,
         out IQueryMatch compoundMatch, out string rejectReason)
     {
         rejectReason = null;
@@ -2173,7 +2169,7 @@ internal static partial class QueryPlanBuilder
     /// If so, build a single TermQuery on the compound tree with the composite key.
     /// One tree lookup instead of two posting list intersections.</summary>
     public static bool TryCreateCompoundExactMatch(
-        QueryExecution exec, QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
+        QueryExecution exec, PlanParameters planParams, QueryBuilderParameters builderParams,
         out IQueryMatch compoundMatch)
     {
         compoundMatch = null;
@@ -2208,7 +2204,7 @@ internal static partial class QueryPlanBuilder
     /// Returns null when a per-execution byte-length check fails — the caller must fall
     /// back to the next optimization (or bitmap). No cost gates here — those are encoded
     /// in the plan-cache key (cardinality cliff bit 31 of Ordering).</summary>
-    private static IQueryMatch ConstructCompoundExact(QueryExecution exec, QueryPlanBuilder.PlanParameters planParams)
+    private static IQueryMatch ConstructCompoundExact(QueryExecution exec, PlanParameters planParams)
     {
         var execs = exec.Executions;
         var indexSearcher = planParams.IndexSearcher;
@@ -2250,7 +2246,7 @@ internal static partial class QueryPlanBuilder
 
         var compoundFieldName = $"compound({firstField},{secondField})";
         var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
-        Voron.Slice.From(planParams.Allocator, compositeKey, out var keySlice);
+        Slice.From(planParams.Allocator, compositeKey, out var keySlice);
 
         return indexSearcher.TermQuery(compoundFieldMeta, keySlice);
     }
@@ -2272,17 +2268,17 @@ internal static partial class QueryPlanBuilder
         if (p.ValueType == PackedParam.TypeLong)
         {
             var bytes = new byte[sizeof(long)];
-            System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
-                bytes, Sparrow.Binary.Bits.SwapBytes(queryExec.LongValues[p.Param1]));
+            BinaryPrimitives.WriteInt64BigEndian(
+                bytes, Bits.SwapBytes(queryExec.LongValues[p.Param1]));
             return bytes;
         }
 
         if (p.ValueType == PackedParam.TypeDouble)
         {
             var bytes = new byte[sizeof(long)];
-            long sortable = Sparrow.Binary.Bits.DoubleToSortableLong(queryExec.DoubleValues[p.Param1]);
-            System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
-                bytes, Sparrow.Binary.Bits.SwapBytes(sortable));
+            long sortable = Bits.DoubleToSortableLong(queryExec.DoubleValues[p.Param1]);
+            BinaryPrimitives.WriteInt64BigEndian(
+                bytes, Bits.SwapBytes(sortable));
             return bytes;
         }
 
@@ -2294,7 +2290,7 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     public static bool TryCreateCompoundFieldMatch(
         QueryExecution exec, OrderMetadata[] orderByFields,
-        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
+        PlanParameters planParams, QueryBuilderParameters builderParams,
         CompiledPlan compiledPlan, out IQueryMatch compoundMatch, out string rejectReason)
     {
         if (TryCreateCompoundFieldMatch(exec, orderByFields, planParams, builderParams, compiledPlan, out compoundMatch))
@@ -2318,7 +2314,7 @@ internal static partial class QueryPlanBuilder
     /// residual predicate checking.</summary>
     public static bool TryCreateCompoundFieldMatch(
         QueryExecution exec, OrderMetadata[] orderByFields,
-        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
+        PlanParameters planParams, QueryBuilderParameters builderParams,
         CompiledPlan compiledPlan, out IQueryMatch compoundMatch)
     {
         compoundMatch = null;
@@ -2419,7 +2415,7 @@ internal static partial class QueryPlanBuilder
     /// caller falls back to the next optimization or bitmap.</summary>
     private static IQueryMatch ConstructCompoundField(
         QueryExecution exec, OrderMetadata[] orderByFields,
-        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
+        PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
         int field2RangeIdx, long entriesToScan, long bitmapCost)
     {
         var execs = exec.Executions;
@@ -2452,7 +2448,7 @@ internal static partial class QueryPlanBuilder
 
         // Build the prefix bytes for field1's value.
         // String: analyzed via field1's analyzer. Numeric: Bits.SwapBytes big-endian encoding.
-        Voron.Slice analyzedPrefix;
+        Slice analyzedPrefix;
         string field1ValueStr;
         switch (packed.ValueType)
         {
@@ -2470,18 +2466,18 @@ internal static partial class QueryPlanBuilder
                 long longVal = exec.LongValues[packed.Param1];
                 field1ValueStr = longVal.ToString();
                 var bytes = new byte[sizeof(long)];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(bytes, Sparrow.Binary.Bits.SwapBytes(longVal));
-                Voron.Slice.From(allocator, bytes, out analyzedPrefix);
+                BinaryPrimitives.WriteInt64BigEndian(bytes, Bits.SwapBytes(longVal));
+                Slice.From(allocator, bytes, out analyzedPrefix);
                 break;
             }
             case PackedParam.TypeDouble:
             {
                 double dblVal = exec.DoubleValues[packed.Param1];
                 field1ValueStr = dblVal.ToString(CultureInfo.InvariantCulture);
-                long sortable = Sparrow.Binary.Bits.DoubleToSortableLong(dblVal);
+                long sortable = Bits.DoubleToSortableLong(dblVal);
                 var bytes = new byte[sizeof(long)];
-                System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(bytes, Sparrow.Binary.Bits.SwapBytes(sortable));
-                Voron.Slice.From(allocator, bytes, out analyzedPrefix);
+                BinaryPrimitives.WriteInt64BigEndian(bytes, Bits.SwapBytes(sortable));
+                Slice.From(allocator, bytes, out analyzedPrefix);
                 break;
             }
             default:
@@ -2502,7 +2498,7 @@ internal static partial class QueryPlanBuilder
             var field2Clause = field2Exec.Clause;
             var field2Packed = field2Exec.PackedParamValue;
 
-            if (field2Packed.IsNone == false)
+            if (!field2Packed.IsNone)
             {
                 // Encode field2 bound value into bytes (same encoding as indexing).
                 // Long/Double: Bits.SwapBytes big-endian. String: analyze with field2's analyzer.
@@ -2513,27 +2509,27 @@ internal static partial class QueryPlanBuilder
                 if (field2Packed.ValueType == PackedParam.TypeLong)
                 {
                     field2Bytes = new byte[sizeof(long)];
-                    System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
-                        field2Bytes, Sparrow.Binary.Bits.SwapBytes(exec.LongValues[field2Packed.Param1]));
+                    BinaryPrimitives.WriteInt64BigEndian(
+                        field2Bytes, Bits.SwapBytes(exec.LongValues[field2Packed.Param1]));
                     if (field2Clause.ClauseType == ClauseType.Between)
                     {
                         field2HighBytes = new byte[sizeof(long)];
-                        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
-                            field2HighBytes, Sparrow.Binary.Bits.SwapBytes(exec.LongValues[field2Packed.Param2]));
+                        BinaryPrimitives.WriteInt64BigEndian(
+                            field2HighBytes, Bits.SwapBytes(exec.LongValues[field2Packed.Param2]));
                     }
                 }
                 else if (field2Packed.ValueType == PackedParam.TypeDouble)
                 {
                     field2Bytes = new byte[sizeof(long)];
-                    long sortable = Sparrow.Binary.Bits.DoubleToSortableLong(exec.DoubleValues[field2Packed.Param1]);
-                    System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
-                        field2Bytes, Sparrow.Binary.Bits.SwapBytes(sortable));
+                    long sortable = Bits.DoubleToSortableLong(exec.DoubleValues[field2Packed.Param1]);
+                    BinaryPrimitives.WriteInt64BigEndian(
+                        field2Bytes, Bits.SwapBytes(sortable));
                     if (field2Clause.ClauseType == ClauseType.Between)
                     {
                         field2HighBytes = new byte[sizeof(long)];
-                        long highSortable = Sparrow.Binary.Bits.DoubleToSortableLong(exec.DoubleValues[field2Packed.Param2]);
-                        System.Buffers.Binary.BinaryPrimitives.WriteInt64BigEndian(
-                            field2HighBytes, Sparrow.Binary.Bits.SwapBytes(highSortable));
+                        long highSortable = Bits.DoubleToSortableLong(exec.DoubleValues[field2Packed.Param2]);
+                        BinaryPrimitives.WriteInt64BigEndian(
+                            field2HighBytes, Bits.SwapBytes(highSortable));
                     }
                 }
                 else if (field2Packed.ValueType == PackedParam.TypeString)
@@ -2622,10 +2618,10 @@ internal static partial class QueryPlanBuilder
                     lowKeyBytes[^1] = (byte)prefixLen;
                     highKeyBytes[^1] = (byte)prefixLen;
 
-                    Voron.Slice.From(allocator, lowKeyBytes, out var lowSlice);
-                    Voron.Slice.From(allocator, highKeyBytes, out var highSlice);
+                    Slice.From(allocator, lowKeyBytes, out var lowSlice);
+                    Slice.From(allocator, highKeyBytes, out var highSlice);
 
-                    drivingMatch = indexSearcher.RangeBuilder<global::Corax.Querying.Matches.Meta.Range.Inclusive, global::Corax.Querying.Matches.Meta.Range.Inclusive>(
+                    drivingMatch = indexSearcher.RangeBuilder<Range.Inclusive, Range.Inclusive>(
                         compoundFieldMeta, lowSlice, highSlice,
                         forward: orderByFields[0].Ascending, CancellationToken.None);
                 }
@@ -2665,7 +2661,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Check if a range clause on the ORDER BY field can be served by a direct</summary>
     public static bool TryCreateSimpleFieldDirectScan(
         QueryExecution exec, OrderMetadata[] orderByFields,
-        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
+        PlanParameters planParams, QueryBuilderParameters builderParams,
         CompiledPlan compiledPlan, out IQueryMatch directMatch, out string rejectReason)
     {
         rejectReason = null;
@@ -2691,7 +2687,7 @@ internal static partial class QueryPlanBuilder
     /// in sort order, so no SortingMatch wrapper is needed.</summary>
     public static bool TryCreateSimpleFieldDirectScan(
         QueryExecution exec, OrderMetadata[] orderByFields,
-        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams,
+        PlanParameters planParams, QueryBuilderParameters builderParams,
         CompiledPlan compiledPlan, out IQueryMatch directMatch)
     {
         directMatch = null;
@@ -2728,7 +2724,7 @@ internal static partial class QueryPlanBuilder
         int drivingIdx = -1;
         long entriesToScan = 0, bitmapCost = 0;
         List<ScanPredicateInfo> preBuiltResiduals = null;
-        if (isFullScan == false)
+        if (!isFullScan)
         {
             // SortDrivingClauseIndex pre-identified at template time and remapped to
             // post-sort index during Build — skip the per-execution clause scan.
@@ -2821,7 +2817,7 @@ internal static partial class QueryPlanBuilder
     /// or tie-break group cap exceeded by current parameter cardinality).</summary>
     private static IQueryMatch ConstructDirectScan(
         QueryExecution exec, OrderMetadata[] orderByFields,
-        QueryPlanBuilder.PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
+        PlanParameters planParams, QueryBuilderParameters builderParams, CompiledPlan compiledPlan,
         int drivingIdx, bool isFullScan, bool hasTieBreak,
         long entriesToScan, long bitmapCost,
         List<ScanPredicateInfo> preBuiltResiduals = null)
@@ -2834,7 +2830,7 @@ internal static partial class QueryPlanBuilder
         var execs = exec.Executions;
 
         ITermsProvider provider;
-        Voron.Impl.LowLevelTransaction llt;
+        LowLevelTransaction llt;
         string drivingClauseDescription;
 
         if (isFullScan)
@@ -2882,7 +2878,7 @@ internal static partial class QueryPlanBuilder
         // Residual predicates: reuse the list built during discovery when available;
         // the cached strategy dispatch path passes null and we build it here.
         List<ScanPredicateInfo> residualPreds = preBuiltResiduals;
-        if (residualPreds == null && isFullScan == false)
+        if (residualPreds == null && !isFullScan)
         {
             int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
             for (int i = 0; i < execs.Count; i++)
@@ -2910,7 +2906,7 @@ internal static partial class QueryPlanBuilder
             drivingMatch = new SortedDrivingWithTieBreakMatch(
                 provider, llt, planParams.Allocator, indexSearcher,
                 orderByFields[0].Field, orderByFields[1].Field,
-                orderByFields[1].FieldType, secondaryDescending: orderByFields[1].Ascending == false,
+                orderByFields[1].FieldType, secondaryDescending: !orderByFields[1].Ascending,
                 nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest,
                 take: take);
         }
@@ -2944,7 +2940,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Create the appropriate DirectScan match based on whether residual predicates exist.</summary>
     private static DirectScanMatchBase BuildDirectScan(
         IndexSearcher searcher, IQueryMatch drivingMatch,
-        long[] longParams, double[] doubleParams, Voron.Slice[] sliceParams, long[] fieldRootPages,
+        long[] longParams, double[] doubleParams, Slice[] sliceParams, long[] fieldRootPages,
         ResidualScanIlEmitter.ResidualScanPredicate residualDelegate,
         ScanPredicateInfo[] residualArray)
     {
@@ -3360,7 +3356,7 @@ internal static partial class QueryPlanBuilder
 
                 // Mark clause as negated so ResolveMatches/ResolveTermSources
                 // produce [AllEntries, TermMatch].
-                if (e0.IsNegated == false)
+                if (!e0.IsNegated)
                 {
                     e0.IsNegated = true;
                 }
@@ -3607,7 +3603,7 @@ internal static partial class QueryPlanBuilder
     /// slot whose value is the number of posting-source slots the compiled IL's OrRange/AndRange
     /// op will iterate. The IL reads these at runtime so the same compiled delegate handles
     /// different parameter array sizes across executions of the same query text.</summary>
-    private static int[] BuildInRangeCounts(List<ClauseExecution> executions, bool isOr, int slotCount)
+    private static int[] BuildInRangeCounts(List<ClauseExecution> executions,  int slotCount)
     {
         var counts = new int[slotCount];
         int rangeIdx = 0;
@@ -3626,7 +3622,7 @@ internal static partial class QueryPlanBuilder
                 // AllIn via EmitAllInOps (seed in AND, or any position in OR):
                 // Fill(slot 0) + AndRange. Fill consumed the first slot, so range = InTermCount - 1.
                 // Null slot included only when HasNullTerm (AND with empty clears the bitmap).
-                case ClauseType.AllIn when isOr || ci is 0:
+                case ClauseType.AllIn when ci is 0:
                     counts[rangeIdx++] = Math.Max(0, execution.InTermCount - 1 + (execution.HasNullTerm ? 1 : 0));
                     break;
 
