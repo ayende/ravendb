@@ -481,7 +481,7 @@ internal static partial class QueryPlanBuilder
             int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
             for (int si2 = scanStart; si2 < executions.Length; si2++)
             {
-                if (BuildScanPredicateInfo(executions[si2].Clause, executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex) is {} pred)
+                if (BuildScanPredicateInfo(executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex) is {} pred)
                     predicates.Add(pred);
             }
             scanPreds = predicates.Count > 0 ? predicates.ToArray() : null;
@@ -2289,9 +2289,7 @@ internal static partial class QueryPlanBuilder
         foreach (ScanPredicateInfo pred in predicates)
         {
             // Advance past clauses that BuildScanPredicateInfo would have skipped (returned null).
-            while (clauseIdx < execs.Length &&
-                   BuildScanPredicateInfo(execs[clauseIdx].Clause, clauseIdx < execs.Length ? execs[clauseIdx] : null,
-                       ref dummyL, ref dummyD, ref dummyS) == null)
+            while (clauseIdx < execs.Length && BuildScanPredicateInfo(execs[clauseIdx], ref dummyL, ref dummyD, ref dummyS) == null)
             {
                 clauseIdx++;
             }
@@ -3240,7 +3238,7 @@ internal static partial class QueryPlanBuilder
                 continue;
             if (execs[i].Clause.HasBoost || (execs[i] is { BoostFactor: > 0 }))
                 return false;
-            var pred = BuildScanPredicateInfo(execs[i].Clause, execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
+            var pred = BuildScanPredicateInfo(execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
             if (pred == null)
                 return false;
             residualCount++;
@@ -3323,7 +3321,7 @@ internal static partial class QueryPlanBuilder
         {
             if (i == drivingClauseIdx || i == field2RangeIdx)
                 continue;
-            var pred = BuildScanPredicateInfo(execs[i].Clause, execs[i], ref rLongIdx, ref rDoubleIdx, ref rSliceIdx);
+            var pred = BuildScanPredicateInfo(execs[i], ref rLongIdx, ref rDoubleIdx, ref rSliceIdx);
             if (pred == null)
                 return null;
             residualPreds.Add(pred.Value);
@@ -3652,7 +3650,7 @@ internal static partial class QueryPlanBuilder
                 bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
                 if (i == drivingIdx) continue;
                 // Boost is ruled out at template time (see ComputeOptFlags).
-                var pred = BuildScanPredicateInfo(execs[i].Clause, execs[i], ref rlongIdx, ref rdoubleIdx, ref rsliceIdx);
+                var pred = BuildScanPredicateInfo( execs[i], ref rlongIdx, ref rdoubleIdx, ref rsliceIdx);
                 if (pred == null)
                     return false;
                 preBuiltResiduals ??= new List<ScanPredicateInfo>();
@@ -3771,7 +3769,7 @@ internal static partial class QueryPlanBuilder
             for (int i = 0; i < execs.Length; i++)
             {
                 if (i == drivingIdx) continue;
-                var pred = BuildScanPredicateInfo(execs[i].Clause, execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
+                var pred = BuildScanPredicateInfo( execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
                 if (pred == null)
                     return null;
                 residualPreds ??= new List<ScanPredicateInfo>();
@@ -4864,8 +4862,7 @@ internal static partial class QueryPlanBuilder
         for (int j = startIndex; j < executions.Length; j++)
         {
             ParamValueType termType = executions[j].TermValueType;
-            if (BuildScanPredicateInfoCore(executions[j].Clause, exec: null, termType,
-                    ref dummyL, ref dummyD, ref dummyS) != null)
+            if (BuildScanPredicateInfoCore(executions[j], termType,ref dummyL, ref dummyD, ref dummyS) != null)
             {
                 continue;
             }
@@ -5112,16 +5109,15 @@ internal static partial class QueryPlanBuilder
     /// <summary>Resolution-time overload: derives term type from <paramref name="exec"/>
     /// and recurses into subclauses using sub-execution types. Used when actual resolved
     /// types are available (per-execution, after PopulateClauseValues).</summary>
-    internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseInfo clause, ClauseExecution exec,
-        ref int longIndex, ref int doubleIndex, ref int sliceIndex)
-        => BuildScanPredicateInfoCore(clause, exec, exec?.TermValueType ?? ParamValueType.String,
-            ref longIndex, ref doubleIndex, ref sliceIndex);
+    internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseExecution exec, ref int longIndex, ref int doubleIndex, ref int sliceIndex)
+        => BuildScanPredicateInfoCore(exec, exec?.TermValueType ?? ParamValueType.String, ref longIndex, ref doubleIndex, ref sliceIndex);
 
     /// <summary>Single walker shared by both overloads. <paramref name="exec"/> is non-null on
     /// the resolution path and supplies per-sub TermValueType during group recursion; on the
     /// template path it is null and recursion falls back to InferTermType.</summary>
-    private static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseInfo clause, ClauseExecution exec, ParamValueType termType, ref int longIndex, ref int doubleIndex, ref int sliceIndex)
+    private static ScanPredicateInfo? BuildScanPredicateInfoCore( ClauseExecution exec, ParamValueType termType, ref int longIndex, ref int doubleIndex, ref int sliceIndex)
     {
+        var clause = exec.Clause;
         switch (clause.ClauseType)
         {
             // These clause types cannot be expressed as entry-scan predicates.
@@ -5177,8 +5173,7 @@ internal static partial class QueryPlanBuilder
                 for (int si = 0; si < subs.Count; si++)
                 {
                     var subTermType = subExecs[si].TermValueType;
-                    var subPred = BuildScanPredicateInfoCore(subs[si], subExecs[si], subTermType,
-                        ref li, ref di, ref slc);
+                    var subPred = BuildScanPredicateInfoCore(subExecs[si], subTermType, ref li, ref di, ref slc);
                     if (subPred == null)
                         return null;
                     branches.Add(subPred.Value);
