@@ -3253,10 +3253,41 @@ internal static partial class QueryPlanBuilder
 
             switch (it.ClauseType)
             {
-                case ClauseType.In or ClauseType.AllIn:
+                case ClauseType.In:
                 {
-                    // OR chain uses EmitInOps for both In and AllIn (range is OR'd regardless).
                     EmitInOps(ops, it, executions[ci].Cardinality, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
+                    break;
+                }
+                case ClauseType.AllIn:
+                {
+                    // AllIn requires AND semantics (match docs with ALL values), so we
+                    // intersect in a scratch bitmap then OR the result into the main bitmap.
+                    if (matchIndex == 0)
+                    {
+                        // Seed: build directly in slot 0 with Fill + AndRange.
+                        EmitAllInOps(ops, it, executions[ci].Cardinality, ref matchIndex, rangeCounts);
+                    }
+                    else
+                    {
+                        // Non-seed: swap slot 0 to slot 2, build AllIn intersection in
+                        // fresh slot 0, then OR slot 2 back.
+                        needsThreeBitmaps = true;
+                        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
+                        ops.Add(new PlanOp
+                        {
+                            Kind = PlanOpKind.SwapBitmaps,
+                            BitmapLocal = 0,
+                            ParamIndex2 = 2
+                        });
+                        EmitAllInOps(ops, it, executions[ci].Cardinality, ref matchIndex, rangeCounts);
+                        ops.Add(new PlanOp
+                        {
+                            Kind = PlanOpKind.OrBitmaps,
+                            BitmapLocal = 0,
+                            ParamIndex2 = 2
+                        });
+                        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 2 });
+                    }
                     break;
                 }
                 case ClauseType.OrGroup when it.SubClauses is { Count: > 0 }:
@@ -3672,20 +3703,17 @@ internal static partial class QueryPlanBuilder
                     counts[rangeIdx++] = execution.InTermCount;
                     break;
 
-                // AllIn non-seed (OR chain, or AND position > 0): AndRange iterates all
-                // typed term slots directly. No Fill consumed a slot, so range = InTermCount.
-                case ClauseType.AllIn when isOr || ci is not 0:
-                    counts[rangeIdx++] = execution.InTermCount;
+                // AllIn via EmitAllInOps (seed in AND, or any position in OR):
+                // Fill(slot 0) + AndRange. Fill consumed the first slot, so range = InTermCount - 1.
+                // Null slot included only when HasNullTerm (AND with empty clears the bitmap).
+                case ClauseType.AllIn when isOr || ci is 0:
+                    counts[rangeIdx++] = Math.Max(0, execution.InTermCount - 1 + (execution.HasNullTerm ? 1 : 0));
                     break;
 
-                // AllIn seed (AND position 0): EmitAllInOps emits Fill(slot 0) + AndRange.
-                // Fill already consumed the first slot, so range = InTermCount - 1.
-                // When HasNullTerm, the null posting list occupies a real slot that must be
-                // included in the range (ANDing with it filters to null-valued docs).
-                // When !HasNullTerm, the null slot is Empty — ANDing with Empty would clear
-                // the bitmap, so it must be excluded.
+                // AllIn non-seed in AND: raw AndRange over all typed term slots (no Fill).
+                // Range = InTermCount.
                 case ClauseType.AllIn:
-                    counts[rangeIdx++] = Math.Max(0, execution.InTermCount - 1 + (execution.HasNullTerm ? 1 : 0));
+                    counts[rangeIdx++] = execution.InTermCount;
                     break;
             }
         }
