@@ -1266,8 +1266,6 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     private static IQueryMatch[] ResolveMatches(QueryExecution exec, ResolutionContext walkerCtx)
     {
-        var indexSearcher = walkerCtx.IndexSearcher;
-        var execs = exec.Executions ?? [];
         // IsAllEntries + spatial/vector is intercepted by the InstantiateAllEntriesPostFilter
         // bypass in InstantiateBitmapPipeline before reaching ResolveMatches — by the time we
         // get here, IsAllEntries implies no spatial/vector slots. Assert the invariant so any
@@ -1276,67 +1274,187 @@ internal static partial class QueryPlanBuilder
         {
             Debug.Assert(!exec.HasSpatialOrVector,
                 "ResolveMatches reached with IsAllEntries && HasSpatialOrVector — InstantiateAllEntriesPostFilter bypass should have handled this.");
-            return [indexSearcher.AllEntries()];
+            return [walkerCtx.IndexSearcher.AllEntries()];
         }
 
-        if (execs.Count == 0)
+        if (exec.Executions is not { Count: > 0 })
             return [];
 
-        var matches = new IQueryMatch[CountMatchSlots(execs, exec.IsAllEntries, exec.Plan.AllNegated)];
+        return ResolveSlots<MatchResolver, IQueryMatch>(exec, walkerCtx);
+    }
+
+    /// <summary>
+    /// Shared iteration over a QueryExecution's clauses, producing one TSlot per
+    /// position. Slot layout matches <see cref="CountMatchSlots"/> exactly, so the
+    /// three resolvers (matches / posting sources / terms providers) produce parallel
+    /// arrays indexed identically. Per-slot leaf operations are dispatched via
+    /// static-abstract on <typeparamref name="TResolver"/>; the JIT specializes
+    /// the loop for each resolver, eliminating virtual calls.
+    /// </summary>
+    private static TSlot[] ResolveSlots<TResolver, TSlot>(QueryExecution exec, ResolutionContext walkerCtx)
+        where TResolver : ISlotResolver<TResolver, TSlot>
+    {
+        var execs = exec.Executions;
+        var slots = new TSlot[CountMatchSlots(execs, exec.IsAllEntries, exec.Plan.AllNegated)];
         int matchIdx = 0;
+
         for (int ci = 0; ci < execs.Count; ci++)
         {
             ClauseInfo clause = execs[ci].Clause;
             ClauseExecution clauseExec = execs[ci];
+
             if (TryGetGroupFanOut(clause, clauseExec, out var subClauses, out var subExecs))
             {
                 for (int si = 0; si < subClauses.Count; si++)
-                {
-                    var subExec = subExecs[si];
-                    var match = ResolveClause(subExec, exec, walkerCtx);
-                    if (subExec.BoostFactor > 0)
-                        match = indexSearcher.Boost(match, subExec.BoostFactor);
-                    matches[matchIdx++] = match;
-                }
-
+                    slots[matchIdx++] = TResolver.ResolveSubClauseSlot(subClauses[si], subExecs[si], exec, walkerCtx);
                 continue;
             }
 
             switch (clause.ClauseType)
             {
                 case ClauseType.AllIn or ClauseType.In:
-                {
                     for (int t = 0; t < clauseExec.InTermCount; t++)
-                        matches[matchIdx++] = ResolveInTerm(clause, clauseExec, t, exec, walkerCtx);
-                    // Always allocate the null-term slot (exec structure is parameter-independent).
-                    // When HasNullTerm is false, fill with a TermQuery(null) that resolves to an
-                    // empty posting list — the OR with an empty match is a no-op.
-                    {
-                        FieldMetadata nullMeta = ResolveFieldMetadata(clause, walkerCtx);
-                        matches[matchIdx++] = clauseExec.HasNullTerm
-                            ? indexSearcher.TermQuery(nullMeta, null)
-                            : TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-                    }
+                        slots[matchIdx++] = TResolver.ResolveInTermSlot(clause, clauseExec, t, exec, walkerCtx);
+                    // Null-term slot is always allocated; resolver decides whether to populate.
+                    slots[matchIdx++] = TResolver.ResolveNullTermSlot(clause, clauseExec, walkerCtx);
                     break;
-                }
+
                 default:
-                {
-                    IQueryMatch match = clause.IsOrChainNotEquals switch
-                    {
-                        true => CreateNotEqualsOrMatch(clause, clauseExec, exec, walkerCtx),
-                        false => ResolveClause(clauseExec, exec, walkerCtx)
-                    };
-                    if (clauseExec.BoostFactor > 0)
-                        match = indexSearcher.Boost(match, clauseExec.BoostFactor);
-                    matches[matchIdx++] = match;
+                    slots[matchIdx++] = TResolver.ResolveDefaultSlot(clause, clauseExec, exec, walkerCtx);
                     break;
-                }
             }
         }
 
         if (exec.Plan.AllNegated)
-            matches[matchIdx] = indexSearcher.AllEntries();
-        return matches;
+            slots[matchIdx] = TResolver.ResolveAllNegatedTailSlot(walkerCtx.IndexSearcher);
+
+        return slots;
+    }
+
+    /// <summary>Per-slot resolver contract; one implementation per output array shape.
+    /// Static abstracts keep the dispatch monomorphic — the JIT specializes
+    /// <see cref="ResolveSlots{TResolver, TSlot}"/> for each concrete resolver.</summary>
+    private interface ISlotResolver<TSelf, TSlot>
+        where TSelf : ISlotResolver<TSelf, TSlot>
+    {
+        static abstract TSlot ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
+            QueryExecution exec, ResolutionContext ctx);
+
+        static abstract TSlot ResolveInTermSlot(ClauseInfo clause, ClauseExecution clauseExec, int termIndex,
+            QueryExecution exec, ResolutionContext ctx);
+
+        static abstract TSlot ResolveNullTermSlot(ClauseInfo clause, ClauseExecution clauseExec, ResolutionContext ctx);
+
+        static abstract TSlot ResolveDefaultSlot(ClauseInfo clause, ClauseExecution clauseExec,
+            QueryExecution exec, ResolutionContext ctx);
+
+        static abstract TSlot ResolveAllNegatedTailSlot(IndexSearcher indexSearcher);
+    }
+
+    /// <summary>Resolver for the IQueryMatch[] output — the bitmap-path matches consumed
+    /// by IL emission and direct execution. Wraps results in <c>Boost</c> when the slot
+    /// carries a non-zero BoostFactor; emits <c>AllEntries</c> for the AllNegated tail.</summary>
+    private readonly struct MatchResolver : ISlotResolver<MatchResolver, IQueryMatch>
+    {
+        public static IQueryMatch ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
+            QueryExecution exec, ResolutionContext ctx)
+        {
+            var match = ResolveClause(subExec, exec, ctx);
+            if (subExec.BoostFactor > 0)
+                match = ctx.IndexSearcher.Boost(match, subExec.BoostFactor);
+            return match;
+        }
+
+        public static IQueryMatch ResolveInTermSlot(ClauseInfo clause, ClauseExecution clauseExec, int termIndex,
+            QueryExecution exec, ResolutionContext ctx)
+            => ResolveInTerm(clause, clauseExec, termIndex, exec, ctx);
+
+        public static IQueryMatch ResolveNullTermSlot(ClauseInfo clause, ClauseExecution clauseExec, ResolutionContext ctx)
+        {
+            // Always emit a match for the null-term slot: TermQuery(null) when the
+            // clause actually carries a null term, otherwise CreateEmpty so the OR/AND
+            // step the IL emits against this slot is a no-op.
+            var indexSearcher = ctx.IndexSearcher;
+            FieldMetadata nullMeta = ResolveFieldMetadata(clause, ctx);
+            return clauseExec.HasNullTerm
+                ? indexSearcher.TermQuery(nullMeta, null)
+                : TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
+        }
+
+        public static IQueryMatch ResolveDefaultSlot(ClauseInfo clause, ClauseExecution clauseExec,
+            QueryExecution exec, ResolutionContext ctx)
+        {
+            IQueryMatch match = clause.IsOrChainNotEquals
+                ? CreateNotEqualsOrMatch(clause, clauseExec, exec, ctx)
+                : ResolveClause(clauseExec, exec, ctx);
+            if (clauseExec.BoostFactor > 0)
+                match = ctx.IndexSearcher.Boost(match, clauseExec.BoostFactor);
+            return match;
+        }
+
+        public static IQueryMatch ResolveAllNegatedTailSlot(IndexSearcher indexSearcher) => indexSearcher.AllEntries();
+    }
+
+    /// <summary>Resolver for the PostingSource[] output — native posting-list slots
+    /// consumed by the PostingList dispatch path. Boosted slots stay <c>Empty</c>
+    /// (the bitmap-path match wins). The AllNegated tail stays <c>Empty</c>.</summary>
+    private readonly struct TermSourceResolver : ISlotResolver<TermSourceResolver, PostingSource>
+    {
+        public static PostingSource ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
+            QueryExecution exec, ResolutionContext ctx)
+        {
+            // Boosted slots are emitted through the IQueryMatch path so scoring works;
+            // the PostingSource stays Empty here.
+            return subExec.BoostFactor > 0
+                ? default
+                : ResolveSingleTermSource(sub, subExec, exec, ctx);
+        }
+
+        public static PostingSource ResolveInTermSlot(ClauseInfo clause, ClauseExecution clauseExec, int termIndex,
+            QueryExecution exec, ResolutionContext ctx)
+            => ResolveInTermSource(clause, clauseExec, termIndex, exec, ctx);
+
+        public static PostingSource ResolveNullTermSlot(ClauseInfo clause, ClauseExecution clauseExec, ResolutionContext ctx)
+        {
+            if (!clauseExec.HasNullTerm)
+                return default;
+
+            FieldMetadata nullMeta = ResolveFieldMetadata(clause, ctx);
+            return ctx.IndexSearcher.TryGetPostingListForNull(in nullMeta, out long nullPlId)
+                ? DecodePostingListId(nullPlId, ctx.IndexSearcher)
+                : default;
+        }
+
+        public static PostingSource ResolveDefaultSlot(ClauseInfo clause, ClauseExecution clauseExec,
+            QueryExecution exec, ResolutionContext ctx)
+        {
+            return clauseExec.BoostFactor > 0
+                ? default
+                : ResolveSingleTermSource(clause, clauseExec, exec, ctx);
+        }
+
+        public static PostingSource ResolveAllNegatedTailSlot(IndexSearcher indexSearcher) => default;
+    }
+
+    /// <summary>Resolver for the ITermsProvider[] output — direct tree-scan dispatch.
+    /// IN/AllIn slots and the AllNegated tail stay null (those paths use PostingList
+    /// dispatch, not TreeScan). Only Equals/range/prefix-like clauses populate.</summary>
+    private readonly struct TermsProviderResolver : ISlotResolver<TermsProviderResolver, ITermsProvider>
+    {
+        public static ITermsProvider ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
+            QueryExecution exec, ResolutionContext ctx)
+            => ResolveSingleTermsProvider(sub, subExec, exec, ctx);
+
+        public static ITermsProvider ResolveInTermSlot(ClauseInfo clause, ClauseExecution clauseExec, int termIndex,
+            QueryExecution exec, ResolutionContext ctx) => null;
+
+        public static ITermsProvider ResolveNullTermSlot(ClauseInfo clause, ClauseExecution clauseExec, ResolutionContext ctx) => null;
+
+        public static ITermsProvider ResolveDefaultSlot(ClauseInfo clause, ClauseExecution clauseExec,
+            QueryExecution exec, ResolutionContext ctx)
+            => ResolveSingleTermsProvider(clause, clauseExec, exec, ctx);
+
+        public static ITermsProvider ResolveAllNegatedTailSlot(IndexSearcher indexSearcher) => null;
     }
 
     private static IQueryMatch ResolveRangeClauseWithDirection(ClauseInfo clause, ClauseExecution exec,
@@ -1646,76 +1764,13 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     private static PostingSource[] ResolveTermSources(QueryExecution exec, ResolutionContext walkerCtx)
     {
-        var indexSearcher = walkerCtx.IndexSearcher;
         // IsAllEntries plans never emit term ops (FillFromPostings / AndWith / etc.) —
         // their match[0] is AllEntries, post-filter slots are spatial/vector. No
         // PostingSource population is needed.
-        if (exec.IsAllEntries)
+        if (exec.IsAllEntries || exec.Executions is not { Count: > 0 })
             return [];
 
-        var execs = exec.Executions;
-        if (execs is not { Count: > 0 })
-            return [];
-
-        var termSources = new PostingSource[CountMatchSlots(execs, exec.IsAllEntries, exec.Plan.AllNegated)];
-        int matchIdx = 0;
-        for (int ci = 0; ci < execs.Count; ci++)
-        {
-            ClauseInfo clause = execs[ci].Clause;
-            ClauseExecution clauseExec = execs[ci];
-            if (TryGetGroupFanOut(clause, clauseExec, out var subClauses, out var subExecs))
-            {
-                for (int si = 0; si < subClauses.Count; si++)
-                {
-                    var sub = subClauses[si];
-                    var subExec = subExecs[si];
-                    if (subExec.BoostFactor > 0)
-                    {
-                        matchIdx++;
-                        continue;
-                    }
-
-                    termSources[matchIdx++] = ResolveSingleTermSource(sub, subExec, exec, walkerCtx);
-                }
-
-                continue;
-            }
-
-            switch (clause.ClauseType)
-            {
-                case ClauseType.AllIn or ClauseType.In:
-                {
-                    for (int t = 0; t < clauseExec.InTermCount; t++)
-                        termSources[matchIdx++] = ResolveInTermSource(clause, clauseExec, t, exec, walkerCtx);
-                    // Null-term slot: resolve via the null posting list so that the PostingList
-                    // dispatch path (used by EmitInOps/EmitAllInOps) can read it.  When HasNullTerm
-                    // is false the slot stays Empty and the compiled OR/AND step is a no-op.
-                    if (clauseExec.HasNullTerm)
-                    {
-                        FieldMetadata nullMeta = ResolveFieldMetadata(clause, walkerCtx);
-                        if (indexSearcher.TryGetPostingListForNull(in nullMeta, out long nullPlId))
-                            termSources[matchIdx] = DecodePostingListId(nullPlId, indexSearcher);
-                    }
-
-                    matchIdx++;
-                    break;
-                }
-                default:
-                {
-                    if (clauseExec.BoostFactor > 0)
-                    {
-                        matchIdx++;
-                        continue;
-                    }
-
-                    termSources[matchIdx++] = ResolveSingleTermSource(clause, clauseExec, exec, walkerCtx);
-                    break;
-                }
-            }
-        }
-
-        // AllNegated extra slot is AllEntries — stays Empty in TermSources.
-        return termSources;
+        return ResolveSlots<TermSourceResolver, PostingSource>(exec, walkerCtx);
     }
 
     /// <summary>Resolve TreeScan-eligible clauses to ITermsProvider instances for direct
@@ -1727,74 +1782,34 @@ internal static partial class QueryPlanBuilder
         if (exec.IsAllEntries || execs is not { Count: > 0 })
             return null;
 
-        bool hasAnyTreeScan = false;
-
-        // Quick check: do we have any TreeScan clauses at all?
-        foreach (var ex in execs)
-        {
-            var cl = ex.Clause;
-            if (IsTreeScanEligibleClause(cl))
-            {
-                hasAnyTreeScan = true;
-                break;
-            }
-
-            // Check subclauses
-            if (cl.SubClauses != null)
-            {
-                foreach (var t in cl.SubClauses)
-                {
-                    if (IsTreeScanEligibleClause(t))
-                    {
-                        hasAnyTreeScan = true;
-                        break;
-                    }
-                }
-            }
-
-            if (hasAnyTreeScan) break;
-        }
-
-        if (!hasAnyTreeScan)
+        if (HasAnyTreeScanClause(execs) == false)
             return null;
 
-        int totalSlots = CountMatchSlots(execs, exec.IsAllEntries, exec.Plan.AllNegated);
-        var providers = new ITermsProvider[totalSlots];
-        int matchIdx = 0;
+        return ResolveSlots<TermsProviderResolver, ITermsProvider>(exec, walkerCtx);
+    }
 
-        for (int ci = 0; ci < execs.Count; ci++)
+    /// <summary>Returns true when the execution list contains at least one TreeScan-eligible
+    /// clause — i.e. when ResolveTermsProviders has any populated slot to produce. Lets the
+    /// caller skip the allocation entirely when no clause can use the TreeScan path.</summary>
+    private static bool HasAnyTreeScanClause(List<ClauseExecution> execs)
+    {
+        for (int i = 0; i < execs.Count; i++)
         {
-            ClauseInfo clause = execs[ci].Clause;
-            ClauseExecution clauseExec = execs[ci];
+            var cl = execs[i].Clause;
+            if (IsTreeScanEligibleClause(cl))
+                return true;
 
-            if (TryGetGroupFanOut(clause, clauseExec, out var subClauses, out var subExecs))
+            if (cl.SubClauses != null)
             {
-                for (int si = 0; si < subClauses.Count; si++)
+                for (int j = 0; j < cl.SubClauses.Count; j++)
                 {
-                    var sub = subClauses[si];
-                    var subExec = subExecs?[si];
-                    providers[matchIdx] = ResolveSingleTermsProvider(sub, subExec, exec, walkerCtx);
-                    matchIdx++;
+                    if (IsTreeScanEligibleClause(cl.SubClauses[j]))
+                        return true;
                 }
-
-                continue;
-            }
-
-            switch (clause.ClauseType)
-            {
-                case ClauseType.AllIn or ClauseType.In:
-                    // IN terms use PostingList dispatch, not TreeScan. +1 for null-term slot (always allocated).
-                    matchIdx += (clauseExec?.InTermCount ?? 0) + 1;
-                    break;
-
-                default:
-                    providers[matchIdx] = ResolveSingleTermsProvider(clause, clauseExec, exec, walkerCtx);
-                    matchIdx++;
-                    break;
             }
         }
 
-        return providers;
+        return false;
     }
 
     /// <summary>Resolve a single TreeScan-eligible clause to its raw ITermsProvider.
