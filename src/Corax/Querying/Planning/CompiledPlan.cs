@@ -145,19 +145,14 @@ public sealed class CompiledPlan
     /// <summary>Post-sort runtime index of the clause identified at plan time as the
     /// sort-driving candidate (range/eq on ORDER BY field). -1 when none.
     /// Remapped from template position by RemapOptimizationIndices.</summary>
-    public int SortDrivingClauseIndex { get; init; } = -1;
+    public int SortDrivingClauseIndex { get; set; } = -1;
 
     /// <summary>Pre-identified compound-exact-match clause pair (runtime indices, remapped
     /// from template via OriginalIndex). -1/-1 when no qualifying pair exists.</summary>
-    public int CompoundExactClauseA { get; init; } = -1;
+    public int CompoundExactClauseA { get; set; } = -1;
     /// <inheritdoc cref="CompoundExactClauseA"/>
-    public int CompoundExactClauseB { get; init; } = -1;
-    /// <summary>True when the compound field order is (A, B); false when (B, A).</summary>
-    public bool CompoundExactAFirst { get; init; }
-
+    public int CompoundExactClauseB { get; set; } = -1;
     /// <summary>Pre-identified compound-field-match (WHERE Equals + ORDER BY) driving clause
     /// index (runtime, remapped from template). -1 when none.</summary>
-    public int CompoundFieldDrivingClause { get; init; } = -1;
-    /// <summary>Sort field name for compound-field match.</summary>
-    public string CompoundFieldSortName { get; init; }
+    public int CompoundFieldDrivingClause { get; set; } = -1;
 }
