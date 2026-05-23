@@ -151,9 +151,12 @@ internal static partial class QueryPlanBuilder
         public double GetDouble(int index) => _doubles[index];
         public string GetString(int index) => _strings[index];
 
-        public long[] GetLongs() => _longs.Count > 0 ? _longs.ToArray() : [];
-        public double[] GetDoubles() => _doubles.Count > 0 ? _doubles.ToArray() : [];
-        public string[] GetStrings() => _strings.Count > 0 ? _strings.ToArray() : [];
+        public void SetValues(QueryExecution exec)
+        {
+            exec.LongValues = _longs.Count > 0 ? _longs.ToArray() : [];
+            exec.DoubleValues = _doubles.Count > 0 ? _doubles.ToArray() : [];
+            exec.StringValues = _strings.Count > 0 ? _strings.ToArray() : [];
+        }
     }
 
     private static ParamValueType ToParamValueType(ValueTokenType t) => t switch
