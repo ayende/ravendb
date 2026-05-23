@@ -486,37 +486,7 @@ internal static partial class QueryPlanBuilder
             emittedInRangeCounts = emitted.InRangeCounts;
 
             exec.Executions = executions;
-
-            // Fixup InRangeCounts from actual runtime InTermCount / HasNullTerm.
-            // EmitPlan uses Bindings.Length (structural) for range counts, but runtime
-            // InTermCount may differ when a single parameter binding expands to an array.
-            if (emittedInRangeCounts != null)
-            {
-                int rangeIdx = 0;
-                for (int ci = 0; ci < executions.Length && rangeIdx < emittedInRangeCounts.Length; ci++)
-                {
-                    var cl = executions[ci].Clause;
-                    if (cl.ClauseType == ClauseType.In)
-                    {
-                        emittedInRangeCounts[rangeIdx] = executions[ci].InTermCount;
-                        rangeIdx++;
-                    }
-                    else if (cl.ClauseType == ClauseType.AllIn)
-                    {
-                        int inCount = executions[ci].InTermCount;
-                        bool hasNull = executions[ci].HasNullTerm;
-                        if (ci == 0 && !isOr)
-                            emittedInRangeCounts[rangeIdx] = Math.Max(0, inCount - 1 + (hasNull ? 1 : 0));
-                        else if (isOr)
-                            emittedInRangeCounts[rangeIdx] = inCount;
-                        else
-                            emittedInRangeCounts[rangeIdx] = inCount;
-                        rangeIdx++;
-                    }
-                }
-            }
-
-            exec.InRangeCounts = emittedInRangeCounts;
+            exec.InRangeCounts = BuildInRangeCounts(executions, isOr, emittedInRangeCounts?.Length ?? 0);
         }
         else
         {
