@@ -1857,6 +1857,19 @@ internal static partial class QueryPlanBuilder
         return DecodePostingListId(GetTermPostingListIdFromParam(termPacked, fieldMeta, walkerCtx.IndexSearcher, queryExec), walkerCtx.IndexSearcher);
     }
 
+    /// <summary>Resolve simple field metadata (no analyzer-aware logic) routing
+    /// through the IndexFieldsMapping when available, otherwise the IndexSearcher's
+    /// direct factory. Used by compound-field key construction where the caller just
+    /// needs a metadata to feed <c>EncodeAndApplyAnalyzer</c>.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static FieldMetadata GetCompoundFieldMetadata(QueryBuilderParameters builderParams,
+        IndexSearcher indexSearcher, string fieldName)
+    {
+        return builderParams?.IndexFieldsMapping != null
+            ? QueryBuilderHelper.GetFieldMetadata(in builderParams, fieldName, hasBoost: false)
+            : indexSearcher.FieldMetadataBuilder(fieldName, hasBoost: false);
+    }
+
     /// <summary>Resolve field metadata for a term-source clause. Mirrors the
     /// non-Spatial/Vector/Search branch of <see cref="ResolveClause"/>.</summary>
     private static FieldMetadata ResolveFieldMetadata(ClauseInfo clause, ResolutionContext walkerCtx)
@@ -2311,7 +2324,7 @@ internal static partial class QueryPlanBuilder
         int residualCount = 0;
         for (int i = 0; i < execs.Count; i++)
         {
-            bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
+            bitmapCost += EffectiveCardinality(execs[i], indexSearcher);
             if (i == drivingClauseIdx || i == field2RangeIdx)
                 continue;
             if (execs[i].Clause.HasBoost || (execs[i] is { BoostFactor: > 0 }))
@@ -2322,29 +2335,12 @@ internal static partial class QueryPlanBuilder
             residualCount++;
         }
 
-        long drivingCardinality = drivingExec.Cardinality > 0 ? drivingExec.Cardinality : indexSearcher.NumberOfEntries;
-        long entriesToScan = drivingCardinality;
-        if (residualCount > 0)
-        {
-            long minResidualCardinality = long.MaxValue;
-            for (int i = 0; i < execs.Count; i++)
-            {
-                if (i == drivingClauseIdx) continue;
-                long card = execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
-                if (card < minResidualCardinality)
-                    minResidualCardinality = card;
-            }
+        long drivingCardinality = EffectiveCardinality(drivingExec, indexSearcher);
+        long entriesToScan = residualCount > 0
+            ? AdjustEntriesToScanByMinResidual(execs, drivingClauseIdx, drivingCardinality, indexSearcher)
+            : drivingCardinality;
 
-            if (minResidualCardinality > 0 && minResidualCardinality < indexSearcher.NumberOfEntries)
-            {
-                double passRate = (double)minResidualCardinality / indexSearcher.NumberOfEntries;
-                if (passRate > 0)
-                    entriesToScan = (long)(drivingCardinality / passRate);
-            }
-        }
-
-        long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier ? long.MaxValue : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
-        if (directCost >= bitmapCost || entriesToScan > QueryPrimitives.EntryScanCountThreshold)
+        if (IsDirectScanCostEffective(entriesToScan, bitmapCost) == false)
             return false;
 
         compoundMatch = ConstructCompoundField(exec, orderByFields, planParams, builderParams, compiledPlan,
@@ -2418,9 +2414,7 @@ internal static partial class QueryPlanBuilder
             case PackedParam.TypeString:
             {
                 field1ValueStr = exec.StringValues[packed.Param1];
-                var field1Meta = builderParams?.IndexFieldsMapping != null
-                    ? QueryBuilderHelper.GetFieldMetadata(in builderParams, field1Name, hasBoost: false)
-                    : indexSearcher.FieldMetadataBuilder(field1Name, hasBoost: false);
+                var field1Meta = GetCompoundFieldMetadata(builderParams, indexSearcher, field1Name);
                 analyzedPrefix = indexSearcher.EncodeAndApplyAnalyzer(field1Meta, field1ValueStr);
                 break;
             }
@@ -2498,9 +2492,7 @@ internal static partial class QueryPlanBuilder
                 else if (field2Packed.ValueType == PackedParam.TypeString)
                 {
                     // Analyze field2's value with the sort field's analyzer (same as indexing)
-                    var field2Meta = builderParams?.IndexFieldsMapping != null
-                        ? QueryBuilderHelper.GetFieldMetadata(in builderParams, sortFieldName, hasBoost: false)
-                        : indexSearcher.FieldMetadataBuilder(sortFieldName, hasBoost: false);
+                    var field2Meta = GetCompoundFieldMetadata(builderParams, indexSearcher, sortFieldName);
                     var analyzed = indexSearcher.EncodeAndApplyAnalyzer(field2Meta, exec.StringValues[field2Packed.Param1]);
                     if (analyzed.Size > byte.MaxValue)
                         usePrefix = true;
@@ -2725,7 +2717,7 @@ internal static partial class QueryPlanBuilder
             int rlongIdx = 0, rdoubleIdx = 0, rsliceIdx = 0;
             for (int i = 0; i < execs.Count; i++)
             {
-                bitmapCost += execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
+                bitmapCost += EffectiveCardinality(execs[i], indexSearcher);
                 if (i == drivingIdx) continue;
                 // Boost is ruled out at template time (see ComputeOptFlags).
                 var pred = BuildScanPredicateInfo( execs[i], ref rlongIdx, ref rdoubleIdx, ref rsliceIdx);
@@ -2735,27 +2727,12 @@ internal static partial class QueryPlanBuilder
                 preBuiltResiduals.Add(pred.Value);
             }
 
-            long drivingCard = execs[drivingIdx].Cardinality > 0 ? execs[drivingIdx].Cardinality : indexSearcher.NumberOfEntries;
-            entriesToScan = drivingCard;
-            if (preBuiltResiduals is { Count: > 0 })
-            {
-                long minResidual = long.MaxValue;
-                for (int i = 0; i < execs.Count; i++)
-                {
-                    if (i == drivingIdx) continue;
-                    long c = execs[i].Cardinality > 0 ? execs[i].Cardinality : indexSearcher.NumberOfEntries;
-                    if (c < minResidual) minResidual = c;
-                }
+            long drivingCard = EffectiveCardinality(execs[drivingIdx], indexSearcher);
+            entriesToScan = preBuiltResiduals is { Count: > 0 }
+                ? AdjustEntriesToScanByMinResidual(execs, drivingIdx, drivingCard, indexSearcher)
+                : drivingCard;
 
-                if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
-                {
-                    double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
-                    if (passRate > 0) entriesToScan = (long)(drivingCard / passRate);
-                }
-            }
-
-            long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier ? long.MaxValue : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
-            if (directCost >= bitmapCost || entriesToScan > QueryPrimitives.EntryScanCountThreshold)
+            if (IsDirectScanCostEffective(entriesToScan, bitmapCost) == false)
                 return false;
         }
         else
@@ -3687,6 +3664,53 @@ internal static partial class QueryPlanBuilder
         // No bitmap needed — AllEntries already implements IQueryMatch.Fill(),
         // so we iterate it directly without materializing into a bitmap first.
         return [new PlanOp { Kind = PlanOpKind.DirectIterate, ParamIndex = 0 }];
+    }
+
+    /// <summary>Cardinality used for cost estimation; <c>NumberOfEntries</c> is the
+    /// fallback when a clause hasn't computed a cardinality yet (e.g. multi-term or
+    /// regex). Callers treat the fallback as "could match everything."</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static long EffectiveCardinality(in ClauseExecution exec, IndexSearcher indexSearcher)
+        => exec.Cardinality > 0 ? exec.Cardinality : indexSearcher.NumberOfEntries;
+
+    /// <summary>Adjust the driving-clause cardinality by the most-selective residual's
+    /// pass rate to estimate how many entries the scan will actually touch. The min
+    /// residual is the tightest filter we'll apply during the scan — its selectivity
+    /// shrinks the effective entries-to-scan. Skips only <paramref name="drivingIdx"/>
+    /// (other "structural" clauses like a field2 range still count as residuals here,
+    /// matching pre-extraction behavior).</summary>
+    private static long AdjustEntriesToScanByMinResidual(List<ClauseExecution> execs,
+        int drivingIdx, long drivingCard, IndexSearcher indexSearcher)
+    {
+        long minResidual = long.MaxValue;
+        for (int i = 0; i < execs.Count; i++)
+        {
+            if (i == drivingIdx) continue;
+            long c = EffectiveCardinality(execs[i], indexSearcher);
+            if (c < minResidual) minResidual = c;
+        }
+
+        if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
+        {
+            double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
+            if (passRate > 0)
+                return (long)(drivingCard / passRate);
+        }
+
+        return drivingCard;
+    }
+
+    /// <summary>Cost-gate shared by direct-scan eligibility checks: rejects when the
+    /// estimated direct-scan cost (entries × multiplier) is no cheaper than the
+    /// bitmap-pipeline cost, or when the scan would touch more entries than the
+    /// hard threshold. Returns <c>true</c> when direct scan is the right pick.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)
+    {
+        long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier
+            ? long.MaxValue
+            : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+        return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
     }
 
     internal static int CountMatchSlots(List<ClauseExecution> executions, bool isAllEntries, bool allNegated)
