@@ -468,33 +468,23 @@ internal static partial class QueryPlanBuilder
 
         // ── Step 8: Cache miss — full exec emission ─────────────────────────
 
-        // Build ScanPredicateInfo[] — structural metadata for the entry-scan path.
-        // Only needed on cache miss: the array is cached on CompiledPlan for future hits.
         ScanPredicateInfo[] scanPreds = null;
-        bool needScanPreds = isOr == false && executions.Length > 1;
-        if (needScanPreds)
+        // Scan predicates allow us to do a direct scan of the entires to reduce the number of document loads
+        // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public'
+        // If Tags = 'good' gave us 100 items, we don't want to do an AndWith Status = 'Public' (may have 1M items)
+        // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly
+        if (isOr == false && // we cannot use scan on OR  
+            executions.Length > 1) // no point if there is just a single clause
         {
+            List<ScanPredicateInfo> predicates = []; 
+            int scanStart = allNegated ? 0 : 1; // Skip clause 0 (the seed) unless all clauses are negated (then we start from AllEntries, so every clause is a scan predicate).
             int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
-            int scanStart = allNegated ? 0 : 1;
-            int maxPreds = executions.Length - scanStart;
-            scanPreds = new ScanPredicateInfo[maxPreds];
-            int scanPredCount = 0;
             for (int si2 = scanStart; si2 < executions.Length; si2++)
             {
-                var pred = BuildScanPredicateInfo(executions[si2].Clause, executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex);
-                if (pred != null)
-                    scanPreds[scanPredCount++] = pred.Value;
+                if (BuildScanPredicateInfo(executions[si2].Clause, executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex) is {} pred)
+                    predicates.Add(pred);
             }
-
-            if (scanPredCount > 0)
-            {
-                if (scanPredCount < maxPreds)
-                    Array.Resize(ref scanPreds, scanPredCount);
-            }
-            else
-            {
-                scanPreds = null;
-            }
+            scanPreds = predicates.Count > 0 ? predicates.ToArray() : null;
         }
 
         PlanOp[] emittedOps;
