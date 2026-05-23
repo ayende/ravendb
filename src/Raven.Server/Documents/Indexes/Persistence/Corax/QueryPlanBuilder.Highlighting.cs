@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using Corax.Querying.Planning;
-using Raven.Server.Documents.Indexes;
 using Raven.Server.Documents.Queries;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
