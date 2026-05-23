@@ -5120,8 +5120,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Single walker shared by both overloads. <paramref name="exec"/> is non-null on
     /// the resolution path and supplies per-sub TermValueType during group recursion; on the
     /// template path it is null and recursion falls back to InferTermType.</summary>
-    private static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseInfo clause, ClauseExecution exec,
-        ParamValueType termType, ref int longIndex, ref int doubleIndex, ref int sliceIndex)
+    private static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseInfo clause, ClauseExecution exec, ParamValueType termType, ref int longIndex, ref int doubleIndex, ref int sliceIndex)
     {
         switch (clause.ClauseType)
         {
@@ -5135,7 +5134,6 @@ internal static partial class QueryPlanBuilder
                 return null;
 
             case ClauseType.StartsWith:
-            {
                 if (termType != ParamValueType.String)
                     return null;
                 sliceIndex++;
@@ -5146,9 +5144,7 @@ internal static partial class QueryPlanBuilder
                     CompareOp = ScanCompareOp.StartsWith,
                     ParamIndex = sliceIndex - 1
                 };
-            }
             case ClauseType.EndsWith:
-            {
                 if (termType != ParamValueType.String)
                     return null;
                 sliceIndex++;
@@ -5159,7 +5155,6 @@ internal static partial class QueryPlanBuilder
                     CompareOp = ScanCompareOp.EndsWith,
                     ParamIndex = sliceIndex - 1
                 };
-            }
             case ClauseType.Exists:
                 return new ScanPredicateInfo
                 {
@@ -5177,7 +5172,7 @@ internal static partial class QueryPlanBuilder
 
                 var subExecs = exec.SubExecutions;
                 var branches = new List<ScanPredicateInfo>();
-                // Save indices so we can roll back if any sub-clause is unscannable.
+                // Save indices so we can roll back if any subclause is unscannable.
                 int li = longIndex, di = doubleIndex, slc = sliceIndex;
                 for (int si = 0; si < subs.Count; si++)
                 {
@@ -5211,41 +5206,20 @@ internal static partial class QueryPlanBuilder
             _ => ScanCompareOp.Equal
         };
 
-        // Strong typing: termType is set by GetTermValue from the parser's literal
-        // type (for inline values) or the resolved JSON-blittable runtime type (for params).
-        // Switch on it directly — no string round-trip / TryParse fallback.
-        ScanValueType valueType;
-        switch (termType)
+        ScanValueType valueType = termType switch
         {
-            case ParamValueType.Long:
-                valueType = ScanValueType.Long;
-                break;
-            case ParamValueType.Double:
-                valueType = ScanValueType.Double;
-                break;
-            default:
-                // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
-                valueType = ScanValueType.Slice;
-                break;
-        }
+            ParamValueType.Long => ScanValueType.Long,
+            ParamValueType.Double => ScanValueType.Double,
+            _ => ScanValueType.Slice  // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
+        };
 
         bool isBetween = clause.ClauseType == ClauseType.Between;
-        int idx, idx2;
-        switch (valueType)
+        var (idx, idx2) = valueType switch
         {
-            case ScanValueType.Long:
-                idx = longIndex++;
-                idx2 = isBetween ? longIndex++ : -1;
-                break;
-            case ScanValueType.Double:
-                idx = doubleIndex++;
-                idx2 = isBetween ? doubleIndex++ : -1;
-                break;
-            default:
-                idx = sliceIndex++;
-                idx2 = isBetween ? sliceIndex++ : -1;
-                break;
-        }
+            ScanValueType.Long => (longIndex++, isBetween ? longIndex++ : -1),
+            ScanValueType.Double => (doubleIndex++, isBetween ? doubleIndex++ : -1),
+            _ => (sliceIndex++, isBetween ? sliceIndex++ : -1)
+        };
 
         return new ScanPredicateInfo
         {
