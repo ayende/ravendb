@@ -55,4 +55,5 @@ public class QueryExecution
     /// so the same compiled delegate handles different IN parameter array sizes.</summary>
     public int[] InRangeCounts;
 
+    public bool HasSpatialOrVector => SpatialFilters is { Length: > 0 } || VectorSelects is { Length: > 0 };
 }
