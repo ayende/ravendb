@@ -601,7 +601,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
                     QueryParameters = blittableParameters,
                     Allocator = bsc
                 };
-                var coraxQuery = QueryPlanBuilder.BuildAndCompile(planParams, null, out _, out _, null, false, default);
+                var coraxQuery = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(indexSearcher, bsc, indexQueryServerSide.Metadata, blittableParameters), out _, out _, null, false, default);
 
                 return coraxQuery;
             }

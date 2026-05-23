@@ -35,6 +35,25 @@ public sealed class QueryBuilderParameters
     public readonly bool IsVectorSingleClause;
     public readonly QueryTimeScope QueryTime;
 
+    /// <summary>Direct-planner test constructor. Used by tests that exercise <c>QueryPlanBuilder</c>
+    /// without a full <see cref="Index"/> / <see cref="IndexQueryServerSide"/> stack — only the
+    /// fields needed by the planner's direct-test path are populated. <see cref="IndexFieldsMapping"/>
+    /// stays <c>null</c>, which is what resolvers (<c>ResolveFieldMetadata</c>, compound-exact /
+    /// compound-field branches) use as the discriminator to route through
+    /// <see cref="IndexSearcher.FieldMetadataBuilder"/> instead of the analyzer-aware
+    /// <see cref="QueryBuilderHelper.GetFieldMetadata"/>.</summary>
+    internal QueryBuilderParameters(IndexSearcher searcher, ByteStringContext allocator, QueryMetadata metadata, BlittableJsonReaderObject queryParameters, bool hasBoost = false)
+    {
+        IndexSearcher = searcher;
+        Allocator = allocator;
+        Metadata = metadata;
+        QueryParameters = queryParameters;
+        HasBoost = hasBoost;
+        // HasDynamics and IsVectorSingleClause default to false; Index/Query and other
+        // production-only fields stay null — the planner's direct-test path guards on
+        // IndexFieldsMapping == null and avoids dereferencing them.
+    }
+
     internal QueryBuilderParameters(IndexSearcher searcher, ByteStringContext allocator, TransactionOperationContext serverContext, DocumentsOperationContext documentsContext,
         IndexQueryServerSide query, Index index, BlittableJsonReaderObject queryParameters, QueryBuilderFactories factories, IndexFieldsMapping indexFieldsMapping,
         FieldsToFetch fieldsToFetch, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, int take, bool deduplicationDisabled, IndexReadOperationBase indexReadOperation = null, List<string> buildSteps = null, QueryTimeScope queryTime = null, CancellationToken token = default)

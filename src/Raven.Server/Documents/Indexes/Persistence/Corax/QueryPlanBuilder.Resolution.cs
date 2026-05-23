@@ -70,9 +70,10 @@ internal static partial class QueryPlanBuilder
 
     private static ResolutionContext CreateResolutionContext(PlanParameters planParams, QueryBuilderParameters builderParameters)
     {
-        return builderParameters != null
-            ? new ResolutionContext(builderParameters)
-            : new ResolutionContext(planParams);
+        // All BuildAndCompile / BuildCompileAndOptimize callers (production + tests) supply a
+        // non-null builderParameters — tests use the minimal QueryBuilderParameters test ctor
+        // and route through the direct-test branch via builderParams.IndexFieldsMapping == null.
+        return new ResolutionContext(builderParameters);
     }
 
     internal readonly record struct BuildCompileAndOptimizeResult(
@@ -601,7 +602,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // Vector select phase: each vector wraps the bitmap so far as its filter source.
-        if (exec.VectorSelects is { Length: > 0 } && builderParameters != null)
+        if (exec.VectorSelects is { Length: > 0 })
         {
             foreach (var item in ResolveVectorItems(exec, builderParameters))
             {
@@ -635,7 +636,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // Vector: each vector wraps the (possibly null) filter so far.
-        if (exec.VectorSelects is { Length: > 0 } && builderParameters != null)
+        if (exec.VectorSelects is { Length: > 0 })
         {
             var vectorItems = ResolveVectorItems(exec, builderParameters);
             foreach (var item in vectorItems)
@@ -1267,32 +1268,15 @@ internal static partial class QueryPlanBuilder
     {
         var indexSearcher = walkerCtx.IndexSearcher;
         var execs = exec.Executions ?? [];
-        // IsAllEntries + spatial/vector occurs when the query's only predicates are
-        // vector.search() or spatial clauses with no other WHERE terms. GroupCollapse
-        // partitions them into SpatialClauses/VectorClauses, leaving the main clause
-        // list empty → IsAllEntries=true. The AllEntries bitmap feeds the post-filter
-        // phases (spatial AND, then vector select with null filter for unfiltered top-K).
+        // IsAllEntries + spatial/vector is intercepted by the InstantiateAllEntriesPostFilter
+        // bypass in InstantiateBitmapPipeline before reaching ResolveMatches — by the time we
+        // get here, IsAllEntries implies no spatial/vector slots. Assert the invariant so any
+        // future caller that reaches ResolveMatches without the bypass fails loudly.
         if (exec.IsAllEntries)
         {
-            var spatialCount = exec.SpatialFilters?.Length ?? 0;
-            var vectorCount = exec.VectorSelects?.Length ?? 0;
-            if (spatialCount + vectorCount is 0)
-                return [indexSearcher.AllEntries()];
-
-            var allEntriesMatches = new IQueryMatch[1 + (spatialCount + vectorCount)];
-            allEntriesMatches[0] = indexSearcher.AllEntries();
-            int matchOfs = 1;
-            foreach (var execSpatialFilter in exec.SpatialFilters ?? [])
-            {
-                allEntriesMatches[matchOfs++] = ResolveClause(execSpatialFilter.Exec, exec, walkerCtx);
-            }
-
-            foreach (var execVectorSelect in exec.VectorSelects ?? [])
-            {
-                allEntriesMatches[matchOfs++] = ResolveClause(execVectorSelect.Exec, exec, walkerCtx);
-            }
-
-            return allEntriesMatches;
+            Debug.Assert(!exec.HasSpatialOrVector,
+                "ResolveMatches reached with IsAllEntries && HasSpatialOrVector — InstantiateAllEntriesPostFilter bypass should have handled this.");
+            return [indexSearcher.AllEntries()];
         }
 
         if (execs.Count == 0)
@@ -1882,9 +1866,10 @@ internal static partial class QueryPlanBuilder
         // Dynamic field name variants are pre-resolved by DynamicFieldNameResolve at template time.
         string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
 
-        if (builderParams == null)
+        if (builderParams?.IndexFieldsMapping == null)
         {
-            // Direct-test path (no QueryBuilderParameters): use IndexSearcher's FieldMetadataBuilder directly.
+            // Direct-test path (no QueryBuilderParameters, or test-constructed one with no
+            // IndexFieldsMapping): use IndexSearcher's FieldMetadataBuilder directly.
             return walkerCtx.IndexSearcher.FieldMetadataBuilder(resolvedFieldName, hasBoost: walkerCtx.HasBoost);
         }
 
@@ -2434,7 +2419,7 @@ internal static partial class QueryPlanBuilder
             case PackedParam.TypeString:
             {
                 field1ValueStr = exec.StringValues[packed.Param1];
-                var field1Meta = builderParams != null
+                var field1Meta = builderParams?.IndexFieldsMapping != null
                     ? QueryBuilderHelper.GetFieldMetadata(in builderParams, field1Name, hasBoost: false)
                     : indexSearcher.FieldMetadataBuilder(field1Name, hasBoost: false);
                 analyzedPrefix = indexSearcher.EncodeAndApplyAnalyzer(field1Meta, field1ValueStr);
@@ -2514,7 +2499,7 @@ internal static partial class QueryPlanBuilder
                 else if (field2Packed.ValueType == PackedParam.TypeString)
                 {
                     // Analyze field2's value with the sort field's analyzer (same as indexing)
-                    var field2Meta = builderParams != null
+                    var field2Meta = builderParams?.IndexFieldsMapping != null
                         ? QueryBuilderHelper.GetFieldMetadata(in builderParams, sortFieldName, hasBoost: false)
                         : indexSearcher.FieldMetadataBuilder(sortFieldName, hasBoost: false);
                     var analyzed = indexSearcher.EncodeAndApplyAnalyzer(field2Meta, exec.StringValues[field2Packed.Param1]);
