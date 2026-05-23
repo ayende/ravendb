@@ -20,8 +20,6 @@ using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Corax;
 using VectorOptions = Raven.Client.Documents.Indexes.Vector.VectorOptions;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
-using Raven.Server.Documents.Indexes;
-using Raven.Server.Documents.Indexes.Persistence.Corax;
 using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Indexes.VectorSearch;
 using Raven.Server.Documents.Queries;
@@ -423,7 +421,7 @@ internal static partial class QueryPlanBuilder
         // Step 5: Sort operands by cardinality (sort executions by cardinality).
         ClauseExecution[] executions = SortClausesByCardinality(execList, isOr);
 
-        exec = new QueryExecution();
+        exec = new QueryExecution { Executions = executions };
         
         if(executions.Length is 0)
         {
@@ -439,9 +437,7 @@ internal static partial class QueryPlanBuilder
 
             // FROM Post - i.e, query with no where clauses, still needs a compiled delegate, so we go generate a cached exec for it
             exec.IsAllEntries = true;
-            exec.Executions = executions;
         }
-        
 
         // ── Step 6: Compute cache key components (cheap) ────────────────────
         int operandOrdering = ComputeOperandOrdering(executions);
@@ -452,31 +448,21 @@ internal static partial class QueryPlanBuilder
             operandOrdering |= QueryExecution.HasBoostBit;
 
         // Cardinality cliff bit: queries under vs. over the cliff get different compiled plans, so the bit is part of the cache key.
-        if (template.SortDrivingClauseIndex >= 0)
-        {
+        if (template.SortDrivingClauseIndex >= 0) 
             operandOrdering |= SetCardinalityCliffBit(executions, template.SortDrivingClauseIndex);
-        }
 
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature(template, planParams);
 
         if(planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags) is {} compiledPlan)
         {
             exec.Plan = compiledPlan;
-            exec.Executions = executions;
-
-            // Build InRangeCounts from executions (same fixup as cache-miss path
-            // but without the structural array from EmitPlan).
-            exec.InRangeCounts = BuildInRangeCounts(executions, isOr, compiledPlan.InRangeSlotCount);
+          
+            if(compiledPlan.InRangeSlotCount is not 0)
+                exec.InRangeCounts = BuildInRangeCounts(executions, isOr, compiledPlan.InRangeSlotCount);
 
             AttachSpatialAndVectorClauses(exec, compiledPlan.AllNegated, template, planParams, builderParameters, writer);
 
-            exec.LongValues = writer.GetLongs();
-            exec.DoubleValues = writer.GetDoubles();
-            exec.StringValues = writer.GetStrings();
-
-            // Structural fields (AllNegated, OptimizationFlags, SortDrivingClauseIndex,
-            // compound indices) are already on the cached compiledPlan — no
-            // RemapOptimizationIndices call needed on cache hit.
+            writer.SetValues(exec);
             return compiledPlan;
         }
 
@@ -582,9 +568,7 @@ internal static partial class QueryPlanBuilder
         AttachSpatialAndVectorClauses(exec, allNegated, template, planParams, builderParameters, writer);
 
         // Store typed arrays once after all clauses (including spatial/vector) are populated.
-        exec.LongValues = writer.GetLongs();
-        exec.DoubleValues = writer.GetDoubles();
-        exec.StringValues = writer.GetStrings();
+        writer.SetValues(exec);
 
         // Boost handling: force every op to QueryMatch dispatch so scores are accumulated.
         if (planParams.HasBoost)
@@ -742,11 +726,9 @@ internal static partial class QueryPlanBuilder
 
         var subPlan = new QueryExecution
         {
-            LongValues = writer.GetLongs(),
-            DoubleValues = writer.GetDoubles(),
-            StringValues = writer.GetStrings(),
-            Executions = subExecs
+             Executions = subExecs
         };
+        writer.SetValues(subPlan);
 
         if (walkerCtx.Clauses.Count == 1)
             return ResolveClause(walkerCtx.Clauses[0], subExecs[0], subPlan, walkerCtx);
@@ -862,8 +844,8 @@ internal static partial class QueryPlanBuilder
 
             bool contradictory = p.ValueType switch
             {
-                PackedParam.TypeLong => writer.GetLongs()[p.Param1] > writer.GetLongs()[p.Param2],
-                PackedParam.TypeDouble => writer.GetDoubles()[p.Param1] > writer.GetDoubles()[p.Param2],
+                PackedParam.TypeLong => writer.GetLong(p.Param1) > writer.GetLong(p.Param2),
+                PackedParam.TypeDouble => writer.GetDouble(p.Param1) > writer.GetDouble(p.Param2),
                 _ => false // for strings, we have to consider analyzers, so we can't tell
             };
             if (contradictory == false)
