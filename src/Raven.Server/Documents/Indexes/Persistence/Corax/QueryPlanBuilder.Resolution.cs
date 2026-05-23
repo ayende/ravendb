@@ -41,13 +41,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>
-    /// Plan → compile → resolve pipeline. On cache hit (template exists for this query text),
-    /// skips AST parsing — re-resolves parameter values from the blittable, re-estimates
-    /// cardinality, re-sorts, and it looks up the compiled delegate by ordering.
-    /// On cache miss, parses the AST into a template and caches it.
-    /// Both paths then: populate → sort → emit → compile (if needed) → resolve.
-    /// </summary>
     public static IQueryMatch BuildAndCompile(
         PlanParameters planParams,
         QueryBuilderParameters builderParameters,
@@ -74,10 +67,6 @@ internal static partial class QueryPlanBuilder
         return InstantiateBitmapPipeline(compiledPlanOut, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
     }
 
-    /// <summary>Single construction site for <see cref="ResolutionContext"/>. Both pipeline
-    /// entry points (<see cref="BuildAndCompile"/> / <see cref="BuildCompileAndOptimize"/>)
-    /// build the context once and thread it through Build → Instantiate so that cardinality
-    /// estimation, match resolution, and term-source resolution all share the same instance.</summary>
     private static ResolutionContext CreateResolutionContext(PlanParameters planParams, QueryBuilderParameters builderParameters)
     {
         return builderParameters != null
@@ -85,18 +74,6 @@ internal static partial class QueryPlanBuilder
             : new ResolutionContext(planParams);
     }
 
-    /// <summary>
-    /// Full pipeline: build, compile, optimize, and apply ORDER BY — returns the final
-    /// <see cref="IQueryMatch"/> ready for result iteration. Encapsulates the optimization
-    /// dispatch (compound-exact, compound-field, direct-scan) that previously lived in
-    /// <c>CoraxIndexReadOperation</c>. The <see cref="ExecutionStrategy"/> on the compiled plan
-    /// caches which optimization succeeded on the first execution; subsequent cache-hit
-    /// executions skip the Try* chain entirely.
-    /// </summary>
-    /// <returns>
-    /// A result object containing the final query match, the resolved plan, the inner match,
-    /// the compiled plan, and resolved ORDER BY metadata.
-    /// </returns>
     internal readonly record struct BuildCompileAndOptimizeResult(
         IQueryMatch QueryMatch,
         IQueryMatch ExecutedMatch,
@@ -415,8 +392,7 @@ internal static partial class QueryPlanBuilder
         bool isOr = template.IsOr;
         PropagateBetweenContradictions(executions, writer);
 
-        // Step 4: Estimate cardinality (needs populated values). Uses the shared walkerCtx —
-        // same instance is reused by InstantiateBitmapPipeline for match resolution.
+        // Step 4: Estimate cardinality (needs populated values).
         foreach (var it in executions)
         {
             if (it.Cardinality >= 0) continue;
@@ -585,20 +561,10 @@ internal static partial class QueryPlanBuilder
     {
         var indexSearcher = planParams.IndexSearcher;
 
-        // Fast path: when the plan reduces to AllEntries() (no WHERE clauses left after
-        // GroupCollapse extracted spatial/vector), the bitmap pipeline degenerates to
-        // "AllEntries() AND spatial filters" — feed that AllEntries through CompiledQueryMatch
-        // just to AND spatial onto it is pure waste. Skip CompiledQueryMatch entirely:
-        //   - Pure spatial: AND chain of spatial filters (first one as seed via PostFilterMatch).
-        //   - Pure vector:  vector with null filter (unfiltered top-K, supported by VectorSearchMatch).
-        //   - Spatial + vector: spatial chain becomes the vector's filter source.
-        // Standalone AllEntries (no spatial/vector) still goes through the bitmap path because
-        // it needs a CompiledQueryMatch shell for the inspection graph / timing instrumentation.
-        if (exec.IsAllEntries
-            && (exec.SpatialFilters is { Length: > 0 } || exec.VectorSelects is { Length: > 0 }))
-        {
+        // Spatial / Vector queries with no other clauses ( WHERE spatial.within() / WHERE vector.search() )
+        // use a dedicated code path to avoid AllEntries + post filters
+        if (exec is { IsAllEntries: true, HasSpatialOrVector: true })
             return InstantiateAllEntriesPostFilter(exec, planParams, builderParameters, walkerCtx);
-        }
 
         var resolvedMatches = ResolveMatches(exec, walkerCtx);
         var termSources = ResolveTermSources(exec, walkerCtx);
@@ -643,38 +609,25 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>
     /// Bypass path for queries with no real WHERE clauses — only spatial filters and/or
-    /// vector selects. Builds the result directly from the resolved spatial/vector matches,
-    /// skipping the <see cref="CompiledQueryMatch"/> shell (and its embedded AllEntries seed).
-    /// Spatial filters chain via <see cref="PostFilterMatch"/> with the first as the seed;
+    /// vector selects. Spatial filters chain via <see cref="PostFilterMatch"/> with the first as the seed;
     /// vector receives the spatial chain as its filter (or null for unfiltered top-K).
     /// </summary>
     private static IQueryMatch InstantiateAllEntriesPostFilter(QueryExecution exec, PlanParameters planParams,
         QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
     {
-        var indexSearcher = planParams.IndexSearcher;
         IQueryMatch result = null;
 
         // Spatial: resolve each spatial clause directly, then chain via PostFilterMatch.
         if (exec.SpatialFilters is { Length: > 0 })
         {
-            var spatialMatches = new IQueryMatch[exec.SpatialFilters.Length];
-            for (int sf = 0; sf < exec.SpatialFilters.Length; sf++)
+            var primary = ResolveClause(exec.SpatialFilters[0].Clause, exec.SpatialFilters[0].Exec, exec, walkerCtx);
+            var rest = exec.SpatialFilters.Length is 1 ? Array.Empty<IQueryMatch>() : new IQueryMatch[exec.SpatialFilters.Length - 1];
+            for (int i = 1; i < exec.SpatialFilters.Length; i++)
             {
-                var sfOp = exec.SpatialFilters[sf];
-                var spatialExec = sfOp.Exec ?? new ClauseExecution(sfOp.Clause);
-                spatialMatches[sf] = ResolveClause(sfOp.Clause, spatialExec, exec, walkerCtx);
+                rest[i - 1] = ResolveClause(exec.SpatialFilters[i].Clause, exec.SpatialFilters[i].Exec, exec, walkerCtx);
             }
-            // First spatial seeds the iteration; remaining filters AND in via PostFilterMatch.
-            if (spatialMatches.Length == 1)
-            {
-                result = spatialMatches[0];
-            }
-            else
-            {
-                var rest = new IQueryMatch[spatialMatches.Length - 1];
-                Array.Copy(spatialMatches, 1, rest, 0, rest.Length);
-                result = new PostFilterMatch(spatialMatches[0], rest);
-            }
+            result = new PostFilterMatch(primary, rest);
+
         }
 
         // Vector: each vector wraps the (possibly null) filter so far.
@@ -682,10 +635,12 @@ internal static partial class QueryPlanBuilder
         {
             var vectorItems = ResolveVectorItems(exec, builderParameters);
             foreach (var item in vectorItems)
+            {
                 result = item.Materialize(result);
+            }
         }
 
-        return result ?? indexSearcher.AllEntries();
+        return result;
     }
 
     /// <summary>
@@ -1326,13 +1281,13 @@ internal static partial class QueryPlanBuilder
             int matchOfs = 1;
             foreach (var execSpatialFilter in exec.SpatialFilters ?? [])
             {
-                ClauseExecution spatialExec = execSpatialFilter.Exec ?? new ClauseExecution(execSpatialFilter.Clause);
+                ClauseExecution spatialExec = execSpatialFilter.Exec;
                 allEntriesMatches[matchOfs++] = ResolveClause(execSpatialFilter.Clause, spatialExec, exec, walkerCtx);
             }
 
             foreach (var execVectorSelect in exec.VectorSelects ?? [])
             {
-                ClauseExecution vectorExec = execVectorSelect.Exec ?? new ClauseExecution(execVectorSelect.Clause);
+                ClauseExecution vectorExec = execVectorSelect.Exec;
                 allEntriesMatches[matchOfs++] = ResolveClause(execVectorSelect.Clause, vectorExec, exec, walkerCtx);
             }
 
@@ -1886,7 +1841,7 @@ internal static partial class QueryPlanBuilder
 
         // Create the match via the existing factory methods, then extract the provider.
         // The factory methods handle all complexity (analyzer, CompactKey, tree lookup).
-        var match = ResolveClause(clause, exec ?? new ClauseExecution(clause), queryExec, walkerCtx);
+        var match = ResolveClause(clause, exec, queryExec, walkerCtx);
         if (match is TermsProviderMatch tpm)
             return tpm.Provider;
 
