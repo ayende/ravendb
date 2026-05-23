@@ -1282,14 +1282,6 @@ internal static partial class QueryPlanBuilder
         if (execs.Count == 0)
             return [];
 
-        // Standalone NotEquals pattern: FillAllEntries (no slot) + ANDNOT(term at slot 0).
-        // Exclude IN/AllIn — they need N+1 slots for multi-term OR+ANDNOT, not 1.
-        if (!exec.Plan.AllNegated && 
-            execs is [{IsNegated: true,Clause.ClauseType: not (ClauseType.In or ClauseType.AllIn)}])
-        {
-            return [ResolveClause(execs[0], exec, walkerCtx)];
-        }
-
         var matches = new IQueryMatch[CountMatchSlots(execs, exec.IsAllEntries, exec.Plan.AllNegated)];
         int matchIdx = 0;
         for (int ci = 0; ci < execs.Count; ci++)
@@ -1664,14 +1656,6 @@ internal static partial class QueryPlanBuilder
         var execs = exec.Executions;
         if (execs is not { Count: > 0 })
             return [];
-
-        // Standalone NotEquals: FillAllEntries (no slot) + ANDNOT at slot 0.
-        // Exclude IN/AllIn — they need N+1 slots for multi-term OR+ANDNOT, not 1.
-        if (execs.Count == 1 && execs[0].IsNegated && !exec.Plan.AllNegated
-            && execs[0].Clause.ClauseType is not (ClauseType.In or ClauseType.AllIn))
-        {
-            return [ResolveSingleTermSource(execs[0].Clause, execs[0], exec, walkerCtx)];
-        }
 
         var termSources = new PostingSource[CountMatchSlots(execs, exec.IsAllEntries, exec.Plan.AllNegated)];
         int matchIdx = 0;
@@ -3538,7 +3522,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>True when all clauses are negated (2+ clauses, first is negated after
     /// cardinality sort — since negated sort last, if the first is negated, all are).
-    /// Single negated clause returns false — handled by the standalone NotEquals path.</summary>
+    /// Single negated clause returns false — emitted as FillAllEntries + ANDNOT by the regular path.</summary>
     private static bool CheckAllNegated(List<ClauseExecution> executions)
         => executions is [{ IsNegated: true }, _, ..];
 
