@@ -521,8 +521,10 @@ internal static partial class QueryPlanBuilder
             return QueryExecution.EmptyInOrdering;
         
         int operandOrdering = 0;
+        
         for (int i = 0; i < Math.Min(executions.Count, 10); i++)
             operandOrdering |= (executions[i].Clause.OriginalIndex & 0x7) << (i * 3);
+        
         if (planParams.HasBoost)
             operandOrdering |= QueryExecution.HasBoostBit;
 
@@ -1243,31 +1245,24 @@ internal static partial class QueryPlanBuilder
         // phases (spatial AND, then vector select with null filter for unfiltered top-K).
         if (exec.IsAllEntries)
         {
-            int spatialCount = exec.SpatialFilters?.Length ?? 0;
-            int vectorCount = exec.VectorSelects?.Length ?? 0;
-            int totalExtra = spatialCount + vectorCount;
-            if (totalExtra == 0)
+            var spatialCount = exec.SpatialFilters?.Length ?? 0;
+            var vectorCount = exec.VectorSelects?.Length ?? 0;
+            if (spatialCount + vectorCount is 0)
                 return [indexSearcher.AllEntries()];
 
-            var allEntriesMatches = new IQueryMatch[1 + totalExtra];
+            var allEntriesMatches = new IQueryMatch[1 + (spatialCount + vectorCount)];
             allEntriesMatches[0] = indexSearcher.AllEntries();
             int matchOfs = 1;
-            if (exec.SpatialFilters != null)
+            foreach (var execSpatialFilter in exec.SpatialFilters ?? [])
             {
-                for (int i = 0; i < exec.SpatialFilters.Length; i++)
-                {
-                    ClauseExecution spatialExec = exec.SpatialFilters[i].Exec ?? new ClauseExecution(exec.SpatialFilters[i].Clause);
-                    allEntriesMatches[matchOfs++] = ResolveClause(exec.SpatialFilters[i].Clause, spatialExec, exec, walkerCtx);
-                }
+                ClauseExecution spatialExec = execSpatialFilter.Exec ?? new ClauseExecution(execSpatialFilter.Clause);
+                allEntriesMatches[matchOfs++] = ResolveClause(execSpatialFilter.Clause, spatialExec, exec, walkerCtx);
             }
 
-            if (exec.VectorSelects != null)
+            foreach (var execVectorSelect in exec.VectorSelects ?? [])
             {
-                for (int i = 0; i < exec.VectorSelects.Length; i++)
-                {
-                    ClauseExecution vectorExec = exec.VectorSelects[i].Exec ?? new ClauseExecution(exec.VectorSelects[i].Clause);
-                    allEntriesMatches[matchOfs++] = ResolveClause(exec.VectorSelects[i].Clause, vectorExec, exec, walkerCtx);
-                }
+                ClauseExecution vectorExec = execVectorSelect.Exec ?? new ClauseExecution(execVectorSelect.Clause);
+                allEntriesMatches[matchOfs++] = ResolveClause(execVectorSelect.Clause, vectorExec, exec, walkerCtx);
             }
 
             return allEntriesMatches;
@@ -1278,12 +1273,10 @@ internal static partial class QueryPlanBuilder
 
         // Standalone NotEquals pattern: FillAllEntries (no slot) + ANDNOT(term at slot 0).
         // Exclude IN/AllIn — they need N+1 slots for multi-term OR+ANDNOT, not 1.
-        if (execs.Count == 1 && execs[0].IsNegated && !exec.Plan.AllNegated
-            && execs[0].Clause.ClauseType is not (ClauseType.In or ClauseType.AllIn))
+        if (!exec.Plan.AllNegated && 
+            execs is [{IsNegated: true,Clause.ClauseType: not (ClauseType.In or ClauseType.AllIn)}])
         {
-            var clause = execs[0].Clause;
-            var exec0 = execs[0];
-            return [ResolveClause(clause, exec0, exec, walkerCtx)];
+            return [ResolveClause(execs[0].Clause, execs[0], exec, walkerCtx)];
         }
 
         var matches = new IQueryMatch[CountMatchSlots(execs, exec.IsAllEntries, exec.Plan.AllNegated)];
