@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace Corax.Querying.Planning;
 
@@ -43,7 +44,7 @@ public sealed class ClauseExecution(ClauseInfo clause) : IComparable<ClauseExecu
     public bool IsNegated = clause.IsNegated;
 
     /// <summary>Per-execution state for OrGroup/AndGroup subclauses. Parallel to <see cref="ClauseInfo.SubClauses"/>.</summary>
-    public ClauseExecution[] SubExecutions;
+    public List<ClauseExecution> SubExecutions;
 
     /// <summary>Negated clauses sort last; ties broken by ascending cardinality.</summary>
     public int CompareTo(ClauseExecution other)

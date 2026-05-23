@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace Corax.Querying.Planning;
 
 public class QueryExecution
@@ -29,7 +31,7 @@ public class QueryExecution
     /// Each element carries a back-reference to its <see cref="ClauseInfo"/> via
     /// <see cref="ClauseExecution.Clause"/>, so clause metadata is accessible as
     /// <c>Executions[i].Clause</c> without a separate parallel list.</summary>
-    public ClauseExecution[] Executions;
+    public List<ClauseExecution> Executions;
     public bool IsAllEntries;
 
     /// <summary>Typed parameter values for clause resolution. Populated during plan building
