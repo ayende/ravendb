@@ -418,8 +418,7 @@ internal static partial class QueryPlanBuilder
                 // FROM Orders WHERE when($a, Name = 'x') AND when($b, Price > 10)
                 // FROM Orders WHERE when($a, Name = 'x') OR when($b, Price > 10)
                 // Regardless of the query, we have nothing _to_ select here, so we return nothing
-                exec = null; // indicates that we should use TermMatch.CreateEmpty();
-                return null;
+                return null; // Caller will use TermMatch.CreateEmpty.
             }
 
             // FROM Post - i.e, query with no where clauses, still needs a compiled delegate, so we go generate a cached exec for it
@@ -427,16 +426,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // ── Step 6: Compute cache key components (cheap) ────────────────────
-        int operandOrdering = ComputeOperandOrdering(executions);
-
-        var allNegated = CheckAllNegated(executions);
-
-        if (planParams.HasBoost)
-            operandOrdering |= QueryExecution.HasBoostBit;
-
-        // Cardinality cliff bit: queries under vs. over the cliff get different compiled plans, so the bit is part of the cache key.
-        if (template.SortDrivingClauseIndex >= 0) 
-            operandOrdering |= SetCardinalityCliffBit(executions, template.SortDrivingClauseIndex);
+        int operandOrdering = ComputeOperandOrdering(template, planParams, executions);
 
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature(template, planParams);
 
@@ -452,66 +442,42 @@ internal static partial class QueryPlanBuilder
             writer.SetValues(exec);
             return compiledPlan;
         }
+        
 
         // ── Step 8: Cache miss — full exec emission ─────────────────────────
 
-        ScanPredicateInfo[] scanPreds = null;
-        // Scan predicates allow us to do a direct scan of the entires to reduce the number of document loads
-        // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public'
-        // If Tags = 'good' gave us 100 items, we don't want to do an AndWith Status = 'Public' (may have 1M items)
-        // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly
-        if (isOr == false && // we cannot use scan on OR  
-            executions.Length > 1) // no point if there is just a single clause
+        // Entry scan is an optimization that only makes sense for a WHERE with multiple AND clauses
+        ScanPredicateInfo[] scanPreds = isOr is false && executions.Length > 1 ? CreateScanPredicates(executions) : null;
+
+        (PlanOp[] emittedOps, int emittedRequiredBitmaps, int[] emittedInRangeCounts) = EmitPlan(isOr, executions);
+        exec.Executions = executions;
+        exec.InRangeCounts = emittedInRangeCounts is { Length: > 0 } ? 
+            BuildInRangeCounts(executions, isOr, emittedInRangeCounts.Length) : 
+            null;
+
+        // Empty-IN short-circuit. Consider two executions of the same query text:
+        //
+        //   Execution 1: FROM Items WHERE Tags IN ($p) — with $p = [] (empty array)
+        //     EmitPlan returns Ops=[] (empty-IN in AND → zero results).
+        //     OperandOrdering=0, TypeSignature=0.
+        //
+        //   Execution 2: FROM Items WHERE Tags IN ($p) — with $p = ['news']
+        //     EmitPlan produces a real plan (FillFromPostings + IterateInto).
+        //     OperandOrdering=0, TypeSignature=0 — same cache key!
+        //
+        // If we cached the empty plan from execution 1, execution 2 would reuse it
+        // and silently return zero results. Avoid this by returning an explicit empty
+        // match without touching the cache.
+        //
+        // Exception: spatial/vector post-filters still need the plan pipeline (vector
+        // with a null filter would return unfiltered top-K).if (emittedOps is { Length: 0 } && 
+            exec.IsAllEntries == false && 
+            template.SpatialClauses == null && template.VectorClauses == null)
         {
-            List<ScanPredicateInfo> predicates = []; 
-            int scanStart = allNegated ? 0 : 1; // Skip clause 0 (the seed) unless all clauses are negated (then we start from AllEntries, so every clause is a scan predicate).
-            int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
-            for (int si2 = scanStart; si2 < executions.Length; si2++)
-            {
-                if (BuildScanPredicateInfo(executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex) is {} pred)
-                    predicates.Add(pred);
-            }
-            scanPreds = predicates.Count > 0 ? predicates.ToArray() : null;
+            return null; // Caller will use TermMatch.CreateEmpty.
         }
 
-        PlanOp[] emittedOps;
-        int emittedRequiredBitmaps;
-        int[] emittedInRangeCounts;
-
-        if (executions.Length > 0)
-        {
-            var emitted = EmitPlan(isOr, executions);
-            emittedOps = emitted.Ops;
-            emittedRequiredBitmaps = emitted.RequiredBitmaps;
-            emittedInRangeCounts = emitted.InRangeCounts;
-
-            exec.Executions = executions;
-            exec.InRangeCounts = BuildInRangeCounts(executions, isOr, emittedInRangeCounts?.Length ?? 0);
-        }
-        else
-        {
-            emittedOps = BuildAllEntriesPlan();
-            emittedRequiredBitmaps = 2;
-            emittedInRangeCounts = null;
-        }
-
-        // Empty-IN short-circuit: EmitPlan returns Ops=[] for an AND chain containing
-        // an empty IN clause (e.g. `Names in ()`), and the resulting plan has
-        // the default OperandOrdering=0 and typeSignature=0. That cache key collides
-        // with single-clause "default" plans (e.g. a one-term Equals after constant
-        // propagation), so a subsequent execution against the same queryText would
-        // receive the cached empty IL and produce zero results for a real query.
-        // Return an explicit empty match here without touching the cache. Bail only
-        // when there are no spatial/vector post-filters — those phases still need to
-        // run (AND with empty is empty for spatial, but vector with a null filter
-        // would otherwise return unfiltered top-K).
-        if (emittedOps is { Length: 0 } && exec.IsAllEntries == false
-                                        && template.SpatialClauses == null && template.VectorClauses == null)
-        {
-            // Caller (BuildAndCompile facade) converts null into TermMatch.CreateEmpty.
-            return null;
-        }
-
+        var allNegated = CheckAllNegated(executions);
         AttachSpatialAndVectorClauses(exec, allNegated, template, planParams, builderParameters, writer);
 
         // Store typed arrays once after all clauses (including spatial/vector) are populated.
@@ -558,6 +524,38 @@ internal static partial class QueryPlanBuilder
         planCache.Add(queryText, compiledPlan, template);
 
         return compiledPlan;
+    }
+
+    private static ScanPredicateInfo[] CreateScanPredicates(ClauseExecution[] executions)
+    {
+        var allNegated = CheckAllNegated(executions);
+        // Scan predicates allow us to do a direct scan of the entires to reduce the number of document loads
+        // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public'
+        // If Tags = 'good' gave us 100 items, we don't want to do an AndWith Status = 'Public' (may have 1M items)
+        // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly
+        List<ScanPredicateInfo> predicates = []; 
+        int scanStart = allNegated ? 0 : 1; // Skip clause 0 (the seed) unless all clauses are negated (then we start from AllEntries, so every clause is a scan predicate).
+        int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
+        for (int si2 = scanStart; si2 < executions.Length; si2++)
+        {
+            if (BuildScanPredicateInfo(executions[si2], ref longIndex, ref doubleIndex, ref sliceIndex) is {} pred)
+                predicates.Add(pred);
+        }
+        return predicates.Count > 0 ? predicates.ToArray() : null;
+    }
+
+    private static int ComputeOperandOrdering(PlanTemplate template, PlanParameters planParams, ClauseExecution[] executions)
+    {
+        int operandOrdering = 0;
+        for (int i = 0; i < Math.Min(executions.Length, 10); i++)
+            operandOrdering |= (executions[i].Clause.OriginalIndex & 0x7) << (i * 3);
+        if (planParams.HasBoost)
+            operandOrdering |= QueryExecution.HasBoostBit;
+
+        // Cardinality cliff bit: queries under vs. over the cliff get different compiled plans, so the bit is part of the cache key.
+        if (template.SortDrivingClauseIndex >= 0) 
+            operandOrdering |= SetCardinalityCliffBit(executions, template.SortDrivingClauseIndex);
+        return operandOrdering;
     }
 
     private static int SetCardinalityCliffBit(ClauseExecution[] executions, int templateIdx)
@@ -3164,6 +3162,11 @@ internal static partial class QueryPlanBuilder
     ///            in slot 0 via SwapBitmaps(0,2), then ORed back).</summary>
     private static (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) EmitPlan(bool isOr, ClauseExecution[] executions)
     {
+        if (executions.Length is 0)
+        {
+            return (BuildAllEntriesPlan(), 2, null);
+        }
+        
         // "Empty IN" check — must consult runtime InTermCount when executions are
         // available. Bindings.Length is the *structural* count (one slot per
         // ValueExpression in the IN literal); when a single parameter binding
@@ -3686,9 +3689,6 @@ internal static partial class QueryPlanBuilder
     /// different parameter array sizes across executions of the same query text.</summary>
     private static int[] BuildInRangeCounts(ClauseExecution[] executions, bool isOr, int slotCount)
     {
-        if (slotCount == 0)
-            return null;
-
         var counts = new int[slotCount];
         int rangeIdx = 0;
         for (int ci = 0; ci < executions.Length && rangeIdx < counts.Length; ci++)
