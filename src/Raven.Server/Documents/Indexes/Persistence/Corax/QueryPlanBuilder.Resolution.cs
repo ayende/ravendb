@@ -17,6 +17,7 @@ using Corax.Querying.Planning;
 using Corax.Querying.Primitives;
 using Corax.Utils;
 using Raven.Client.Exceptions;
+using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Binary;
@@ -592,16 +593,20 @@ internal static partial class QueryPlanBuilder
         {
             var spatialFilters = new IQueryMatch[exec.SpatialFilters.Length];
             for (int sf = 0; sf < exec.SpatialFilters.Length; sf++)
+            {
                 spatialFilters[sf] = resolvedMatches[exec.SpatialFilters[sf].MatchIndex];
+            }
+
             result = new PostFilterMatch(result, spatialFilters);
         }
 
         // Vector select phase: each vector wraps the bitmap so far as its filter source.
         if (exec.VectorSelects is { Length: > 0 } && builderParameters != null)
         {
-            var vectorItems = ResolveVectorItems(exec, builderParameters);
-            foreach (var item in vectorItems)
+            foreach (var item in ResolveVectorItems(exec, builderParameters))
+            {
                 result = item.Materialize(result);
+            }
         }
 
         return result;
@@ -1279,14 +1284,12 @@ internal static partial class QueryPlanBuilder
             int matchOfs = 1;
             foreach (var execSpatialFilter in exec.SpatialFilters ?? [])
             {
-                ClauseExecution spatialExec = execSpatialFilter.Exec;
-                allEntriesMatches[matchOfs++] = ResolveClause(spatialExec, exec, walkerCtx);
+                allEntriesMatches[matchOfs++] = ResolveClause(execSpatialFilter.Exec, exec, walkerCtx);
             }
 
             foreach (var execVectorSelect in exec.VectorSelects ?? [])
             {
-                ClauseExecution vectorExec = execVectorSelect.Exec;
-                allEntriesMatches[matchOfs++] = ResolveClause(vectorExec, exec, walkerCtx);
+                allEntriesMatches[matchOfs++] = ResolveClause(execVectorSelect.Exec, exec, walkerCtx);
             }
 
             return allEntriesMatches;
@@ -1577,7 +1580,7 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Vector:
             {
-                var vectorItem = HandleVector(builderParams, clause, cur, false);
+                var vectorItem = HandleVector(builderParams, cur, false);
                 return vectorItem.Materialize(null);
             }
 
