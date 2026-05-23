@@ -1572,12 +1572,9 @@ namespace FastTests.Corax
             };
 
             // BuildAndCompile: RQL → QueryExecution → IL compilation → CompiledQueryMatch
-            // Pass null for QueryBuilderParameters — the fallback uses FieldMetadataBuilder
-            // directly from IndexSearcher, which is sufficient for the simple term/range/bool
-            // queries exercised by these unit tests (no vector/spatial/dynamic fields).
             var compiledMatch = QueryPlanBuilder.BuildAndCompile(
                 planParams,
-                null,
+                new QueryBuilderParameters(searcher, Allocator, queryMetadata, null),
                 out var debugPlan,
                 out _,
                 highlightingTerms: null,
