@@ -58,19 +58,31 @@ internal static partial class QueryPlanBuilder
         CancellationToken token)
     {
         var indexSearcher = planParams.IndexSearcher;
+        var walkerCtx = CreateResolutionContext(planParams, builderParameters);
 
         // Phase 1: structural template (cached per queryText).
         var template = BuildTemplate(planParams);
 
         // Phase 2: parameter resolution, exec emission, IL compile (with cache miss handling).
-        (compiledPlanOut, exec) = Build(template, planParams, builderParameters);
+        (compiledPlanOut, exec) = Build(template, planParams, builderParameters, walkerCtx);
         if (compiledPlanOut == null)
             return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
 
         // Phase 3: live binding (resolved matches, term sources, spatial/vector/highlighting wrappers).
         // BuildAndCompile uses the unconditional bitmap path — ORDER BY optimization dispatch
         // (CompoundExact / CompoundField / DirectScan) belongs to BuildCompileAndOptimize.
-        return InstantiateBitmapPipeline(compiledPlanOut, exec, planParams, builderParameters, highlightingTerms, wantTimings, token);
+        return InstantiateBitmapPipeline(compiledPlanOut, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
+    }
+
+    /// <summary>Single construction site for <see cref="ResolutionContext"/>. Both pipeline
+    /// entry points (<see cref="BuildAndCompile"/> / <see cref="BuildCompileAndOptimize"/>)
+    /// build the context once and thread it through Build → Instantiate so that cardinality
+    /// estimation, match resolution, and term-source resolution all share the same instance.</summary>
+    private static ResolutionContext CreateResolutionContext(PlanParameters planParams, QueryBuilderParameters builderParameters)
+    {
+        return builderParameters != null
+            ? new ResolutionContext(builderParameters)
+            : new ResolutionContext(planParams);
     }
 
     /// <summary>
@@ -107,12 +119,13 @@ internal static partial class QueryPlanBuilder
         CancellationToken token)
     {
         var indexSearcher = planParams.IndexSearcher;
+        var walkerCtx = CreateResolutionContext(planParams, builderParameters);
 
         // Phase 1: structural template (cached per queryText).
         var template = BuildTemplate(planParams);
 
         // Phase 2: parameter resolution, plan emission, IL compile (with cache-miss handling).
-        var (plan, exec) = Build(template, planParams, builderParameters);
+        var (plan, exec) = Build(template, planParams, builderParameters, walkerCtx);
         if (plan == null)
         {
             var emptyMatch = TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
@@ -126,7 +139,7 @@ internal static partial class QueryPlanBuilder
         // last resort. All four strategies — CompoundExact / CompoundField / DirectScan / BitmapSort
         // — are produced here.
         var queryMatch = Instantiate(plan, exec, orderByFields, hasEmptySorts,
-            planParams, builderParameters, highlightingTerms, wantTimings, out var innerMatch, token);
+            planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
         return new BuildCompileAndOptimizeResult(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, builderParameters, orderByFields);
     }
 
@@ -153,6 +166,7 @@ internal static partial class QueryPlanBuilder
         bool hasEmptySorts,
         PlanParameters planParams,
         QueryBuilderParameters builderParameters,
+        ResolutionContext walkerCtx,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         bool wantTimings,
         out IQueryMatch innerMatch,
@@ -232,7 +246,7 @@ internal static partial class QueryPlanBuilder
             // byte-length overflow). Fall back to bitmap+sort. The cached strategy stays valid
             // for the next execution; this one had unlucky parameter values.
             return InstantiateBitmapFallback(compiledPlan, exec, orderByFields, hasEmptySorts,
-                planParams, builderParameters, highlightingTerms, wantTimings, out innerMatch, token);
+                planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out innerMatch, token);
         }
 
         // ── Slow path: cache-miss, run Try* discovery chain ──
@@ -301,7 +315,7 @@ internal static partial class QueryPlanBuilder
             if (needsFullChain)
             {
                 // All Try* failed → fall back to bitmap pipeline.
-                var bitmapMatch = InstantiateBitmapPipeline(compiledPlan, exec, planParams, builderParameters, highlightingTerms, wantTimings, token);
+                var bitmapMatch = InstantiateBitmapPipeline(compiledPlan, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
                 innerMatch = bitmapMatch;
                 if (bitmapMatch is CompiledQueryMatch seekMatch)
                     TrySetSortSeekHint(seekMatch, exec, orderByFields);
@@ -316,7 +330,7 @@ internal static partial class QueryPlanBuilder
             if (queryMatch == null)
             {
                 // No ORDER BY and no Try* winner — use bitmap match.
-                queryMatch = InstantiateBitmapPipeline(compiledPlan, exec, planParams, builderParameters, highlightingTerms, wantTimings, token);
+                queryMatch = InstantiateBitmapPipeline(compiledPlan, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
                 innerMatch = queryMatch;
             }
         }
@@ -336,12 +350,13 @@ internal static partial class QueryPlanBuilder
         CompiledPlan compiledPlan, QueryExecution exec,
         OrderMetadata[] orderByFields, bool hasEmptySorts,
         PlanParameters planParams, QueryBuilderParameters builderParameters,
+        ResolutionContext walkerCtx,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         bool wantTimings,
         out IQueryMatch innerMatch,
         CancellationToken token)
     {
-        var fallbackMatch = InstantiateBitmapPipeline(compiledPlan, exec, planParams, builderParameters, highlightingTerms, wantTimings, token);
+        var fallbackMatch = InstantiateBitmapPipeline(compiledPlan, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
         innerMatch = fallbackMatch;
         if (orderByFields != null)
         {
@@ -379,7 +394,7 @@ internal static partial class QueryPlanBuilder
     /// post-filters (e.g. an empty IN clause inside an AND chain) — the caller must produce
     /// an explicit empty result rather than caching this shape under the wrong key.
     /// </summary>
-    private static (CompiledPlan,  QueryExecution) Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters)
+    private static (CompiledPlan,  QueryExecution) Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
     {
         var indexSearcher = planParams.IndexSearcher;
         var queryText = planParams.Metadata.Query.QueryText;
@@ -400,15 +415,12 @@ internal static partial class QueryPlanBuilder
         bool isOr = template.IsOr;
         PropagateBetweenContradictions(executions, writer);
 
-        // Step 4: Estimate cardinality (needs populated values)
-        var cardinalityCtx = builderParameters != null
-            ? new ResolutionContext(builderParameters)
-            : new ResolutionContext(planParams);
-        
+        // Step 4: Estimate cardinality (needs populated values). Uses the shared walkerCtx —
+        // same instance is reused by InstantiateBitmapPipeline for match resolution.
         foreach (var it in executions)
         {
             if (it.Cardinality >= 0) continue;
-            it.Cardinality = EstimateCardinality(it, indexSearcher, writer, cardinalityCtx);
+            it.Cardinality = EstimateCardinality(it, indexSearcher, writer, walkerCtx);
         }
 
         // Step 5: Sort operands by cardinality (sort executions by cardinality).
@@ -566,14 +578,28 @@ internal static partial class QueryPlanBuilder
         QueryExecution exec,
         PlanParameters planParams,
         QueryBuilderParameters builderParameters,
+        ResolutionContext walkerCtx,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         bool wantTimings,
         CancellationToken token)
     {
         var indexSearcher = planParams.IndexSearcher;
-        var walkerCtx = builderParameters != null
-            ? new ResolutionContext(builderParameters)
-            : new ResolutionContext(planParams);
+
+        // Fast path: when the plan reduces to AllEntries() (no WHERE clauses left after
+        // GroupCollapse extracted spatial/vector), the bitmap pipeline degenerates to
+        // "AllEntries() AND spatial filters" — feed that AllEntries through CompiledQueryMatch
+        // just to AND spatial onto it is pure waste. Skip CompiledQueryMatch entirely:
+        //   - Pure spatial: AND chain of spatial filters (first one as seed via PostFilterMatch).
+        //   - Pure vector:  vector with null filter (unfiltered top-K, supported by VectorSearchMatch).
+        //   - Spatial + vector: spatial chain becomes the vector's filter source.
+        // Standalone AllEntries (no spatial/vector) still goes through the bitmap path because
+        // it needs a CompiledQueryMatch shell for the inspection graph / timing instrumentation.
+        if (exec.IsAllEntries
+            && (exec.SpatialFilters is { Length: > 0 } || exec.VectorSelects is { Length: > 0 }))
+        {
+            return InstantiateAllEntriesPostFilter(exec, planParams, builderParameters, walkerCtx);
+        }
+
         var resolvedMatches = ResolveMatches(exec, walkerCtx);
         var termSources = ResolveTermSources(exec, walkerCtx);
         var termsProviders = ResolveTermsProviders(exec, walkerCtx);
@@ -608,13 +634,58 @@ internal static partial class QueryPlanBuilder
         if (exec.VectorSelects is { Length: > 0 } && builderParameters != null)
         {
             var vectorItems = ResolveVectorItems(exec, builderParameters);
-            bool hasActualFilter = !exec.IsAllEntries || exec.SpatialFilters is { Length: > 0 };
-            IQueryMatch vectorFilter = hasActualFilter ? result : null;
             foreach (var item in vectorItems)
-                result = item.Materialize(vectorFilter);
+                result = item.Materialize(result);
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Bypass path for queries with no real WHERE clauses — only spatial filters and/or
+    /// vector selects. Builds the result directly from the resolved spatial/vector matches,
+    /// skipping the <see cref="CompiledQueryMatch"/> shell (and its embedded AllEntries seed).
+    /// Spatial filters chain via <see cref="PostFilterMatch"/> with the first as the seed;
+    /// vector receives the spatial chain as its filter (or null for unfiltered top-K).
+    /// </summary>
+    private static IQueryMatch InstantiateAllEntriesPostFilter(QueryExecution exec, PlanParameters planParams,
+        QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
+    {
+        var indexSearcher = planParams.IndexSearcher;
+        IQueryMatch result = null;
+
+        // Spatial: resolve each spatial clause directly, then chain via PostFilterMatch.
+        if (exec.SpatialFilters is { Length: > 0 })
+        {
+            var spatialMatches = new IQueryMatch[exec.SpatialFilters.Length];
+            for (int sf = 0; sf < exec.SpatialFilters.Length; sf++)
+            {
+                var sfOp = exec.SpatialFilters[sf];
+                var spatialExec = sfOp.Exec ?? new ClauseExecution(sfOp.Clause);
+                spatialMatches[sf] = ResolveClause(sfOp.Clause, spatialExec, exec, walkerCtx);
+            }
+            // First spatial seeds the iteration; remaining filters AND in via PostFilterMatch.
+            if (spatialMatches.Length == 1)
+            {
+                result = spatialMatches[0];
+            }
+            else
+            {
+                var rest = new IQueryMatch[spatialMatches.Length - 1];
+                Array.Copy(spatialMatches, 1, rest, 0, rest.Length);
+                result = new PostFilterMatch(spatialMatches[0], rest);
+            }
+        }
+
+        // Vector: each vector wraps the (possibly null) filter so far.
+        if (exec.VectorSelects is { Length: > 0 } && builderParameters != null)
+        {
+            var vectorItems = ResolveVectorItems(exec, builderParameters);
+            foreach (var item in vectorItems)
+                result = item.Materialize(result);
+        }
+
+        return result ?? indexSearcher.AllEntries();
     }
 
     /// <summary>
@@ -3738,7 +3809,7 @@ internal static partial class QueryPlanBuilder
     /// even when they're term-shaped, so scoring still works.</summary>
     internal static bool IsTermSourceEligibleClause(ClauseInfo clause)
     {
-        return clause is { HasBoost: true, ClauseType: ClauseType.Equals or ClauseType.NotEquals };
+        return clause is { HasBoost: false, ClauseType: ClauseType.Equals or ClauseType.NotEquals };
     }
 
     /// <summary>TreeScan-eligible: multi-term clauses that have a direct ITermsProvider

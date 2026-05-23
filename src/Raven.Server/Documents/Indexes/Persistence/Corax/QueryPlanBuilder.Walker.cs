@@ -412,7 +412,7 @@ internal static partial class QueryPlanBuilder
                 };
                 if(list is null) continue;
                 list.Add(clauses[i]);
-                list.RemoveAt(i);
+                clauses.RemoveAt(i);
             }
         }
     }
