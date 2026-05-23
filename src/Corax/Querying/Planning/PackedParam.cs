@@ -47,6 +47,10 @@ public readonly struct PackedParam
     public int Param2 => _value & 0x7FFF;
     public bool IsNone => _value == None._value;
 
+    /// <summary>For IN/AllIn clauses: build a PackedParam pointing at the n-th IN term.
+    /// IN terms are stored contiguously starting at Param1; offset n addresses Param1 + n.</summary>
+    public PackedParam WithTermOffset(int termIndex) => new(ValueType, Param1 + termIndex);
+
     private static void ThrowLimitExceeded(int index)
     {
         throw new System.InvalidOperationException(
