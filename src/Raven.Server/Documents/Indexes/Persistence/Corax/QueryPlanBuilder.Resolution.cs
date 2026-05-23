@@ -3174,7 +3174,7 @@ internal static partial class QueryPlanBuilder
                     if (matchIndex == 0)
                     {
                         // Seed: build directly in slot 0 with Fill + AndRange.
-                        EmitAllInOps(ops, it, executions[ci].Cardinality, ref matchIndex, rangeCounts);
+                        EmitAllInOps(ops, it, executions[ci].Cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
                     }
                     else
                     {
@@ -3188,7 +3188,7 @@ internal static partial class QueryPlanBuilder
                             BitmapLocal = 0,
                             ParamIndex2 = 2
                         });
-                        EmitAllInOps(ops, it, executions[ci].Cardinality, ref matchIndex, rangeCounts);
+                        EmitAllInOps(ops, it, executions[ci].Cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
                         ops.Add(new PlanOp
                         {
                             Kind = PlanOpKind.OrBitmaps,
@@ -3421,7 +3421,7 @@ internal static partial class QueryPlanBuilder
                 // Use the fixed-shape EmitAllInOps path for AllIn clauses.
                 case ClauseType.AllIn:
                 {
-                    EmitAllInOps(ops, c0, executions[0].Cardinality, ref matchIndex, rangeCounts);
+                    EmitAllInOps(ops, c0, executions[0].Cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
                     break;
                 }
                 default:
@@ -3514,19 +3514,21 @@ internal static partial class QueryPlanBuilder
                 }
                 case ClauseType.AllIn:
                 {
-                    int inTermCount = (ci2.Bindings?.Length ?? 0);
-                    int rangeIdx = rangeCounts.Count;
-                    rangeCounts.Add(inTermCount);
+                    // AllIn: intersect all terms in bitmap[1], then AND (or ANDNOT) with bitmap[0].
+                    // Same pattern as non-seed IN, but uses EmitAllInOps (Fill + AndRange) instead
+                    // of EmitInOps (Fill + OrRange) — AllIn requires ALL terms to match.
+                    ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
+                    EmitAllInOps(ops, ci2, executions[i].Cardinality, bitmapLocal: 1, ref matchIndex, rangeCounts);
                     ops.Add(new PlanOp
                     {
-                        Kind = PlanOpKind.AndRange,
-                        ParamIndex = matchIndex,
-                        ParamIndex2 = rangeIdx,
+                        Kind = ci2.IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
                         BitmapLocal = 0,
-                        EstimatedCardinality = executions[i].Cardinality,
-                        Dispatch = MatchDispatch.PostingList
+                        ParamIndex2 = 1
                     });
-                    matchIndex += inTermCount;
+                    if (ci2.IsNegated == false)
+                    {
+                        ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
+                    }
                     break;
                 }
                 default:
@@ -3612,24 +3614,17 @@ internal static partial class QueryPlanBuilder
             ClauseExecution execution = executions[ci];
             switch (execution.Clause.ClauseType)
             {
-                // IN: OrRange iterates all typed term slots. The trailing null slot is
-                // always allocated but ORing with Empty is a no-op, so it's safe to
-                // include — InTermCount covers exactly the non-null terms.
+                // IN: EmitInOps emits Fill + OrRange. Fill consumed slot 0,
+                // range = InTermCount (ORing with empty null slot is a no-op).
                 case ClauseType.In:
                     counts[rangeIdx++] = execution.InTermCount;
                     break;
 
-                // AllIn via EmitAllInOps (seed in AND, or any position in OR):
-                // Fill(slot 0) + AndRange. Fill consumed the first slot, so range = InTermCount - 1.
-                // Null slot included only when HasNullTerm (AND with empty clears the bitmap).
-                case ClauseType.AllIn when ci is 0:
-                    counts[rangeIdx++] = Math.Max(0, execution.InTermCount - 1 + (execution.HasNullTerm ? 1 : 0));
-                    break;
-
-                // AllIn non-seed in AND: raw AndRange over all typed term slots (no Fill).
-                // Range = InTermCount.
+                // AllIn: EmitAllInOps emits Fill + AndRange (all paths — seed, non-seed,
+                // OR, AND). Fill consumed slot 0, so range = InTermCount - 1.
+                // Null slot included only when HasNullTerm (AND with empty clears bitmap).
                 case ClauseType.AllIn:
-                    counts[rangeIdx++] = execution.InTermCount;
+                    counts[rangeIdx++] = Math.Max(0, execution.InTermCount - 1 + (execution.HasNullTerm ? 1 : 0));
                     break;
             }
         }
@@ -3696,13 +3691,11 @@ internal static partial class QueryPlanBuilder
     /// <summary>Emit ops for an AllIn clause (as a seed): Fill slot 0 + AndRange for the rest.
     /// Same fixed shape rationale as <see cref="EmitInOps"/> — the count of remaining
     /// terms lives in <c>ctx.InRangeCounts</c> rather than the op shape itself.</summary>
-    private static void EmitAllInOps(List<PlanOp> ops, ClauseInfo clause, long cardinality, ref int matchIndex, List<int> rangeCounts)
+    private static void EmitAllInOps(List<PlanOp> ops, ClauseInfo clause, long cardinality, int bitmapLocal, ref int matchIndex, List<int> rangeCounts)
     {
         int totalSlots = (clause.Bindings?.Length ?? 0) + 1;
-        // For AllIn, ANDing with an Empty PostingSource clears the bitmap — so the
-        // null-term slot is always included in the range. At runtime, when no null term
-        // is present the slot holds an empty match (AND with empty = clear), which is
-        // correct for AllIn semantics. The range count covers all slots after slot 0.
+        // Fill consumes slot 0, AndRange iterates the rest. The range count
+        // covers all slots after slot 0 (including the null-term slot).
         int rangeCount = totalSlots - 1;
         int rangeIdx = rangeCounts.Count;
         rangeCounts.Add(rangeCount);
@@ -3711,7 +3704,7 @@ internal static partial class QueryPlanBuilder
         {
             Kind = PlanOpKind.FillFromPostings,
             ParamIndex = matchIndex,
-            BitmapLocal = 0,
+            BitmapLocal = bitmapLocal,
             EstimatedCardinality = Math.Max(1, cardinality / totalSlots),
             Dispatch = MatchDispatch.PostingList
         });
@@ -3720,7 +3713,7 @@ internal static partial class QueryPlanBuilder
             Kind = PlanOpKind.AndRange,
             ParamIndex = matchIndex + 1,
             ParamIndex2 = rangeIdx,
-            BitmapLocal = 0,
+            BitmapLocal = bitmapLocal,
             EstimatedCardinality = cardinality,
             Dispatch = MatchDispatch.PostingList
         });
