@@ -178,7 +178,7 @@ internal static partial class QueryPlanBuilder
                 case ExecutionStrategy.CompoundField:
                     if (exec != null && orderByFields != null)
                     {
-                        int f2 = FindCompoundFieldField2Range(exec.Executions, exec.Plan.CompoundFieldDrivingClause, exec.Plan.CompoundFieldSortName);
+                        int f2 = FindCompoundFieldField2Range(exec.Executions, exec.Plan.CompoundFieldDrivingClause, exec.Plan.Template.CompoundFieldSortName);
                         // Cost facts (entriesToScan, bitmapCost) are diagnostic-only inside
                         // Construct (used for the Reason string). Pass zeros — the cliff bit
                         // in the cache key already segregates cost buckets.
@@ -447,15 +447,10 @@ internal static partial class QueryPlanBuilder
         var (ops, requiredBitmaps, inRangeCounts) = EmitPlan(isOr, executions);
 
         // Boost handling: force every op to QueryMatch dispatch so scores are accumulated.
-        if (planParams.HasBoost)
+        for (int i = 0; i < ops.Length && planParams.HasBoost; i++)
         {
-            for (int i = 0; i < ops.Length; i++)
-            {
-                ops[i].Dispatch = MatchDispatch.QueryMatch;
-            }
+            ops[i].Dispatch = MatchDispatch.QueryMatch;
         }
-
-        var remapped = RemapOptimizationIndices(template, executions);
 
         // Compile and cache. Structural fields (AllNegated, OptimizationFlags, remapped
         // indices, ScanPredicateInfos) are stored on the CompiledPlan, not on QueryExecution.
@@ -476,14 +471,9 @@ internal static partial class QueryPlanBuilder
             InRangeSlotCount = inRangeCounts?.Length ?? 0,
             InspectionTemplate = BuildInspectionTemplate(ops, exec),
             ScanPredicateInfos = scanPreds,
-            AllNegated =  CheckAllNegated(executions),
-            SortDrivingClauseIndex = remapped.SortDriving,
-            CompoundExactClauseA = remapped.ExactA,
-            CompoundExactClauseB = remapped.ExactB,
-            CompoundExactAFirst = remapped.ExactAFirst,
-            CompoundFieldDrivingClause = remapped.FieldDriving,
-            CompoundFieldSortName = remapped.FieldSortName
+            AllNegated =  CheckAllNegated(executions)
         };
+        RemapOptimizationIndices(compiledPlan, executions);
         planCache.Add(queryText, compiledPlan, template);
 
         return FinalizePlan();
@@ -800,51 +790,21 @@ internal static partial class QueryPlanBuilder
     ///
     /// Note: <see cref="QueryExecution.CardinalityCliffBit"/> is computed in <see cref="Build"/>
     /// before the cache lookup (it is part of the cache key).</summary>
-    private static (int SortDriving, int ExactA, int ExactB, bool ExactAFirst,
-                     int FieldDriving, string FieldSortName)
-        RemapOptimizationIndices(PlanTemplate template, List<ClauseExecution> executions)
+    private static void RemapOptimizationIndices(CompiledPlan plan, List<ClauseExecution> executions)
     {
-        int sortDriving = -1;
-        int exactA = -1;
-        int exactB = -1;
-        int fieldDriving = -1;
-
-        int needSort = template.SortDrivingClauseIndex >= 0 ? 1 : 0;
-        int needExactA = template.CompoundExactClauseA >= 0 ? 1 : 0;
-        int needExactB = template.CompoundExactClauseB >= 0 ? 1 : 0;
-        int needField = template.CompoundFieldDrivingClause >= 0 ? 1 : 0;
-        int remaining = needSort + needExactA + needExactB + needField;
-        for (int i = 0; i < executions.Count && remaining > 0; i++)
+        var template = plan.Template;
+        for (int i = 0; i < executions.Count; i++)
         {
-            int origIdx = executions[i].Clause.OriginalIndex;
-            if (needSort > 0 && origIdx == template.SortDrivingClauseIndex)
-            {
-                sortDriving = i;
-                remaining--;
-            }
-
-            if (needExactA > 0 && origIdx == template.CompoundExactClauseA)
-            {
-                exactA = i;
-                remaining--;
-            }
-            else if (needExactB > 0 && origIdx == template.CompoundExactClauseB)
-            {
-                exactB = i;
-                remaining--;
-            }
-
-            if (needField > 0 && origIdx == template.CompoundFieldDrivingClause)
-            {
-                fieldDriving = i;
-                remaining--;
-            }
+            ClauseExecution exec = executions[i];
+            if (exec.Clause.OriginalIndex == template.SortDrivingClauseIndex)
+                plan.SortDrivingClauseIndex = i;
+            if (exec.Clause.OriginalIndex == template.CompoundExactClauseA)
+                plan.CompoundExactClauseA = i;
+            if (exec.Clause.OriginalIndex == template.CompoundExactClauseB)
+                plan.CompoundExactClauseB = i;
+            if (exec.Clause.OriginalIndex == template.CompoundFieldDrivingClause)
+                plan.CompoundFieldDrivingClause = i;
         }
-
-        // NOTE: CardinalityCliffBit is now computed in Build() before the cache lookup
-        // (it's part of the cache key). RemapOptimizationIndices no longer sets it.
-        return (SortDriving: sortDriving, ExactA: exactA, ExactB: exactB, ExactAFirst: template.CompoundExactAFirst,
-                FieldDriving: fieldDriving, FieldSortName: template.CompoundFieldSortName);
     }
 
     /// <summary>Create a ClauseExecution for a clause, including sub-executions for OrGroup/AndGroup.
@@ -2215,7 +2175,7 @@ internal static partial class QueryPlanBuilder
 
         string firstField, secondField;
         ClauseExecution firstExec, secondExec;
-        if (exec.Plan.CompoundExactAFirst)
+        if (exec.Plan.Template.CompoundExactAFirst)
         {
             firstField = eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName;
             secondField = eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName;
@@ -2299,7 +2259,7 @@ internal static partial class QueryPlanBuilder
             return true;
         }
 
-        if (exec.Plan.CompoundFieldDrivingClause < 0 || exec.Plan.CompoundFieldSortName == null)
+        if (exec.Plan.CompoundFieldDrivingClause < 0 || exec.Plan.Template.CompoundFieldSortName == null)
             rejectReason = "no compound-field candidate identified at template time";
         else if (exec.Plan.AllNegated)
             rejectReason = "all clauses are negated";
@@ -2325,7 +2285,7 @@ internal static partial class QueryPlanBuilder
         // checks that are deterministic for the cache key (cardinality cliff bit 31
         // in Ordering segregates cliff buckets, so cost outcome is stable per key).
         int drivingClauseIdx = exec.Plan.CompoundFieldDrivingClause;
-        string sortFieldName = exec.Plan.CompoundFieldSortName;
+        string sortFieldName = exec.Plan.Template.CompoundFieldSortName;
         if (drivingClauseIdx < 0 || sortFieldName == null)
             return false;
         var execs = exec.Executions;
@@ -2422,7 +2382,7 @@ internal static partial class QueryPlanBuilder
         var indexSearcher = planParams.IndexSearcher;
         var allocator = planParams.Allocator;
         int drivingClauseIdx = exec.Plan.CompoundFieldDrivingClause;
-        string sortFieldName = exec.Plan.CompoundFieldSortName;
+        string sortFieldName = exec.Plan.Template.CompoundFieldSortName;
 
         var drivingClause = execs[drivingClauseIdx].Clause;
         var drivingExec = execs[drivingClauseIdx];
@@ -3620,8 +3580,7 @@ internal static partial class QueryPlanBuilder
                     counts[rangeIdx++] = execution.InTermCount;
                     break;
 
-                // AllIn: EmitAllInOps emits Fill + AndRange (all paths — seed, non-seed,
-                // OR, AND). Fill consumed slot 0, so range = InTermCount - 1.
+                // AllIn: EmitAllInOps emits Fill + AndRange. Fill consumed slot 0, so range = InTermCount - 1.
                 // Null slot included only when HasNullTerm (AND with empty clears bitmap).
                 case ClauseType.AllIn:
                     counts[rangeIdx++] = Math.Max(0, execution.InTermCount - 1 + (execution.HasNullTerm ? 1 : 0));
