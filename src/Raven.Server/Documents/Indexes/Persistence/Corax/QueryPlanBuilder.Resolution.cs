@@ -5125,17 +5125,19 @@ internal static partial class QueryPlanBuilder
     {
         switch (clause.ClauseType)
         {
+            // These clause types cannot be expressed as entry-scan predicates.
             case ClauseType.Search:
             case ClauseType.Regex:
             case ClauseType.Spatial:
             case ClauseType.Vector:
+            case ClauseType.In:
+            case ClauseType.AllIn:
+                return null;
+
             case ClauseType.StartsWith:
             {
                 if (termType != ParamValueType.String)
-                {
                     return null;
-                }
-
                 sliceIndex++;
                 return new ScanPredicateInfo
                 {
@@ -5145,20 +5147,10 @@ internal static partial class QueryPlanBuilder
                     ParamIndex = sliceIndex - 1
                 };
             }
-            case ClauseType.In:
-            case ClauseType.AllIn:
-                // IN/AllIn cannot use the single-slot StartsWith fallback above — they
-                // need multi-term OR/AND semantics. Returning null forces these clauses
-                // through the regular posting-list pipeline; AreAllScanEligible will see
-                // null and disable entry-scan for any AND chain that contains them.
-                return null;
             case ClauseType.EndsWith:
             {
                 if (termType != ParamValueType.String)
-                {
                     return null;
-                }
-
                 sliceIndex++;
                 return new ScanPredicateInfo
                 {
@@ -5168,78 +5160,40 @@ internal static partial class QueryPlanBuilder
                     ParamIndex = sliceIndex - 1
                 };
             }
-            case ClauseType.AndGroup:
-            {
-                if (clause.SubClauses is not { Count: > 0 } subs)
-                {
-                    return null;
-                }
-
-                var subExecs = exec?.SubExecutions;
-                var branches = new List<ScanPredicateInfo>();
-                for (int si = 0; si < subs.Count; si++)
-                {
-                    var sub = subs[si];
-                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
-                    var subTermType = subExec?.TermValueType ?? InferTermType(sub);
-                    var subPred = BuildScanPredicateInfoCore(sub, subExec, subTermType,
-                        ref longIndex, ref doubleIndex, ref sliceIndex);
-                    if (subPred == null)
-                    {
-                        return null;
-                    }
-
-                    branches.Add(subPred.Value);
-                }
-                return new ScanPredicateInfo
-                {
-                    FieldName = clause.FieldName ?? subs[0].FieldName,
-                    ValueType = ScanValueType.Long,
-                    CompareOp = ScanCompareOp.Equal,
-                    SubPredicates = branches.ToArray(),
-                    Group = GroupKind.And
-                };
-            }
-
             case ClauseType.Exists:
                 return new ScanPredicateInfo
                 {
                     FieldName = clause.FieldName,
-                    ValueType = ScanValueType.Long, // unused for Exists but must be set
+                    ValueType = ScanValueType.Long,
                     CompareOp = ScanCompareOp.Exists,
-                    ParamIndex = 0 // unused
+                    ParamIndex = 0
                 };
 
+            case ClauseType.AndGroup:
             case ClauseType.OrGroup:
             {
                 if (clause.SubClauses is not { Count: > 0 } subs)
-                {
                     return null;
-                }
 
-                var subExecs = exec?.SubExecutions;
+                var subExecs = exec.SubExecutions;
                 var branches = new List<ScanPredicateInfo>();
+                // Save indices so we can roll back if any sub-clause is unscannable.
                 int li = longIndex, di = doubleIndex, slc = sliceIndex;
                 for (int si = 0; si < subs.Count; si++)
                 {
-                    var sub = subs[si];
-                    var subExec = subExecs != null && si < subExecs.Length ? subExecs[si] : null;
-                    var subTermType = subExec?.TermValueType ?? InferTermType(sub);
-                    var subPred = BuildScanPredicateInfoCore(sub, subExec, subTermType,
+                    var subTermType = subExecs[si].TermValueType;
+                    var subPred = BuildScanPredicateInfoCore(subs[si], subExecs[si], subTermType,
                         ref li, ref di, ref slc);
                     if (subPred == null)
-                    {
-                        return null; // Any complex subclause → can't entry-scan the whole group
-                    }
-
+                        return null;
                     branches.Add(subPred.Value);
                 }
                 longIndex = li; doubleIndex = di; sliceIndex = slc;
                 return new ScanPredicateInfo
                 {
-                    FieldName = subs[0].FieldName,
+                    FieldName = clause.FieldName ?? subs[0].FieldName,
                     SubPredicates = branches.ToArray(),
-                    Group = GroupKind.Or
+                    Group = clause.ClauseType == ClauseType.AndGroup ? GroupKind.And : GroupKind.Or
                 };
             }
         }
