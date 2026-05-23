@@ -132,9 +132,9 @@ internal static partial class QueryPlanBuilder
 
         var flatClauses = new List<(ClauseInfo Clause, ClauseExecution Exec)>();
         var execs = exec.Executions;
-        if (execs is { Length: > 0 })
+        if (execs is { Count: > 0 })
         {
-            for (int ci = 0; ci < execs.Length; ci++)
+            for (int ci = 0; ci < execs.Count; ci++)
             {
                 var clause = execs[ci].Clause;
                 var clauseExec = execs[ci];
@@ -142,7 +142,7 @@ internal static partial class QueryPlanBuilder
                 {
                     for (int si = 0; si < clause.SubClauses.Count; si++)
                     {
-                        var subExec = clauseExec?.SubExecutions != null && si < clauseExec.SubExecutions.Length ? clauseExec.SubExecutions[si] : null;
+                        var subExec = clauseExec?.SubExecutions != null && si < clauseExec.SubExecutions.Count ? clauseExec.SubExecutions[si] : null;
                         flatClauses.Add((clause.SubClauses[si], subExec));
                     }
                 }

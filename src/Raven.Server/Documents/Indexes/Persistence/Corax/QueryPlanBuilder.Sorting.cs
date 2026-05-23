@@ -41,7 +41,7 @@ internal static partial class QueryPlanBuilder
             return;
 
         var execs = exec.Executions;
-        if (execs == null || execs.Length == 0)
+        if (execs == null || execs.Count == 0)
             return;
 
         // Only consider the first ORDER BY field
@@ -49,7 +49,7 @@ internal static partial class QueryPlanBuilder
 
         // Find a range clause on the same field (scan all clauses, not just first — the sort-eligible
         // clause may not be the cheapest and thus not clause[0]).
-        for (int i = 0; i < execs.Length; i++)
+        for (int i = 0; i < execs.Count; i++)
         {
             var clause = execs[i].Clause;
             var sortExec = execs[i];

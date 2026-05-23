@@ -21,10 +21,10 @@ internal static partial class QueryPlanBuilder
     private static void PopulateHighlightingTerms(QueryExecution exec, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
     {
         var execs = exec.Executions;
-        if (highlightingTerms == null || execs is not { Length: > 0 })
+        if (highlightingTerms == null || execs is not { Count: > 0 })
             return;
 
-        for (int ci = 0; ci < execs.Length; ci++)
+        for (int ci = 0; ci < execs.Count; ci++)
         {
             var clauseObj = execs[ci].Clause;
             var clauseExec2 = execs[ci];
@@ -38,7 +38,7 @@ internal static partial class QueryPlanBuilder
                 {
                     for (int si = 0; si < clauseObj.SubClauses.Count; si++)
                     {
-                        var subExec = clauseExec2?.SubExecutions != null && si < clauseExec2.SubExecutions.Length ? clauseExec2.SubExecutions[si] : null;
+                        var subExec = clauseExec2?.SubExecutions != null && si < clauseExec2.SubExecutions.Count ? clauseExec2.SubExecutions[si] : null;
                         PopulateHighlightingForClause(clauseObj.SubClauses[si], subExec, highlightingTerms, metadata, exec);
                     }
 

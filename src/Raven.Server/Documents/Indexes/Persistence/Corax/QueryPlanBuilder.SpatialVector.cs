@@ -202,8 +202,6 @@ internal static partial class QueryPlanBuilder
         // Extend Executions array to include spatial/vector post-filter clauses.
         int extraCount = (spatialClauses?.Length ?? 0) + (vectorClauses?.Length ?? 0);
         var execs = exec.Executions ??= [];
-        int execIdx = execs.Length;
-        Array.Resize(ref execs, execs.Length + extraCount);
 
         int matchIndex = CountMatchSlots(execs, exec.IsAllEntries, allNegated);
 
@@ -213,7 +211,7 @@ internal static partial class QueryPlanBuilder
             for (int i = 0; i < spatialClauses.Length; i++)
             {
                 var spatialExec = spatialExecs?[i] ?? new ClauseExecution(spatialClauses[i]);
-                execs[execIdx++] = spatialExec;
+                execs.Add(spatialExec);
                 exec.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i], Exec = spatialExec };
             }
         }
@@ -224,7 +222,7 @@ internal static partial class QueryPlanBuilder
             for (int i = 0; i < vectorClauses.Length; i++)
             {
                 var vectorExec = vectorExecs?[i] ?? new ClauseExecution(vectorClauses[i]);
-                execs[execIdx++] = vectorExec;
+                execs.Add(vectorExec);
                 exec.VectorSelects[i] = new VectorSearchOp
                 {
                     Clause = vectorClauses[i], Exec = vectorExec
