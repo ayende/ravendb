@@ -619,11 +619,11 @@ internal static partial class QueryPlanBuilder
         // Spatial: resolve each spatial clause directly, then chain via PostFilterMatch.
         if (exec.SpatialFilters is { Length: > 0 })
         {
-            var primary = ResolveClause(exec.SpatialFilters[0].Clause, exec.SpatialFilters[0].Exec, exec, walkerCtx);
+            var primary = ResolveClause(exec.SpatialFilters[0].Exec, exec, walkerCtx);
             var rest = exec.SpatialFilters.Length is 1 ? Array.Empty<IQueryMatch>() : new IQueryMatch[exec.SpatialFilters.Length - 1];
             for (int i = 1; i < exec.SpatialFilters.Length; i++)
             {
-                rest[i - 1] = ResolveClause(exec.SpatialFilters[i].Clause, exec.SpatialFilters[i].Exec, exec, walkerCtx);
+                rest[i - 1] = ResolveClause(exec.SpatialFilters[i].Exec, exec, walkerCtx);
             }
             result = new PostFilterMatch(primary, rest);
 
@@ -678,7 +678,7 @@ internal static partial class QueryPlanBuilder
         writer.SetValues(subPlan);
 
         if (walkerCtx.Clauses.Count == 1)
-            return ResolveClause(walkerCtx.Clauses[0], subExecs[0], subPlan, walkerCtx);
+            return ResolveClause(subExecs[0], subPlan, walkerCtx);
 
         // Multiple clauses (AND chain) — resolve each and AND them via bitmap.
         // RoaringBitmap is passed as `ref` to AndWithMatch, so using var is not legal here;
@@ -690,8 +690,7 @@ internal static partial class QueryPlanBuilder
             bool first = true;
             for (int ci2 = 0; ci2 < walkerCtx.Clauses.Count; ci2++)
             {
-                var clause = walkerCtx.Clauses[ci2];
-                var match = ResolveClause(clause, subExecs[ci2], subPlan, walkerCtx);
+                var match = ResolveClause(subExecs[ci2], subPlan, walkerCtx);
                 if (first)
                 {
                     QueryPrimitives.OrWithMatch(match, ref bitmap.BitmapState);
@@ -1281,13 +1280,13 @@ internal static partial class QueryPlanBuilder
             foreach (var execSpatialFilter in exec.SpatialFilters ?? [])
             {
                 ClauseExecution spatialExec = execSpatialFilter.Exec;
-                allEntriesMatches[matchOfs++] = ResolveClause(execSpatialFilter.Clause, spatialExec, exec, walkerCtx);
+                allEntriesMatches[matchOfs++] = ResolveClause(spatialExec, exec, walkerCtx);
             }
 
             foreach (var execVectorSelect in exec.VectorSelects ?? [])
             {
                 ClauseExecution vectorExec = execVectorSelect.Exec;
-                allEntriesMatches[matchOfs++] = ResolveClause(execVectorSelect.Clause, vectorExec, exec, walkerCtx);
+                allEntriesMatches[matchOfs++] = ResolveClause(vectorExec, exec, walkerCtx);
             }
 
             return allEntriesMatches;
@@ -1301,7 +1300,7 @@ internal static partial class QueryPlanBuilder
         if (!exec.Plan.AllNegated && 
             execs is [{IsNegated: true,Clause.ClauseType: not (ClauseType.In or ClauseType.AllIn)}])
         {
-            return [ResolveClause(execs[0].Clause, execs[0], exec, walkerCtx)];
+            return [ResolveClause(execs[0], exec, walkerCtx)];
         }
 
         var matches = new IQueryMatch[CountMatchSlots(execs, exec.IsAllEntries, exec.Plan.AllNegated)];
@@ -1314,9 +1313,8 @@ internal static partial class QueryPlanBuilder
             {
                 for (int si = 0; si < subClauses.Count; si++)
                 {
-                    var sub = subClauses[si];
                     var subExec = subExecs[si];
-                    var match = ResolveClause(sub, subExec, exec, walkerCtx);
+                    var match = ResolveClause(subExec, exec, walkerCtx);
                     if (subExec.BoostFactor > 0)
                         match = indexSearcher.Boost(match, subExec.BoostFactor);
                     matches[matchIdx++] = match;
@@ -1347,7 +1345,7 @@ internal static partial class QueryPlanBuilder
                     IQueryMatch match = clause.IsOrChainNotEquals switch
                     {
                         true => CreateNotEqualsOrMatch(clause, clauseExec, exec, walkerCtx),
-                        false => ResolveClause(clause, clauseExec, exec, walkerCtx)
+                        false => ResolveClause(clauseExec, exec, walkerCtx)
                     };
                     if (clauseExec.BoostFactor > 0)
                         match = indexSearcher.Boost(match, clauseExec.BoostFactor);
@@ -1376,7 +1374,7 @@ internal static partial class QueryPlanBuilder
             ClauseType.Between when exec.SentinelRewriteType != null =>
                 ResolveSentinelRewrittenBetween(exec, fieldMeta, indexSearcher, queryExec),
             ClauseType.Between => BetweenQueryFromParam(packed, fieldMeta, indexSearcher, queryExec, forward),
-            _ => ResolveClause(clause, exec, queryExec, walkerCtx) // fallback
+            _ => ResolveClause(exec, queryExec, walkerCtx) // fallback
         };
     }
 
@@ -1418,8 +1416,9 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution cur, QueryExecution root, ResolutionContext walkerCtx)
+    private static IQueryMatch ResolveClause(ClauseExecution cur, QueryExecution root, ResolutionContext walkerCtx)
     {
+        var clause = cur.Clause;
         var indexSearcher = walkerCtx.IndexSearcher;
         var builderParams = walkerCtx.BuilderParams;
         if (clause.ClauseType == ClauseType.OrGroup && clause.SubClauses != null)
@@ -1429,7 +1428,7 @@ internal static partial class QueryPlanBuilder
             for (int si = 0; si < clause.SubClauses.Count; si++)
             {
                 var subExec = cur.SubExecutions[si];
-                var subMatch = ResolveClause(clause.SubClauses[si], subExec, root, walkerCtx);
+                var subMatch = ResolveClause(subExec, root, walkerCtx);
                 QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
             }
 
@@ -1446,7 +1445,7 @@ internal static partial class QueryPlanBuilder
             {
                 var sub = clause.SubClauses[si];
                 var subExec = cur.SubExecutions[si];
-                var subMatch = ResolveClause(sub, subExec, root, walkerCtx);
+                var subMatch = ResolveClause(subExec, root, walkerCtx);
                 if (first)
                 {
                     QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
@@ -1633,7 +1632,7 @@ internal static partial class QueryPlanBuilder
         IQueryMatch termMatch;
         if (clause.ClauseType is ClauseType.In or ClauseType.AllIn)
         {
-            termMatch = ResolveClause(clause, exec, queryExec, walkerCtx);
+            termMatch = ResolveClause(exec, queryExec, walkerCtx);
         }
         else if (clause.ClauseType == ClauseType.Exists)
         {
@@ -1839,7 +1838,7 @@ internal static partial class QueryPlanBuilder
 
         // Create the match via the existing factory methods, then extract the provider.
         // The factory methods handle all complexity (analyzer, CompactKey, tree lookup).
-        var match = ResolveClause(clause, exec, queryExec, walkerCtx);
+        var match = ResolveClause(exec, queryExec, walkerCtx);
         if (match is TermsProviderMatch tpm)
             return tpm.Provider;
 
