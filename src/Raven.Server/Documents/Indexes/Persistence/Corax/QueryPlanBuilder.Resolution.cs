@@ -409,7 +409,7 @@ internal static partial class QueryPlanBuilder
         ClauseExecution[] executions = SortClausesByCardinality(execList, isOr);
 
         exec = new QueryExecution { Executions = executions };
-        
+
         if(executions.Length is 0)
         {
             if (template.Clauses.Count > 0)
@@ -423,6 +423,33 @@ internal static partial class QueryPlanBuilder
 
             // FROM Post - i.e, query with no where clauses, still needs a compiled delegate, so we go generate a cached exec for it
             exec.IsAllEntries = true;
+        }
+
+        // Empty-IN in AND short-circuit. Must happen before the cache lookup to avoid
+        // poisoning the cache. Consider two executions of the same query text:
+        //
+        //   Execution 1: FROM Items WHERE Tags IN ($p) AND spatial.within(Loc, ...) — $p = []
+        //     Empty IN in an AND chain → guaranteed zero results (AND with empty = empty).
+        //     If we let this reach the cache, OperandOrdering=0 + TypeSignature=0 would
+        //     cache an empty plan.
+        //
+        //   Execution 2: same query — $p = ['news']
+        //     Same cache key → cache hit → reuses the empty plan → zero results. Wrong.
+        //
+        // By bailing out here, we never touch the cache and the next execution with real
+        // terms gets a clean cache miss. OR chains are fine — empty-IN clauses are
+        // compacted out inside EmitPlan (OR with nothing is a no-op).
+        if (!isOr && executions.Length > 0)
+        {
+            for (int i = 0; i < executions.Length; i++)
+            {
+                if (executions[i].ClauseType is ClauseType.In or ClauseType.AllIn
+                    && executions[i].InTermCount == 0
+                    && !executions[i].HasNullTerm)
+                {
+                    return null; // Caller will use TermMatch.CreateEmpty.
+                }
+            }
         }
 
         // ── Step 6: Compute cache key components (cheap) ────────────────────
@@ -451,31 +478,9 @@ internal static partial class QueryPlanBuilder
 
         (PlanOp[] emittedOps, int emittedRequiredBitmaps, int[] emittedInRangeCounts) = EmitPlan(isOr, executions);
         exec.Executions = executions;
-        exec.InRangeCounts = emittedInRangeCounts is { Length: > 0 } ? 
-            BuildInRangeCounts(executions, isOr, emittedInRangeCounts.Length) : 
+        exec.InRangeCounts = emittedInRangeCounts is { Length: > 0 } ?
+            BuildInRangeCounts(executions, isOr, emittedInRangeCounts.Length) :
             null;
-
-        // Empty-IN short-circuit. Consider two executions of the same query text:
-        //
-        //   Execution 1: FROM Items WHERE Tags IN ($p) — with $p = [] (empty array)
-        //     EmitPlan returns Ops=[] (empty-IN in AND → zero results).
-        //     OperandOrdering=0, TypeSignature=0.
-        //
-        //   Execution 2: FROM Items WHERE Tags IN ($p) — with $p = ['news']
-        //     EmitPlan produces a real plan (FillFromPostings + IterateInto).
-        //     OperandOrdering=0, TypeSignature=0 — same cache key!
-        //
-        // If we cached the empty plan from execution 1, execution 2 would reuse it
-        // and silently return zero results. Avoid this by returning an explicit empty
-        // match without touching the cache.
-        //
-        // Exception: spatial/vector post-filters still need the plan pipeline (vector
-        // with a null filter would return unfiltered top-K).if (emittedOps is { Length: 0 } && 
-            exec.IsAllEntries == false && 
-            template.SpatialClauses == null && template.VectorClauses == null)
-        {
-            return null; // Caller will use TermMatch.CreateEmpty.
-        }
 
         var allNegated = CheckAllNegated(executions);
         AttachSpatialAndVectorClauses(exec, allNegated, template, planParams, builderParameters, writer);
@@ -3185,14 +3190,10 @@ internal static partial class QueryPlanBuilder
 
         if (isOr is false)
         {
-            // Empty IN clauses: zero results in AND, no-op in OR.
+            // AND empty-IN is caught before the cache lookup in Build.
+            // This assert guards against regressions — should never fire.
             for (int i = 0; i < executions.Length; i++)
-            {
-                if (IsEmptyIn(executions[i]))
-                {
-                    return ([], 2, null);
-                }
-            }
+                Debug.Assert(IsEmptyIn(executions[i]) == false, "Empty IN in AND should have been caught before EmitPlan");
         }
         else
         {
