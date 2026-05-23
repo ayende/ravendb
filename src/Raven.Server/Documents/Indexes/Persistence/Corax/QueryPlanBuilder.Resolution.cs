@@ -564,7 +564,7 @@ internal static partial class QueryPlanBuilder
         // Spatial / Vector queries with no other clauses ( WHERE spatial.within() / WHERE vector.search() )
         // use a dedicated code path to avoid AllEntries + post filters
         if (exec is { IsAllEntries: true, HasSpatialOrVector: true })
-            return InstantiateAllEntriesPostFilter(exec, planParams, builderParameters, walkerCtx);
+            return InstantiateAllEntriesPostFilter(exec, builderParameters, walkerCtx);
 
         var resolvedMatches = ResolveMatches(exec, walkerCtx);
         var termSources = ResolveTermSources(exec, walkerCtx);
@@ -612,8 +612,7 @@ internal static partial class QueryPlanBuilder
     /// vector selects. Spatial filters chain via <see cref="PostFilterMatch"/> with the first as the seed;
     /// vector receives the spatial chain as its filter (or null for unfiltered top-K).
     /// </summary>
-    private static IQueryMatch InstantiateAllEntriesPostFilter(QueryExecution exec, PlanParameters planParams,
-        QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
+    private static IQueryMatch InstantiateAllEntriesPostFilter(QueryExecution exec, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
     {
         IQueryMatch result = null;
 
@@ -1419,8 +1418,7 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution exec,
-        QueryExecution queryExec, ResolutionContext walkerCtx)
+    private static IQueryMatch ResolveClause(ClauseInfo clause, ClauseExecution cur, QueryExecution root, ResolutionContext walkerCtx)
     {
         var indexSearcher = walkerCtx.IndexSearcher;
         var builderParams = walkerCtx.BuilderParams;
@@ -1430,8 +1428,8 @@ internal static partial class QueryPlanBuilder
             var temp = new RoaringBitmap(indexSearcher.Allocator);
             for (int si = 0; si < clause.SubClauses.Count; si++)
             {
-                var subExec = exec.SubExecutions[si];
-                var subMatch = ResolveClause(clause.SubClauses[si], subExec, queryExec, walkerCtx);
+                var subExec = cur.SubExecutions[si];
+                var subMatch = ResolveClause(clause.SubClauses[si], subExec, root, walkerCtx);
                 QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
             }
 
@@ -1447,8 +1445,8 @@ internal static partial class QueryPlanBuilder
             for (int si = 0; si < clause.SubClauses.Count; si++)
             {
                 var sub = clause.SubClauses[si];
-                var subExec = exec.SubExecutions[si];
-                var subMatch = ResolveClause(sub, subExec, queryExec, walkerCtx);
+                var subExec = cur.SubExecutions[si];
+                var subMatch = ResolveClause(sub, subExec, root, walkerCtx);
                 if (first)
                 {
                     QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
@@ -1474,25 +1472,25 @@ internal static partial class QueryPlanBuilder
             fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
         }
 
-        var packed = exec.PackedParamValue;
+        var packed = cur.PackedParamValue;
 
         switch (clause.ClauseType)
         {
             case ClauseType.Equals:
             case ClauseType.NotEquals:
-                return TermQueryFromParam(packed, fieldMeta, indexSearcher, queryExec);
+                return TermQueryFromParam(packed, fieldMeta, indexSearcher, root);
 
             case ClauseType.GreaterThan:
             case ClauseType.GreaterThanOrEqual:
             case ClauseType.LessThan:
             case ClauseType.LessThanOrEqual:
-                return RangeQueryFromParam(clause.ClauseType, packed, fieldMeta, indexSearcher, queryExec);
+                return RangeQueryFromParam(clause.ClauseType, packed, fieldMeta, indexSearcher, root);
 
             case ClauseType.Between:
             {
-                if (exec.SentinelRewriteType != null)
-                    return ResolveSentinelRewrittenBetween(exec, fieldMeta, indexSearcher, queryExec);
-                return BetweenQueryFromParam(packed, fieldMeta, indexSearcher, queryExec);
+                if (cur.SentinelRewriteType != null)
+                    return ResolveSentinelRewrittenBetween(cur, fieldMeta, indexSearcher, root);
+                return BetweenQueryFromParam(packed, fieldMeta, indexSearcher, root);
             }
 
             case ClauseType.In:
@@ -1501,13 +1499,13 @@ internal static partial class QueryPlanBuilder
                 // IN/AllIn inside an AndGroup reaches here as a single clause.
                 // Expand each term into a TermQuery and merge via bitmap, same as the
                 // top-level queryExec does with FillFromPostings/OrWithPostings/AndWithPostings.
-                if (exec.InTermCount == 0)
+                if (cur.InTermCount == 0)
                     return indexSearcher.EmptyMatch();
                 var bm = new BitmapMatch(indexSearcher.Allocator);
                 var temp = new RoaringBitmap(indexSearcher.Allocator);
-                for (int t = 0; t < exec.InTermCount; t++)
+                for (int t = 0; t < cur.InTermCount; t++)
                 {
-                    var termMatch = ResolveInTerm(clause, exec, t, queryExec, walkerCtx);
+                    var termMatch = ResolveInTerm(clause, cur, t, root, walkerCtx);
                     if (clause.ClauseType == ClauseType.AllIn && t > 0)
                         QueryPrimitives.AndWithMatch(termMatch, ref bm.BitmapState, ref temp);
                     else
@@ -1522,10 +1520,10 @@ internal static partial class QueryPlanBuilder
                 return indexSearcher.ExistsQuery(fieldMeta);
 
             case ClauseType.StartsWith:
-                return indexSearcher.StartWithQuery(fieldMeta, queryExec.StringValues[packed.Param1]);
+                return indexSearcher.StartWithQuery(fieldMeta, root.StringValues[packed.Param1]);
 
             case ClauseType.EndsWith:
-                return indexSearcher.EndsWithQuery(fieldMeta, queryExec.StringValues[packed.Param1]);
+                return indexSearcher.EndsWithQuery(fieldMeta, root.StringValues[packed.Param1]);
 
             case ClauseType.Search:
             {
@@ -1553,7 +1551,7 @@ internal static partial class QueryPlanBuilder
                 else
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
 
-                var searchTerm = queryExec.StringValues[packed.Param1];
+                var searchTerm = root.StringValues[packed.Param1];
                 if (searchQueryOptions == IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments
                     && searchTerm is { Length: >= 1 }
                     && (searchTerm[0] == '*' || (searchTerm.Length >= 2 && searchTerm[^1] == '*')))
@@ -1571,16 +1569,16 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Regex:
                 return indexSearcher.RegexQuery(fieldMeta,
-                    new Regex(queryExec.StringValues[packed.Param1]));
+                    new Regex(root.StringValues[packed.Param1]));
 
             case ClauseType.Spatial:
             {
-                return HandleSpatial(builderParams, clause, exec, clause.SpatialMethodType);
+                return HandleSpatial(builderParams, clause, cur, clause.SpatialMethodType);
             }
 
             case ClauseType.Vector:
             {
-                var vectorItem = HandleVector(builderParams, clause, exec, false);
+                var vectorItem = HandleVector(builderParams, clause, cur, false);
                 return vectorItem.Materialize(null);
             }
 
