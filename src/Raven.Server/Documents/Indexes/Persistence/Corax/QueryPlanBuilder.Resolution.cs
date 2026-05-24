@@ -1506,71 +1506,9 @@ internal static partial class QueryPlanBuilder
         var clause = cur.Clause;
         var indexSearcher = walkerCtx.IndexSearcher;
         var builderParams = walkerCtx.BuilderParams;
-        if (clause.ClauseType == ClauseType.OrGroup && clause.SubClauses != null)
-        {
-            // Mirror MatchResolver.ResolveSubClauseSlot: a sub-clause flagged with
-            // IsOrChainNotEquals (negated direct child of this OrGroup, per PlanWalker
-            // .NotCanonicalize) must contribute its complement (AllEntries ANDNOT positive),
-            // not the raw positive posting list. Without this the OrGroup collapse path
-            // silently OR-merges the positive form for `... or X != y`.
-            var bm = new BitmapMatch(indexSearcher.Allocator);
-            var temp = new RoaringBitmap(indexSearcher.Allocator);
-            for (int si = 0; si < clause.SubClauses.Count; si++)
-            {
-                var sub = clause.SubClauses[si];
-                var subExec = cur.SubExecutions[si];
-                var subMatch = sub.IsOrChainNotEquals
-                    ? CreateNotEqualsOrMatch(sub, subExec, root, walkerCtx)
-                    : ResolveClause(subExec, root, walkerCtx);
-                QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
-            }
-
-            temp.Dispose();
-            return bm;
-        }
-
-        if (clause.ClauseType == ClauseType.AndGroup && clause.SubClauses != null)
-        {
-            // NOTE: This collapse path is a known dual-path issue tracked by ayende/ravendb#4847.
-            // The IL slot pipeline (EmitOrPlan / EmitAndPlan) handles AND/OR composition with
-            // correct semantics for both `IsNegated` and `ClauseType == NotEquals` (see
-            // EmitAndPlan line ~3434). This collapse path historically only checked `IsNegated`,
-            // which silently AND-merged NotEquals sub-clauses as positive matches. Mirror the
-            // emitter's predicate here so the dual paths agree until #4847 retires this branch.
-            var bm = new BitmapMatch(indexSearcher.Allocator);
-            var temp = new RoaringBitmap(indexSearcher.Allocator);
-            bool first = true;
-            for (int si = 0; si < clause.SubClauses.Count; si++)
-            {
-                var sub = clause.SubClauses[si];
-                var subExec = cur.SubExecutions[si];
-                var subMatch = ResolveClause(subExec, root, walkerCtx);
-                bool isNegated = sub.IsNegated || sub.ClauseType == ClauseType.NotEquals;
-                if (first)
-                {
-                    if (isNegated)
-                    {
-                        // First clause is negated: seed from AllEntries, then ANDNOT.
-                        // Mirrors EmitAndPlan's firstIsNegated handling (line ~3270).
-                        var allEntries = indexSearcher.AllEntries();
-                        QueryPrimitives.OrWithMatch(allEntries, ref bm.BitmapState);
-                        QueryPrimitives.AndNotWithMatch(subMatch, ref bm.BitmapState, ref temp);
-                    }
-                    else
-                    {
-                        QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
-                    }
-                    first = false;
-                }
-                else if (isNegated)
-                    QueryPrimitives.AndNotWithMatch(subMatch, ref bm.BitmapState, ref temp);
-                else
-                    QueryPrimitives.AndWithMatch(subMatch, ref bm.BitmapState, ref temp);
-            }
-
-            temp.Dispose();
-            return bm;
-        }
+        // ResolveClause is invoked per leaf only. OrGroup/AndGroup are decomposed
+        // by ResolveClauseLeavesInto / EmitClauseInto upstream; if one reaches here
+        // it falls through to the switch default which throws "Unexpected ClauseType".
 
         // Spatial/Vector/Search have their own field resolution paths.
         FieldMetadata fieldMeta = default;
