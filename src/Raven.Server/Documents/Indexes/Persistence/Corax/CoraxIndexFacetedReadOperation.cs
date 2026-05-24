@@ -257,7 +257,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
             .ToList();
 
 
-        FieldMetadata GetFieldMetadata(string name) => QueryBuilderHelper.GetFieldMetadata(_allocator, name, _index, _fieldMappings, null,
+        FieldMetadata GetFieldMetadata(string name) => QueryBuilderHelper.GetFieldMetadata(_allocator, name, _index, _fieldMappings,
             _index.Definition.HasDynamicFields,
             _index.Definition.HasDynamicFields ? new Lazy<List<string>>(() => _indexSearcher.GetFields()) : null, exact: true, hasBoost: true);
     }

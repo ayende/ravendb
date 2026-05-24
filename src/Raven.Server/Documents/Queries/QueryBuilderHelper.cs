@@ -487,26 +487,24 @@ public static class QueryBuilderHelper
         throw new InvalidQueryException("Expected field, got: " + field, query.QueryText, parameters);
     }
 
-    internal static FieldMetadata GetFieldIdForOrderBy(ByteStringContext allocator, string fieldName, Index index, bool hasDynamics, Lazy<List<string>> dynamicFields, IndexFieldsMapping indexMapping = null, FieldsToFetch queryMapping = null,
+    internal static FieldMetadata GetFieldIdForOrderBy(ByteStringContext allocator, string fieldName, Index index, bool hasDynamics, Lazy<List<string>> dynamicFields, IndexFieldsMapping indexMapping = null,
         bool isForQuery = true)
     {
         if (fieldName is "score()")
             return FieldMetadata.Build(allocator, fieldName, -1, FieldIndexingMode.Normal, null);
 
-
-
-        return GetFieldMetadata(allocator, fieldName, index, indexMapping, queryMapping, hasDynamics, dynamicFields, isForQuery: isForQuery, isSorting: true);
+        return GetFieldMetadata(allocator, fieldName, index, indexMapping, hasDynamics, dynamicFields, isForQuery: isForQuery, isSorting: true);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static FieldMetadata GetFieldMetadata(in QueryBuilderParameters parameters, string fieldName, bool isForQuery = true,
         bool exact = false, bool isSorting = false, bool hasBoost = false, bool handleSearch = false, bool forceDefaultSearchAnalyzer = false)
     {
-        return GetFieldMetadata(parameters.Allocator, fieldName, parameters.Index, parameters.IndexFieldsMapping, parameters.FieldsToFetch, parameters.HasDynamics, parameters.DynamicFields, isForQuery, exact, isSorting, hasBoost, handleSearch, forceDefaultSearchAnalyzer);
+        return GetFieldMetadata(parameters.Allocator, fieldName, parameters.Index, parameters.IndexFieldsMapping, parameters.HasDynamics, parameters.DynamicFields, isForQuery, exact, isSorting, hasBoost, handleSearch, forceDefaultSearchAnalyzer);
     }
-    
+
     internal static FieldMetadata GetFieldMetadata(ByteStringContext allocator, string fieldName, Index index, IndexFieldsMapping indexMapping,
-        FieldsToFetch queryMapping, bool hasDynamics, Lazy<List<string>> dynamicFields, bool isForQuery = true,
+        bool hasDynamics, Lazy<List<string>> dynamicFields, bool isForQuery = true,
         bool exact = false, bool isSorting = false, bool hasBoost = false, bool handleSearch = false, bool forceDefaultSearchAnalyzer = false)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
@@ -558,7 +556,7 @@ public static class QueryBuilderHelper
         }
 
         return metadata;
-        void ThrowNotFoundInIndex() => throw new InvalidQueryException($"Field {fieldName} not found in Index '{index.Name}'.");
+        void ThrowNotFoundInIndex() => throw new InvalidQueryException($"Field {fieldName} not found in Index '{index?.Name ?? "unknown"}'.");
     }
 
     internal static bool IsExact(Index index, bool exact, QueryFieldName fieldName)
