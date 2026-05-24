@@ -163,30 +163,16 @@ internal static partial class QueryPlanBuilder
             case ExecutionStrategy.DirectScan when orderByFields is { Length: <= 2 }:
                 // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
                 // DirectScan plan — PageSize is not part of the plan cache key.
+                if (exec.Executions is not { Count:> 0 } || 
+                    exec.Plan.SortDrivingClauseIndex >= 0 && exec.Executions[exec.Plan.SortDrivingClauseIndex].PackedParamValue.IsNone is false)
                 {
-                    var execs = exec.Executions;
-                    bool isFullScan = execs is null or { Count: 0 };
-                    int drivingIdx = -1;
-                    if (!isFullScan)
-                    {
-                        drivingIdx = exec.Plan.SortDrivingClauseIndex;
-                        // BoostFactor cannot land here: ComputeOptFlags clears
-                        // DirectScanCandidate template-wide for any boost; only IsNone
-                        // (parameter resolved to null) can still invalidate at runtime.
-                        if (drivingIdx >= 0 && exec.Executions[drivingIdx].PackedParamValue.IsNone)
-                            drivingIdx = -1;
-                    }
-                    if (isFullScan || drivingIdx >= 0)
-                    {
-                        innerMatch = ConstructDirectScan(exec, orderByFields, planParams, builderParameters,
-                            compiledPlan, drivingIdx, isFullScan, orderByFields.Length == 2, entriesToScan: 0, bitmapCost: 0);
-                        if (innerMatch is not null) return innerMatch;
-                    }
-                    goto default;
+                    innerMatch = ConstructDirectScan(exec, orderByFields, planParams, builderParameters,
+                        compiledPlan, exec.Plan.SortDrivingClauseIndex, exec.Executions is not { Count:> 0 }, orderByFields.Length == 2, entriesToScan: 0, bitmapCost: 0);
+                    if (innerMatch is not null) return innerMatch;
                 }
+                goto default;
             case ExecutionStrategy.BitmapSort:
-            default:
-                // may either be the selected strategy, or a one-off (because of bad parameters preventing a faster strategy) 
+            default: // may either be the selected strategy or a one-off (because of bad parameters preventing a faster strategy) 
                 return InstantiateBitmapFallback(compiledPlan, exec, orderByFields, hasEmptySorts,
                     planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out innerMatch, token);
         }
