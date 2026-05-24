@@ -1517,6 +1517,12 @@ internal static partial class QueryPlanBuilder
 
         if (clause.ClauseType == ClauseType.AndGroup && clause.SubClauses != null)
         {
+            // NOTE: This collapse path is a known dual-path issue tracked by ayende/ravendb#4847.
+            // The IL slot pipeline (EmitOrPlan / EmitAndPlan) handles AND/OR composition with
+            // correct semantics for both `IsNegated` and `ClauseType == NotEquals` (see
+            // EmitAndPlan line ~3434). This collapse path historically only checked `IsNegated`,
+            // which silently AND-merged NotEquals sub-clauses as positive matches. Mirror the
+            // emitter's predicate here so the dual paths agree until #4847 retires this branch.
             var bm = new BitmapMatch(indexSearcher.Allocator);
             var temp = new RoaringBitmap(indexSearcher.Allocator);
             bool first = true;
@@ -1525,12 +1531,24 @@ internal static partial class QueryPlanBuilder
                 var sub = clause.SubClauses[si];
                 var subExec = cur.SubExecutions[si];
                 var subMatch = ResolveClause(subExec, root, walkerCtx);
+                bool isNegated = sub.IsNegated || sub.ClauseType == ClauseType.NotEquals;
                 if (first)
                 {
-                    QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
+                    if (isNegated)
+                    {
+                        // First clause is negated: seed from AllEntries, then ANDNOT.
+                        // Mirrors EmitAndPlan's firstIsNegated handling (line ~3270).
+                        var allEntries = indexSearcher.AllEntries();
+                        QueryPrimitives.OrWithMatch(allEntries, ref bm.BitmapState);
+                        QueryPrimitives.AndNotWithMatch(subMatch, ref bm.BitmapState, ref temp);
+                    }
+                    else
+                    {
+                        QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
+                    }
                     first = false;
                 }
-                else if (sub.IsNegated)
+                else if (isNegated)
                     QueryPrimitives.AndNotWithMatch(subMatch, ref bm.BitmapState, ref temp);
                 else
                     QueryPrimitives.AndWithMatch(subMatch, ref bm.BitmapState, ref temp);
