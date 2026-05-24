@@ -242,15 +242,51 @@ internal static partial class QueryPlanBuilder
         /// </summary>
         private static void NotCanonicalize(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
-            if (ctx.IsOr == false)
-                return;
+            if (ctx.IsOr)
+            {
+                foreach (var c in clauses)
+                {
+                    if (c.IsNegated || c.ClauseType == ClauseType.NotEquals)
+                    {
+                        c.IsOrChainNotEquals = true;
+                    }
+                }
+            }
 
+            // Recurse into nested groups. Negation polarity on a direct child of any OrGroup
+            // (top-level or nested) must be materialized as AllEntries ANDNOT(positive); the
+            // raw posting list / range / tree-scan can't deliver the complement. Direct
+            // children of an AndGroup don't get the flag — AND-rooted negation is handled
+            // by the firstIsNegated / AndNotWith path which subtracts the positive form.
             foreach (var c in clauses)
             {
-                if (c.IsNegated || c.ClauseType == ClauseType.NotEquals)
+                if (c.SubClauses is not { Count: > 0 } subs)
+                    continue;
+                bool subIsOr = c.ClauseType == ClauseType.OrGroup;
+                foreach (var sub in subs)
                 {
-                    c.IsOrChainNotEquals = true;
+                    if (subIsOr && (sub.IsNegated || sub.ClauseType == ClauseType.NotEquals))
+                        sub.IsOrChainNotEquals = true;
                 }
+                NotCanonicalizeRecursive(subs);
+            }
+        }
+
+        /// <summary>Recursive helper for <see cref="NotCanonicalize"/>. Walks each clause's
+        /// SubClauses and flags negated direct children of any OrGroup with IsOrChainNotEquals.</summary>
+        private static void NotCanonicalizeRecursive(List<ClauseInfo> clauses)
+        {
+            foreach (var c in clauses)
+            {
+                if (c.SubClauses is not { Count: > 0 } subs)
+                    continue;
+                bool subIsOr = c.ClauseType == ClauseType.OrGroup;
+                foreach (var sub in subs)
+                {
+                    if (subIsOr && (sub.IsNegated || sub.ClauseType == ClauseType.NotEquals))
+                        sub.IsOrChainNotEquals = true;
+                }
+                NotCanonicalizeRecursive(subs);
             }
         }
 
