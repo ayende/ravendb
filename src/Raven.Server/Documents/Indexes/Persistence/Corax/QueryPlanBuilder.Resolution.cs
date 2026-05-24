@@ -3498,11 +3498,12 @@ internal static partial class QueryPlanBuilder
         return ordering;
     }
 
-    /// <summary>True when all clauses are negated (2+ clauses, first is negated after
+    /// <summary>True when all clauses are negated (1+ clauses, first is negated after
     /// cardinality sort — since negated sort last, if the first is negated, all are).
-    /// Single negated clause returns false — emitted as FillAllEntries + ANDNOT by the regular path.</summary>
+    /// The single-clause NotEquals path in <see cref="EmitAndPlan"/> sets <c>IsNegated = true</c>
+    /// before this is called, so the slot layout is <c>[AllEntries, TermMatch]</c>.</summary>
     private static bool CheckAllNegated(List<ClauseExecution> executions)
-        => executions is [{ IsNegated: true }, _, ..];
+        => executions is [{ IsNegated: true }, ..];
 
     
     static bool IsEmptyIn(ClauseExecution e) =>
