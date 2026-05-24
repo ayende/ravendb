@@ -1347,7 +1347,12 @@ internal static partial class QueryPlanBuilder
         public static IQueryMatch ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
             QueryExecution exec, ResolutionContext ctx)
         {
-            var match = ResolveClause(subExec, exec, ctx);
+            // A negated direct child of a nested OrGroup carries IsOrChainNotEquals=true (set by
+            // PlanWalker.NotCanonicalize). Materialise as AllEntries ANDNOT(positive) so the
+            // surrounding OR step combines the complement set, not the positive posting list.
+            IQueryMatch match = sub.IsOrChainNotEquals
+                ? CreateNotEqualsOrMatch(sub, subExec, exec, ctx)
+                : ResolveClause(subExec, exec, ctx);
             if (subExec.BoostFactor > 0)
                 match = ctx.IndexSearcher.Boost(match, subExec.BoostFactor);
             return match;
@@ -1502,12 +1507,20 @@ internal static partial class QueryPlanBuilder
         var builderParams = walkerCtx.BuilderParams;
         if (clause.ClauseType == ClauseType.OrGroup && clause.SubClauses != null)
         {
+            // Mirror MatchResolver.ResolveSubClauseSlot: a sub-clause flagged with
+            // IsOrChainNotEquals (negated direct child of this OrGroup, per PlanWalker
+            // .NotCanonicalize) must contribute its complement (AllEntries ANDNOT positive),
+            // not the raw positive posting list. Without this the OrGroup collapse path
+            // silently OR-merges the positive form for `... or X != y`.
             var bm = new BitmapMatch(indexSearcher.Allocator);
             var temp = new RoaringBitmap(indexSearcher.Allocator);
             for (int si = 0; si < clause.SubClauses.Count; si++)
             {
+                var sub = clause.SubClauses[si];
                 var subExec = cur.SubExecutions[si];
-                var subMatch = ResolveClause(subExec, root, walkerCtx);
+                var subMatch = sub.IsOrChainNotEquals
+                    ? CreateNotEqualsOrMatch(sub, subExec, root, walkerCtx)
+                    : ResolveClause(subExec, root, walkerCtx);
                 QueryPrimitives.OrWithMatch(subMatch, ref bm.BitmapState);
             }
 
@@ -3120,12 +3133,17 @@ internal static partial class QueryPlanBuilder
                     for (int si = 0; si < subCount; si++)
                     {
                         var sub = it.SubClauses[si];
+                        // Negated direct children of this nested OrGroup carry
+                        // IsOrChainNotEquals=true (PlanWalker.NotCanonicalize). Force
+                        // QueryMatch dispatch so the IL reads the pre-materialized
+                        // AllEntries-ANDNOT bitmap that MatchResolver.ResolveSubClauseSlot
+                        // produces, not the raw positive posting list.
                         ops.Add(new PlanOp
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
                             EstimatedCardinality = exec.Cardinality / subCount,
-                            Dispatch = GetDispatch(sub)
+                            Dispatch = sub.IsOrChainNotEquals ? MatchDispatch.QueryMatch : GetDispatch(sub)
                         });
                         matchIndex++;
                     }
@@ -3154,9 +3172,13 @@ internal static partial class QueryPlanBuilder
                         });
                         for (int s = 1; s < subClauses.Count; s++)
                         {
+                            // Mirror EmitAndPlan's firstIsNegated predicate: a bare NotEquals
+                            // sub-clause must subtract via AndNot. Pre-tactical-fix this branch
+                            // only checked IsNegated, silently AND-merging NotEquals subs as positives.
+                            bool subIsNegated = subClauses[s].IsNegated || subClauses[s].ClauseType == ClauseType.NotEquals;
                             ops.Add(new PlanOp
                             {
-                                Kind = subClauses[s].IsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
+                                Kind = subIsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
                                 ParamIndex = matchIndex + s,
                                 EstimatedCardinality = subCardinality,
                                 Dispatch = GetDispatch(subClauses[s]),
@@ -3189,9 +3211,11 @@ internal static partial class QueryPlanBuilder
                         });
                         for (int s = 1; s < subClauses.Count; s++)
                         {
+                            // Same predicate alignment as the matchIndex==0 branch above.
+                            bool subIsNegated = subClauses[s].IsNegated || subClauses[s].ClauseType == ClauseType.NotEquals;
                             ops.Add(new PlanOp
                             {
-                                Kind = subClauses[s].IsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
+                                Kind = subIsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
                                 ParamIndex = matchIndex + s,
                                 BitmapLocal = 0,
                                 EstimatedCardinality = subCardinality,
@@ -3315,13 +3339,17 @@ internal static partial class QueryPlanBuilder
                     int subCount = subClauses.Count;
                     for (int s = 0; s < subCount; s++)
                     {
+                        var sub = subClauses[s];
+                        // Negated direct children of this OrGroup carry IsOrChainNotEquals=true
+                        // (PlanWalker.NotCanonicalize). Force QueryMatch dispatch so the IL reads
+                        // the AllEntries-ANDNOT bitmap from MatchResolver.ResolveSubClauseSlot.
                         ops.Add(new PlanOp
                         {
                             Kind = s == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + s,
                             BitmapLocal = 0,
                             EstimatedCardinality = executions[0].Cardinality / Math.Max(1, subCount),
-                            Dispatch = GetDispatch(subClauses[s])
+                            Dispatch = sub.IsOrChainNotEquals ? MatchDispatch.QueryMatch : GetDispatch(sub)
                         });
                     }
 
@@ -3383,13 +3411,17 @@ internal static partial class QueryPlanBuilder
                     // Fill each subclause into bitmap[1]
                     for (int s = 0; s < subCount; s++)
                     {
+                        var sub = subClauses[s];
+                        // Negated direct children of this OrGroup carry IsOrChainNotEquals=true
+                        // (PlanWalker.NotCanonicalize). Force QueryMatch dispatch so the IL reads
+                        // the AllEntries-ANDNOT bitmap from MatchResolver.ResolveSubClauseSlot.
                         ops.Add(new PlanOp
                         {
                             Kind = PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex + s,
                             BitmapLocal = 1, // target bitmap[1]
                             EstimatedCardinality = executions[i].Cardinality / Math.Max(1, subCount),
-                            Dispatch = GetDispatch(subClauses[s])
+                            Dispatch = sub.IsOrChainNotEquals ? MatchDispatch.QueryMatch : GetDispatch(sub)
                         });
                     }
 
