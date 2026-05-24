@@ -150,8 +150,7 @@ internal static partial class QueryPlanBuilder
             switch (strategy)
             {
                 case ExecutionStrategy.CompoundExact:
-                    if (exec != null)
-                        built = ConstructCompoundExact(exec, planParams);
+                    built = ConstructCompoundExact(exec, planParams);
                     if (built != null)
                     {
                         innerMatch = built;
@@ -160,7 +159,9 @@ internal static partial class QueryPlanBuilder
 
                     break;
                 case ExecutionStrategy.CompoundField:
-                    if (exec != null && orderByFields != null)
+                    // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
+                    // CompoundField plan — PageSize is not part of the plan cache key.
+                    if (orderByFields != null)
                     {
                         int f2 = FindCompoundFieldField2Range(exec.Executions, exec.Plan.CompoundFieldDrivingClause, exec.Plan.Template.CompoundFieldSortName);
                         // Cost facts (entriesToScan, bitmapCost) are diagnostic-only inside
@@ -178,7 +179,9 @@ internal static partial class QueryPlanBuilder
 
                     break;
                 case ExecutionStrategy.DirectScan:
-                    if (exec != null && orderByFields is { Length: <= 2 })
+                    // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
+                    // DirectScan plan — PageSize is not part of the plan cache key.
+                    if (orderByFields is { Length: <= 2 })
                     {
                         var execs2 = exec.Executions;
                         bool isFullScan = execs2 == null || execs2.Count == 0;
@@ -229,9 +232,7 @@ internal static partial class QueryPlanBuilder
         IQueryMatch queryMatch = null;
         innerMatch = null;
 
-        if (exec == null)
-            trail.Record("CompoundExact", false, "no exec available");
-        else if ((compiledPlan.Template.OptimizationFlags & PlanOptimizationFlags.CompoundExactCandidate) == 0)
+        if ((compiledPlan.Template.OptimizationFlags & PlanOptimizationFlags.CompoundExactCandidate) == 0)
             trail.Record("CompoundExact", false, "template has no compound-exact candidate");
         else if (TryCreateCompoundExactMatch(exec, planParams, builderParameters, out var compoundExact, out var ceReason))
         {
@@ -248,9 +249,7 @@ internal static partial class QueryPlanBuilder
         {
             if (needsFullChain)
             {
-                if (exec == null)
-                    trail.Record("CompoundField", false, "no exec available");
-                else if ((compiledPlan.Template.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
+                if ((compiledPlan.Template.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
                     trail.Record("CompoundField", false, "template has no direct-scan candidate");
                 else if (TryCreateCompoundFieldMatch(exec, orderByFields, planParams, builderParameters, compiledPlan, out var compoundMatch, out var cfReason))
                 {
@@ -266,9 +265,7 @@ internal static partial class QueryPlanBuilder
 
             if (needsFullChain)
             {
-                if (exec == null)
-                    trail.Record("DirectScan", false, "no exec available");
-                else if ((compiledPlan.Template.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
+                if ((compiledPlan.Template.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
                     trail.Record("DirectScan", false, "template has no direct-scan candidate");
                 else if (TryCreateSimpleFieldDirectScan(exec, orderByFields, planParams, builderParameters, compiledPlan, out var directMatch, out var dsReason))
                 {
