@@ -1278,50 +1278,51 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    /// <summary>
-    /// Produces a slot per position from QueryExecution's clauses. Slot layout matches
-    /// <see cref="CountMatchSlots"/> exactly, produces identical parallel arrays indexed. 
-    /// </summary>
+    /// <summary>Produces a slot per LEAF position from QueryExecution's clauses. Slot layout
+    /// matches <see cref="CountMatchSlots"/> exactly — both walk the clause tree via the
+    /// same recursion (<see cref="ResolveClauseLeavesInto{TResolver, TSlot}"/> here,
+    /// <see cref="CountClauseLeaves"/> there). The emit helpers consume leaves in the
+    /// same order, keeping IL slot indices end-to-end consistent.</summary>
     private static TSlot[] ResolveSlots<TResolver, TSlot>(QueryExecution exec, ResolutionContext walkerCtx)
         where TResolver : ISlotResolver<TResolver, TSlot>
     {
         var execs = exec.Executions;
         var slots = new TSlot[CountMatchSlots(execs, exec.IsAllEntries)];
         int matchIdx = 0;
-
         foreach (var clauseExec in execs)
-        {
-            ClauseInfo clause = clauseExec.Clause;
-
-            if (TryGetGroupFanOut(clause, clauseExec, out var subClauses, out var subExecs))
-            {
-                for (int si = 0; si < subClauses.Count; si++)
-                {
-                    slots[matchIdx++] = TResolver.ResolveSubClauseSlot(subClauses[si], subExecs[si], exec, walkerCtx);
-                }
-
-                continue;
-            }
-
-            switch (clause.ClauseType)
-            {
-                case ClauseType.AllIn or ClauseType.In:
-                    for (int t = 0; t < clauseExec.InTermCount; t++)
-                    {
-                        slots[matchIdx++] = TResolver.ResolveInTermSlot(clause, clauseExec, t, exec, walkerCtx);
-                    }
-
-                    // Null-term slot is always allocated; resolver decides whether to populate.
-                    slots[matchIdx++] = TResolver.ResolveNullTermSlot(clause, clauseExec, walkerCtx);
-                    break;
-
-                default:
-                    slots[matchIdx++] = TResolver.ResolveDefaultSlot(clause, clauseExec, exec, walkerCtx);
-                    break;
-            }
-        }
-
+            ResolveClauseLeavesInto<TResolver, TSlot>(clauseExec.Clause, clauseExec, exec, walkerCtx, slots, ref matchIdx);
         return slots;
+    }
+
+    /// <summary>Recursive leaf walker shared by all three <see cref="ISlotResolver{TSelf, TSlot}"/>
+    /// implementations. Groups expand to their leaves; <see cref="ClauseInfo.IsOrChainNotEquals"/>
+    /// short-circuits to <see cref="ISlotResolver{TSelf, TSlot}.ResolveSubClauseSlot"/> so the
+    /// AllEntries-ANDNOT materialisation kicks in at any nesting depth.</summary>
+    private static void ResolveClauseLeavesInto<TResolver, TSlot>(
+        ClauseInfo clause, ClauseExecution clauseExec, QueryExecution exec, ResolutionContext walkerCtx,
+        TSlot[] slots, ref int matchIdx)
+        where TResolver : ISlotResolver<TResolver, TSlot>
+    {
+        if (clause.IsOrChainNotEquals)
+        {
+            slots[matchIdx++] = TResolver.ResolveSubClauseSlot(clause, clauseExec, exec, walkerCtx);
+            return;
+        }
+        if (TryGetGroupFanOut(clause, clauseExec, out var subClauses, out var subExecs))
+        {
+            for (int si = 0; si < subClauses.Count; si++)
+                ResolveClauseLeavesInto<TResolver, TSlot>(subClauses[si], subExecs?[si], exec, walkerCtx, slots, ref matchIdx);
+            return;
+        }
+        if (clause.ClauseType is ClauseType.AllIn or ClauseType.In)
+        {
+            for (int t = 0; t < clauseExec.InTermCount; t++)
+                slots[matchIdx++] = TResolver.ResolveInTermSlot(clause, clauseExec, t, exec, walkerCtx);
+            // Null-term slot is always allocated; resolver decides whether to populate.
+            slots[matchIdx++] = TResolver.ResolveNullTermSlot(clause, clauseExec, walkerCtx);
+            return;
+        }
+        slots[matchIdx++] = TResolver.ResolveDefaultSlot(clause, clauseExec, exec, walkerCtx);
     }
 
     /// <summary>Per-slot resolver contract; one implementation per output array shape.
@@ -3021,16 +3022,308 @@ internal static partial class QueryPlanBuilder
         };
     }
 
+    // ── Phase D unified recursive emit ─────────────────────────────────────────
+    //
+    // EmitOrPlan / EmitAndPlan invoke EmitClauseInto per top-level clause; nested
+    // groups recurse and slot allocation stays in lock-step with the recursive
+    // resolver in ResolveSlots / CountMatchSlots (one match slot per LEAF, not
+    // per direct sub-clause). The emitter consumes leaves in identical order so
+    // ParamIndex values line up with ResolvedMatches / PostingSources entries.
+    //
+    // Bitmap slots:
+    //   Slot 0 = main accumulator
+    //   Slot 1 = AND-primitive temp (clobbered by AndWithPostings/AndNotWithPostings
+    //            for SmallPostingList/PostingList sources via MaterializeTermSourceIntoBitmap)
+    //            and as the direct scratch for IN AndInto leaves.
+    //   Slot 2+ = save slots for non-Fill group merges. Allocated LIFO via
+    //             nextScratch; RequiredBitmaps grows with nesting depth.
+    //
+    // SkipEarlyExit propagation: AndWithPostings and AndRange normally emit a
+    // goto-doneLabel when the bitmap empties — that early-exit is correct at the
+    // top of an AND chain (whole query is empty), but inside a saved-swap context
+    // it would jump past the merge-back and leak the saved accumulator. The
+    // suppressEarlyExit flag is propagated through the recursion: top-level
+    // EmitOrPlan always suppresses (the OR chain continues regardless), top-level
+    // EmitAndPlan does not (early-exit is desired), and EmitGroupInto's non-Fill
+    // path turns suppression ON before emitting the inner contents.
+
+    /// <summary>How a clause's result is folded into slot 0 by the recursive emitter.</summary>
+    private enum MergeKind
+    {
+        /// <summary>Slot 0 ← clause result. First op of an OR chain or first
+        /// non-negated element of an AND chain.</summary>
+        Fill,
+        /// <summary>slot 0 ← slot 0 ∪ clause. Subsequent OR-chain elements.</summary>
+        OrInto,
+        /// <summary>slot 0 ← slot 0 ∩ clause. Subsequent positive AND-chain elements.</summary>
+        AndInto,
+        /// <summary>slot 0 ← slot 0 \ clause. Negated AND-chain elements.</summary>
+        AndNotInto
+    }
+
+    /// <summary>Recursive emit entry point. Emit ops that fold <paramref name="clause"/>'s
+    /// result into slot 0 per <paramref name="merge"/>. Groups recurse; IN/AllIn/leaf
+    /// route to specialised helpers.</summary>
+    private static void EmitClauseInto(
+        ClauseInfo clause, ClauseExecution exec,
+        MergeKind merge, long cardinality,
+        bool suppressEarlyExit,
+        ref int matchIndex, ref int nextScratch, ref int maxScratchUsed,
+        List<PlanOp> ops, List<int> rangeCounts)
+    {
+        // OR-chain NotEquals materialised by MatchResolver into ResolvedMatches[matchIndex].
+        if (clause.IsOrChainNotEquals)
+        {
+            EmitLeafMergeOp(merge, matchIndex, cardinality, MatchDispatch.QueryMatch, suppressEarlyExit, ops);
+            matchIndex++;
+            return;
+        }
+
+        if (TryGetGroupFanOut(clause, exec, out var subs, out var subExecs))
+        {
+            EmitGroupInto(clause, exec, subs, subExecs, merge, suppressEarlyExit,
+                ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
+            return;
+        }
+
+        if (clause.ClauseType is ClauseType.In)
+        {
+            EmitInLeaf(clause, cardinality, merge, ref matchIndex, ref maxScratchUsed, ops, rangeCounts);
+            return;
+        }
+
+        if (clause.ClauseType is ClauseType.AllIn)
+        {
+            EmitAllInLeaf(clause, cardinality, merge, suppressEarlyExit,
+                ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
+            return;
+        }
+
+        EmitLeafMergeOp(merge, matchIndex, cardinality, GetDispatch(clause), suppressEarlyExit, ops);
+        matchIndex++;
+    }
+
+    /// <summary>Emit a group (OrGroup or AndGroup) merged into slot 0. For Fill merge,
+    /// build directly in slot 0. For non-Fill, save slot 0 to a scratch slot, build
+    /// the group fresh in slot 0, then merge with the saved accumulator via the
+    /// matching bitmap-pair op.</summary>
+    private static void EmitGroupInto(
+        ClauseInfo clause, ClauseExecution exec,
+        List<ClauseInfo> subs, List<ClauseExecution> subExecs,
+        MergeKind merge, bool suppressEarlyExit,
+        ref int matchIndex, ref int nextScratch, ref int maxScratchUsed,
+        List<PlanOp> ops, List<int> rangeCounts)
+    {
+        if (merge == MergeKind.Fill)
+        {
+            EmitGroupContentsInSlot0(clause, exec, subs, subExecs, suppressEarlyExit,
+                ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
+            return;
+        }
+
+        int saveSlot = nextScratch++;
+        if (saveSlot > maxScratchUsed) maxScratchUsed = saveSlot;
+
+        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
+        ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+
+        // Inside the saved context, AndWithPostings/AndRange MUST NOT early-exit to
+        // doneLabel — that would skip the merge-back below and leak the saved value.
+        EmitGroupContentsInSlot0(clause, exec, subs, subExecs, suppressEarlyExit: true,
+            ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
+
+        switch (merge)
+        {
+            case MergeKind.OrInto:
+                ops.Add(new PlanOp { Kind = PlanOpKind.OrBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                break;
+            case MergeKind.AndInto:
+                ops.Add(new PlanOp { Kind = PlanOpKind.AndBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                break;
+            case MergeKind.AndNotInto:
+                // AndNotBitmaps[0, saveSlot] = slot 0 \ saveSlot. After build,
+                // slot 0 = group result, saveSlot = original accumulator. We
+                // want (orig \ group) so swap operands back first.
+                ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                break;
+        }
+
+        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
+        nextScratch--;
+    }
+
+    /// <summary>Build a group's complete result in slot 0 (slot 0 must be empty/usable
+    /// on entry; the caller arranges this either by being the seed Fill or by swapping
+    /// the live accumulator out). OrGroup: Fill first sub, OR rest. AndGroup: Fill
+    /// first sub (or FillAllEntries if first is negated), AND/ANDNOT rest.</summary>
+    private static void EmitGroupContentsInSlot0(
+        ClauseInfo clause, ClauseExecution exec,
+        List<ClauseInfo> subs, List<ClauseExecution> subExecs,
+        bool suppressEarlyExit,
+        ref int matchIndex, ref int nextScratch, ref int maxScratchUsed,
+        List<PlanOp> ops, List<int> rangeCounts)
+    {
+        int subCount = subs.Count;
+        long subCard = (exec?.Cardinality ?? 0) / Math.Max(1, subCount);
+        bool isOr = clause.ClauseType == ClauseType.OrGroup;
+
+        if (isOr)
+        {
+            for (int si = 0; si < subCount; si++)
+            {
+                EmitClauseInto(subs[si], subExecs?[si],
+                    si == 0 ? MergeKind.Fill : MergeKind.OrInto,
+                    subCard, suppressEarlyExit,
+                    ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
+            }
+            return;
+        }
+
+        // AndGroup
+        bool firstIsNeg = subs[0].IsNegated || subs[0].ClauseType == ClauseType.NotEquals;
+        int start;
+        if (firstIsNeg)
+        {
+            ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
+            start = 0;
+        }
+        else
+        {
+            EmitClauseInto(subs[0], subExecs?[0], MergeKind.Fill, subCard, suppressEarlyExit,
+                ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
+            start = 1;
+        }
+        for (int si = start; si < subCount; si++)
+        {
+            bool subNeg = subs[si].IsNegated || subs[si].ClauseType == ClauseType.NotEquals;
+            EmitClauseInto(subs[si], subExecs?[si],
+                subNeg ? MergeKind.AndNotInto : MergeKind.AndInto,
+                subCard, suppressEarlyExit,
+                ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
+        }
+    }
+
+    /// <summary>Emit one PlanOp for a simple leaf clause according to <paramref name="merge"/>.
+    /// Sets SkipEarlyExit on AndWithPostings when inside a saved-swap context.</summary>
+    private static void EmitLeafMergeOp(
+        MergeKind merge, int matchIndex, long cardinality, MatchDispatch dispatch,
+        bool suppressEarlyExit, List<PlanOp> ops)
+    {
+        PlanOpKind kind = merge switch
+        {
+            MergeKind.Fill => PlanOpKind.FillFromPostings,
+            MergeKind.OrInto => PlanOpKind.OrWithPostings,
+            MergeKind.AndInto => PlanOpKind.AndWithPostings,
+            MergeKind.AndNotInto => PlanOpKind.AndNotWithPostings,
+            _ => throw new InvalidOperationException($"Unhandled MergeKind: {merge}")
+        };
+        ops.Add(new PlanOp
+        {
+            Kind = kind,
+            ParamIndex = matchIndex,
+            BitmapLocal = 0,
+            EstimatedCardinality = cardinality,
+            Dispatch = dispatch,
+            SkipEarlyExit = kind == PlanOpKind.AndWithPostings && suppressEarlyExit
+        });
+    }
+
+    /// <summary>IN clause leaf — logically (term0 ∪ term1 ∪ … ∪ termN). For Fill/OrInto
+    /// merges, build directly in slot 0 via EmitInOps. For AndInto/AndNotInto, build
+    /// the union in slot 1 (slot 1 is freshly cleared first), then merge into slot 0
+    /// via AndBitmaps/AndNotBitmaps. OrRange ignores SkipEarlyExit so suppression
+    /// doesn't need to propagate here.</summary>
+    private static void EmitInLeaf(
+        ClauseInfo clause, long cardinality, MergeKind merge,
+        ref int matchIndex, ref int maxScratchUsed,
+        List<PlanOp> ops, List<int> rangeCounts)
+    {
+        if (merge is MergeKind.Fill or MergeKind.OrInto)
+        {
+            EmitInOps(ops, clause, cardinality, bitmapLocal: 0, isSeed: merge == MergeKind.Fill, ref matchIndex, rangeCounts);
+            return;
+        }
+
+        // AndInto / AndNotInto: union IN terms in slot 1, then merge with slot 0.
+        if (1 > maxScratchUsed) maxScratchUsed = 1;
+        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
+        EmitInOps(ops, clause, cardinality, bitmapLocal: 1, isSeed: false, ref matchIndex, rangeCounts);
+        ops.Add(new PlanOp
+        {
+            Kind = merge == MergeKind.AndInto ? PlanOpKind.AndBitmaps : PlanOpKind.AndNotBitmaps,
+            BitmapLocal = 0,
+            ParamIndex2 = 1
+        });
+    }
+
+    /// <summary>AllIn clause leaf — logically (term0 ∩ term1 ∩ … ∩ termN). For Fill merge,
+    /// build directly in slot 0. For OrInto/AndInto/AndNotInto, save slot 0 to a scratch
+    /// slot, build the intersection in slot 0 (Fill + AndRange), then merge back. The
+    /// AndRange op honors SkipEarlyExit; in a saved context we must set it so the loop
+    /// doesn't jump to doneLabel mid-intersection.</summary>
+    private static void EmitAllInLeaf(
+        ClauseInfo clause, long cardinality, MergeKind merge,
+        bool suppressEarlyExit,
+        ref int matchIndex, ref int nextScratch, ref int maxScratchUsed,
+        List<PlanOp> ops, List<int> rangeCounts)
+    {
+        if (merge == MergeKind.Fill)
+        {
+            EmitAllInOps(ops, clause, cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
+            if (suppressEarlyExit)
+                SetLastAndRangeSkipEarlyExit(ops);
+            return;
+        }
+
+        int saveSlot = nextScratch++;
+        if (saveSlot > maxScratchUsed) maxScratchUsed = saveSlot;
+
+        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
+        ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+        EmitAllInOps(ops, clause, cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
+        // Inside save-swap: AndRange must not jump to doneLabel — that would skip
+        // the merge-back and leak the saved accumulator.
+        SetLastAndRangeSkipEarlyExit(ops);
+
+        switch (merge)
+        {
+            case MergeKind.OrInto:
+                ops.Add(new PlanOp { Kind = PlanOpKind.OrBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                break;
+            case MergeKind.AndInto:
+                ops.Add(new PlanOp { Kind = PlanOpKind.AndBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                break;
+            case MergeKind.AndNotInto:
+                ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                break;
+        }
+        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
+        nextScratch--;
+    }
+
+    /// <summary>Set <see cref="PlanOp.SkipEarlyExit"/>=true on the most recent
+    /// <see cref="PlanOpKind.AndRange"/> in <paramref name="ops"/>. The op was emitted
+    /// by <see cref="EmitAllInOps"/> as the last entry of the AllIn pair; mutating it
+    /// here avoids threading the flag through that helper's signature.</summary>
+    private static void SetLastAndRangeSkipEarlyExit(List<PlanOp> ops)
+    {
+        for (int i = ops.Count - 1; i >= 0; i--)
+        {
+            if (ops[i].Kind == PlanOpKind.AndRange)
+            {
+                var op = ops[i];
+                op.SkipEarlyExit = true;
+                ops[i] = op;
+                return;
+            }
+        }
+    }
+
     /// <summary>Translate sorted clauses into a linear PlanOp[] sequence for IL emission.
     /// Dispatches to <see cref="EmitOrPlan"/> or <see cref="EmitAndPlan"/> after shared
-    /// empty-IN handling.
-    ///
-    /// Bitmap slots:
-    ///   Slot 0 = main result bitmap (accumulates the final answer).
-    ///   Slot 1 = scratch bitmap (used for AND-chain non-seed IN terms and OR-group accumulation).
-    ///   Slot 2 = save slot (only allocated when an OR chain contains multiple AND-groups;
-    ///            used to save the prior OR accumulation while building a new AND sub-chain
-    ///            in slot 0 via SwapBitmaps(0,2), then ORed back).</summary>
+    /// empty-IN handling.</summary>
     private static (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) EmitPlan(bool isOr, List<ClauseExecution> executions)
     {
         if (executions.Count is 0)
@@ -3051,215 +3344,41 @@ internal static partial class QueryPlanBuilder
         return isOr ? EmitOrPlan(executions) : EmitAndPlan(executions);
     }
 
-    /// <summary>Emit the PlanOp sequence for an OR chain. All terms are ORed into slot 0.
-    /// AND-groups within an OR use the three-bitmap swap pattern: save slot 0 to slot 2,
-    /// build AND result in slot 0, OR slot 2 back. Returns RequiredBitmaps = 2 unless
-    /// nested AndGroups require 3.</summary>
+    /// <summary>Emit the PlanOp sequence for an OR chain. All clauses are merged into
+    /// slot 0: the first via Fill, the rest via OrInto. Groups recurse through
+    /// <see cref="EmitClauseInto"/>, allocating scratch slots on demand. SkipEarlyExit
+    /// is forced on every AND-step because remaining OR terms may still match.
+    /// Returns RequiredBitmaps = max(2, deepest scratch slot used + 1).</summary>
     private static (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) EmitOrPlan(List<ClauseExecution> executions)
     {
         List<PlanOp> ops = [];
         List<int> rangeCounts = [];
-        bool needsThreeBitmaps = false;
-
         int matchIndex = 0;
-        foreach (var exec in executions)
+        int nextScratch = 2;
+        int maxScratchUsed = 1;
+
+        for (int i = 0; i < executions.Count; i++)
         {
-            var it = exec.Clause;
-
-            // Negated clause in an OR chain: emit a single QueryMatch slot whose match
-            // is materialized at resolution time as AllEntries ANDNOT(positive form).
-            // Covers NotEquals, NOT IN, NOT AllIn, NOT exists(), NOT startsWith(), etc.
-            // The raw posting list / range / tree-scan can't deliver the complement,
-            // so dispatch is forced to QueryMatch and CreateNotEqualsOrMatch produces
-            // a pre-materialized BitmapMatch. The IsOrChainNotEquals flag is set at
-            // template build time by PlanWalker.NotCanonicalize.
-            if (it.IsNegated || it.ClauseType == ClauseType.NotEquals)
-            {
-                Debug.Assert(it.IsOrChainNotEquals,
-                    "PlanWalker.NotCanonicalize must mark every negated OR-chain clause with IsOrChainNotEquals=true before template freeze.");
-                ops.Add(new PlanOp
-                {
-                    Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
-                    ParamIndex = matchIndex,
-                    EstimatedCardinality = exec.Cardinality,
-                    Dispatch = MatchDispatch.QueryMatch
-                });
-                matchIndex++;
-                continue;
-            }
-
-            switch (it.ClauseType)
-            {
-                case ClauseType.In:
-                {
-                    EmitInOps(ops, it, exec.Cardinality, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
-                    break;
-                }
-                case ClauseType.AllIn:
-                {
-                    // AllIn requires AND semantics (match docs with ALL values), so we
-                    // intersect in a scratch bitmap then OR the result into the main bitmap.
-                    if (matchIndex == 0)
-                    {
-                        // Seed: build directly in slot 0 with Fill + AndRange.
-                        EmitAllInOps(ops, it, exec.Cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
-                    }
-                    else
-                    {
-                        // Non-seed: swap slot 0 to slot 2, build AllIn intersection in
-                        // fresh slot 0, then OR slot 2 back.
-                        needsThreeBitmaps = true;
-                        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.SwapBitmaps,
-                            BitmapLocal = 0,
-                            ParamIndex2 = 2
-                        });
-                        EmitAllInOps(ops, it, exec.Cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.OrBitmaps,
-                            BitmapLocal = 0,
-                            ParamIndex2 = 2
-                        });
-                        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 2 });
-                    }
-                    break;
-                }
-                case ClauseType.OrGroup when it.SubClauses is { Count: > 0 }:
-                {
-                    int subCount = it.SubClauses.Count;
-                    for (int si = 0; si < subCount; si++)
-                    {
-                        var sub = it.SubClauses[si];
-                        // Negated direct children of this nested OrGroup carry
-                        // IsOrChainNotEquals=true (PlanWalker.NotCanonicalize). Force
-                        // QueryMatch dispatch so the IL reads the pre-materialized
-                        // AllEntries-ANDNOT bitmap that MatchResolver.ResolveSubClauseSlot
-                        // produces, not the raw positive posting list.
-                        ops.Add(new PlanOp
-                        {
-                            Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
-                            ParamIndex = matchIndex,
-                            EstimatedCardinality = exec.Cardinality / subCount,
-                            Dispatch = sub.IsOrChainNotEquals ? MatchDispatch.QueryMatch : GetDispatch(sub)
-                        });
-                        matchIndex++;
-                    }
-
-                    break;
-                }
-                case ClauseType.AndGroup when it.SubClauses is { Count: > 0 }:
-                {
-                    // AND sub-expression inside an OR chain.
-                    // Only supported when the AND group is the first element (matchIndex == 0)
-                    // or can be merged into slot 0 via OrBitmaps after computing into slot 1.
-                    var subClauses = it.SubClauses;
-                    int subCount = subClauses.Count;
-                    long subCardinality = exec.Cardinality / Math.Max(1, subCount);
-                    if (matchIndex == 0)
-                    {
-                        // First element: build the AND chain directly in slot 0.
-                        // Slot 1 is free (unused), so AndWithPostings can use it as scratch.
-                        // Suppress early-exit on AND steps — the OR chain continues regardless.
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.FillFromPostings,
-                            ParamIndex = matchIndex,
-                            EstimatedCardinality = subCardinality,
-                            Dispatch = GetDispatch(subClauses[0])
-                        });
-                        for (int s = 1; s < subClauses.Count; s++)
-                        {
-                            // Mirror EmitAndPlan's firstIsNegated predicate: a bare NotEquals
-                            // sub-clause must subtract via AndNot. Pre-tactical-fix this branch
-                            // only checked IsNegated, silently AND-merging NotEquals subs as positives.
-                            bool subIsNegated = subClauses[s].IsNegated || subClauses[s].ClauseType == ClauseType.NotEquals;
-                            ops.Add(new PlanOp
-                            {
-                                Kind = subIsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
-                                ParamIndex = matchIndex + s,
-                                EstimatedCardinality = subCardinality,
-                                Dispatch = GetDispatch(subClauses[s]),
-                                SkipEarlyExit = true // don't abort on empty — remaining OR terms may still match
-                            });
-                        }
-                    }
-                    else
-                    {
-                        // Non-first AND group: save the accumulated OR result (slot 0) to slot 2,
-                        // build this AND sub-chain fresh in slot 0, then OR slot 2 back.
-                        needsThreeBitmaps = true;
-                        // Uses SwapBitmaps(0, 2): slot 0 ↔ slot 2.
-                        // Slot 2 must have been cleared before the swap (it's either the initial
-                        // empty state or was cleared at the end of the previous iteration).
-                        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.SwapBitmaps,
-                            BitmapLocal = 0,
-                            ParamIndex2 = 2
-                        });
-                        // Slot 0 is now fresh (was slot 2 = cleared); slot 2 = prior OR accumulation.
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.FillFromPostings,
-                            ParamIndex = matchIndex,
-                            EstimatedCardinality = subCardinality,
-                            Dispatch = GetDispatch(subClauses[0])
-                        });
-                        for (int s = 1; s < subClauses.Count; s++)
-                        {
-                            // Same predicate alignment as the matchIndex==0 branch above.
-                            bool subIsNegated = subClauses[s].IsNegated || subClauses[s].ClauseType == ClauseType.NotEquals;
-                            ops.Add(new PlanOp
-                            {
-                                Kind = subIsNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings,
-                                ParamIndex = matchIndex + s,
-                                BitmapLocal = 0,
-                                EstimatedCardinality = subCardinality,
-                                Dispatch = GetDispatch(subClauses[s]),
-                                SkipEarlyExit = true // don't abort — OR chain continues
-                            });
-                        }
-
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.OrBitmaps,
-                            BitmapLocal = 0,
-                            ParamIndex2 = 2
-                        });
-                        ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 2 });
-                    }
-
-                    matchIndex += subClauses.Count;
-                    break;
-                }
-                default:
-                {
-                    ops.Add(new PlanOp
-                    {
-                        Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
-                        ParamIndex = matchIndex,
-                        EstimatedCardinality = exec.Cardinality,
-                        Dispatch = GetDispatch(it)
-                    });
-                    matchIndex++;
-                    break;
-                }
-            }
+            var exec = executions[i];
+            EmitClauseInto(exec.Clause, exec,
+                i == 0 ? MergeKind.Fill : MergeKind.OrInto,
+                exec.Cardinality, suppressEarlyExit: true,
+                ref matchIndex, ref nextScratch, ref maxScratchUsed,
+                ops, rangeCounts);
         }
 
         ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
 
-        return (ops.ToArray(), needsThreeBitmaps ? 3 : 2, rangeCounts.Count > 0 ? rangeCounts.ToArray() : null);
+        return (ops.ToArray(), Math.Max(2, maxScratchUsed + 1), rangeCounts.Count > 0 ? rangeCounts.ToArray() : null);
     }
 
-    /// <summary>Emit the PlanOp sequence for an AND chain. The first clause seeds slot 0
-    /// (FillFromPostings), the following clauses narrow it (AndWithPostings/AndNotWithPostings).
-    /// IN terms are ORed into slot 1, then ANDed with slot 0. Includes single-clause special
-    /// cases: DirectIterate for Equals, FillAllEntries+AndNot for NotEquals.</summary>
+    /// <summary>Emit the PlanOp sequence for an AND chain. Single-clause Equals/NotEquals
+    /// retain their specialised plans (DirectIterate, FillAllEntries+AndNot). Otherwise
+    /// the first non-negated clause seeds slot 0 (Fill) and each subsequent clause is
+    /// merged via AndInto or AndNotInto through <see cref="EmitClauseInto"/>. When every
+    /// clause is negated we seed with FillAllEntries instead and AndNot all of them.
+    /// CheckAndMaybeEntryScan is emitted before each iteration when remaining clauses
+    /// are scan-eligible; CheckEmpty follows each non-negated step.</summary>
     private static (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) EmitAndPlan(List<ClauseExecution> executions)
     {
         List<PlanOp> ops = [];
@@ -3303,90 +3422,40 @@ internal static partial class QueryPlanBuilder
                 return (ops.ToArray(), 2, null);
         }
 
-        // AND chain: Fill the smallest non-negated, then AndWith/AndNotWith remaining.
-        // If the first clause is negated (all clauses are negated), we need to
-        // start from AllEntries and ANDNOT each one.
+        int matchIndex = 0;
+        int nextScratch = 2;
+        int maxScratchUsed = 1;
+
+        // AND chain: Fill the smallest non-negated, then AndWith/AndNotWith the rest.
+        // If the first clause is negated (cardinality sort puts negated clauses last,
+        // so first-negated ⇒ all-negated) we seed with FillAllEntries instead and
+        // AndNot every clause. FillAllEntries calls indexSearcher.AllEntries() directly,
+        // avoiding the structural-vs-runtime slot-index mismatch that bites IN with a
+        // parameter-bound array of different length.
         bool firstIsNegated = e0.IsNegated || e0.ClauseType == ClauseType.NotEquals;
         int startIndex;
 
         if (firstIsNegated)
         {
-            // All clauses are negated — start from all entries.
-            // FillAllEntries doesn't need a slot index — it calls indexSearcher.AllEntries()
-            // directly. This sidesteps the structural-vs-runtime slot-index mismatch that
-            // occurs when an IN clause's runtime InTermCount differs from its template
-            // Bindings.Length (e.g. NOT IN with a parameter that expands to an array).
-            ops.Add(new PlanOp
-            {
-                Kind = PlanOpKind.FillAllEntries,
-                EstimatedCardinality = long.MaxValue
-            });
-            startIndex = 0; // Process all clauses as ANDNOT
+            ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
+            startIndex = 0;
         }
         else
         {
+            EmitClauseInto(c0, e0, MergeKind.Fill, e0.Cardinality, suppressEarlyExit: false,
+                ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
             startIndex = 1;
         }
 
-        int matchIndex = 0;
-        if (!firstIsNegated)
-        {
-            switch (e0.ClauseType)
-            {
-                case ClauseType.OrGroup when c0.SubClauses != null:
-                {
-                    var subClauses = c0.SubClauses;
-                    int subCount = subClauses.Count;
-                    for (int s = 0; s < subCount; s++)
-                    {
-                        var sub = subClauses[s];
-                        // Negated direct children of this OrGroup carry IsOrChainNotEquals=true
-                        // (PlanWalker.NotCanonicalize). Force QueryMatch dispatch so the IL reads
-                        // the AllEntries-ANDNOT bitmap from MatchResolver.ResolveSubClauseSlot.
-                        ops.Add(new PlanOp
-                        {
-                            Kind = s == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
-                            ParamIndex = matchIndex + s,
-                            BitmapLocal = 0,
-                            EstimatedCardinality = executions[0].Cardinality / Math.Max(1, subCount),
-                            Dispatch = sub.IsOrChainNotEquals ? MatchDispatch.QueryMatch : GetDispatch(sub)
-                        });
-                    }
-
-                    matchIndex += subCount;
-                    break;
-                }
-                case ClauseType.In:
-                {
-                    EmitInOps(ops, c0, executions[0].Cardinality, bitmapLocal: 0, isSeed: true, ref matchIndex, rangeCounts);
-                    break;
-                }
-                // Use the fixed-shape EmitAllInOps path for AllIn clauses.
-                case ClauseType.AllIn:
-                {
-                    EmitAllInOps(ops, c0, executions[0].Cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
-                    break;
-                }
-                default:
-                    ops.Add(new PlanOp
-                    {
-                        Kind = PlanOpKind.FillFromPostings,
-                        ParamIndex = 0,
-                        EstimatedCardinality = executions[0].Cardinality,
-                        Dispatch = GetDispatch(c0)
-                    });
-                    matchIndex = 1;
-                    break;
-            }
-        }
-
-        // Precheck: can all remaining clauses be converted to entry scan predicates?
+        // Precheck: can every remaining clause be evaluated by an entry-scan predicate?
         bool allScanEligible = AreAllScanEligible(executions, startIndex);
 
         for (int i = startIndex; i < executions.Count; i++)
         {
-            // Goto check before each AND step — only if all remaining clauses
-            // can be handled by entry scan predicates
+            // CheckAndMaybeEntryScan emits a runtime branch into the entry-scan
+            // fallback when bitmap[0] is small relative to remaining IQueryMatch
+            // counts. Only safe to emit when AreAllScanEligible reports every
+            // remaining clause has a scan predicate.
             if (allScanEligible)
             {
                 ops.Add(new PlanOp
@@ -3396,116 +3465,26 @@ internal static partial class QueryPlanBuilder
                 });
             }
 
-            var ci2 = executions[i].Clause;
-            switch (ci2.ClauseType)
+            var execI = executions[i];
+            var clauseI = execI.Clause;
+            bool stepNegated = clauseI.IsNegated || clauseI.ClauseType == ClauseType.NotEquals;
+            MergeKind merge = stepNegated ? MergeKind.AndNotInto : MergeKind.AndInto;
+
+            EmitClauseInto(clauseI, execI, merge, execI.Cardinality, suppressEarlyExit: false,
+                ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
+
+            // CheckEmpty: short-circuit when slot 0 became empty after a positive
+            // intersection. Negated steps don't justify the check — they remove
+            // entries, so an empty result still represents a valid finished plan.
+            if (!stepNegated)
             {
-                case ClauseType.OrGroup when ci2.SubClauses != null:
-                {
-                    // OrGroup: OR subclauses into bitmap[1], then AND with bitmap[0]
-                    var subClauses = ci2.SubClauses;
-                    int subCount = subClauses.Count;
-
-                    // Clear bitmap[1] (OR accumulator)
-                    ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-
-                    // Fill each subclause into bitmap[1]
-                    for (int s = 0; s < subCount; s++)
-                    {
-                        var sub = subClauses[s];
-                        // Negated direct children of this OrGroup carry IsOrChainNotEquals=true
-                        // (PlanWalker.NotCanonicalize). Force QueryMatch dispatch so the IL reads
-                        // the AllEntries-ANDNOT bitmap from MatchResolver.ResolveSubClauseSlot.
-                        ops.Add(new PlanOp
-                        {
-                            Kind = PlanOpKind.OrWithPostings,
-                            ParamIndex = matchIndex + s,
-                            BitmapLocal = 1, // target bitmap[1]
-                            EstimatedCardinality = executions[i].Cardinality / Math.Max(1, subCount),
-                            Dispatch = sub.IsOrChainNotEquals ? MatchDispatch.QueryMatch : GetDispatch(sub)
-                        });
-                    }
-
-                    // AND bitmap[1] into bitmap[0]
-                    ops.Add(new PlanOp
-                    {
-                        Kind = PlanOpKind.AndBitmaps,
-                        BitmapLocal = 0, // target
-                        ParamIndex2 = 1 // source (reuse ParamIndex2 for source bitmap)
-                    });
-
-                    // Early exit check
-                    ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
-
-                    matchIndex += subCount;
-                    break;
-                }
-                case ClauseType.In:
-                {
-                    // OR all IN terms into bitmap[1], then AND (or ANDNOT) with bitmap[0].
-                    // isSeed: false — FillFromPostings always targets bitmap[0], so we use
-                    // OrRange which respects bitmapLocal. Bitmap[1] is freshly cleared.
-                    ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                    EmitInOps(ops, ci2, executions[i].Cardinality, bitmapLocal: 1, isSeed: false, ref matchIndex, rangeCounts);
-                    ops.Add(new PlanOp
-                    {
-                        Kind = ci2.IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
-                        BitmapLocal = 0,
-                        ParamIndex2 = 1
-                    });
-                    if (!ci2.IsNegated)
-                    {
-                        ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
-                    }
-
-                    break;
-                }
-                case ClauseType.AllIn:
-                {
-                    // AllIn: intersect all terms in bitmap[1], then AND (or ANDNOT) with bitmap[0].
-                    // Same pattern as non-seed IN, but uses EmitAllInOps (Fill + AndRange) instead
-                    // of EmitInOps (Fill + OrRange) — AllIn requires ALL terms to match.
-                    ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-                    EmitAllInOps(ops, ci2, executions[i].Cardinality, bitmapLocal: 1, ref matchIndex, rangeCounts);
-                    ops.Add(new PlanOp
-                    {
-                        Kind = ci2.IsNegated ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
-                        BitmapLocal = 0,
-                        ParamIndex2 = 1
-                    });
-                    if (ci2.IsNegated == false)
-                    {
-                        ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
-                    }
-                    break;
-                }
-                default:
-                {
-                    // Simple clause: AND or ANDNOT with bitmap[0]
-                    var isNegated = ci2.IsNegated || ci2.ClauseType == ClauseType.NotEquals;
-                    var andKind = isNegated ? PlanOpKind.AndNotWithPostings : PlanOpKind.AndWithPostings;
-                    ops.Add(new PlanOp
-                    {
-                        Kind = andKind,
-                        ParamIndex = matchIndex,
-                        BitmapLocal = 0,
-                        EstimatedCardinality = executions[i].Cardinality,
-                        Dispatch = GetDispatch(ci2)
-                    });
-
-                    if (!isNegated)
-                    {
-                        ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
-                    }
-
-                    matchIndex++;
-                    break;
-                }
+                ops.Add(new PlanOp { Kind = PlanOpKind.CheckEmpty, BitmapLocal = 0 });
             }
         }
 
         ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
 
-        return (ops.ToArray(), 2, rangeCounts.Count > 0 ? rangeCounts.ToArray() : null);
+        return (ops.ToArray(), Math.Max(2, maxScratchUsed + 1), rangeCounts.Count > 0 ? rangeCounts.ToArray() : null);
     }
 
     /// <summary>True when all clauses are negated (1+ clauses, first is negated after
@@ -3735,27 +3714,33 @@ internal static partial class QueryPlanBuilder
         return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
     }
 
+    /// <summary>Count IL match slots a query consumes. Nested groups expand to one slot
+    /// PER LEAF (recursively); the recursive walk is shared with <see cref="ResolveSlots"/>
+    /// and the emit helpers so slot indices stay aligned end-to-end.</summary>
     internal static int CountMatchSlots(List<ClauseExecution> executions, bool isAllEntries)
     {
         int count = isAllEntries ? 1 : 0;
         foreach (var exec in executions ?? [])
-        {
-            var clause = exec.Clause;
-            if (clause.IsOrChainNotEquals)
-            {
-                count += 1;
-                continue;
-            }
-
-            count += clause.ClauseType switch
-            {
-                ClauseType.OrGroup or ClauseType.AndGroup => clause.SubClauses?.Count ?? 1,
-                ClauseType.In or ClauseType.AllIn => (exec.InTermCount > 0 ? exec.InTermCount : clause.Bindings?.Length ?? 0) + 1,
-                _ => 1
-            };
-        }
-
+            count += CountClauseLeaves(exec.Clause, exec);
         return count;
+    }
+
+    /// <summary>Recursive leaf counter. <see cref="ClauseInfo.IsOrChainNotEquals"/>
+    /// short-circuits to a single AllEntries-ANDNOT slot regardless of group shape.</summary>
+    private static int CountClauseLeaves(ClauseInfo clause, ClauseExecution exec)
+    {
+        if (clause.IsOrChainNotEquals)
+            return 1;
+        if (TryGetGroupFanOut(clause, exec, out var subClauses, out var subExecs))
+        {
+            int sum = 0;
+            for (int i = 0; i < subClauses.Count; i++)
+                sum += CountClauseLeaves(subClauses[i], subExecs?[i]);
+            return sum;
+        }
+        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn)
+            return ((exec?.InTermCount ?? 0) > 0 ? exec.InTermCount : clause.Bindings?.Length ?? 0) + 1;
+        return 1;
     }
 
     /// <summary>For an OrGroup or AndGroup clause, returns the parallel (sub-clauses, sub-executions)
