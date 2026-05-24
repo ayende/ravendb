@@ -1345,15 +1345,12 @@ internal static partial class QueryPlanBuilder
     /// carries a non-zero BoostFactor.</summary>
     private readonly struct MatchResolver : ISlotResolver<MatchResolver, IQueryMatch>
     {
+        // Precondition: callers (ResolveClauseLeavesInto) only dispatch here for clauses
+        // where ClauseInfo.IsOrChainNotEquals is set.
         public static IQueryMatch ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
             QueryExecution exec, ResolutionContext ctx)
         {
-            // A negated direct child of a nested OrGroup carries IsOrChainNotEquals=true (set by
-            // PlanWalker.NotCanonicalize). Materialise as AllEntries ANDNOT(positive) so the
-            // surrounding OR step combines the complement set, not the positive posting list.
-            IQueryMatch match = sub.IsOrChainNotEquals
-                ? CreateNotEqualsOrMatch(sub, subExec, exec, ctx)
-                : ResolveClause(subExec, exec, ctx);
+            IQueryMatch match = CreateNotEqualsOrMatch(sub, subExec, exec, ctx);
             if (subExec.BoostFactor > 0)
                 match = ctx.IndexSearcher.Boost(match, subExec.BoostFactor);
             return match;
@@ -1392,15 +1389,12 @@ internal static partial class QueryPlanBuilder
     /// (the bitmap-path match wins).</summary>
     private readonly struct TermSourceResolver : ISlotResolver<TermSourceResolver, PostingSource>
     {
+        // Precondition: callers (ResolveClauseLeavesInto) only dispatch here for clauses
+        // where ClauseInfo.IsOrChainNotEquals is set. Such clauses use MatchDispatch.QueryMatch,
+        // so the PostingSource slot is never read — return default and skip the lookup.
         public static PostingSource ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
             QueryExecution exec, ResolutionContext ctx)
-        {
-            // Boosted slots are emitted through the IQueryMatch path so scoring works;
-            // the PostingSource stays Empty here.
-            return subExec.BoostFactor > 0
-                ? default
-                : ResolveSingleTermSource(sub, subExec, exec, ctx);
-        }
+            => default;
 
         public static PostingSource ResolveInTermSlot(ClauseInfo clause, ClauseExecution clauseExec, int termIndex,
             QueryExecution exec, ResolutionContext ctx)
@@ -1431,9 +1425,12 @@ internal static partial class QueryPlanBuilder
     /// Only Equals/range/prefix-like clauses populate.</summary>
     private readonly struct TermsProviderResolver : ISlotResolver<TermsProviderResolver, ITermsProvider>
     {
+        // Precondition: callers (ResolveClauseLeavesInto) only dispatch here for clauses
+        // where ClauseInfo.IsOrChainNotEquals is set. Such clauses use MatchDispatch.QueryMatch,
+        // so the ITermsProvider slot is never read.
         public static ITermsProvider ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
             QueryExecution exec, ResolutionContext ctx)
-            => ResolveSingleTermsProvider(sub, subExec, exec, ctx);
+            => null;
 
         public static ITermsProvider ResolveInTermSlot(ClauseInfo clause, ClauseExecution clauseExec, int termIndex,
             QueryExecution exec, ResolutionContext ctx) => null;
