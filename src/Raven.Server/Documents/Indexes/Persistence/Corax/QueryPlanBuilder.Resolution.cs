@@ -2163,9 +2163,9 @@ internal static partial class QueryPlanBuilder
 
         var eA = exec.Executions[idxA];
         var eB = exec.Executions[idxB];
-        if (eA.BoostFactor > 0 || eA.PackedParamValue.IsNone)
+        if (IsClauseBoosted(eA) || eA.PackedParamValue.IsNone)
             return false;
-        if (eB.BoostFactor > 0 || eB.PackedParamValue.IsNone)
+        if (IsClauseBoosted(eB) || eB.PackedParamValue.IsNone)
             return false;
 
         compoundMatch = ConstructCompoundExact(exec, planParams);
@@ -2326,7 +2326,7 @@ internal static partial class QueryPlanBuilder
             bitmapCost += EffectiveCardinality(execs[i], indexSearcher);
             if (i == drivingClauseIdx || i == field2RangeIdx)
                 continue;
-            if (execs[i].Clause.HasBoost || (execs[i] is { BoostFactor: > 0 }))
+            if (IsClauseBoosted(execs[i]))
                 return false;
             var pred = BuildScanPredicateInfo(execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
             if (pred == null)
@@ -3678,6 +3678,19 @@ internal static partial class QueryPlanBuilder
 
         return drivingCard;
     }
+
+    /// <summary>True iff <paramref name="exec"/> carries any boost — either annotated at
+    /// template time (<see cref="ClauseInfo.HasBoost"/>) or with a resolved runtime
+    /// factor (<see cref="ClauseExecution.BoostFactor"/> &gt; 0). Compound-key and
+    /// direct-scan paths can't propagate scores, so they reject any boosted clause.
+    ///
+    /// HasBoost is normally filtered upstream at plan time
+    /// (see <c>HasBoostRecursive</c> in QueryPlanBuilder.cs), so the second disjunct
+    /// catches edge cases where a runtime factor is set without the template flag
+    /// (e.g. wrapper paths that materialize a BoostingMatch directly).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool IsClauseBoosted(ClauseExecution exec)
+        => exec.Clause.HasBoost || exec.BoostFactor > 0;
 
     /// <summary>Encode a numeric (long/double) field value at <paramref name="paramIdx"/>
     /// into 8 big-endian sortable bytes — the same encoding indexing uses for compound-key
