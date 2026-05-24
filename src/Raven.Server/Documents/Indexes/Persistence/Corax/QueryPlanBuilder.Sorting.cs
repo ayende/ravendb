@@ -119,7 +119,6 @@ internal static partial class QueryPlanBuilder
         var index = builderParameters.Index;
         var getSpatialField = builderParameters.Factories?.GetSpatialFieldFactory;
         var indexMapping = builderParameters.IndexFieldsMapping;
-        var queryMapping = builderParameters.FieldsToFetch;
         var allocator = builderParameters.Allocator;
         if (query.PageSize == 0) // no need to sort when counting only
         {
@@ -183,7 +182,7 @@ internal static partial class QueryPlanBuilder
             }
 
             var fieldMetadata = QueryBuilderHelper.GetFieldIdForOrderBy(allocator, field.Name, index, builderParameters.HasDynamics,
-                builderParameters.DynamicFields, indexMapping, queryMapping, false);
+                builderParameters.DynamicFields, indexMapping, false);
 
             bool fieldIsEmpty = builderParameters.IndexSearcher.GetTermAmountInField(fieldMetadata) == 0;
             if (fieldIsEmpty)
@@ -246,7 +245,7 @@ internal static partial class QueryPlanBuilder
 
             var metadataField = QueryBuilderHelper.GetFieldIdForOrderBy(allocator, field.Name.Value, index, builderParameters.HasDynamics,
                 builderParameters.DynamicFields,
-                indexMapping, queryMapping, false);
+                indexMapping, false);
             // Dynamic CreateField fields: no IndexFieldsMapping entry, FieldId == DynamicField (-2).
             // Such fields are written per-document only when the index function emits CreateField;
             // docs that don't emit the field have NO entry (not even a NonExisting marker) in the

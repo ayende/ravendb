@@ -1639,7 +1639,7 @@ internal static partial class QueryPlanBuilder
                                        && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
                         builderParams.Allocator, searchFieldName, builderParams.Index,
-                        builderParams.IndexFieldsMapping, builderParams.FieldsToFetch,
+                        builderParams.IndexFieldsMapping,
                         builderParams.HasDynamics, builderParams.DynamicFields,
                         handleSearch: true, hasBoost: builderParams.HasBoost,
                         forceDefaultSearchAnalyzer: forceSearch);
