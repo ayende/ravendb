@@ -1072,6 +1072,22 @@ internal static partial class QueryPlanBuilder
         return (packedType, startIdx);
     }
 
+    /// <summary>Write a single IN-term value to <paramref name="writer"/> after checking
+    /// dominant-type compatibility. Values whose type can't be coerced to the dominant
+    /// type are dropped (e.g. IN(DateTime, "Shalom") on a DateTime-indexed field —
+    /// dominant = Long, "Shalom" never matches a long-indexed term, so dropping it
+    /// produces the correct empty/partial result matching Lucene). Without this guard,
+    /// Convert.ToInt64 would throw FormatException.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static bool TryEmitInTermValue(ValueWriter writer, object value, ParamValueType type,
+        ParamValueType dominantType, ValueTokenType dominantTokenType)
+    {
+        if (type != dominantType && AreTypesIncompatible(type, dominantType))
+            return false;
+        writer.Add(value, dominantTokenType);
+        return true;
+    }
+
     /// <summary>All-literal fast-path emit: read values straight from
     /// <paramref name="bindings"/>, write each dominantType-compatible non-null
     /// value into <paramref name="writer"/>, then stamp the exec slot.</summary>
@@ -1091,10 +1107,8 @@ internal static partial class QueryPlanBuilder
                 continue;
             }
 
-            if (it.LiteralType != dominantType && AreTypesIncompatible(it.LiteralType, dominantType))
-                continue;
-            writer.Add(value, dominantTokenType);
-            nonNullCount++;
+            if (TryEmitInTermValue(writer, value, it.LiteralType, dominantType, dominantTokenType))
+                nonNullCount++;
         }
 
         exec.PackedParamValue = new PackedParam(packedType, startIdx);
@@ -1105,13 +1119,8 @@ internal static partial class QueryPlanBuilder
     /// <summary>Parameter-bound slow-path emit: iterate the pre-resolved
     /// <paramref name="values"/> / <paramref name="types"/> buffers, filter to the
     /// inferred dominant type, write into <paramref name="writer"/>, then stamp the
-    /// exec slot.
-    ///
-    /// Values whose individual type can't be coerced to the dominant type are dropped
-    /// (e.g. IN(DateTime, "Shalom") on a DateTime-indexed field — dominant = Long,
-    /// "Shalom" never matches a long-indexed term, so dropping it produces the correct
-    /// empty/partial result matching Lucene). Without this guard, Convert.ToInt64
-    /// would throw FormatException.</summary>
+    /// exec slot. <paramref name="hasNullTerm"/> is supplied by the caller because
+    /// nulls are resolved upstream in this path (unlike the literal fast-path).</summary>
     private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType,
         List<object> values, List<ParamValueType> types, bool hasNullTerm)
     {
@@ -1123,10 +1132,8 @@ internal static partial class QueryPlanBuilder
         {
             var value = values[i];
             if (value == null) continue;
-            if (types[i] != dominantType && AreTypesIncompatible(types[i], dominantType))
-                continue;
-            writer.Add(value, dominantTokenType);
-            nonNullCount++;
+            if (TryEmitInTermValue(writer, value, types[i], dominantType, dominantTokenType))
+                nonNullCount++;
         }
 
         exec.PackedParamValue = new PackedParam(packedType, startIdx);
