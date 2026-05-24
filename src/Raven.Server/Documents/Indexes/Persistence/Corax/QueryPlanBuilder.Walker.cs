@@ -80,7 +80,7 @@ internal static partial class QueryPlanBuilder
         }
 
         /// <summary>Construct from raw bag/metadata. Used by sub-expression entry points
-        /// (e.g. <see cref="BuildFromSubExpression"/>) that do not have a full
+        /// (e.g. <see cref="QueryPlanBuilder.BuildQueryForMoreLikeThis"/>) that do not have a full
         /// <see cref="PlanParameters"/> available.</summary>
         private ResolutionContext(BlittableJsonReaderObject queryParameters, QueryMetadata metadata, IndexSearcher indexSearcher)
         {

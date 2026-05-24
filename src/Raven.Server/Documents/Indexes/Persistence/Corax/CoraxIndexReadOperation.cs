@@ -1450,7 +1450,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 {
                     // moreLikeThis(id() = 'datas/4-A', ...) — build a query from just the
                     // inner binary expression (not the full WHERE which wraps it in moreLikeThis).
-                    baseDocumentQuery = BuildQueryFromExpression(builderParameters, be);
+                    baseDocumentQuery = QueryPlanBuilder.BuildQueryForMoreLikeThis(builderParameters, be);
                 }
                 else
                 {
@@ -1482,17 +1482,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     Options = options
                 };
             }
-        }
-
-        /// <summary>
-        /// Build a query match from the inner BinaryExpression of a moreLikeThis clause,
-        /// e.g. the <c>id() = 'datas/4-A'</c> part of <c>moreLikeThis(id() = 'datas/4-A', ...)</c>.
-        /// Resolves the expression directly instead of going through the full plan pipeline
-        /// (which would see the moreLikeThis wrapper and produce AllEntries).
-        /// </summary>
-        private static IQueryMatch BuildQueryFromExpression(QueryBuilderParameters builderParameters, QueryExpression expression)
-        {
-            return QueryPlanBuilder.BuildFromSubExpression(builderParameters, expression);
         }
 
         private static IQueryMatch BuildCompiledQueryMatch(QueryBuilderParameters builderParameters)
