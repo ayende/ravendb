@@ -17,7 +17,6 @@ using Corax.Querying.Planning;
 using Corax.Querying.Primitives;
 using Corax.Utils;
 using Raven.Client.Exceptions;
-using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Binary;
@@ -52,7 +51,7 @@ internal static partial class QueryPlanBuilder
         CancellationToken token)
     {
         var indexSearcher = planParams.IndexSearcher;
-        var walkerCtx = CreateResolutionContext(planParams, builderParameters);
+        var walkerCtx = new ResolutionContext(builderParameters);
 
         // Phase 1: structural template (cached per queryText).
         var template = BuildTemplate(planParams);
@@ -66,14 +65,6 @@ internal static partial class QueryPlanBuilder
         // BuildAndCompile uses the unconditional bitmap path — ORDER BY optimization dispatch
         // (CompoundExact / CompoundField / DirectScan) belongs to BuildCompileAndOptimize.
         return InstantiateBitmapPipeline(compiledPlanOut, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
-    }
-
-    private static ResolutionContext CreateResolutionContext(PlanParameters planParams, QueryBuilderParameters builderParameters)
-    {
-        // All BuildAndCompile / BuildCompileAndOptimize callers (production + tests) supply a
-        // non-null builderParameters — tests use the minimal QueryBuilderParameters test ctor
-        // and route through the direct-test branch via builderParams.IndexFieldsMapping == null.
-        return new ResolutionContext(builderParameters);
     }
 
     internal readonly record struct BuildCompileAndOptimizeResult(
@@ -98,7 +89,7 @@ internal static partial class QueryPlanBuilder
         CancellationToken token)
     {
         var indexSearcher = planParams.IndexSearcher;
-        var walkerCtx = CreateResolutionContext(planParams, builderParameters);
+        var walkerCtx = new ResolutionContext(builderParameters);
 
         // Phase 1: structural template (cached per queryText).
         var template = BuildTemplate(planParams);
@@ -670,9 +661,9 @@ internal static partial class QueryPlanBuilder
         // Populate parameters for the sub-expression clauses
         var writer = new ValueWriter();
         var subExecs = new List<ClauseExecution>(walkerCtx.Clauses.Count);
-        for (int ci = 0; ci < walkerCtx.Clauses.Count; ci++)
+        foreach (var it in walkerCtx.Clauses)
         {
-            var item = CreateExecution(walkerCtx.Clauses[ci]);
+            var item = CreateExecution(it);
             subExecs.Add(item);
             PopulateClauseValues(item, builderParams.QueryParameters, writer, builderParams);
         }
@@ -844,11 +835,14 @@ internal static partial class QueryPlanBuilder
     private static ClauseExecution CreateExecution(ClauseInfo clause)
     {
         var exec = new ClauseExecution(clause);
-        if (clause.SubClauses is { Count: > 0 })
+        
+        if (clause.SubClauses is not { Count: > 0 }) 
+            return exec;
+        
+        exec.SubExecutions = new List<ClauseExecution>(clause.SubClauses.Count);
+        foreach (var it in clause.SubClauses)
         {
-            exec.SubExecutions = new List<ClauseExecution>(clause.SubClauses.Count);
-            for (int i = 0; i < clause.SubClauses.Count; i++)
-                exec.SubExecutions.Add(CreateExecution(clause.SubClauses[i]));
+            exec.SubExecutions.Add(CreateExecution(it));
         }
 
         return exec;
@@ -1273,30 +1267,20 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     private static IQueryMatch[] ResolveMatches(QueryExecution exec, ResolutionContext walkerCtx)
     {
-        // IsAllEntries + spatial/vector is intercepted by the InstantiateAllEntriesPostFilter
-        // bypass in InstantiateBitmapPipeline before reaching ResolveMatches — by the time we
-        // get here, IsAllEntries implies no spatial/vector slots. Assert the invariant so any
-        // future caller that reaches ResolveMatches without the bypass fails loudly.
-        if (exec.IsAllEntries)
+        Debug.Assert(!exec.HasSpatialOrVector,
+            "ResolveMatches reached with IsAllEntries && HasSpatialOrVector — InstantiateAllEntriesPostFilter bypass should have handled this.");
+
+        return (exec.IsAllEntries, exec.Executions) switch
         {
-            Debug.Assert(!exec.HasSpatialOrVector,
-                "ResolveMatches reached with IsAllEntries && HasSpatialOrVector — InstantiateAllEntriesPostFilter bypass should have handled this.");
-            return [walkerCtx.IndexSearcher.AllEntries()];
-        }
-
-        if (exec.Executions is not { Count: > 0 })
-            return [];
-
-        return ResolveSlots<MatchResolver, IQueryMatch>(exec, walkerCtx);
+            (true, _) => [walkerCtx.IndexSearcher.AllEntries()],
+            (false, []) => [],
+            _ => ResolveSlots<MatchResolver, IQueryMatch>(exec, walkerCtx)
+        };
     }
 
     /// <summary>
-    /// Shared iteration over a QueryExecution's clauses, producing one TSlot per
-    /// position. Slot layout matches <see cref="CountMatchSlots"/> exactly, so the
-    /// three resolvers (matches / posting sources / terms providers) produce parallel
-    /// arrays indexed identically. Per-slot leaf operations are dispatched via
-    /// static-abstract on <typeparamref name="TResolver"/>; the JIT specializes
-    /// the loop for each resolver, eliminating virtual calls.
+    /// Produces a slot per position from QueryExecution's clauses. Slot layout matches
+    /// <see cref="CountMatchSlots"/> exactly, produces identical parallel arrays indexed. 
     /// </summary>
     private static TSlot[] ResolveSlots<TResolver, TSlot>(QueryExecution exec, ResolutionContext walkerCtx)
         where TResolver : ISlotResolver<TResolver, TSlot>
@@ -1305,15 +1289,17 @@ internal static partial class QueryPlanBuilder
         var slots = new TSlot[CountMatchSlots(execs, exec.IsAllEntries, exec.Plan.AllNegated)];
         int matchIdx = 0;
 
-        for (int ci = 0; ci < execs.Count; ci++)
+        foreach (var clauseExec in execs)
         {
-            ClauseInfo clause = execs[ci].Clause;
-            ClauseExecution clauseExec = execs[ci];
+            ClauseInfo clause = clauseExec.Clause;
 
             if (TryGetGroupFanOut(clause, clauseExec, out var subClauses, out var subExecs))
             {
                 for (int si = 0; si < subClauses.Count; si++)
+                {
                     slots[matchIdx++] = TResolver.ResolveSubClauseSlot(subClauses[si], subExecs[si], exec, walkerCtx);
+                }
+
                 continue;
             }
 
@@ -1321,7 +1307,10 @@ internal static partial class QueryPlanBuilder
             {
                 case ClauseType.AllIn or ClauseType.In:
                     for (int t = 0; t < clauseExec.InTermCount; t++)
+                    {
                         slots[matchIdx++] = TResolver.ResolveInTermSlot(clause, clauseExec, t, exec, walkerCtx);
+                    }
+
                     // Null-term slot is always allocated; resolver decides whether to populate.
                     slots[matchIdx++] = TResolver.ResolveNullTermSlot(clause, clauseExec, walkerCtx);
                     break;
@@ -1341,19 +1330,16 @@ internal static partial class QueryPlanBuilder
     /// <summary>Per-slot resolver contract; one implementation per output array shape.
     /// Static abstracts keep the dispatch monomorphic — the JIT specializes
     /// <see cref="ResolveSlots{TResolver, TSlot}"/> for each concrete resolver.</summary>
-    private interface ISlotResolver<TSelf, TSlot>
+    private interface ISlotResolver<TSelf, out TSlot>
         where TSelf : ISlotResolver<TSelf, TSlot>
     {
-        static abstract TSlot ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
-            QueryExecution exec, ResolutionContext ctx);
+        static abstract TSlot ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec, QueryExecution exec, ResolutionContext ctx);
 
-        static abstract TSlot ResolveInTermSlot(ClauseInfo clause, ClauseExecution clauseExec, int termIndex,
-            QueryExecution exec, ResolutionContext ctx);
+        static abstract TSlot ResolveInTermSlot(ClauseInfo clause, ClauseExecution clauseExec, int termIndex, QueryExecution exec, ResolutionContext ctx);
 
         static abstract TSlot ResolveNullTermSlot(ClauseInfo clause, ClauseExecution clauseExec, ResolutionContext ctx);
 
-        static abstract TSlot ResolveDefaultSlot(ClauseInfo clause, ClauseExecution clauseExec,
-            QueryExecution exec, ResolutionContext ctx);
+        static abstract TSlot ResolveDefaultSlot(ClauseInfo clause, ClauseExecution clauseExec, QueryExecution exec, ResolutionContext ctx);
 
         static abstract TSlot ResolveAllNegatedTailSlot(IndexSearcher indexSearcher);
     }
@@ -1799,19 +1785,16 @@ internal static partial class QueryPlanBuilder
     /// caller skip the allocation entirely when no clause can use the TreeScan path.</summary>
     private static bool HasAnyTreeScanClause(List<ClauseExecution> execs)
     {
-        for (int i = 0; i < execs.Count; i++)
+        foreach (var exec in execs)
         {
-            var cl = execs[i].Clause;
+            var cl = exec.Clause;
             if (IsTreeScanEligibleClause(cl))
                 return true;
 
-            if (cl.SubClauses != null)
+            foreach (var subClause in cl.SubClauses ?? [])
             {
-                for (int j = 0; j < cl.SubClauses.Count; j++)
-                {
-                    if (IsTreeScanEligibleClause(cl.SubClauses[j]))
-                        return true;
-                }
+                if (IsTreeScanEligibleClause(subClause))
+                    return true;
             }
         }
 
@@ -3060,9 +3043,9 @@ internal static partial class QueryPlanBuilder
         bool needsThreeBitmaps = false;
 
         int matchIndex = 0;
-        for (int ci = 0; ci < executions.Count; ci++)
+        foreach (var exec in executions)
         {
-            var it = executions[ci].Clause;
+            var it = exec.Clause;
 
             // Negated clause in an OR chain: emit a single QueryMatch slot whose match
             // is materialized at resolution time as AllEntries ANDNOT(positive form).
@@ -3079,7 +3062,7 @@ internal static partial class QueryPlanBuilder
                 {
                     Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                     ParamIndex = matchIndex,
-                    EstimatedCardinality = executions[ci].Cardinality,
+                    EstimatedCardinality = exec.Cardinality,
                     Dispatch = MatchDispatch.QueryMatch
                 });
                 matchIndex++;
@@ -3090,7 +3073,7 @@ internal static partial class QueryPlanBuilder
             {
                 case ClauseType.In:
                 {
-                    EmitInOps(ops, it, executions[ci].Cardinality, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
+                    EmitInOps(ops, it, exec.Cardinality, bitmapLocal: 0, isSeed: matchIndex == 0, ref matchIndex, rangeCounts);
                     break;
                 }
                 case ClauseType.AllIn:
@@ -3100,7 +3083,7 @@ internal static partial class QueryPlanBuilder
                     if (matchIndex == 0)
                     {
                         // Seed: build directly in slot 0 with Fill + AndRange.
-                        EmitAllInOps(ops, it, executions[ci].Cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
+                        EmitAllInOps(ops, it, exec.Cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
                     }
                     else
                     {
@@ -3114,7 +3097,7 @@ internal static partial class QueryPlanBuilder
                             BitmapLocal = 0,
                             ParamIndex2 = 2
                         });
-                        EmitAllInOps(ops, it, executions[ci].Cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
+                        EmitAllInOps(ops, it, exec.Cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
                         ops.Add(new PlanOp
                         {
                             Kind = PlanOpKind.OrBitmaps,
@@ -3135,7 +3118,7 @@ internal static partial class QueryPlanBuilder
                         {
                             Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                             ParamIndex = matchIndex,
-                            EstimatedCardinality = executions[ci].Cardinality / subCount,
+                            EstimatedCardinality = exec.Cardinality / subCount,
                             Dispatch = GetDispatch(sub)
                         });
                         matchIndex++;
@@ -3150,7 +3133,7 @@ internal static partial class QueryPlanBuilder
                     // or can be merged into slot 0 via OrBitmaps after computing into slot 1.
                     var subClauses = it.SubClauses;
                     int subCount = subClauses.Count;
-                    long subCardinality = executions[ci].Cardinality / Math.Max(1, subCount);
+                    long subCardinality = exec.Cardinality / Math.Max(1, subCount);
                     if (matchIndex == 0)
                     {
                         // First element: build the AND chain directly in slot 0.
@@ -3229,7 +3212,7 @@ internal static partial class QueryPlanBuilder
                     {
                         Kind = matchIndex == 0 ? PlanOpKind.FillFromPostings : PlanOpKind.OrWithPostings,
                         ParamIndex = matchIndex,
-                        EstimatedCardinality = executions[ci].Cardinality,
+                        EstimatedCardinality = exec.Cardinality,
                         Dispatch = GetDispatch(it)
                     });
                     matchIndex++;
@@ -3487,26 +3470,13 @@ internal static partial class QueryPlanBuilder
         return (ops.ToArray(), 2, rangeCounts.Count > 0 ? rangeCounts.ToArray() : null);
     }
 
-    /// <summary>Encode clause sort order into a 30-bit integer for the plan-cache key.
-    /// Up to 10 clauses × 3 bits each; slot <c>i</c> holds
-    /// <c>clauses[i].OriginalIndex &amp; 0x7</c> shifted by <c>i*3</c>.</summary>
-    private static int ComputeOperandOrdering(List<ClauseExecution> executions)
-    {
-        int ordering = 0;
-        for (int i = 0; i < Math.Min(executions.Count, 10); i++)
-            ordering |= (executions[i].Clause.OriginalIndex & 0x7) << (i * 3);
-        return ordering;
-    }
-
     /// <summary>True when all clauses are negated (1+ clauses, first is negated after
     /// cardinality sort — since negated sort last, if the first is negated, all are).
     /// The single-clause NotEquals path in <see cref="EmitAndPlan"/> sets <c>IsNegated = true</c>
     /// before this is called, so the slot layout is <c>[AllEntries, TermMatch]</c>.</summary>
-    private static bool CheckAllNegated(List<ClauseExecution> executions)
-        => executions is [{ IsNegated: true }, ..];
+    private static bool CheckAllNegated(List<ClauseExecution> executions) => executions is [{ IsNegated: true }, ..];
 
-    
-    static bool IsEmptyIn(ClauseExecution e) =>
+    private static bool IsEmptyIn(ClauseExecution e) =>
         // HasNullTerm must also block the empty-IN path: a list whose only entry
         // is null arrives as InTermCount=0+HasNullTerm=true and still has to match
         // docs with a null in that field via the null-term posting list (Fill@0
@@ -3735,10 +3705,9 @@ internal static partial class QueryPlanBuilder
         }
 
         int count = isAllEntries ? 1 : 0;
-        for (int ci = 0; ci < executions.Count; ci++)
+        foreach (var exec in executions)
         {
-            var clause = executions[ci].Clause;
-            var exec = executions[ci];
+            var clause = exec.Clause;
             if (clause.IsOrChainNotEquals)
             {
                 count += 1;
@@ -3986,7 +3955,7 @@ internal static partial class QueryPlanBuilder
             LazyNumberValue lnv => lnv.TryParseLong(out _) ? ScanValueType.Long : ScanValueType.Double,
             string { Length: < 83 } => ScanValueType.Slice, // statically skip Encoding.UTF8.GetByteCount() < 255 here, since we _know_ it's < 255 regardless
             string s when Encoding.UTF8.GetByteCount(s) < byte.MaxValue => ScanValueType.Slice, 
-            string s => ScanValueType.SliceLong,
+            string => ScanValueType.SliceLong,
             LazyStringValue lsv => lsv.Size > byte.MaxValue ? ScanValueType.SliceLong : ScanValueType.Slice,
             BlittableJsonReaderArray arr => arr.Length > 0 ? ClassifyParamTypeFirstElement(arr[0]) : ScanValueType.Slice,
             _ => ScanValueType.Slice
