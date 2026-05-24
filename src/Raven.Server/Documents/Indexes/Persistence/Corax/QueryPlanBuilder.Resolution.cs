@@ -879,10 +879,9 @@ internal static partial class QueryPlanBuilder
             switch (it.Source)
             {
                 case BindingSource.Literal:
+                    if (it.LiteralValue == null) { hasNullTerm = true; break; }
                     resolvedValues.Add(it.LiteralValue);
                     termTypes.Add(it.LiteralType);
-                    if (it.LiteralValue == null)
-                        hasNullTerm = true;
                     break;
 
                 case BindingSource.QueryParameter:
@@ -895,22 +894,20 @@ internal static partial class QueryPlanBuilder
                         foreach (var elem in arr)
                         {
                             var (elemVal, elemType) = ResolveParameterValue(elem);
+                            if (elemVal == null) { hasNullTerm = true; continue; }
                             resolvedValues.Add(elemVal);
                             termTypes.Add(ToParamValueType(elemType));
-                            if (elemVal == null)
-                                hasNullTerm = true;
                         }
                     }
                     else if (inRaw != null)
                     {
                         var (singleVal, singleType) = ResolveParameterValue(inRaw);
+                        if (singleVal == null) { hasNullTerm = true; break; }
                         resolvedValues.Add(singleVal);
                         termTypes.Add(ToParamValueType(singleType));
                     }
                     else
                     {
-                        resolvedValues.Add(null);
-                        termTypes.Add(ParamValueType.Null);
                         hasNullTerm = true;
                     }
 
@@ -919,24 +916,13 @@ internal static partial class QueryPlanBuilder
 
                 case BindingSource.DeferredMethod:
                     // Deferred bindings (cmpxchg, now, today) shouldn't appear in IN lists,
-                    // but handle gracefully: resolve as null.
-                    resolvedValues.Add(null);
-                    termTypes.Add(ParamValueType.Null);
+                    // but handle gracefully: treat as null.
                     hasNullTerm = true;
                     break;
             }
         }
 
-        ParamValueType dominantType = ParamValueType.Null;
-        for (int i = 0; i < resolvedValues.Count; i++)
-        {
-            if (resolvedValues[i] == null) continue;
-            dominantType = termTypes[i];
-            break;
-        }
-
-        if (dominantType == ParamValueType.Null)
-            dominantType = ParamValueType.String;
+        ParamValueType dominantType = resolvedValues.Count > 0 ? termTypes[0] : ParamValueType.String;
 
         EmitInTerms(exec, writer, dominantType, resolvedValues, termTypes, hasNullTerm);
     }
@@ -1018,9 +1004,7 @@ internal static partial class QueryPlanBuilder
         int nonNullCount = 0;
         for (int i = 0; i < values.Count; i++)
         {
-            var value = values[i];
-            if (value == null) continue;
-            if (TryEmitInTermValue(writer, value, types[i], dominantType, dominantTokenType))
+            if (TryEmitInTermValue(writer, values[i], types[i], dominantType, dominantTokenType))
                 nonNullCount++;
         }
 
