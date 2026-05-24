@@ -130,8 +130,7 @@ internal static partial class QueryPlanBuilder
             BoostPropagate(ctx);
             NotCanonicalize(clauses, ctx);
             BetweenRewriteSentinels(clauses, ctx.IsOr);
-            InPreClassify(clauses);
-            if (ctx.Metadata.IsDynamic) 
+            if (ctx.Metadata.IsDynamic)
                 DynamicFieldNameResolve(clauses);
             GroupCollapse(clauses, ctx);
             WhenRegister(clauses, ctx);
@@ -175,56 +174,6 @@ internal static partial class QueryPlanBuilder
             throw new NotSupportedException(
                 $"Query has {ctx.WhenCount} WHEN-guarded clauses; the plan template supports at most " +
                 $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
-        }
-
-        /// <summary>
-        /// For IN/AllIn clauses where ALL bindings are literals (no parameters), pre-compute
-        /// the dominant type at template time. Sets <see cref="ClauseInfo.AllBindingsAreLiteral"/> and
-        /// <see cref="ClauseInfo.InDominantType"/>. At execution time, <see cref="ResolveInFromBindings"/>
-        /// skips the dominant-type scan and type-incompatible filtering for these clauses.
-        /// Recurses into OrGroup/AndGroup sub-clauses.
-        /// </summary>
-        private static void InPreClassify(List<ClauseInfo> clauses)
-        {
-            foreach (var t in clauses)
-            {
-                InPreClassifyRecursive(t);
-            }
-        }
-
-        private static void InPreClassifyRecursive(ClauseInfo clause)
-        {
-            foreach (var t in clause.SubClauses ?? [])
-            {
-                InPreClassifyRecursive(t);
-            }
-            
-            if (clause.ClauseType is not (ClauseType.In or ClauseType.AllIn) || clause.Bindings is not { Length: not 0 })
-                return;
-
-            // Check if all bindings are literals
-            foreach (var t in clause.Bindings)
-            {
-                if (t.Source != BindingSource.Literal)
-                    return; // has parameter bindings — can't pre-classify
-            }
-
-            // All literal: compute dominant type
-            ParamValueType dominant = ParamValueType.Null;
-            foreach (var t in clause.Bindings)
-            {
-                if (t.LiteralValue == null)
-                    continue;
-                if (dominant == ParamValueType.Null) 
-                    dominant = t.LiteralType;
-            }
-            if (dominant == ParamValueType.Null)
-            {
-                dominant = ParamValueType.String;
-            }
-
-            clause.AllBindingsAreLiteral = true;
-            clause.InDominantType = dominant;
         }
 
         /// <summary>

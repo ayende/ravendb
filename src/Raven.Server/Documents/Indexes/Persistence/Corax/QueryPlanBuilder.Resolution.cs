@@ -807,7 +807,7 @@ internal static partial class QueryPlanBuilder
             }
             case ClauseType.In or ClauseType.AllIn:
                 // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
-                ResolveInFromBindings(exec.Clause, exec, queryParameters, writer, bindings);
+                ResolveInFromBindings(exec.Clause, exec, queryParameters, writer, bindings, builderParameters);
                 break;
             default:
                 // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
@@ -856,20 +856,15 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Populate <paramref name="exec"/>'s typed-parameter slot for an IN/AllIn
-    /// clause. Two paths share the same tail (<see cref="EmitInTerms"/>): the
-    /// allocation-free literal fast path reads directly from <see cref="ParameterBinding"/>
-    /// when <see cref="ClauseInfo.AllBindingsAreLiteral"/> is set (dominantType was pre-computed
-    /// by InPreClassify at template time); the parameter-bound slow path resolves each
-    /// binding (potentially array-expanding) into <see cref="List{T}"/> buffers, infers
-    /// the dominant type at runtime, and then runs the same emit logic.</summary>
-    private static void ResolveInFromBindings(ClauseInfo clause, ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings)
+    /// clause. Resolves each binding (literal, query parameter, or deferred method such as
+    /// today()/now()/cmpxchg()) into typed value buffers, then calls <see cref="EmitInTerms"/>.
+    /// Array-expanding query parameters (e.g. <c>@ids</c> bound to a JSON array) are
+    /// flattened inline. Null values are never added to the buffers — they set
+    /// <c>hasNullTerm</c> so the posting-list resolver queries the null-term list separately.</summary>
+    private static void ResolveInFromBindings(ClauseInfo clause, ClauseExecution exec,
+        BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings,
+        QueryBuilderParameters builderParameters)
     {
-        if (clause.AllBindingsAreLiteral)
-        {
-            EmitInTerms(exec, writer, clause.InDominantType, bindings, hasNullTerm: false);
-            return;
-        }
-
         var resolvedValues = new List<object>(bindings.Length);
         var termTypes = new List<ParamValueType>(bindings.Length);
         bool hasNullTerm = false;
@@ -910,20 +905,21 @@ internal static partial class QueryPlanBuilder
                     {
                         hasNullTerm = true;
                     }
-
                     break;
                 }
 
                 case BindingSource.DeferredMethod:
-                    // Deferred bindings (cmpxchg, now, today) shouldn't appear in IN lists,
-                    // but handle gracefully: treat as null.
-                    hasNullTerm = true;
+                {
+                    var (val, type) = ResolveBindingScalar(it, queryParameters, builderParameters);
+                    if (val == null) { hasNullTerm = true; break; }
+                    resolvedValues.Add(val);
+                    termTypes.Add(type);
                     break;
+                }
             }
         }
 
         ParamValueType dominantType = resolvedValues.Count > 0 ? termTypes[0] : ParamValueType.String;
-
         EmitInTerms(exec, writer, dominantType, resolvedValues, termTypes, hasNullTerm);
     }
 
@@ -962,39 +958,10 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    /// <summary>All-literal fast-path emit: read values straight from
-    /// <paramref name="bindings"/>, write each dominantType-compatible non-null
-    /// value into <paramref name="writer"/>, then stamp the exec slot.</summary>
-    private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType,
-        ParameterBinding[] bindings, bool hasNullTerm)
-    {
-        var (packedType, startIdx) = ResolveInWriterSlot(writer, dominantType);
-        var dominantTokenType = ToValueTokenType(dominantType);
-
-        int nonNullCount = 0;
-        foreach (var it in bindings)
-        {
-            var value = it.LiteralValue;
-            if (value == null)
-            {
-                hasNullTerm = true;
-                continue;
-            }
-
-            if (TryEmitInTermValue(writer, value, it.LiteralType, dominantType, dominantTokenType))
-                nonNullCount++;
-        }
-
-        exec.PackedParamValue = new PackedParam(packedType, startIdx);
-        exec.InTermCount = nonNullCount;
-        exec.HasNullTerm = hasNullTerm;
-    }
-
-    /// <summary>Parameter-bound slow-path emit: iterate the pre-resolved
-    /// <paramref name="values"/> / <paramref name="types"/> buffers, filter to the
-    /// inferred dominant type, write into <paramref name="writer"/>, then stamp the
-    /// exec slot. <paramref name="hasNullTerm"/> is supplied by the caller because
-    /// nulls are resolved upstream in this path (unlike the literal fast-path).</summary>
+    /// <summary>Write the resolved non-null IN/AllIn term values into <paramref name="writer"/>
+    /// and stamp the exec slot. Null values are not in <paramref name="values"/> — they are
+    /// signalled via <paramref name="hasNullTerm"/> so the resolver queries the null posting
+    /// list separately. Values whose type is incompatible with the dominant type are dropped.</summary>
     private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType,
         List<object> values, List<ParamValueType> types, bool hasNullTerm)
     {

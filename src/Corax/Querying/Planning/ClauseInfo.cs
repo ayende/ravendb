@@ -98,24 +98,6 @@ public sealed class ClauseInfo
         set { ThrowIfFrozen(); field = value; }
     }
 
-    /// <summary>For IN/AllIn clauses: true when ALL bindings are literals (no parameters).
-    /// When set, the dominant type and type-incompatible filtering are pre-computed at
-    /// template time, skipping per-execution work in ResolveInFromBindings.</summary>
-    public bool AllBindingsAreLiteral
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
-
-    /// <summary>Pre-computed dominant type for all-literal IN/AllIn clauses. Only valid
-    /// when <see cref="AllBindingsAreLiteral"/> is true. The dominant type determines which typed
-    /// array (Long/Double/String) receives the resolved values.</summary>
-    public ParamValueType InDominantType
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
-
     /// <summary>True if this clause is wrapped in boost(). When set, Bindings[^1] is the
     /// boost factor binding and exec.BoostFactor is resolved from it per-execution.</summary>
     public bool HasBoost
