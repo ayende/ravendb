@@ -202,7 +202,6 @@ internal static partial class QueryPlanBuilder
         }
 
         // Extend Executions array to include spatial/vector post-filter clauses.
-        int extraCount = (spatialClauses?.Length ?? 0) + (vectorClauses?.Length ?? 0);
         var execs = exec.Executions ??= [];
 
         int matchIndex = CountMatchSlots(execs, exec.IsAllEntries, allNegated);

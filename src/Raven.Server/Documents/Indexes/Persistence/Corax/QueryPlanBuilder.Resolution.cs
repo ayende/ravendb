@@ -1690,7 +1690,6 @@ internal static partial class QueryPlanBuilder
     private static (FieldMetadata FieldMeta, PackedParam TermPacked) ResolveInTermParam(
         ClauseInfo clause, ClauseExecution exec, int termIndex, ResolutionContext walkerCtx)
     {
-        // ResolveFieldMetadata picks up the exact/search field name variant for dynamic indexes (#4777 fix).
         FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
         return (fieldMeta, exec.PackedParamValue.WithTermOffset(termIndex));
     }
@@ -3699,13 +3698,8 @@ internal static partial class QueryPlanBuilder
 
     internal static int CountMatchSlots(List<ClauseExecution> executions, bool isAllEntries, bool allNegated)
     {
-        if (executions == null || executions.Count == 0)
-        {
-            return isAllEntries ? 1 : 0;
-        }
-
         int count = isAllEntries ? 1 : 0;
-        foreach (var exec in executions)
+        foreach (var exec in executions ?? [])
         {
             var clause = exec.Clause;
             if (clause.IsOrChainNotEquals)
@@ -3716,16 +3710,13 @@ internal static partial class QueryPlanBuilder
 
             count += clause.ClauseType switch
             {
-                ClauseType.OrGroup or ClauseType.AndGroup when clause.SubClauses != null => clause.SubClauses.Count,
+                ClauseType.OrGroup or ClauseType.AndGroup => clause.SubClauses?.Count ?? 1,
                 ClauseType.In or ClauseType.AllIn => (exec.InTermCount > 0 ? exec.InTermCount : clause.Bindings?.Length ?? 0) + 1,
                 _ => 1
             };
         }
 
-        if (allNegated)
-        {
-            count++;
-        }
+        if (allNegated) count++;
 
         return count;
     }
