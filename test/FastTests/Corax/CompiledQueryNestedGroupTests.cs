@@ -274,6 +274,64 @@ public class CompiledQueryNestedGroupTests : RavenTestBase
         }
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task NestedWithNegation_NotEqualsDirectInsideOrGroup()
+    {
+        // Probe for an asymmetry: NotEquals as a DIRECT sub-clause of a nested OrGroup
+        // (not wrapped in an inner AndGroup). NotCanonicalize only marks top-level
+        // OR-chain clauses with IsOrChainNotEquals=true; nested OrGroup sub-clauses
+        // are not marked. If the OrGroup collapse path (or the IL pipeline's nested
+        // OrGroup case in EmitAndPlan) doesn't handle the negation, the positive form
+        // leaks through and the result set is wrong.
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        using var store = GetDocumentStore(options);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            for (int i = 0; i < 100; i++)
+            {
+                await session.StoreAsync(new TestDoc
+                {
+                    Name = $"doc-{i:D5}",
+                    Status = i % 2 == 0 ? "active" : "inactive",
+                    Category = "a b c d".Split(' ')[i % 4],
+                    Priority = (i % 5) + 1
+                });
+            }
+            await session.SaveChangesAsync();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        using (var session = store.OpenAsyncSession())
+        {
+            // active AND (Priority != 1 OR Category = 'b')
+            var results = await session.Advanced.AsyncRawQuery<TestDoc>(
+                "from TestDocs where Status = 'active' and " +
+                "(Priority != 1 or Category = 'b')")
+                .ToListAsync();
+
+            Assert.All(results, r =>
+            {
+                Assert.Equal("active", r.Status);
+                Assert.True(
+                    r.Priority != 1 || r.Category == "b",
+                    $"Unexpected match: Category={r.Category}, Priority={r.Priority}");
+            });
+
+            var expected = 0;
+            for (int i = 0; i < 100; i++)
+            {
+                var sta = i % 2 == 0 ? "active" : "inactive";
+                var cat = "a b c d".Split(' ')[i % 4];
+                var pri = (i % 5) + 1;
+                if (sta == "active" && (pri != 1 || cat == "b"))
+                    expected++;
+            }
+            Assert.Equal(expected, results.Count);
+        }
+    }
+
     private class TestDoc
     {
         public string Id { get; set; }
