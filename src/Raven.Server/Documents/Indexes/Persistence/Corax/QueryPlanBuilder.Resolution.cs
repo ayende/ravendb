@@ -2462,31 +2462,11 @@ internal static partial class QueryPlanBuilder
                 byte[] field2HighBytes = null;
                 bool usePrefix = false;
 
-                if (field2Packed.ValueType == PackedParam.TypeLong)
+                if (field2Packed.ValueType is PackedParam.TypeLong or PackedParam.TypeDouble)
                 {
-                    field2Bytes = new byte[sizeof(long)];
-                    BinaryPrimitives.WriteInt64BigEndian(
-                        field2Bytes, Bits.SwapBytes(exec.LongValues[field2Packed.Param1]));
+                    field2Bytes = EncodeNumericBoundBigEndian(exec, field2Packed.ValueType, field2Packed.Param1);
                     if (field2Clause.ClauseType == ClauseType.Between)
-                    {
-                        field2HighBytes = new byte[sizeof(long)];
-                        BinaryPrimitives.WriteInt64BigEndian(
-                            field2HighBytes, Bits.SwapBytes(exec.LongValues[field2Packed.Param2]));
-                    }
-                }
-                else if (field2Packed.ValueType == PackedParam.TypeDouble)
-                {
-                    field2Bytes = new byte[sizeof(long)];
-                    long sortable = Bits.DoubleToSortableLong(exec.DoubleValues[field2Packed.Param1]);
-                    BinaryPrimitives.WriteInt64BigEndian(
-                        field2Bytes, Bits.SwapBytes(sortable));
-                    if (field2Clause.ClauseType == ClauseType.Between)
-                    {
-                        field2HighBytes = new byte[sizeof(long)];
-                        long highSortable = Bits.DoubleToSortableLong(exec.DoubleValues[field2Packed.Param2]);
-                        BinaryPrimitives.WriteInt64BigEndian(
-                            field2HighBytes, Bits.SwapBytes(highSortable));
-                    }
+                        field2HighBytes = EncodeNumericBoundBigEndian(exec, field2Packed.ValueType, field2Packed.Param2);
                 }
                 else if (field2Packed.ValueType == PackedParam.TypeString)
                 {
@@ -3697,6 +3677,20 @@ internal static partial class QueryPlanBuilder
         }
 
         return drivingCard;
+    }
+
+    /// <summary>Encode a numeric (long/double) field value at <paramref name="paramIdx"/>
+    /// into 8 big-endian sortable bytes — the same encoding indexing uses for compound-key
+    /// long/double fields. Doubles map through <see cref="Bits.DoubleToSortableLong"/>
+    /// first so that descending order matches IEEE-754 semantics.</summary>
+    private static byte[] EncodeNumericBoundBigEndian(QueryExecution exec, int valueType, int paramIdx)
+    {
+        long raw = valueType == PackedParam.TypeDouble
+            ? Bits.DoubleToSortableLong(exec.DoubleValues[paramIdx])
+            : exec.LongValues[paramIdx];
+        var buf = new byte[sizeof(long)];
+        BinaryPrimitives.WriteInt64BigEndian(buf, Bits.SwapBytes(raw));
+        return buf;
     }
 
     /// <summary>Cost-gate shared by direct-scan eligibility checks: rejects when the
