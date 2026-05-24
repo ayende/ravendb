@@ -142,170 +142,79 @@ internal static partial class QueryPlanBuilder
         out IQueryMatch innerMatch,
         CancellationToken token)
     {
-        // ── Fast path: cached strategy, dispatch directly to Construct* ──
-        var strategy = compiledPlan.Strategy;
-        if (strategy != ExecutionStrategy.NotEvaluated)
+        
+        switch (compiledPlan.Strategy)
         {
-            IQueryMatch built = null;
-            switch (strategy)
+            case ExecutionStrategy.NotEvaluated:
+                SelectExecutionStrategy(); // select the right strategy 
+                RuntimeHelpers.EnsureSufficientExecutionStack(); // not retry...
+                return Instantiate(compiledPlan, exec, orderByFields, hasEmptySorts, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out innerMatch, token);
+            
+            // ── Fast path: cached strategy, dispatch directly to Construct* ──
+            case ExecutionStrategy.CompoundExact:
+                innerMatch = ConstructCompoundExact(exec, planParams);
+                if(innerMatch is null) goto default;
+                return innerMatch;
+            case ExecutionStrategy.CompoundField when orderByFields != null:  // orderByFields can be null when PageSize is 0  
+                int f2 = FindCompoundFieldField2Range(exec.Executions, exec.Plan.CompoundFieldDrivingClause, exec.Plan.Template.CompoundFieldSortName);
+                innerMatch = ConstructCompoundField(exec, orderByFields, planParams, builderParameters, compiledPlan, f2, entriesToScan: 0, bitmapCost: 0);
+                if(innerMatch is null) goto default;
+                return OrderBy(builderParameters, innerMatch, orderByFields, hasEmptySorts);
+            case ExecutionStrategy.DirectScan 
+                when orderByFields is { Length: <= 2 } &&
+                     exec.Executions is { Count: > 0 } && 
+                     exec.Plan.SortDrivingClauseIndex >= 0 && 
+                     exec.Executions[exec.Plan.SortDrivingClauseIndex].PackedParamValue.IsNone is false:
+                bool hasTieBreak = orderByFields.Length == 2;
+                innerMatch = ConstructDirectScan(exec, orderByFields, planParams, builderParameters,
+                    compiledPlan, exec.Plan.SortDrivingClauseIndex, true, hasTieBreak, entriesToScan: 0, bitmapCost: 0);
+                if(innerMatch is null) goto default;
+                return innerMatch;
+            case ExecutionStrategy.BitmapSort:
+            default:
+                // may either be the selected strategy, or a one-off (because of bad parameters preventing a faster strategy) 
+                return InstantiateBitmapFallback(compiledPlan, exec, orderByFields, hasEmptySorts,
+                    planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out innerMatch, token);
+        }
+
+
+        void SelectExecutionStrategy()
+        {
+            // ── Slow path: cache-miss, run Try* discovery chain ──
+            compiledPlan.DecisionTrail = new();
+            compiledPlan.Strategy = ExecutionStrategy.BitmapSort; // if nothing else overrides it 
+
+            if (compiledPlan.Template.OptimizationFlags.HasFlag(PlanOptimizationFlags.CompoundExactCandidate))
             {
-                case ExecutionStrategy.CompoundExact:
-                    built = ConstructCompoundExact(exec, planParams);
-                    if (built != null)
-                    {
-                        innerMatch = built;
-                        return built;
-                    }
+                if (TryCreateCompoundExactMatch(exec, planParams, builderParameters, out var ceReason))
+                {
+                    compiledPlan.Strategy = ExecutionStrategy.CompoundExact;
+                    compiledPlan.DecisionTrail.Record("CompoundExact", true, "compound exact-term lookup");
+                    return;
+                }
 
-                    break;
-                case ExecutionStrategy.CompoundField:
-                    // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
-                    // CompoundField plan — PageSize is not part of the plan cache key.
-                    if (orderByFields != null)
-                    {
-                        int f2 = FindCompoundFieldField2Range(exec.Executions, exec.Plan.CompoundFieldDrivingClause, exec.Plan.Template.CompoundFieldSortName);
-                        // Cost facts (entriesToScan, bitmapCost) are diagnostic-only inside
-                        // Construct (used for the Reason string). Pass zeros — the cliff bit
-                        // in the cache key already segregates cost buckets.
-                        built = ConstructCompoundField(exec, orderByFields, planParams, builderParameters,
-                            compiledPlan, f2, entriesToScan: 0, bitmapCost: 0);
-                    }
-
-                    if (built != null)
-                    {
-                        innerMatch = built;
-                        return OrderBy(builderParameters, built, orderByFields, hasEmptySorts);
-                    }
-
-                    break;
-                case ExecutionStrategy.DirectScan:
-                    // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
-                    // DirectScan plan — PageSize is not part of the plan cache key.
-                    if (orderByFields is { Length: <= 2 })
-                    {
-                        var execs2 = exec.Executions;
-                        bool isFullScan = execs2 == null || execs2.Count == 0;
-                        bool hasTieBreak = orderByFields.Length == 2;
-                        // Re-resolve drivingIdx (cheap structural lookup; cached at template time
-                        // via SortDrivingClauseIndex). Skip cost gating — strategy cache encodes
-                        // the cost decision via cliff bit in Ordering.
-                        int drivingIdx = -1;
-                        if (!isFullScan)
-                        {
-                            drivingIdx = exec.Plan.SortDrivingClauseIndex;
-                            // BoostFactor cannot land here: ComputeOptFlags clears
-                            // DirectScanCandidate template-wide for any boost; only IsNone
-                            // (parameter resolved to null) can still invalidate at runtime.
-                            if (drivingIdx >= 0 && exec.Executions[drivingIdx].PackedParamValue.IsNone)
-                                drivingIdx = -1;
-                        }
-
-                        if (isFullScan || drivingIdx >= 0)
-                            built = ConstructDirectScan(exec, orderByFields, planParams, builderParameters,
-                                compiledPlan, drivingIdx, isFullScan, hasTieBreak,
-                                entriesToScan: 0, bitmapCost: 0);
-                    }
-
-                    if (built != null)
-                    {
-                        innerMatch = built;
-                        return built;
-                    }
-
-                    break;
+                compiledPlan.DecisionTrail.Record("CompoundExact", false, ceReason ?? "rejected");
             }
 
-            // Cached non-BitmapSort strategy failed at construction time (e.g. per-execution
-            // byte-length overflow). Fall back to bitmap+sort. The cached strategy stays valid
-            // for the next execution; this one had unlucky parameter values.
-            return InstantiateBitmapFallback(compiledPlan, exec, orderByFields, hasEmptySorts,
-                planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out innerMatch, token);
-        }
-
-        // ── Slow path: cache-miss, run Try* discovery chain ──
-        // Each Try* method performs structural + cost checks and, on success, constructs the
-        // live match. We record the outcome on a DecisionTrail for diagnostics, then bake the
-        // winning strategy + *Data onto compiledPlan so future executions skip discovery.
-        bool needsFullChain = true;
-        var resultStrategy = ExecutionStrategy.BitmapSort;
-        var trail = new PlanDecisionTrail();
-        IQueryMatch queryMatch = null;
-        innerMatch = null;
-
-        if ((compiledPlan.Template.OptimizationFlags & PlanOptimizationFlags.CompoundExactCandidate) == 0)
-            trail.Record("CompoundExact", false, "template has no compound-exact candidate");
-        else if (TryCreateCompoundExactMatch(exec, planParams, builderParameters, out var compoundExact, out var ceReason))
-        {
-            queryMatch = compoundExact;
-            innerMatch = compoundExact;
-            resultStrategy = ExecutionStrategy.CompoundExact;
-            needsFullChain = false;
-            trail.Record("CompoundExact", true, "compound exact-term lookup");
-        }
-        else
-            trail.Record("CompoundExact", false, ceReason ?? "rejected");
-
-        if (orderByFields != null)
-        {
-            if (needsFullChain)
+            if (orderByFields is null)
             {
-                if ((compiledPlan.Template.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
-                    trail.Record("CompoundField", false, "template has no direct-scan candidate");
-                else if (TryCreateCompoundFieldMatch(exec, orderByFields, planParams, builderParameters, compiledPlan, out var compoundMatch, out var cfReason))
+                compiledPlan.DecisionTrail.Record("NoOrderBy", true, "no ORDER BY");
+                return;
+            }
+
+            if (compiledPlan.Template.OptimizationFlags.HasFlag(PlanOptimizationFlags.DirectScanCandidate))
+            {
+                if (TryCreateCompoundFieldMatch(exec, orderByFields, planParams, builderParameters, compiledPlan, out var cfReason))
                 {
-                    innerMatch = compoundMatch;
-                    queryMatch = OrderBy(builderParameters, compoundMatch, orderByFields, hasEmptySorts);
-                    resultStrategy = ExecutionStrategy.CompoundField;
-                    needsFullChain = false;
-                    trail.Record("CompoundField", true, "compound tree scan with ORDER BY");
+                    compiledPlan.Strategy = ExecutionStrategy.CompoundField;
+                    compiledPlan.DecisionTrail.Record("CompoundField", true, "compound tree scan with ORDER BY");
                 }
                 else
-                    trail.Record("CompoundField", false, cfReason ?? "rejected");
-            }
-
-            if (needsFullChain)
-            {
-                if ((compiledPlan.Template.OptimizationFlags & PlanOptimizationFlags.DirectScanCandidate) == 0)
-                    trail.Record("DirectScan", false, "template has no direct-scan candidate");
-                else if (TryCreateSimpleFieldDirectScan(exec, orderByFields, planParams, builderParameters, compiledPlan, out var directMatch, out var dsReason))
                 {
-                    queryMatch = directMatch;
-                    innerMatch = directMatch;
-                    resultStrategy = ExecutionStrategy.DirectScan;
-                    needsFullChain = false;
-                    trail.Record("DirectScan", true, "direct tree scan on sort field");
+                    compiledPlan.DecisionTrail.Record("CompoundField", false, cfReason ?? "rejected");
                 }
-                else
-                    trail.Record("DirectScan", false, dsReason ?? "rejected");
-            }
-
-            if (needsFullChain)
-            {
-                // All Try* failed → fall back to bitmap pipeline.
-                var bitmapMatch = InstantiateBitmapPipeline(compiledPlan, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
-                innerMatch = bitmapMatch;
-                if (bitmapMatch is CompiledQueryMatch seekMatch)
-                    TrySetSortSeekHint(seekMatch, exec, orderByFields);
-                queryMatch = OrderBy(builderParameters, bitmapMatch, orderByFields, hasEmptySorts);
-                resultStrategy = ExecutionStrategy.BitmapSort;
-                trail.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
             }
         }
-        else
-        {
-            trail.Record("NoOrderBy", true, "no ORDER BY");
-            if (queryMatch == null)
-            {
-                // No ORDER BY and no Try* winner — use bitmap match.
-                queryMatch = InstantiateBitmapPipeline(compiledPlan, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
-                innerMatch = queryMatch;
-            }
-        }
-
-        compiledPlan.Strategy = resultStrategy;
-        compiledPlan.DecisionTrail = trail;
-
-        return queryMatch;
     }
 
     /// <summary>Bitmap-pipeline fallback used when a cached non-BitmapSort strategy fails at
@@ -2060,36 +1969,38 @@ internal static partial class QueryPlanBuilder
     // ── Compound field exact match (no ORDER BY) ─────────────────────────
 
     public static bool TryCreateCompoundExactMatch(
-        QueryExecution exec, PlanParameters planParams, QueryBuilderParameters builderParams,
-        out IQueryMatch compoundMatch, out string rejectReason)
+        QueryExecution exec, PlanParameters planParams, QueryBuilderParameters builderParams, out string rejectReason)
     {
-        rejectReason = null;
-        bool result = TryCreateCompoundExactMatch(exec, planParams, builderParams, out compoundMatch);
-        if (!result)
+        if (planParams.Index is null || exec is not { 
+                Executions: { Count: >= 2 } executions, 
+                Plan: { 
+                    AllNegated: false, 
+                    CompoundExactClauseA: var a and >= 0, 
+                    CompoundExactClauseB: var b and >= 0 
+                } 
+            } || a >= executions.Count || b >= executions.Count)
         {
-            if (exec.Executions == null || exec.Executions.Count < 2)
-                rejectReason = $"fewer than 2 clauses ({exec.Executions?.Count ?? 0})";
-            else if (exec.Plan.AllNegated)
-                rejectReason = "all clauses are negated";
-            else if (planParams.Index == null)
-                rejectReason = "no index available";
-            else if (exec.Plan.CompoundExactClauseA < 0 || exec.Plan.CompoundExactClauseB < 0)
-                rejectReason = "no compound-exact clause pair identified at template time";
-            else
-                rejectReason = "composite key encoding failed or exceeded max term length";
+            rejectReason = "no compound-exact clause pair identified at template time";
+            return false;
         }
 
-        return result;
+        if (IsClauseBoosted(executions[a]) || executions[a].PackedParamValue.IsNone || 
+            IsClauseBoosted(executions[b]) || executions[b].PackedParamValue.IsNone)
+        {
+            rejectReason = "composite key encoding failed or exceeded max term length, or clause is boosted";
+            return false;
+        }
+
+        rejectReason = null;
+        return true;
     }
 
     /// <summary>Check if two Equals clauses on (field1, field2) match a compound field.
     /// If so, build a single TermQuery on the compound tree with the composite key.
     /// One tree lookup instead of two posting list intersections.</summary>
     public static bool TryCreateCompoundExactMatch(
-        QueryExecution exec, PlanParameters planParams, QueryBuilderParameters builderParams,
-        out IQueryMatch compoundMatch)
+        QueryExecution exec, PlanParameters planParams, QueryBuilderParameters builderParams)
     {
-        compoundMatch = null;
         // Discovery: structural rejection. All structural facts (CompoundExactClauseA/B,
         // CompoundExactAFirst) were pre-classified at template time; this method only
         // confirms the runtime state is compatible.
@@ -2109,9 +2020,7 @@ internal static partial class QueryPlanBuilder
             return false;
         if (IsClauseBoosted(eB) || eB.PackedParamValue.IsNone)
             return false;
-
-        compoundMatch = ConstructCompoundExact(exec, planParams);
-        return compoundMatch != null;
+        return true;
     }
 
     /// <summary>Phase 5 bake: construction-only path for the CompoundExact hint.
@@ -2202,29 +2111,6 @@ internal static partial class QueryPlanBuilder
         return null;
     }
 
-    /// <summary>Check if WHERE + ORDER BY can be served by a compound tree scan.
-    /// Condition: an Equals clause on field1, ORDER BY on field2 (or field1, or both),
-    /// </summary>
-    public static bool TryCreateCompoundFieldMatch(
-        QueryExecution exec, OrderMetadata[] orderByFields,
-        PlanParameters planParams, QueryBuilderParameters builderParams,
-        CompiledPlan compiledPlan, out IQueryMatch compoundMatch, out string rejectReason)
-    {
-        if (TryCreateCompoundFieldMatch(exec, orderByFields, planParams, builderParams, compiledPlan, out compoundMatch))
-        {
-            rejectReason = null;
-            return true;
-        }
-
-        if (exec.Plan.CompoundFieldDrivingClause < 0 || exec.Plan.Template.CompoundFieldSortName == null)
-            rejectReason = "no compound-field candidate identified at template time";
-        else if (exec.Plan.AllNegated)
-            rejectReason = "all clauses are negated";
-        else
-            rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or prefix too long";
-        return false;
-    }
-
     /// <summary>compound(field1, field2) exists in the index, and any residual clauses are
     /// entry-scan eligible.
     /// Returns a DirectScanMatch wrapping a compound tree StartsWith with optional
@@ -2232,32 +2118,32 @@ internal static partial class QueryPlanBuilder
     public static bool TryCreateCompoundFieldMatch(
         QueryExecution exec, OrderMetadata[] orderByFields,
         PlanParameters planParams, QueryBuilderParameters builderParams,
-        CompiledPlan compiledPlan, out IQueryMatch compoundMatch)
+        CompiledPlan compiledPlan, out string rejectReason)
     {
-        compoundMatch = null;
-
-        // Discovery: structural rejection + cost gate. Structural facts
-        // (CompoundFieldDrivingClause, CompoundFieldSortName) were pre-classified at
-        // template time. This method runs cost estimation and residual-scannability
-        // checks that are deterministic for the cache key (cardinality cliff bit 31
-        // in Ordering segregates cliff buckets, so cost outcome is stable per key).
-        int drivingClauseIdx = exec.Plan.CompoundFieldDrivingClause;
-        string sortFieldName = exec.Plan.Template.CompoundFieldSortName;
-        if (drivingClauseIdx < 0 || sortFieldName == null)
+        if (exec.Plan.CompoundFieldDrivingClause < 0 || exec.Plan.Template.CompoundFieldSortName is null)
+        {
+            rejectReason = "no compound-field candidate identified at template time";
             return false;
+        }
         var execs = exec.Executions;
-        if (execs == null || drivingClauseIdx >= execs.Count || exec.Plan.AllNegated)
+        if (exec.Plan.CompoundFieldDrivingClause >= execs.Count || exec.Plan.AllNegated)
+        {
+            rejectReason = "all clauses are negated";   
             return false;
+        }
 
         var indexSearcher = planParams.IndexSearcher;
 
-        var drivingExec = execs[drivingClauseIdx];
+        var drivingExec = execs[exec.Plan.CompoundFieldDrivingClause];
         if (drivingExec.PackedParamValue.IsNone)
+        {
+            rejectReason = "driving clause has no packed param value";
             return false;
+        }
 
         // Find optional field2 range narrowing clause (structural — same for all
         // executions of this template).
-        int field2RangeIdx = FindCompoundFieldField2Range(execs, drivingClauseIdx, sortFieldName);
+        int field2RangeIdx = FindCompoundFieldField2Range(execs, exec.Plan.CompoundFieldDrivingClause, exec.Plan.Template.CompoundFieldSortName);
 
         // Residual scannability + cost check
         int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
@@ -2266,27 +2152,36 @@ internal static partial class QueryPlanBuilder
         for (int i = 0; i < execs.Count; i++)
         {
             bitmapCost += EffectiveCardinality(execs[i], indexSearcher);
-            if (i == drivingClauseIdx || i == field2RangeIdx)
+            if (i == exec.Plan.CompoundFieldDrivingClause || i == field2RangeIdx)
                 continue;
             if (IsClauseBoosted(execs[i]))
+            {
+                rejectReason = "boosted clause found";
                 return false;
-            var pred = BuildScanPredicateInfo(execs[i], ref longIdx, ref doubleIdx, ref sliceIdx);
-            if (pred == null)
+            }
+
+            if (BuildScanPredicateInfo(execs[i], ref longIdx, ref doubleIdx, ref sliceIdx) is null)
+            {
+                rejectReason = "scan predicate info is null";
                 return false;
+            }
             residualCount++;
         }
 
         long drivingCardinality = EffectiveCardinality(drivingExec, indexSearcher);
         long entriesToScan = residualCount > 0
-            ? AdjustEntriesToScanByMinResidual(execs, drivingClauseIdx, drivingCardinality, indexSearcher)
+            ? AdjustEntriesToScanByMinResidual(execs, exec.Plan.CompoundFieldDrivingClause, drivingCardinality, indexSearcher)
             : drivingCardinality;
 
         if (IsDirectScanCostEffective(entriesToScan, bitmapCost) == false)
-            return false;
+        {
+            rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or prefix too long";
 
-        compoundMatch = ConstructCompoundField(exec, orderByFields, planParams, builderParams, compiledPlan,
-            field2RangeIdx, entriesToScan, bitmapCost);
-        return compoundMatch != null;
+            return false;
+        }
+
+        rejectReason = null;
+        return true;
     }
 
     /// <summary>Locate an optional GT/GTE/LT/LTE/Between clause on the sort field
