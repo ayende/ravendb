@@ -148,7 +148,7 @@ internal static partial class QueryPlanBuilder
     /// call <see cref="AttachPostFilterPhases"/> to wire them onto the plan. No-op when
     /// the template has neither.</summary>
     private static void AttachSpatialAndVectorClauses(
-        QueryExecution exec, bool allNegated, PlanTemplate template, QueryPlanBuilder.PlanParameters planParams,
+        QueryExecution exec, PlanTemplate template, QueryPlanBuilder.PlanParameters planParams,
         QueryBuilderParameters builderParameters, ValueWriter writer)
     {
         if (template.SpatialClauses == null && template.VectorClauses == null)
@@ -189,10 +189,10 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        AttachPostFilterPhases(exec, allNegated, spatialArr, spatialExecs, vectorArr, vectorExecs);
+        AttachPostFilterPhases(exec, spatialArr, spatialExecs, vectorArr, vectorExecs);
     }
 
-    private static void AttachPostFilterPhases(QueryExecution exec, bool allNegated,
+    private static void AttachPostFilterPhases(QueryExecution exec,
         ClauseInfo[] spatialClauses, ClauseExecution[] spatialExecs,
         ClauseInfo[] vectorClauses, ClauseExecution[] vectorExecs)
     {
@@ -204,7 +204,7 @@ internal static partial class QueryPlanBuilder
         // Extend Executions array to include spatial/vector post-filter clauses.
         var execs = exec.Executions ??= [];
 
-        int matchIndex = CountMatchSlots(execs, exec.IsAllEntries, allNegated);
+        int matchIndex = CountMatchSlots(execs, exec.IsAllEntries);
 
         if (spatialClauses != null)
         {

@@ -465,7 +465,7 @@ internal static partial class QueryPlanBuilder
             if(compiledPlan.InRangeSlotCount is not 0)
                 exec.InRangeCounts = BuildInRangeCounts(executions, compiledPlan.InRangeSlotCount);
 
-            AttachSpatialAndVectorClauses(exec, compiledPlan.AllNegated, template, planParams, builderParameters, writer);
+            AttachSpatialAndVectorClauses(exec, template, planParams, builderParameters, writer);
             writer.SetValues(exec);
             return (compiledPlan, exec);
         }
@@ -1286,7 +1286,7 @@ internal static partial class QueryPlanBuilder
         where TResolver : ISlotResolver<TResolver, TSlot>
     {
         var execs = exec.Executions;
-        var slots = new TSlot[CountMatchSlots(execs, exec.IsAllEntries, exec.Plan.AllNegated)];
+        var slots = new TSlot[CountMatchSlots(execs, exec.IsAllEntries)];
         int matchIdx = 0;
 
         foreach (var clauseExec in execs)
@@ -1321,9 +1321,6 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        if (exec.Plan.AllNegated)
-            slots[matchIdx] = TResolver.ResolveAllNegatedTailSlot(walkerCtx.IndexSearcher);
-
         return slots;
     }
 
@@ -1340,13 +1337,11 @@ internal static partial class QueryPlanBuilder
         static abstract TSlot ResolveNullTermSlot(ClauseInfo clause, ClauseExecution clauseExec, ResolutionContext ctx);
 
         static abstract TSlot ResolveDefaultSlot(ClauseInfo clause, ClauseExecution clauseExec, QueryExecution exec, ResolutionContext ctx);
-
-        static abstract TSlot ResolveAllNegatedTailSlot(IndexSearcher indexSearcher);
     }
 
     /// <summary>Resolver for the IQueryMatch[] output — the bitmap-path matches consumed
     /// by IL emission and direct execution. Wraps results in <c>Boost</c> when the slot
-    /// carries a non-zero BoostFactor; emits <c>AllEntries</c> for the AllNegated tail.</summary>
+    /// carries a non-zero BoostFactor.</summary>
     private readonly struct MatchResolver : ISlotResolver<MatchResolver, IQueryMatch>
     {
         public static IQueryMatch ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
@@ -1384,13 +1379,11 @@ internal static partial class QueryPlanBuilder
                 match = ctx.IndexSearcher.Boost(match, clauseExec.BoostFactor);
             return match;
         }
-
-        public static IQueryMatch ResolveAllNegatedTailSlot(IndexSearcher indexSearcher) => indexSearcher.AllEntries();
     }
 
     /// <summary>Resolver for the PostingSource[] output — native posting-list slots
     /// consumed by the PostingList dispatch path. Boosted slots stay <c>Empty</c>
-    /// (the bitmap-path match wins). The AllNegated tail stays <c>Empty</c>.</summary>
+    /// (the bitmap-path match wins).</summary>
     private readonly struct TermSourceResolver : ISlotResolver<TermSourceResolver, PostingSource>
     {
         public static PostingSource ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
@@ -1425,13 +1418,11 @@ internal static partial class QueryPlanBuilder
                 ? default
                 : ResolveSingleTermSource(clause, clauseExec, exec, ctx);
         }
-
-        public static PostingSource ResolveAllNegatedTailSlot(IndexSearcher indexSearcher) => default;
     }
 
     /// <summary>Resolver for the ITermsProvider[] output — direct tree-scan dispatch.
-    /// IN/AllIn slots and the AllNegated tail stay null (those paths use PostingList
-    /// dispatch, not TreeScan). Only Equals/range/prefix-like clauses populate.</summary>
+    /// IN/AllIn slots stay null (those paths use PostingList dispatch, not TreeScan).
+    /// Only Equals/range/prefix-like clauses populate.</summary>
     private readonly struct TermsProviderResolver : ISlotResolver<TermsProviderResolver, ITermsProvider>
     {
         public static ITermsProvider ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
@@ -1446,8 +1437,6 @@ internal static partial class QueryPlanBuilder
         public static ITermsProvider ResolveDefaultSlot(ClauseInfo clause, ClauseExecution clauseExec,
             QueryExecution exec, ResolutionContext ctx)
             => ResolveSingleTermsProvider(clause, clauseExec, exec, ctx);
-
-        public static ITermsProvider ResolveAllNegatedTailSlot(IndexSearcher indexSearcher) => null;
     }
 
     private static IQueryMatch ResolveRangeClauseWithDirection(ClauseInfo clause, ClauseExecution exec,
@@ -3696,7 +3685,7 @@ internal static partial class QueryPlanBuilder
         return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
     }
 
-    internal static int CountMatchSlots(List<ClauseExecution> executions, bool isAllEntries, bool allNegated)
+    internal static int CountMatchSlots(List<ClauseExecution> executions, bool isAllEntries)
     {
         int count = isAllEntries ? 1 : 0;
         foreach (var exec in executions ?? [])
@@ -3715,8 +3704,6 @@ internal static partial class QueryPlanBuilder
                 _ => 1
             };
         }
-
-        if (allNegated) count++;
 
         return count;
     }
