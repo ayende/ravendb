@@ -807,7 +807,7 @@ internal static partial class QueryPlanBuilder
             }
             case ClauseType.In or ClauseType.AllIn:
                 // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
-                ResolveInFromBindings(exec.Clause, exec, queryParameters, writer, bindings, builderParameters);
+                ResolveInFromBindings(exec, queryParameters, writer, bindings, builderParameters);
                 break;
             default:
                 // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
@@ -861,9 +861,8 @@ internal static partial class QueryPlanBuilder
     /// Array-expanding query parameters (e.g. <c>@ids</c> bound to a JSON array) are
     /// flattened inline. Null values are never added to the buffers — they set
     /// <c>hasNullTerm</c> so the posting-list resolver queries the null-term list separately.</summary>
-    private static void ResolveInFromBindings(ClauseInfo clause, ClauseExecution exec,
-        BlittableJsonReaderObject queryParameters, ValueWriter writer, ParameterBinding[] bindings,
-        QueryBuilderParameters builderParameters)
+    private static void ResolveInFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, 
+        ParameterBinding[] bindings, QueryBuilderParameters builderParameters)
     {
         var resolvedValues = new List<object>(bindings.Length);
         var termTypes = new List<ParamValueType>(bindings.Length);
@@ -874,7 +873,11 @@ internal static partial class QueryPlanBuilder
             switch (it.Source)
             {
                 case BindingSource.Literal:
-                    if (it.LiteralValue == null) { hasNullTerm = true; break; }
+                    if (it.LiteralValue == null)
+                    {
+                        hasNullTerm = true; 
+                        continue;
+                    }
                     resolvedValues.Add(it.LiteralValue);
                     termTypes.Add(it.LiteralType);
                     break;
@@ -889,7 +892,11 @@ internal static partial class QueryPlanBuilder
                         foreach (var elem in arr)
                         {
                             var (elemVal, elemType) = ResolveParameterValue(elem);
-                            if (elemVal == null) { hasNullTerm = true; continue; }
+                            if (elemVal == null)
+                            {
+                                hasNullTerm = true; 
+                                continue;
+                            }
                             resolvedValues.Add(elemVal);
                             termTypes.Add(ToParamValueType(elemType));
                         }
@@ -897,7 +904,11 @@ internal static partial class QueryPlanBuilder
                     else if (inRaw != null)
                     {
                         var (singleVal, singleType) = ResolveParameterValue(inRaw);
-                        if (singleVal == null) { hasNullTerm = true; break; }
+                        if (singleVal == null)
+                        {
+                            hasNullTerm = true; 
+                            continue;
+                        }
                         resolvedValues.Add(singleVal);
                         termTypes.Add(ToParamValueType(singleType));
                     }
@@ -911,7 +922,11 @@ internal static partial class QueryPlanBuilder
                 case BindingSource.DeferredMethod:
                 {
                     var (val, type) = ResolveBindingScalar(it, queryParameters, builderParameters);
-                    if (val == null) { hasNullTerm = true; break; }
+                    if (val == null)
+                    {
+                        hasNullTerm = true; 
+                        continue;
+                    }
                     resolvedValues.Add(val);
                     termTypes.Add(type);
                     break;
@@ -1135,7 +1150,10 @@ internal static partial class QueryPlanBuilder
         var slots = new TSlot[CountMatchSlots(execs, exec.IsAllEntries)];
         int matchIdx = 0;
         foreach (var clauseExec in execs)
+        {
             ResolveClauseLeavesInto<TResolver, TSlot>(clauseExec.Clause, clauseExec, exec, walkerCtx, slots, ref matchIdx);
+        }
+
         return slots;
     }
 
