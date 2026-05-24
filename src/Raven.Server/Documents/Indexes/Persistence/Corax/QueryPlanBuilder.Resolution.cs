@@ -129,6 +129,21 @@ internal static partial class QueryPlanBuilder
     /// strategies (CompoundExact / DirectScan / no ORDER BY), the compound match for CompoundField,
     /// or the bitmap CompiledQueryMatch for BitmapSort. The caller uses this for inspection-graph
     /// construction and deterministic disposal of the IL-emitted match.</param>
+    /// <summary>Per-execution context bundling the stable parameters that flow through
+    /// every Construct* / Try* call inside <see cref="Instantiate"/>. Stack-only;
+    /// zero allocation. <see cref="RejectReason"/> is written by Try* on failure
+    /// so the caller can record it on the <see cref="CompiledPlan.DecisionTrail"/>
+    /// without an extra out parameter.</summary>
+    private ref struct InstCtx
+    {
+        public CompiledPlan Plan;
+        public QueryExecution Exec;
+        public OrderMetadata[] OrderByFields; // may be null when PageSize == 0
+        public PlanParameters PlanParams;
+        public QueryBuilderParameters BuilderParams;
+        public string RejectReason;
+    }
+
     private static IQueryMatch Instantiate(
         CompiledPlan compiledPlan,
         QueryExecution exec,
@@ -142,86 +157,94 @@ internal static partial class QueryPlanBuilder
         out IQueryMatch innerMatch,
         CancellationToken token)
     {
-        
+        var ctx = new InstCtx
+        {
+            Plan = compiledPlan,
+            Exec = exec,
+            OrderByFields = orderByFields,
+            PlanParams = planParams,
+            BuilderParams = builderParameters,
+        };
+
+        if (compiledPlan.Strategy == ExecutionStrategy.NotEvaluated)
+            SelectExecutionStrategy(ref ctx);
+
         switch (compiledPlan.Strategy)
         {
-            case ExecutionStrategy.NotEvaluated:
-                SelectExecutionStrategy(); // select the right strategy 
-                RuntimeHelpers.EnsureSufficientExecutionStack(); // not retry...
-                return Instantiate(compiledPlan, exec, orderByFields, hasEmptySorts, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out innerMatch, token);
-            
             // ── Fast path: cached strategy, dispatch directly to Construct* ──
             case ExecutionStrategy.CompoundExact:
-                innerMatch = ConstructCompoundExact(exec, planParams);
-                if(innerMatch is null) goto default;
+                innerMatch = ConstructCompoundExact(ref ctx);
+                if (innerMatch is null) goto default;
                 return innerMatch;
-            case ExecutionStrategy.CompoundField when orderByFields != null:  // orderByFields can be null when PageSize is 0  
-                int f2 = FindCompoundFieldField2Range(exec.Executions, exec.Plan.CompoundFieldDrivingClause, exec.Plan.Template.CompoundFieldSortName);
-                innerMatch = ConstructCompoundField(exec, orderByFields, planParams, builderParameters, compiledPlan, f2, entriesToScan: 0, bitmapCost: 0);
-                if(innerMatch is null) goto default;
+            case ExecutionStrategy.CompoundField when orderByFields != null:
+                // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
+                // CompoundField plan — PageSize is not part of the plan cache key.
+                int f2 = FindCompoundFieldField2Range(exec.Executions, compiledPlan.CompoundFieldDrivingClause, compiledPlan.Template.CompoundFieldSortName);
+                innerMatch = ConstructCompoundField(ref ctx, f2, entriesToScan: 0, bitmapCost: 0);
+                if (innerMatch is null) goto default;
                 return OrderBy(builderParameters, innerMatch, orderByFields, hasEmptySorts);
             case ExecutionStrategy.DirectScan when orderByFields is { Length: <= 2 }:
                 // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
                 // DirectScan plan — PageSize is not part of the plan cache key.
-                if (exec.Executions is not { Count:> 0 } || 
+                var execs = exec.Executions;
+                if (execs is not { Count: > 0 } ||
                     exec.Plan.SortDrivingClauseIndex >= 0 && exec.Executions[exec.Plan.SortDrivingClauseIndex].PackedParamValue.IsNone is false)
                 {
-                    innerMatch = ConstructDirectScan(exec, orderByFields, planParams, builderParameters,
-                        compiledPlan, exec.Plan.SortDrivingClauseIndex, exec.Executions is not { Count:> 0 }, orderByFields.Length == 2, entriesToScan: 0, bitmapCost: 0);
+                    innerMatch = ConstructDirectScan(ref ctx, exec.Plan.SortDrivingClauseIndex,
+                        execs is not { Count: > 0 }, orderByFields.Length == 2, entriesToScan: 0, bitmapCost: 0);
                     if (innerMatch is not null) return innerMatch;
                 }
                 goto default;
             case ExecutionStrategy.BitmapSort:
-            default: // may either be the selected strategy or a one-off (because of bad parameters preventing a faster strategy) 
+            default:
+                // may either be the selected strategy, or a one-off (because of bad parameters preventing a faster strategy)
                 return InstantiateBitmapFallback(compiledPlan, exec, orderByFields, hasEmptySorts,
                     planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out innerMatch, token);
         }
 
-
-        void SelectExecutionStrategy()
+        static void SelectExecutionStrategy(ref InstCtx ctx)
         {
             // ── Slow path: cache-miss, run Try* discovery chain ──
-            compiledPlan.DecisionTrail = new();
-            compiledPlan.Strategy = ExecutionStrategy.BitmapSort; // if nothing else overrides it 
+            ctx.Plan.DecisionTrail = new();
+            ctx.Plan.Strategy = ExecutionStrategy.BitmapSort; // if nothing else overrides it
 
-            if (compiledPlan.Template.OptimizationFlags.HasFlag(PlanOptimizationFlags.CompoundExactCandidate))
+            if (ctx.Plan.Template.OptimizationFlags.HasFlag(PlanOptimizationFlags.CompoundExactCandidate))
             {
-                if (TryCreateCompoundExactMatch(exec, planParams, builderParameters, out var ceReason))
+                if (TryCreateCompoundExactMatch(ref ctx))
                 {
-                    compiledPlan.Strategy = ExecutionStrategy.CompoundExact;
-                    compiledPlan.DecisionTrail.Record("CompoundExact", true, "compound exact-term lookup");
+                    ctx.Plan.Strategy = ExecutionStrategy.CompoundExact;
+                    ctx.Plan.DecisionTrail.Record("CompoundExact", true, "compound exact-term lookup");
                     return;
                 }
-
-                compiledPlan.DecisionTrail.Record("CompoundExact", false, ceReason ?? "rejected");
+                ctx.Plan.DecisionTrail.Record("CompoundExact", false, ctx.RejectReason ?? "rejected");
             }
 
-            if (orderByFields is null)
+            if (ctx.OrderByFields is null)
             {
-                compiledPlan.DecisionTrail.Record("NoOrderBy", true, "no ORDER BY");
+                ctx.Plan.DecisionTrail.Record("NoOrderBy", true, "no ORDER BY");
                 return;
             }
 
-            if (compiledPlan.Template.OptimizationFlags.HasFlag(PlanOptimizationFlags.DirectScanCandidate))
+            if (ctx.Plan.Template.OptimizationFlags.HasFlag(PlanOptimizationFlags.DirectScanCandidate))
             {
-                if (TryCreateCompoundFieldMatch(exec, orderByFields, planParams, builderParameters, compiledPlan, out var cfReason))
+                if (TryCreateCompoundFieldMatch(ref ctx))
                 {
-                    compiledPlan.Strategy = ExecutionStrategy.CompoundField;
-                    compiledPlan.DecisionTrail.Record("CompoundField", true, "compound tree scan with ORDER BY");
+                    ctx.Plan.Strategy = ExecutionStrategy.CompoundField;
+                    ctx.Plan.DecisionTrail.Record("CompoundField", true, "compound tree scan with ORDER BY");
                     return;
                 }
-                compiledPlan.DecisionTrail.Record("CompoundField", false, cfReason ?? "rejected");
+                ctx.Plan.DecisionTrail.Record("CompoundField", false, ctx.RejectReason ?? "rejected");
 
-                if (TryCreateSimpleFieldDirectScan(exec, orderByFields, planParams, builderParameters, compiledPlan, out _, out var dsReason))
+                if (TryCreateSimpleFieldDirectScan(ref ctx))
                 {
-                    compiledPlan.Strategy = ExecutionStrategy.DirectScan;
-                    compiledPlan.DecisionTrail.Record("DirectScan", true, "direct tree scan on sort field");
+                    ctx.Plan.Strategy = ExecutionStrategy.DirectScan;
+                    ctx.Plan.DecisionTrail.Record("DirectScan", true, "direct tree scan on sort field");
                     return;
                 }
-                compiledPlan.DecisionTrail.Record("DirectScan", false, dsReason ?? "rejected");
+                ctx.Plan.DecisionTrail.Record("DirectScan", false, ctx.RejectReason ?? "rejected");
             }
 
-            compiledPlan.DecisionTrail.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
+            ctx.Plan.DecisionTrail.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
         }
     }
 
@@ -3822,4 +3845,33 @@ internal static partial class QueryPlanBuilder
             _ => ScanValueType.Slice
         };
     }
+
+    // ── InstCtx overloads — thin wrappers so Instantiate callers pass one struct ──
+
+    private static bool TryCreateCompoundExactMatch(ref InstCtx ctx)
+    {
+        bool result = TryCreateCompoundExactMatch(ctx.Exec, ctx.PlanParams, ctx.BuilderParams, out ctx.RejectReason);
+        return result;
+    }
+
+    private static bool TryCreateCompoundFieldMatch(ref InstCtx ctx)
+    {
+        bool result = TryCreateCompoundFieldMatch(ctx.Exec, ctx.OrderByFields, ctx.PlanParams, ctx.BuilderParams, ctx.Plan, out ctx.RejectReason);
+        return result;
+    }
+
+    private static bool TryCreateSimpleFieldDirectScan(ref InstCtx ctx)
+    {
+        bool result = TryCreateSimpleFieldDirectScan(ctx.Exec, ctx.OrderByFields, ctx.PlanParams, ctx.BuilderParams, ctx.Plan, out _, out ctx.RejectReason);
+        return result;
+    }
+
+    private static IQueryMatch ConstructCompoundExact(ref InstCtx ctx)
+        => ConstructCompoundExact(ctx.Exec, ctx.PlanParams);
+
+    private static IQueryMatch ConstructCompoundField(ref InstCtx ctx, int field2RangeIdx, long entriesToScan, long bitmapCost)
+        => ConstructCompoundField(ctx.Exec, ctx.OrderByFields, ctx.PlanParams, ctx.BuilderParams, ctx.Plan, field2RangeIdx, entriesToScan, bitmapCost);
+
+    private static IQueryMatch ConstructDirectScan(ref InstCtx ctx, int drivingIdx, bool isFullScan, bool hasTieBreak, long entriesToScan, long bitmapCost)
+        => ConstructDirectScan(ctx.Exec, ctx.OrderByFields, ctx.PlanParams, ctx.BuilderParams, ctx.Plan, drivingIdx, isFullScan, hasTieBreak, entriesToScan, bitmapCost);
 }
