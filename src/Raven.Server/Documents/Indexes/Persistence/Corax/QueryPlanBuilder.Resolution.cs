@@ -160,16 +160,30 @@ internal static partial class QueryPlanBuilder
                 innerMatch = ConstructCompoundField(exec, orderByFields, planParams, builderParameters, compiledPlan, f2, entriesToScan: 0, bitmapCost: 0);
                 if(innerMatch is null) goto default;
                 return OrderBy(builderParameters, innerMatch, orderByFields, hasEmptySorts);
-            case ExecutionStrategy.DirectScan 
-                when orderByFields is { Length: <= 2 } &&
-                     exec.Executions is { Count: > 0 } && 
-                     exec.Plan.SortDrivingClauseIndex >= 0 && 
-                     exec.Executions[exec.Plan.SortDrivingClauseIndex].PackedParamValue.IsNone is false:
-                bool hasTieBreak = orderByFields.Length == 2;
-                innerMatch = ConstructDirectScan(exec, orderByFields, planParams, builderParameters,
-                    compiledPlan, exec.Plan.SortDrivingClauseIndex, true, hasTieBreak, entriesToScan: 0, bitmapCost: 0);
-                if(innerMatch is null) goto default;
-                return innerMatch;
+            case ExecutionStrategy.DirectScan when orderByFields is { Length: <= 2 }:
+                // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
+                // DirectScan plan — PageSize is not part of the plan cache key.
+                {
+                    var execs = exec.Executions;
+                    bool isFullScan = execs is null or { Count: 0 };
+                    int drivingIdx = -1;
+                    if (!isFullScan)
+                    {
+                        drivingIdx = exec.Plan.SortDrivingClauseIndex;
+                        // BoostFactor cannot land here: ComputeOptFlags clears
+                        // DirectScanCandidate template-wide for any boost; only IsNone
+                        // (parameter resolved to null) can still invalidate at runtime.
+                        if (drivingIdx >= 0 && exec.Executions[drivingIdx].PackedParamValue.IsNone)
+                            drivingIdx = -1;
+                    }
+                    if (isFullScan || drivingIdx >= 0)
+                    {
+                        innerMatch = ConstructDirectScan(exec, orderByFields, planParams, builderParameters,
+                            compiledPlan, drivingIdx, isFullScan, orderByFields.Length == 2, entriesToScan: 0, bitmapCost: 0);
+                        if (innerMatch is not null) return innerMatch;
+                    }
+                    goto default;
+                }
             case ExecutionStrategy.BitmapSort:
             default:
                 // may either be the selected strategy, or a one-off (because of bad parameters preventing a faster strategy) 
@@ -208,12 +222,20 @@ internal static partial class QueryPlanBuilder
                 {
                     compiledPlan.Strategy = ExecutionStrategy.CompoundField;
                     compiledPlan.DecisionTrail.Record("CompoundField", true, "compound tree scan with ORDER BY");
+                    return;
                 }
-                else
+                compiledPlan.DecisionTrail.Record("CompoundField", false, cfReason ?? "rejected");
+
+                if (TryCreateSimpleFieldDirectScan(exec, orderByFields, planParams, builderParameters, compiledPlan, out _, out var dsReason))
                 {
-                    compiledPlan.DecisionTrail.Record("CompoundField", false, cfReason ?? "rejected");
+                    compiledPlan.Strategy = ExecutionStrategy.DirectScan;
+                    compiledPlan.DecisionTrail.Record("DirectScan", true, "direct tree scan on sort field");
+                    return;
                 }
+                compiledPlan.DecisionTrail.Record("DirectScan", false, dsReason ?? "rejected");
             }
+
+            compiledPlan.DecisionTrail.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
         }
     }
 
