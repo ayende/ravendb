@@ -145,6 +145,16 @@ public sealed class CompiledPlan
     /// reflects the finalized dispatch (post-boost-override).</summary>
     public bool HasTreeScanDispatch { get; init; }
 
+    /// <summary>Per-atom effective <see cref="MatchDispatch"/> in the same recursive
+    /// leaf-walk order used by <c>ResolveClauseLeavesInto</c> and <c>CountClauseLeaves</c>.
+    /// One entry per leaf (Or/AndGroup expands to its sub-leaves); IN/AllIn collapses
+    /// to a single entry whose dispatch applies to every term + null slot. Computed at
+    /// template-build time *after* the boost-override loop, so every entry is
+    /// <see cref="MatchDispatch.QueryMatch"/> for boosted plans — the resolvers don't
+    /// have to re-derive dispatch from clause shape or special-case boost. Empty for
+    /// <see cref="QueryExecution.IsAllEntries"/> plans and for plans with no executions.</summary>
+    public MatchDispatch[] ClauseDispatch { get; init; }
+
     /// <summary>Structural scan predicate metadata cached from the first compilation.
     /// Field names, param indices, compare ops do not change across executions.
     /// Used by <c>ExtractScanParameters</c> on every execution (both cache hit and miss)
