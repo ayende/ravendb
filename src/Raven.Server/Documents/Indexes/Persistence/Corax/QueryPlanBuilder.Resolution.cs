@@ -967,22 +967,16 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Recursive leaf walker shared by all three <see cref="ISlotResolver{TSelf, TSlot}"/>
-    /// implementations. Groups expand to their leaves. Boosted <see cref="ClauseInfo.IsOrChainNotEquals"/>
-    /// clauses short-circuit to <see cref="ISlotResolver{TSelf, TSlot}.ResolveSubClauseSlot"/> so the
-    /// resolver-time AllEntries-ANDNOT materialisation kicks in — required because the IL emitter
-    /// can't compose <c>Boost(complement)</c>. Unboosted negated-OR leaves walk their positive
-    /// form (IN/AllIn → InTermCount+1 slots, scalar → 1 slot); the IL emitter handles the
-    /// complement via FillAllEntries + AndNot, picking up cancellation/timing for free.</summary>
+    /// implementations. Groups expand to their leaves. <see cref="ClauseInfo.IsOrChainNotEquals"/>
+    /// clauses walk their positive form (IN/AllIn → InTermCount+1 slots, scalar → 1 slot); the IL
+    /// emitter handles the complement via FillAllEntries + AndNot, picking up cancellation/timing
+    /// for free. Boost on a negated leaf is silently ignored — matches Lucene, where boosting a
+    /// negation has no effect because there is no match to score.</summary>
     private static void ResolveClauseLeavesInto<TResolver, TSlot>(
         ClauseExecution clauseExec, QueryExecution exec, ResolutionContext walkerCtx,
         TSlot[] slots, ref int matchIdx)
         where TResolver : ISlotResolver<TResolver, TSlot>
     {
-        if (clauseExec.Clause is { IsOrChainNotEquals: true, HasBoost: true })
-        {
-            slots[matchIdx++] = TResolver.ResolveSubClauseSlot(clauseExec, exec, walkerCtx);
-            return;
-        }
         if (TryGetGroupFanOut(clauseExec.Clause, clauseExec, out _, out var subExecs))
         {
             for (int si = 0; si < subExecs.Count; si++)
@@ -1006,8 +1000,6 @@ internal static partial class QueryPlanBuilder
     private interface ISlotResolver<TSelf, out TSlot>
         where TSelf : ISlotResolver<TSelf, TSlot>
     {
-        static abstract TSlot ResolveSubClauseSlot(ClauseExecution subExec, QueryExecution exec, ResolutionContext ctx);
-
         static abstract TSlot ResolveInTermSlot(ClauseExecution clauseExec, int termIndex, QueryExecution exec, ResolutionContext ctx);
 
         static abstract TSlot ResolveNullTermSlot(ClauseExecution clauseExec, ResolutionContext ctx);
@@ -1020,19 +1012,6 @@ internal static partial class QueryPlanBuilder
     /// carries a non-zero BoostFactor.</summary>
     private readonly struct MatchResolver : ISlotResolver<MatchResolver, IQueryMatch>
     {
-        // Precondition: callers (ResolveClauseLeavesInto) only dispatch here for clauses
-        // where ClauseInfo.IsOrChainNotEquals AND ClauseInfo.HasBoost are both set. The
-        // unboosted IsOrChainNotEquals path materialises the complement at IL time via
-        // FillAllEntries + AndNot — see EmitNegatedLeafInto.
-        public static IQueryMatch ResolveSubClauseSlot(ClauseExecution subExec,
-            QueryExecution exec, ResolutionContext ctx)
-        {
-            IQueryMatch match = CreateNotEqualsOrMatch(subExec, exec, ctx);
-            if (subExec.BoostFactor > 0)
-                match = ctx.IndexSearcher.Boost(match, subExec.BoostFactor);
-            return match;
-        }
-
         public static IQueryMatch ResolveInTermSlot(ClauseExecution clauseExec, int termIndex,
             QueryExecution exec, ResolutionContext ctx)
             => ResolveInTerm(clauseExec, termIndex, exec, ctx);
@@ -1064,14 +1043,6 @@ internal static partial class QueryPlanBuilder
     /// (the bitmap-path match wins).</summary>
     private readonly struct TermSourceResolver : ISlotResolver<TermSourceResolver, PostingSource>
     {
-        // Precondition: callers (ResolveClauseLeavesInto) only dispatch here for clauses
-        // where ClauseInfo.IsOrChainNotEquals AND ClauseInfo.HasBoost are set. HasBoost forces
-        // every op to MatchDispatch.QueryMatch (see the override loop in BuildAndCompile),
-        // so the PostingSource slot is never read — return default and skip the lookup.
-        public static PostingSource ResolveSubClauseSlot(ClauseExecution subExec,
-            QueryExecution exec, ResolutionContext ctx)
-            => default;
-
         public static PostingSource ResolveInTermSlot(ClauseExecution clauseExec, int termIndex,
             QueryExecution exec, ResolutionContext ctx)
             => ResolveInTermSource(clauseExec, termIndex, exec, ctx);
@@ -1101,14 +1072,6 @@ internal static partial class QueryPlanBuilder
     /// Only Equals/range/prefix-like clauses populate.</summary>
     private readonly struct TermsProviderResolver : ISlotResolver<TermsProviderResolver, ITermsProvider>
     {
-        // Precondition: callers (ResolveClauseLeavesInto) only dispatch here for clauses
-        // where ClauseInfo.IsOrChainNotEquals AND ClauseInfo.HasBoost are set. HasBoost forces
-        // every op to MatchDispatch.QueryMatch (see the override loop in BuildAndCompile),
-        // so the ITermsProvider slot is never read.
-        public static ITermsProvider ResolveSubClauseSlot(ClauseExecution subExec,
-            QueryExecution exec, ResolutionContext ctx)
-            => null;
-
         public static ITermsProvider ResolveInTermSlot(ClauseExecution clauseExec, int termIndex,
             QueryExecution exec, ResolutionContext ctx) => null;
 
@@ -1219,8 +1182,7 @@ internal static partial class QueryPlanBuilder
             case ClauseType.AllIn:
                 throw new InvalidOperationException(
                     "In/AllIn should be expanded by ResolveMatches (per-term slot loop), " +
-                    "not resolved as a single clause. Use ResolveInPositiveBitmap when the " +
-                    "positive-form bitmap is needed (e.g. NOT IN inside an OR chain).");
+                    "not resolved as a single clause.");
 
             case ClauseType.Exists:
                 return indexSearcher.ExistsQuery(fieldMeta);
@@ -1322,72 +1284,6 @@ internal static partial class QueryPlanBuilder
     {
         var (fieldMeta, termPacked) = ResolveInTermParam(exec, termIndex, walkerCtx);
         return termPacked.TermQuery(fieldMeta, walkerCtx.IndexSearcher, queryExec);
-    }
-
-    /// <summary>Build the positive-form bitmap of an IN/AllIn clause: expand each term to a
-    /// TermQuery and OR-merge (IN) or AND-merge after the first (AllIn) into a
-    /// <see cref="BitmapMatch"/>. Mirrors the top-level
-    /// FillFromPostings/OrWithPostings/AndWithPostings sequence used by the IL emitter,
-    /// but produces a single <see cref="IQueryMatch"/> for callers that need the
-    /// materialized positive set (currently only <see cref="CreateNotEqualsOrMatch"/>
-    /// for NOT IN / NOT AllIn appearing inside an OR chain).</summary>
-    private static IQueryMatch ResolveInPositiveBitmap(ClauseExecution exec,
-        QueryExecution queryExec, ResolutionContext walkerCtx)
-    {
-        var indexSearcher = walkerCtx.IndexSearcher;
-        if (exec.InTermCount == 0)
-            return indexSearcher.EmptyMatch();
-        var isAllIn = exec.Clause.ClauseType == ClauseType.AllIn;
-        var bm = new BitmapMatch(indexSearcher.Allocator);
-        var temp = new RoaringBitmap(indexSearcher.Allocator);
-        for (int t = 0; t < exec.InTermCount; t++)
-        {
-            var termMatch = ResolveInTerm(exec, t, queryExec, walkerCtx);
-            if (isAllIn && t > 0)
-                QueryPrimitives.AndWithMatch(termMatch, ref bm.BitmapState, ref temp);
-            else
-                QueryPrimitives.OrWithMatch(termMatch, ref bm.BitmapState);
-        }
-        temp.Dispose();
-        return bm;
-    }
-
-    /// <summary>Create a pre-materialized <see cref="BitmapMatch"/> for a negated clause
-    /// appearing in an OR chain. OR(NOT X, NOT Y, ...) cannot use the raw term posting list
-    /// (FillBitmapFromPostingSource would add entries WITH X, not WITHOUT X). Instead, we
-    /// pre-compute AllEntries ANDNOT (positive form) into a BitmapMatch so that OrWithMatch
-    /// during execution correctly ORs in the set of entries NOT matching the positive predicate.
-    /// Handles NOT EQUALS (single term), NOT EXISTS (ExistsQuery), and single-term NOT IN/AllIn.</summary>
-    private static IQueryMatch CreateNotEqualsOrMatch(ClauseExecution exec,
-        QueryExecution queryExec, ResolutionContext walkerCtx)
-    {
-        // Resolve the positive form of the match. For IN/AllIn clauses, ResolveInPositiveBitmap
-        // handles multi-term expansion correctly. For simple Equals/NotEquals, the
-        // single-term TermQuery suffices. EXISTS clauses carry no PackedParam.
-        var clause = exec.Clause;
-        var indexSearcher = walkerCtx.IndexSearcher;
-        IQueryMatch termMatch;
-        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn)
-        {
-            termMatch = ResolveInPositiveBitmap(exec, queryExec, walkerCtx);
-        }
-        else if (clause.ClauseType == ClauseType.Exists)
-        {
-            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
-            termMatch = indexSearcher.ExistsQuery(fieldMeta);
-        }
-        else
-        {
-            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
-            termMatch = exec.PackedParamValue.TermQuery(fieldMeta, indexSearcher, queryExec);
-        }
-
-        var bitmapMatch = new BitmapMatch(indexSearcher.Allocator);
-        var tempData = new RoaringBitmap(indexSearcher.Allocator);
-        QueryPrimitives.OrWithMatch(indexSearcher.AllEntries(), ref bitmapMatch.BitmapState);
-        QueryPrimitives.AndNotWithMatch(termMatch, ref bitmapMatch.BitmapState, ref tempData);
-        tempData.Dispose();
-        return bitmapMatch;
     }
 
     // ── Term-source resolution ───────────────────────────────────────────
@@ -2624,24 +2520,17 @@ internal static partial class QueryPlanBuilder
         ref int matchIndex, ref int nextScratch, ref int maxScratchUsed,
         List<PlanOp> ops, List<int> rangeCounts)
     {
-        // Negated leaf of an OR chain. Two paths:
-        //   • HasBoost: MatchResolver pre-materialises Boost(complement) into slot matchIndex.
-        //     The IL emitter can't reconstruct that scoring wrapper at runtime (boosting the
-        //     positive form would score entries that aren't in the result), so resolver-time
-        //     materialisation stays the path of record. One match slot, QueryMatch dispatch.
-        //   • !HasBoost: build the complement at IL time via FillAllEntries + AndNot of the
-        //     positive form (single term, IN union, or AllIn intersection). The slot footprint
-        //     follows the POSITIVE form's layout — CountClauseLeaves and ResolveClauseLeavesInto
-        //     agree. Cancellation and timing come for free from the per-term cursor machinery.
+        // Negated leaf of an OR chain. Build the complement at IL time via FillAllEntries +
+        // AndNot of the positive form (single term, IN union, or AllIn intersection). The slot
+        // footprint follows the POSITIVE form's layout — CountClauseLeaves and
+        // ResolveClauseLeavesInto agree. Cancellation and timing come for free from the per-term
+        // cursor machinery.
+        //
+        // Boost on a negated leaf is intentionally a no-op (matches Lucene): boosting is
+        // scoring for a match, and a negation produces a complement, not a match — there's
+        // nothing to score. The BoostFactor on such a clause is silently ignored.
         if (exec.Clause.IsOrChainNotEquals)
         {
-            if (exec.Clause.HasBoost)
-            {
-                EmitLeafMergeOp(merge, matchIndex, cardinality, MatchDispatch.QueryMatch, suppressEarlyExit, ops);
-                matchIndex++;
-                return;
-            }
-
             EmitNegatedLeafInto(exec, merge, cardinality,
                 ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
             return;
@@ -2891,11 +2780,11 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Unboosted IsOrChainNotEquals leaf — fold AllEntries ANDNOT(positive form)
-    /// into slot 0 at IL time. Replaces the resolver-time CreateNotEqualsOrMatch
-    /// pre-materialisation; the per-term loops route through the cursor machinery so
-    /// cancellation and timing are covered. Only invoked with merge ∈ {Fill, OrInto}
-    /// because IsOrChainNotEquals only appears as an OR-chain leaf.
+    /// <summary>IsOrChainNotEquals leaf — fold AllEntries ANDNOT(positive form) into slot 0
+    /// at IL time. The per-term loops route through the cursor machinery so cancellation
+    /// and timing are covered. Only invoked with merge ∈ {Fill, OrInto} because
+    /// IsOrChainNotEquals only appears as an OR-chain leaf. Boost on such a clause is
+    /// silently ignored (matches Lucene — negation produces a complement, not a match to score).
     /// Fill: build the complement directly in slot 0 (FillAllEntries + complement body).
     /// OrInto: save slot 0 to a scratch, rebuild complement in slot 0, OR back.</summary>
     private static void EmitNegatedLeafInto(
@@ -3384,16 +3273,12 @@ internal static partial class QueryPlanBuilder
         return count;
     }
 
-    /// <summary>Recursive leaf counter. Boosted <see cref="ClauseInfo.IsOrChainNotEquals"/>
-    /// clauses short-circuit to a single pre-materialised BitmapMatch slot — the IL emitter
-    /// cannot synthesise <c>Boost(complement)</c> at runtime, so resolver-time materialisation
-    /// stays for that narrow case. Unboosted negated-OR leaves walk their positive form (1 slot
-    /// for scalar/exists, InTermCount+1 for IN/AllIn) and the IL emitter materialises the
-    /// complement via FillAllEntries + AndNot.</summary>
+    /// <summary><see cref="ClauseInfo.IsOrChainNotEquals"/> leaves walk their positive form
+    /// (1 slot for scalar/exists, InTermCount+1 for IN/AllIn) and the IL emitter materialises
+    /// the complement via FillAllEntries + AndNot. Boost on a negated leaf is ignored (matches
+    /// Lucene), so HasBoost has no effect on the slot count here.</summary>
     private static int CountClauseLeaves(ClauseExecution exec)
     {
-        if (exec.Clause is { IsOrChainNotEquals: true, HasBoost: true })
-            return 1;
         if (TryGetGroupFanOut(exec.Clause, exec, out _, out var subExecs))
         {
             int sum = 0;

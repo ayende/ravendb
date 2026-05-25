@@ -178,12 +178,12 @@ internal static partial class QueryPlanBuilder
 
         /// <summary>
         /// For OR-rooted templates, mark every top-level negated clause with
-        /// <see cref="ClauseInfo.IsOrChainNotEquals"/> = true. 
+        /// <see cref="ClauseInfo.IsOrChainNotEquals"/> = true.
         ///
         /// Covers NotEquals, NOT IN, NOT AllIn, NOT exists(), NOT startsWith(), etc.
-        /// The flag tells <c>CreateNotEqualsOrMatch</c> to pre-materialise
-        /// AllEntries ANDNOT(positive form) into a BitmapMatch — required because the
-        /// raw posting list / range / tree-scan can't deliver the complement directly,
+        /// The flag tells the IL emitter (<c>EmitNegatedLeafInto</c>) to build the complement
+        /// at execution time via FillAllEntries + AndNot(positive form) — required because
+        /// the raw posting list / range / tree-scan can't deliver the complement directly,
         /// and the OR chain needs the complement bitmap to OrWith into.
         ///
         /// No-op for AND-rooted templates: <see cref="ClauseInfo.IsOrChainNotEquals"/>
