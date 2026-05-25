@@ -871,23 +871,6 @@ internal static partial class QueryPlanBuilder
         EmitInTerms(exec, writer, dominantType, resolvedValues, termTypes, hasNullTerm);
     }
 
-    private static (int PackedType, int StartIdx) ResolveInWriterSlot(ValueWriter writer, ParamValueType dominantType)
-    {
-        int packedType = dominantType switch
-        {
-            ParamValueType.Long => PackedParam.TypeLong,
-            ParamValueType.Double => PackedParam.TypeDouble,
-            _ => PackedParam.TypeString
-        };
-        int startIdx = packedType switch
-        {
-            PackedParam.TypeLong => writer.LongCount,
-            PackedParam.TypeDouble => writer.DoubleCount,
-            _ => writer.StringCount
-        };
-        return (packedType, startIdx);
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool TryEmitInTermValue(ValueWriter writer, object value, ParamValueType type,
         ParamValueType dominantType, ValueTokenType dominantTokenType)
@@ -901,7 +884,7 @@ internal static partial class QueryPlanBuilder
     private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType,
         List<object> values, List<ParamValueType> types, bool hasNullTerm)
     {
-        var (packedType, startIdx) = ResolveInWriterSlot(writer, dominantType);
+        var (packedType, startIdx) = writer.ResolveInSlot(dominantType);
         var dominantTokenType = ToValueTokenType(dominantType);
 
         int nonNullCount = 0;
