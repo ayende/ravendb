@@ -3681,46 +3681,15 @@ internal static partial class QueryPlanBuilder
     internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseExecution exec, ref int longIndex, ref int doubleIndex, ref int sliceIndex)
         => BuildScanPredicateInfoCore(exec, exec.TermValueType, ref longIndex, ref doubleIndex, ref sliceIndex);
 
-    /// <summary>Eligibility-only probe: returns whether <see cref="BuildScanPredicateInfo"/>
-    /// would have produced a non-null result for this execution, without allocating a
-    /// <see cref="ScanPredicateInfo"/> or accumulating parameter indices. Use this when the
-    /// caller only needs the null/non-null signal (gating loops, skip-filters).</summary>
+    /// <summary>Eligibility-only probe — defined as "would <see cref="BuildScanPredicateInfo"/>
+    /// return non-null?" so the two cannot drift. The throwaway index counters are discarded;
+    /// the only cost over a hand-rolled walk is the List+ToArray allocation in the Group case,
+    /// which is acceptable because callers process eligible clauses by calling Build immediately
+    /// after anyway.</summary>
     private static bool IsScanEligible(ClauseExecution exec)
-        => IsScanEligibleCore(exec, exec.TermValueType);
-
-    private static bool IsScanEligibleCore(ClauseExecution exec, ParamValueType termType)
     {
-        var clause = exec.Clause;
-        switch (clause.ClauseType)
-        {
-            case ClauseType.Search:
-            case ClauseType.Regex:
-            case ClauseType.Spatial:
-            case ClauseType.Vector:
-            case ClauseType.In:
-            case ClauseType.AllIn:
-                return false;
-
-            case ClauseType.StartsWith:
-            case ClauseType.EndsWith:
-                return termType == ParamValueType.String;
-
-            case ClauseType.AndGroup:
-            case ClauseType.OrGroup:
-            {
-                if (clause.SubClauses is not { Count: > 0 } subs)
-                    return false;
-                var subExecs = exec.SubExecutions;
-                for (int si = 0; si < subs.Count; si++)
-                {
-                    if (IsScanEligibleCore(subExecs[si], subExecs[si].TermValueType) == false)
-                        return false;
-                }
-                return true;
-            }
-        }
-        // Equals / NotEquals / Range / Between / Exists → eligible.
-        return true;
+        int l = 0, d = 0, s = 0;
+        return BuildScanPredicateInfo(exec, ref l, ref d, ref s) is not null;
     }
 
     /// <summary>Single walker shared by both overloads. <paramref name="exec"/> is non-null on
