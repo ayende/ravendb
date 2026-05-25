@@ -183,7 +183,7 @@ internal static partial class QueryPlanBuilder
         CollectionsMarshal.AsSpan(executions).Sort();
 
         var exec = new QueryExecution { Executions = executions };
- 
+
         if(executions.Count is 0)
         {
             if (template.Clauses.Count > 0)
@@ -198,6 +198,10 @@ internal static partial class QueryPlanBuilder
             // FROM Post - i.e, query with no where clauses, still needs a compiled delegate, so we go generate a cached exec for it
             exec.IsAllEntries = true;
         }
+
+        // Populate typed-arrays before BuildInspectionTemplate reads them via FormatValueFromPlan
+        // and before any downstream consumer (FinalizePlan/AttachSpatialAndVectorClauses) needs them.
+        writer.SetValues(exec);
 
         // ── Step 6: Compute cache key components (cheap) ────────────────────
         int operandOrdering = ComputeOperandOrdering(template, planParams, executions);
@@ -253,6 +257,9 @@ internal static partial class QueryPlanBuilder
                 exec.InRangeCounts = BuildInRangeCounts(executions, compiledPlan.InRangeSlotCount);
 
             AttachSpatialAndVectorClauses(exec, template, planParams, builderParameters, writer);
+            // Re-snapshot typed arrays into exec: AttachSpatialAndVectorClauses appended
+            // spatial/vector clause values to the writer after the initial SetValues call
+            // (which had to run early so BuildInspectionTemplate could format them).
             writer.SetValues(exec);
             return (compiledPlan, exec);
         }
@@ -1421,8 +1428,11 @@ internal static partial class QueryPlanBuilder
                 // pre-resolved by the DynamicFieldNameResolve walker step at template time.
                 string searchFieldName = clause.ResolvedFieldName ?? clause.FieldName;
                 {
+                    // Search clause is unreachable from the direct-test path (tests that use
+                    // the test-only QueryBuilderParameters ctor never construct Search clauses),
+                    // so Index is always non-null here.
                     bool forceSearch = builderParams.HasDynamics
-                                       && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
+                                       && builderParams.Index.Configuration.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery;
                     searchMeta = QueryBuilderHelper.GetFieldMetadata(
                         builderParams.Allocator, searchFieldName, builderParams.Index,
                         builderParams.IndexFieldsMapping,
@@ -1431,11 +1441,11 @@ internal static partial class QueryPlanBuilder
                         forceDefaultSearchAnalyzer: forceSearch);
                 }
 
-                var indexDef = builderParams.Index?.Definition;
+                var indexDef = builderParams.Index.Definition;
                 IndexSearcher.SearchQueryOptions searchQueryOptions;
-                if (indexDef != null && IndexDefinitionBaseServerSide.IndexVersion.IsCoraxSearchWildcardAdjustmentSupported(indexDef.Version))
+                if (IndexDefinitionBaseServerSide.IndexVersion.IsCoraxSearchWildcardAdjustmentSupported(indexDef.Version))
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments;
-                else if (indexDef is { Version: >= IndexDefinitionBaseServerSide.IndexVersion.PhraseQuerySupportInCoraxIndexes })
+                else if (indexDef.Version >= IndexDefinitionBaseServerSide.IndexVersion.PhraseQuerySupportInCoraxIndexes)
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQuery;
                 else
                     searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
@@ -1675,16 +1685,13 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Resolve simple field metadata (no analyzer-aware logic) routing
-    /// through the IndexFieldsMapping when available, otherwise the IndexSearcher's
-    /// direct factory. Used by compound-field key construction where the caller just
-    /// needs a metadata to feed <c>EncodeAndApplyAnalyzer</c>.</summary>
+    /// through the IndexFieldsMapping. Used by compound-field key construction where the
+    /// caller just needs a metadata to feed <c>EncodeAndApplyAnalyzer</c>.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static FieldMetadata GetCompoundFieldMetadata(QueryBuilderParameters builderParams,
         IndexSearcher indexSearcher, string fieldName)
     {
-        return builderParams?.IndexFieldsMapping != null
-            ? QueryBuilderHelper.GetFieldMetadata(in builderParams, fieldName, hasBoost: false)
-            : indexSearcher.FieldMetadataBuilder(fieldName, hasBoost: false);
+        return QueryBuilderHelper.GetFieldMetadata(in builderParams, fieldName, hasBoost: false);
     }
 
     /// <summary>Resolve field metadata for a term-source clause. Mirrors the
@@ -1695,19 +1702,13 @@ internal static partial class QueryPlanBuilder
         // Dynamic field name variants are pre-resolved by DynamicFieldNameResolve at template time.
         string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
 
-        if (builderParams?.IndexFieldsMapping == null)
-        {
-            // Direct-test path (no QueryBuilderParameters, or test-constructed one with no
-            // IndexFieldsMapping): use IndexSearcher's FieldMetadataBuilder directly.
-            return walkerCtx.IndexSearcher.FieldMetadataBuilder(resolvedFieldName, hasBoost: walkerCtx.HasBoost);
-        }
-
         // When forceDefaultSearchAnalyzer is enabled for indexes with dynamic fields (CreateField),
         // non-exact non-search clauses should use the search analyzer (#4778 fix).
+        // HasDynamics short-circuits the Index dereference for the direct-test path.
         bool forceSearchAnalyzer = builderParams.HasDynamics
                                    && !clause.IsExact
                                    && clause.ClauseType != ClauseType.Search
-                                   && (builderParams.Index?.Configuration?.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery ?? false);
+                                   && builderParams.Index.Configuration.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery;
         return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact,
             hasBoost: builderParams.HasBoost, forceDefaultSearchAnalyzer: forceSearchAnalyzer);
     }

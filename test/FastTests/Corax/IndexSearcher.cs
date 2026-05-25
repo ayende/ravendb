@@ -1290,7 +1290,8 @@ namespace FastTests.Corax
 
             const string rql = "FROM TestIndex WHERE Content IN ($p0)";
 
-            using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
+            using var fields = CreateKnownFields(Allocator);
+            using var searcher = new IndexSearcher(Env, fields);
             using var ctx = global::Sparrow.Json.JsonOperationContext.ShortTermSingleUse();
 
             // Execution 1: $p0 = [] (empty array) → should return 0 results
@@ -1302,7 +1303,7 @@ namespace FastTests.Corax
                     IndexSearcher = searcher, Metadata = queryMetadata,
                     QueryParameters = emptyParams, Allocator = Allocator
                 };
-                var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, emptyParams), out _, out _, null, false, default);
+                var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, emptyParams, fields), out _, out _, null, false, default);
                 Span<long> buf = stackalloc long[64];
                 Assert.Equal(0, match.Fill(buf));
             }
@@ -1316,7 +1317,7 @@ namespace FastTests.Corax
                     IndexSearcher = searcher, Metadata = queryMetadata,
                     QueryParameters = realParams, Allocator = Allocator
                 };
-                var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, realParams), out _, out _, null, false, default);
+                var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, realParams, fields), out _, out _, null, false, default);
                 Span<long> buf = stackalloc long[64];
                 Assert.Equal(1, match.Fill(buf));
             }
@@ -1530,7 +1531,8 @@ namespace FastTests.Corax
 
             // when($p = true, Content = 'road') with $p = false → clause eliminated.
             // With all clauses removed, there is no selection, distinct from no filter, we always filter out all entries.
-            using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
+            using var fields = CreateKnownFields(Allocator);
+            using var searcher = new IndexSearcher(Env, fields);
             var rql = "FROM TestIndex WHERE when($p = true, Content = 'road')";
             var queryMetadata = new QueryMetadata(rql, null, 0);
 
@@ -1545,7 +1547,7 @@ namespace FastTests.Corax
                 Allocator = Allocator
             };
 
-            var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, paramsJson), out _, out _, null, false, default);
+            var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, paramsJson, fields), out _, out _, null, false, default);
             Span<long> buffer = stackalloc long[256];
             int count = match.Fill(buffer);
             Assert.Equal(0, count);
@@ -1557,7 +1559,8 @@ namespace FastTests.Corax
         /// </summary>
         private List<long> ExecuteRQLQuery(string rqlQuery)
         {
-            using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
+            using var fields = CreateKnownFields(Allocator);
+            using var searcher = new IndexSearcher(Env, fields);
 
             // Parse RQL query string into AST via QueryMetadata
             var queryMetadata = new QueryMetadata(rqlQuery, null, 0);
@@ -1574,7 +1577,7 @@ namespace FastTests.Corax
             // BuildAndCompile: RQL → QueryExecution → IL compilation → CompiledQueryMatch
             var compiledMatch = QueryPlanBuilder.BuildAndCompile(
                 planParams,
-                new QueryBuilderParameters(searcher, Allocator, queryMetadata, null),
+                new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, fields),
                 out var debugPlan,
                 out _,
                 highlightingTerms: null,

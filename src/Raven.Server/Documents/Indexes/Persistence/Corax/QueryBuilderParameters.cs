@@ -36,22 +36,22 @@ public sealed class QueryBuilderParameters
     public readonly QueryTimeScope QueryTime;
 
     /// <summary>Direct-planner test constructor. Used by tests that exercise <c>QueryPlanBuilder</c>
-    /// without a full <see cref="Index"/> / <see cref="IndexQueryServerSide"/> stack — only the
-    /// fields needed by the planner's direct-test path are populated. <see cref="IndexFieldsMapping"/>
-    /// stays <c>null</c>, which is what resolvers (<c>ResolveFieldMetadata</c>, compound-exact /
-    /// compound-field branches) use as the discriminator to route through
-    /// <see cref="IndexSearcher.FieldMetadataBuilder"/> instead of the analyzer-aware
-    /// <see cref="QueryBuilderHelper.GetFieldMetadata"/>.</summary>
-    internal QueryBuilderParameters(IndexSearcher searcher, ByteStringContext allocator, QueryMetadata metadata, BlittableJsonReaderObject queryParameters, bool hasBoost = false)
+    /// without a full <see cref="Index"/> / <see cref="IndexQueryServerSide"/> stack. The supplied
+    /// <see cref="IndexFieldsMapping"/> is required so resolvers (<c>ResolveFieldMetadata</c>,
+    /// compound-exact / compound-field branches) can route through
+    /// <see cref="QueryBuilderHelper.GetFieldMetadata"/> uniformly — the production code no longer
+    /// branches on <c>IndexFieldsMapping == null</c>.</summary>
+    internal QueryBuilderParameters(IndexSearcher searcher, ByteStringContext allocator, QueryMetadata metadata, BlittableJsonReaderObject queryParameters, IndexFieldsMapping indexFieldsMapping, bool hasBoost = false)
     {
         IndexSearcher = searcher;
         Allocator = allocator;
         Metadata = metadata;
         QueryParameters = queryParameters;
+        IndexFieldsMapping = indexFieldsMapping ?? throw new ArgumentNullException(nameof(indexFieldsMapping));
         HasBoost = hasBoost;
         // HasDynamics and IsVectorSingleClause default to false; Index/Query and other
-        // production-only fields stay null — the planner's direct-test path guards on
-        // IndexFieldsMapping == null and avoids dereferencing them.
+        // production-only fields stay null — the planner's direct-test path does not exercise
+        // Search / Spatial / Vector / dynamic-field branches.
     }
 
     internal QueryBuilderParameters(IndexSearcher searcher, ByteStringContext allocator, TransactionOperationContext serverContext, DocumentsOperationContext documentsContext,

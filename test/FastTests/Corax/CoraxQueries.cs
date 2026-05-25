@@ -289,7 +289,7 @@ namespace FastTests.Corax
                 QueryParameters = null,
                 Allocator = Allocator
             };
-            var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, null), out _, out _, null, false, default);
+            var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, _knownFields), out _, out _, null, false, default);
 
             var list = new List<string>();
             Span<long> ids = stackalloc long[256];
