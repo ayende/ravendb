@@ -2810,45 +2810,45 @@ internal static partial class QueryPlanBuilder
         AndNotInto
     }
 
-    /// <summary>Recursive emit entry point. Emit ops that fold <paramref name="clause"/>'s
+    /// <summary>Recursive emit entry point. Emit ops that fold <paramref name="exec"/>'s
     /// result into slot 0 per <paramref name="merge"/>. Groups recurse; IN/AllIn/leaf
     /// route to specialised helpers.</summary>
     private static void EmitClauseInto(
-        ClauseInfo clause, ClauseExecution exec,
+        ClauseExecution exec,
         MergeKind merge, long cardinality,
         bool suppressEarlyExit,
         ref int matchIndex, ref int nextScratch, ref int maxScratchUsed,
         List<PlanOp> ops, List<int> rangeCounts)
     {
         // OR-chain NotEquals materialised by MatchResolver into ResolvedMatches[matchIndex].
-        if (clause.IsOrChainNotEquals)
+        if (exec.Clause.IsOrChainNotEquals)
         {
             EmitLeafMergeOp(merge, matchIndex, cardinality, MatchDispatch.QueryMatch, suppressEarlyExit, ops);
             matchIndex++;
             return;
         }
 
-        if (TryGetGroupFanOut(clause, exec, out var subs, out var subExecs))
+        if (TryGetGroupFanOut(exec.Clause, exec, out _, out var subExecs))
         {
-            EmitGroupInto(clause, exec, subs, subExecs, merge, suppressEarlyExit,
+            EmitGroupInto(exec, subExecs, merge, suppressEarlyExit,
                 ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
             return;
         }
 
-        if (clause.ClauseType is ClauseType.In)
+        if (exec.ClauseType is ClauseType.In)
         {
-            EmitInLeaf(clause, exec, cardinality, merge, ref matchIndex, ref maxScratchUsed, ops, rangeCounts);
+            EmitInLeaf(exec, cardinality, merge, ref matchIndex, ref maxScratchUsed, ops, rangeCounts);
             return;
         }
 
-        if (clause.ClauseType is ClauseType.AllIn)
+        if (exec.ClauseType is ClauseType.AllIn)
         {
-            EmitAllInLeaf(clause, exec, cardinality, merge, suppressEarlyExit,
+            EmitAllInLeaf(exec, cardinality, merge, suppressEarlyExit,
                 ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
             return;
         }
 
-        EmitLeafMergeOp(merge, matchIndex, cardinality, GetDispatch(clause), suppressEarlyExit, ops);
+        EmitLeafMergeOp(merge, matchIndex, cardinality, GetDispatch(exec.Clause), suppressEarlyExit, ops);
         matchIndex++;
     }
 
@@ -2857,15 +2857,15 @@ internal static partial class QueryPlanBuilder
     /// the group fresh in slot 0, then merge with the saved accumulator via the
     /// matching bitmap-pair op.</summary>
     private static void EmitGroupInto(
-        ClauseInfo clause, ClauseExecution exec,
-        List<ClauseInfo> subs, List<ClauseExecution> subExecs,
+        ClauseExecution exec,
+        List<ClauseExecution> subExecs,
         MergeKind merge, bool suppressEarlyExit,
         ref int matchIndex, ref int nextScratch, ref int maxScratchUsed,
         List<PlanOp> ops, List<int> rangeCounts)
     {
         if (merge == MergeKind.Fill)
         {
-            EmitGroupContentsInSlot0(clause, exec, subs, subExecs, suppressEarlyExit,
+            EmitGroupContentsInSlot0(exec, subExecs, suppressEarlyExit,
                 ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
             return;
         }
@@ -2878,7 +2878,7 @@ internal static partial class QueryPlanBuilder
 
         // Inside the saved context, AndWithPostings/AndRange MUST NOT early-exit to
         // doneLabel — that would skip the merge-back below and leak the saved value.
-        EmitGroupContentsInSlot0(clause, exec, subs, subExecs, suppressEarlyExit: true,
+        EmitGroupContentsInSlot0(exec, subExecs, suppressEarlyExit: true,
             ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
 
         switch (merge)
@@ -2907,21 +2907,21 @@ internal static partial class QueryPlanBuilder
     /// the live accumulator out). OrGroup: Fill first sub, OR rest. AndGroup: Fill
     /// first sub (or FillAllEntries if first is negated), AND/ANDNOT rest.</summary>
     private static void EmitGroupContentsInSlot0(
-        ClauseInfo clause, ClauseExecution exec,
-        List<ClauseInfo> subs, List<ClauseExecution> subExecs,
+        ClauseExecution exec,
+        List<ClauseExecution> subExecs,
         bool suppressEarlyExit,
         ref int matchIndex, ref int nextScratch, ref int maxScratchUsed,
         List<PlanOp> ops, List<int> rangeCounts)
     {
-        int subCount = subs.Count;
-        long subCard = (exec?.Cardinality ?? 0) / Math.Max(1, subCount);
-        bool isOr = clause.ClauseType == ClauseType.OrGroup;
+        int subCount = subExecs.Count;
+        long subCard = exec.Cardinality / Math.Max(1, subCount);
+        bool isOr = exec.ClauseType == ClauseType.OrGroup;
 
         if (isOr)
         {
             for (int si = 0; si < subCount; si++)
             {
-                EmitClauseInto(subs[si], subExecs?[si],
+                EmitClauseInto(subExecs[si],
                     si == 0 ? MergeKind.Fill : MergeKind.OrInto,
                     subCard, suppressEarlyExit,
                     ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
@@ -2930,7 +2930,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // AndGroup
-        bool firstIsNeg = subs[0].IsNegated || subs[0].ClauseType == ClauseType.NotEquals;
+        bool firstIsNeg = subExecs[0].IsNegated || subExecs[0].ClauseType == ClauseType.NotEquals;
         int start;
         if (firstIsNeg)
         {
@@ -2939,14 +2939,14 @@ internal static partial class QueryPlanBuilder
         }
         else
         {
-            EmitClauseInto(subs[0], subExecs?[0], MergeKind.Fill, subCard, suppressEarlyExit,
+            EmitClauseInto(subExecs[0], MergeKind.Fill, subCard, suppressEarlyExit,
                 ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
             start = 1;
         }
         for (int si = start; si < subCount; si++)
         {
-            bool subNeg = subs[si].IsNegated || subs[si].ClauseType == ClauseType.NotEquals;
-            EmitClauseInto(subs[si], subExecs?[si],
+            bool subNeg = subExecs[si].IsNegated || subExecs[si].ClauseType == ClauseType.NotEquals;
+            EmitClauseInto(subExecs[si],
                 subNeg ? MergeKind.AndNotInto : MergeKind.AndInto,
                 subCard, suppressEarlyExit,
                 ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
@@ -2984,11 +2984,11 @@ internal static partial class QueryPlanBuilder
     /// via AndBitmaps/AndNotBitmaps. OrRange ignores SkipEarlyExit so suppression
     /// doesn't need to propagate here.</summary>
     private static void EmitInLeaf(
-        ClauseInfo clause, ClauseExecution exec, long cardinality, MergeKind merge,
+        ClauseExecution exec, long cardinality, MergeKind merge,
         ref int matchIndex, ref int maxScratchUsed,
         List<PlanOp> ops, List<int> rangeCounts)
     {
-        int inTermCount = exec?.InTermCount > 0 ? exec.InTermCount : clause.Bindings?.Length ?? 0;
+        int inTermCount = exec.InTermCount;
         if (merge is MergeKind.Fill or MergeKind.OrInto)
         {
             EmitInOps(ops, inTermCount, cardinality, bitmapLocal: 0, isSeed: merge == MergeKind.Fill, ref matchIndex, rangeCounts);
@@ -3013,12 +3013,12 @@ internal static partial class QueryPlanBuilder
     /// AndRange op honors SkipEarlyExit; in a saved context we must set it so the loop
     /// doesn't jump to doneLabel mid-intersection.</summary>
     private static void EmitAllInLeaf(
-        ClauseInfo clause, ClauseExecution exec, long cardinality, MergeKind merge,
+        ClauseExecution exec, long cardinality, MergeKind merge,
         bool suppressEarlyExit,
         ref int matchIndex, ref int nextScratch, ref int maxScratchUsed,
         List<PlanOp> ops, List<int> rangeCounts)
     {
-        int inTermCount = exec?.InTermCount > 0 ? exec.InTermCount : clause.Bindings?.Length ?? 0;
+        int inTermCount = exec.InTermCount;
         if (merge == MergeKind.Fill)
         {
             EmitAllInOps(ops, inTermCount, cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
@@ -3111,7 +3111,7 @@ internal static partial class QueryPlanBuilder
         for (int i = 0; i < executions.Count; i++)
         {
             var exec = executions[i];
-            EmitClauseInto(exec.Clause, exec,
+            EmitClauseInto(exec,
                 i == 0 ? MergeKind.Fill : MergeKind.OrInto,
                 exec.Cardinality, suppressEarlyExit: true,
                 ref matchIndex, ref nextScratch, ref maxScratchUsed,
@@ -3135,7 +3135,6 @@ internal static partial class QueryPlanBuilder
         List<PlanOp> ops = [];
         List<int> rangeCounts = [];
 
-        var c0 = executions[0].Clause;
         var e0 = executions[0];
         switch (executions.Count)
         {
@@ -3145,7 +3144,7 @@ internal static partial class QueryPlanBuilder
                     Kind = PlanOpKind.DirectIterate,
                     ParamIndex = 0,
                     EstimatedCardinality = e0.Cardinality,
-                    Dispatch = GetDispatch(c0)
+                    Dispatch = GetDispatch(e0.Clause)
                 });
                 return (ops.ToArray(), 2, null);
             case 1 when e0.ClauseType == ClauseType.NotEquals
@@ -3159,7 +3158,7 @@ internal static partial class QueryPlanBuilder
                 {
                     Kind = PlanOpKind.AndNotWithPostings,
                     EstimatedCardinality = e0.Cardinality,
-                    Dispatch = GetDispatch(c0)
+                    Dispatch = GetDispatch(e0.Clause)
                 });
                 ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
 
@@ -3193,7 +3192,7 @@ internal static partial class QueryPlanBuilder
         }
         else
         {
-            EmitClauseInto(c0, e0, MergeKind.Fill, e0.Cardinality, suppressEarlyExit: false,
+            EmitClauseInto(e0, MergeKind.Fill, e0.Cardinality, suppressEarlyExit: false,
                 ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
             startIndex = 1;
         }
@@ -3217,11 +3216,10 @@ internal static partial class QueryPlanBuilder
             }
 
             var execI = executions[i];
-            var clauseI = execI.Clause;
-            bool stepNegated = clauseI.IsNegated || clauseI.ClauseType == ClauseType.NotEquals;
+            bool stepNegated = execI.IsNegated || execI.ClauseType == ClauseType.NotEquals;
             MergeKind merge = stepNegated ? MergeKind.AndNotInto : MergeKind.AndInto;
 
-            EmitClauseInto(clauseI, execI, merge, execI.Cardinality, suppressEarlyExit: false,
+            EmitClauseInto(execI, merge, execI.Cardinality, suppressEarlyExit: false,
                 ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
 
             // CheckEmpty: short-circuit when slot 0 became empty after a positive
@@ -3486,25 +3484,25 @@ internal static partial class QueryPlanBuilder
     {
         int count = isAllEntries ? 1 : 0;
         foreach (var exec in executions ?? [])
-            count += CountClauseLeaves(exec.Clause, exec);
+            count += CountClauseLeaves(exec);
         return count;
     }
 
     /// <summary>Recursive leaf counter. <see cref="ClauseInfo.IsOrChainNotEquals"/>
     /// short-circuits to a single AllEntries-ANDNOT slot regardless of group shape.</summary>
-    private static int CountClauseLeaves(ClauseInfo clause, ClauseExecution exec)
+    private static int CountClauseLeaves(ClauseExecution exec)
     {
-        if (clause.IsOrChainNotEquals)
+        if (exec.Clause.IsOrChainNotEquals)
             return 1;
-        if (TryGetGroupFanOut(clause, exec, out var subClauses, out var subExecs))
+        if (TryGetGroupFanOut(exec.Clause, exec, out _, out var subExecs))
         {
             int sum = 0;
-            for (int i = 0; i < subClauses.Count; i++)
-                sum += CountClauseLeaves(subClauses[i], subExecs?[i]);
+            for (int i = 0; i < subExecs.Count; i++)
+                sum += CountClauseLeaves(subExecs[i]);
             return sum;
         }
-        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn)
-            return ((exec?.InTermCount ?? 0) > 0 ? exec.InTermCount : clause.Bindings?.Length ?? 0) + 1;
+        if (exec.ClauseType is ClauseType.In or ClauseType.AllIn)
+            return exec.InTermCount + 1;
         return 1;
     }
 
