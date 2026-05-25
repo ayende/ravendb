@@ -17,7 +17,6 @@ using Corax.Querying.Planning;
 using Corax.Querying.Primitives;
 using Corax.Utils;
 using Raven.Client.Exceptions;
-using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Binary;
@@ -116,11 +115,11 @@ internal static partial class QueryPlanBuilder
 
     private ref struct InstCtx(CompiledPlan plan, QueryExecution exec, OrderMetadata[] orderByFields, PlanParameters planParams, QueryBuilderParameters builderParams)
     {
-        public CompiledPlan Plan = plan;
-        public QueryExecution Exec = exec;
-        public OrderMetadata[] OrderByFields = orderByFields; // may be null when PageSize == 0
-        public PlanParameters PlanParams = planParams;
-        public QueryBuilderParameters BuilderParams = builderParams;
+        public readonly CompiledPlan Plan = plan;
+        public readonly QueryExecution Exec = exec;
+        public readonly OrderMetadata[] OrderByFields = orderByFields; // may be null when PageSize == 0
+        public readonly PlanParameters PlanParams = planParams;
+        public readonly QueryBuilderParameters BuilderParams = builderParams;
 
         public string RejectReason;
     }
@@ -586,7 +585,7 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
-    /// Used to get the active list of clauses, and a mask on when flags to tell between the different plans based on the when conditions 
+    /// Used to get the active list of clauses and a mask on when flags to tell between the different plans based on the when conditions 
     /// </summary>
     private static (List<ClauseExecution> ExecList, int WhenFlags) EvaluateWhenAndFilterClauses(PlanTemplate template, PlanParameters planParams)
     {
@@ -606,9 +605,9 @@ internal static partial class QueryPlanBuilder
         int whenBit = 0;
         foreach (var cached in template.Clauses)
         {
-            if (cached.WhenCondition != null)
+            if (cached.WhenCondition is {} predicate)
             {
-                if (cached.WhenCondition(planParams.QueryParameters) == false)
+                if (predicate(planParams.QueryParameters) == false)
                 {
                     whenBit++;
                     continue;
@@ -977,21 +976,26 @@ internal static partial class QueryPlanBuilder
         TSlot[] slots, ref int matchIdx)
         where TResolver : ISlotResolver<TResolver, TSlot>
     {
-        if (TryGetGroupFanOut(clauseExec.Clause, clauseExec, out _, out var subExecs))
+        switch (clauseExec.ClauseType)
         {
-            for (int si = 0; si < subExecs.Count; si++)
-                ResolveClauseLeavesInto<TResolver, TSlot>(subExecs[si], exec, walkerCtx, slots, ref matchIdx);
-            return;
+            case ClauseType.OrGroup or ClauseType.AndGroup:
+                foreach (var it in clauseExec.SubExecutions)
+                {
+                    ResolveClauseLeavesInto<TResolver, TSlot>(it, exec, walkerCtx, slots, ref matchIdx);
+                }
+                break;
+            case ClauseType.AllIn or ClauseType.In:
+                for (int t = 0; t < clauseExec.InTermCount; t++)
+                {
+                    slots[matchIdx++] = TResolver.ResolveInTermSlot(clauseExec, t, exec, walkerCtx);
+                }
+                // Null-term slot is always allocated; resolver decides whether to populate.
+                slots[matchIdx++] = TResolver.ResolveNullTermSlot(clauseExec, walkerCtx);
+                break;
+            default:
+                slots[matchIdx++] = TResolver.ResolveDefaultSlot(clauseExec, exec, walkerCtx);
+                break;
         }
-        if (clauseExec.ClauseType is ClauseType.AllIn or ClauseType.In)
-        {
-            for (int t = 0; t < clauseExec.InTermCount; t++)
-                slots[matchIdx++] = TResolver.ResolveInTermSlot(clauseExec, t, exec, walkerCtx);
-            // Null-term slot is always allocated; resolver decides whether to populate.
-            slots[matchIdx++] = TResolver.ResolveNullTermSlot(clauseExec, walkerCtx);
-            return;
-        }
-        slots[matchIdx++] = TResolver.ResolveDefaultSlot(clauseExec, exec, walkerCtx);
     }
 
     /// <summary>Per-slot resolver contract; one implementation per output array shape.
@@ -1007,9 +1011,6 @@ internal static partial class QueryPlanBuilder
         static abstract TSlot ResolveDefaultSlot(ClauseExecution clauseExec, QueryExecution exec, ResolutionContext ctx);
     }
 
-    /// <summary>Resolver for the IQueryMatch[] output — the bitmap-path matches consumed
-    /// by IL emission and direct execution. Wraps results in <c>Boost</c> when the slot
-    /// carries a non-zero BoostFactor.</summary>
     private readonly struct MatchResolver : ISlotResolver<MatchResolver, IQueryMatch>
     {
         public static IQueryMatch ResolveInTermSlot(ClauseExecution clauseExec, int termIndex,
@@ -1038,9 +1039,6 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Resolver for the PostingSource[] output — native posting-list slots
-    /// consumed by the PostingList dispatch path. Boosted slots stay <c>Empty</c>
-    /// (the bitmap-path match wins).</summary>
     private readonly struct TermSourceResolver : ISlotResolver<TermSourceResolver, PostingSource>
     {
         public static PostingSource ResolveInTermSlot(ClauseExecution clauseExec, int termIndex,
@@ -1067,9 +1065,6 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Resolver for the ITermsProvider[] output — direct tree-scan dispatch.
-    /// IN/AllIn slots stay null (those paths use PostingList dispatch, not TreeScan).
-    /// Only Equals/range/prefix-like clauses populate.</summary>
     private readonly struct TermsProviderResolver : ISlotResolver<TermsProviderResolver, ITermsProvider>
     {
         public static ITermsProvider ResolveInTermSlot(ClauseExecution clauseExec, int termIndex,
@@ -1388,16 +1383,6 @@ internal static partial class QueryPlanBuilder
     {
         var (fieldMeta, termPacked) = ResolveInTermParam(exec, termIndex, walkerCtx);
         return DecodePostingListId(termPacked.GetTermPostingListId(fieldMeta, walkerCtx.IndexSearcher, queryExec), walkerCtx.IndexSearcher);
-    }
-
-    /// <summary>Resolve simple field metadata (no analyzer-aware logic) routing
-    /// through the IndexFieldsMapping. Used by compound-field key construction where the
-    /// caller just needs a metadata to feed <c>EncodeAndApplyAnalyzer</c>.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static FieldMetadata GetCompoundFieldMetadata(QueryBuilderParameters builderParams,
-        IndexSearcher indexSearcher, string fieldName)
-    {
-        return QueryBuilderHelper.GetFieldMetadata(in builderParams, fieldName, hasBoost: false);
     }
 
     /// <summary>Resolve field metadata for a term-source clause. Mirrors the
@@ -1880,7 +1865,7 @@ internal static partial class QueryPlanBuilder
             case PackedParam.TypeString:
             {
                 field1ValueStr = ctx.Exec.StringValues[packed.Param1];
-                var field1Meta = GetCompoundFieldMetadata(ctx.BuilderParams, indexSearcher, field1Name);
+                var field1Meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, field1Name, hasBoost: false);
                 analyzedPrefix = indexSearcher.EncodeAndApplyAnalyzer(field1Meta, field1ValueStr);
                 break;
             }
@@ -1938,7 +1923,7 @@ internal static partial class QueryPlanBuilder
                 else if (field2Packed.ValueType == PackedParam.TypeString)
                 {
                     // Analyze field2's value with the sort field's analyzer (same as indexing)
-                    var field2Meta = GetCompoundFieldMetadata(ctx.BuilderParams, indexSearcher, sortFieldName);
+                    var field2Meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, sortFieldName, hasBoost: false);
                     var analyzed = indexSearcher.EncodeAndApplyAnalyzer(field2Meta, ctx.Exec.StringValues[field2Packed.Param1]);
                     if (analyzed.Size > byte.MaxValue)
                         usePrefix = true;
@@ -3279,16 +3264,21 @@ internal static partial class QueryPlanBuilder
     /// Lucene), so HasBoost has no effect on the slot count here.</summary>
     private static int CountClauseLeaves(ClauseExecution exec)
     {
-        if (TryGetGroupFanOut(exec.Clause, exec, out _, out var subExecs))
+        switch (exec.ClauseType)
         {
-            int sum = 0;
-            for (int i = 0; i < subExecs.Count; i++)
-                sum += CountClauseLeaves(subExecs[i]);
-            return sum;
+            case ClauseType.OrGroup or ClauseType.AndGroup:
+                int sum = 0;
+                foreach (var it in exec.SubExecutions)
+                {
+                    sum += CountClauseLeaves(it);
+                }
+
+                return sum;
+            case ClauseType.In or ClauseType.AllIn:
+                return exec.InTermCount + 1;
+            default:
+                return 1;
         }
-        if (exec.ClauseType is ClauseType.In or ClauseType.AllIn)
-            return exec.InTermCount + 1;
-        return 1;
     }
 
     /// <summary>For an OrGroup or AndGroup clause, returns the parallel (sub-clauses, sub-executions)
