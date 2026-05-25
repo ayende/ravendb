@@ -71,10 +71,10 @@ public sealed class ClauseInfo
     /// NOT IN, NOT AllIn, NOT exists(), NOT startsWith(), etc.
     /// Example: `WHERE Name != 'a' OR Age = 25` or `WHERE NOT exists(Tags) OR Score &gt; 10`.
     /// The complement set cannot be delivered by the raw posting list / range / tree-scan
-    /// (which would produce the POSITIVE form). Instead, ResolveMatches pre-materializes
-    /// AllEntries ANDNOT(positive form) into a BitmapMatch via CreateNotEqualsOrMatch,
-    /// so OrWithMatch during execution correctly ORs in the complement set. The slot
-    /// is always dispatched via QueryMatch, regardless of the underlying clause type.</summary>
+    /// (which would produce the POSITIVE form). Instead, the IL emitter builds the complement
+    /// at execution time via FillAllEntries + AndNot(positive form), so OrWithMatch correctly
+    /// ORs in the set of entries NOT matching the positive predicate. Boost is intentionally
+    /// ignored on such clauses (matches Lucene — there is no match to score).</summary>
     public bool IsOrChainNotEquals
     {
         get;
