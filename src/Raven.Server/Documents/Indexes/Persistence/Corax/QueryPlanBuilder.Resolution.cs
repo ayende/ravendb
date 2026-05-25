@@ -223,6 +223,23 @@ internal static partial class QueryPlanBuilder
             ops[i].Dispatch = MatchDispatch.QueryMatch;
         }
 
+        // Per-dispatch presence flags: only slot-using ops contribute. Drives the
+        // ResolveMatches / ResolveTermSources / ResolveTermsProviders skip-when-unused
+        // decisions in InstantiateBitmapPipeline. Computed here (cache-miss time) and
+        // cached on CompiledPlan so every cache hit reuses the result.
+        bool hasQueryMatchDispatch = false, hasPostingListDispatch = false, hasTreeScanDispatch = false;
+        for (int i = 0; i < ops.Length; i++)
+        {
+            if (OpUsesSlotDispatch(ops[i].Kind) == false)
+                continue;
+            switch (ops[i].Dispatch)
+            {
+                case MatchDispatch.QueryMatch: hasQueryMatchDispatch = true; break;
+                case MatchDispatch.PostingList: hasPostingListDispatch = true; break;
+                case MatchDispatch.TreeScan: hasTreeScanDispatch = true; break;
+            }
+        }
+
         // Compile and cache. Structural fields (AllNegated, OptimizationFlags, remapped
         // indices, ScanPredicateInfos) are stored on the CompiledPlan, not on QueryExecution.
         compiledPlan = new CompiledPlan
@@ -242,7 +259,10 @@ internal static partial class QueryPlanBuilder
             InRangeSlotCount = inRangeCounts?.Length ?? 0,
             InspectionTemplate = BuildInspectionTemplate(ops, exec),
             ScanPredicateInfos = scanPreds,
-            AllNegated =  CheckAllNegated(executions)
+            AllNegated =  CheckAllNegated(executions),
+            HasQueryMatchDispatch = hasQueryMatchDispatch,
+            HasPostingListDispatch = hasPostingListDispatch,
+            HasTreeScanDispatch = hasTreeScanDispatch,
         };
         RemapOptimizationIndices(compiledPlan, executions);
         planCache.Add(queryText, compiledPlan, template);
@@ -451,9 +471,22 @@ internal static partial class QueryPlanBuilder
         if (exec is { IsAllEntries: true, HasSpatialOrVector: true })
             return InstantiateAllEntriesPostFilter(exec, builderParameters, walkerCtx);
 
-        var resolvedMatches = ResolveMatches(exec, walkerCtx);
-        var termSources = ResolveTermSources(exec, walkerCtx);
-        var termsProviders = ResolveTermsProviders(exec, walkerCtx);
+        // The three HasXxxDispatch flags on compiledPlan tell us up-front which of the
+        // resolver arrays IL will ever read. Spatial/vector queries still need the
+        // matches array — post-filter wrappers read exec.SpatialFilters/VectorFilters
+        // independently, but the bitmap pipeline below also expects a candidate match.
+        // IsAllEntries plans that reach here (i.e. without spatial/vector — the
+        // shortcut at line 559 handles the paired case) keep their AllEntries()
+        // seed via ResolveMatches' own fast path.
+        var resolvedMatches = (compiledPlan.HasQueryMatchDispatch || exec.HasSpatialOrVector || exec.IsAllEntries)
+            ? ResolveMatches(exec, walkerCtx)
+            : [];
+        var termSources = compiledPlan.HasPostingListDispatch
+            ? ResolveTermSources(exec, walkerCtx)
+            : [];
+        var termsProviders = compiledPlan.HasTreeScanDispatch
+            ? ResolveTermsProviders(exec, walkerCtx)
+            : null;
         ExtractScanParameters(exec, indexSearcher,
             out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
 
@@ -1306,38 +1339,17 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Resolve TreeScan-eligible clauses to ITermsProvider instances for direct
     /// tree-scan dispatch in the compiled pipeline. Slot indexing is parallel to
-    /// ResolveMatches/ResolveTermSources. Returns null if no TreeScan clauses exist.</summary>
+    /// ResolveMatches/ResolveTermSources. Caller (InstantiateBitmapPipeline) gates this
+    /// on <see cref="CompiledPlan.HasTreeScanDispatch"/>, which already reflects the
+    /// finalized post-boost-override dispatch — when boost is on every TreeScan-shaped
+    /// clause becomes QueryMatch and this resolver is skipped entirely.</summary>
     private static ITermsProvider[] ResolveTermsProviders(QueryExecution exec, ResolutionContext walkerCtx)
     {
         var execs = exec.Executions;
         if (exec.IsAllEntries || execs is not { Count: > 0 })
             return null;
 
-        if (HasAnyTreeScanClause(execs) == false)
-            return null;
-
         return ResolveSlots<TermsProviderResolver, ITermsProvider>(exec, walkerCtx);
-    }
-
-    /// <summary>Returns true when the execution list contains at least one TreeScan-eligible
-    /// clause — i.e. when ResolveTermsProviders has any populated slot to produce. Lets the
-    /// caller skip the allocation entirely when no clause can use the TreeScan path.</summary>
-    private static bool HasAnyTreeScanClause(List<ClauseExecution> execs)
-    {
-        foreach (var exec in execs)
-        {
-            var cl = exec.Clause;
-            if (IsTreeScanEligibleClause(cl))
-                return true;
-
-            foreach (var subClause in cl.SubClauses ?? [])
-            {
-                if (IsTreeScanEligibleClause(subClause))
-                    return true;
-            }
-        }
-
-        return false;
     }
 
     /// <summary>Resolve a single TreeScan-eligible clause to its raw ITermsProvider.
@@ -3336,6 +3348,28 @@ internal static partial class QueryPlanBuilder
         }
 
         return true;
+    }
+
+    /// <summary>True for <see cref="PlanOpKind"/>s that consult <see cref="PlanOp.Dispatch"/>
+    /// to read a per-slot source (ResolvedMatches / PostingSources / TermsProviders). The
+    /// bitmap-only kinds (FillAllEntries, RepairAfterLazy, ClearBitmap, AndBitmaps,
+    /// AndNotBitmaps, OrBitmaps, SwapBitmaps, CheckEmpty, CheckAndMaybeEntryScan,
+    /// IterateInto) leave Dispatch at its default and must be excluded when deriving
+    /// the per-dispatch presence flags on <see cref="CompiledPlan"/>.</summary>
+    private static bool OpUsesSlotDispatch(PlanOpKind kind)
+    {
+        return kind switch
+        {
+            PlanOpKind.FillFromPostings or
+            PlanOpKind.DirectIterate or
+            PlanOpKind.AndWithPostings or
+            PlanOpKind.OrWithPostings or
+            PlanOpKind.LazyOrWithPostings or
+            PlanOpKind.AndNotWithPostings or
+            PlanOpKind.OrRange or
+            PlanOpKind.AndRange => true,
+            _ => false,
+        };
     }
 
     /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause at plan-build time.
