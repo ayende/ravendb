@@ -1771,11 +1771,10 @@ internal static partial class QueryPlanBuilder
         int scanStart = exec.Plan.AllNegated ? 0 : 1;
         int clauseIdx = scanStart;
         var execs = exec.Executions;
-        int dummyL = 0, dummyD = 0, dummyS = 0;
         foreach (ScanPredicateInfo pred in predicates)
         {
             // Advance past clauses that BuildScanPredicateInfo would have skipped (returned null).
-            while (clauseIdx < execs.Count && BuildScanPredicateInfo(execs[clauseIdx], ref dummyL, ref dummyD, ref dummyS) == null)
+            while (clauseIdx < execs.Count && IsScanEligible(execs[clauseIdx]) == false)
             {
                 clauseIdx++;
             }
@@ -2068,7 +2067,6 @@ internal static partial class QueryPlanBuilder
         int field2RangeIdx = FindCompoundFieldField2Range(ref ctx);
 
         // Residual scannability + cost check
-        int longIdx = 0, doubleIdx = 0, sliceIdx = 0;
         long bitmapCost = 0;
         int residualCount = 0;
         for (int i = 0; i < execs.Count; i++)
@@ -2082,7 +2080,7 @@ internal static partial class QueryPlanBuilder
                 return false;
             }
 
-            if (BuildScanPredicateInfo(execs[i], ref longIdx, ref doubleIdx, ref sliceIdx) is null)
+            if (IsScanEligible(execs[i]) == false)
             {
                 rejectReason = "scan predicate info is null";
                 return false;
@@ -3302,16 +3300,10 @@ internal static partial class QueryPlanBuilder
     private static bool AreAllScanEligible(List<ClauseExecution> executions, int startIndex)
     {
         // If any clause (In, AllIn, Spatial, Vector, Search, etc.) can't be scanned, we must not emit CheckAndMaybeEntryScan — entry scan would skip them entirely.
-        int dummyL = 0, dummyD = 0, dummyS = 0;
         for (int j = startIndex; j < executions.Count; j++)
         {
-            ParamValueType termType = executions[j].TermValueType;
-            if (BuildScanPredicateInfoCore(executions[j], termType,ref dummyL, ref dummyD, ref dummyS) != null)
-            {
-                continue;
-            }
-
-            return false;
+            if (IsScanEligible(executions[j]) == false)
+                return false;
         }
 
         return true;
@@ -3579,6 +3571,48 @@ internal static partial class QueryPlanBuilder
     /// types are available (per-execution, after PopulateClauseValues).</summary>
     internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseExecution exec, ref int longIndex, ref int doubleIndex, ref int sliceIndex)
         => BuildScanPredicateInfoCore(exec, exec?.TermValueType ?? ParamValueType.String, ref longIndex, ref doubleIndex, ref sliceIndex);
+
+    /// <summary>Eligibility-only probe: returns whether <see cref="BuildScanPredicateInfo"/>
+    /// would have produced a non-null result for this execution, without allocating a
+    /// <see cref="ScanPredicateInfo"/> or accumulating parameter indices. Use this when the
+    /// caller only needs the null/non-null signal (gating loops, skip-filters).</summary>
+    private static bool IsScanEligible(ClauseExecution exec)
+        => IsScanEligibleCore(exec, exec.TermValueType);
+
+    private static bool IsScanEligibleCore(ClauseExecution exec, ParamValueType termType)
+    {
+        var clause = exec.Clause;
+        switch (clause.ClauseType)
+        {
+            case ClauseType.Search:
+            case ClauseType.Regex:
+            case ClauseType.Spatial:
+            case ClauseType.Vector:
+            case ClauseType.In:
+            case ClauseType.AllIn:
+                return false;
+
+            case ClauseType.StartsWith:
+            case ClauseType.EndsWith:
+                return termType == ParamValueType.String;
+
+            case ClauseType.AndGroup:
+            case ClauseType.OrGroup:
+            {
+                if (clause.SubClauses is not { Count: > 0 } subs)
+                    return false;
+                var subExecs = exec.SubExecutions;
+                for (int si = 0; si < subs.Count; si++)
+                {
+                    if (IsScanEligibleCore(subExecs[si], subExecs[si].TermValueType) == false)
+                        return false;
+                }
+                return true;
+            }
+        }
+        // Equals / NotEquals / Range / Between / Exists → eligible.
+        return true;
+    }
 
     /// <summary>Single walker shared by both overloads. <paramref name="exec"/> is non-null on
     /// the resolution path and supplies per-sub TermValueType during group recursion; on the
