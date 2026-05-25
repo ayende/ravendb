@@ -744,8 +744,12 @@ internal static partial class QueryPlanBuilder
                 }
             }
             case ClauseType.In or ClauseType.AllIn:
-                // IN/AllIn: each binding is a term (literal or parameter, possibly array-expanding)
-                ResolveInFromBindings(exec, queryParameters, writer, bindings, builderParameters);
+                // Boosted clauses store the boost factor in the trailing binding (read by
+                // ResolveBoostFactor via Bindings[^1]); exclude it from the IN-term walk.
+                var inBindings = exec.Clause.HasBoost
+                    ? bindings.AsSpan(0, bindings.Length - 1).ToArray()
+                    : bindings;
+                ResolveInFromBindings(exec, queryParameters, writer, inBindings, builderParameters);
                 break;
             default:
                 // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
