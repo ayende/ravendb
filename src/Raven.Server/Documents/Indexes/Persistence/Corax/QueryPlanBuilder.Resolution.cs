@@ -223,23 +223,6 @@ internal static partial class QueryPlanBuilder
             ops[i].Dispatch = MatchDispatch.QueryMatch;
         }
 
-        // Per-dispatch presence flags: only slot-using ops contribute. Drives the
-        // ResolveMatches / ResolveTermSources / ResolveTermsProviders skip-when-unused
-        // decisions in InstantiateBitmapPipeline. Computed here (cache-miss time) and
-        // cached on CompiledPlan so every cache hit reuses the result.
-        bool hasQueryMatchDispatch = false, hasPostingListDispatch = false, hasTreeScanDispatch = false;
-        for (int i = 0; i < ops.Length; i++)
-        {
-            if (OpUsesSlotDispatch(ops[i].Kind) == false)
-                continue;
-            switch (ops[i].Dispatch)
-            {
-                case MatchDispatch.QueryMatch: hasQueryMatchDispatch = true; break;
-                case MatchDispatch.PostingList: hasPostingListDispatch = true; break;
-                case MatchDispatch.TreeScan: hasTreeScanDispatch = true; break;
-            }
-        }
-
         // Per-leaf effective dispatch in resolver-walk order, with the boost-override
         // pre-applied. ResolveClauseLeavesInto reads compiledPlan.ClauseDispatch[i] to
         // decide whether to populate slot[i] for its TargetDispatch — boost handling
@@ -266,9 +249,6 @@ internal static partial class QueryPlanBuilder
             InspectionTemplate = BuildInspectionTemplate(ops, exec),
             ScanPredicateInfos = scanPreds,
             AllNegated =  CheckAllNegated(executions),
-            HasQueryMatchDispatch = hasQueryMatchDispatch,
-            HasPostingListDispatch = hasPostingListDispatch,
-            HasTreeScanDispatch = hasTreeScanDispatch,
             ClauseDispatch = clauseDispatch,
         };
         RemapOptimizationIndices(compiledPlan, executions);
@@ -478,22 +458,9 @@ internal static partial class QueryPlanBuilder
         if (exec is { IsAllEntries: true, HasSpatialOrVector: true })
             return InstantiateAllEntriesPostFilter(exec, builderParameters, walkerCtx);
 
-        // The three HasXxxDispatch flags on compiledPlan tell us up-front which of the
-        // resolver arrays IL will ever read. Spatial/vector queries still need the
-        // matches array — post-filter wrappers read exec.SpatialFilters/VectorFilters
-        // independently, but the bitmap pipeline below also expects a candidate match.
-        // IsAllEntries plans that reach here (i.e. without spatial/vector — the
-        // shortcut at line 559 handles the paired case) keep their AllEntries()
-        // seed via ResolveMatches' own fast path.
-        var resolvedMatches = (compiledPlan.HasQueryMatchDispatch || exec.HasSpatialOrVector || exec.IsAllEntries)
-            ? ResolveMatches(exec, walkerCtx)
-            : [];
-        var termSources = compiledPlan.HasPostingListDispatch
-            ? ResolveTermSources(exec, walkerCtx)
-            : [];
-        var termsProviders = compiledPlan.HasTreeScanDispatch
-            ? ResolveTermsProviders(exec, walkerCtx)
-            : null;
+        var resolvedMatches = ResolveMatches(exec, walkerCtx);
+        var termSources = ResolveTermSources(exec, walkerCtx);
+        var termsProviders = ResolveTermsProviders(exec, walkerCtx);
         ExtractScanParameters(exec, indexSearcher,
             out var longParams, out var doubleParams, out var sliceParams, out var fieldRootPages);
 
@@ -916,17 +883,9 @@ internal static partial class QueryPlanBuilder
         var (packedType, startIdx) = writer.ResolveInSlot(dominantType);
         var dominantTokenType = ToValueTokenType(dominantType);
 
-        // Engine-level type compatibility is enforced upstream in QueryMetadata.VisitIn,
-        // but ResolveParameterValue does a Corax-internal ISO-date-string → ticks
-        // promotion that can leave a single array element with a different ParamValueType
-        // from its siblings (e.g. [DateTime, "Shalom"] → [Long, String]). Skip values
-        // whose promoted type does not match the dominant slot — matches Lucene's
-        // tolerant behavior for this case.
         int written = 0;
         for (int i = 0; i < values.Count; i++)
         {
-            if (types[i] != dominantType)
-                continue;
             writer.Add(values[i], dominantTokenType);
             written++;
         }
@@ -1369,10 +1328,9 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Resolve TreeScan-eligible clauses to ITermsProvider instances for direct
     /// tree-scan dispatch in the compiled pipeline. Slot indexing is parallel to
-    /// ResolveMatches/ResolveTermSources. Caller (InstantiateBitmapPipeline) gates this
-    /// on <see cref="CompiledPlan.HasTreeScanDispatch"/>, which already reflects the
-    /// finalized post-boost-override dispatch — when boost is on every TreeScan-shaped
-    /// clause becomes QueryMatch and this resolver is skipped entirely.</summary>
+    /// ResolveMatches/ResolveTermSources. Per-leaf dispatch filtering handles the
+    /// post-boost-override semantics — when boost is on every TreeScan-shaped
+    /// clause becomes QueryMatch and no TreeScan slot is populated.</summary>
     private static ITermsProvider[] ResolveTermsProviders(QueryExecution exec, ResolutionContext walkerCtx)
     {
         var execs = exec.Executions;
