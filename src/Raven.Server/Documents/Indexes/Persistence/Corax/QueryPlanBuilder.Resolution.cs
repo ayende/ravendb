@@ -450,6 +450,12 @@ internal static partial class QueryPlanBuilder
             }
         }
 
+        // Per-clause effective dispatch in resolver-walk order, with the boost-override
+        // pre-applied. ResolveSlots reads compiledPlan.ClauseDispatch[i] to decide
+        // whether to populate slot[i] for its TargetDispatch — boost handling becomes a
+        // no-op inside the resolver because every entry is QueryMatch under boost.
+        MatchDispatch[] clauseDispatch = ComputeClauseDispatch(executions, planParams.HasBoost);
+
         // Compile and cache. Structural fields (AllNegated, OptimizationFlags, remapped
         // indices, ScanPredicateInfos) are stored on the CompiledPlan, not on QueryExecution.
         compiledPlan = new CompiledPlan
@@ -473,6 +479,7 @@ internal static partial class QueryPlanBuilder
             HasQueryMatchDispatch = hasQueryMatchDispatch,
             HasPostingListDispatch = hasPostingListDispatch,
             HasTreeScanDispatch = hasTreeScanDispatch,
+            ClauseDispatch = clauseDispatch,
         };
         RemapOptimizationIndices(compiledPlan, executions);
         planCache.Add(queryText, compiledPlan, template);
@@ -1307,20 +1314,29 @@ internal static partial class QueryPlanBuilder
         {
             (true, _) => [walkerCtx.IndexSearcher.AllEntries()],
             (false, []) => [],
-            _ => ResolveSlots<MatchResolver, IQueryMatch>(exec, walkerCtx)
+            _ => ResolveSlots<MatchResolver, IQueryMatch>(exec, exec.Plan.ClauseDispatch, walkerCtx)
         };
     }
 
     /// <summary>
     /// Produces a slot per position from QueryExecution's clauses. Slot layout matches
-    /// <see cref="CountMatchSlots"/> exactly, produces identical parallel arrays indexed. 
+    /// <see cref="CountMatchSlots"/> exactly, produces identical parallel arrays indexed.
+    ///
+    /// <para><paramref name="clauseDispatch"/> is the per-atom effective dispatch vector
+    /// computed at plan-build time (one entry per clause / sub-clause; IN/AllIn collapses
+    /// to a single entry that covers every term + null slot). A slot is populated only
+    /// when the atom's dispatch matches <c>TResolver.TargetDispatch</c>; mismatched
+    /// slots stay at <c>default(TSlot)</c>. This avoids the previous wasted work of
+    /// building three parallel arrays where IL only ever reads one per slot.</para>
     /// </summary>
-    private static TSlot[] ResolveSlots<TResolver, TSlot>(QueryExecution exec, ResolutionContext walkerCtx)
+    private static TSlot[] ResolveSlots<TResolver, TSlot>(QueryExecution exec, MatchDispatch[] clauseDispatch, ResolutionContext walkerCtx)
         where TResolver : ISlotResolver<TResolver, TSlot>
     {
         var execs = exec.Executions;
         var slots = new TSlot[CountMatchSlots(execs, exec.IsAllEntries)];
         int matchIdx = 0;
+        int clauseIdx = 0;
+        var target = TResolver.TargetDispatch;
 
         foreach (var clauseExec in execs)
         {
@@ -1330,26 +1346,35 @@ internal static partial class QueryPlanBuilder
             {
                 for (int si = 0; si < subClauses.Count; si++)
                 {
-                    slots[matchIdx++] = TResolver.ResolveSubClauseSlot(subClauses[si], subExecs[si], exec, walkerCtx);
+                    if (clauseDispatch[clauseIdx++] == target)
+                        slots[matchIdx] = TResolver.ResolveSubClauseSlot(subClauses[si], subExecs[si], exec, walkerCtx);
+                    matchIdx++;
                 }
 
                 continue;
             }
 
+            bool matches = clauseDispatch[clauseIdx++] == target;
             switch (clause.ClauseType)
             {
                 case ClauseType.AllIn or ClauseType.In:
                     for (int t = 0; t < clauseExec.InTermCount; t++)
                     {
-                        slots[matchIdx++] = TResolver.ResolveInTermSlot(clause, clauseExec, t, exec, walkerCtx);
+                        if (matches)
+                            slots[matchIdx] = TResolver.ResolveInTermSlot(clause, clauseExec, t, exec, walkerCtx);
+                        matchIdx++;
                     }
 
                     // Null-term slot is always allocated; resolver decides whether to populate.
-                    slots[matchIdx++] = TResolver.ResolveNullTermSlot(clause, clauseExec, walkerCtx);
+                    if (matches)
+                        slots[matchIdx] = TResolver.ResolveNullTermSlot(clause, clauseExec, walkerCtx);
+                    matchIdx++;
                     break;
 
                 default:
-                    slots[matchIdx++] = TResolver.ResolveDefaultSlot(clause, clauseExec, exec, walkerCtx);
+                    if (matches)
+                        slots[matchIdx] = TResolver.ResolveDefaultSlot(clause, clauseExec, exec, walkerCtx);
+                    matchIdx++;
                     break;
             }
         }
@@ -1363,6 +1388,14 @@ internal static partial class QueryPlanBuilder
     private interface ISlotResolver<TSelf, out TSlot>
         where TSelf : ISlotResolver<TSelf, TSlot>
     {
+        /// <summary>The <see cref="MatchDispatch"/> bucket whose slots this resolver populates.
+        /// ResolveSlots compares against <c>compiledPlan.ClauseDispatch[clauseIdx]</c> and
+        /// only invokes the per-slot Resolve* methods when they match; mismatched slots
+        /// stay at <c>default(TSlot)</c>. This makes boost handling a no-op inside each
+        /// resolver — the boost-override at build time already collapsed every clause's
+        /// dispatch to <see cref="MatchDispatch.QueryMatch"/>.</summary>
+        static abstract MatchDispatch TargetDispatch { get; }
+
         static abstract TSlot ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec, QueryExecution exec, ResolutionContext ctx);
 
         static abstract TSlot ResolveInTermSlot(ClauseInfo clause, ClauseExecution clauseExec, int termIndex, QueryExecution exec, ResolutionContext ctx);
@@ -1377,6 +1410,8 @@ internal static partial class QueryPlanBuilder
     /// carries a non-zero BoostFactor.</summary>
     private readonly struct MatchResolver : ISlotResolver<MatchResolver, IQueryMatch>
     {
+        public static MatchDispatch TargetDispatch => MatchDispatch.QueryMatch;
+
         public static IQueryMatch ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
             QueryExecution exec, ResolutionContext ctx)
         {
@@ -1415,19 +1450,17 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Resolver for the PostingSource[] output — native posting-list slots
-    /// consumed by the PostingList dispatch path. Boosted slots stay <c>Empty</c>
-    /// (the bitmap-path match wins).</summary>
+    /// consumed by the PostingList dispatch path. ResolveSlots only invokes these
+    /// methods on slots whose clause dispatch is <see cref="MatchDispatch.PostingList"/>;
+    /// boosted clauses are already PromoteRedirected to QueryMatch by the build-time
+    /// boost-override, so no per-resolver boost check is needed.</summary>
     private readonly struct TermSourceResolver : ISlotResolver<TermSourceResolver, PostingSource>
     {
+        public static MatchDispatch TargetDispatch => MatchDispatch.PostingList;
+
         public static PostingSource ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
             QueryExecution exec, ResolutionContext ctx)
-        {
-            // Boosted slots are emitted through the IQueryMatch path so scoring works;
-            // the PostingSource stays Empty here.
-            return subExec.BoostFactor > 0
-                ? default
-                : ResolveSingleTermSource(sub, subExec, exec, ctx);
-        }
+            => ResolveSingleTermSource(sub, subExec, exec, ctx);
 
         public static PostingSource ResolveInTermSlot(ClauseInfo clause, ClauseExecution clauseExec, int termIndex,
             QueryExecution exec, ResolutionContext ctx)
@@ -1446,11 +1479,7 @@ internal static partial class QueryPlanBuilder
 
         public static PostingSource ResolveDefaultSlot(ClauseInfo clause, ClauseExecution clauseExec,
             QueryExecution exec, ResolutionContext ctx)
-        {
-            return clauseExec.BoostFactor > 0
-                ? default
-                : ResolveSingleTermSource(clause, clauseExec, exec, ctx);
-        }
+            => ResolveSingleTermSource(clause, clauseExec, exec, ctx);
     }
 
     /// <summary>Resolver for the ITermsProvider[] output — direct tree-scan dispatch.
@@ -1458,6 +1487,8 @@ internal static partial class QueryPlanBuilder
     /// Only Equals/range/prefix-like clauses populate.</summary>
     private readonly struct TermsProviderResolver : ISlotResolver<TermsProviderResolver, ITermsProvider>
     {
+        public static MatchDispatch TargetDispatch => MatchDispatch.TreeScan;
+
         public static ITermsProvider ResolveSubClauseSlot(ClauseInfo sub, ClauseExecution subExec,
             QueryExecution exec, ResolutionContext ctx)
             => ResolveSingleTermsProvider(sub, subExec, exec, ctx);
@@ -1783,7 +1814,7 @@ internal static partial class QueryPlanBuilder
         if (exec.IsAllEntries || exec.Executions is not { Count: > 0 })
             return [];
 
-        return ResolveSlots<TermSourceResolver, PostingSource>(exec, walkerCtx);
+        return ResolveSlots<TermSourceResolver, PostingSource>(exec, exec.Plan.ClauseDispatch, walkerCtx);
     }
 
     /// <summary>Resolve TreeScan-eligible clauses to ITermsProvider instances for direct
@@ -1798,7 +1829,7 @@ internal static partial class QueryPlanBuilder
         if (exec.IsAllEntries || execs is not { Count: > 0 })
             return null;
 
-        return ResolveSlots<TermsProviderResolver, ITermsProvider>(exec, walkerCtx);
+        return ResolveSlots<TermsProviderResolver, ITermsProvider>(exec, exec.Plan.ClauseDispatch, walkerCtx);
     }
 
     /// <summary>Resolve a single TreeScan-eligible clause to its raw ITermsProvider.
@@ -3813,6 +3844,34 @@ internal static partial class QueryPlanBuilder
             return MatchDispatch.TreeScan;
 
         return MatchDispatch.QueryMatch;
+    }
+
+    /// <summary>Per-atom effective dispatch in resolver-walk order. An "atom" is the
+    /// unit ResolveSlots advances over: one entry per regular clause, one entry per
+    /// OrGroup/AndGroup sub-clause, and a single collapsed entry for IN/AllIn (whose
+    /// dispatch applies uniformly to every term + null slot the clause produces).
+    /// When <paramref name="planHasBoost"/> is true, every entry is forced to
+    /// <see cref="MatchDispatch.QueryMatch"/> — mirroring the boost-override loop
+    /// that already promoted every <see cref="PlanOp.Dispatch"/> to QueryMatch.
+    /// Returns an empty array for IsAllEntries plans and for plans with no executions.</summary>
+    private static MatchDispatch[] ComputeClauseDispatch(List<ClauseExecution> executions, bool planHasBoost)
+    {
+        if (executions is null || executions.Count == 0)
+            return [];
+
+        var list = new List<MatchDispatch>(executions.Count);
+        foreach (var clauseExec in executions)
+        {
+            var clause = clauseExec.Clause;
+            if (TryGetGroupFanOut(clause, clauseExec, out var subClauses, out _))
+            {
+                for (int si = 0; si < subClauses.Count; si++)
+                    list.Add(planHasBoost ? MatchDispatch.QueryMatch : GetDispatch(subClauses[si]));
+                continue;
+            }
+            list.Add(planHasBoost ? MatchDispatch.QueryMatch : GetDispatch(clause));
+        }
+        return list.ToArray();
     }
     
     /// <summary>Resolution-time overload: derives term type from <paramref name="exec"/>

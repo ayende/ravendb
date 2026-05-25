@@ -145,6 +145,16 @@ public sealed class CompiledPlan
     /// reflects the finalized dispatch (post-boost-override).</summary>
     public bool HasTreeScanDispatch { get; init; }
 
+    /// <summary>Per-clause effective <see cref="MatchDispatch"/> in the same walk order
+    /// the resolvers iterate (top-level clauses; OrGroup/AndGroup sub-clauses fanned out
+    /// in order; IN/AllIn collapsed to a single entry that applies to every term slot
+    /// produced by that clause). Computed at template-build time *after* the boost-override
+    /// loop, so every entry is <see cref="MatchDispatch.QueryMatch"/> for boosted plans —
+    /// the resolvers don't have to re-derive dispatch from clause shape or special-case
+    /// boost. Empty for <see cref="QueryExecution.IsAllEntries"/> plans and for plans
+    /// with no executions.</summary>
+    public MatchDispatch[] ClauseDispatch { get; init; }
+
     /// <summary>Structural scan predicate metadata cached from the first compilation.
     /// Field names, param indices, compare ops do not change across executions.
     /// Used by <c>ExtractScanParameters</c> on every execution (both cache hit and miss)
