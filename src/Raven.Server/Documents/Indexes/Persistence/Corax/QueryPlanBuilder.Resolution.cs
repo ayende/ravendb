@@ -204,6 +204,12 @@ internal static partial class QueryPlanBuilder
 
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature(template, planParams);
 
+        // IN/AllIn clauses with QueryParameter bindings can expand to different term counts
+        // at runtime. The slot layout (ParamIndex constants baked into the compiled IL) depends
+        // on InTermCount, so different counts must produce different compiled plans. Fold a hash
+        // of all IN/AllIn InTermCounts into typeSignature so the cache treats them as distinct.
+        typeSignature ^= ComputeInTermSignature(executions);
+
         if(planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags) is {} compiledPlan)
             return FinalizePlan();
         
@@ -2837,13 +2843,13 @@ internal static partial class QueryPlanBuilder
 
         if (clause.ClauseType is ClauseType.In)
         {
-            EmitInLeaf(clause, cardinality, merge, ref matchIndex, ref maxScratchUsed, ops, rangeCounts);
+            EmitInLeaf(clause, exec, cardinality, merge, ref matchIndex, ref maxScratchUsed, ops, rangeCounts);
             return;
         }
 
         if (clause.ClauseType is ClauseType.AllIn)
         {
-            EmitAllInLeaf(clause, cardinality, merge, suppressEarlyExit,
+            EmitAllInLeaf(clause, exec, cardinality, merge, suppressEarlyExit,
                 ref matchIndex, ref nextScratch, ref maxScratchUsed, ops, rangeCounts);
             return;
         }
@@ -2984,20 +2990,21 @@ internal static partial class QueryPlanBuilder
     /// via AndBitmaps/AndNotBitmaps. OrRange ignores SkipEarlyExit so suppression
     /// doesn't need to propagate here.</summary>
     private static void EmitInLeaf(
-        ClauseInfo clause, long cardinality, MergeKind merge,
+        ClauseInfo clause, ClauseExecution exec, long cardinality, MergeKind merge,
         ref int matchIndex, ref int maxScratchUsed,
         List<PlanOp> ops, List<int> rangeCounts)
     {
+        int inTermCount = exec?.InTermCount > 0 ? exec.InTermCount : clause.Bindings?.Length ?? 0;
         if (merge is MergeKind.Fill or MergeKind.OrInto)
         {
-            EmitInOps(ops, clause, cardinality, bitmapLocal: 0, isSeed: merge == MergeKind.Fill, ref matchIndex, rangeCounts);
+            EmitInOps(ops, inTermCount, cardinality, bitmapLocal: 0, isSeed: merge == MergeKind.Fill, ref matchIndex, rangeCounts);
             return;
         }
 
         // AndInto / AndNotInto: union IN terms in slot 1, then merge with slot 0.
         if (1 > maxScratchUsed) maxScratchUsed = 1;
         ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-        EmitInOps(ops, clause, cardinality, bitmapLocal: 1, isSeed: false, ref matchIndex, rangeCounts);
+        EmitInOps(ops, inTermCount, cardinality, bitmapLocal: 1, isSeed: false, ref matchIndex, rangeCounts);
         ops.Add(new PlanOp
         {
             Kind = merge == MergeKind.AndInto ? PlanOpKind.AndBitmaps : PlanOpKind.AndNotBitmaps,
@@ -3012,14 +3019,15 @@ internal static partial class QueryPlanBuilder
     /// AndRange op honors SkipEarlyExit; in a saved context we must set it so the loop
     /// doesn't jump to doneLabel mid-intersection.</summary>
     private static void EmitAllInLeaf(
-        ClauseInfo clause, long cardinality, MergeKind merge,
+        ClauseInfo clause, ClauseExecution exec, long cardinality, MergeKind merge,
         bool suppressEarlyExit,
         ref int matchIndex, ref int nextScratch, ref int maxScratchUsed,
         List<PlanOp> ops, List<int> rangeCounts)
     {
+        int inTermCount = exec?.InTermCount > 0 ? exec.InTermCount : clause.Bindings?.Length ?? 0;
         if (merge == MergeKind.Fill)
         {
-            EmitAllInOps(ops, clause, cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
+            EmitAllInOps(ops, inTermCount, cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
             if (suppressEarlyExit)
                 SetLastAndRangeSkipEarlyExit(ops);
             return;
@@ -3030,7 +3038,7 @@ internal static partial class QueryPlanBuilder
 
         ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
         ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-        EmitAllInOps(ops, clause, cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
+        EmitAllInOps(ops, inTermCount, cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
         // Inside save-swap: AndRange must not jump to doneLabel — that would skip
         // the merge-back and leak the saved accumulator.
         SetLastAndRangeSkipEarlyExit(ops);
@@ -3272,11 +3280,23 @@ internal static partial class QueryPlanBuilder
     {
         var counts = new int[slotCount];
         int rangeIdx = 0;
+        AccumulateInRangeCounts(executions, counts, ref rangeIdx);
+        return counts;
+    }
+
+    private static void AccumulateInRangeCounts(List<ClauseExecution> executions, int[] counts, ref int rangeIdx)
+    {
         for (int ci = 0; ci < executions.Count && rangeIdx < counts.Length; ci++)
         {
             ClauseExecution execution = executions[ci];
             switch (execution.Clause.ClauseType)
             {
+                case ClauseType.OrGroup:
+                case ClauseType.AndGroup:
+                    if (execution.SubExecutions is not null)
+                        AccumulateInRangeCounts(execution.SubExecutions, counts, ref rangeIdx);
+                    break;
+
                 // IN: EmitInOps emits Fill + OrRange. Fill consumed slot 0,
                 // range = InTermCount (ORing with empty null slot is a no-op).
                 case ClauseType.In:
@@ -3290,7 +3310,6 @@ internal static partial class QueryPlanBuilder
                     break;
             }
         }
-        return counts;
     }
 
     private static bool AreAllScanEligible(List<ClauseExecution> executions, int startIndex)
@@ -3313,16 +3332,17 @@ internal static partial class QueryPlanBuilder
 
     // ── Plan helpers ─────────────────────────────────────────────────────
 
-    /// <summary>Emit ops for an IN clause: Fill the first term + OrRange for the rest, plus null-term if needed.</summary>
     /// <summary>Emit ops for an IN clause: Fill slot 0 + OrRange for the rest.
     /// Fixed 2-op shape regardless of term count or presence of null. Slot 0 holds
     /// the null-term posting list when HasNullTerm, else the first typed term, else
-    /// an empty PostingSource. Slots 1..N-1 hold remaining typed terms, dispatched
-    /// via OrRange whose count comes from <c>ctx.InRangeCounts[rangeIdx]</c> at
-    /// runtime.</summary>
-    private static void EmitInOps(List<PlanOp> ops, ClauseInfo clause, long cardinality, int bitmapLocal, bool isSeed, ref int matchIndex, List<int> rangeCounts)
+    /// an empty PostingSource. Slots 1..inTermCount hold remaining typed terms and
+    /// the null-term, dispatched via OrRange whose count comes from
+    /// <c>ctx.InRangeCounts[rangeIdx]</c> at runtime. <paramref name="inTermCount"/>
+    /// must match <c>exec.InTermCount</c> so the emitter slot layout agrees with the
+    /// resolver's <see cref="ResolveClauseLeavesInto{TResolver,TSlot}"/> walk.</summary>
+    private static void EmitInOps(List<PlanOp> ops, int inTermCount, long cardinality, int bitmapLocal, bool isSeed, ref int matchIndex, List<int> rangeCounts)
     {
-        int totalSlots = (clause.Bindings?.Length ?? 0) + 1;
+        int totalSlots = inTermCount + 1; // inTermCount non-null terms + 1 null-term slot
         // Range iterates over the slots AFTER slot 0 (which Fill handles). When the parameter
         // list has no null, the trailing null slot is Empty — ORing with Empty is a no-op, so
         // we can safely include it (rangeCount = totalSlots - 1). When the list HAS a null
@@ -3352,10 +3372,12 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Emit ops for an AllIn clause (as a seed): Fill slot 0 + AndRange for the rest.
     /// Same fixed shape rationale as <see cref="EmitInOps"/> — the count of remaining
-    /// terms lives in <c>ctx.InRangeCounts</c> rather than the op shape itself.</summary>
-    private static void EmitAllInOps(List<PlanOp> ops, ClauseInfo clause, long cardinality, int bitmapLocal, ref int matchIndex, List<int> rangeCounts)
+    /// terms lives in <c>ctx.InRangeCounts</c> rather than the op shape itself.
+    /// <paramref name="inTermCount"/> must match <c>exec.InTermCount</c> so the slot
+    /// layout agrees with the resolver walk.</summary>
+    private static void EmitAllInOps(List<PlanOp> ops, int inTermCount, long cardinality, int bitmapLocal, ref int matchIndex, List<int> rangeCounts)
     {
-        int totalSlots = (clause.Bindings?.Length ?? 0) + 1;
+        int totalSlots = inTermCount + 1; // inTermCount non-null terms + 1 null-term slot
         // Fill consumes slot 0, AndRange iterates the rest. The range count
         // covers all slots after slot 0 (including the null-term slot).
         int rangeCount = totalSlots - 1;
@@ -3699,6 +3721,28 @@ internal static partial class QueryPlanBuilder
             typeSignature |= kind << (i * 2); 
         }
         return (typeSignature, fullKinds);
+    }
+
+    /// <summary>Compute a hash over the InTermCount of every IN/AllIn execution in the tree.
+    /// When a QueryParameter IN binding expands to N values at runtime (N may differ per
+    /// execution), the compiled plan's slot-layout constants depend on N. Folding this hash
+    /// into the typeSignature cache key ensures different expansion sizes get different plans,
+    /// preventing slot-index mismatches between the emitter (uses InTermCount at build time)
+    /// and the resolver (uses InTermCount at execution time).</summary>
+    private static int ComputeInTermSignature(List<ClauseExecution> executions)
+    {
+        int sig = 0;
+        foreach (var exec in executions ?? [])
+            AccumulateInTermCounts(exec, ref sig);
+        return sig;
+    }
+
+    private static void AccumulateInTermCounts(ClauseExecution exec, ref int sig)
+    {
+        if (exec.Clause.ClauseType is ClauseType.In or ClauseType.AllIn)
+            sig = (sig * 397) ^ exec.InTermCount;
+        foreach (var sub in exec.SubExecutions ?? [])
+            AccumulateInTermCounts(sub, ref sig);
     }
 
     /// <summary>Classify a query parameter's runtime type from the blittable JSON value.
