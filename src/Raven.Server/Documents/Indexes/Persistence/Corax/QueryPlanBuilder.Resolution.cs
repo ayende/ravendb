@@ -402,12 +402,7 @@ internal static partial class QueryPlanBuilder
     private static int ComputeOperandOrdering(PlanTemplate template, PlanParameters planParams, List<ClauseExecution> executions)
     {
         // Empty-IN in AND: guaranteed zero results (AND with empty = empty).
-        // Use a reserved ordering value so the empty plan caches separately from
-        // real plans with the same query text. Without this, two executions:
-        //   $p = []      → empty plan cached at (Ordering=0, TypeSig=0)
-        //   $p = ['news'] → same cache key → reuses empty plan → zero results
-        // The reserved value ensures each gets its own cache slot.
-        // OR chains are unaffected — empty-IN clauses are compacted out in EmitPlan.
+        //   $p = [] - empty vs. $p = ['news'] → has results - we need to tell the differernce.
         if (template.IsOr is false && HasEmptyIn(executions))
             return QueryExecution.EmptyInOrdering;
         
@@ -427,31 +422,19 @@ internal static partial class QueryPlanBuilder
 
     private static int SetCardinalityCliffBit(List<ClauseExecution> executions, int templateIdx)
     {
-        foreach (var t in executions)
+        foreach (var execution in executions)
         {
-            if (t.Clause.OriginalIndex != templateIdx) 
+            if (execution.Clause.OriginalIndex != templateIdx) 
                 continue;
                 
-            long drivingCard = t.Cardinality;
+            long drivingCard = execution.Cardinality;
             if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
                 return QueryExecution.CardinalityCliffBit;
             break;
         }
         return 0;
     }
-
-    /// <summary>
-    /// Bitmap-pipeline match allocator: resolves matches and term sources from the live
-    /// transaction, extracts scan parameters, optionally populates highlighting terms,
-    /// builds the <see cref="CompiledQueryMatch"/>, then applies the mandatory spatial
-    /// post-filter and vector-select wrappers.
-    ///
-    /// This is the unconditional bitmap path. <see cref="Instantiate"/> calls it as the
-    /// last fallback when no strategy (CompoundExact / CompoundField / DirectScan) wins;
-    /// <see cref="BuildAndCompile"/> calls it directly (no ORDER BY optimization dispatch).
-    /// The wrappers are correctness, not optional decoration — vector selects produce
-    /// unfiltered top-K without the filter source they're given here.
-    /// </summary>
+    
     private static IQueryMatch InstantiateBitmapPipeline(
         CompiledPlan compiledPlan,
         QueryExecution exec,
@@ -465,7 +448,7 @@ internal static partial class QueryPlanBuilder
         var indexSearcher = planParams.IndexSearcher;
 
         // Spatial / Vector queries with no other clauses ( WHERE spatial.within() / WHERE vector.search() )
-        // use a dedicated code path to avoid AllEntries + post filters
+        // use a dedicated code path to avoid AllEntries + post-filters
         if (exec is { IsAllEntries: true, HasSpatialOrVector: true })
             return InstantiateAllEntriesPostFilter(exec, builderParameters, walkerCtx);
 
@@ -515,9 +498,7 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
-    /// Bypass path for queries with no real WHERE clauses — only spatial filters and/or
-    /// vector selects. Spatial filters chain via <see cref="PostFilterMatch"/> with the first as the seed;
-    /// vector receives the spatial chain as its filter (or null for unfiltered top-K).
+    /// Bypass path for queries with no real WHERE clauses — only spatial filters and/or  vector selects. 
     /// </summary>
     private static IQueryMatch InstantiateAllEntriesPostFilter(QueryExecution exec, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
     {
@@ -548,11 +529,6 @@ internal static partial class QueryPlanBuilder
         return result;
     }
 
-    /// <summary>
-    /// Build a query match from a sub-expression (e.g. the inner BinaryExpression
-    /// of a moreLikeThis clause). Parses and resolves the expression directly
-    /// without going through the full plan/compile pipeline.
-    /// </summary>
     public static IQueryMatch BuildQueryForMoreLikeThis(QueryBuilderParameters builderParams, QueryExpression expression)
     {
         // Sub-expression entry point: run the same phases as ParseTemplate.
@@ -609,20 +585,9 @@ internal static partial class QueryPlanBuilder
         return bitmap;
     }
 
-    // ── Build helpers ─────────────────────────────────────────────────
-
-    /// <summary>Step 2 of <see cref="Build"/>: walk the template clauses, evaluating each
-    /// WHEN condition against bound parameters, and collect the surviving clauses with their
-    /// freshly-allocated <see cref="ClauseExecution"/> slots.
-    ///
-    /// WhenFlags layout: bit <c>i</c> = "the i-th WHEN clause in template traversal order
-    /// evaluated true." This is a stable, parameter-independent ordinal (PlanTemplate
-    /// construction enforced MaxWhenClauses=32 already). Plans built from the same
-    /// queryText but different WHEN-survival subsets must end up with different cache
-    /// keys — e.g. [Attach==true, Number!=1] sorted Attach-first gives ordering=1, which
-    /// collides with the single-clause [Attach==true] survivor (also ord=1). WhenFlags
-    /// joins (Ordering, TypeSignature) in the plan-cache key so each survival pattern
-    /// gets its own cached compiled plan.</summary>
+    /// <summary>
+    /// Used to get the active list of clauses, and a mask on when flags to tell between the different plans based on the when conditions 
+    /// </summary>
     private static (List<ClauseExecution> ExecList, int WhenFlags) EvaluateWhenAndFilterClauses(PlanTemplate template, PlanParameters planParams)
     {
         var execList = new List<ClauseExecution>(template.Clauses.Count);
@@ -659,30 +624,13 @@ internal static partial class QueryPlanBuilder
         return (execList, whenFlags);
     }
 
-    /// <summary>Step 3b of <see cref="Build"/>: constant propagation for trivially-false
-    /// clauses. Today only BETWEEN with low &gt; high is detected; the contradictory clause
-    /// is rewritten to an empty IN (zero cardinality) so that EmitPlan's empty-IN handling
-    /// covers it uniformly — AND chain → empty result, OR chain → clause dropped.
-    ///
-    /// Strings are intentionally skipped: per-field analyzers rewrite both bounds inside
-    /// BetweenQuery, so a raw-bounds ordinal compare here would misfire (see RavenDB-23642).
-    ///
-    /// Note: single-value IN is NOT rewritten to Equals here. The plan cache is keyed by
-    /// (queryText, OperandOrdering), but IN parameter cardinality changes between executions
-    /// of the same queryText. Rewriting to Equals on first execution would cache an
-    /// Equals-shaped IL that would silently drop terms on subsequent N&gt;1 executions
-    /// (RavenDB-17423). The uniform IN shape lets EmitInOps emit a single OrRange whose
-    /// term count is read from InRangeCounts at runtime.</summary>
     private static void PropagateBetweenContradictions(List<ClauseExecution> execList, ValueWriter writer)
     {
-        for (int i = execList.Count - 1; i >= 0; i--)
+        foreach (var exec in execList)
         {
-            var e = execList[i];
-            var c = e.Clause;
+            var p = exec.PackedParamValue;
 
-            var p = e.PackedParamValue;
-
-            if (c.ClauseType != ClauseType.Between || p.Param2 is PackedParam.NoParamValue)
+            if (exec.Clause.ClauseType != ClauseType.Between || p.Param2 is PackedParam.NoParamValue)
                 continue;
 
 
@@ -695,25 +643,13 @@ internal static partial class QueryPlanBuilder
             if (!contradictory)
                 continue;
 
-            // Mark with zero cardinality. EmitPlan handles:
-            //   AND chain: zero-cardinality → empty result.
-            //   OR  chain: remove the clause (contributes nothing).
-            e.Cardinality = 0;
-            e.InTermCount = 0;
-            e.HasNullTerm = false;
-            e.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
+            exec.Cardinality = 0;
+            exec.InTermCount = 0;
+            exec.HasNullTerm = false;
+            exec.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
         }
     }
 
-    /// <summary>Remap template-position optimization indices (sort-driving, compound-exact pair,
-    /// compound-field driver) to post-sort runtime indices. After WHEN elimination + cardinality
-    /// sort, clauses are reordered relative to the template; each clause carries its
-    /// template-position in <see cref="ClauseInfo.OriginalIndex"/> so a single pass over the
-    /// (already-sorted) clause list is enough to find the four targets. Returns the remapped
-    /// values to be stored on <see cref="CompiledPlan"/>.
-    ///
-    /// Note: <see cref="QueryExecution.CardinalityCliffBit"/> is computed in <see cref="Build"/>
-    /// before the cache lookup (it is part of the cache key).</summary>
     private static void RemapOptimizationIndices(CompiledPlan plan, List<ClauseExecution> executions)
     {
         var template = plan.Template;
@@ -731,8 +667,6 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Create a ClauseExecution for a clause, including sub-executions for OrGroup/AndGroup.
-    /// Sets the <see cref="ClauseExecution.Clause"/> back-reference on every instance.</summary>
     private static ClauseExecution CreateExecution(ClauseInfo clause)
     {
         var exec = new ClauseExecution(clause);
@@ -749,9 +683,6 @@ internal static partial class QueryPlanBuilder
         return exec;
     }
 
-    /// <summary>Resolve a single clause's parameter value using its cached binding.
-    /// Called for each clause during parameter population (both first execution and cache hit).
-    /// The optional builderParameters is needed to resolve deferred method expressions (cmpxchg, now, today).</summary>
     private static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
@@ -820,10 +751,8 @@ internal static partial class QueryPlanBuilder
                 // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
                 var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters, builderParameters);
                 // startsWith/endsWith/search/regex require a String argument — reject Null (matches Lucene behavior).
-                if (value == null && exec.Clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith or ClauseType.Search or ClauseType.Regex)
-                {
+                if (value == null && exec.Clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith or ClauseType.Search or ClauseType.Regex) 
                     ThrowInvalidMethodArgument(exec.Clause);
-                }
 
                 exec.TermValueType = valueType;
                 exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
@@ -862,12 +791,6 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    /// <summary>Populate <paramref name="exec"/>'s typed-parameter slot for an IN/AllIn
-    /// clause. Resolves each binding (literal, query parameter, or deferred method such as
-    /// today()/now()/cmpxchg()) into typed value buffers, then calls <see cref="EmitInTerms"/>.
-    /// Array-expanding query parameters (e.g. <c>@ids</c> bound to a JSON array) are
-    /// flattened inline. Null values are never added to the buffers — they set
-    /// <c>hasNullTerm</c> so the posting-list resolver queries the null-term list separately.</summary>
     private static void ResolveInFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, 
         ParameterBinding[] bindings, QueryBuilderParameters builderParameters)
     {
@@ -944,8 +867,6 @@ internal static partial class QueryPlanBuilder
         EmitInTerms(exec, writer, dominantType, resolvedValues, termTypes, hasNullTerm);
     }
 
-    /// <summary>Compute the (packedType, startIdx) pair for a writer slot keyed by
-    /// <paramref name="dominantType"/>. Shared header for both IN emit paths.</summary>
     private static (int PackedType, int StartIdx) ResolveInWriterSlot(ValueWriter writer, ParamValueType dominantType)
     {
         int packedType = dominantType switch
@@ -963,12 +884,6 @@ internal static partial class QueryPlanBuilder
         return (packedType, startIdx);
     }
 
-    /// <summary>Write a single IN-term value to <paramref name="writer"/> after checking
-    /// dominant-type compatibility. Values whose type can't be coerced to the dominant
-    /// type are dropped (e.g. IN(DateTime, "Shalom") on a DateTime-indexed field —
-    /// dominant = Long, "Shalom" never matches a long-indexed term, so dropping it
-    /// produces the correct empty/partial result matching Lucene). Without this guard,
-    /// Convert.ToInt64 would throw FormatException.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool TryEmitInTermValue(ValueWriter writer, object value, ParamValueType type,
         ParamValueType dominantType, ValueTokenType dominantTokenType)
@@ -979,10 +894,6 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    /// <summary>Write the resolved non-null IN/AllIn term values into <paramref name="writer"/>
-    /// and stamp the exec slot. Null values are not in <paramref name="values"/> — they are
-    /// signalled via <paramref name="hasNullTerm"/> so the resolver queries the null posting
-    /// list separately. Values whose type is incompatible with the dominant type are dropped.</summary>
     private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType,
         List<object> values, List<ParamValueType> types, bool hasNullTerm)
     {
@@ -1001,8 +912,6 @@ internal static partial class QueryPlanBuilder
         exec.HasNullTerm = hasNullTerm;
     }
 
-    /// <summary>Look up a binding's value from the blittable. Returns the RAW value —
-    /// callers must check for arrays/objects before calling ResolveParameterValue.</summary>
     private static (object Value, ParamValueType Type) ResolveBindingRaw(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
     {
         if (binding.LiteralType != ParamValueType.Parameter)
@@ -1012,9 +921,6 @@ internal static partial class QueryPlanBuilder
         return (null, ParamValueType.Null);
     }
 
-    /// <summary>Resolve a binding to a scalar value. Asserts the result is not an array/object.
-    /// For parameters that might be arrays, use ResolveBindingRaw and handle arrays first.
-    /// The optional builderParameters is needed to resolve deferred method expressions (cmpxchg, now, today).</summary>
     private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
     {
         switch (binding.Source)
