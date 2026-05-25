@@ -251,13 +251,13 @@ internal static partial class QueryPlanBuilder
         return items;
     }
 
-    private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, ClauseInfo clause, ClauseExecution exec, SpatialOperationType spatialMethod)
+    private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, ClauseExecution exec, SpatialOperationType spatialMethod)
     {
         var index = builderParameters.Index;
         var allocator = builderParameters.Allocator;
 
         // Field name was pre-resolved during parsing.
-        string fieldName = clause.FieldName
+        string fieldName = exec.Clause.FieldName
                            ?? throw new InvalidOperationException("Spatial clause has no pre-resolved field name.");
 
         var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, builderParameters.IndexFieldsMapping,
