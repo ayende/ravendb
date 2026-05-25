@@ -294,7 +294,7 @@ namespace FastTests.Corax
                 HasBoost = true,
                 Allocator = Allocator
             };
-            var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, hasBoost: true), out _, out _, null, false, default);
+            var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, knownFields, hasBoost: true), out _, out _, null, false, default);
             match = QueryPlanBuilder.ApplyScoreOrdering(planParams, match, take);
             var list = new List<string>();
             Span<long> ids = stackalloc long[256];
@@ -317,7 +317,7 @@ namespace FastTests.Corax
                 HasBoost = true,
                 Allocator = Allocator
             };
-            var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, hasBoost: true), out _, out _, null, false, default);
+            var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, knownFields, hasBoost: true), out _, out _, null, false, default);
             match = QueryPlanBuilder.ApplyScoreOrdering(planParams, match, long.MaxValue);
             var list = new List<long>();
             var termsReader = searcher.TermsReaderFor("Content1");
