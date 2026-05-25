@@ -885,8 +885,7 @@ internal static partial class QueryPlanBuilder
                 case BindingSource.QueryParameter:
                 {
                     // Parameter — resolve from blittable. May be scalar or array.
-                    object inRaw = null;
-                    queryParameters?.TryGet(it.ParameterName, out inRaw);
+                    queryParameters.TryGet(it.ParameterName, out object inRaw);
                     if (inRaw is BlittableJsonReaderArray arr)
                     {
                         foreach (var elem in arr)
@@ -1001,7 +1000,7 @@ internal static partial class QueryPlanBuilder
     {
         if (binding.LiteralType != ParamValueType.Parameter)
             return (binding.LiteralValue, binding.LiteralType);
-        if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
+        if (queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
             return (raw, ParamValueType.Parameter); // raw from blittable — caller decides how to interpret
         return (null, ParamValueType.Null);
     }
@@ -1027,7 +1026,7 @@ internal static partial class QueryPlanBuilder
 
             case BindingSource.QueryParameter:
             default:
-                if (queryParameters != null && queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
+                if (queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
                 {
                     var (val, type) = ResolveParameterValue(raw);
                     return (val, ToParamValueType(type));
@@ -2759,9 +2758,9 @@ internal static partial class QueryPlanBuilder
         // Bounds-check before indexing — return null to indicate "no displayable value".
         return packed.ValueType switch
         {
-            PackedParam.TypeLong => idx < exec.LongValues?.Length ? exec.LongValues[idx].ToString() : null,
-            PackedParam.TypeDouble => idx < exec.DoubleValues?.Length ? exec.DoubleValues[idx].ToString(CultureInfo.InvariantCulture) : null,
-            _ => idx < exec.StringValues?.Length ? exec.StringValues[idx] : null
+            PackedParam.TypeLong => idx < exec.LongValues.Length ? exec.LongValues[idx].ToString() : null,
+            PackedParam.TypeDouble => idx < exec.DoubleValues.Length ? exec.DoubleValues[idx].ToString(CultureInfo.InvariantCulture) : null,
+            _ => idx < exec.StringValues.Length ? exec.StringValues[idx] : null
         };
     }
 
@@ -3496,15 +3495,14 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>For an OrGroup or AndGroup clause, returns the parallel (sub-clauses, sub-executions)
     /// arrays that callers iterate to fan out one match slot per sub-term. Returns false for any
-    /// other clause type, or for empty groups. <paramref name="subExecs"/> is null when
-    /// <paramref name="exec"/> is null (TermsProviders path tolerates that).</summary>
+    /// other clause type, or for empty groups.</summary>
     internal static bool TryGetGroupFanOut(ClauseInfo clause, ClauseExecution exec,
         out List<ClauseInfo> subClauses, out List<ClauseExecution> subExecs)
     {
         if (clause.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup && clause.SubClauses is { Count: > 0 })
         {
             subClauses = clause.SubClauses;
-            subExecs = exec?.SubExecutions;
+            subExecs = exec.SubExecutions;
             return true;
         }
 
@@ -3528,7 +3526,7 @@ internal static partial class QueryPlanBuilder
     /// from the direct dispatch (it walks the full tree regardless).</summary>
     internal static bool IsTreeScanEligibleClause(ClauseInfo clause)
     {
-        if (clause is null or { HasBoost: true })
+        if (clause.HasBoost)
             return false;
 
         if (clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith
@@ -3571,7 +3569,7 @@ internal static partial class QueryPlanBuilder
     /// and recurses into subclauses using sub-execution types. Used when actual resolved
     /// types are available (per-execution, after PopulateClauseValues).</summary>
     internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseExecution exec, ref int longIndex, ref int doubleIndex, ref int sliceIndex)
-        => BuildScanPredicateInfoCore(exec, exec?.TermValueType ?? ParamValueType.String, ref longIndex, ref doubleIndex, ref sliceIndex);
+        => BuildScanPredicateInfoCore(exec, exec.TermValueType, ref longIndex, ref doubleIndex, ref sliceIndex);
 
     /// <summary>Eligibility-only probe: returns whether <see cref="BuildScanPredicateInfo"/>
     /// would have produced a non-null result for this execution, without allocating a
@@ -3752,7 +3750,7 @@ internal static partial class QueryPlanBuilder
     /// without walking the full clause/execution list.</summary>
     private static ScanValueType ClassifyParamType(BlittableJsonReaderObject queryParams, string name)
     {
-        if (queryParams == null || queryParams.TryGet(name, out object raw) == false || raw == null)
+        if (queryParams.TryGet(name, out object raw) == false || raw == null)
             return ScanValueType.Slice;
         return raw switch
         {
