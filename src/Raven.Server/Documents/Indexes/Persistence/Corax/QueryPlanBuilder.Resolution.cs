@@ -1401,26 +1401,10 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.In:
             case ClauseType.AllIn:
-            {
-                // IN/AllIn inside an AndGroup reaches here as a single clause.
-                // Expand each term into a TermQuery and merge via bitmap, same as the
-                // top-level queryExec does with FillFromPostings/OrWithPostings/AndWithPostings.
-                if (cur.InTermCount == 0)
-                    return indexSearcher.EmptyMatch();
-                var bm = new BitmapMatch(indexSearcher.Allocator);
-                var temp = new RoaringBitmap(indexSearcher.Allocator);
-                for (int t = 0; t < cur.InTermCount; t++)
-                {
-                    var termMatch = ResolveInTerm(cur, t, root, walkerCtx);
-                    if (clause.ClauseType == ClauseType.AllIn && t > 0)
-                        QueryPrimitives.AndWithMatch(termMatch, ref bm.BitmapState, ref temp);
-                    else
-                        QueryPrimitives.OrWithMatch(termMatch, ref bm.BitmapState);
-                }
-
-                temp.Dispose();
-                return bm;
-            }
+                throw new InvalidOperationException(
+                    "In/AllIn should be expanded by ResolveMatches (per-term slot loop), " +
+                    "not resolved as a single clause. Use ResolveInPositiveBitmap when the " +
+                    "positive-form bitmap is needed (e.g. NOT IN inside an OR chain).");
 
             case ClauseType.Exists:
                 return indexSearcher.ExistsQuery(fieldMeta);
@@ -1521,6 +1505,34 @@ internal static partial class QueryPlanBuilder
         return TermQueryFromParam(termPacked, fieldMeta, walkerCtx.IndexSearcher, queryExec);
     }
 
+    /// <summary>Build the positive-form bitmap of an IN/AllIn clause: expand each term to a
+    /// TermQuery and OR-merge (IN) or AND-merge after the first (AllIn) into a
+    /// <see cref="BitmapMatch"/>. Mirrors the top-level
+    /// FillFromPostings/OrWithPostings/AndWithPostings sequence used by the IL emitter,
+    /// but produces a single <see cref="IQueryMatch"/> for callers that need the
+    /// materialized positive set (currently only <see cref="CreateNotEqualsOrMatch"/>
+    /// for NOT IN / NOT AllIn appearing inside an OR chain).</summary>
+    private static IQueryMatch ResolveInPositiveBitmap(ClauseExecution exec,
+        QueryExecution queryExec, ResolutionContext walkerCtx)
+    {
+        var indexSearcher = walkerCtx.IndexSearcher;
+        if (exec.InTermCount == 0)
+            return indexSearcher.EmptyMatch();
+        var isAllIn = exec.Clause.ClauseType == ClauseType.AllIn;
+        var bm = new BitmapMatch(indexSearcher.Allocator);
+        var temp = new RoaringBitmap(indexSearcher.Allocator);
+        for (int t = 0; t < exec.InTermCount; t++)
+        {
+            var termMatch = ResolveInTerm(exec, t, queryExec, walkerCtx);
+            if (isAllIn && t > 0)
+                QueryPrimitives.AndWithMatch(termMatch, ref bm.BitmapState, ref temp);
+            else
+                QueryPrimitives.OrWithMatch(termMatch, ref bm.BitmapState);
+        }
+        temp.Dispose();
+        return bm;
+    }
+
     /// <summary>Create a pre-materialized <see cref="BitmapMatch"/> for a negated clause
     /// appearing in an OR chain. OR(NOT X, NOT Y, ...) cannot use the raw term posting list
     /// (FillBitmapFromPostingSource would add entries WITH X, not WITHOUT X). Instead, we
@@ -1530,7 +1542,7 @@ internal static partial class QueryPlanBuilder
     private static IQueryMatch CreateNotEqualsOrMatch(ClauseExecution exec,
         QueryExecution queryExec, ResolutionContext walkerCtx)
     {
-        // Resolve the positive form of the match. For IN/AllIn clauses, ResolveClause
+        // Resolve the positive form of the match. For IN/AllIn clauses, ResolveInPositiveBitmap
         // handles multi-term expansion correctly. For simple Equals/NotEquals, the
         // single-term TermQueryFromParam suffices. EXISTS clauses carry no PackedParam.
         var clause = exec.Clause;
@@ -1538,7 +1550,7 @@ internal static partial class QueryPlanBuilder
         IQueryMatch termMatch;
         if (clause.ClauseType is ClauseType.In or ClauseType.AllIn)
         {
-            termMatch = ResolveClause(exec, queryExec, walkerCtx);
+            termMatch = ResolveInPositiveBitmap(exec, queryExec, walkerCtx);
         }
         else if (clause.ClauseType == ClauseType.Exists)
         {
@@ -1773,15 +1785,11 @@ internal static partial class QueryPlanBuilder
         var execs = exec.Executions;
         foreach (ScanPredicateInfo pred in predicates)
         {
-            // Advance past clauses that BuildScanPredicateInfo would have skipped (returned null).
-            while (clauseIdx < execs.Count && IsScanEligible(execs[clauseIdx]) == false)
-            {
+            // Advance past clauses that BuildScanPredicateInfo would have skipped.
+            while (IsScanEligible(execs[clauseIdx]) == false)
                 clauseIdx++;
-            }
 
-            ClauseExecution matchingExec = clauseIdx < execs.Count ? execs[clauseIdx] : null;
-            clauseIdx++;
-            ExtractParamsFromPredicate(pred, matchingExec, indexSearcher, exec, longs, doubles, slices, roots);
+            ExtractParamsFromPredicate(pred, execs[clauseIdx++], indexSearcher, exec, longs, doubles, slices, roots);
         }
 
         longParams = longs.Count > 0 ? longs.ToArray() : [];
@@ -1870,23 +1878,16 @@ internal static partial class QueryPlanBuilder
     {
         if (pred.SubPredicates != null)
         {
-            // Each OrBranch corresponds to a subclause of the OrGroup.
-            // Pass sub-executions positionally to maintain the predicate-to-clause mapping.
-            List<ClauseExecution> subExecs = exec?.SubExecutions;
+            // Each sub-predicate corresponds positionally to a sub-execution of the group.
+            // BuildScanPredicateInfoCore guarantees pred.SubPredicates.Length == exec.SubExecutions.Count.
+            var subExecs = exec.SubExecutions;
             for (int b = 0; b < pred.SubPredicates.Length; b++)
-            {
-                ClauseExecution subExec = (subExecs != null && b < subExecs.Count) ? subExecs[b] : null;
-                ExtractParamsFromPredicate(pred.SubPredicates[b], subExec, indexSearcher, queryExec, longs, doubles, slices, roots);
-            }
-
+                ExtractParamsFromPredicate(pred.SubPredicates[b], subExecs[b], indexSearcher, queryExec, longs, doubles, slices, roots);
             return;
         }
 
         // Resolve field root page
         roots.Add(indexSearcher.FieldCache.GetLookupRootPage(pred.FieldName));
-
-        if (exec == null)
-            return;
 
         // Read pre-resolved typed values from the queryExec's arrays via packed param.
         var packed = exec.PackedParamValue;
