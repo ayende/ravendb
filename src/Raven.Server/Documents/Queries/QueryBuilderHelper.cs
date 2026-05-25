@@ -49,20 +49,10 @@ public static class QueryBuilderHelper
 
             if (parameterValue is BlittableJsonReaderArray array)
             {
-                ValueTokenType? expectedValueType = null;
-                var unwrappedArray = UnwrapArray(array, metadata.QueryText, parameters);
-                foreach (var item in unwrappedArray)
-                {
-                    if (expectedValueType == null)
-                        expectedValueType = item.Type;
-                    else
-                    {
-                        if (AreValueTokenTypesValid(expectedValueType.Value, item.Type) == false)
-                            ThrowInvalidParameterType(expectedValueType.Value, item, metadata.QueryText, parameters);
-                    }
-
+                // Type compatibility across array elements is enforced upstream in
+                // QueryMetadata.VisitIn (centralised IN type check) — just yield here.
+                foreach (var item in UnwrapArray(array, metadata.QueryText, parameters))
                     yield return item;
-                }
 
                 yield break;
             }

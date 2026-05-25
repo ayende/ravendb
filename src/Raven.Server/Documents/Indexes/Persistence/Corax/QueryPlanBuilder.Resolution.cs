@@ -871,31 +871,29 @@ internal static partial class QueryPlanBuilder
         EmitInTerms(exec, writer, dominantType, resolvedValues, termTypes, hasNullTerm);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static bool TryEmitInTermValue(ValueWriter writer, object value, ParamValueType type,
-        ParamValueType dominantType, ValueTokenType dominantTokenType)
-    {
-        if (type != dominantType && AreTypesIncompatible(type, dominantType))
-            return false;
-        writer.Add(value, dominantTokenType);
-        return true;
-    }
-
     private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType,
         List<object> values, List<ParamValueType> types, bool hasNullTerm)
     {
         var (packedType, startIdx) = writer.ResolveInSlot(dominantType);
         var dominantTokenType = ToValueTokenType(dominantType);
 
-        int nonNullCount = 0;
+        // Engine-level type compatibility is enforced upstream in QueryMetadata.VisitIn,
+        // but ResolveParameterValue does a Corax-internal ISO-date-string → ticks
+        // promotion that can leave a single array element with a different ParamValueType
+        // from its siblings (e.g. [DateTime, "Shalom"] → [Long, String]). Skip values
+        // whose promoted type does not match the dominant slot — matches Lucene's
+        // tolerant behavior for this case.
+        int written = 0;
         for (int i = 0; i < values.Count; i++)
         {
-            if (TryEmitInTermValue(writer, values[i], types[i], dominantType, dominantTokenType))
-                nonNullCount++;
+            if (types[i] != dominantType)
+                continue;
+            writer.Add(values[i], dominantTokenType);
+            written++;
         }
 
         exec.PackedParamValue = new PackedParam(packedType, startIdx);
-        exec.InTermCount = nonNullCount;
+        exec.InTermCount = written;
         exec.HasNullTerm = hasNullTerm;
     }
 

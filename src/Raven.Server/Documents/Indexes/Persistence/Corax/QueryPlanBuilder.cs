@@ -81,19 +81,6 @@ internal static partial class QueryPlanBuilder
         _ => ValueTokenType.String
     };
 
-    /// <summary>True when a value of type <paramref name="termType"/> cannot be coerced
-    /// to <paramref name="dominantType"/> without throwing. Used to filter mixed-type IN
-    /// lists: a string term in an otherwise-numeric IN list (e.g. IN(DateTime, "Shalom")
-    /// on a DateTime-indexed field) can never match a numeric-indexed term and would
-    /// throw on Convert.ToInt64, so it is dropped instead.</summary>
-    private static bool AreTypesIncompatible(ParamValueType termType, ParamValueType dominantType)
-    {
-        return termType != dominantType && (
-            // Long and Double are mutually coercible.
-            termType is not (ParamValueType.Long or ParamValueType.Double) ||
-            dominantType is not (ParamValueType.Long or ParamValueType.Double));
-    }
-
     private static SpatialOperationType ToSpatialOp(MethodType t) => t switch
     {
         MethodType.Spatial_Within => SpatialOperationType.Within,

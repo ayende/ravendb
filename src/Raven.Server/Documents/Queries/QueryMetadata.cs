@@ -2324,6 +2324,30 @@ function execute(doc, args){
                             ThrowIncompatibleTypesOfVariables(fieldName, QueryText, parameters, values.ToArray());
                     }
 
+                    // When the binding is a parameter that resolves to an array, walk every
+                    // array element pair-wise — peeking array[0] (the unwrapArrays:true path
+                    // below) hides mixed-type arrays like $p = [1L, "Shalom"]. This is the
+                    // centralised IN type check; engine-side IN walkers (Lucene's GetValues,
+                    // Corax v2's TryEmitInTermValue) no longer re-validate.
+                    if (value.Value == ValueTokenType.Parameter
+                        && parameters != null
+                        && parameters.TryGetMember(value.Token, out var paramValue)
+                        && paramValue is BlittableJsonReaderArray arr)
+                    {
+                        foreach (var item in arr)
+                        {
+                            var elemType = QueryBuilderHelper.GetValueTokenType(item, QueryText, parameters);
+                            if (previousType != ValueTokenType.Null
+                                && QueryBuilderHelper.AreValueTokenTypesValid(previousType, elemType) == false)
+                            {
+                                QueryBuilderHelper.ThrowInvalidParameterType(previousType, (item, elemType), QueryText, parameters);
+                            }
+                            if (elemType != ValueTokenType.Null)
+                                previousType = elemType;
+                        }
+                        continue;
+                    }
+
                     var valueType = GetValueTokenType(parameters, value, unwrapArrays: true);
                     if (i > 0 && QueryBuilderHelper.AreValueTokenTypesValid(previousType, valueType) == false)
                         ThrowIncompatibleTypesOfParameters(fieldName, QueryText, parameters, values.ToArray());
