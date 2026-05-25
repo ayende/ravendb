@@ -1,3 +1,7 @@
+using System;
+using Corax.Mappings;
+using Corax.Querying.Matches.Meta;
+
 namespace Corax.Querying.Planning;
 
 /// <summary>
@@ -51,9 +55,71 @@ public readonly struct PackedParam
     /// IN terms are stored contiguously starting at Param1; offset n addresses Param1 + n.</summary>
     public PackedParam WithTermOffset(int termIndex) => new(ValueType, Param1 + termIndex);
 
+    public IQueryMatch TermQuery(FieldMetadata fieldMeta, IndexSearcher indexSearcher, QueryExecution exec)
+    {
+        return ValueType switch
+        {
+            TypeLong => indexSearcher.TermQuery(fieldMeta, exec.LongValues[Param1]),
+            TypeDouble => indexSearcher.TermQuery(fieldMeta, exec.DoubleValues[Param1]),
+            _ => indexSearcher.TermQuery(fieldMeta, exec.StringValues[Param1])
+        };
+    }
+
+    public long GetTermPostingListId(FieldMetadata fieldMeta, IndexSearcher indexSearcher, QueryExecution exec)
+    {
+        return ValueType switch
+        {
+            TypeLong => indexSearcher.GetTermPostingListId(fieldMeta, exec.LongValues[Param1]),
+            TypeDouble => indexSearcher.GetTermPostingListId(fieldMeta, exec.DoubleValues[Param1]),
+            _ => indexSearcher.GetTermPostingListId(fieldMeta, exec.StringValues[Param1])
+        };
+    }
+
+    public IQueryMatch RangeQuery(ClauseType op, FieldMetadata fieldMeta, IndexSearcher indexSearcher, QueryExecution exec, bool forward = true)
+    {
+        return op switch
+        {
+            ClauseType.GreaterThan => ValueType switch
+            {
+                TypeLong => indexSearcher.GreaterThanQuery(fieldMeta, exec.LongValues[Param1], forward),
+                TypeDouble => indexSearcher.GreaterThanQuery(fieldMeta, exec.DoubleValues[Param1], forward),
+                _ => indexSearcher.GreaterThanQuery(fieldMeta, exec.StringValues[Param1], forward)
+            },
+            ClauseType.GreaterThanOrEqual => ValueType switch
+            {
+                TypeLong => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, exec.LongValues[Param1], forward),
+                TypeDouble => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, exec.DoubleValues[Param1], forward),
+                _ => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, exec.StringValues[Param1], forward)
+            },
+            ClauseType.LessThan => ValueType switch
+            {
+                TypeLong => indexSearcher.LessThanQuery(fieldMeta, exec.LongValues[Param1], forward),
+                TypeDouble => indexSearcher.LessThanQuery(fieldMeta, exec.DoubleValues[Param1], forward),
+                _ => indexSearcher.LessThanQuery(fieldMeta, exec.StringValues[Param1], forward)
+            },
+            ClauseType.LessThanOrEqual => ValueType switch
+            {
+                TypeLong => indexSearcher.LessThanOrEqualsQuery(fieldMeta, exec.LongValues[Param1], forward),
+                TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, exec.DoubleValues[Param1], forward),
+                _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, exec.StringValues[Param1], forward)
+            },
+            _ => throw new InvalidOperationException($"RangeQuery does not handle {op}")
+        };
+    }
+
+    public IQueryMatch BetweenQuery(FieldMetadata fieldMeta, IndexSearcher indexSearcher, QueryExecution exec, bool forward = true)
+    {
+        return ValueType switch
+        {
+            TypeLong => indexSearcher.BetweenQuery(fieldMeta, exec.LongValues[Param1], exec.LongValues[Param2], forward: forward),
+            TypeDouble => indexSearcher.BetweenQuery(fieldMeta, exec.DoubleValues[Param1], exec.DoubleValues[Param2], forward: forward),
+            _ => indexSearcher.BetweenQuery(fieldMeta, exec.StringValues[Param1], exec.StringValues[Param2], forward: forward)
+        };
+    }
+
     private static void ThrowLimitExceeded(int index)
     {
-        throw new System.InvalidOperationException(
+        throw new InvalidOperationException(
             $"Query parameter index {index} exceeds maximum ({MaxIndex}). " +
             "Simplify the query or reduce the number of IN terms.");
     }

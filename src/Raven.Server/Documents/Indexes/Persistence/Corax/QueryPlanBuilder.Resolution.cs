@@ -949,94 +949,6 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    // ── Typed dispatch helpers ───────────────────────────────────────────
-
-    /// <summary>Create a TermQuery using the pre-resolved typed value from the plan's arrays.</summary>
-    private static IQueryMatch TermQueryFromParam(PackedParam packed, FieldMetadata fieldMeta,
-        IndexSearcher indexSearcher, QueryExecution exec)
-    {
-        int idx = packed.Param1;
-        return packed.ValueType switch
-        {
-            PackedParam.TypeLong => indexSearcher.TermQuery(fieldMeta, exec.LongValues[idx]),
-            PackedParam.TypeDouble => indexSearcher.TermQuery(fieldMeta, exec.DoubleValues[idx]),
-            _ => indexSearcher.TermQuery(fieldMeta, exec.StringValues[idx])
-        };
-    }
-
-    /// <summary>Get a posting-list ID using the pre-resolved typed value.</summary>
-    private static long GetTermPostingListIdFromParam(PackedParam packed, FieldMetadata fieldMeta,
-        IndexSearcher indexSearcher, QueryExecution exec)
-    {
-        int idx = packed.Param1;
-        return packed.ValueType switch
-        {
-            PackedParam.TypeLong => indexSearcher.GetTermPostingListId(fieldMeta, exec.LongValues[idx]),
-            PackedParam.TypeDouble => indexSearcher.GetTermPostingListId(fieldMeta, exec.DoubleValues[idx]),
-            _ => indexSearcher.GetTermPostingListId(fieldMeta, exec.StringValues[idx])
-        };
-    }
-
-    // ── Range / Between dispatch helpers ────────────────────────────────
-
-    /// <summary>Dispatch a single-bound range query (GT, GTE, LT, LTE) by <see cref="PackedParam.ValueType"/>.</summary>
-    private static IQueryMatch RangeQueryFromParam(ClauseType op, PackedParam packed, FieldMetadata fieldMeta,
-        IndexSearcher indexSearcher, QueryExecution exec, bool forward = true)
-    {
-        int idx = packed.Param1;
-        return op switch
-        {
-            ClauseType.GreaterThan => packed.ValueType switch
-            {
-                PackedParam.TypeLong => indexSearcher.GreaterThanQuery(fieldMeta, exec.LongValues[idx], forward),
-                PackedParam.TypeDouble => indexSearcher.GreaterThanQuery(fieldMeta, exec.DoubleValues[idx], forward),
-                _ => indexSearcher.GreaterThanQuery(fieldMeta, exec.StringValues[idx], forward)
-            },
-            ClauseType.GreaterThanOrEqual => packed.ValueType switch
-            {
-                PackedParam.TypeLong => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, exec.LongValues[idx], forward),
-                PackedParam.TypeDouble => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, exec.DoubleValues[idx], forward),
-                _ => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, exec.StringValues[idx], forward)
-            },
-            ClauseType.LessThan => packed.ValueType switch
-            {
-                PackedParam.TypeLong => indexSearcher.LessThanQuery(fieldMeta, exec.LongValues[idx], forward),
-                PackedParam.TypeDouble => indexSearcher.LessThanQuery(fieldMeta, exec.DoubleValues[idx], forward),
-                _ => indexSearcher.LessThanQuery(fieldMeta, exec.StringValues[idx], forward)
-            },
-            ClauseType.LessThanOrEqual => packed.ValueType switch
-            {
-                PackedParam.TypeLong => indexSearcher.LessThanOrEqualsQuery(fieldMeta, exec.LongValues[idx], forward),
-                PackedParam.TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, exec.DoubleValues[idx], forward),
-                _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, exec.StringValues[idx], forward)
-            },
-            _ => throw new InvalidOperationException($"RangeQueryFromParam does not handle {op}")
-        };
-    }
-
-    /// <summary>Dispatch a BETWEEN query by <see cref="PackedParam.ValueType"/>.
-    /// Uses Param1 (low) and Param2 (high) from the packed value.</summary>
-    private static IQueryMatch BetweenQueryFromParam(PackedParam packed, FieldMetadata fieldMeta,
-        IndexSearcher indexSearcher, QueryExecution exec, bool forward = true)
-    {
-        int idx1 = packed.Param1;
-        int idx2 = packed.Param2;
-        return packed.ValueType switch
-        {
-            PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, exec.LongValues[idx1], exec.LongValues[idx2], forward: forward),
-            PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, exec.DoubleValues[idx1], exec.DoubleValues[idx2], forward: forward),
-            _ => indexSearcher.BetweenQuery(fieldMeta, exec.StringValues[idx1], exec.StringValues[idx2], forward: forward)
-        };
-    }
-
-    // ── Match resolution ─────────────────────────────────────────────────
-
-    /// <summary>
-    /// Resolve clause infos to IQueryMatch instances for execution.
-    /// Uses existing IndexSearcher methods (TermQuery, etc.) which handle
-    /// all the complexity of analyzer application, CompactKey encoding,
-    /// posting list resolution, etc.
-    /// </summary>
     private static IQueryMatch[] ResolveMatches(QueryExecution exec, ResolutionContext walkerCtx)
     {
         Debug.Assert(!exec.HasSpatialOrVector,
@@ -1232,10 +1144,10 @@ internal static partial class QueryPlanBuilder
         return exec.ClauseType switch
         {
             ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual or ClauseType.LessThan or ClauseType.LessThanOrEqual
-                => RangeQueryFromParam(exec.ClauseType, packed, fieldMeta, indexSearcher, queryExec, forward),
+                => packed.RangeQuery(exec.ClauseType, fieldMeta, indexSearcher, queryExec, forward),
             ClauseType.Between when exec.SentinelRewriteType != null =>
                 ResolveSentinelRewrittenBetween(exec, fieldMeta, indexSearcher, queryExec),
-            ClauseType.Between => BetweenQueryFromParam(packed, fieldMeta, indexSearcher, queryExec, forward),
+            ClauseType.Between => packed.BetweenQuery(fieldMeta, indexSearcher, queryExec, forward),
             _ => ResolveClause(exec, queryExec, walkerCtx) // fallback
         };
     }
@@ -1247,10 +1159,10 @@ internal static partial class QueryPlanBuilder
             return indexSearcher.AllEntries();
         var packed = exec.PackedParamValue;
         if (exec.SentinelRewriteType == ClauseType.LessThanOrEqual)
-            return RangeQueryFromParam(ClauseType.LessThanOrEqual, packed, fieldMeta, indexSearcher, queryExec);
+            return packed.RangeQuery(ClauseType.LessThanOrEqual, fieldMeta, indexSearcher, queryExec);
 
         Debug.Assert(exec.SentinelRewriteType == ClauseType.GreaterThanOrEqual);
-        IQueryMatch rangeMatch = RangeQueryFromParam(ClauseType.GreaterThanOrEqual, packed, fieldMeta, indexSearcher, queryExec);
+        IQueryMatch rangeMatch = packed.RangeQuery(ClauseType.GreaterThanOrEqual, fieldMeta, indexSearcher, queryExec);
         // BETWEEN low AND 'NULL' must include null-valued docs (Lucene parity)
         if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _))
         {
@@ -1303,19 +1215,19 @@ internal static partial class QueryPlanBuilder
         {
             case ClauseType.Equals:
             case ClauseType.NotEquals:
-                return TermQueryFromParam(packed, fieldMeta, indexSearcher, root);
+                return packed.TermQuery(fieldMeta, indexSearcher, root);
 
             case ClauseType.GreaterThan:
             case ClauseType.GreaterThanOrEqual:
             case ClauseType.LessThan:
             case ClauseType.LessThanOrEqual:
-                return RangeQueryFromParam(clause.ClauseType, packed, fieldMeta, indexSearcher, root);
+                return packed.RangeQuery(clause.ClauseType, fieldMeta, indexSearcher, root);
 
             case ClauseType.Between:
             {
                 if (cur.SentinelRewriteType != null)
                     return ResolveSentinelRewrittenBetween(cur, fieldMeta, indexSearcher, root);
-                return BetweenQueryFromParam(packed, fieldMeta, indexSearcher, root);
+                return packed.BetweenQuery(fieldMeta, indexSearcher, root);
             }
 
             case ClauseType.In:
@@ -1424,7 +1336,7 @@ internal static partial class QueryPlanBuilder
         QueryExecution queryExec, ResolutionContext walkerCtx)
     {
         var (fieldMeta, termPacked) = ResolveInTermParam(exec, termIndex, walkerCtx);
-        return TermQueryFromParam(termPacked, fieldMeta, walkerCtx.IndexSearcher, queryExec);
+        return termPacked.TermQuery(fieldMeta, walkerCtx.IndexSearcher, queryExec);
     }
 
     /// <summary>Build the positive-form bitmap of an IN/AllIn clause: expand each term to a
@@ -1466,7 +1378,7 @@ internal static partial class QueryPlanBuilder
     {
         // Resolve the positive form of the match. For IN/AllIn clauses, ResolveInPositiveBitmap
         // handles multi-term expansion correctly. For simple Equals/NotEquals, the
-        // single-term TermQueryFromParam suffices. EXISTS clauses carry no PackedParam.
+        // single-term TermQuery suffices. EXISTS clauses carry no PackedParam.
         var clause = exec.Clause;
         var indexSearcher = walkerCtx.IndexSearcher;
         IQueryMatch termMatch;
@@ -1482,7 +1394,7 @@ internal static partial class QueryPlanBuilder
         else
         {
             FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
-            termMatch = TermQueryFromParam(exec.PackedParamValue, fieldMeta, indexSearcher, queryExec);
+            termMatch = exec.PackedParamValue.TermQuery(fieldMeta, indexSearcher, queryExec);
         }
 
         var bitmapMatch = new BitmapMatch(indexSearcher.Allocator);
@@ -1584,7 +1496,7 @@ internal static partial class QueryPlanBuilder
             return default; // Kind == Empty
 
         FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, walkerCtx);
-        long postingListId = GetTermPostingListIdFromParam(exec.PackedParamValue, fieldMeta, walkerCtx.IndexSearcher, queryExec);
+        long postingListId = exec.PackedParamValue.GetTermPostingListId(fieldMeta, walkerCtx.IndexSearcher, queryExec);
         return DecodePostingListId(postingListId, walkerCtx.IndexSearcher);
     }
 
@@ -1594,7 +1506,7 @@ internal static partial class QueryPlanBuilder
         QueryExecution queryExec, ResolutionContext walkerCtx)
     {
         var (fieldMeta, termPacked) = ResolveInTermParam(exec, termIndex, walkerCtx);
-        return DecodePostingListId(GetTermPostingListIdFromParam(termPacked, fieldMeta, walkerCtx.IndexSearcher, queryExec), walkerCtx.IndexSearcher);
+        return DecodePostingListId(termPacked.GetTermPostingListId(fieldMeta, walkerCtx.IndexSearcher, queryExec), walkerCtx.IndexSearcher);
     }
 
     /// <summary>Resolve simple field metadata (no analyzer-aware logic) routing
