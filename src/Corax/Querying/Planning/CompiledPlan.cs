@@ -123,6 +123,28 @@ public sealed class CompiledPlan
     /// cache hits can allocate and fill InRangeCounts without EmitPlan.</summary>
     public int InRangeSlotCount { get; init; }
 
+    /// <summary>True when at least one slot-using op in the emitted plan dispatches
+    /// via <see cref="MatchDispatch.QueryMatch"/> (reads <c>ctx.ResolvedMatches</c> at
+    /// runtime). False ⇒ the resolved <c>IQueryMatch[]</c> is never read by IL and the
+    /// per-clause ResolveMatches pass can be skipped (subject to the spatial/vector
+    /// override in the bitmap-pipeline instantiator). Computed after the
+    /// boost-override loop, so a query with <c>HasBoost</c> sets this true for every
+    /// op regardless of clause shape.</summary>
+    public bool HasQueryMatchDispatch { get; init; }
+
+    /// <summary>True when at least one slot-using op in the emitted plan dispatches
+    /// via <see cref="MatchDispatch.PostingList"/> (reads <c>ctx.PostingSources</c>).
+    /// False ⇒ ResolveTermSources is skipped. Boosted plans force this to false (boost
+    /// forces every op to QueryMatch).</summary>
+    public bool HasPostingListDispatch { get; init; }
+
+    /// <summary>True when at least one slot-using op in the emitted plan dispatches
+    /// via <see cref="MatchDispatch.TreeScan"/> (reads <c>ctx.TermsProviders</c>).
+    /// False ⇒ ResolveTermsProviders is skipped. Replaces the old per-execution
+    /// HasAnyTreeScanClause walk — this flag is computed once at cache-miss time and
+    /// reflects the finalized dispatch (post-boost-override).</summary>
+    public bool HasTreeScanDispatch { get; init; }
+
     /// <summary>Structural scan predicate metadata cached from the first compilation.
     /// Field names, param indices, compare ops do not change across executions.
     /// Used by <c>ExtractScanParameters</c> on every execution (both cache hit and miss)
