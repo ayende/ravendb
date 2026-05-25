@@ -204,12 +204,6 @@ internal static partial class QueryPlanBuilder
 
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature(template, planParams);
 
-        // IN/AllIn clauses with QueryParameter bindings can expand to different term counts
-        // at runtime. The slot layout (ParamIndex constants baked into the compiled IL) depends
-        // on InTermCount, so different counts must produce different compiled plans. Fold a hash
-        // of all IN/AllIn InTermCounts into typeSignature so the cache treats them as distinct.
-        typeSignature ^= ComputeInTermSignature(executions);
-
         if(planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags) is {} compiledPlan)
             return FinalizePlan();
         
@@ -3721,28 +3715,6 @@ internal static partial class QueryPlanBuilder
             typeSignature |= kind << (i * 2); 
         }
         return (typeSignature, fullKinds);
-    }
-
-    /// <summary>Compute a hash over the InTermCount of every IN/AllIn execution in the tree.
-    /// When a QueryParameter IN binding expands to N values at runtime (N may differ per
-    /// execution), the compiled plan's slot-layout constants depend on N. Folding this hash
-    /// into the typeSignature cache key ensures different expansion sizes get different plans,
-    /// preventing slot-index mismatches between the emitter (uses InTermCount at build time)
-    /// and the resolver (uses InTermCount at execution time).</summary>
-    private static int ComputeInTermSignature(List<ClauseExecution> executions)
-    {
-        int sig = 0;
-        foreach (var exec in executions ?? [])
-            AccumulateInTermCounts(exec, ref sig);
-        return sig;
-    }
-
-    private static void AccumulateInTermCounts(ClauseExecution exec, ref int sig)
-    {
-        if (exec.Clause.ClauseType is ClauseType.In or ClauseType.AllIn)
-            sig = (sig * 397) ^ exec.InTermCount;
-        foreach (var sub in exec.SubExecutions ?? [])
-            AccumulateInTermCounts(sub, ref sig);
     }
 
     /// <summary>Classify a query parameter's runtime type from the blittable JSON value.
