@@ -69,17 +69,6 @@ internal static partial class QueryPlanBuilder
         public string RejectReason;
     }
 
-    /// <summary>
-    /// Phase 1: build (or fetch from the plan cache) the structural template for a query
-    /// text. Captures field names, clause types, parameter bindings, and literal values.
-    /// No cardinality estimation, no parameter values, no IL.
-    ///
-    /// Safe to call without a live transaction once the schema is known —
-    /// cmpxchg()/now()/today() bindings store a DeferredExpression that resolves per
-    /// execution, so the template itself remains parameter-independent.
-    /// </summary>
-
-
     private enum MergeKind
     {
         /// <summary>Slot 0 ← clause result. First op of an OR chain or first
@@ -92,10 +81,6 @@ internal static partial class QueryPlanBuilder
         /// <summary>slot 0 ← slot 0 \ clause. Negated AND-chain elements.</summary>
         AndNotInto
     }
-
-    /// <summary>Recursive emit entry point. Emit ops that fold <paramref name="exec"/>'s
-    /// result into slot 0 per <paramref name="merge"/>. Groups recurse; IN/AllIn/leaf
-    /// route to specialised helpers.</summary>
 
 
     private interface ISlotResolver<TSelf, out TSlot>
@@ -205,18 +190,6 @@ internal static partial class QueryPlanBuilder
         return planCache.TryGetTemplate(queryText) ?? ParseTemplate(planParams);
     }
 
-    /// <summary>
-    /// Phase 2: bind parameter values to the structural template, estimate cardinality,
-    /// sort clauses, emit plan ops, and look up or compile the IL delegate via the plan cache.
-    ///
-    /// Returns the (cached or newly compiled) <see cref="CompiledPlan"/> together with the
-    /// per-execution <see cref="QueryExecution"/> via <paramref name="plan"/>.
-    /// Returns <c>null</c> when the plan reduces to an empty match without spatial/vector
-    /// post-filters (e.g. an empty IN clause inside an AND chain) — the caller must produce
-    /// an explicit empty result rather than caching this shape under the wrong key.
-    /// </summary>
-
-
     public static IQueryMatch BuildAndCompile(
         PlanParameters planParams,
         QueryBuilderParameters builderParameters,
@@ -261,18 +234,15 @@ internal static partial class QueryPlanBuilder
         if (plan == null)
         {
             var emptyMatch = TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-            return new BuildCompileAndOptimizeResult(emptyMatch, emptyMatch, null, null, builderParameters, null);
+            return new(emptyMatch, emptyMatch, null, null, builderParameters, null);
         }
 
         // Phase 3a: resolve ORDER BY metadata (needed by Instantiate's strategy dispatch).
         var orderByFields = GetSortMetadata(builderParameters, out var hasEmptySorts);
-        // Phase 3b: dispatch on the cached ExecutionStrategy (fast path) or run Try* discovery
-        // (slow path, cache-miss only). Instantiate falls through to the bitmap pipeline as the
-        // last resort. All four strategies — CompoundExact / CompoundField / DirectScan / BitmapSort
-        // — are produced here.
+        // Phase 3b: dispatch on the cached ExecutionStrategy (fast path) or run  discovery (cache-miss only). 
         var queryMatch = Instantiate(plan, exec, orderByFields, hasEmptySorts,
             planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
-        return new BuildCompileAndOptimizeResult(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, builderParameters, orderByFields);
+        return new (queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, builderParameters, orderByFields);
     }
 
 
@@ -304,8 +274,8 @@ internal static partial class QueryPlanBuilder
             it.Cardinality = EstimateCardinality(it, indexSearcher, writer, walkerCtx);
         }
 
-        // Step 5: Sort operands by cardinality (sort executions by cardinality).
-        CollectionsMarshal.AsSpan(executions).Sort();
+        // Step 5: sort executions by cardinality
+        executions.Sort();
 
         var exec = new QueryExecution { Executions = executions };
 
@@ -324,23 +294,18 @@ internal static partial class QueryPlanBuilder
             exec.IsAllEntries = true;
         }
 
-        // Populate typed-arrays before BuildInspectionTemplate reads them via FormatValueFromPlan
-        // and before any downstream consumer (FinalizePlan/AttachSpatialAndVectorClauses) needs them.
-        writer.SetValues(exec);
-
         // ── Step 6: Compute cache key components (cheap) ────────────────────
         int operandOrdering = ComputeOperandOrdering(template, planParams, executions);
 
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature(template, planParams);
 
         if(planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags) is {} compiledPlan)
-            return FinalizePlan();
+            return FinalizePlan(); // use cached plan
         
 
         // ── Step 7: Cache miss — full exec emission ─────────────────────────
 
         // Entry scan is an optimization that only makes sense for a WHERE with multiple AND clauses
-        ScanPredicateInfo[] scanPreds = isOr is false && executions.Count > 1 ? CreateScanPredicates(executions) : null;
         var (ops, requiredBitmaps, inRangeCounts) = EmitPlan(isOr, executions);
 
         // Boost handling: force every op to QueryMatch dispatch so scores are accumulated.
@@ -357,11 +322,12 @@ internal static partial class QueryPlanBuilder
 
         // Compile and cache. Structural fields (AllNegated, OptimizationFlags, remapped
         // indices, ScanPredicateInfos) are stored on the CompiledPlan, not on QueryExecution.
+        var scanPredicates = isOr is false && executions.Count > 1 ? CreateScanPredicates(executions) : null;
         compiledPlan = new CompiledPlan
         {
             CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
             CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
-            CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(scanPreds, out var scanCsharp),
+            CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(scanPredicates, out var scanCsharp),
 
             Template = template,
             Source = csharpText + "\n" + scanCsharp,
@@ -373,7 +339,7 @@ internal static partial class QueryPlanBuilder
             RequiredBitmaps = requiredBitmaps,
             InRangeSlotCount = inRangeCounts?.Length ?? 0,
             InspectionTemplate = BuildInspectionTemplate(ops, exec),
-            ScanPredicateInfos = scanPreds,
+            ScanPredicateInfos = scanPredicates,
             AllNegated =  CheckAllNegated(executions),
             ClauseDispatch = clauseDispatch,
         };
@@ -390,8 +356,6 @@ internal static partial class QueryPlanBuilder
 
             AttachSpatialAndVectorClauses(exec, template, planParams, builderParameters, writer);
             // Re-snapshot typed arrays into exec: AttachSpatialAndVectorClauses appended
-            // spatial/vector clause values to the writer after the initial SetValues call
-            // (which had to run early so BuildInspectionTemplate could format them).
             writer.SetValues(exec);
             return (compiledPlan, exec);
         }
@@ -3701,33 +3665,4 @@ internal static partial class QueryPlanBuilder
             _ => idx < exec.StringValues.Length ? exec.StringValues[idx] : null
         };
     }
-
-    // ── Phase D unified recursive emit ─────────────────────────────────────────
-    //
-    // EmitOrPlan / EmitAndPlan invoke EmitClauseInto per top-level clause; nested
-    // groups recurse and slot allocation stays in lock-step with the recursive
-    // resolver in ResolveSlots / CountMatchSlots (one match slot per LEAF, not
-    // per direct sub-clause). The emitter consumes leaves in identical order so
-    // ParamIndex values line up with ResolvedMatches / PostingSources entries.
-    //
-    // Bitmap slots:
-    //   Slot 0 = main accumulator
-    //   Slot 1 = AND-primitive temp (clobbered by AndWithPostings/AndNotWithPostings
-    //            for SmallPostingList/PostingList sources via MaterializeTermSourceIntoBitmap)
-    //            and as the direct scratch for IN AndInto leaves.
-    //   Slot 2+ = save slots for non-Fill group merges. Allocated LIFO via
-    //             nextScratch; RequiredBitmaps grows with nesting depth.
-    //
-    // SkipEarlyExit propagation: AndWithPostings and AndRange normally emit a
-    // goto-doneLabel when the bitmap empties — that early-exit is correct at the
-    // top of an AND chain (whole query is empty), but inside a saved-swap context
-    // it would jump past the merge-back and leak the saved accumulator. The
-    // suppressEarlyExit flag is propagated through the recursion: top-level
-    // EmitOrPlan always suppresses (the OR chain continues regardless), top-level
-    // EmitAndPlan does not (early-exit is desired), and EmitGroupInto's non-Fill
-    // path turns suppression ON before emitting the inner contents.
-
-    /// <summary>How a clause's result is folded into slot 0 by the recursive emitter.</summary>
-
-
 }
