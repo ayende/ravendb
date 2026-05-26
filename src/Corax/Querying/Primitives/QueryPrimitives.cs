@@ -433,6 +433,9 @@ public static class QueryPrimitives
                 bitmap.Clear();
                 return;
 
+            case Planning.PostingSourceKind.All:
+                return; // Universal pass-through: AND with all entries = no-op.
+
             case Planning.PostingSourceKind.Single:
                 {
                     long entryId = source.SingleEntryId;
