@@ -79,7 +79,7 @@ public class CompiledQueryMatch(
         {
             foreach (var it in ResolvedMatches ?? [])
             {
-                if (it.IsBoosting)
+                if (it != null && it.IsBoosting)
                     return true;
             }
             return false;
@@ -139,7 +139,8 @@ public class CompiledQueryMatch(
     {
         foreach (var it in ResolvedMatches ?? [])
         {
-            it.Score(matches, scores, boostFactor);
+            if (it != null)
+                it.Score(matches, scores, boostFactor);
         }
     }
 
@@ -184,7 +185,8 @@ public class CompiledQueryMatch(
         {
             foreach (var it in ResolvedMatches)
             {
-                children.Add(it.Inspect());
+                if (it != null)
+                    children.Add(it.Inspect());
             }
         }
 

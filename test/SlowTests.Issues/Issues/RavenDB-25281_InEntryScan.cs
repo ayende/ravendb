@@ -31,6 +31,8 @@ public class RavenDB_25281_InEntryScan : RavenTestBase
                 bulk.Store(new Doc { Tag = "common", Name = "Alpha" });
         }
 
+        Indexes.WaitForIndexing(store);
+
         using var session = store.OpenSession();
 
         // AND chain (2 clauses): Tag == "rare"  AND  Name IN ["Alpha","Bravo"]

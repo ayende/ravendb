@@ -139,7 +139,16 @@ internal static partial class QueryPlanBuilder
         public static PostingSource ResolveNullTermSlot(ClauseExecution clauseExec, ResolutionContext ctx)
         {
             if (!clauseExec.HasNullTerm)
-                return default;
+            {
+                // For IN: OR with PostingSource.Empty is already a no-op — default is fine.
+                // For AllIn: AND with PostingSource.Empty would clear the bitmap; return All
+                // so the AND range loop can always cover inTermCount slots (including the null
+                // slot) without corrupting the result. AccumulateInRangeCounts mirrors this by
+                // always using inTermCount as the range for AllIn.
+                return clauseExec.ClauseType == ClauseType.AllIn
+                    ? new PostingSource { Kind = PostingSourceKind.All }
+                    : default;
+            }
 
             FieldMetadata nullMeta = ResolveFieldMetadata(clauseExec.Clause, ctx);
             return ctx.IndexSearcher.TryGetPostingListForNull(in nullMeta, out long nullPlId)
@@ -1239,7 +1248,7 @@ internal static partial class QueryPlanBuilder
         int inTermCount = exec.InTermCount;
         if (merge == MergeKind.Fill)
         {
-            EmitAllInOps(ops, inTermCount, cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
+            EmitAllInOps(ops, inTermCount, cardinality, 0, ref matchIndex, rangeCounts);
             if (suppressEarlyExit)
                 SetLastAndRangeSkipEarlyExit(ops);
             return;
@@ -1250,7 +1259,7 @@ internal static partial class QueryPlanBuilder
 
         ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
         ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-        EmitAllInOps(ops, inTermCount, cardinality, bitmapLocal: 0, ref matchIndex, rangeCounts);
+        EmitAllInOps(ops, inTermCount, cardinality, 0, ref matchIndex, rangeCounts);
         // Inside save-swap: AndRange must not jump to doneLabel — that would skip
         // the merge-back and leak the saved accumulator.
         SetLastAndRangeSkipEarlyExit(ops);
@@ -1335,7 +1344,7 @@ internal static partial class QueryPlanBuilder
         if (exec.ClauseType is ClauseType.AllIn)
         {
             if (1 > maxScratchUsed) maxScratchUsed = 1;
-            EmitAllInOps(ops, exec.InTermCount, cardinality, bitmapLocal: 1, ref matchIndex, rangeCounts);
+            EmitAllInOps(ops, exec.InTermCount, cardinality, 1, ref matchIndex, rangeCounts);
             // AndRange would early-exit to doneLabel if slot 1 empties mid-intersection,
             // skipping our AndNotBitmaps and the rest of the OR chain. Suppress it.
             SetLastAndRangeSkipEarlyExit(ops);
@@ -3306,10 +3315,13 @@ internal static partial class QueryPlanBuilder
                     counts[rangeIdx++] = execution.InTermCount;
                     break;
 
-                // AllIn: EmitAllInOps emits Fill + AndRange. Fill consumed slot 0, so range = InTermCount - 1.
-                // Null slot included only when HasNullTerm (AND with empty clears bitmap).
+                // AllIn: EmitAllInOps emits Fill + AndRange over inTermCount slots (all typed terms
+                // + the null-term slot). The null-term slot is always iterated; when HasNullTerm=false
+                // ResolveNullTermSlot returns PostingSourceKind.All so the AND is a no-op rather than
+                // clearing the bitmap. The cursor always advances inTermCount positions past Fill,
+                // landing at inTermCount+1 = CountClauseLeaves(AllIn) — consistent with the slot layout.
                 case ClauseType.AllIn:
-                    counts[rangeIdx++] = Math.Max(0, execution.InTermCount - 1 + (execution.HasNullTerm ? 1 : 0));
+                    counts[rangeIdx++] = execution.InTermCount;
                     break;
             }
         }
