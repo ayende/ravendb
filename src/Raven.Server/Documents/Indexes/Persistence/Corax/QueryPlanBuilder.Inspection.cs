@@ -37,6 +37,7 @@ internal static partial class QueryPlanBuilder
             return result.ExecutedMatch.Inspect();
 
         var exec = result.Execution;
+        var flatExecs = BuildFlatClauseExecutions(exec);
         var rootParams = new Dictionary<string, string>();
         if (scannedEntries >= 0)
             rootParams["ScannedEntries"] = scannedEntries.ToString();
@@ -64,22 +65,29 @@ internal static partial class QueryPlanBuilder
             if (t.FieldName != null) parameters["FieldName"] = t.FieldName;
 
             // Format values from the current execution's typed arrays (not cached).
-            var term = FormatValueFromPlan(t.PackedValue, exec);
-            if (term != null) parameters["Term"] = term;
-            var term2 = FormatValue2FromPlan(t.PackedValue, exec);
-            if (term2 != null) parameters["Term2"] = term2;
+            if (t.FlatClauseIndex >= 0 && t.FlatClauseIndex < flatExecs.Count)
+            {
+                var clauseExec = flatExecs[t.FlatClauseIndex];
+                var packed = clauseExec.PackedParamValue;
+                int inTermCount = clauseExec.InTermCount;
+
+                var term = FormatValueFromPlan(packed, exec);
+                if (term != null) parameters["Term"] = term;
+                var term2 = FormatValue2FromPlan(packed, exec);
+                if (term2 != null) parameters["Term2"] = term2;
+
+                if (inTermCount > 0)
+                {
+                    int displayCount = Math.Min(inTermCount, 5);
+                    var displayTerms = new string[displayCount];
+                    for (int dt = 0; dt < displayCount; dt++)
+                        displayTerms[dt] = FormatValueFromPlan(packed.WithTermOffset(dt), exec);
+                    parameters["Terms"] = string.Join(", ", displayTerms) + (inTermCount > 5 ? $" ... ({inTermCount} total)" : "");
+                }
+            }
 
             if (t.ClauseType != null) parameters["ClauseType"] = t.ClauseType;
             if (t.IsNegated) parameters["Negated"] = "true";
-
-            if (t.InTermCount > 0)
-            {
-                int displayCount = Math.Min(t.InTermCount, 5);
-                var displayTerms = new string[displayCount];
-                for (int dt = 0; dt < displayCount; dt++)
-                    displayTerms[dt] = FormatValueFromPlan(t.PackedValue.WithTermOffset(dt), exec);
-                parameters["Terms"] = string.Join(", ", displayTerms) + (t.InTermCount > 5 ? $" ... ({t.InTermCount} total)" : "");
-            }
 
             if (t.EstimatedCardinality is > 0 and < long.MaxValue)
                 parameters["EstimatedRows"] = t.EstimatedCardinality.ToString("N0");
@@ -127,6 +135,43 @@ internal static partial class QueryPlanBuilder
 
     }
 
+    /// <summary>Rebuild the flat clause-execution list from the current QueryExecution, in the
+    /// same walk order as BuildInspectionTemplate's structural flatten. Each entry's
+    /// PackedParamValue and InTermCount reflect the current execution, not the cached template.</summary>
+    private static List<ClauseExecution> BuildFlatClauseExecutions(QueryExecution exec)
+    {
+        var flat = new List<ClauseExecution>();
+        if (exec?.Executions is not { Count: > 0 })
+            return flat;
+
+        foreach (var clauseExec in exec.Executions)
+        {
+            var clause = clauseExec.Clause;
+            if (clause.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup && clauseExec.SubExecutions != null)
+            {
+                for (int si = 0; si < clauseExec.SubExecutions.Count; si++)
+                    flat.Add(clauseExec.SubExecutions[si]);
+            }
+            else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clauseExec.InTermCount > 0)
+            {
+                var p = clauseExec.PackedParamValue;
+                for (int t = 0; t < clauseExec.InTermCount; t++)
+                {
+                    flat.Add(new ClauseExecution(clause)
+                    {
+                        PackedParamValue = p.WithTermOffset(t)
+                    });
+                }
+            }
+            else
+            {
+                flat.Add(clauseExec);
+            }
+        }
+
+        return flat;
+    }
+
     // Covers VectorSearch and Spatial post-filter ops — both expose Inspect() subtrees
     // appended to the compiled-query root.
     private static void AppendPostFilterNodes(QueryInspectionNode source, QueryInspectionNode target)
@@ -142,48 +187,38 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Build an inspection template from plan ops + clauses. Created once, cached.</summary>
-    private static InspectionOp[] BuildInspectionTemplate(PlanOp[] ops, QueryExecution exec)
+    /// <summary>Build an inspection template from plan ops + clause structure. Created once, cached.
+    /// Only structural clause metadata (FieldName, ClauseType, IsNegated) is stored — per-execution
+    /// values (PackedParam, InTermCount) are resolved at display time in BuildInspectionGraph.</summary>
+    private static InspectionOp[] BuildInspectionTemplate(PlanOp[] ops, List<ClauseExecution> executions)
     {
         if (ops == null || ops.Length == 0) return [];
 
-        var flatClauses = new List<(ClauseInfo Clause, ClauseExecution Exec)>();
-        var execs = exec.Executions;
-        if (execs is { Count: > 0 })
+        // Flatten clause tree to align with op.ParamIndex (same walk order as the emitter).
+        var flatClauses = new List<ClauseInfo>();
+        foreach (var clauseExec in executions)
         {
-            for (int ci = 0; ci < execs.Count; ci++)
+            var clause = clauseExec.Clause;
+            if (clause.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup && clause.SubClauses != null)
             {
-                var clause = execs[ci].Clause;
-                var clauseExec = execs[ci];
-                if (clause.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup && clause.SubClauses != null)
+                for (int si = 0; si < clause.SubClauses.Count; si++)
+                    flatClauses.Add(clause.SubClauses[si]);
+            }
+            else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clauseExec.InTermCount > 0)
+            {
+                for (int t = 0; t < clauseExec.InTermCount; t++)
                 {
-                    for (int si = 0; si < clause.SubClauses.Count; si++)
+                    flatClauses.Add(new ClauseInfo
                     {
-                        var subExec = clauseExec?.SubExecutions != null && si < clauseExec.SubExecutions.Count ? clauseExec.SubExecutions[si] : null;
-                        flatClauses.Add((clause.SubClauses[si], subExec));
-                    }
+                        FieldName = clause.FieldName,
+                        ClauseType = clause.ClauseType,
+                        IsNegated = clause.IsNegated
+                    });
                 }
-                else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clauseExec is { InTermCount: > 0 })
-                {
-                    var p = clauseExec.PackedParamValue;
-                    for (int t = 0; t < clauseExec.InTermCount; t++)
-                    {
-                        var termExec = new ClauseExecution(clause)
-                        {
-                            PackedParamValue = p.WithTermOffset(t)
-                        };
-                        flatClauses.Add((new ClauseInfo
-                        {
-                            FieldName = clause.FieldName,
-                            ClauseType = clause.ClauseType,
-                            IsNegated = clause.IsNegated
-                        }, termExec));
-                    }
-                }
-                else
-                {
-                    flatClauses.Add((clause, clauseExec));
-                }
+            }
+            else
+            {
+                flatClauses.Add(clause);
             }
         }
 
@@ -229,15 +264,11 @@ internal static partial class QueryPlanBuilder
 
             if (op.ParamIndex >= 0 && op.ParamIndex < flatClauses.Count)
             {
-                var (clause, clauseExec) = flatClauses[op.ParamIndex];
-                if (clause != null)
-                {
-                    inspOp.FieldName = clause.FieldName;
-                    inspOp.PackedValue = clauseExec?.PackedParamValue ?? PackedParam.None;
-                    inspOp.InTermCount = clauseExec?.InTermCount ?? 0;
-                    inspOp.IsNegated = clause.IsNegated;
-                    if (clause.ClauseType != ClauseType.Equals) inspOp.ClauseType = clause.ClauseType.ToString();
-                }
+                inspOp.FlatClauseIndex = op.ParamIndex;
+                var clause = flatClauses[op.ParamIndex];
+                inspOp.FieldName = clause.FieldName;
+                inspOp.IsNegated = clause.IsNegated;
+                if (clause.ClauseType != ClauseType.Equals) inspOp.ClauseType = clause.ClauseType.ToString();
             }
 
             result.Add(inspOp);

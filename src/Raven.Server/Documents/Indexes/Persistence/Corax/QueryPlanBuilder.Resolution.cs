@@ -339,7 +339,7 @@ internal static partial class QueryPlanBuilder
             OpCount = ops.Length,
             RequiredBitmaps = requiredBitmaps,
             InRangeSlotCount = inRangeCounts?.Length ?? 0,
-            InspectionTemplate = BuildInspectionTemplate(ops, exec),
+            InspectionTemplate = BuildInspectionTemplate(ops, executions),
             ScanPredicateInfos = scanPredicates,
             AllNegated =  CheckAllNegated(executions),
             ClauseDispatch = clauseDispatch,
