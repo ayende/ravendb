@@ -14,12 +14,9 @@ public sealed class InspectionOp
     public bool IsNegated;
     public long EstimatedCardinality;
 
-    /// <summary>Packed parameter reference for this op's value(s). Formatted at
-    /// inspection time via FormatValueFromPlan against the current QueryExecution.</summary>
-    public PackedParam PackedValue;
-
-    /// <summary>Number of IN/AllIn terms. Zero for non-IN clauses.</summary>
-    public int InTermCount;
+    /// <summary>Index into the flat clause list (rebuilt per-execution in BuildInspectionGraph).
+    /// -1 for ops that don't map to a clause (e.g. CheckAndMaybeEntryScan, bitmap merge ops).</summary>
+    public int FlatClauseIndex = -1;
 
     /// <summary>True when this op is part of an AND-group inside an OR chain.
     /// Used to nest these ops under an "AND-Group" node in the inspection tree.</summary>
