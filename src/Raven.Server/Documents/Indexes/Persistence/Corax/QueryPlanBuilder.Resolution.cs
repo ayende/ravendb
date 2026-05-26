@@ -310,7 +310,7 @@ internal static partial class QueryPlanBuilder
         // pre-applied. ResolveClauseLeavesInto reads compiledPlan.ClauseDispatch[i] to
         // decide whether to populate slot[i] for its TargetDispatch — boost handling
         // becomes a no-op inside the resolver because every entry is QueryMatch under boost.
-        MatchDispatch[] clauseDispatch = ComputeClauseDispatch(executions, planParams.HasBoost);
+        MatchDispatch[] clauseDispatch = ComputeClauseDispatch(executions, planParams.HasBoost, template);
 
         var (ops, requiredBitmaps, inRangeCounts) = EmitPlan(isOr, executions);
 
@@ -2543,12 +2543,7 @@ internal static partial class QueryPlanBuilder
                 break;
             case ClauseType.AllIn or ClauseType.In:
             {
-                // Clauses beyond the dispatch array (spatial/vector, appended after plan build)
-                // always use QueryMatch dispatch — populate unconditionally for the MatchResolver.
-                bool matches = clauseIdx < clauseDispatch.Length
-                    ? clauseDispatch[clauseIdx] == TResolver.TargetDispatch
-                    : TResolver.TargetDispatch == MatchDispatch.QueryMatch;
-                clauseIdx++;
+                bool matches = clauseDispatch[clauseIdx++] == TResolver.TargetDispatch;
                 if (!matches)
                 {
                     matchIdx += clauseExec.InTermCount + 1; // +1 for the null slot
@@ -2566,10 +2561,7 @@ internal static partial class QueryPlanBuilder
             }
             default:
             {
-                bool matches = clauseIdx < clauseDispatch.Length
-                    ? clauseDispatch[clauseIdx] == TResolver.TargetDispatch
-                    : TResolver.TargetDispatch == MatchDispatch.QueryMatch;
-                clauseIdx++;
+                bool matches = clauseDispatch[clauseIdx++] == TResolver.TargetDispatch;
                 if (!matches)
                 {
                     matchIdx++;
@@ -3497,7 +3489,7 @@ internal static partial class QueryPlanBuilder
     /// and for plans with no executions.</summary>
 
 
-    private static MatchDispatch[] ComputeClauseDispatch(List<ClauseExecution> executions, bool planHasBoost)
+    private static MatchDispatch[] ComputeClauseDispatch(List<ClauseExecution> executions, bool planHasBoost, PlanTemplate template)
     {
         if (executions is null || executions.Count == 0)
             return [];
@@ -3505,6 +3497,14 @@ internal static partial class QueryPlanBuilder
         var list = new List<MatchDispatch>(executions.Count);
         foreach (var clauseExec in executions)
             AppendClauseDispatch(clauseExec, planHasBoost, list);
+
+        // Spatial/vector clauses are separated by GroupCollapse at template time and
+        // appended to exec.Executions later by AttachSpatialAndVectorClauses. They
+        // always resolve through IQueryMatch (no PostingList / TreeScan fast path).
+        int postFilterCount = (template.SpatialClauses?.Count ?? 0) + (template.VectorClauses?.Count ?? 0);
+        for (int i = 0; i < postFilterCount; i++)
+            list.Add(MatchDispatch.QueryMatch);
+
         return list.ToArray();
     }
 
