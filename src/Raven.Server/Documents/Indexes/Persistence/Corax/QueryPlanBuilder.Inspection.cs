@@ -15,7 +15,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 /// </summary>
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>Build the inspection graph from the cached template and runtime telemetry.</summary>
+    /// <summary>Build the inspection graph from the cached template and runtime telemetry.
+    /// Values are formatted from the current <see cref="QueryExecution"/>'s typed arrays,
+    /// not baked into the cached template.</summary>
     public static QueryInspectionNode BuildInspectionGraph(BuildCompileAndOptimizeResult result)
     {
         long[] timings = null;
@@ -34,6 +36,7 @@ internal static partial class QueryPlanBuilder
         if (template == null || template.Length == 0)
             return result.ExecutedMatch.Inspect();
 
+        var exec = result.Execution;
         var rootParams = new Dictionary<string, string>();
         if (scannedEntries >= 0)
             rootParams["ScannedEntries"] = scannedEntries.ToString();
@@ -59,11 +62,29 @@ internal static partial class QueryPlanBuilder
             var parameters = new Dictionary<string, string>();
             if (t.Dispatch != null) parameters["Dispatch"] = t.Dispatch;
             if (t.FieldName != null) parameters["FieldName"] = t.FieldName;
-            if (t.Term != null) parameters["Term"] = t.Term;
-            if (t.Term2 != null) parameters["Term2"] = t.Term2;
+
+            // Format values from the current execution's typed arrays (not cached).
+            var packed = t.PackedValue;
+            if (packed.IsNone is false)
+            {
+                var term = FormatValueFromPlan(packed, exec);
+                if (term != null) parameters["Term"] = term;
+                var term2 = FormatValue2FromPlan(packed, exec);
+                if (term2 != null) parameters["Term2"] = term2;
+            }
+
             if (t.ClauseType != null) parameters["ClauseType"] = t.ClauseType;
             if (t.IsNegated) parameters["Negated"] = "true";
-            if (t.Terms != null) parameters["Terms"] = t.Terms;
+
+            if (t.InTermCount > 0)
+            {
+                int displayCount = Math.Min(t.InTermCount, 5);
+                var displayTerms = new string[displayCount];
+                for (int dt = 0; dt < displayCount; dt++)
+                    displayTerms[dt] = FormatValueFromPlan(packed.WithTermOffset(dt), exec);
+                parameters["Terms"] = string.Join(", ", displayTerms) + (t.InTermCount > 5 ? $" ... ({t.InTermCount} total)" : "");
+            }
+
             if (t.EstimatedCardinality is > 0 and < long.MaxValue)
                 parameters["EstimatedRows"] = t.EstimatedCardinality.ToString("N0");
 
@@ -215,21 +236,11 @@ internal static partial class QueryPlanBuilder
                 var (clause, clauseExec) = flatClauses[op.ParamIndex];
                 if (clause != null)
                 {
-                    var packed = clauseExec?.PackedParamValue ?? PackedParam.None;
-                    int inTermCount = clauseExec?.InTermCount ?? 0;
                     inspOp.FieldName = clause.FieldName;
-                    inspOp.Term = FormatValueFromPlan(packed, exec);
-                    inspOp.Term2 = FormatValue2FromPlan(packed, exec);
+                    inspOp.PackedValue = clauseExec?.PackedParamValue ?? PackedParam.None;
+                    inspOp.InTermCount = clauseExec?.InTermCount ?? 0;
                     inspOp.IsNegated = clause.IsNegated;
                     if (clause.ClauseType != ClauseType.Equals) inspOp.ClauseType = clause.ClauseType.ToString();
-                    if (inTermCount > 0)
-                    {
-                        int displayCount = Math.Min(inTermCount, 5);
-                        var displayTerms = new string[displayCount];
-                        for (int t = 0; t < displayCount; t++)
-                            displayTerms[t] = FormatValueFromPlan(packed.WithTermOffset(t), exec);
-                        inspOp.Terms = string.Join(", ", displayTerms) + (inTermCount > 5 ? $" ... ({inTermCount} total)" : "");
-                    }
                 }
             }
 

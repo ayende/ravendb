@@ -47,6 +47,7 @@ internal static partial class QueryPlanBuilder
         IQueryMatch ExecutedMatch,
         IQueryMatch SortingWrapper,
         CompiledPlan CompiledPlan,
+        QueryExecution Execution,
         QueryBuilderParameters QueryBuilderParams,
         OrderMetadata[] OrderByFields) : IDisposable
     {
@@ -234,7 +235,7 @@ internal static partial class QueryPlanBuilder
         if (plan == null)
         {
             var emptyMatch = TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-            return new(emptyMatch, emptyMatch, null, null, builderParameters, null);
+            return new(emptyMatch, emptyMatch, null, null, null, builderParameters, null);
         }
 
         // Phase 3a: resolve ORDER BY metadata (needed by Instantiate's strategy dispatch).
@@ -242,7 +243,7 @@ internal static partial class QueryPlanBuilder
         // Phase 3b: dispatch on the cached ExecutionStrategy (fast path) or run  discovery (cache-miss only). 
         var queryMatch = Instantiate(plan, exec, orderByFields, hasEmptySorts,
             planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
-        return new (queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, builderParameters, orderByFields);
+        return new (queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, exec, builderParameters, orderByFields);
     }
 
 
@@ -305,20 +306,20 @@ internal static partial class QueryPlanBuilder
 
         // ── Step 7: Cache miss — full exec emission ─────────────────────────
 
-        // Entry scan is an optimization that only makes sense for a WHERE with multiple AND clauses
-        var (ops, requiredBitmaps, inRangeCounts) = EmitPlan(isOr, executions);
-
-        // Boost handling: force every op to QueryMatch dispatch so scores are accumulated.
-        for (int i = 0; i < ops.Length && planParams.HasBoost; i++)
-        {
-            ops[i].Dispatch = MatchDispatch.QueryMatch;
-        }
-
         // Per-leaf effective dispatch in resolver-walk order, with the boost-override
         // pre-applied. ResolveClauseLeavesInto reads compiledPlan.ClauseDispatch[i] to
         // decide whether to populate slot[i] for its TargetDispatch — boost handling
         // becomes a no-op inside the resolver because every entry is QueryMatch under boost.
         MatchDispatch[] clauseDispatch = ComputeClauseDispatch(executions, planParams.HasBoost);
+
+        var (ops, requiredBitmaps, inRangeCounts) = EmitPlan(isOr, executions);
+
+        // Boost handling: force every op to QueryMatch dispatch so the IL emitter
+        // generates IQueryMatch-based methods that accumulate scores.
+        for (int i = 0; i < ops.Length && planParams.HasBoost; i++)
+        {
+            ops[i].Dispatch = MatchDispatch.QueryMatch;
+        }
 
         // Compile and cache. Structural fields (AllNegated, OptimizationFlags, remapped
         // indices, ScanPredicateInfos) are stored on the CompiledPlan, not on QueryExecution.
