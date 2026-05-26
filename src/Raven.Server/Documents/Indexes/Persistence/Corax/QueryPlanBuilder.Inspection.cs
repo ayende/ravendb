@@ -122,8 +122,11 @@ internal static partial class QueryPlanBuilder
         }
 
         // Vector/spatial nodes from executed match
-        var matchInspection = result.ExecutedMatch.Inspect();
-        AppendPostFilterNodes(matchInspection, root);
+        if (result.ExecutedMatch != null)
+        {
+            var matchInspection = result.ExecutedMatch.Inspect();
+            AppendPostFilterNodes(matchInspection, root);
+        }
 
         if (result.SortingWrapper == null) 
             return root;
