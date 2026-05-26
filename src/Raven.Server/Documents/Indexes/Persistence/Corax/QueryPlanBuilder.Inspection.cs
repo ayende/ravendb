@@ -64,14 +64,10 @@ internal static partial class QueryPlanBuilder
             if (t.FieldName != null) parameters["FieldName"] = t.FieldName;
 
             // Format values from the current execution's typed arrays (not cached).
-            var packed = t.PackedValue;
-            if (packed.IsNone is false)
-            {
-                var term = FormatValueFromPlan(packed, exec);
-                if (term != null) parameters["Term"] = term;
-                var term2 = FormatValue2FromPlan(packed, exec);
-                if (term2 != null) parameters["Term2"] = term2;
-            }
+            var term = FormatValueFromPlan(t.PackedValue, exec);
+            if (term != null) parameters["Term"] = term;
+            var term2 = FormatValue2FromPlan(t.PackedValue, exec);
+            if (term2 != null) parameters["Term2"] = term2;
 
             if (t.ClauseType != null) parameters["ClauseType"] = t.ClauseType;
             if (t.IsNegated) parameters["Negated"] = "true";
@@ -81,7 +77,7 @@ internal static partial class QueryPlanBuilder
                 int displayCount = Math.Min(t.InTermCount, 5);
                 var displayTerms = new string[displayCount];
                 for (int dt = 0; dt < displayCount; dt++)
-                    displayTerms[dt] = FormatValueFromPlan(packed.WithTermOffset(dt), exec);
+                    displayTerms[dt] = FormatValueFromPlan(t.PackedValue.WithTermOffset(dt), exec);
                 parameters["Terms"] = string.Join(", ", displayTerms) + (t.InTermCount > 5 ? $" ... ({t.InTermCount} total)" : "");
             }
 
