@@ -2542,7 +2542,14 @@ internal static partial class QueryPlanBuilder
                 }
                 break;
             case ClauseType.AllIn or ClauseType.In:
-                if ((clauseDispatch[clauseIdx++] != TResolver.TargetDispatch))
+            {
+                // Clauses beyond the dispatch array (spatial/vector, appended after plan build)
+                // always use QueryMatch dispatch — populate unconditionally for the MatchResolver.
+                bool matches = clauseIdx < clauseDispatch.Length
+                    ? clauseDispatch[clauseIdx] == TResolver.TargetDispatch
+                    : TResolver.TargetDispatch == MatchDispatch.QueryMatch;
+                clauseIdx++;
+                if (!matches)
                 {
                     matchIdx += clauseExec.InTermCount + 1; // +1 for the null slot
                     break;
@@ -2556,11 +2563,21 @@ internal static partial class QueryPlanBuilder
                 // Null-term slot is always allocated; resolver decides whether to populate.
                 slots[matchIdx++] = TResolver.ResolveNullTermSlot(clauseExec, walkerCtx);
                 break;
+            }
             default:
-                if (clauseDispatch[clauseIdx++] != TResolver.TargetDispatch)
-                    return;
+            {
+                bool matches = clauseIdx < clauseDispatch.Length
+                    ? clauseDispatch[clauseIdx] == TResolver.TargetDispatch
+                    : TResolver.TargetDispatch == MatchDispatch.QueryMatch;
+                clauseIdx++;
+                if (!matches)
+                {
+                    matchIdx++;
+                    break;
+                }
                 slots[matchIdx++] = TResolver.ResolveDefaultSlot(clauseExec, root, walkerCtx);
                 break;
+            }
         }
     }
 
@@ -3499,6 +3516,12 @@ internal static partial class QueryPlanBuilder
             case ClauseType.OrGroup or ClauseType.AndGroup:
                 foreach (var sub in clauseExec.SubExecutions)
                     AppendClauseDispatch(sub, planHasBoost, list);
+                break;
+            // IN/AllIn always resolve as individual posting-list lookups (EmitInOps /
+            // EmitAllInOps hardcode PostingList on the emitted ops). GetDispatch would
+            // return QueryMatch for the parent clause type, causing a mismatch.
+            case ClauseType.In or ClauseType.AllIn:
+                list.Add(planHasBoost ? MatchDispatch.QueryMatch : MatchDispatch.PostingList);
                 break;
             default:
                 list.Add(planHasBoost ? MatchDispatch.QueryMatch : GetDispatch(clauseExec.Clause));
