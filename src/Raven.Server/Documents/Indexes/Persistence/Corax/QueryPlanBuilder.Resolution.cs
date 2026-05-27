@@ -266,35 +266,31 @@ internal static partial class QueryPlanBuilder
         // WHEN clauses against bound parameters as we go.
         var (executions, whenFlags) = EvaluateWhenAndFilterClauses(template, planParams);
 
-        // Step 3: Populate parameter values into typed arrays. Detect empty-IN inline —
-        // the cache-key pass and the plan emitter both need it, so we compute it once here
-        // instead of re-walking the executions later.
+        // Steps 3 + 3b + 4: single per-clause pass. Population, contradiction rewrite,
+        // cardinality estimation, and the empty-IN / sort-driving-cardinality detections
+        // are all per-clause concerns — collapse into one walk so we don't iterate
+        // executions four times in a row.
+        bool isOr = template.IsOr;
         var writer = new ValueWriter();
         bool hasEmptyIn = false;
-        foreach (var it in executions)
-        {
-            PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters);
-            hasEmptyIn |= IsEmptyIn(it);
-        }
-
-        // Step 3b: Constant propagation — simplify trivially-false/simple clauses.
-        // Contradiction rewrites can create new empty-IN clauses; fold those into the flag.
-        bool isOr = template.IsOr;
-        hasEmptyIn |= PropagateBetweenContradictions(executions, writer);
-        // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
-        hasEmptyIn &= !isOr;
-
-        // Step 4: Estimate cardinality (needs populated values). Also capture the
-        // sort-driving clause's cardinality for the cliff-bit decision in one pass.
         int sortDrivingIdx = template.SortDrivingClauseIndex;
         long drivingClauseCardinality = -1;
         foreach (var it in executions)
         {
+            PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters);
+            // Constant propagation — a contradictory BETWEEN rewrites into the empty-IN flavor,
+            // which both pre-sets Cardinality to 0 (so EstimateCardinality is a no-op) and
+            // feeds the empty-IN flag below.
+            PropagateBetweenContradiction(it, writer);
+            hasEmptyIn |= IsEmptyIn(it);
+
             if (it.Cardinality < 0)
                 it.Cardinality = EstimateCardinality(it, indexSearcher, writer, walkerCtx);
             if (sortDrivingIdx >= 0 && it.Clause.OriginalIndex == sortDrivingIdx)
                 drivingClauseCardinality = it.Cardinality;
         }
+        // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
+        hasEmptyIn &= !isOr;
 
         // Step 5: sort executions by cardinality
         executions.Sort();
@@ -715,36 +711,30 @@ internal static partial class QueryPlanBuilder
     }
 
 
-    /// <summary>Returns true when any clause was rewritten into the empty-IN flavor — caller uses
-    /// this to set <see cref="QueryExecution.HasEmptyIn"/> in the same pass that populates clauses,
-    /// avoiding a second walk later on.</summary>
-    private static bool PropagateBetweenContradictions(List<ClauseExecution> execList, ValueWriter writer)
+    /// <summary>Per-clause constant propagation: a numeric BETWEEN whose low &gt; high can never
+    /// match, so we rewrite it into the empty-IN flavor that downstream code already handles
+    /// (Cardinality = 0 skips estimation, ClauseType.In + InTermCount = 0 feeds the empty-IN
+    /// short-circuit). String bounds are skipped because analyzer rewriting makes raw comparison
+    /// meaningless. Called from the single per-clause pass in <see cref="Build"/>.</summary>
+    private static void PropagateBetweenContradiction(ClauseExecution exec, ValueWriter writer)
     {
-        bool producedEmptyIn = false;
-        foreach (var exec in execList)
+        var p = exec.PackedParamValue;
+        if (exec.Clause.ClauseType != ClauseType.Between || p.Param2 is PackedParam.NoParamValue)
+            return;
+
+        bool contradictory = p.ValueType switch
         {
-            var p = exec.PackedParamValue;
+            PackedParam.TypeLong => writer.GetLong(p.Param1) > writer.GetLong(p.Param2),
+            PackedParam.TypeDouble => writer.GetDouble(p.Param1) > writer.GetDouble(p.Param2),
+            _ => false // for strings, we have to consider analyzers, so we can't tell
+        };
+        if (!contradictory)
+            return;
 
-            if (exec.Clause.ClauseType != ClauseType.Between || p.Param2 is PackedParam.NoParamValue)
-                continue;
-
-
-            bool contradictory = p.ValueType switch
-            {
-                PackedParam.TypeLong => writer.GetLong(p.Param1) > writer.GetLong(p.Param2),
-                PackedParam.TypeDouble => writer.GetDouble(p.Param1) > writer.GetDouble(p.Param2),
-                _ => false // for strings, we have to consider analyzers, so we can't tell
-            };
-            if (!contradictory)
-                continue;
-
-            exec.Cardinality = 0;
-            exec.InTermCount = 0;
-            exec.HasNullTerm = false;
-            exec.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
-            producedEmptyIn = true;
-        }
-        return producedEmptyIn;
+        exec.Cardinality = 0;
+        exec.InTermCount = 0;
+        exec.HasNullTerm = false;
+        exec.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
     }
 
 
