@@ -176,6 +176,8 @@ internal static partial class QueryPlanBuilder
     }
 
 
+    /// <summary>Singleton no-op ITermsProvider for TreeScan slots where the field doesn't exist.
+    /// FillPostingListIds returns 0 immediately, so the bitmap op is a no-op.</summary>
     private sealed class EmptyTermsProviderInstance : ITermsProvider
     {
         public static readonly EmptyTermsProviderInstance Instance = new();
@@ -355,9 +357,9 @@ internal static partial class QueryPlanBuilder
             return new QueryExecution
             {
                 Executions = executions,
-                QueryWillReturnNoResults = hasEmptyIn & template.IsOr is false || // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.  
+                QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false || // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
                                            executions.Count is 0 && template.Clauses.Count is not 0, // all filters removed by WHEN() clauses - returns nothing
-                IsAllEntries = executions.Count is 0, // no filter at all (all filters removed by WHEN() clauses handled above), return everything
+                IsAllEntries = executions.Count is 0 && template.Clauses.Count is 0, // no filter at all, return everything
                 DrivingClauseCardinality = drivingClauseCardinality,
             };
         }
@@ -733,12 +735,6 @@ internal static partial class QueryPlanBuilder
 
     private static int ComputeOperandOrdering(PlanParameters planParams, QueryExecution exec)
     {
-        // Empty-IN in AND: guaranteed zero results (AND with empty = empty).
-        //   $p = [] - empty vs. $p = ['news'] → has results - we need to tell the differernce.
-        // exec.HasEmptyIn was pre-computed during clause population; no second walk needed.
-        if (exec.QueryWillReturnNoResults)
-            return QueryExecution.EmptyInOrdering;
-
         var executions = exec.Executions;
         int operandOrdering = 0;
 
@@ -813,11 +809,11 @@ internal static partial class QueryPlanBuilder
     }
 
 
-    /// <summary>Emits the structural plan for a (cache-miss) query. Empty-IN handling is the
-    /// caller's responsibility — when <see cref="QueryExecution.QueryWillReturnNoResults"/> is set the caller
-    /// picks the empty-result plan directly (and the reserved <see cref="QueryExecution.EmptyInOrdering"/>
-    /// cache key keeps that plan isolated from real ones), so this method stays parameter-blind
-    /// and works off the structural execution list alone.</summary>
+    /// <summary>Emits the structural plan for a (cache-miss) query. Stays parameter-blind:
+    /// when <see cref="QueryExecution.QueryWillReturnNoResults"/> is set the caller has already
+    /// short-circuited with <c>return default</c> (see <see cref="Build"/>) so this method
+    /// never has to encode "guaranteed zero results" — it works off the structural execution
+    /// list alone.</summary>
     private static (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) EmitPlan(PlanTemplate template, List<ClauseExecution> executions)
     {
         if (executions.Count is 0)
@@ -978,12 +974,6 @@ internal static partial class QueryPlanBuilder
 
         return (ops.ToArray(), Math.Max(2, maxScratchUsed + 1), rangeCounts.Count > 0 ? rangeCounts.ToArray() : null);
     }
-
-    /// <summary>True when all clauses are negated (1+ clauses, first is negated after
-    /// cardinality sort — since negated sort last, if the first is negated, all are).
-    /// The single-clause NotEquals path in <see cref="EmitAndPlan"/> sets <c>IsNegated = true</c>
-    /// before this is called, so the slot layout is <c>[AllEntries, TermMatch]</c>.</summary>
-
 
     private static void EmitClauseInto(
         ClauseExecution exec,
@@ -1244,12 +1234,6 @@ internal static partial class QueryPlanBuilder
         nextScratch--;
     }
 
-    /// <summary>Set <see cref="PlanOp.SkipEarlyExit"/>=true on the most recent
-    /// <see cref="PlanOpKind.AndRange"/> in <paramref name="ops"/>. The op was emitted
-    /// by <see cref="EmitAllInOps"/> as the last entry of the AllIn pair; mutating it
-    /// here avoids threading the flag through that helper's signature.</summary>
-
-
     private static void EmitNegatedLeafInto(
         ClauseExecution exec,
         MergeKind merge, long cardinality,
@@ -1328,11 +1312,10 @@ internal static partial class QueryPlanBuilder
         matchIndex++;
     }
 
-    /// <summary>Translate sorted clauses into a linear PlanOp[] sequence for IL emission.
-    /// Dispatches to <see cref="EmitOrPlan"/> or <see cref="EmitAndPlan"/> after shared
-    /// empty-IN handling.</summary>
-
-
+    /// <summary>Set <see cref="PlanOp.SkipEarlyExit"/>=true on the most recent
+    /// <see cref="PlanOpKind.AndRange"/> in <paramref name="ops"/>. Used by
+    /// <see cref="EmitComplementBody"/> after emitting the AllIn pair so that
+    /// an empty intersection doesn't early-exit out of the surrounding negation.</summary>
     private static void SetLastAndRangeSkipEarlyExit(List<PlanOp> ops)
     {
         for (int i = ops.Count - 1; i >= 0; i--)
@@ -1346,15 +1329,6 @@ internal static partial class QueryPlanBuilder
             }
         }
     }
-
-    /// <summary>IsOrChainNotEquals leaf — fold AllEntries ANDNOT(positive form) into slot 0
-    /// at IL time. The per-term loops route through the cursor machinery so cancellation
-    /// and timing are covered. Only invoked with merge ∈ {Fill, OrInto} because
-    /// IsOrChainNotEquals only appears as an OR-chain leaf. Boost on such a clause is
-    /// silently ignored (matches Lucene — negation produces a complement, not a match to score).
-    /// Fill: build the complement directly in slot 0 (FillAllEntries + complement body).
-    /// OrInto: save slot 0 to a scratch, rebuild complement in slot 0, OR back.</summary>
-
 
     private static void EmitInOps(List<PlanOp> ops, int inTermCount, long cardinality, int bitmapLocal, bool isSeed, ref int matchIndex, List<int> rangeCounts)
     {
@@ -1429,12 +1403,6 @@ internal static partial class QueryPlanBuilder
         // so we iterate it directly without materializing into a bitmap first.
         return [new PlanOp { Kind = PlanOpKind.DirectIterate, ParamIndex = 0 }];
     }
-
-    /// <summary>Cardinality used for cost estimation; <c>NumberOfEntries</c> is the
-    /// fallback when a clause hasn't computed a cardinality yet (e.g. multi-term or
-    /// regex). Callers treat the fallback as "could match everything."</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-
 
     private static IQueryMatch Instantiate(
         CompiledPlan compiledPlan,
@@ -1689,11 +1657,6 @@ internal static partial class QueryPlanBuilder
 
         return bitmap;
     }
-
-    /// <summary>
-    /// Used to get the active list of clauses and a mask on when flags to tell between the different plans based on the when conditions 
-    /// </summary>
-
 
     private static bool TryCreateCompoundExactMatch(
         ref InstCtx ctx, out string rejectReason)
@@ -2136,9 +2099,6 @@ internal static partial class QueryPlanBuilder
         return directScan;
     }
 
-    /// <summary>Check if a range clause on the ORDER BY field can be served by a direct</summary>
-
-
     private static bool TryCreateSimpleFieldDirectScan(
         ref InstCtx ctx, out string rejectReason)
     {
@@ -2161,10 +2121,9 @@ internal static partial class QueryPlanBuilder
         return result;
     }
 
-    /// <summary>tree scan instead of the bitmap pipeline. The range query already walks the tree
+    /// <summary>Check if a range clause on the ORDER BY field can be served by a direct
+    /// tree scan instead of the bitmap pipeline. The range query already walks the tree
     /// in sort order, so no SortingMatch wrapper is needed.</summary>
-
-
     private static bool TryCreateSimpleFieldDirectScan(ref InstCtx ctx, out IQueryMatch directMatch)
     {
         directMatch = null;
@@ -2415,10 +2374,6 @@ internal static partial class QueryPlanBuilder
             take: -1, precompiledDelegate: residualDelegate);
     }
 
-    /// <summary>Singleton no-op ITermsProvider for TreeScan slots where the field doesn't exist.
-    /// FillPostingListIds returns 0 immediately, so the bitmap op is a no-op.</summary>
-
-
     private static IQueryMatch[] ResolveMatches(QueryExecution exec, ResolutionContext walkerCtx)
     {
         Debug.Assert(!exec.HasSpatialOrVector,
@@ -2431,20 +2386,6 @@ internal static partial class QueryPlanBuilder
             _ => ResolveSlots<MatchResolver, IQueryMatch>(walkerCtx, exec)
         };
     }
-
-    /// <summary>Produces a slot per LEAF position from QueryExecution's clauses. Slot layout
-    /// matches <see cref="CountMatchSlots"/> exactly — both walk the clause tree via the
-    /// same recursion (<see cref="ResolveClauseLeavesInto{TResolver, TSlot}"/> here,
-    /// <see cref="CountClauseLeaves"/> there). The emit helpers consume leaves in the
-    /// same order, keeping IL slot indices end-to-end consistent.
-    ///
-    /// <para><paramref name="clauseDispatch"/> is the per-leaf effective dispatch vector
-    /// computed at plan-build time (parallel to the recursion). A slot is populated only
-    /// when the leaf's dispatch matches <c>TResolver.TargetDispatch</c>; mismatched slots
-    /// stay at <c>default(TSlot)</c>. This avoids the wasted work of building three
-    /// parallel arrays where IL only ever reads one per slot.</para>
-    /// </summary>
-
 
     private static PostingSource[] ResolveTermSources(QueryExecution exec, ResolutionContext walkerCtx)
     {
@@ -2473,12 +2414,14 @@ internal static partial class QueryPlanBuilder
         return ResolveSlots<TermsProviderResolver, ITermsProvider>(walkerCtx, exec);
     }
 
-    /// <summary>Resolve a single TreeScan-eligible clause to its raw ITermsProvider.
-    /// Returns null for non-TreeScan clauses or when the field doesn't exist in the
-    /// index (factory method returned TermMatch.Empty instead of TermsProviderMatch).
-    /// Null slots cause the IL to fall through to the QueryMatch dispatch path.</summary>
-
-
+    /// <summary>Produces a slot per LEAF position from QueryExecution's clauses. Slot layout
+    /// matches <see cref="CountMatchSlots"/> exactly — both walk the clause tree via the
+    /// same recursion (<see cref="ResolveClauseLeavesInto{TResolver, TSlot}"/> here,
+    /// <see cref="CountClauseLeaves"/> there). The emit helpers consume leaves in the
+    /// same order, keeping IL slot indices end-to-end consistent. The per-leaf effective
+    /// dispatch vector is consulted via <c>TResolver.TargetDispatch</c>; mismatched slots
+    /// stay at <c>default(TSlot)</c>, avoiding wasted work of building three parallel
+    /// arrays where IL only ever reads one per slot.</summary>
     private static TSlot[] ResolveSlots<TResolver, TSlot>(ResolutionContext walkerCtx, QueryExecution exec)
         where TResolver : ISlotResolver<TResolver, TSlot>
     {
@@ -2545,9 +2488,6 @@ internal static partial class QueryPlanBuilder
             }
         }
     }
-
-    /// <summary>Static abstracts keep the dispatch monomorphic — the JIT specializes  resolver.</summary>
-
 
     private static IQueryMatch ResolveClause(ClauseExecution cur, QueryExecution root, ResolutionContext walkerCtx)
     {
@@ -2677,11 +2617,8 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Compute the field metadata and packed parameter for an IN term at the given index.
-    /// Shared by <see cref="ResolveInTerm"/> (bitmap path) and <see cref="ResolveInTermSource"/>
-    /// (posting-list path) to ensure field resolution and index arithmetic stay in sync.</summary>
-
-
+    /// <summary>Converts an Equals clause into a BetweenQuery(low==high==value) so
+    /// it produces a TermsProviderMatch that SortedDrivingMatch can walk in sort order.</summary>
     private static IQueryMatch ResolveEqualsClauseWithDirection(ClauseExecution exec,
         QueryExecution queryExec, bool forward, ResolutionContext walkerCtx)
     {
@@ -2738,10 +2675,6 @@ internal static partial class QueryPlanBuilder
         return rangeMatch;
     }
 
-    /// <summary>Converts an Equals clause into a BetweenQuery(low==high==value) so
-    /// it produces a TermsProviderMatch that SortedDrivingMatch can walk in sort order.</summary>
-
-
     private static IQueryMatch ResolveInTerm(ClauseExecution exec, int termIndex,
         QueryExecution queryExec, ResolutionContext walkerCtx)
     {
@@ -2751,29 +2684,15 @@ internal static partial class QueryPlanBuilder
 
     // ── Term-source resolution ───────────────────────────────────────────
 
-    /// <summary>
-    /// Resolve clause infos to <see cref="PostingSource"/> instances for the native
-    /// posting-list dispatch path. Parallels <see cref="ResolveMatches"/> — the
-    /// returned array uses the same indexing scheme. Slots whose underlying
-    /// clause is multi-term / non-term-shaped (Spatial, Vector, Search, Range,
-    /// StartsWith, EndsWith, Regex, AllEntries) keep <c>Kind == PostingSourceKind.Empty</c>;
-    /// only Equals / NotEquals / In / AllIn / OrGroup-of-(Not)Equals slots populate.
-    /// The IL emitter consults <see cref="PlanOp.Dispatch"/> to decide which
-    /// array to read.
-    /// </summary>
-
-
+    /// <summary>Compute the field metadata and packed parameter for an IN term at the given index.
+    /// Shared by <see cref="ResolveInTerm"/> (bitmap path) and <see cref="ResolveInTermSource"/>
+    /// (posting-list path) to ensure field resolution and index arithmetic stay in sync.</summary>
     private static (FieldMetadata FieldMeta, PackedParam TermPacked) ResolveInTermParam(
         ClauseExecution exec, int termIndex, ResolutionContext walkerCtx)
     {
         FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, walkerCtx);
         return (fieldMeta, exec.PackedParamValue.WithTermOffset(termIndex));
     }
-
-    /// <summary>Resolve a single IN term to a typed TermQuery (bitmap path).
-    /// IN terms are stored contiguously: PackedParamValue.Param1 = start index, InTermCount = count.
-    /// Only non-null terms are in the typed array. Null is handled separately via HasNullTerm.</summary>
-
 
     private static ITermsProvider ResolveSingleTermsProvider(ClauseExecution exec,
         QueryExecution queryExec, ResolutionContext walkerCtx)
@@ -3158,9 +3077,10 @@ internal static partial class QueryPlanBuilder
 
     // ── Execution-phase methods (moved from QueryPlanBuilder.cs) ──────────
 
-    /// <summary>Format a value from the plan's typed arrays as a string for display/highlighting.</summary>
-
-
+    /// <summary>Cardinality used for cost estimation; <c>NumberOfEntries</c> is the
+    /// fallback when a clause hasn't computed a cardinality yet (e.g. multi-term or
+    /// regex). Callers treat the fallback as "could match everything."</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static long EffectiveCardinality(in ClauseExecution exec, IndexSearcher indexSearcher)
         => exec.Cardinality > 0 ? exec.Cardinality : indexSearcher.NumberOfEntries;
 
@@ -3192,18 +3112,6 @@ internal static partial class QueryPlanBuilder
 
         return drivingCard;
     }
-
-    /// <summary>True iff <paramref name="exec"/> carries any boost — either annotated at
-    /// template time (<see cref="ClauseInfo.HasBoost"/>) or with a resolved runtime
-    /// factor (<see cref="ClauseExecution.BoostFactor"/> &gt; 0). Compound-key and
-    /// direct-scan paths can't propagate scores, so they reject any boosted clause.
-    ///
-    /// HasBoost is normally filtered upstream at plan time
-    /// (see <c>HasBoostRecursive</c> in QueryPlanBuilder.cs), so the second disjunct
-    /// catches edge cases where a runtime factor is set without the template flag
-    /// (e.g. wrapper paths that materialize a BoostingMatch directly).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-
 
     private static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)
     {
@@ -3335,16 +3243,10 @@ internal static partial class QueryPlanBuilder
 
     // ── Plan helpers ─────────────────────────────────────────────────────
 
-    /// <summary>Emit ops for an IN clause: Fill slot 0 + OrRange for the rest.
-    /// Fixed 2-op shape regardless of term count or presence of null. Slot 0 holds
-    /// the null-term posting list when HasNullTerm, else the first typed term, else
-    /// an empty PostingSource. Slots 1..inTermCount hold remaining typed terms and
-    /// the null-term, dispatched via OrRange whose count comes from
-    /// <c>ctx.InRangeCounts[rangeIdx]</c> at runtime. <paramref name="inTermCount"/>
-    /// must match <c>exec.InTermCount</c> so the emitter slot layout agrees with the
-    /// resolver's <see cref="ResolveClauseLeavesInto{TResolver,TSlot}"/> walk.</summary>
-
-
+    /// <summary>True iff <paramref name="exec"/> carries any boost — either annotated at
+    /// template time (<see cref="ClauseInfo.HasBoost"/>) or with a resolved runtime
+    /// factor (<see cref="ClauseExecution.BoostFactor"/> &gt; 0). Compound-key and
+    /// direct-scan paths can't propagate scores, so they reject any boosted clause.</summary>
     private static bool IsClauseBoosted(ClauseExecution exec)
         => exec.Clause.HasBoost || exec.BoostFactor > 0;
 
@@ -3363,13 +3265,6 @@ internal static partial class QueryPlanBuilder
         BinaryPrimitives.WriteInt64BigEndian(buf, Bits.SwapBytes(raw));
         return buf;
     }
-
-    /// <summary>Cost-gate shared by direct-scan eligibility checks: rejects when the
-    /// estimated direct-scan cost (entries × multiplier) is no cheaper than the
-    /// bitmap-pipeline cost, or when the scan would touch more entries than the
-    /// hard threshold. Returns <c>true</c> when direct scan is the right pick.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-
 
     internal static int CountMatchSlots(List<ClauseExecution> executions, bool isAllEntries)
     {
