@@ -204,7 +204,13 @@ internal static partial class QueryPlanBuilder
         // Extend Executions array to include spatial/vector post-filter clauses.
         var execs = exec.Executions ??= [];
 
-        int matchIndex = CountMatchSlots(execs, exec.IsAllEntries);
+        // Spatial/Vector ops get MatchIndex slots appended after the base resolved
+        // matches. The base slot count is the length of Cardinalities — populated
+        // by CardinalityArrayBuilder.Build in FinalizePlan before this call, and
+        // already accounts for IsAllEntries (slot 0 reserved for AllEntries) and
+        // every In/AllIn fanout. Falls back to (IsAllEntries ? 1 : 0) when no
+        // base clauses exist (Cardinalities is null in that case).
+        int matchIndex = exec.Cardinalities?.Length ?? (exec.IsAllEntries ? 1 : 0);
 
         if (spatialClauses != null)
         {

@@ -14,7 +14,12 @@ internal static partial class QueryPlanBuilder
     private sealed class PlanEmitter
     {
         private readonly List<PlanOp> _ops = [];
-        private readonly List<int> _rangeCounts = [];
+        // Index counter for IN/AllIn range slots. Each EmitInOps/EmitAllInOps consumes
+        // one slot; the values themselves are computed at FinalizePlan time by
+        // CardinalityArrayBuilder.Build from the same execution-tree walk that produces
+        // cardinalities, so PlanEmitter only needs the running index to bake into
+        // PlanOp.ParamIndex2 — IL reads ctx.InRangeCounts[that idx] at runtime.
+        private int _nextRangeIdx;
         private int _matchIndex;
         private int _nextScratch = 2;
         private int _maxScratchUsed = 1;
@@ -29,28 +34,28 @@ internal static partial class QueryPlanBuilder
         /// a clause based on per-execution parameter shape would poison the cached plan for
         /// subsequent executions with different IN-array sizes — the cache key does not encode
         /// IN array length.</summary>
-        public static (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams)
+        public static (PlanOp[] Ops, int RequiredBitmaps) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams)
         {
             if (executions.Count is 0)
-                return (BuildAllEntriesPlan(), 2, null);
+                return (BuildAllEntriesPlan(), 2);
 
             var emitter = new PlanEmitter();
-            var (ops, bitmaps, rangeCounts) = template.IsOr ? emitter.EmitOrPlan(executions) : emitter.EmitAndPlan(executions);
+            var (ops, bitmaps) = template.IsOr ? emitter.EmitOrPlan(executions) : emitter.EmitAndPlan(executions);
             if (planParams.HasBoost)
-            { 
+            {
                 // we require query match for boost, because the other options cannot compute it
                 for (int i = 0; i < ops.Length; i++)
                 {
                     ops[i].Dispatch = MatchDispatch.QueryMatch;
                 }
             }
-            return (ops, bitmaps, rangeCounts);
+            return (ops, bitmaps);
         }
 
-        private (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) Complete()
+        private (PlanOp[] Ops, int RequiredBitmaps) Complete()
         {
             _ops.Add(new PlanOp { Kind = PlanOpKind.IterateInto });
-            return (_ops.ToArray(), Math.Max(2, _maxScratchUsed + 1), _rangeCounts.Count > 0 ? _rangeCounts.ToArray() : null);
+            return (_ops.ToArray(), Math.Max(2, _maxScratchUsed + 1));
         }
 
         /// <summary>Emit the PlanOp sequence for an OR chain. All clauses are merged into
@@ -58,7 +63,7 @@ internal static partial class QueryPlanBuilder
         /// <see cref="EmitClauseInto"/>, allocating scratch slots on demand. SkipEarlyExit
         /// is forced on every AND-step because remaining OR terms may still match.
         /// Returns RequiredBitmaps = max(2, deepest scratch slot used + 1).</summary>
-        private (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) EmitOrPlan(List<ClauseExecution> executions)
+        private (PlanOp[] Ops, int RequiredBitmaps) EmitOrPlan(List<ClauseExecution> executions)
         {
             for (int i = 0; i < executions.Count; i++)
             {
@@ -77,7 +82,7 @@ internal static partial class QueryPlanBuilder
         /// clause is negated we seed with FillAllEntries instead and AndNot all of them.
         /// CheckAndMaybeEntryScan is emitted before each iteration when remaining clauses
         /// are scan-eligible; CheckEmpty follows each non-negated step.</summary>
-        private (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) EmitAndPlan(List<ClauseExecution> executions)
+        private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions)
         {
             var e0 = executions[0];
             switch (executions.Count)
@@ -90,7 +95,7 @@ internal static partial class QueryPlanBuilder
                         EstimatedCardinality = e0.Cardinality,
                         Dispatch = GetDispatch(e0.Clause)
                     });
-                    return (_ops.ToArray(), 2, null);
+                    return (_ops.ToArray(), 2);
                 case 1 when e0.ClauseType == ClauseType.NotEquals
                             || (e0.ClauseType == ClauseType.Equals && e0.IsNegated):
                     _ops.Add(new PlanOp
@@ -113,7 +118,7 @@ internal static partial class QueryPlanBuilder
                         e0.IsNegated = true;
                     }
 
-                    return (_ops.ToArray(), 2, null);
+                    return (_ops.ToArray(), 2);
             }
 
             // AND chain: Fill the smallest non-negated, then AndWith/AndNotWith the rest.
@@ -465,8 +470,9 @@ internal static partial class QueryPlanBuilder
             // list has no null, the trailing null slot is Empty — ORing with Empty is a no-op, so
             // we can safely include it (rangeCount = totalSlots - 1). When the list HAS a null
             // term, that slot is non-empty and we want to OR it in. Both cases use the same range.
-            int rangeIdx = _rangeCounts.Count;
-            _rangeCounts.Add(totalSlots - 1);
+            // The value stored at this index is filled in at FinalizePlan time by the
+            // fused CardinalityArrayBuilder.Build walk.
+            int rangeIdx = _nextRangeIdx++;
 
             _ops.Add(new PlanOp
             {
@@ -498,9 +504,9 @@ internal static partial class QueryPlanBuilder
             int totalSlots = inTermCount + 1; // inTermCount non-null terms + 1 null-term slot
             // Fill consumes slot 0, AndRange iterates the rest. The range count
             // covers all slots after slot 0 (including the null-term slot).
-            int rangeCount = totalSlots - 1;
-            int rangeIdx = _rangeCounts.Count;
-            _rangeCounts.Add(rangeCount);
+            // The value at this index is filled in at FinalizePlan time by the
+            // fused CardinalityArrayBuilder.Build walk.
+            int rangeIdx = _nextRangeIdx++;
 
             _ops.Add(new PlanOp
             {
