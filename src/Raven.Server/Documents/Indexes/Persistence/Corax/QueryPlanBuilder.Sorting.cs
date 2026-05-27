@@ -184,7 +184,7 @@ internal static partial class QueryPlanBuilder
             var fieldMetadata = QueryBuilderHelper.GetFieldIdForOrderBy(allocator, field.Name, index, builderParameters.HasDynamics,
                 builderParameters.DynamicFields, indexMapping, false);
 
-            bool fieldIsEmpty = builderParameters.IndexSearcher.GetTermAmountInField(fieldMetadata) == 0;
+            bool fieldIsEmpty = builderParameters.IndexSearcher.GetDistinctTermCountInField(fieldMetadata) == 0;
             if (fieldIsEmpty)
             {
                 if (builderParameters.IndexReadOperation.IsSharded == false)

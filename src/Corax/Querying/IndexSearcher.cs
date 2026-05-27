@@ -351,22 +351,26 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return terms?.DictionaryId ?? -1;
     }
    
-    public long GetTermAmountInField(in FieldMetadata field)
+    /// <summary>Number of distinct terms recorded under <paramref name="field"/>'s compact tree,
+    /// plus an entry for the null-posting-list bucket if one exists. This is a *term-dictionary*
+    /// count, not a matching-document count — use <see cref="NumberOfEntries"/> or
+    /// <see cref="NumberOfDocumentsUnderSpecificTerm"/> for document-count metrics.</summary>
+    public long GetDistinctTermCountInField(in FieldMetadata field)
     {
-        long termAmount = 0;
-        
+        long termCount = 0;
+
         var fieldTree = _fieldsTree?.CompactTreeFor(field.FieldName);
 
-        termAmount += fieldTree?.NumberOfEntries ?? 0;
+        termCount += fieldTree?.NumberOfEntries ?? 0;
 
         if (TryGetPostingListForNull(field, out var nullPostingListId))
         {
             var nullPostingList = GetPostingList(nullPostingListId);
 
-            termAmount += nullPostingList?.State.NumberOfEntries ?? 0;
+            termCount += nullPostingList?.State.NumberOfEntries ?? 0;
         }
-        
-        return termAmount;
+
+        return termCount;
     }
 
     public bool TryGetTermsOfField(in FieldMetadata field, out ExistsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator> existsTermsProvider)
