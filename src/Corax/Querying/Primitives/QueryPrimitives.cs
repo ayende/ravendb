@@ -280,34 +280,15 @@ public static class QueryPrimitives
 
     /// <summary>
     /// Runtime check: should we switch from bitmap AND to per-entry scan?
-    /// Compares cost of reading bitmap.Count entry blobs vs scanning through
-    /// the posting list. Returns true when entry scan is cheaper.
-    /// Called directly from IL-emitted code.
+    /// Compares the cost of reading <paramref name="bitmapCount"/> entry blobs
+    /// against the planner's estimate of the next clause's cardinality. Returns
+    /// true when entry scan is cheaper. Called directly from IL-emitted code.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool ShouldSwitchToEntryScan(long bitmapCount, long postingListCount)
+    public static bool ShouldSwitchToEntryScan(long bitmapCount, long nextClauseCardinality)
     {
         return bitmapCount < EntryScanCountThreshold
-            && bitmapCount * EntryScanCostMultiplier < postingListCount;
-    }
-
-    /// <summary>Dispatch-agnostic slot-count probe for the entry-scan heuristic.
-    /// The dispatch-aware resolver populates exactly one of <c>ResolvedMatches</c>,
-    /// <c>TermsProviders</c>, or <c>PostingSources</c> per slot; reading
-    /// <c>ResolvedMatches[cursor].Count</c> directly NRE's when the slot lives
-    /// elsewhere. For QueryMatch-dispatched slots we return the real count so
-    /// the entry-scan heuristic behaves exactly as before; for PostingList and
-    /// TreeScan dispatch we return 0 — the count isn't readily available without
-    /// decoding, and over-triggering entry scan on a stale upper bound regresses
-    /// queries the OLD code resolved via cheap posting-list AND. Returning 0
-    /// keeps the heuristic conservative: the regular AND path runs (correct and
-    /// already cheap for these dispatches); we can wire a real count through
-    /// later if profiling shows entry-scan would win for these clauses.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static long GetSlotEntryCount(Matches.CompiledQueryMatch ctx, int cursor)
-    {
-        IQueryMatch match = ctx.ResolvedMatches[cursor];
-        return match?.Count ?? 0;
+            && bitmapCount * EntryScanCostMultiplier < nextClauseCardinality;
     }
 
     /// <summary>Fill bitmap from an IQueryMatch by calling Fill repeatedly.

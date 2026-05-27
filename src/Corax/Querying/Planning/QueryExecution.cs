@@ -55,5 +55,11 @@ public class QueryExecution
     /// so the same compiled delegate handles different IN parameter array sizes.</summary>
     public int[] InRangeCounts;
 
+    /// <summary>Per-slot planner cardinality estimate consumed by the entry-scan heuristic.
+    /// Plan-cached IL holds no per-query numbers, so we attach the estimate per execution and
+    /// the IL indexes it by the runtime cursor. One long per match slot (same layout as the
+    /// dispatch arrays — IN/AllIn occupy <c>InTermCount + 1</c> consecutive slots).</summary>
+    public long[] Cardinalities;
+
     public bool HasSpatialOrVector => SpatialFilters is { Length: > 0 } || VectorSelects is { Length: > 0 };
 }
