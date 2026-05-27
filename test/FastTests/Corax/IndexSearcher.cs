@@ -1324,6 +1324,60 @@ namespace FastTests.Corax
         }
 
         [RavenFact(RavenTestCategory.Corax)]
+        public void EmptyInDoesNotPoisonCacheInOrChain()
+        {
+            // Regression test: an empty IN parameter ($p=[]) in an OR chain must not
+            // cache a plan that subsequent non-empty executions ($p=['x']) would reuse,
+            // producing wrong results because the IN clause was compacted out at plan time.
+            // The cache key (queryText, operandOrdering, typeSignature, fullKinds, whenFlags)
+            // does not encode IN-array size, so plan-time decisions based on parameter shape
+            // would corrupt the cache. The runtime handles empty-IN via InRangeCounts[i]=0.
+            var list = new[]
+            {
+                new IndexSingleEntry { Id = "entry/1", Content = "Alpha" },
+                new IndexSingleEntry { Id = "entry/2", Content = "Beta" },
+                new IndexSingleEntry { Id = "entry/3", Content = "Gamma" },
+            };
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            IndexEntries(bsc, list, CreateKnownFields(bsc));
+
+            const string rql = "FROM TestIndex WHERE Content IN ($p0) OR Id = 'entry/1'";
+
+            using var fields = CreateKnownFields(Allocator);
+            using var searcher = new IndexSearcher(Env, fields);
+            using var ctx = global::Sparrow.Json.JsonOperationContext.ShortTermSingleUse();
+
+            // Execution 1: $p0 = [] (empty array) → IN side contributes nothing, OR with Id='entry/1' → 1 result
+            {
+                var emptyParams = ctx.ReadObject(new global::Sparrow.Json.Parsing.DynamicJsonValue { ["p0"] = new global::Sparrow.Json.Parsing.DynamicJsonArray() }, "params");
+                var queryMetadata = new QueryMetadata(rql, emptyParams, 0);
+                var planParams = new QueryPlanBuilder.PlanParameters
+                {
+                    IndexSearcher = searcher, Metadata = queryMetadata,
+                    QueryParameters = emptyParams, Allocator = Allocator
+                };
+                var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, emptyParams, fields), out _, out _, null, false, default);
+                Span<long> buf = stackalloc long[64];
+                Assert.Equal(1, match.Fill(buf));
+            }
+
+            // Execution 2: $p0 = ['Beta'] → IN matches entry/2, OR Id='entry/1' → 2 results.
+            // Would return 1 if the cached plan from execution 1 dropped the IN clause.
+            {
+                var realParams = ctx.ReadObject(new global::Sparrow.Json.Parsing.DynamicJsonValue { ["p0"] = new global::Sparrow.Json.Parsing.DynamicJsonArray { "Beta" } }, "params");
+                var queryMetadata = new QueryMetadata(rql, realParams, 0);
+                var planParams = new QueryPlanBuilder.PlanParameters
+                {
+                    IndexSearcher = searcher, Metadata = queryMetadata,
+                    QueryParameters = realParams, Allocator = Allocator
+                };
+                var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, realParams, fields), out _, out _, null, false, default);
+                Span<long> buf = stackalloc long[64];
+                Assert.Equal(2, match.Fill(buf));
+            }
+        }
+
+        [RavenFact(RavenTestCategory.Corax)]
         public void SimpleAndNot()
         {
             var entry1 = new IndexSingleEntry {Id = "entry/1", Content = "Testing"};
