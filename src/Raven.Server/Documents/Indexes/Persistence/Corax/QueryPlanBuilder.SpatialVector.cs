@@ -300,7 +300,11 @@ internal static partial class QueryPlanBuilder
             ? vec.MinimumMatch
             : builderParameters.Index.Configuration.CoraxVectorSearchDefaultMinimumSimilarity;
 
-        int numberOfCandidates = vec.NumberOfCandidates >= 0
+        // Treat 0 as "unspecified" (fall back to config default). The binding-resolution path can
+        // emit 0 when the client omits numberOfCandidates and the parameter slot is materialized
+        // with a default-int value; a configured 0 is meaningless to HNSW (it terminates the
+        // search after the entry point and yields only the seed node).
+        int numberOfCandidates = vec.NumberOfCandidates > 0
             ? vec.NumberOfCandidates
             : builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying;
 
