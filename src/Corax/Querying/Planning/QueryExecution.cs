@@ -34,10 +34,8 @@ public class QueryExecution
     public List<ClauseExecution> Executions;
     public bool IsAllEntries;
 
-    /// <summary>Set during clause population/contradiction propagation when any AND clause is
-    /// an empty IN/AllIn (InTermCount=0, no null term). Pre-computed once so the cache-key
-    /// pass and the plan emitter don't both have to re-scan the execution list.</summary>
-    public bool HasEmptyIn;
+    /// <summary>Set during clause population/contradiction propagation when we can detect upfront that this query cannot return any results</summary>
+    public bool QueryWillReturnNoResults;
 
     /// <summary>Cardinality of the clause that matches <see cref="PlanTemplate.SortDrivingClauseIndex"/>,
     /// captured during the per-execution cardinality estimation pass. Lets <see cref="CompiledPlan.Ordering"/>'s
