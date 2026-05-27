@@ -19,12 +19,16 @@ internal static partial class QueryPlanBuilder
         private readonly List<double> _doubles = [];
         private readonly List<string> _strings = [];
 
+        private PackedParam? TryAddLong(long? value) => value is null ? null : AddLong(value.Value);
+        
         private PackedParam AddLong(long value)
         {
             _longs.Add(value);
             return new PackedParam(PackedParam.TypeLong, _longs.Count - 1);
         }
 
+        private PackedParam? TryAddDouble(double? value) => value is null ? null : AddDouble(value.Value);
+        
         private PackedParam AddDouble(double value)
         {
             _doubles.Add(value);
@@ -45,6 +49,30 @@ internal static partial class QueryPlanBuilder
             {
                 ValueTokenType.Long => AddLong(value is long l ? l : Convert.ToInt64(value)),
                 ValueTokenType.Double => AddDouble(value is double d ? d : Convert.ToDouble(value)),
+                _ => AddString(value?.ToString())
+            };
+        }
+        
+        public PackedParam? TryAdd(object? value, ValueTokenType type)
+        {
+            return type switch
+            {
+                ValueTokenType.Long =>  TryAddLong(value switch
+                {
+                    long l => l,
+                    double d => (long)d,
+                    string str when long.TryParse(str, out long l) => l,
+                    _ when long.TryParse(value?.ToString(), out long l) => l,
+                    _ => null
+                }),
+                ValueTokenType.Double => TryAddDouble(value switch
+                {
+                    double d => d,
+                    long l => l,
+                    string str when double.TryParse(str, out double d) => d,
+                    _ when double.TryParse(value?.ToString(), out double d) => d,
+                    _ => null
+                }),
                 _ => AddString(value?.ToString())
             };
         }
