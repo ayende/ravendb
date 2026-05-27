@@ -280,24 +280,27 @@ public static class QueryIlEmitter
         d.CsLine("");
     }
 
-    /// <summary>if (ShouldSwitchToEntryScan(bitmaps[0].Count, matches[cursor].Count)) goto EntryScan</summary>
+    /// <summary>if (ShouldSwitchToEntryScan(bitmaps[0].Count, GetSlotEntryCount(ctx, cursor))) goto EntryScan.
+    /// Routes the next-slot count probe through <see cref="QueryPrimitives.GetSlotEntryCount"/>
+    /// so the heuristic works regardless of which dispatch array (ResolvedMatches /
+    /// PostingSources / TermsProviders) holds the resolved slot. Reading
+    /// <c>ResolvedMatches[cursor].Count</c> inline NRE's for PostingList/TreeScan
+    /// dispatch where that slot is null.</summary>
     private static void EmitEntryScanCheck(ref DualEmit d, LocalBuilder cursorVar, LabelPair entryScanLabel)
     {
         d.IlLoadBitmapRef(0);
         d.Il.Emit(OpCodes.Call, IlEmitterShared.CountGetter);
         d.Il.Emit(OpCodes.Conv_I8);
 
-        // Load ctx.ResolvedMatches[cursor]
+        // GetSlotEntryCount(ctx, cursor)
         d.Il.Emit(OpCodes.Ldarg_0);
-        d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxResolvedMatches);
         d.Il.Emit(OpCodes.Ldloc, cursorVar);
-        d.Il.Emit(OpCodes.Ldelem_Ref);
-        d.Il.Emit(OpCodes.Callvirt, IlEmitterShared.MatchCountGetter);
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.GetSlotEntryCount);
 
         d.Il.Emit(OpCodes.Call, IlEmitterShared.ShouldSwitchToEntryScan);
         d.Il.Emit(OpCodes.Brtrue, entryScanLabel.Il);
 
-        d.CsLine($"if (QueryPrimitives.ShouldSwitchToEntryScan((long)ctx.Bitmaps[0].Count, ctx.ResolvedMatches[{d.GetLocalName(cursorVar)}].Count))");
+        d.CsLine($"if (QueryPrimitives.ShouldSwitchToEntryScan((long)ctx.Bitmaps[0].Count, QueryPrimitives.GetSlotEntryCount(ctx, {d.GetLocalName(cursorVar)})))");
         d.CsLine($"    goto {entryScanLabel.Name};");
     }
 

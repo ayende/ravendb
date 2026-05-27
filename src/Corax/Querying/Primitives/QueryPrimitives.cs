@@ -291,6 +291,25 @@ public static class QueryPrimitives
             && bitmapCount * EntryScanCostMultiplier < postingListCount;
     }
 
+    /// <summary>Dispatch-agnostic slot-count probe for the entry-scan heuristic.
+    /// The dispatch-aware resolver populates exactly one of <c>ResolvedMatches</c>,
+    /// <c>TermsProviders</c>, or <c>PostingSources</c> per slot; reading
+    /// <c>ResolvedMatches[cursor].Count</c> directly NRE's when the slot lives
+    /// elsewhere. For QueryMatch-dispatched slots we return the real count so
+    /// the entry-scan heuristic behaves exactly as before; for PostingList and
+    /// TreeScan dispatch we return 0 — the count isn't readily available without
+    /// decoding, and over-triggering entry scan on a stale upper bound regresses
+    /// queries the OLD code resolved via cheap posting-list AND. Returning 0
+    /// keeps the heuristic conservative: the regular AND path runs (correct and
+    /// already cheap for these dispatches); we can wire a real count through
+    /// later if profiling shows entry-scan would win for these clauses.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static long GetSlotEntryCount(Matches.CompiledQueryMatch ctx, int cursor)
+    {
+        IQueryMatch match = ctx.ResolvedMatches[cursor];
+        return match?.Count ?? 0;
+    }
+
     /// <summary>Fill bitmap from an IQueryMatch by calling Fill repeatedly.
     /// Fast paths (consume-after-use semantics — sources are not read again):
     ///   - IBitmapQueryMatch: steal containers via LazyOrWith + one RepairAfterLazy pass.
