@@ -1,6 +1,5 @@
 using System;
 using System.Runtime.CompilerServices;
-using System.Threading;
 using Corax.Mappings;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
@@ -8,7 +7,6 @@ using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Querying.Planning;
 using Corax.Utils;
 using Raven.Client.Exceptions.Corax;
-using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Spatial4n.Shapes;
@@ -519,31 +517,6 @@ internal static partial class QueryPlanBuilder
             default:
                 return indexSearcher.OrderBy(match, orderMetadata, builderParameters.Index.Configuration.NullsSortMode, take, builderParameters.Token);
         }
-    }
-
-    /// <summary>Apply ORDER BY from plan metadata when a full <see cref="QueryBuilderParameters"/> is not
-    /// available (e.g., direct tests). Handles <c>ORDER BY score()</c> only — callers that need
-    /// field / spatial / alphanumeric sorts must use the full
-    /// <see cref="OrderBy(QueryBuilderParameters,IQueryMatch,in OrderMetadata[],bool)"/> overload.</summary>
-    public static IQueryMatch ApplyScoreOrdering(QueryPlanBuilder.PlanParameters planParams, IQueryMatch match, long take, CancellationToken token = default)
-    {
-        OrderByField[] orderByFields = planParams.Metadata.OrderBy;
-        if (orderByFields == null || orderByFields.Length == 0)
-            return match;
-
-        var indexSearcher = planParams.IndexSearcher;
-        int takeInt = take > int.MaxValue ? Constants.IndexSearcher.TakeAll : (int)take;
-
-        for (int i = 0; i < orderByFields.Length; i++)
-        {
-            if (orderByFields[i].OrderingType == OrderByFieldType.Score)
-            {
-                var meta = new OrderMetadata(true, MatchCompareFieldType.Score, orderByFields[i].Ascending);
-                return indexSearcher.OrderBy(match, meta, NullsSortMode.NullsLargest, take: takeInt, token: token);
-            }
-        }
-
-        return match;
     }
 
     // ── Search helpers (used by ResolveClause for Search clause type) ────
