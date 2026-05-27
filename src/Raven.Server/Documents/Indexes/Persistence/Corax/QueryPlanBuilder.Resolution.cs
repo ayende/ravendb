@@ -21,6 +21,7 @@ using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Binary;
 using Sparrow.Json;
+using Sparrow.Server;
 using Voron;
 using Voron.Data.RoaringBitmaps;
 using Voron.Impl;
@@ -1136,60 +1137,30 @@ internal static partial class QueryPlanBuilder
             secondExec = eA;
         }
 
-        byte[] field1Bytes = BuildCompoundFieldBytes(firstField, firstExec, indexSearcher, ctx.Exec);
-        if (field1Bytes == null || field1Bytes.Length > byte.MaxValue) return null;
+        if (TryGetCompoundFieldEncoding(firstField, firstExec.PackedParamValue,
+                firstExec.PackedParamValue.Param1, ref ctx, out var enc1) == false
+            || enc1.Size > byte.MaxValue)
+            return null;
 
-        byte[] field2Bytes = BuildCompoundFieldBytes(secondField, secondExec, indexSearcher, ctx.Exec);
-        if (field2Bytes == null) return null;
+        if (TryGetCompoundFieldEncoding(secondField, secondExec.PackedParamValue,
+                secondExec.PackedParamValue.Param1, ref ctx, out var enc2) == false)
+            return null;
 
-        int totalLen = field1Bytes.Length + field2Bytes.Length + 1;
+        int totalLen = enc1.Size + enc2.Size + 1;
         if (totalLen > Constants.Terms.MaxLength) return null;
 
-        var compositeKey = new byte[totalLen];
-        field1Bytes.CopyTo(compositeKey, 0);
-        field2Bytes.CopyTo(compositeKey.AsSpan(field1Bytes.Length));
-        compositeKey[^1] = (byte)field1Bytes.Length;
+        // Single allocator-backed buffer; write each field directly into its slice.
+        // The trailing byte stores field1 length (used at scan time to split the composite key).
+        ctx.PlanParams.Allocator.Allocate(totalLen, out ByteString keyBuf);
+        var keySpan = keyBuf.ToSpan();
+        WriteCompoundFieldEncoding(keySpan.Slice(0, enc1.Size), enc1, ctx.Exec);
+        WriteCompoundFieldEncoding(keySpan.Slice(enc1.Size, enc2.Size), enc2, ctx.Exec);
+        keySpan[totalLen - 1] = (byte)enc1.Size;
 
         var compoundFieldName = $"compound({firstField},{secondField})";
         var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
-        Slice.From(ctx.PlanParams.Allocator, compositeKey, out var keySlice);
 
-        return indexSearcher.TermQuery(compoundFieldMeta, keySlice);
-    }
-
-
-    private static byte[] BuildCompoundFieldBytes(string fieldName, ClauseExecution exec,
-        IndexSearcher indexSearcher, QueryExecution queryExec)
-    {
-        var p = exec.PackedParamValue;
-        if (p.ValueType == PackedParam.TypeString)
-        {
-            var meta = indexSearcher.FieldMetadataBuilder(fieldName, hasBoost: false);
-            var analyzed = queryExec.GetAnalyzedSlice(indexSearcher, meta, p.Param1);
-            if (analyzed.Size > byte.MaxValue) return null;
-            var bytes = new byte[analyzed.Size];
-            analyzed.CopyTo(bytes);
-            return bytes;
-        }
-
-        if (p.ValueType == PackedParam.TypeLong)
-        {
-            var bytes = new byte[sizeof(long)];
-            BinaryPrimitives.WriteInt64BigEndian(
-                bytes, Bits.SwapBytes(queryExec.LongValues[p.Param1]));
-            return bytes;
-        }
-
-        if (p.ValueType == PackedParam.TypeDouble)
-        {
-            var bytes = new byte[sizeof(long)];
-            long sortable = Bits.DoubleToSortableLong(queryExec.DoubleValues[p.Param1]);
-            BinaryPrimitives.WriteInt64BigEndian(
-                bytes, Bits.SwapBytes(sortable));
-            return bytes;
-        }
-
-        return null;
+        return indexSearcher.TermQuery(compoundFieldMeta, new Slice(keyBuf));
     }
 
     /// <summary>compound(field1, field2) exists in the index, and any residual clauses are
@@ -1324,40 +1295,11 @@ internal static partial class QueryPlanBuilder
         var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
 
         // Build the prefix bytes for field1's value.
-        // String: analyzed via field1's analyzer. Numeric: Bits.SwapBytes big-endian encoding.
-        Slice analyzedPrefix;
-        string field1ValueStr;
-        switch (packed.ValueType)
-        {
-            case PackedParam.TypeString:
-            {
-                field1ValueStr = ctx.Exec.StringValues[packed.Param1];
-                var field1Meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, field1Name, hasBoost: false);
-                analyzedPrefix = ctx.Exec.GetAnalyzedSlice(indexSearcher, field1Meta, packed.Param1);
-                break;
-            }
-            case PackedParam.TypeLong:
-            {
-                long longVal = ctx.Exec.LongValues[packed.Param1];
-                field1ValueStr = longVal.ToString();
-                var bytes = new byte[sizeof(long)];
-                BinaryPrimitives.WriteInt64BigEndian(bytes, Bits.SwapBytes(longVal));
-                Slice.From(allocator, bytes, out analyzedPrefix);
-                break;
-            }
-            case PackedParam.TypeDouble:
-            {
-                double dblVal = ctx.Exec.DoubleValues[packed.Param1];
-                field1ValueStr = dblVal.ToString(CultureInfo.InvariantCulture);
-                long sortable = Bits.DoubleToSortableLong(dblVal);
-                var bytes = new byte[sizeof(long)];
-                BinaryPrimitives.WriteInt64BigEndian(bytes, Bits.SwapBytes(sortable));
-                Slice.From(allocator, bytes, out analyzedPrefix);
-                break;
-            }
-            default:
-                return null;
-        }
+        // String: analyzed via field1's analyzer (cached). Numeric: 8-byte big-endian sortable encoding
+        // written directly into a single allocator-backed ByteString (no managed byte[] hop).
+        Slice analyzedPrefix = BuildField1Prefix(ref ctx, field1Name, packed, out string field1ValueStr);
+        if (analyzedPrefix.HasValue == false)
+            return null;
 
         // Compound key trailing byte stores field1 length as a single byte.
         // If the analyzed prefix exceeds 255 bytes, the compound key format can't represent it.
@@ -1365,129 +1307,25 @@ internal static partial class QueryPlanBuilder
         if (analyzedPrefix.Size > byte.MaxValue)
             return null;
 
-        IQueryMatch drivingMatch = null;
-        if (field2RangeIdx >= 0)
+        bool ascending = ctx.OrderByFields[0].Ascending;
+
+        IQueryMatch drivingMatch;
+        if (field2RangeIdx >= 0
+            && TryBuildCompositeRangeKeys(ref ctx, analyzedPrefix, sortFieldName,
+                execs[field2RangeIdx], out var lowSlice, out var highSlice))
         {
-            // Compound range: build composite low/high keys incorporating the field2 bound
-            var field2Exec = execs[field2RangeIdx];
-            var field2Clause = field2Exec.Clause;
-            var field2Packed = field2Exec.PackedParamValue;
-
-            if (!field2Packed.IsNone)
-            {
-                // Encode field2 bound value into bytes (same encoding as indexing).
-                // Long/Double: Bits.SwapBytes big-endian. String: analyze with field2's analyzer.
-                byte[] field2Bytes = null;
-                byte[] field2HighBytes = null;
-                bool usePrefix = false;
-
-                if (field2Packed.ValueType is PackedParam.TypeLong or PackedParam.TypeDouble)
-                {
-                    field2Bytes = EncodeNumericBoundBigEndian(ctx.Exec, field2Packed.ValueType, field2Packed.Param1);
-                    if (field2Clause.ClauseType == ClauseType.Between)
-                        field2HighBytes = EncodeNumericBoundBigEndian(ctx.Exec, field2Packed.ValueType, field2Packed.Param2);
-                }
-                else if (field2Packed.ValueType == PackedParam.TypeString)
-                {
-                    // Analyze field2's value with the sort field's analyzer (same as indexing)
-                    var field2Meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, sortFieldName, hasBoost: false);
-                    var analyzed = ctx.Exec.GetAnalyzedSlice(indexSearcher, field2Meta, field2Packed.Param1);
-                    if (analyzed.Size > byte.MaxValue)
-                        usePrefix = true;
-                    else
-                    {
-                        field2Bytes = new byte[analyzed.Size];
-                        analyzed.CopyTo(field2Bytes);
-                        if (field2Clause.ClauseType == ClauseType.Between)
-                        {
-                            var analyzedHigh = ctx.Exec.GetAnalyzedSlice(indexSearcher, field2Meta, field2Packed.Param2);
-                            if (analyzedHigh.Size > byte.MaxValue)
-                                usePrefix = true;
-                            else
-                            {
-                                field2HighBytes = new byte[analyzedHigh.Size];
-                                analyzedHigh.CopyTo(field2HighBytes);
-                            }
-                        }
-                    }
-                }
-                else
-                {
-                    usePrefix = true;
-                }
-
-                if (usePrefix)
-                {
-                    // Field2 value too long or unsupported type — fall back to prefix-only
-                    drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
-                        isNegated: false, forward: ctx.OrderByFields[0].Ascending,
-                        validatePostfixLen: true);
-                }
-                else
-                {
-                    // Build low- and high-composite keys
-                    int prefixLen = analyzedPrefix.Size;
-                    int field2Len = field2Bytes.Length;
-                    int keyLen = prefixLen + field2Len + 1; // +1 for field1 length byte
-                    int highField2Len = field2HighBytes?.Length ?? field2Len;
-                    int highKeyLen = prefixLen + highField2Len + 1;
-
-                    // Check total key length against max
-                    if (keyLen > Constants.Terms.MaxLength || highKeyLen > Constants.Terms.MaxLength)
-                    {
-                        drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
-                            isNegated: false, forward: ctx.OrderByFields[0].Ascending, validatePostfixLen: true);
-                        goto DrivingMatchReady;
-                    }
-
-                    byte[] lowKeyBytes = new byte[keyLen];
-                    byte[] highKeyBytes = new byte[highKeyLen];
-
-                    analyzedPrefix.CopyTo(lowKeyBytes);
-                    analyzedPrefix.CopyTo(highKeyBytes);
-
-                    // Low key: either the field2 bound or min value (0x00s)
-                    // High key: either the field2 bound or max value (0xFFs)
-                    bool isGt = field2Clause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual;
-                    if (isGt || field2Clause.ClauseType == ClauseType.Between)
-                    {
-                        field2Bytes.CopyTo(lowKeyBytes.AsSpan(prefixLen));
-                    }
-                    // else: low = field1 prefix + 0x00s (already zeroed)
-
-                    if (field2Clause.ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual || field2Clause.ClauseType == ClauseType.Between)
-                    {
-                        var highBytes = field2HighBytes ?? field2Bytes;
-                        highBytes.CopyTo(highKeyBytes.AsSpan(prefixLen));
-                    }
-                    else
-                    {
-                        // GT/GTE: high = field1 prefix + 0xFF...FF
-                        highKeyBytes.AsSpan(prefixLen, highField2Len).Fill(0xFF);
-                    }
-
-                    // Trailing field1 length byte
-                    lowKeyBytes[^1] = (byte)prefixLen;
-                    highKeyBytes[^1] = (byte)prefixLen;
-
-                    Slice.From(allocator, lowKeyBytes, out var lowSlice);
-                    Slice.From(allocator, highKeyBytes, out var highSlice);
-
-                    drivingMatch = indexSearcher.RangeBuilder<Range.Inclusive, Range.Inclusive>(
-                        compoundFieldMeta, lowSlice, highSlice,
-                        forward: ctx.OrderByFields[0].Ascending, CancellationToken.None);
-                }
-            }
+            drivingMatch = indexSearcher.RangeBuilder<Range.Inclusive, Range.Inclusive>(
+                compoundFieldMeta, lowSlice, highSlice,
+                forward: ascending, CancellationToken.None);
         }
         else
         {
-            // Pure prefix scan (no field2 constraint)
+            // No field2 narrowing (or it would overflow / use an unsupported value type):
+            // run a prefix scan on field1 only and let entry-scan residuals filter the rest.
             drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
-                isNegated: false, forward: ctx.OrderByFields[0].Ascending,
+                isNegated: false, forward: ascending,
                 validatePostfixLen: true);
         }
-
-        DrivingMatchReady:
 
         // Extract scan parameters for residual predicates
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
@@ -1509,6 +1347,129 @@ internal static partial class QueryPlanBuilder
         directScan.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
 
         return directScan;
+    }
+
+    /// <summary>Build the field1 prefix <see cref="Slice"/> for the CompoundField driving match.
+    /// String case returns the cached analyzed slice directly (no allocation). Numeric cases
+    /// allocate a single 8-byte allocator-backed buffer and write the big-endian sortable
+    /// encoding straight in — no managed <c>byte[]</c> intermediate. Unsupported value types
+    /// return <c>default(Slice)</c>; caller treats that as a failure.</summary>
+    private static Slice BuildField1Prefix(ref InstCtx ctx, string field1Name, PackedParam packed,
+        out string field1ValueStr)
+    {
+        var indexSearcher = ctx.PlanParams.IndexSearcher;
+        switch (packed.ValueType)
+        {
+            case PackedParam.TypeString:
+            {
+                field1ValueStr = ctx.Exec.StringValues[packed.Param1];
+                var field1Meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, field1Name, hasBoost: false);
+                return ctx.Exec.GetAnalyzedSlice(indexSearcher, field1Meta, packed.Param1);
+            }
+            case PackedParam.TypeLong:
+            {
+                long longVal = ctx.Exec.LongValues[packed.Param1];
+                field1ValueStr = longVal.ToString();
+                ctx.PlanParams.Allocator.Allocate(sizeof(long), out ByteString buf);
+                EncodeNumericValue(buf.ToSpan(), PackedParam.TypeLong, packed.Param1, ctx.Exec);
+                return new Slice(buf);
+            }
+            case PackedParam.TypeDouble:
+            {
+                double dblVal = ctx.Exec.DoubleValues[packed.Param1];
+                field1ValueStr = dblVal.ToString(CultureInfo.InvariantCulture);
+                ctx.PlanParams.Allocator.Allocate(sizeof(long), out ByteString buf);
+                EncodeNumericValue(buf.ToSpan(), PackedParam.TypeDouble, packed.Param1, ctx.Exec);
+                return new Slice(buf);
+            }
+            default:
+                field1ValueStr = null;
+                return default;
+        }
+    }
+
+    /// <summary>Build the composite low/high <see cref="Slice"/> keys for a CompoundField range scan.
+    /// Returns false (and the caller falls back to the prefix-only StartsWith path) when:
+    ///   - the field2 packed param is None,
+    ///   - field2 is a String value that exceeds 255 bytes (low or high bound),
+    ///   - field2 is an unsupported value type,
+    ///   - the resulting composite key (prefix + suffix + 1 length byte) exceeds
+    ///     <see cref="Constants.Terms.MaxLength"/>.
+    /// Each successful return allocates exactly two allocator-backed buffers (one per slice);
+    /// the field2 bytes are written directly into them with no managed <c>byte[]</c> hop.
+    /// </summary>
+    private static bool TryBuildCompositeRangeKeys(
+        ref InstCtx ctx,
+        Slice analyzedPrefix,
+        string sortFieldName,
+        ClauseExecution field2Exec,
+        out Slice lowSlice,
+        out Slice highSlice)
+    {
+        lowSlice = default;
+        highSlice = default;
+
+        var field2Packed = field2Exec.PackedParamValue;
+        if (field2Packed.IsNone)
+            return false;
+
+        var field2ClauseType = field2Exec.Clause.ClauseType;
+        bool isBetween = field2ClauseType == ClauseType.Between;
+        bool isGt = field2ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual;
+        bool isLt = field2ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual;
+
+        // Resolve low (and high for Between) encodings. String slots reject early on >255 bytes.
+        if (TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param1, ref ctx, out var encLow) == false)
+            return false;
+        if (field2Packed.ValueType == PackedParam.TypeString && encLow.Size > byte.MaxValue)
+            return false;
+
+        CompoundFieldEncoding encHigh = default;
+        if (isBetween)
+        {
+            if (TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param2, ref ctx, out encHigh) == false)
+                return false;
+            if (field2Packed.ValueType == PackedParam.TypeString && encHigh.Size > byte.MaxValue)
+                return false;
+        }
+
+        int prefixSize = analyzedPrefix.Size;
+        int lowSuffixSize = encLow.Size;
+        int highSuffixSize = isBetween ? encHigh.Size : encLow.Size;
+        int lowLen = prefixSize + lowSuffixSize + 1;
+        int highLen = prefixSize + highSuffixSize + 1;
+
+        if (lowLen > Constants.Terms.MaxLength || highLen > Constants.Terms.MaxLength)
+            return false;
+
+        var allocator = ctx.PlanParams.Allocator;
+        var prefixSpan = analyzedPrefix.AsReadOnlySpan();
+
+        // Low key. GT/GTE → low suffix = field2 bound; LT/LTE → low suffix = 0x00; Between → low = low bound.
+        allocator.Allocate(lowLen, out ByteString lowBuf);
+        var lowSpan = lowBuf.ToSpan();
+        prefixSpan.CopyTo(lowSpan);
+        if (isGt || isBetween)
+            WriteCompoundFieldEncoding(lowSpan.Slice(prefixSize, lowSuffixSize), encLow, ctx.Exec);
+        else
+            lowSpan.Slice(prefixSize, lowSuffixSize).Clear();
+        lowSpan[lowLen - 1] = (byte)prefixSize;
+
+        // High key. LT/LTE → high suffix = field2 bound; GT/GTE → high suffix = 0xFF; Between → high = high bound.
+        allocator.Allocate(highLen, out ByteString highBuf);
+        var highSpan = highBuf.ToSpan();
+        prefixSpan.CopyTo(highSpan);
+        if (isLt)
+            WriteCompoundFieldEncoding(highSpan.Slice(prefixSize, highSuffixSize), encLow, ctx.Exec);
+        else if (isBetween)
+            WriteCompoundFieldEncoding(highSpan.Slice(prefixSize, highSuffixSize), encHigh, ctx.Exec);
+        else
+            highSpan.Slice(prefixSize, highSuffixSize).Fill(0xFF);
+        highSpan[highLen - 1] = (byte)prefixSize;
+
+        lowSlice = new Slice(lowBuf);
+        highSlice = new Slice(highBuf);
+        return true;
     }
 
     private static bool TryCreateSimpleFieldDirectScan(
@@ -2276,15 +2237,77 @@ internal static partial class QueryPlanBuilder
     /// <summary>Encode a numeric (long/double) field value at <paramref name="paramIdx"/>
     /// into 8 big-endian sortable bytes — the same encoding indexing uses for compound-key
     /// long/double fields. Doubles map through <see cref="Bits.DoubleToSortableLong"/>
-    /// first so that descending order matches IEEE-754 semantics.</summary>
-    private static byte[] EncodeNumericBoundBigEndian(QueryExecution exec, int valueType, int paramIdx)
+    /// first so that descending order matches IEEE-754 semantics. Writes directly into
+    /// <paramref name="dest"/> (which must be exactly <c>sizeof(long)</c> bytes), so the
+    /// caller controls the allocation strategy and no managed <c>byte[]</c> is needed.</summary>
+    private static void EncodeNumericValue(Span<byte> dest, int valueType, int paramIdx, QueryExecution exec)
     {
         long raw = valueType == PackedParam.TypeDouble
             ? Bits.DoubleToSortableLong(exec.DoubleValues[paramIdx])
             : exec.LongValues[paramIdx];
-        var buf = new byte[sizeof(long)];
-        BinaryPrimitives.WriteInt64BigEndian(buf, Bits.SwapBytes(raw));
-        return buf;
+        BinaryPrimitives.WriteInt64BigEndian(dest, Bits.SwapBytes(raw));
+    }
+
+    /// <summary>One value-slot of a compound key: the resolved size plus the source
+    /// (typed packed-param, plus the cached analyzed <see cref="Slice"/> for the string
+    /// case so <c>EncodeAndApplyAnalyzer</c> doesn't run twice — once to size, once to
+    /// write). Numeric slots carry only <see cref="Packed"/>; <see cref="Analyzed"/>
+    /// stays <c>default</c>.</summary>
+    private struct CompoundFieldEncoding
+    {
+        public PackedParam Packed;
+        /// <summary>String case only: analyzed value (from the per-execution analyzed-slice
+        /// cache). For Between, <see cref="Packed.Param2"/> selects the high bound — but
+        /// this struct only holds one bound, so callers build two encodings.</summary>
+        public Slice Analyzed;
+        /// <summary>For the string case, the slot index inside the typed-value array that
+        /// <see cref="Analyzed"/> was resolved from. Used when the caller wants the high
+        /// bound (Between) and asks for the encoding at <see cref="PackedParam.Param2"/>
+        /// rather than <c>Param1</c>.</summary>
+        public int SourceSlot;
+        public int Size;
+    }
+
+    /// <summary>Resolve a compound-key value slot to its size + write-source.
+    /// String slots run the analyzer (cached) and reject sizes &gt;255 (the trailing
+    /// length byte in the compound-key format is a single byte). Numeric slots return
+    /// <c>sizeof(long)</c>. Any other ValueType returns false.</summary>
+    private static bool TryGetCompoundFieldEncoding(string fieldName, PackedParam packed, int paramSlot,
+        ref InstCtx ctx, out CompoundFieldEncoding encoding)
+    {
+        encoding = default;
+        encoding.Packed = packed;
+        encoding.SourceSlot = paramSlot;
+
+        if (packed.ValueType == PackedParam.TypeString)
+        {
+            var meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, fieldName, hasBoost: false);
+            encoding.Analyzed = ctx.Exec.GetAnalyzedSlice(ctx.PlanParams.IndexSearcher, meta, paramSlot);
+            encoding.Size = encoding.Analyzed.Size;
+            return true;
+        }
+
+        if (packed.ValueType is PackedParam.TypeLong or PackedParam.TypeDouble)
+        {
+            encoding.Size = sizeof(long);
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Write the encoded bytes of a compound-key slot into <paramref name="dest"/>.
+    /// <paramref name="dest"/> must be exactly <see cref="CompoundFieldEncoding.Size"/> bytes long.
+    /// String: copies the cached analyzed bytes. Numeric: delegates to
+    /// <see cref="EncodeNumericValue"/> for 8-byte big-endian sortable encoding.</summary>
+    private static void WriteCompoundFieldEncoding(Span<byte> dest, CompoundFieldEncoding encoding, QueryExecution exec)
+    {
+        if (encoding.Packed.ValueType == PackedParam.TypeString)
+        {
+            encoding.Analyzed.AsReadOnlySpan().CopyTo(dest);
+            return;
+        }
+        EncodeNumericValue(dest, encoding.Packed.ValueType, encoding.SourceSlot, exec);
     }
 
     /// <summary>For an OrGroup or AndGroup clause, returns the parallel (sub-clauses, sub-executions)
