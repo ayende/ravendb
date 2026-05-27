@@ -1,4 +1,7 @@
 using System.Collections.Generic;
+using Corax.Mappings;
+using Corax.Querying;
+using Voron;
 
 namespace Corax.Querying.Planning;
 
@@ -64,4 +67,38 @@ public class QueryExecution
     public long[] Cardinalities;
 
     public bool HasSpatialOrVector => SpatialFilters is { Length: > 0 } || VectorSelects is { Length: > 0 };
+
+    /// <summary>Per-execution cache for analyzer-encoded string slices. Both the bitmap-pipeline
+    /// resolution (via <see cref="PackedParam"/> string branches) and the entry-scan residual
+    /// extractor (<c>ScanParamExtractor</c>) consult this cache so each <c>(field, stringSlot)</c>
+    /// pair is encoded at most once per <c>Build()</c>. Stored as a flat list because the
+    /// per-query unique-pair count is small (typically &lt; 20); a linear scan beats hashing
+    /// overhead for these sizes and avoids per-lookup allocation.</summary>
+    private List<(Slice Field, int Slot, Slice Analyzed)> _analyzedSlices;
+
+    /// <summary>Get the analyzer-encoded slice for <c>(fieldMeta, slot)</c>, materializing once
+    /// per execution. Subsequent lookups for the same pair return the cached slice without
+    /// re-running the analyzer. The cached slice's lifetime matches the underlying allocator's
+    /// transaction.</summary>
+    public Slice GetAnalyzedSlice(IndexSearcher indexSearcher, in FieldMetadata fieldMeta, int slot)
+    {
+        var fieldName = fieldMeta.FieldName;
+        if (_analyzedSlices != null)
+        {
+            // Linear scan — see field comment for the size rationale.
+            foreach (var entry in _analyzedSlices)
+            {
+                if (entry.Slot == slot && SliceComparer.AreEqual(entry.Field, fieldName))
+                    return entry.Analyzed;
+            }
+        }
+        else
+        {
+            _analyzedSlices = new List<(Slice, int, Slice)>();
+        }
+
+        var analyzed = indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, StringValues[slot]);
+        _analyzedSlices.Add((fieldName, slot, analyzed));
+        return analyzed;
+    }
 }

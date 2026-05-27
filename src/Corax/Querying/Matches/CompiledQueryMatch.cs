@@ -246,4 +246,12 @@ public class CompiledQueryMatch(
     /// <see cref="ResidualScanIlEmitter.ResidualScanPredicate"/> delegate. Embedded as a field
     /// so the emitted IL can <c>Ldfld</c> directly through a managed pointer — no virtcall.</summary>
     public ResidualParams Residuals;
+
+    /// <summary>Deferred populate hook for <see cref="Residuals"/>'s analyzer-encoded slice array
+    /// and field-root-page array. Most queries never reach entry-scan; this avoids analyzer
+    /// invocations and per-predicate field-root lookups on the common path. Invoked once by
+    /// <see cref="CompiledQueryHelper.RunEntryScan"/> the first time the entry-scan path fires,
+    /// then cleared so the cost is paid at most once per <c>Build()</c>. Null when the plan has
+    /// no scan-eligible predicates.</summary>
+    public Action PopulateScanParams;
 }

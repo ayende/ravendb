@@ -61,7 +61,9 @@ public readonly struct PackedParam
         {
             TypeLong => indexSearcher.TermQuery(fieldMeta, exec.LongValues[Param1]),
             TypeDouble => indexSearcher.TermQuery(fieldMeta, exec.DoubleValues[Param1]),
-            _ => indexSearcher.TermQuery(fieldMeta, exec.StringValues[Param1])
+            // String: route through the per-execution analyzed-slice cache so the entry-scan
+            // residual path (which also analyzes this (field, slot) pair) reuses the same Slice.
+            _ => indexSearcher.TermQuery(fieldMeta, exec.GetAnalyzedSlice(indexSearcher, fieldMeta, Param1))
         };
     }
 
@@ -77,31 +79,32 @@ public readonly struct PackedParam
 
     public IQueryMatch RangeQuery(ClauseType op, FieldMetadata fieldMeta, IndexSearcher indexSearcher, QueryExecution exec, bool forward = true)
     {
+        // String branches go through the per-execution analyzed-slice cache (see TermQuery above).
         return op switch
         {
             ClauseType.GreaterThan => ValueType switch
             {
                 TypeLong => indexSearcher.GreaterThanQuery(fieldMeta, exec.LongValues[Param1], forward),
                 TypeDouble => indexSearcher.GreaterThanQuery(fieldMeta, exec.DoubleValues[Param1], forward),
-                _ => indexSearcher.GreaterThanQuery(fieldMeta, exec.StringValues[Param1], forward)
+                _ => indexSearcher.GreaterThanQuerySlice(fieldMeta, exec.GetAnalyzedSlice(indexSearcher, fieldMeta, Param1), forward)
             },
             ClauseType.GreaterThanOrEqual => ValueType switch
             {
                 TypeLong => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, exec.LongValues[Param1], forward),
                 TypeDouble => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, exec.DoubleValues[Param1], forward),
-                _ => indexSearcher.GreaterThanOrEqualsQuery(fieldMeta, exec.StringValues[Param1], forward)
+                _ => indexSearcher.GreaterThanOrEqualsQuerySlice(fieldMeta, exec.GetAnalyzedSlice(indexSearcher, fieldMeta, Param1), forward)
             },
             ClauseType.LessThan => ValueType switch
             {
                 TypeLong => indexSearcher.LessThanQuery(fieldMeta, exec.LongValues[Param1], forward),
                 TypeDouble => indexSearcher.LessThanQuery(fieldMeta, exec.DoubleValues[Param1], forward),
-                _ => indexSearcher.LessThanQuery(fieldMeta, exec.StringValues[Param1], forward)
+                _ => indexSearcher.LessThanQuerySlice(fieldMeta, exec.GetAnalyzedSlice(indexSearcher, fieldMeta, Param1), forward)
             },
             ClauseType.LessThanOrEqual => ValueType switch
             {
                 TypeLong => indexSearcher.LessThanOrEqualsQuery(fieldMeta, exec.LongValues[Param1], forward),
                 TypeDouble => indexSearcher.LessThanOrEqualsQuery(fieldMeta, exec.DoubleValues[Param1], forward),
-                _ => indexSearcher.LessThanOrEqualsQuery(fieldMeta, exec.StringValues[Param1], forward)
+                _ => indexSearcher.LessThanOrEqualsQuerySlice(fieldMeta, exec.GetAnalyzedSlice(indexSearcher, fieldMeta, Param1), forward)
             },
             _ => throw new InvalidOperationException($"RangeQuery does not handle {op}")
         };
@@ -109,11 +112,16 @@ public readonly struct PackedParam
 
     public IQueryMatch BetweenQuery(FieldMetadata fieldMeta, IndexSearcher indexSearcher, QueryExecution exec, bool forward = true)
     {
+        // String branch routes both bounds through the per-execution analyzed-slice cache.
         return ValueType switch
         {
             TypeLong => indexSearcher.BetweenQuery(fieldMeta, exec.LongValues[Param1], exec.LongValues[Param2], forward: forward),
             TypeDouble => indexSearcher.BetweenQuery(fieldMeta, exec.DoubleValues[Param1], exec.DoubleValues[Param2], forward: forward),
-            _ => indexSearcher.BetweenQuery(fieldMeta, exec.StringValues[Param1], exec.StringValues[Param2], forward: forward)
+            _ => indexSearcher.BetweenQuerySlice(
+                fieldMeta,
+                exec.GetAnalyzedSlice(indexSearcher, fieldMeta, Param1),
+                exec.GetAnalyzedSlice(indexSearcher, fieldMeta, Param2),
+                forward: forward)
         };
     }
 

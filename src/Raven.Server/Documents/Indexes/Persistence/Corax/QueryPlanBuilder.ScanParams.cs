@@ -147,10 +147,13 @@ internal static partial class QueryPlanBuilder
             {
                 case ScanValueType.Slice:
                 case ScanValueType.SliceLong:
+                    // Route through the per-execution analyzed-slice cache. If the bitmap pipeline
+                    // already analyzed this (field, slot) pair while building TermMatch/RangeMatch,
+                    // the cached Slice is returned without re-running the analyzer.
                     var fieldMeta = _indexSearcher.FieldMetadataBuilder(exec.Clause.FieldName);
-                    _slices.Add(_indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, _exec.StringValues[idx1]));
+                    _slices.Add(_exec.GetAnalyzedSlice(_indexSearcher, fieldMeta, idx1));
                     if (hasBetween)
-                        _slices.Add(_indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, _exec.StringValues[idx2]));
+                        _slices.Add(_exec.GetAnalyzedSlice(_indexSearcher, fieldMeta, idx2));
                     break;
             }
         }
