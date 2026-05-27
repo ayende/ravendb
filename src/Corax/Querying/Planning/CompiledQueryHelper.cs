@@ -79,6 +79,15 @@ public static class CompiledQueryHelper
         var predicate = ctx.CompiledEntryPredicate;
         var llt = searcher.Transaction.LowLevelTransaction;
 
+        // Lazy scan-param setup: the bitmap pipeline skips analyzer/field-root work at
+        // construction time and defers it until entry-scan actually triggers. Most queries
+        // never reach this path, so the cost stays off the common path.
+        if (ctx.PopulateScanParams is { } populate)
+        {
+            populate();
+            ctx.PopulateScanParams = null;
+        }
+
         try
         {
             int read;

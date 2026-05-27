@@ -926,8 +926,6 @@ internal static partial class QueryPlanBuilder
         var resolvedMatches = ResolveMatches(exec, walkerCtx);
         var termSources = ResolveTermSources(exec, walkerCtx);
         var termsProviders = ResolveTermsProviders(exec, walkerCtx);
-        ScanParamExtractor.Extract(exec, indexSearcher,
-            out var sliceParams, out var fieldRootPages);
 
         if (highlightingTerms != null)
             PopulateHighlightingTerms(exec, highlightingTerms, planParams.Metadata);
@@ -938,14 +936,27 @@ internal static partial class QueryPlanBuilder
         {
             InRangeCounts = exec.InRangeCounts,
             Cardinalities = exec.Cardinalities,
+            // Longs/Doubles point at QueryExecution arrays — zero-copy, already materialized.
+            // Slices/FieldRootPages are filled lazily on first entry-scan trigger via PopulateScanParams.
             Residuals = new ResidualParams
             {
                 Longs = exec.LongValues,
                 Doubles = exec.DoubleValues,
-                Slices = sliceParams,
-                FieldRootPages = fieldRootPages,
             },
         };
+
+        // Attach the deferred scan-param populate only when the plan actually has scan-eligible
+        // predicates. Most queries don't, so the closure allocation is skipped on the common path.
+        if (exec.Plan.ScanPredicateInfos is { Count: > 0 })
+        {
+            compiledMatch.PopulateScanParams = () =>
+            {
+                ScanParamExtractor.Extract(exec, indexSearcher, out var sliceParams, out var fieldRootPages);
+                compiledMatch.Residuals.Slices = sliceParams;
+                compiledMatch.Residuals.FieldRootPages = fieldRootPages;
+            };
+        }
+
         IQueryMatch result = compiledMatch;
 
         // Spatial post-filter phase: AND each spatial match with the candidate bitmap.
@@ -1152,7 +1163,7 @@ internal static partial class QueryPlanBuilder
         if (p.ValueType == PackedParam.TypeString)
         {
             var meta = indexSearcher.FieldMetadataBuilder(fieldName, hasBoost: false);
-            var analyzed = indexSearcher.EncodeAndApplyAnalyzer(meta, queryExec.StringValues[p.Param1]);
+            var analyzed = queryExec.GetAnalyzedSlice(indexSearcher, meta, p.Param1);
             if (analyzed.Size > byte.MaxValue) return null;
             var bytes = new byte[analyzed.Size];
             analyzed.CopyTo(bytes);
@@ -1320,7 +1331,7 @@ internal static partial class QueryPlanBuilder
             {
                 field1ValueStr = ctx.Exec.StringValues[packed.Param1];
                 var field1Meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, field1Name, hasBoost: false);
-                analyzedPrefix = indexSearcher.EncodeAndApplyAnalyzer(field1Meta, field1ValueStr);
+                analyzedPrefix = ctx.Exec.GetAnalyzedSlice(indexSearcher, field1Meta, packed.Param1);
                 break;
             }
             case PackedParam.TypeLong:
@@ -1378,7 +1389,7 @@ internal static partial class QueryPlanBuilder
                 {
                     // Analyze field2's value with the sort field's analyzer (same as indexing)
                     var field2Meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, sortFieldName, hasBoost: false);
-                    var analyzed = indexSearcher.EncodeAndApplyAnalyzer(field2Meta, ctx.Exec.StringValues[field2Packed.Param1]);
+                    var analyzed = ctx.Exec.GetAnalyzedSlice(indexSearcher, field2Meta, field2Packed.Param1);
                     if (analyzed.Size > byte.MaxValue)
                         usePrefix = true;
                     else
@@ -1387,7 +1398,7 @@ internal static partial class QueryPlanBuilder
                         analyzed.CopyTo(field2Bytes);
                         if (field2Clause.ClauseType == ClauseType.Between)
                         {
-                            var analyzedHigh = indexSearcher.EncodeAndApplyAnalyzer(field2Meta, ctx.Exec.StringValues[field2Packed.Param2]);
+                            var analyzedHigh = ctx.Exec.GetAnalyzedSlice(indexSearcher, field2Meta, field2Packed.Param2);
                             if (analyzedHigh.Size > byte.MaxValue)
                                 usePrefix = true;
                             else
