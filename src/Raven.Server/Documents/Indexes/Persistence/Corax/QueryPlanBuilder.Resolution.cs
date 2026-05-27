@@ -417,7 +417,10 @@ internal static partial class QueryPlanBuilder
 
         ScanPredicateInfo[] CreateScanPredicates()
         {
-            if (template.IsOr is false && executions.Count > 1)
+            // Scan predicates only apply to multi-clause AND chains (clause 0 is the
+            // seed, 1..N are evaluated per-entry). OR chains and single-clause queries
+            // skip this — the IL won't emit CheckAndMaybeEntryScan for them.
+            if (template.IsOr || executions.Count <= 1)
                 return null;
             
             var allNegated = CheckAllNegated();
