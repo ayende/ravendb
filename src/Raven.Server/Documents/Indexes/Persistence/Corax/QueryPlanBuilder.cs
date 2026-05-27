@@ -148,8 +148,10 @@ internal static partial class QueryPlanBuilder
         string orderByPrimaryField = p.Metadata.OrderBy is { Length: > 0 }
             ? p.Metadata.OrderBy[0].Name?.Value
             : null;
+        bool orderByPrimaryAscending = p.Metadata.OrderBy is { Length: > 0 } && p.Metadata.OrderBy[0].Ascending;
 
-        var optFlags = ComputeTemplateOptimizations(walkerCtx, p, orderByPrimaryField, out int sortDrivingIdx);
+        var optFlags = ComputeTemplateOptimizations(walkerCtx, p, orderByPrimaryField, orderByPrimaryAscending,
+            out int sortDrivingIdx, out int sortSeekHintIdx, out bool sortSeekUseParam2);
 
         // Collect unique query-parameter names in first-appearance order.
         // Literals are excluded — their types are fixed at template time and cannot
@@ -176,7 +178,10 @@ internal static partial class QueryPlanBuilder
             CompoundFieldDrivingClause = walkerCtx.CompoundFieldDrivingClause,
             CompoundFieldSortName = walkerCtx.CompoundFieldSortName,
             CompoundFieldIsMultiSort = walkerCtx.CompoundFieldIsMultiSort,
-            ParameterSlots = seen.ToArray()
+            ParameterSlots = seen.ToArray(),
+            SortSeekHintTemplateIdx = sortSeekHintIdx,
+            SortSeekUseParam2 = sortSeekUseParam2,
+            SortSeekPrimaryOrderByFieldName = sortSeekHintIdx >= 0 ? orderByPrimaryField : null,
         };
     }
 
@@ -197,9 +202,12 @@ internal static partial class QueryPlanBuilder
 
     [SkipLocalsInit]
     private static PlanOptimizationFlags ComputeTemplateOptimizations(
-        ResolutionContext walkerCtx, PlanParameters p, string orderByPrimaryField, out int sortDrivingIdx)
+        ResolutionContext walkerCtx, PlanParameters p, string orderByPrimaryField, bool orderByPrimaryAscending,
+        out int sortDrivingIdx, out int sortSeekHintIdx, out bool sortSeekUseParam2)
     {
         sortDrivingIdx = -1;
+        sortSeekHintIdx = -1;
+        sortSeekUseParam2 = false;
         var flags = PlanOptimizationFlags.None;
         var clauses = walkerCtx.Clauses;
 
@@ -233,6 +241,34 @@ internal static partial class QueryPlanBuilder
 
             flags |= PlanOptimizationFlags.DirectScanCandidate;
             if (sortDrivingIdx == -1) sortDrivingIdx = i;
+
+            // Sort-seek-hint candidate: range predicate on the primary ORDER BY field whose
+            // direction is compatible with the sort direction. (Equals isn't a useful hint —
+            // a SortedIndexReader doesn't gain anything from seeking to a single exact term;
+            // its purpose is to skip the half of the term range that the WHERE excludes.)
+            //   ASC + GT/GTE   → seek to lower bound  (read Param1)
+            //   DESC + LT/LTE  → seek to upper bound  (read Param1)
+            //   BETWEEN ASC    → seek to lower bound  (read Param1)
+            //   BETWEEN DESC   → seek to upper bound  (read Param2)
+            if (sortSeekHintIdx == -1)
+            {
+                switch (c.ClauseType, orderByPrimaryAscending)
+                {
+                    case (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual, true):
+                    case (ClauseType.LessThan or ClauseType.LessThanOrEqual, false):
+                        sortSeekHintIdx = i;
+                        sortSeekUseParam2 = false;
+                        break;
+                    case (ClauseType.Between, true):
+                        sortSeekHintIdx = i;
+                        sortSeekUseParam2 = false;
+                        break;
+                    case (ClauseType.Between, false):
+                        sortSeekHintIdx = i;
+                        sortSeekUseParam2 = true;
+                        break;
+                }
+            }
         }
 
         if (eqCount >= 2)

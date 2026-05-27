@@ -90,4 +90,26 @@ public sealed class PlanTemplate
     /// by classifying each parameter's runtime blittable type, instead of walking the
     /// full clause/execution list.</summary>
     public string[] ParameterSlots = [];
+
+    /// <summary>Template-position index of the clause that supplies the seek value for
+    /// <c>TrySetSortSeekHint</c> — a non-negated range predicate on the primary
+    /// <c>ORDER BY</c> field with a direction-compatible clause type. -1 when no such
+    /// clause exists, the query has no <c>ORDER BY</c>, or the primary ORDER BY field
+    /// has no name (Score/Random/Distance). Pre-computed at template time so
+    /// <c>TrySetSortSeekHint</c> avoids a per-execution clause-scan + per-clause
+    /// Slice.ToString() allocation.</summary>
+    public int SortSeekHintTemplateIdx = -1;
+
+    /// <summary>For the BETWEEN seek hint: true when descending order (read Param2 = upper bound),
+    /// false when ascending (read Param1 = lower bound). For GT/GTE/LT/LTE this is always
+    /// false — they only have Param1. Meaningful only when <see cref="SortSeekHintTemplateIdx"/>
+    /// is non-negative.</summary>
+    public bool SortSeekUseParam2;
+
+    /// <summary>Field name of the primary <c>ORDER BY</c> field at template time, used by the
+    /// runtime sort-seek-hint gate to detect the empty-field-skip case (where
+    /// <c>GetSortMetadata</c> drops the first ORDER BY because the index has zero terms in
+    /// that field, promoting the second ORDER BY to <c>orderByFields[0]</c>). Null when no
+    /// hint is applicable (paired with <see cref="SortSeekHintTemplateIdx"/> = -1).</summary>
+    public string SortSeekPrimaryOrderByFieldName;
 }
