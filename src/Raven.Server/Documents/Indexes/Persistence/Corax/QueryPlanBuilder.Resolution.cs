@@ -659,11 +659,9 @@ internal static partial class QueryPlanBuilder
         int written = 0;
         for (int i = 0; i < values.Count; i++)
         {
-            // Mixed-type IN: dominantType is inferred from the first value, but sibling values
-            // may be incoercible to that type (e.g. IN [<datetime>, "Shalom"] with dominant Long).
-            // Such a term can never match an index where the field is stored under dominantType,
-            // so silently drop it instead of throwing FormatException. Matches Lucene's behavior.
-            if (TryAddCoerced(writer, values[i], dominantTokenType) == false)
+            // Mixed-type IN: dominantType is inferred from the first value, but sibling values may differ (IN [long, "Shalom"]).
+            // Silently drop it instead of throwing, Matches Lucene's behavior.
+            if (writer.TryAdd(values[i], dominantTokenType) is null)
                 continue;
             written++;
         }
@@ -673,22 +671,6 @@ internal static partial class QueryPlanBuilder
         exec.HasNullTerm = hasNullTerm;
     }
 
-    private static bool TryAddCoerced(ValueWriter writer, object value, ValueTokenType type)
-    {
-        try
-        {
-            writer.Add(value, type);
-            return true;
-        }
-        catch (FormatException)
-        {
-            return false;
-        }
-        catch (InvalidCastException)
-        {
-            return false;
-        }
-    }
 
 
     private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
