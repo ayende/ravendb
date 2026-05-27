@@ -846,7 +846,8 @@ internal static partial class QueryPlanBuilder
                     exec.Plan.SortDrivingClauseIndex >= 0 && exec.Executions[exec.Plan.SortDrivingClauseIndex].PackedParamValue.IsNone is false)
                 {
                     bool hasTieBreak = orderByFields.Length == 2;
-                    innerMatch = ConstructDirectScan(ref ctx, exec.Plan.SortDrivingClauseIndex, isFullScan, hasTieBreak, entriesToScan: 0, bitmapCost: 0);
+                    innerMatch = ConstructDirectScan(ref ctx, exec.Plan.SortDrivingClauseIndex, isFullScan, hasTieBreak,
+                        reasonForInspection: "cached DirectScan strategy");
                     if (innerMatch is not null) return innerMatch;
                 }
 
@@ -1522,7 +1523,7 @@ internal static partial class QueryPlanBuilder
             else if (ctx.OrderByFields.Length == 2 && ctx.OrderByFields[1].FieldType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
                 rejectReason = "tie-break field type is not numeric (must be Integer or Floating)";
             else if (ctx.Exec.Executions is { Count: > 0 } && ctx.Exec.Plan.SortDrivingClauseIndex < 0)
-                rejectReason = "no range/equals clause on sort field";
+                rejectReason = "no range/equals clause on sort field (or WHEN eliminated the candidate)";
             else
                 rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or cardinality too high for tie-break";
         }
@@ -1571,30 +1572,11 @@ internal static partial class QueryPlanBuilder
         List<ScanPredicateInfo> preBuiltResiduals = null;
         if (!isFullScan)
         {
-            // SortDrivingClauseIndex pre-identified at template time and remapped to
-            // post-sort index during Build — skip the per-execution clause scan.
+            // SortDrivingClauseIndex was pre-identified at template time (excluding clauses
+            // with WHEN conditions — see ComputeTemplateOptimizations) and remapped to its
+            // post-sort index during Build. A value of -1 here means either no candidate
+            // exists, or WHEN eliminated the candidate at runtime; both fall back to bitmap.
             drivingIdx = ctx.Exec.Plan.SortDrivingClauseIndex;
-            if (drivingIdx == -1)
-            {
-                // Fallback: template didn't identify a candidate (e.g. WHEN eliminated the
-                // clause, or sort field didn't match any template clause). Boost is ruled
-                // out at template time, so we don't recheck BoostFactor here.
-                for (int i = 0; i < execs.Count; i++)
-                {
-                    var cl = execs[i].Clause;
-                    if (cl.FieldName != sortFieldName)
-                        continue;
-                    if (cl.ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                        or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between
-                        or ClauseType.Equals))
-                        continue;
-                    if (cl.IsNegated)
-                        continue;
-                    drivingIdx = i;
-                    break;
-                }
-            }
-
             if (drivingIdx == -1)
                 return false;
 
@@ -1634,7 +1616,8 @@ internal static partial class QueryPlanBuilder
                 return false;
         }
 
-        directMatch = ConstructDirectScan(ref ctx, drivingIdx, isFullScan, hasTieBreak, entriesToScan, bitmapCost, preBuiltResiduals);
+        string reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
+        directMatch = ConstructDirectScan(ref ctx, drivingIdx, isFullScan, hasTieBreak, reason, preBuiltResiduals);
         return directMatch != null;
     }
 
@@ -1643,107 +1626,34 @@ internal static partial class QueryPlanBuilder
     /// in either TryCreateSimpleFieldDirectScan or by virtue of a cached
     /// <see cref="ExecutionStrategy.DirectScan"/>. Returns null when a per-execution
     /// runtime check fails (e.g. driving match resolution returns non-TermsProviderMatch
-    /// or tie-break group cap exceeded by current parameter cardinality).</summary>
+    /// because the field has no terms in this index).</summary>
+    /// <param name="reasonForInspection">Free-form decision-trail string surfaced through
+    /// <c>DirectScanMatchBase.Reason</c>; isFullScan overrides it with a fixed string.</param>
     private static IQueryMatch ConstructDirectScan(
         ref InstCtx ctx,
         int drivingIdx, bool isFullScan, bool hasTieBreak,
-        long entriesToScan, long bitmapCost,
+        string reasonForInspection,
         List<ScanPredicateInfo> preBuiltResiduals = null)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        var walkerCtx = new ResolutionContext(ctx.BuilderParams);
         string sortFieldName = ctx.OrderByFields[0].Field.FieldName.ToString();
         bool forward = ctx.OrderByFields[0].Ascending;
-        var sortFieldType = ctx.OrderByFields[0].FieldType;
-        var execs = ctx.Exec.Executions;
 
-        ITermsProvider provider;
-        LowLevelTransaction llt;
-        string drivingClauseDescription;
+        // ── 1. Driving provider (term iterator wrapped as TermsProviderMatch) ──
+        if (ResolveDrivingProvider(ref ctx, drivingIdx, isFullScan, forward,
+                out ITermsProvider provider, out LowLevelTransaction llt, out string drivingClauseDescription) == false)
+            return null;
 
-        if (isFullScan)
-        {
-            var fieldMeta = ctx.OrderByFields[0].Field;
-            IQueryMatch fullScanMatch;
-            if (sortFieldType == MatchCompareFieldType.Integer)
-                fullScanMatch = indexSearcher.BetweenQuery(fieldMeta, long.MinValue, long.MaxValue, forward: forward);
-            else if (sortFieldType == MatchCompareFieldType.Floating)
-                fullScanMatch = indexSearcher.BetweenQuery(fieldMeta, double.MinValue, double.MaxValue, forward: forward);
-            else
-                fullScanMatch = indexSearcher.ExistsQuery(fieldMeta, forward: forward);
-            if (fullScanMatch is not TermsProviderMatch tpm)
-                return null;
-            provider = tpm.Provider;
-            llt = tpm.Llt;
-            drivingClauseDescription = $"{sortFieldName} [all]";
-        }
-        else
-        {
-            var drivingExec = execs[drivingIdx];
+        // ── 2. Residual predicates (rebuilt on cache-hit path; passed through on the discovery path) ──
+        if (TryGetResidualPredicates(ref ctx, drivingIdx, isFullScan, preBuiltResiduals, out List<ScanPredicateInfo> residualPreds) == false)
+            return null;
 
-            TermsProviderMatch tpm;
-            if (drivingExec.ClauseType == ClauseType.Equals)
-            {
-                var eqMatch = ResolveEqualsClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx);
-                if (eqMatch is not TermsProviderMatch eq)
-                    return null;
-                tpm = eq;
-            }
-            else
-            {
-                var match = ResolveRangeClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx);
-                if (match is not TermsProviderMatch m)
-                    return null;
-                tpm = m;
-            }
-
-            provider = tpm.Provider;
-            llt = tpm.Llt;
-            drivingClauseDescription = $"{drivingExec.Clause.FieldName} {drivingExec.ClauseType}";
-        }
-
-        // Residual predicates: reuse the list built during discovery when available;
-        // the cached strategy dispatch path passes null and we build it here.
-        List<ScanPredicateInfo> residualPreds = preBuiltResiduals;
-        if (residualPreds == null && !isFullScan)
-        {
-            int sliceIdx = 0;
-            for (int i = 0; i < execs.Count; i++)
-            {
-                if (i == drivingIdx) continue;
-                var pred = BuildScanPredicateInfo(execs[i], ref sliceIdx);
-                if (pred == null)
-                    return null;
-                residualPreds ??= new List<ScanPredicateInfo>();
-                residualPreds.Add(pred.Value);
-            }
-        }
-
-        // ── Create the driving match ──
+        // ── 3. Driving match: SortedDrivingMatch or its tie-break variant ──
         // BetweenQuery and StartWithQuery don't include nulls in their term output,
         // so SortedDrivingMatch must drain them itself (respecting nullFirst direction).
-        bool nullIsSmallest = (ctx.OrderByFields[0].NullsSortMode ?? ctx.BuilderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
-        bool nullFirst = forward ? nullIsSmallest : !nullIsSmallest;
-        IQueryMatch drivingMatch;
-        if (hasTieBreak)
-        {
-            // Secondary field uses its own NullsSortMode — distinct from the primary field's.
-            bool secondaryNullIsSmallest = (ctx.OrderByFields[1].NullsSortMode ?? ctx.BuilderParams.Index.Configuration.NullsSortMode) == NullsSortMode.NullsSmallest;
-            int take = ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll;
-            drivingMatch = new SortedDrivingWithTieBreakMatch(
-                provider, llt, ctx.PlanParams.Allocator, indexSearcher,
-                ctx.OrderByFields[0].Field, ctx.OrderByFields[1].Field,
-                ctx.OrderByFields[1].FieldType, secondaryDescending: !ctx.OrderByFields[1].Ascending,
-                nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest,
-                take: take);
-        }
-        else
-        {
-            drivingMatch = new SortedDrivingMatch(provider, llt, ctx.PlanParams.Allocator,
-                indexSearcher, ctx.OrderByFields[0].Field, nullFirst);
-        }
+        IQueryMatch drivingMatch = BuildSortedDrivingMatch(ref ctx, provider, llt, hasTieBreak, forward);
 
-        // ── Residual scan parameters ──
+        // ── 4. Residual scan parameters ──
         ScanPredicateInfo[] residualArray = residualPreds is { Count: > 0 } ? residualPreds.ToArray() : null;
         ScanParamExtractor.BuildResidual(ctx.Exec, indexSearcher, ctx.PlanParams.Allocator, residualArray,
             drivingIdx, -1,
@@ -1753,16 +1663,135 @@ internal static partial class QueryPlanBuilder
             indexSearcher, drivingMatch,
             new ResidualParams { Longs = ctx.Exec.LongValues, Doubles = ctx.Exec.DoubleValues, Slices = sliceParams, FieldRootPages = fieldRootPages },
             ctx.Plan.CompiledEntryPredicate, residualArray);
+
+        PopulateDirectScanInspection(ds, sortFieldName, drivingClauseDescription, forward, residualArray, residualPreds,
+            isFullScan ? "full index-only scan (no WHERE clause)" : reasonForInspection);
+        return ds;
+    }
+
+    /// <summary>Resolve the term iterator that walks the sort field in sort order, for full-scan or
+    /// from the driving range/equals clause. Returns false when the underlying factory yielded a
+    /// non-<see cref="TermsProviderMatch"/> (typically because the field has no terms in this index).</summary>
+    private static bool ResolveDrivingProvider(
+        ref InstCtx ctx, int drivingIdx, bool isFullScan, bool forward,
+        out ITermsProvider provider, out LowLevelTransaction llt, out string drivingClauseDescription)
+    {
+        var indexSearcher = ctx.PlanParams.IndexSearcher;
+
+        if (isFullScan)
+        {
+            var fieldMeta = ctx.OrderByFields[0].Field;
+            var sortFieldType = ctx.OrderByFields[0].FieldType;
+            IQueryMatch fullScanMatch = sortFieldType switch
+            {
+                MatchCompareFieldType.Integer => indexSearcher.BetweenQuery(fieldMeta, long.MinValue, long.MaxValue, forward: forward),
+                MatchCompareFieldType.Floating => indexSearcher.BetweenQuery(fieldMeta, double.MinValue, double.MaxValue, forward: forward),
+                _ => indexSearcher.ExistsQuery(fieldMeta, forward: forward)
+            };
+            if (fullScanMatch is not TermsProviderMatch tpm)
+            {
+                provider = null; llt = null; drivingClauseDescription = null;
+                return false;
+            }
+            provider = tpm.Provider;
+            llt = tpm.Llt;
+            drivingClauseDescription = $"{fieldMeta.FieldName} [all]";
+            return true;
+        }
+
+        var walkerCtx = new ResolutionContext(ctx.BuilderParams);
+        var drivingExec = ctx.Exec.Executions[drivingIdx];
+        IQueryMatch drivingMatch = drivingExec.ClauseType == ClauseType.Equals
+            ? ResolveEqualsClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx)
+            : ResolveRangeClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx);
+
+        if (drivingMatch is not TermsProviderMatch resolved)
+        {
+            provider = null; llt = null; drivingClauseDescription = null;
+            return false;
+        }
+        provider = resolved.Provider;
+        llt = resolved.Llt;
+        drivingClauseDescription = $"{drivingExec.Clause.FieldName} {drivingExec.ClauseType}";
+        return true;
+    }
+
+    /// <summary>Residual predicates list. On the discovery path (<see cref="TryCreateSimpleFieldDirectScan"/>)
+    /// the list is built during cost analysis and threaded through; on the cache-hit dispatch path
+    /// (<see cref="BuildCompileAndOptimize"/>) the list is rebuilt here.
+    /// Returns false when a residual predicate is non-scannable — a structural property that didn't
+    /// change since the decision was cached, so the assertion of consistency here is genuine.</summary>
+    private static bool TryGetResidualPredicates(
+        ref InstCtx ctx, int drivingIdx, bool isFullScan,
+        List<ScanPredicateInfo> preBuiltResiduals, out List<ScanPredicateInfo> residualPreds)
+    {
+        residualPreds = preBuiltResiduals;
+        if (residualPreds != null || isFullScan)
+            return true;
+
+        var execs = ctx.Exec.Executions;
+        int sliceIdx = 0;
+        for (int i = 0; i < execs.Count; i++)
+        {
+            if (i == drivingIdx) continue;
+            var pred = BuildScanPredicateInfo(execs[i], ref sliceIdx);
+            if (pred == null)
+                return false;
+            residualPreds ??= new List<ScanPredicateInfo>();
+            residualPreds.Add(pred.Value);
+        }
+        return true;
+    }
+
+    /// <summary>Resolve "nulls first vs last" for a single ORDER BY field given its NullsSortMode
+    /// (per-field override or index default) and the scan direction.</summary>
+    private static bool ResolveNullFirst(in OrderMetadata orderByField, NullsSortMode indexDefault, bool forward)
+    {
+        bool nullIsSmallest = (orderByField.NullsSortMode ?? indexDefault) == NullsSortMode.NullsSmallest;
+        return forward ? nullIsSmallest : !nullIsSmallest;
+    }
+
+    /// <summary>Build the SortedDrivingMatch (or its tie-break variant) that walks the term tree
+    /// in sort order, draining the per-field null list itself.</summary>
+    private static IQueryMatch BuildSortedDrivingMatch(
+        ref InstCtx ctx, ITermsProvider provider, LowLevelTransaction llt, bool hasTieBreak, bool forward)
+    {
+        var indexSearcher = ctx.PlanParams.IndexSearcher;
+        var indexDefaultNullsSortMode = ctx.BuilderParams.Index.Configuration.NullsSortMode;
+        bool nullFirst = ResolveNullFirst(ctx.OrderByFields[0], indexDefaultNullsSortMode, forward);
+
+        if (hasTieBreak)
+        {
+            // Secondary field uses its own NullsSortMode — distinct from the primary field's.
+            // ResolveNullFirst's "forward" arg is the primary scan direction; the secondary's nullIsSmallest
+            // is passed directly through (the tie-break match interprets it relative to its own descending flag).
+            bool secondaryNullIsSmallest = (ctx.OrderByFields[1].NullsSortMode ?? indexDefaultNullsSortMode) == NullsSortMode.NullsSmallest;
+            int take = ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll;
+            return new SortedDrivingWithTieBreakMatch(
+                provider, llt, ctx.PlanParams.Allocator, indexSearcher,
+                ctx.OrderByFields[0].Field, ctx.OrderByFields[1].Field,
+                ctx.OrderByFields[1].FieldType, secondaryDescending: !ctx.OrderByFields[1].Ascending,
+                nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest,
+                take: take);
+        }
+
+        return new SortedDrivingMatch(provider, llt, ctx.PlanParams.Allocator,
+            indexSearcher, ctx.OrderByFields[0].Field, nullFirst);
+    }
+
+    /// <summary>Populate the free-form inspection strings on a constructed DirectScan match. The
+    /// match's Fill/AndWith path never reads these — they exist solely for query introspection.</summary>
+    private static void PopulateDirectScanInspection(
+        DirectScanMatchBase ds, string sortFieldName, string drivingClauseDescription, bool forward,
+        ScanPredicateInfo[] residualArray, List<ScanPredicateInfo> residualPreds, string reason)
+    {
         ds.DrivingTreeName = sortFieldName;
         ds.DrivingClause = drivingClauseDescription;
-        ds.Direction = ctx.OrderByFields[0].Ascending ? "Forward" : "Backward";
+        ds.Direction = forward ? "Forward" : "Backward";
         ds.ResidualDescription = residualArray != null
             ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
             : null;
-        ds.Reason = isFullScan
-            ? "full index-only scan (no WHERE clause)"
-            : $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
-        return ds;
+        ds.Reason = reason;
     }
 
     /// <summary>Create the appropriate DirectScan match based on whether residual predicates exist.</summary>
