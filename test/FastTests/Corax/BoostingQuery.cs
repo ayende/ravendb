@@ -295,7 +295,7 @@ namespace FastTests.Corax
                 Allocator = Allocator
             };
             var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, knownFields, hasBoost: true), out _, out _, null, false, default);
-            match = QueryPlanBuilder.ApplyScoreOrdering(planParams, match, take);
+            match = ApplyScoreOrderingIfRequested(searcher, queryMetadata, match, take);
             var list = new List<string>();
             Span<long> ids = stackalloc long[256];
             int count;
@@ -318,7 +318,7 @@ namespace FastTests.Corax
                 Allocator = Allocator
             };
             var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, knownFields, hasBoost: true), out _, out _, null, false, default);
-            match = QueryPlanBuilder.ApplyScoreOrdering(planParams, match, long.MaxValue);
+            match = ApplyScoreOrderingIfRequested(searcher, queryMetadata, match, long.MaxValue);
             var list = new List<long>();
             var termsReader = searcher.TermsReaderFor("Content1");
             Span<long> ids = stackalloc long[256];
@@ -327,6 +327,29 @@ namespace FastTests.Corax
                 for (int i = 0; i < count; i++)
                     list.Add(long.Parse(termsReader.GetTermFor(ids[i])));
             return list;
+        }
+
+        // Inlined replacement for the (now removed) QueryPlanBuilder.ApplyScoreOrdering test-only
+        // shim. Production OrderBy(QueryBuilderParameters, ...) needs the full server-side query
+        // pipeline which these direct-IndexSearcher tests bypass, so we wrap the searcher's
+        // score-ordering primitive directly here.
+        private static global::Corax.Querying.Matches.Meta.IQueryMatch ApplyScoreOrderingIfRequested(IndexSearcher searcher, QueryMetadata queryMetadata, global::Corax.Querying.Matches.Meta.IQueryMatch match, long take)
+        {
+            var orderByFields = queryMetadata.OrderBy;
+            if (orderByFields is null || orderByFields.Length == 0)
+                return match;
+
+            int takeInt = take > int.MaxValue ? global::Corax.Constants.IndexSearcher.TakeAll : (int)take;
+            foreach (var field in orderByFields)
+            {
+                if (field.OrderingType == Raven.Server.Documents.Queries.AST.OrderByFieldType.Score)
+                {
+                    var meta = new global::Corax.Utils.OrderMetadata(true, global::Corax.Querying.Matches.SortingMatches.Meta.MatchCompareFieldType.Score, field.Ascending);
+                    return searcher.OrderBy(match, meta, global::Corax.Utils.NullsSortMode.NullsLargest, take: takeInt);
+                }
+            }
+
+            return match;
         }
 
         private void PrepareData(bool inverse = false)
