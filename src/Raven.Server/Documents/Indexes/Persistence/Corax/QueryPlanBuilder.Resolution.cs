@@ -266,28 +266,45 @@ internal static partial class QueryPlanBuilder
         // WHEN clauses against bound parameters as we go.
         var (executions, whenFlags) = EvaluateWhenAndFilterClauses(template, planParams);
 
-        // Step 3: Populate parameter values into typed arrays
+        // Step 3: Populate parameter values into typed arrays. Detect empty-IN inline —
+        // the cache-key pass and the plan emitter both need it, so we compute it once here
+        // instead of re-walking the executions later.
         var writer = new ValueWriter();
+        bool hasEmptyIn = false;
         foreach (var it in executions)
         {
             PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters);
+            hasEmptyIn |= IsEmptyIn(it);
         }
 
         // Step 3b: Constant propagation — simplify trivially-false/simple clauses.
+        // Contradiction rewrites can create new empty-IN clauses; fold those into the flag.
         bool isOr = template.IsOr;
-        PropagateBetweenContradictions(executions, writer);
+        hasEmptyIn |= PropagateBetweenContradictions(executions, writer);
+        // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
+        hasEmptyIn &= !isOr;
 
-        // Step 4: Estimate cardinality (needs populated values).
+        // Step 4: Estimate cardinality (needs populated values). Also capture the
+        // sort-driving clause's cardinality for the cliff-bit decision in one pass.
+        int sortDrivingIdx = template.SortDrivingClauseIndex;
+        long drivingClauseCardinality = -1;
         foreach (var it in executions)
         {
-            if (it.Cardinality >= 0) continue;
-            it.Cardinality = EstimateCardinality(it, indexSearcher, writer, walkerCtx);
+            if (it.Cardinality < 0)
+                it.Cardinality = EstimateCardinality(it, indexSearcher, writer, walkerCtx);
+            if (sortDrivingIdx >= 0 && it.Clause.OriginalIndex == sortDrivingIdx)
+                drivingClauseCardinality = it.Cardinality;
         }
 
         // Step 5: sort executions by cardinality
         executions.Sort();
 
-        var exec = new QueryExecution { Executions = executions };
+        var exec = new QueryExecution
+        {
+            Executions = executions,
+            HasEmptyIn = hasEmptyIn,
+            DrivingClauseCardinality = drivingClauseCardinality,
+        };
 
         if(executions.Count is 0)
         {
@@ -305,7 +322,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // ── Step 6: Compute cache key components (cheap) ────────────────────
-        int operandOrdering = ComputeOperandOrdering(template, planParams, executions);
+        int operandOrdering = ComputeOperandOrdering(template, planParams, exec);
 
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature(template, planParams);
 
@@ -321,7 +338,11 @@ internal static partial class QueryPlanBuilder
         // becomes a no-op inside the resolver because every entry is QueryMatch under boost.
         MatchDispatch[] clauseDispatch = ComputeClauseDispatch(executions, planParams.HasBoost, template);
 
-        var (ops, requiredBitmaps, inRangeCounts) = EmitPlan(isOr, executions);
+        // Empty IN in AND → zero results. The reserved EmptyInOrdering cache key (computed above)
+        // ensures this caches separately from real plans, so EmitPlan can stay parameter-blind.
+        var (ops, requiredBitmaps, inRangeCounts) = exec.HasEmptyIn
+            ? ((PlanOp[])[], 2, (int[])null)
+            : EmitPlan(isOr, executions);
 
         // Boost handling: force every op to QueryMatch dispatch so the IL emitter
         // generates IQueryMatch-based methods that accumulate scores.
@@ -694,8 +715,12 @@ internal static partial class QueryPlanBuilder
     }
 
 
-    private static void PropagateBetweenContradictions(List<ClauseExecution> execList, ValueWriter writer)
+    /// <summary>Returns true when any clause was rewritten into the empty-IN flavor — caller uses
+    /// this to set <see cref="QueryExecution.HasEmptyIn"/> in the same pass that populates clauses,
+    /// avoiding a second walk later on.</summary>
+    private static bool PropagateBetweenContradictions(List<ClauseExecution> execList, ValueWriter writer)
     {
+        bool producedEmptyIn = false;
         foreach (var exec in execList)
         {
             var p = exec.PackedParamValue;
@@ -717,7 +742,9 @@ internal static partial class QueryPlanBuilder
             exec.InTermCount = 0;
             exec.HasNullTerm = false;
             exec.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
+            producedEmptyIn = true;
         }
+        return producedEmptyIn;
     }
 
 
@@ -740,41 +767,29 @@ internal static partial class QueryPlanBuilder
     }
 
 
-    private static int ComputeOperandOrdering(PlanTemplate template, PlanParameters planParams, List<ClauseExecution> executions)
+    private static int ComputeOperandOrdering(PlanTemplate template, PlanParameters planParams, QueryExecution exec)
     {
         // Empty-IN in AND: guaranteed zero results (AND with empty = empty).
         //   $p = [] - empty vs. $p = ['news'] → has results - we need to tell the differernce.
-        if (template.IsOr is false && HasEmptyIn(executions))
+        // exec.HasEmptyIn was pre-computed during clause population; no second walk needed.
+        if (exec.HasEmptyIn)
             return QueryExecution.EmptyInOrdering;
-        
+
+        var executions = exec.Executions;
         int operandOrdering = 0;
-        
+
         for (int i = 0; i < Math.Min(executions.Count, 10); i++)
             operandOrdering |= (executions[i].Clause.OriginalIndex & 0x7) << (i * 3);
-        
+
         if (planParams.HasBoost)
             operandOrdering |= QueryExecution.HasBoostBit;
 
         // Cardinality cliff bit: queries under vs. over the cliff get different compiled plans, so the bit is part of the cache key.
-        if (template.SortDrivingClauseIndex >= 0) 
-            operandOrdering |= SetCardinalityCliffBit(executions, template.SortDrivingClauseIndex);
+        // exec.DrivingClauseCardinality was captured during the cardinality pass; no second walk needed.
+        long drivingCard = exec.DrivingClauseCardinality;
+        if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
+            operandOrdering |= QueryExecution.CardinalityCliffBit;
         return operandOrdering;
-    }
-
-
-    private static int SetCardinalityCliffBit(List<ClauseExecution> executions, int templateIdx)
-    {
-        foreach (var execution in executions)
-        {
-            if (execution.Clause.OriginalIndex != templateIdx) 
-                continue;
-                
-            long drivingCard = execution.Cardinality;
-            if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
-                return QueryExecution.CardinalityCliffBit;
-            break;
-        }
-        return 0;
     }
 
 
@@ -852,14 +867,15 @@ internal static partial class QueryPlanBuilder
     }
 
 
+    /// <summary>Emits the structural plan for a (cache-miss) query. Empty-IN handling is the
+    /// caller's responsibility — when <see cref="QueryExecution.HasEmptyIn"/> is set the caller
+    /// picks the empty-result plan directly (and the reserved <see cref="QueryExecution.EmptyInOrdering"/>
+    /// cache key keeps that plan isolated from real ones), so this method stays parameter-blind
+    /// and works off the structural execution list alone.</summary>
     private static (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) EmitPlan(bool isOr, List<ClauseExecution> executions)
     {
         if (executions.Count is 0)
             return (BuildAllEntriesPlan(), 2, null);
-        
-        // Empty IN in AND → zero results. The reserved EmptyInOrdering cache key ensures this caches separately from real plans.
-        if (isOr is false && HasEmptyIn(executions))
-            return ([], 2, null);
 
         int write = 0;
         for (int i = 0; i < executions.Count; i++)
@@ -3269,20 +3285,6 @@ internal static partial class QueryPlanBuilder
         (e.InTermCount == 0) &&
         e.HasNullTerm is false;
     
-    /// <summary>True when any clause in the array is an empty IN/AllIn (InTermCount=0,
-    /// no null term). Used to detect guaranteed-empty AND chains before the cache lookup.</summary>
-
-
-    private static bool HasEmptyIn(List<ClauseExecution> executions)
-    {
-        foreach (var exec in executions)
-        {
-            if (IsEmptyIn(exec))
-                return true;
-        }
-        return false;
-    }
-
     /// <summary>Build the per-execution InRangeCounts array. Each IN/AllIn clause gets one
     /// slot whose value is the number of posting-source slots the compiled IL's OrRange/AndRange
     /// op will iterate. The IL reads these at runtime so the same compiled delegate handles
