@@ -109,7 +109,7 @@ public static class CompiledQueryHelper
                 if (validCount == 0)
                     continue;
 
-                int passed = predicate(ctx, readers.AsSpan(0, validCount), buffer[..validCount], Span<int>.Empty);
+                int passed = predicate(ref ctx.Residuals, readers.AsSpan(0, validCount), buffer[..validCount], Span<int>.Empty);
                 ctx.EntryScanEntriesPassed += passed;
                 for (int i = 0; i < passed; i++)
                     targetBitmap.Add(buffer[i]);

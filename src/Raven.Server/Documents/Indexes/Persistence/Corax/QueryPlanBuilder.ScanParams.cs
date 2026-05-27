@@ -8,9 +8,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>Materializes the four typed scan-parameter arrays (long/double/slice/fieldRoot)
-    /// consumed by entry-scan and direct-scan code paths. Two static entry points share the
-    /// same accumulator state held on instance fields:
+    /// <summary>Materializes the typed scan-parameter arrays (slice + fieldRoot) consumed by
+    /// entry-scan and direct-scan code paths. Long/double parameters are NOT materialized — the
+    /// emitted IL reads <c>QueryExecution.LongValues</c>/<c>DoubleValues</c> directly via baked
+    /// <see cref="PackedParam.Param1"/> indices. Two static entry points share the same accumulator
+    /// state held on instance fields:
     /// <list type="bullet">
     ///   <item><see cref="Extract"/> — bitmap-pipeline path; encodes slice values through the
     ///   field analyzer.</item>
@@ -21,8 +23,6 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     private sealed class ScanParamExtractor
     {
-        private readonly List<long> _longs = [];
-        private readonly List<double> _doubles = [];
         private readonly List<Slice> _slices = [];
         private readonly List<long> _roots = [];
 
@@ -38,13 +38,11 @@ internal static partial class QueryPlanBuilder
         }
 
         public static void Extract(QueryExecution exec, IndexSearcher indexSearcher,
-            out long[] longParams, out double[] doubleParams, out Slice[] sliceParams, out long[] fieldRootPages)
+            out Slice[] sliceParams, out long[] fieldRootPages)
         {
             var predicates = exec.Plan.ScanPredicateInfos;
             if (predicates == null || predicates.Count == 0)
             {
-                longParams = [];
-                doubleParams = [];
                 sliceParams = [];
                 fieldRootPages = [];
                 return;
@@ -66,8 +64,6 @@ internal static partial class QueryPlanBuilder
                 x.ExtractFromPredicate(pred, execs[clauseIdx++]);
             }
 
-            longParams = x._longs.Count > 0 ? x._longs.ToArray() : [];
-            doubleParams = x._doubles.Count > 0 ? x._doubles.ToArray() : [];
             sliceParams = x._slices.Count > 0 ? x._slices.ToArray() : [];
             fieldRootPages = x._roots.Count > 0 ? x._roots.ToArray() : [];
         }
@@ -75,10 +71,8 @@ internal static partial class QueryPlanBuilder
         public static void BuildResidual(
             QueryExecution exec, IndexSearcher indexSearcher, ByteStringContext allocator,
             ScanPredicateInfo[] residualArray, int skipClauseIdx1, int skipClauseIdx2,
-            out long[] longParams, out double[] doubleParams, out Slice[] sliceParams, out long[] fieldRootPages)
+            out Slice[] sliceParams, out long[] fieldRootPages)
         {
-            longParams = null;
-            doubleParams = null;
             sliceParams = null;
             fieldRootPages = null;
 
@@ -105,14 +99,6 @@ internal static partial class QueryPlanBuilder
                 bool hasBetween = idx2 != PackedParam.NoParamValue;
                 switch (residualArray[residualIdx].ValueType)
                 {
-                    case ScanValueType.Long:
-                        x._longs.Add(exec.LongValues[idx1]);
-                        if (hasBetween) x._longs.Add(exec.LongValues[idx2]);
-                        break;
-                    case ScanValueType.Double:
-                        x._doubles.Add(exec.DoubleValues[idx1]);
-                        if (hasBetween) x._doubles.Add(exec.DoubleValues[idx2]);
-                        break;
                     case ScanValueType.Slice:
                     case ScanValueType.SliceLong:
                         Slice.From(allocator, exec.StringValues[idx1], out var s1);
@@ -129,8 +115,6 @@ internal static partial class QueryPlanBuilder
                 residualIdx++;
             }
 
-            longParams = x._longs.Count > 0 ? x._longs.ToArray() : null;
-            doubleParams = x._doubles.Count > 0 ? x._doubles.ToArray() : null;
             sliceParams = x._slices.Count > 0 ? x._slices.ToArray() : null;
             fieldRootPages = x._roots.Count > 0 ? x._roots.ToArray() : null;
         }
@@ -150,7 +134,8 @@ internal static partial class QueryPlanBuilder
             // Resolve field root page
             _roots.Add(_indexSearcher.FieldCache.GetLookupRootPage(pred.FieldName));
 
-            // Read pre-resolved typed values from the queryExec's arrays via packed param.
+            // Slice values flow through the analyzer; long/double are read directly from
+            // QueryExecution by the IL using baked PackedParam.Param1 indices, so no copy.
             var packed = exec.PackedParamValue;
             if (packed.IsNone)
                 return;
@@ -160,16 +145,6 @@ internal static partial class QueryPlanBuilder
 
             switch (pred.ValueType)
             {
-                case ScanValueType.Long:
-                    _longs.Add(_exec.LongValues[idx1]);
-                    if (hasBetween)
-                        _longs.Add(_exec.LongValues[idx2]);
-                    break;
-                case ScanValueType.Double:
-                    _doubles.Add(_exec.DoubleValues[idx1]);
-                    if (hasBetween)
-                        _doubles.Add(_exec.DoubleValues[idx2]);
-                    break;
                 case ScanValueType.Slice:
                 case ScanValueType.SliceLong:
                     var fieldMeta = _indexSearcher.FieldMetadataBuilder(exec.Clause.FieldName);

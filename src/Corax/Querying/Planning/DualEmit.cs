@@ -160,38 +160,38 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
     public void LoadLongParam(int idx)
     {
         Il.Emit(OpCodes.Ldarg_0);
-        Il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxLongParams);
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualLongs);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelem_I8);
-        CsStack.Push($"ctx.ResidualLongParams[{idx}]");
+        CsStack.Push($"residuals.Longs[{idx}]");
     }
 
     public void LoadDoubleParam(int idx)
     {
         Il.Emit(OpCodes.Ldarg_0);
-        Il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxDoubleParams);
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualDoubles);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelem_R8);
-        CsStack.Push($"ctx.ResidualDoubleParams[{idx}]");
+        CsStack.Push($"residuals.Doubles[{idx}]");
     }
 
     public void LoadSliceSpan(int idx)
     {
         Il.Emit(OpCodes.Ldarg_0);
-        Il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxSliceParams);
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualSlices);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelema, typeof(Slice));
         Il.Emit(OpCodes.Call, IlEmitterShared.SliceAsReadOnlySpan);
-        CsStack.Push($"ctx.ResidualSliceParams[{idx}].AsReadOnlySpan()");
+        CsStack.Push($"residuals.Slices[{idx}].AsReadOnlySpan()");
     }
 
     public void LoadFieldRootPage(int rootIdx)
     {
         Il.Emit(OpCodes.Ldarg_0);
-        Il.Emit(OpCodes.Callvirt, IlEmitterShared.CtxFieldRootPages);
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualFieldRootPages);
         IlEmitterShared.EmitLdcI4(Il, rootIdx);
         Il.Emit(OpCodes.Ldelem_I8);
-        CsStack.Push($"ctx.ResidualFieldRootPages[{rootIdx}]");
+        CsStack.Push($"residuals.FieldRootPages[{rootIdx}]");
     }
 
     public void Ceq()

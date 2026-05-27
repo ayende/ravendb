@@ -3,9 +3,7 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Text;
 using Corax.Querying.Matches;
-using Corax.Querying.Matches.Meta;
 using Corax.Querying.Primitives;
-using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
 
@@ -280,12 +278,7 @@ public static class QueryIlEmitter
         d.CsLine("");
     }
 
-    /// <summary>if (ShouldSwitchToEntryScan(bitmaps[0].Count, ctx.Cardinalities[cursor])) goto EntryScan.
-    /// The planner attaches a per-execution <c>long[]</c> of cardinality estimates indexed by
-    /// match-slot position (see <see cref="CompiledQueryMatch.Cardinalities"/>), so the IL can
-    /// read the next clause's estimate directly without touching the dispatch arrays — which
-    /// is necessary because PR15 populates exactly one of ResolvedMatches/PostingSources/TermsProviders
-    /// per slot and reading the wrong one NRE's.</summary>
+    /// <summary>if (ShouldSwitchToEntryScan(bitmaps[0].Count, ctx.Cardinalities[cursor])) goto EntryScan.</summary>
     private static void EmitEntryScanCheck(ref DualEmit d, LocalBuilder cursorVar, LabelPair entryScanLabel)
     {
         d.IlLoadBitmapRef(0);
