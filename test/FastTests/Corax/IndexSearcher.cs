@@ -1575,7 +1575,7 @@ namespace FastTests.Corax
         }
 
         [RavenFact(RavenTestCategory.Corax)]
-        public void WhenFalseEliminatesAllClausesReturnNoEntries()
+        public void WhenFalseEliminatesAllClausesReturnAllEntries()
         {
             var entry1 = new IndexEntry { Id = "entry/1", Content = new string[] { "road", "lake" } };
             var entry2 = new IndexEntry { Id = "entry/2", Content = new string[] { "muddy", "road" } };
@@ -1584,7 +1584,8 @@ namespace FastTests.Corax
             IndexEntries(bsc, new[] { entry1, entry2 }, CreateKnownFields(bsc));
 
             // when($p = true, Content = 'road') with $p = false → clause eliminated.
-            // With all clauses removed, there is no selection, distinct from no filter, we always filter out all entries.
+            // With all clauses removed, the query reduces to match-all (matches Lucene's
+            // LuceneWhenQuery → MatchAllDocsQuery() at top level).
             using var fields = CreateKnownFields(Allocator);
             using var searcher = new IndexSearcher(Env, fields);
             var rql = "FROM TestIndex WHERE when($p = true, Content = 'road')";
@@ -1604,7 +1605,7 @@ namespace FastTests.Corax
             var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, paramsJson, fields), out _, out _, null, false, default);
             Span<long> buffer = stackalloc long[256];
             int count = match.Fill(buffer);
-            Assert.Equal(0, count);
+            Assert.Equal(2, count);
         }
 
         /// <summary>
