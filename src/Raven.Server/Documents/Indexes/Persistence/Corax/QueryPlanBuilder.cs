@@ -244,7 +244,11 @@ internal static partial class QueryPlanBuilder
                 continue;
 
             flags |= PlanOptimizationFlags.DirectScanCandidate;
-            if (sortDrivingIdx == -1) sortDrivingIdx = i;
+            // Skip clauses that may be eliminated at runtime by their WHEN condition: the
+            // ClauseExecution remap (by OriginalIndex) cannot find them when they're dropped,
+            // and DirectScan has no safe per-execution fallback that doesn't redo discovery.
+            // Bitmap pipeline is always a correct fallback for these cases.
+            if (sortDrivingIdx == -1 && c.WhenCondition is null) sortDrivingIdx = i;
 
             // Sort-seek-hint candidate: range predicate on the primary ORDER BY field whose
             // direction is compatible with the sort direction. (Equals isn't a useful hint —
