@@ -356,9 +356,15 @@ internal static partial class QueryPlanBuilder
             return new QueryExecution
             {
                 Executions = executions,
-                QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false || // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
-                                           executions.Count is 0 && template.Clauses.Count is not 0, // all filters removed by WHEN() clauses - returns nothing
-                IsAllEntries = executions.Count is 0 && template.Clauses.Count is 0, // no filter at all, return everything
+                // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
+                QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false,
+                // executions.Count == 0 covers both shapes that reduce to match-all:
+                //   (a) no template clauses at all (e.g. `from Docs`)
+                //   (b) every template clause was a WHEN(false) and got filtered out — Lucene
+                //       returns MatchAllDocsQuery for this case (LuceneQueryBuilder.cs ~line 59-62).
+                // The only way EvaluateWhenAndFilterClauses drops a clause is via WhenCondition,
+                // so executions.Count==0 with non-empty Clauses unambiguously means "all WHEN-false".
+                IsAllEntries = executions.Count is 0,
                 DrivingClauseCardinality = drivingClauseCardinality,
             };
         }
