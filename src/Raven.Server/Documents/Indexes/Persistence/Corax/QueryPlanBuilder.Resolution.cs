@@ -659,13 +659,35 @@ internal static partial class QueryPlanBuilder
         int written = 0;
         for (int i = 0; i < values.Count; i++)
         {
-            writer.Add(values[i], dominantTokenType);
+            // Mixed-type IN: dominantType is inferred from the first value, but sibling values
+            // may be incoercible to that type (e.g. IN [<datetime>, "Shalom"] with dominant Long).
+            // Such a term can never match an index where the field is stored under dominantType,
+            // so silently drop it instead of throwing FormatException. Matches Lucene's behavior.
+            if (TryAddCoerced(writer, values[i], dominantTokenType) == false)
+                continue;
             written++;
         }
 
         exec.PackedParamValue = new PackedParam(packedType, startIdx);
         exec.InTermCount = written;
         exec.HasNullTerm = hasNullTerm;
+    }
+
+    private static bool TryAddCoerced(ValueWriter writer, object value, ValueTokenType type)
+    {
+        try
+        {
+            writer.Add(value, type);
+            return true;
+        }
+        catch (FormatException)
+        {
+            return false;
+        }
+        catch (InvalidCastException)
+        {
+            return false;
+        }
     }
 
 
@@ -737,7 +759,7 @@ internal static partial class QueryPlanBuilder
             _ => clause.ClauseType.ToString()
         };
         throw new InvalidQueryException(
-            $"Method {methodName}() expects to get an argument of type String while it got null");
+            $"Method {methodName}() expects to get an argument of type String while it got Null");
     }
 
 
