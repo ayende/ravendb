@@ -1023,6 +1023,10 @@ internal static partial class QueryPlanBuilder
     {
         // Sub-expression entry point: run the same phases as ParseTemplate.
         // Validation is inline in the Parse methods; errors accumulate in walkerCtx.Errors.
+        // The whole build is measured so query introspection can report per-MLT-base build
+        // cost (parse + resolve + AND chain) instead of folding it into the outer query's
+        // opaque "everything else" budget.
+        long buildStart = Stopwatch.GetTimestamp();
         var walkerCtx = new ResolutionContext(builderParams);
         var indexSearcher = walkerCtx.IndexSearcher;
         walkerCtx.Clauses = [];
@@ -1049,22 +1053,52 @@ internal static partial class QueryPlanBuilder
         };
         writer.SetValues(subPlan);
 
-        if (walkerCtx.Clauses.Count == 1)
-            return ResolveClause(subExecs[0], subPlan, walkerCtx);
+        int clauseCount = walkerCtx.Clauses.Count;
+        var clauseTicks = new long[clauseCount];
+        var clauseCardinality = new long[clauseCount];
+        var childInspections = new QueryInspectionNode[clauseCount];
+
+        if (clauseCount == 1)
+        {
+            long t0 = Stopwatch.GetTimestamp();
+            var single = ResolveClause(subExecs[0], subPlan, walkerCtx);
+            clauseTicks[0] = Stopwatch.GetTimestamp() - t0;
+            clauseCardinality[0] = single.Count;
+            childInspections[0] = single.Inspect();
+            long buildTicks = Stopwatch.GetTimestamp() - buildStart;
+            return new MoreLikeThisBaseMatch(single, buildTicks, clauseTicks, clauseCardinality,
+                bitmapAfterAnd: null, capturedChildInspections: childInspections);
+        }
 
         // Multiple clauses (AND chain) — resolve each and AND them via bitmap.
+        // Capture each sub-match's Count + Inspect() before it's consumed by Or/AndWith
+        // (the matches go out of scope immediately after consumption with no further hook
+        // for introspection — see #4856).
         var bitmap = new BitmapMatch(indexSearcher.Allocator);
-        if (walkerCtx.Clauses.Count == 0)
-            return bitmap;
+        var bitmapAfterStep = new long[clauseCount];
 
-        QueryPrimitives.OrWithMatch(ResolveClause(subExecs[0], subPlan, walkerCtx), ref bitmap.BitmapState);
+        {
+            long t0 = Stopwatch.GetTimestamp();
+            var first = ResolveClause(subExecs[0], subPlan, walkerCtx);
+            clauseTicks[0] = Stopwatch.GetTimestamp() - t0;
+            clauseCardinality[0] = first.Count;
+            childInspections[0] = first.Inspect();
+            QueryPrimitives.OrWithMatch(first, ref bitmap.BitmapState);
+            bitmapAfterStep[0] = bitmap.BitmapState.Count;
+        }
 
         var temp = new RoaringBitmap(indexSearcher.Allocator);
         try
         {
-            for (int i = 1; i < walkerCtx.Clauses.Count; i++)
+            for (int i = 1; i < clauseCount; i++)
             {
-                QueryPrimitives.AndWithMatch(ResolveClause(subExecs[i], subPlan, walkerCtx), ref bitmap.BitmapState, ref temp);
+                long t0 = Stopwatch.GetTimestamp();
+                var sub = ResolveClause(subExecs[i], subPlan, walkerCtx);
+                clauseTicks[i] = Stopwatch.GetTimestamp() - t0;
+                clauseCardinality[i] = sub.Count;
+                childInspections[i] = sub.Inspect();
+                QueryPrimitives.AndWithMatch(sub, ref bitmap.BitmapState, ref temp);
+                bitmapAfterStep[i] = bitmap.BitmapState.Count;
             }
         }
         finally
@@ -1072,7 +1106,9 @@ internal static partial class QueryPlanBuilder
             temp.Dispose();
         }
 
-        return bitmap;
+        long totalBuildTicks = Stopwatch.GetTimestamp() - buildStart;
+        return new MoreLikeThisBaseMatch(bitmap, totalBuildTicks, clauseTicks, clauseCardinality,
+            bitmapAfterStep, childInspections);
     }
 
     private static bool TryCreateCompoundExactMatch(
