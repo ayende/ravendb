@@ -101,6 +101,11 @@ public static class IlEmitterShared
             nameof(QueryPrimitives.ShouldSwitchToEntryScan),
             [typeof(long), typeof(long)])!;
 
+    public static readonly MethodInfo GetSlotEntryCount =
+        typeof(QueryPrimitives).GetMethod(
+            nameof(QueryPrimitives.GetSlotEntryCount),
+            [typeof(CompiledQueryMatch), typeof(int)])!;
+
     public static readonly MethodInfo CtxLongParams =
         typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualLongParams))!.GetGetMethod();
     public static readonly MethodInfo CtxDoubleParams =
