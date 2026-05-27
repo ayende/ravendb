@@ -281,18 +281,9 @@ internal static partial class QueryPlanBuilder
             return FinalizePlan(); // use cached plan
 
         // Cache miss — full exec emission
-        MatchDispatch[] clauseDispatch = ComputeClauseDispatch(executions, planParams.HasBoost, template);
-        var (ops, requiredBitmaps, inRangeCounts) = PlanEmitter.Emit(template, executions);
-
-        if (planParams.HasBoost)
-        { 
-            // we require query match for boost, because the other options cannot compute it
-            for (int i = 0; i < ops.Length; i++)
-            {
-                ops[i].Dispatch = MatchDispatch.QueryMatch;
-            }
-        }
-
+        var clauseDispatch = ComputeClauseDispatch(executions, planParams.HasBoost, template);
+        var (ops, requiredBitmaps, inRangeCounts) = PlanEmitter.Emit(template, executions, planParams);
+        
         var scanPredicates = CreateScanPredicates();
         compiledPlan = new CompiledPlan
         {
@@ -322,8 +313,7 @@ internal static partial class QueryPlanBuilder
         (CompiledPlan, QueryExecution ) FinalizePlan()
         {
             exec.Plan = compiledPlan;
-            if(compiledPlan.InRangeSlotCount is not 0)
-                exec.InRangeCounts = CardinalityArrayBuilder.BuildInRangeCounts(executions, compiledPlan.InRangeSlotCount);
+            exec.InRangeCounts = CardinalityArrayBuilder.BuildInRangeCounts(executions, compiledPlan.InRangeSlotCount);
             exec.Cardinalities = CardinalityArrayBuilder.BuildCardinalities(executions, exec.IsAllEntries);
 
             AttachSpatialAndVectorClauses(exec, template, planParams, builderParameters, writer);
@@ -358,12 +348,6 @@ internal static partial class QueryPlanBuilder
                 Executions = executions,
                 // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
                 QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false,
-                // executions.Count == 0 covers both shapes that reduce to match-all:
-                //   (a) no template clauses at all (e.g. `from Docs`)
-                //   (b) every template clause was a WHEN(false) and got filtered out — Lucene
-                //       returns MatchAllDocsQuery for this case (LuceneQueryBuilder.cs ~line 59-62).
-                // The only way EvaluateWhenAndFilterClauses drops a clause is via WhenCondition,
-                // so executions.Count==0 with non-empty Clauses unambiguously means "all WHEN-false".
                 IsAllEntries = executions.Count is 0,
                 DrivingClauseCardinality = drivingClauseCardinality,
             };
@@ -420,19 +404,18 @@ internal static partial class QueryPlanBuilder
             return execList;
         }
 
+        // Scan predicates allow us to do a direct scan of the entries to reduce the number of document loads
+        // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public'
+        // If Tags = 'good' gave us 100 items, we don't want to do an AndWith Status = 'Public' (may have 1M items)
+        // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly
         ScanPredicateInfo[] CreateScanPredicates()
         {
-            // Scan predicates only apply to multi-clause AND chains (clause 0 is the
-            // seed, 1..N are evaluated per-entry). OR chains and single-clause queries
-            // skip this — the IL won't emit CheckAndMaybeEntryScan for them.
+            // Scan predicates only apply to multi-clause AND chains (clause 0 is the seed, 1..N are evaluated per-entry).
+            // OR chains and single-clause queries skip this — the IL won't emit CheckAndMaybeEntryScan for them.
             if (template.IsOr || executions.Count <= 1)
                 return null;
             
             var allNegated = CheckAllNegated();
-            // Scan predicates allow us to do a direct scan of the entries to reduce the number of document loads
-            // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public'
-            // If Tags = 'good' gave us 100 items, we don't want to do an AndWith Status = 'Public' (may have 1M items)
-            // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly
             List<ScanPredicateInfo> predicates = []; 
             int scanStart = allNegated ? 0 : 1; // Skip clause 0 (the seed) unless all clauses are negated (then we start from AllEntries, so every clause is a scan predicate).
             int longIndex = 0, doubleIndex = 0, sliceIndex = 0;
@@ -2299,37 +2282,42 @@ internal static partial class QueryPlanBuilder
         BinaryPrimitives.WriteInt64BigEndian(buf, Bits.SwapBytes(raw));
         return buf;
     }
-
+    
     internal static int CountMatchSlots(List<ClauseExecution> executions, bool isAllEntries)
     {
         int count = isAllEntries ? 1 : 0;
+
         foreach (var exec in executions ?? [])
-            count += CountClauseLeaves(exec);
-        return count;
-    }
-
-    /// <summary><see cref="ClauseInfo.IsOrChainNotEquals"/> leaves walk their positive form
-    /// (1 slot for scalar/exists, InTermCount+1 for IN/AllIn) and the IL emitter materialises
-    /// the complement via FillAllEntries + AndNot. Boost on a negated leaf is ignored (matches
-    /// Lucene), so HasBoost has no effect on the slot count here.</summary>
-
-
-    private static int CountClauseLeaves(ClauseExecution exec)
-    {
-        switch (exec.ClauseType)
         {
-            case ClauseType.OrGroup or ClauseType.AndGroup:
-                int sum = 0;
-                foreach (var it in exec.SubExecutions)
-                {
-                    sum += CountClauseLeaves(it);
-                }
+            count += CountLeaves(exec);
+        }
 
-                return sum;
-            case ClauseType.In or ClauseType.AllIn:
-                return exec.InTermCount + 1;
-            default:
-                return 1;
+        return count;
+
+        int CountLeaves(ClauseExecution exec)
+        {
+            RuntimeHelpers.EnsureSufficientExecutionStack();
+            switch (exec.ClauseType)
+            {
+                case ClauseType.OrGroup:
+                case ClauseType.AndGroup:
+                    int sum = 0;
+                    if (exec.SubExecutions is not null)
+                    {
+                        foreach (var it in exec.SubExecutions)
+                        {
+                            sum += CountLeaves(it);
+                        }
+                    }
+                    return sum;
+
+                case ClauseType.In:
+                case ClauseType.AllIn:
+                    return exec.InTermCount + 1;
+
+                default:
+                    return 1;
+            }
         }
     }
 
@@ -2423,11 +2411,8 @@ internal static partial class QueryPlanBuilder
     /// and for plans with no executions.</summary>
 
 
-    private static MatchDispatch[] ComputeClauseDispatch(List<ClauseExecution> executions, bool planHasBoost, PlanTemplate template)
+    private static List<MatchDispatch> ComputeClauseDispatch(List<ClauseExecution> executions, bool planHasBoost, PlanTemplate template)
     {
-        if (executions is null || executions.Count == 0)
-            return [];
-
         var list = new List<MatchDispatch>(executions.Count);
         foreach (var clauseExec in executions)
         {
@@ -2441,17 +2426,20 @@ internal static partial class QueryPlanBuilder
             list.Add(MatchDispatch.QueryMatch);
         }
 
-        return list.ToArray();
+        return list;
     }
 
 
     private static void AppendClauseDispatch(ClauseExecution clauseExec, bool planHasBoost, List<MatchDispatch> list)
     {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
         switch (clauseExec.ClauseType)
         {
             case ClauseType.OrGroup or ClauseType.AndGroup:
                 foreach (var sub in clauseExec.SubExecutions)
-                    AppendClauseDispatch(sub, planHasBoost, list);
+                {
+                    AppendClauseDispatch(sub, planHasBoost, list); 
+                }
                 break;
             // IN/AllIn always resolve as individual posting-list lookups (EmitInOps /
             // EmitAllInOps hardcode PostingList on the emitted ops). GetDispatch would

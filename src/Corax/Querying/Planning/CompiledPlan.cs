@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+
 namespace Corax.Querying.Planning;
 
 /// <summary>Execution strategy chosen for a CompiledPlan. Determined once at cache-miss time
@@ -131,7 +133,7 @@ public sealed class CompiledPlan
     /// <see cref="MatchDispatch.QueryMatch"/> for boosted plans — the resolvers don't
     /// have to re-derive dispatch from clause shape or special-case boost. Empty for
     /// <see cref="QueryExecution.IsAllEntries"/> plans and for plans with no executions.</summary>
-    public MatchDispatch[] ClauseDispatch { get; init; }
+    public List<MatchDispatch> ClauseDispatch { get; init; }
 
     /// <summary>Structural scan predicate metadata cached from the first compilation.
     /// Field names, param indices, compare ops do not change across executions.
