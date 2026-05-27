@@ -41,7 +41,7 @@ internal static partial class QueryPlanBuilder
             out long[] longParams, out double[] doubleParams, out Slice[] sliceParams, out long[] fieldRootPages)
         {
             var predicates = exec.Plan.ScanPredicateInfos;
-            if (predicates == null || predicates.Length == 0)
+            if (predicates == null || predicates.Count == 0)
             {
                 longParams = [];
                 doubleParams = [];

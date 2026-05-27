@@ -1,6 +1,8 @@
 using System;
+using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.InteropServices;
 using System.Text;
 using Corax.Querying.Matches;
 using Corax.Utils;
@@ -36,9 +38,9 @@ public static class ResidualScanIlEmitter
     /// The emitted IL always evaluates ALL predicates against every entry.
     /// <paramref name="csharpSource"/> receives the C# equivalent of the emitted IL,
     /// generated side-by-side via <see cref="DualEmit"/>.</summary>
-    public static ResidualScanPredicate EmitDelegate(ScanPredicateInfo[] predicates, out string csharpSource)
+    public static ResidualScanPredicate EmitDelegate(Span<ScanPredicateInfo> predicates, out string csharpSource)
     {
-        if (predicates == null || predicates.Length == 0)
+        if (predicates.IsEmpty)
         {
             csharpSource = "// No residual predicates.\n";
             return null;
