@@ -274,9 +274,9 @@ internal static partial class QueryPlanBuilder
             return default;
 
         // Compute cache key components (cheap) 
-        int operandOrdering = ComputeOperandOrdering(planParams, exec);
+        int operandOrdering = ComputeOperandOrdering();
 
-        (int typeSignature, byte[] fullKinds) = ComputeTypeSignature(template, planParams);
+        (int typeSignature, byte[] fullKinds) = ComputeTypeSignature();
 
         if(planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags) is {} compiledPlan)
             return FinalizePlan(); // use cached plan
@@ -437,8 +437,41 @@ internal static partial class QueryPlanBuilder
         }
 
         bool CheckAllNegated() => executions is [{ IsNegated: true }, ..];
+        
+        int ComputeOperandOrdering()
+        {
+            var execs = exec.Executions;
+            int ordering = 0;
+
+            for (int i = 0; i < Math.Min(execs.Count, 10); i++)
+                ordering |= (execs[i].Clause.OriginalIndex & 0x7) << (i * 3);
+
+            if (planParams.HasBoost)
+                ordering |= QueryExecution.HasBoostBit;
+
+            // Cardinality cliff bit: queries under vs. over the cliff get different compiled plans, so the bit is part of the cache key.
+            // exec.DrivingClauseCardinality was captured during the cardinality pass; no second walk needed.
+            long drivingCard = exec.DrivingClauseCardinality;
+            if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
+                ordering |= QueryExecution.CardinalityCliffBit;
+            return ordering;
+        }
+        
+        (int TypeSignature, byte[] FullKinds) ComputeTypeSignature()
+        {
+            // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong). Literals are excluded — their types are fixed at template time.
+            int types = 0;
+            var full = template.ParameterSlots.Length > 16 ? new byte[template.ParameterSlots.Length] : null;
+            for (int i = 0; i < template.ParameterSlots.Length; i++)
+            {
+                int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0x3;
+                full?[i] = (byte)kind;
+                if (i > 16) continue;
+                types |= kind << (i * 2); 
+            }
+            return (types, full);
+        }
     }
-    
 
     private static ClauseExecution CreateExecution(ClauseInfo clause)
     {
@@ -733,40 +766,6 @@ internal static partial class QueryPlanBuilder
     }
 
 
-    private static int ComputeOperandOrdering(PlanParameters planParams, QueryExecution exec)
-    {
-        var executions = exec.Executions;
-        int operandOrdering = 0;
-
-        for (int i = 0; i < Math.Min(executions.Count, 10); i++)
-            operandOrdering |= (executions[i].Clause.OriginalIndex & 0x7) << (i * 3);
-
-        if (planParams.HasBoost)
-            operandOrdering |= QueryExecution.HasBoostBit;
-
-        // Cardinality cliff bit: queries under vs. over the cliff get different compiled plans, so the bit is part of the cache key.
-        // exec.DrivingClauseCardinality was captured during the cardinality pass; no second walk needed.
-        long drivingCard = exec.DrivingClauseCardinality;
-        if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
-            operandOrdering |= QueryExecution.CardinalityCliffBit;
-        return operandOrdering;
-    }
-
-
-    private static (int TypeSignature, byte[] FullKinds) ComputeTypeSignature(PlanTemplate template, PlanParameters planParams)
-    {
-        // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong). Literals are excluded — their types are fixed at template time.
-        int typeSignature = 0;
-        var fullKinds = template.ParameterSlots.Length > 16 ? new byte[template.ParameterSlots.Length] : null;
-        for (int i = 0; i < template.ParameterSlots.Length; i++)
-        {
-            int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0x3;
-            fullKinds?[i] = (byte)kind;
-            if (i > 16) continue;
-            typeSignature |= kind << (i * 2); 
-        }
-        return (typeSignature, fullKinds);
-    }
 
     /// <summary>Classify a query parameter's runtime type from the blittable JSON value.
     /// Mirrors the type-branching in <see cref="ResolveParameterValue"/> — long, double,
