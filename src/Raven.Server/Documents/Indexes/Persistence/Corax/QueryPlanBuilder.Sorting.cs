@@ -31,85 +31,49 @@ internal static partial class QueryPlanBuilder
 
     // ── Sort seek hint ────────────────────────────────────────────────────
 
-    /// <summary>If the first clause is a range predicate on the same field as the first
-    /// ORDER BY field, set a seek hint on the CompiledQueryMatch so SortedIndexReader
-    /// can skip walking irrelevant tree terms.</summary>
-    public static void TrySetSortSeekHint(CompiledQueryMatch match,
+    /// <summary>O(1) seek-hint dispatch. The eligible clause (range predicate on the primary
+    /// ORDER BY field with a direction-compatible operator) was identified once at template
+    /// build time (<see cref="PlanTemplate.SortSeekHintTemplateIdx"/>) and remapped to an
+    /// execution-position index on the <see cref="CompiledPlan"/>
+    /// (<see cref="CompiledPlan.SortSeekClauseExecIdx"/>). At query time we only need to:
+    /// (1) verify <c>orderByFields[0]</c> still matches the primary field — <c>GetSortMetadata</c>
+    /// may have dropped the primary OrderBy when the index has zero terms in that field
+    /// (non-sharded empty-field-skip case), promoting the secondary to slot 0; and
+    /// (2) read the runtime parameter value through the baked <c>PackedParam</c> + <c>SortSeekUseParam2</c>
+    /// pair. No clause scan, no per-clause <c>FieldName.ToString()</c>.</summary>
+    public static void TrySetSortSeekHint(CompiledQueryMatch match, CompiledPlan plan,
         QueryExecution exec, OrderMetadata[] orderByFields)
     {
-        if (orderByFields == null || orderByFields.Length == 0)
+        int idx = plan.SortSeekClauseExecIdx;
+        if (idx < 0)
             return;
 
-        var execs = exec.Executions;
-        if (execs == null || execs.Count == 0)
+        // Empty-field-skip guard: in the non-sharded case, GetSortMetadata drops an
+        // OrderBy whose field has zero distinct terms in this index. If that happens to
+        // the primary ORDER BY, orderByFields[0] is now the second template ORDER BY,
+        // and the cached hint (computed against the template's primary) is invalid.
+        var primaryName = plan.Template.SortSeekPrimaryOrderByFieldName;
+        if (primaryName is null || orderByFields is null || orderByFields.Length == 0)
+            return;
+        if (orderByFields[0].Field.FieldName.ToString() != primaryName)
             return;
 
-        // Only consider the first ORDER BY field
-        var sortField = orderByFields[0].Field.FieldName;
+        var sortExec = exec.Executions[idx];
+        var packed = sortExec.PackedParamValue;
+        if (packed.IsNone)
+            return;
 
-        // Find a range clause on the same field (scan all clauses, not just first — the sort-eligible
-        // clause may not be the cheapest and thus not clause[0]).
-        for (int i = 0; i < execs.Count; i++)
+        int paramIdx = plan.Template.SortSeekUseParam2 ? packed.Param2 : packed.Param1;
+        object seekValue = packed.ValueType switch
         {
-            var clause = execs[i].Clause;
-            var sortExec = execs[i];
+            PackedParam.TypeLong => exec.LongValues[paramIdx],
+            PackedParam.TypeDouble => exec.DoubleValues[paramIdx],
+            PackedParam.TypeString => exec.StringValues[paramIdx],
+            _ => null
+        };
 
-            if (clause.FieldName != sortField.ToString())
-                continue;
-
-            // Range clauses on the sort field — supports long, double, and string
-            if (clause.ClauseType is not (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between))
-                continue;
-
-            var packed = sortExec.PackedParamValue;
-            if (packed.IsNone)
-                continue;
-
-            // For ascending order: seek to the lower bound (GT/GTE value)
-            // For descending order: seek to the upper bound (LT/LTE value)
-            bool ascending = orderByFields[0].Ascending;
-            object seekValue = null;
-
-            if (ascending && clause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual)
-            {
-                seekValue = packed.ValueType switch
-                {
-                    PackedParam.TypeLong => exec.LongValues[packed.Param1],
-                    PackedParam.TypeDouble => exec.DoubleValues[packed.Param1],
-                    PackedParam.TypeString => exec.StringValues[packed.Param1],
-                    _ => null
-                };
-            }
-            else if (ascending == false && clause.ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual)
-            {
-                seekValue = packed.ValueType switch
-                {
-                    PackedParam.TypeLong => exec.LongValues[packed.Param1],
-                    PackedParam.TypeDouble => exec.DoubleValues[packed.Param1],
-                    PackedParam.TypeString => exec.StringValues[packed.Param1],
-                    _ => null
-                };
-            }
-            else if (clause.ClauseType == ClauseType.Between)
-            {
-                // Between: seek to the lower bound for ASC, upper bound for DESC
-                int idx = ascending ? packed.Param1 : packed.Param2;
-                seekValue = packed.ValueType switch
-                {
-                    PackedParam.TypeLong => exec.LongValues[idx],
-                    PackedParam.TypeDouble => exec.DoubleValues[idx],
-                    PackedParam.TypeString => exec.StringValues[idx],
-                    _ => null
-                };
-            }
-
-            if (seekValue != null)
-            {
-                match.SortHint = new SortHint(clause.FieldName, seekValue);
-                return;
-            }
-        }
+        if (seekValue != null)
+            match.SortHint = new SortHint(sortExec.Clause.FieldName, seekValue);
     }
 
     public static OrderMetadata[] GetSortMetadata(QueryBuilderParameters builderParameters, out bool hasEmpty)

@@ -161,4 +161,10 @@ public sealed class CompiledPlan
     /// <summary>Pre-identified compound-field-match (WHERE Equals + ORDER BY) driving clause
     /// index (runtime, remapped from template). -1 when none.</summary>
     public int CompoundFieldDrivingClause { get; set; } = -1;
+
+    /// <summary>Runtime exec-position index of the sort-seek-hint clause (remapped from
+    /// <see cref="PlanTemplate.SortSeekHintTemplateIdx"/>). -1 when no hint applies for
+    /// this template, or when WHEN elimination dropped the candidate clause for this
+    /// specific execution.</summary>
+    public int SortSeekClauseExecIdx { get; set; } = -1;
 }

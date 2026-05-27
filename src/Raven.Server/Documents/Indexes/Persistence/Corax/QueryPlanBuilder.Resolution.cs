@@ -369,6 +369,8 @@ internal static partial class QueryPlanBuilder
                     compiledPlan.CompoundExactClauseB = i;
                 if (it.Clause.OriginalIndex == template.CompoundFieldDrivingClause)
                     compiledPlan.CompoundFieldDrivingClause = i;
+                if (it.Clause.OriginalIndex == template.SortSeekHintTemplateIdx)
+                    compiledPlan.SortSeekClauseExecIdx = i;
             }
         }
 
@@ -853,7 +855,7 @@ internal static partial class QueryPlanBuilder
                 innerMatch = InstantiateBitmapPipeline(ctx.Plan, ctx.Exec, ctx.PlanParams, ctx.BuilderParams, walkerCtx, highlightingTerms, wantTimings, token);
                 if (ctx.OrderByFields == null) return innerMatch;
                 if (innerMatch is CompiledQueryMatch seekMatch)
-                    TrySetSortSeekHint(seekMatch, ctx.Exec, ctx.OrderByFields);
+                    TrySetSortSeekHint(seekMatch, ctx.Plan, ctx.Exec, ctx.OrderByFields);
                 return OrderBy(ctx.BuilderParams, innerMatch, ctx.OrderByFields, hasEmptySorts);
         }
 
