@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using Corax.Querying.Planning;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
@@ -127,98 +128,89 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Builds the per-slot arrays consumed by the compiled IL at runtime:
-    /// <c>InRangeCounts</c> (one entry per IN/AllIn range op) and <c>Cardinalities</c>
-    /// (one entry per match slot, mirroring <see cref="ResolveSlots{TResolver,TSlot}"/>).
-    /// Both walk the executions recursively into OrGroup/AndGroup sub-executions; the
-    /// in-flight write cursor lives on instance fields instead of being threaded as
-    /// <c>ref int</c>.</summary>
-    private sealed class CardinalityArrayBuilder
+    private static class CardinalityArrayBuilder
     {
-        // ── InRangeCounts ──────────────────────────────────────────────────
         public static int[] BuildInRangeCounts(List<ClauseExecution> executions, int slotCount)
         {
-            var b = new CardinalityArrayBuilder { _counts = new int[slotCount] };
-            b.AccumulateInRangeCounts(executions);
-            return b._counts;
-        }
+            if (slotCount is 0)
+                return Array.Empty<int>();
+            
+            int[] counts = new int[slotCount];
+            int rangeIdx = 0;
+    
+            Accumulate(executions);
+            return counts;
 
-        private int[] _counts;
-        private int _rangeIdx;
-
-        private void AccumulateInRangeCounts(List<ClauseExecution> executions)
-        {
-            for (int ci = 0; ci < executions.Count && _rangeIdx < _counts.Length; ci++)
+            void Accumulate(List<ClauseExecution> currentExecutions)
             {
-                ClauseExecution execution = executions[ci];
-                switch (execution.Clause.ClauseType)
+                RuntimeHelpers.EnsureSufficientExecutionStack();
+                for (int ci = 0; ci < currentExecutions.Count && rangeIdx < counts.Length; ci++)
                 {
-                    case ClauseType.OrGroup:
-                    case ClauseType.AndGroup:
-                        if (execution.SubExecutions is not null)
-                            AccumulateInRangeCounts(execution.SubExecutions);
-                        break;
+                    ClauseExecution execution = currentExecutions[ci];
+                    switch (execution.Clause.ClauseType)
+                    {
+                        case ClauseType.OrGroup:
+                        case ClauseType.AndGroup:
+                            if (execution.SubExecutions is not null)
+                            {
+                                Accumulate(execution.SubExecutions);
+                            }
+                            break;
 
-                    // IN: EmitInOps emits Fill + OrRange. Fill consumed slot 0,
-                    // range = InTermCount (ORing with empty null slot is a no-op).
-                    case ClauseType.In:
-                        _counts[_rangeIdx++] = execution.InTermCount;
-                        break;
-
-                    // AllIn: EmitAllInOps emits Fill + AndRange over inTermCount slots (all typed terms
-                    // + the null-term slot). The null-term slot is always iterated; when HasNullTerm=false
-                    // ResolveNullTermSlot returns PostingSourceKind.All so the AND is a no-op rather than
-                    // clearing the bitmap. The cursor always advances inTermCount positions past Fill,
-                    // landing at inTermCount+1 = CountClauseLeaves(AllIn) — consistent with the slot layout.
-                    case ClauseType.AllIn:
-                        _counts[_rangeIdx++] = execution.InTermCount;
-                        break;
+                        case ClauseType.In:
+                        case ClauseType.AllIn:
+                            counts[rangeIdx++] = execution.InTermCount;
+                            break;
+                    }
                 }
             }
         }
 
-        // ── Cardinalities ──────────────────────────────────────────────────
         public static long[] BuildCardinalities(List<ClauseExecution> executions, bool isAllEntries)
         {
             int slotCount = CountMatchSlots(executions, isAllEntries);
             if (slotCount == 0)
                 return null;
 
-            var b = new CardinalityArrayBuilder
+            long[] cardinalities = new long[slotCount];
+            int slot = isAllEntries ? 1 : 0;
+
+            foreach (var exec in executions ?? [])
             {
-                _cardinalities = new long[slotCount],
-                _slot = isAllEntries ? 1 : 0,
-            };
-            if (executions is not null)
-            {
-                foreach (var exec in executions)
-                    b.AccumulateCardinalities(exec);
+                Accumulate(exec);
             }
-            return b._cardinalities;
-        }
 
-        private long[] _cardinalities;
-        private int _slot;
+            return cardinalities;
 
-        private void AccumulateCardinalities(ClauseExecution exec)
-        {
-            switch (exec.ClauseType)
+            void Accumulate(ClauseExecution exec)
             {
-                case ClauseType.OrGroup or ClauseType.AndGroup:
-                    if (exec.SubExecutions is not null)
-                    {
-                        foreach (var sub in exec.SubExecutions)
-                            AccumulateCardinalities(sub);
-                    }
-                    return;
-                case ClauseType.In or ClauseType.AllIn:
-                    int n = exec.InTermCount + 1;
-                    for (int i = 0; i < n; i++)
-                        _cardinalities[_slot++] = exec.Cardinality;
-                    return;
-                default:
-                    _cardinalities[_slot++] = exec.Cardinality;
-                    return;
+                RuntimeHelpers.EnsureSufficientExecutionStack();
+                switch (exec.ClauseType)
+                {
+                    case ClauseType.OrGroup:
+                    case ClauseType.AndGroup:
+                        if (exec.SubExecutions is not null)
+                        {
+                            foreach (var sub in exec.SubExecutions)
+                            {
+                                Accumulate(sub);
+                            }
+                        }
+                        break;
+
+                    case ClauseType.In:
+                    case ClauseType.AllIn:
+                        int n = exec.InTermCount + 1;
+                        for (int i = 0; i < n; i++)
+                        {
+                            cardinalities[slot++] = exec.Cardinality;
+                        }
+                        break;
+
+                    default:
+                        cardinalities[slot++] = exec.Cardinality;
+                        break;
+                }
             }
         }
     }

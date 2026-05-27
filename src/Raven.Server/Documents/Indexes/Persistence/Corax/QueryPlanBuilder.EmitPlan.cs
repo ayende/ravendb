@@ -29,13 +29,22 @@ internal static partial class QueryPlanBuilder
         /// a clause based on per-execution parameter shape would poison the cached plan for
         /// subsequent executions with different IN-array sizes — the cache key does not encode
         /// IN array length.</summary>
-        public static (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) Emit(PlanTemplate template, List<ClauseExecution> executions)
+        public static (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams)
         {
             if (executions.Count is 0)
                 return (BuildAllEntriesPlan(), 2, null);
 
             var emitter = new PlanEmitter();
-            return template.IsOr ? emitter.EmitOrPlan(executions) : emitter.EmitAndPlan(executions);
+            var (ops, bitmaps, rangeCounts) = template.IsOr ? emitter.EmitOrPlan(executions) : emitter.EmitAndPlan(executions);
+            if (planParams.HasBoost)
+            { 
+                // we require query match for boost, because the other options cannot compute it
+                for (int i = 0; i < ops.Length; i++)
+                {
+                    ops[i].Dispatch = MatchDispatch.QueryMatch;
+                }
+            }
+            return (ops, bitmaps, rangeCounts);
         }
 
         private (PlanOp[] Ops, int RequiredBitmaps, int[] InRangeCounts) Complete()

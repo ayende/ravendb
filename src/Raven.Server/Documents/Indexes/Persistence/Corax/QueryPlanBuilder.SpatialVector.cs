@@ -148,7 +148,7 @@ internal static partial class QueryPlanBuilder
     /// call <see cref="AttachPostFilterPhases"/> to wire them onto the plan. No-op when
     /// the template has neither.</summary>
     private static void AttachSpatialAndVectorClauses(
-        QueryExecution exec, PlanTemplate template, QueryPlanBuilder.PlanParameters planParams,
+        QueryExecution exec, PlanTemplate template, PlanParameters planParams,
         QueryBuilderParameters builderParameters, ValueWriter writer)
     {
         if (template.SpatialClauses == null && template.VectorClauses == null)
