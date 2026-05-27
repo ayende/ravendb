@@ -13,9 +13,11 @@ namespace Corax.Querying.Planning;
 /// <summary>
 /// Emits IL for residual-predicate evaluation delegates used by both the entry-scan
 /// path (CompiledQueryMatch) and the direct-scan path (DirectScanMatch). A single
-/// delegate works against <see cref="IPredicateEvaluationContext"/>, which both
-/// context types implement. Per-predicate value type, compare op, AND/OR sub-groups,
-/// and fieldRootPages indexing are baked into IL at emit time.
+/// delegate works against a <c>ref</c> to <see cref="ResidualParams"/>, which both
+/// context types embed as a field. Per-predicate value type, compare op, AND/OR
+/// sub-groups, and fieldRootPages indexing are baked into IL at emit time. Loads
+/// against the residual arrays use plain <c>Ldfld</c> on the byref struct — no
+/// interface dispatch, fully JIT-inlineable.
 ///
 /// The delegate ALWAYS evaluates ALL predicates baked into the IL, regardless of
 /// which path calls it. In the direct-scan case, the driving-clause predicates
@@ -27,7 +29,7 @@ namespace Corax.Querying.Planning;
 public static class ResidualScanIlEmitter
 {
     public delegate int ResidualScanPredicate(
-        IPredicateEvaluationContext ctx,
+        ref ResidualParams residuals,
         Span<EntryTermsReader> readers,
         Span<long> entryIds,
         Span<int> originalIndexes);
@@ -49,8 +51,8 @@ public static class ResidualScanIlEmitter
         var dm = new DynamicMethod(
             "ResidualScan",
             typeof(int),
-            [typeof(IPredicateEvaluationContext), typeof(Span<EntryTermsReader>), typeof(Span<long>), typeof(Span<int>)],
-            typeof(IPredicateEvaluationContext).Module,
+            [typeof(ResidualParams).MakeByRefType(), typeof(Span<EntryTermsReader>), typeof(Span<long>), typeof(Span<int>)],
+            typeof(ResidualParams).Module,
             skipVisibility: true)
         {
             InitLocals = false
@@ -61,13 +63,13 @@ public static class ResidualScanIlEmitter
         var d = new DualEmit(il, cs);
 
         // Register arguments for C# name tracking.
-        var ctxIdx = d.RegisterArg("ctx");
+        var residualsIdx = d.RegisterArg("residuals");
         var readersIdx = d.RegisterArg("readers");
         var entryIdsIdx =  d.RegisterArg("entryIds");
         var originalIndexesIdx = d.RegisterArg("originalIndexes");
 
         // C# function signature (no IL equivalent).
-        d.CsLine("static int ResidualScan(IPredicateEvaluationContext ctx, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
+        d.CsLine("static int ResidualScan(ref ResidualParams residuals, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
         d.CsLine("{");
 
         // Locals

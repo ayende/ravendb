@@ -6,7 +6,6 @@ using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
 using Voron.Data.RoaringBitmaps;
 using Sparrow.Server;
-using Voron;
 using Voron.Impl;
 
 namespace Corax.Querying.Matches;
@@ -25,7 +24,7 @@ public class CompiledQueryMatch(
     ByteStringContext allocator,
     bool wantTimings,
     CancellationToken token)
-    : IBitmapQueryMatch, IPredicateEvaluationContext, IDisposable
+    : IBitmapQueryMatch, IDisposable
 {
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
         wantTimings ? compiledPlan.CompiledTimedDelegate : compiledPlan.CompiledDelegate;
@@ -243,8 +242,8 @@ public class CompiledQueryMatch(
         Llt = null; // release transaction reference so it is not kept alive longer than needed
     }
 
-    public long[] ResidualLongParams { get; init; }
-    public double[] ResidualDoubleParams { get; init;}
-    public Slice[] ResidualSliceParams { get; init;}
-    public long[] ResidualFieldRootPages { get; init;}
+    /// <summary>Residual scan state passed by <c>ref</c> to the emitted
+    /// <see cref="ResidualScanIlEmitter.ResidualScanPredicate"/> delegate. Embedded as a field
+    /// so the emitted IL can <c>Ldfld</c> directly through a managed pointer — no virtcall.</summary>
+    public ResidualParams Residuals;
 }

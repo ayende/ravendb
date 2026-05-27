@@ -159,14 +159,15 @@ public sealed class DirectScanSimpleMatch(IndexSearcher searcher, IQueryMatch dr
 public sealed class DirectScanFilteredMatch(
     IndexSearcher searcher,
     IQueryMatch drivingMatch,
-    long[] longParams,
-    double[] doubleParams,
-    Slice[] sliceParams,
-    long[] fieldRootPages,
+    ResidualParams residuals,
     int take,
     ResidualScanIlEmitter.ResidualScanPredicate precompiledDelegate)
-    : DirectScanMatchBase(searcher, drivingMatch, take), IPredicateEvaluationContext
+    : DirectScanMatchBase(searcher, drivingMatch, take)
 {
+    /// <summary>Residual scan state, embedded as a field so the emitted IL can <c>Ldfld</c>
+    /// through a managed pointer rather than dispatching through an interface.</summary>
+    private ResidualParams _residuals = residuals;
+
     [SkipLocalsInit]
     public override unsafe int Fill(Span<long> matches)
     {
@@ -243,7 +244,7 @@ public sealed class DirectScanFilteredMatch(
                     packed++;
                 }
 
-                int matched = precompiledDelegate(this,
+                int matched = precompiledDelegate(ref _residuals,
                     readersArr.AsSpan(0, packed),
                     packedIds[..packed],
                     packedOrigIdx[..packed]);
@@ -284,8 +285,4 @@ public sealed class DirectScanFilteredMatch(
         }
     }
 
-    long[] IPredicateEvaluationContext.ResidualLongParams => longParams;
-    double[] IPredicateEvaluationContext.ResidualDoubleParams => doubleParams;
-    Slice[] IPredicateEvaluationContext.ResidualSliceParams => sliceParams;
-    long[] IPredicateEvaluationContext.ResidualFieldRootPages => fieldRootPages;
 }

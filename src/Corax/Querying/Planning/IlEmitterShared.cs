@@ -103,14 +103,14 @@ public static class IlEmitterShared
             nameof(QueryPrimitives.ShouldSwitchToEntryScan),
             [typeof(long), typeof(long)])!;
 
-    public static readonly MethodInfo CtxLongParams =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualLongParams))!.GetGetMethod();
-    public static readonly MethodInfo CtxDoubleParams =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualDoubleParams))!.GetGetMethod();
-    public static readonly MethodInfo CtxSliceParams =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualSliceParams))!.GetGetMethod();
-    public static readonly MethodInfo CtxFieldRootPages =
-        typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualFieldRootPages))!.GetGetMethod();
+    public static readonly FieldInfo ResidualLongs =
+        typeof(ResidualParams).GetField(nameof(ResidualParams.Longs))!;
+    public static readonly FieldInfo ResidualDoubles =
+        typeof(ResidualParams).GetField(nameof(ResidualParams.Doubles))!;
+    public static readonly FieldInfo ResidualSlices =
+        typeof(ResidualParams).GetField(nameof(ResidualParams.Slices))!;
+    public static readonly FieldInfo ResidualFieldRootPages =
+        typeof(ResidualParams).GetField(nameof(ResidualParams.FieldRootPages))!;
 
     public static readonly MethodInfo ReaderReset =
         typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset));
