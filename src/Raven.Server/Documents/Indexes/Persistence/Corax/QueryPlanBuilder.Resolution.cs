@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -289,7 +290,7 @@ internal static partial class QueryPlanBuilder
         {
             CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
             CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
-            CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(scanPredicates, out var scanCsharp),
+            CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(CollectionsMarshal.AsSpan(scanPredicates), out var scanCsharp),
 
             Template = template,
             Source = csharpText + "\n" + scanCsharp,
@@ -408,7 +409,7 @@ internal static partial class QueryPlanBuilder
         // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public'
         // If Tags = 'good' gave us 100 items, we don't want to do an AndWith Status = 'Public' (may have 1M items)
         // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly
-        ScanPredicateInfo[] CreateScanPredicates()
+        List<ScanPredicateInfo> CreateScanPredicates()
         {
             // Scan predicates only apply to multi-clause AND chains (clause 0 is the seed, 1..N are evaluated per-entry).
             // OR chains and single-clause queries skip this — the IL won't emit CheckAndMaybeEntryScan for them.
@@ -424,7 +425,7 @@ internal static partial class QueryPlanBuilder
                 if (BuildScanPredicateInfo(executions[i], ref longIndex, ref doubleIndex, ref sliceIndex) is {} pred)
                     predicates.Add(pred);
             }
-            return predicates.Count > 0 ? predicates.ToArray() : null;
+            return predicates;
         }
 
         bool CheckAllNegated() => executions is [{ IsNegated: true }, ..];

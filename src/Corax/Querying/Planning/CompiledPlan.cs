@@ -140,7 +140,7 @@ public sealed class CompiledPlan
     /// Used by <c>ExtractScanParameters</c> on every execution (both cache hit and miss)
     /// to avoid rebuilding the <see cref="ScanPredicateInfo"/> array per query.
     /// Null when the plan has no entry-scan predicates (single-clause, OR, etc.).</summary>
-    public ScanPredicateInfo[] ScanPredicateInfos { get; init; }
+    public List<ScanPredicateInfo> ScanPredicateInfos { get; init; }
 
     // ── Structural fields moved from QueryExecution ─────────────────────
     // Set once at cache-miss time (by Build + RemapOptimizationIndices) then
