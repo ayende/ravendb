@@ -363,6 +363,7 @@ internal static partial class QueryPlanBuilder
             exec.Plan = compiledPlan;
             if(compiledPlan.InRangeSlotCount is not 0)
                 exec.InRangeCounts = BuildInRangeCounts(executions, compiledPlan.InRangeSlotCount);
+            exec.Cardinalities = BuildCardinalities(executions, exec.IsAllEntries);
 
             AttachSpatialAndVectorClauses(exec, template, planParams, builderParameters, writer);
             // Re-snapshot typed arrays into exec: AttachSpatialAndVectorClauses appended
@@ -1604,6 +1605,7 @@ internal static partial class QueryPlanBuilder
             indexSearcher, planParams.Allocator, wantTimings, token)
         {
             InRangeCounts = exec.InRangeCounts,
+            Cardinalities = exec.Cardinalities,
             ResidualLongParams = longParams,
             ResidualDoubleParams = doubleParams,
             ResidualSliceParams = sliceParams,
@@ -3293,6 +3295,55 @@ internal static partial class QueryPlanBuilder
         int rangeIdx = 0;
         AccumulateInRangeCounts(executions, counts, ref rangeIdx);
         return counts;
+    }
+
+    /// <summary>Build the per-execution cardinality array consumed by the entry-scan
+    /// heuristic in IL. One <c>long</c> per match slot, mirroring the slot layout used
+    /// by <see cref="ResolveSlots{TResolver,TSlot}"/>: each non-IN leaf occupies 1 slot,
+    /// IN/AllIn occupy <c>InTermCount + 1</c> slots (all filled with the same clause
+    /// cardinality so any cursor position inside the range reads a sensible estimate),
+    /// and the leading AllEntries slot (when <paramref name="isAllEntries"/> is true) is
+    /// left at 0 — CheckAndMaybeEntryScan never reads that slot because there are no
+    /// remaining clauses for the plan to evaluate.</summary>
+
+
+    private static long[] BuildCardinalities(List<ClauseExecution> executions, bool isAllEntries)
+    {
+        int slotCount = CountMatchSlots(executions, isAllEntries);
+        if (slotCount == 0)
+            return null;
+
+        var cardinalities = new long[slotCount];
+        int slot = isAllEntries ? 1 : 0;
+        if (executions is not null)
+        {
+            foreach (var exec in executions)
+                AccumulateCardinalities(exec, cardinalities, ref slot);
+        }
+        return cardinalities;
+    }
+
+
+    private static void AccumulateCardinalities(ClauseExecution exec, long[] cardinalities, ref int slot)
+    {
+        switch (exec.ClauseType)
+        {
+            case ClauseType.OrGroup or ClauseType.AndGroup:
+                if (exec.SubExecutions is not null)
+                {
+                    foreach (var sub in exec.SubExecutions)
+                        AccumulateCardinalities(sub, cardinalities, ref slot);
+                }
+                return;
+            case ClauseType.In or ClauseType.AllIn:
+                int n = exec.InTermCount + 1;
+                for (int i = 0; i < n; i++)
+                    cardinalities[slot++] = exec.Cardinality;
+                return;
+            default:
+                cardinalities[slot++] = exec.Cardinality;
+                return;
+        }
     }
 
 

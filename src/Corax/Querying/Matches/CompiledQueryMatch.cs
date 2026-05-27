@@ -39,6 +39,13 @@ public class CompiledQueryMatch(
 
     public int[] InRangeCounts;
 
+    /// <summary>Per-slot planner cardinality estimate. The entry-scan heuristic reads
+    /// <c>Cardinalities[cursor]</c> to decide whether bitmap[0] is small enough relative
+    /// to the next clause's estimated entries to switch to per-entry scanning. Sized to
+    /// match the resolver's slot layout (<see cref="ResolvedMatches"/>/<see cref="PostingSources"/>/<see cref="TermsProviders"/>),
+    /// so the IL cursor can index it directly regardless of dispatch.</summary>
+    public long[] Cardinalities;
+
     public long EntryScanEntriesScanned; 
     public long EntryScanEntriesPassed;
 

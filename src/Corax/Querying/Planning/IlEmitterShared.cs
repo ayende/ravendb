@@ -58,6 +58,8 @@ public static class IlEmitterShared
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ResolvedMatches));
     public static readonly FieldInfo CtxInRangeCounts =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.InRangeCounts));
+    public static readonly FieldInfo CtxCardinalities =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Cardinalities));
     public static readonly FieldInfo CtxTermsProviders =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.TermsProviders));
     public static readonly FieldInfo CtxEntryScanTakenAtOp =
@@ -100,11 +102,6 @@ public static class IlEmitterShared
         typeof(QueryPrimitives).GetMethod(
             nameof(QueryPrimitives.ShouldSwitchToEntryScan),
             [typeof(long), typeof(long)])!;
-
-    public static readonly MethodInfo GetSlotEntryCount =
-        typeof(QueryPrimitives).GetMethod(
-            nameof(QueryPrimitives.GetSlotEntryCount),
-            [typeof(CompiledQueryMatch), typeof(int)])!;
 
     public static readonly MethodInfo CtxLongParams =
         typeof(IPredicateEvaluationContext).GetProperty(nameof(IPredicateEvaluationContext.ResidualLongParams))!.GetGetMethod();
