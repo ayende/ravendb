@@ -112,4 +112,12 @@ public sealed class PlanTemplate
     /// that field, promoting the second ORDER BY to <c>orderByFields[0]</c>). Null when no
     /// hint is applicable (paired with <see cref="SortSeekHintTemplateIdx"/> = -1).</summary>
     public string SortSeekPrimaryOrderByFieldName;
+
+    /// <summary>Pre-computed sort-metadata template, stored as <see cref="object"/> because the
+    /// concrete type (<c>SortMetadataTemplate</c>) lives in Raven.Server and cannot be referenced
+    /// from Corax. Built once at template-build time by <c>BuildSortMetadataTemplate</c>; the
+    /// runtime <c>MaterializeSortMetadata</c> casts it back to extract the prebuilt
+    /// <c>OrderMetadata[]</c> + per-slot patch directives. Null for templates built by callers
+    /// that don't supply a <c>QueryBuilderParameters</c> (direct-planner tests).</summary>
+    public object SortMetadataTemplate;
 }
