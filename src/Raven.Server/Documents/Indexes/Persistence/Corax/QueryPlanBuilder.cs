@@ -100,7 +100,7 @@ internal static partial class QueryPlanBuilder
     {
         var query = p.Metadata.Query;
         if (query.Where == null)
-            return new PlanTemplate { Clauses = [] };
+            return new PlanTemplate { Clauses = [], SortMetadataTemplate = BuildSortMetadataTemplate(p) };
 
         // Phase 1: materialize the AST into ClauseInfo[]. Each Parse method validates
         // its own preconditions (field name, argument count, type compatibility) and
@@ -111,7 +111,7 @@ internal static partial class QueryPlanBuilder
         PlanWalker.ThrowIfErrors(walkerCtx);
 
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
-            return new PlanTemplate { Clauses = [] };
+            return new PlanTemplate { Clauses = [], SortMetadataTemplate = BuildSortMetadataTemplate(p) };
 
         Debug.Assert(rootOp != BooleanOp.False,
             "No RQL expression currently reduces to BooleanOp.False at template time. " +
@@ -136,6 +136,7 @@ internal static partial class QueryPlanBuilder
                 Clauses = [],
                 SpatialClauses = walkerCtx.SpatialClauses,
                 VectorClauses = walkerCtx.VectorClauses,
+                SortMetadataTemplate = BuildSortMetadataTemplate(p),
             };
         }
 
@@ -182,6 +183,9 @@ internal static partial class QueryPlanBuilder
             SortSeekHintTemplateIdx = sortSeekHintIdx,
             SortSeekUseParam2 = sortSeekUseParam2,
             SortSeekPrimaryOrderByFieldName = sortSeekHintIdx >= 0 ? orderByPrimaryField : null,
+            // BuildSortMetadataTemplate may return null when PlanParameters lacks Index/IndexFieldsMapping
+            // (direct-planner tests) — the runtime path then falls back to ComputeSortMetadataLegacy.
+            SortMetadataTemplate = BuildSortMetadataTemplate(p),
         };
     }
 

@@ -251,7 +251,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // Phase 3a: resolve ORDER BY metadata (needed by Instantiate's strategy dispatch).
-        var orderByFields = GetSortMetadata(builderParameters, out var hasEmptySorts);
+        var orderByFields = GetSortMetadata(builderParameters, plan.Template, out var hasEmptySorts);
         // Phase 3b: dispatch on the cached ExecutionStrategy (fast path) or run  discovery (cache-miss only). 
         var queryMatch = Instantiate(plan, exec, orderByFields, hasEmptySorts,
             planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
