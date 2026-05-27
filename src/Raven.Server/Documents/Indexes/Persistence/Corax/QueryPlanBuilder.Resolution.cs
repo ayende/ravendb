@@ -285,7 +285,7 @@ internal static partial class QueryPlanBuilder
 
         // Cache miss — full exec emission
         var clauseDispatch = ComputeClauseDispatch(executions, planParams.HasBoost, template);
-        var (ops, requiredBitmaps, inRangeCounts) = PlanEmitter.Emit(template, executions, planParams);
+        var (ops, requiredBitmaps) = PlanEmitter.Emit(template, executions, planParams);
 
         var scanPredicates = CreateScanPredicates();
         compiledPlan = new CompiledPlan
@@ -302,7 +302,6 @@ internal static partial class QueryPlanBuilder
             WhenFlags = whenFlags,
             OpCount = ops.Length,
             RequiredBitmaps = requiredBitmaps,
-            InRangeSlotCount = inRangeCounts?.Length ?? 0,
             InspectionTemplate = BuildInspectionTemplate(ops, executions),
             ScanPredicateInfos = scanPredicates,
             AllNegated = CheckAllNegated(),
@@ -316,8 +315,9 @@ internal static partial class QueryPlanBuilder
         (CompiledPlan, QueryExecution ) FinalizePlan()
         {
             exec.Plan = compiledPlan;
-            exec.InRangeCounts = CardinalityArrayBuilder.BuildInRangeCounts(executions, compiledPlan.InRangeSlotCount);
-            exec.Cardinalities = CardinalityArrayBuilder.BuildCardinalities(executions, exec.IsAllEntries);
+            CardinalityArrayBuilder.Build(executions, exec.IsAllEntries, out var inRange, out var cards);
+            exec.InRangeCounts = inRange;
+            exec.Cardinalities = cards;
 
             AttachSpatialAndVectorClauses(exec, template, planParams, builderParameters, writer);
             // Re-snapshot typed arrays into exec: AttachSpatialAndVectorClauses appended
@@ -1820,25 +1820,23 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Produces a slot per LEAF position from QueryExecution's clauses. Slot layout
-    /// matches <see cref="CountMatchSlots"/> exactly — both walk the clause tree via the
-    /// same recursion (<see cref="ResolveClauseLeavesInto{TResolver, TSlot}"/> here,
-    /// <see cref="CountClauseLeaves"/> there). The emit helpers consume leaves in the
-    /// same order, keeping IL slot indices end-to-end consistent. The per-leaf effective
-    /// dispatch vector is consulted via <c>TResolver.TargetDispatch</c>; mismatched slots
-    /// stay at <c>default(TSlot)</c>, avoiding wasted work of building three parallel
-    /// arrays where IL only ever reads one per slot.</summary>
+    /// matches the IL emitter's leaf walk and <see cref="CardinalityArrayBuilder.Build"/>
+    /// exactly — all three walk the clause tree with the same recursion, keeping IL slot
+    /// indices end-to-end consistent. The per-leaf effective dispatch vector is consulted
+    /// via <c>TResolver.TargetDispatch</c>; mismatched slots stay at <c>default(TSlot)</c>,
+    /// avoiding wasted work of building three parallel arrays where IL only ever reads
+    /// one per slot.</summary>
     private static TSlot[] ResolveSlots<TResolver, TSlot>(ResolutionContext walkerCtx, QueryExecution exec)
         where TResolver : ISlotResolver<TResolver, TSlot>
     {
-        var slots = new TSlot[CountMatchSlots(exec.Executions, exec.IsAllEntries)];
-        int matchIdx = 0;
+        var slots = new List<TSlot>();
         int clauseIdx = 0;
         foreach (var clauseExec in exec.Executions)
         {
-            ResolveClauseLeavesInto<TResolver, TSlot>(walkerCtx, clauseExec, exec, slots, ref matchIdx, ref clauseIdx);
+            ResolveClauseLeavesInto<TResolver, TSlot>(walkerCtx, clauseExec, exec, slots, ref clauseIdx);
         }
 
-        return slots;
+        return slots.ToArray();
     }
 
     /// <summary>Recursive leaf walker shared by all three <see cref="ISlotResolver{TSelf, TSlot}"/>
@@ -1849,7 +1847,7 @@ internal static partial class QueryPlanBuilder
     /// negation has no effect because there is no match to score.</summary>
     private static void ResolveClauseLeavesInto<TResolver, TSlot>(ResolutionContext walkerCtx,
         ClauseExecution clauseExec, QueryExecution root,
-        TSlot[] slots, ref int matchIdx, ref int clauseIdx)
+        List<TSlot> slots, ref int clauseIdx)
         where TResolver : ISlotResolver<TResolver, TSlot>
     {
         var clauseDispatch = root.Plan.ClauseDispatch;
@@ -1858,7 +1856,7 @@ internal static partial class QueryPlanBuilder
             case ClauseType.OrGroup or ClauseType.AndGroup:
                 foreach (var it in clauseExec.SubExecutions)
                 {
-                    ResolveClauseLeavesInto<TResolver, TSlot>(walkerCtx, it, root, slots, ref matchIdx, ref clauseIdx);
+                    ResolveClauseLeavesInto<TResolver, TSlot>(walkerCtx, it, root, slots, ref clauseIdx);
                 }
 
                 break;
@@ -1867,17 +1865,21 @@ internal static partial class QueryPlanBuilder
                 bool matches = clauseDispatch[clauseIdx++] == TResolver.TargetDispatch;
                 if (!matches)
                 {
-                    matchIdx += clauseExec.InTermCount + 1; // +1 for the null slot
+                    // Reserve InTermCount + 1 default slots (+1 for the null-term slot).
+                    for (int i = 0; i <= clauseExec.InTermCount; i++)
+                    {
+                        slots.Add(default);
+                    }
                     break;
                 }
 
                 for (int i = 0; i < clauseExec.InTermCount; i++)
                 {
-                    slots[matchIdx++] = TResolver.ResolveInTermSlot(clauseExec, i, root, walkerCtx);
+                    slots.Add(TResolver.ResolveInTermSlot(clauseExec, i, root, walkerCtx));
                 }
 
                 // Null-term slot is always allocated; resolver decides whether to populate.
-                slots[matchIdx++] = TResolver.ResolveNullTermSlot(clauseExec, walkerCtx);
+                slots.Add(TResolver.ResolveNullTermSlot(clauseExec, walkerCtx));
                 break;
             }
             default:
@@ -1885,11 +1887,11 @@ internal static partial class QueryPlanBuilder
                 bool matches = clauseDispatch[clauseIdx++] == TResolver.TargetDispatch;
                 if (!matches)
                 {
-                    matchIdx++;
+                    slots.Add(default);
                     break;
                 }
 
-                slots[matchIdx++] = TResolver.ResolveDefaultSlot(clauseExec, root, walkerCtx);
+                slots.Add(TResolver.ResolveDefaultSlot(clauseExec, root, walkerCtx));
                 break;
             }
         }
@@ -2281,45 +2283,6 @@ internal static partial class QueryPlanBuilder
         var buf = new byte[sizeof(long)];
         BinaryPrimitives.WriteInt64BigEndian(buf, Bits.SwapBytes(raw));
         return buf;
-    }
-
-    internal static int CountMatchSlots(List<ClauseExecution> executions, bool isAllEntries)
-    {
-        int count = isAllEntries ? 1 : 0;
-
-        foreach (var exec in executions ?? [])
-        {
-            count += CountLeaves(exec);
-        }
-
-        return count;
-
-        int CountLeaves(ClauseExecution exec)
-        {
-            RuntimeHelpers.EnsureSufficientExecutionStack();
-            switch (exec.ClauseType)
-            {
-                case ClauseType.OrGroup:
-                case ClauseType.AndGroup:
-                    int sum = 0;
-                    if (exec.SubExecutions is not null)
-                    {
-                        foreach (var it in exec.SubExecutions)
-                        {
-                            sum += CountLeaves(it);
-                        }
-                    }
-
-                    return sum;
-
-                case ClauseType.In:
-                case ClauseType.AllIn:
-                    return exec.InTermCount + 1;
-
-                default:
-                    return 1;
-            }
-        }
     }
 
     /// <summary>For an OrGroup or AndGroup clause, returns the parallel (sub-clauses, sub-executions)

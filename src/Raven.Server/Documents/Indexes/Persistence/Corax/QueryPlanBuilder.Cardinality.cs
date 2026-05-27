@@ -124,61 +124,34 @@ internal static partial class QueryPlanBuilder
         }
     }
 
+    /// <summary>Single-pass walker producing both the per-IN term-count array and the
+    /// per-leaf cardinality array. Slot layout is identical to the leaf walk used by
+    /// <see cref="ResolveSlots{TResolver, TSlot}"/> and the IL emitter — keeping all
+    /// three in step is a hard invariant: a divergence shows up as an off-by-one in
+    /// IL slot reads, not as a data-shape error.</summary>
     private static class CardinalityArrayBuilder
     {
-        public static int[] BuildInRangeCounts(List<ClauseExecution> executions, int slotCount)
+        public static void Build(List<ClauseExecution> executions, bool isAllEntries,
+            out int[] inRangeCounts, out long[] cardinalities)
         {
-            if (slotCount is 0)
-                return Array.Empty<int>();
-            
-            int[] counts = new int[slotCount];
-            int rangeIdx = 0;
-    
-            Accumulate(executions);
-            return counts;
+            var inRange = new List<int>();
+            var cards = new List<long>();
+            if (isAllEntries)
+                cards.Add(0); // reserve slot 0 for the synthetic AllEntries match
 
-            void Accumulate(List<ClauseExecution> currentExecutions)
+            if (executions is not null)
             {
-                RuntimeHelpers.EnsureSufficientExecutionStack();
-                for (int ci = 0; ci < currentExecutions.Count && rangeIdx < counts.Length; ci++)
+                foreach (var exec in executions)
                 {
-                    ClauseExecution execution = currentExecutions[ci];
-                    switch (execution.Clause.ClauseType)
-                    {
-                        case ClauseType.OrGroup:
-                        case ClauseType.AndGroup:
-                            if (execution.SubExecutions is not null)
-                            {
-                                Accumulate(execution.SubExecutions);
-                            }
-                            break;
-
-                        case ClauseType.In:
-                        case ClauseType.AllIn:
-                            counts[rangeIdx++] = execution.InTermCount;
-                            break;
-                    }
+                    Walk(exec);
                 }
             }
-        }
 
-        public static long[] BuildCardinalities(List<ClauseExecution> executions, bool isAllEntries)
-        {
-            int slotCount = CountMatchSlots(executions, isAllEntries);
-            if (slotCount == 0)
-                return null;
+            inRangeCounts = inRange.Count == 0 ? Array.Empty<int>() : inRange.ToArray();
+            cardinalities = cards.Count == 0 ? null : cards.ToArray();
+            return;
 
-            long[] cardinalities = new long[slotCount];
-            int slot = isAllEntries ? 1 : 0;
-
-            foreach (var exec in executions ?? [])
-            {
-                Accumulate(exec);
-            }
-
-            return cardinalities;
-
-            void Accumulate(ClauseExecution exec)
+            void Walk(ClauseExecution exec)
             {
                 RuntimeHelpers.EnsureSufficientExecutionStack();
                 switch (exec.ClauseType)
@@ -189,22 +162,23 @@ internal static partial class QueryPlanBuilder
                         {
                             foreach (var sub in exec.SubExecutions)
                             {
-                                Accumulate(sub);
+                                Walk(sub);
                             }
                         }
                         break;
 
                     case ClauseType.In:
                     case ClauseType.AllIn:
+                        inRange.Add(exec.InTermCount);
                         int n = exec.InTermCount + 1;
                         for (int i = 0; i < n; i++)
                         {
-                            cardinalities[slot++] = exec.Cardinality;
+                            cards.Add(exec.Cardinality);
                         }
                         break;
 
                     default:
-                        cardinalities[slot++] = exec.Cardinality;
+                        cards.Add(exec.Cardinality);
                         break;
                 }
             }

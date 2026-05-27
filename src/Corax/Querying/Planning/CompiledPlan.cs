@@ -119,12 +119,6 @@ public sealed class CompiledPlan
     /// re-running EmitPlan.</summary>
     public int RequiredBitmaps { get; init; }
 
-    /// <summary>Number of IN/AllIn range-count slots in the plan. Each IN or AllIn
-    /// clause produces one slot whose runtime value comes from the fixup loop.
-    /// Zero when the plan has no IN/AllIn clauses. Stored on the CompiledPlan so
-    /// cache hits can allocate and fill InRangeCounts without EmitPlan.</summary>
-    public int InRangeSlotCount { get; init; }
-
     /// <summary>Per-atom effective <see cref="MatchDispatch"/> in the same recursive
     /// leaf-walk order used by <c>ResolveClauseLeavesInto</c> and <c>CountClauseLeaves</c>.
     /// One entry per leaf (Or/AndGroup expands to its sub-leaves); IN/AllIn collapses
