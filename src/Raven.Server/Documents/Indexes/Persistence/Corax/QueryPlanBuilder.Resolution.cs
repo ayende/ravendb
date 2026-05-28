@@ -935,29 +935,24 @@ internal static partial class QueryPlanBuilder
             PopulateHighlightingTerms(exec, highlightingTerms, planParams.Metadata);
 
         var compiledMatch = new CompiledQueryMatch(
-            compiledPlan, compiledPlan.RequiredBitmaps, compiledPlan.OpCount, resolvedMatches, termSources, termsProviders,
+            compiledPlan, exec, compiledPlan.RequiredBitmaps, compiledPlan.OpCount, resolvedMatches, termSources, termsProviders,
             indexSearcher, planParams.Allocator, wantTimings, token)
         {
             InRangeCounts = exec.InRangeCounts,
             Cardinalities = exec.Cardinalities,
-            // Longs/Doubles point at QueryExecution arrays — zero-copy, already materialized.
-            // Slices/FieldRootPages are filled lazily on first entry-scan trigger via PopulateScanParams.
-            Residuals = new ResidualParams
-            {
-                Longs = exec.LongValues,
-                Doubles = exec.DoubleValues,
-            },
         };
 
-        // Attach the deferred scan-param populate only when the plan actually has scan-eligible
-        // predicates. Most queries don't, so the closure allocation is skipped on the common path.
+        // Attach the deferred scan-param populate on QueryExecution only when the plan actually has
+        // scan-eligible predicates. Most queries don't, so the closure allocation is skipped on the
+        // common path. LongValues/DoubleValues are already populated on exec; only ResidualSlices
+        // and FieldRootPages need lazy materialization (they trigger analyzer + field-root lookups).
         if (exec.Plan.ScanPredicateInfos is { Count: > 0 })
         {
-            compiledMatch.PopulateScanParams = () =>
+            exec.PopulateScanParams = () =>
             {
                 ScanParamExtractor.Extract(exec, indexSearcher, out var sliceParams, out var fieldRootPages);
-                compiledMatch.Residuals.Slices = sliceParams;
-                compiledMatch.Residuals.FieldRootPages = fieldRootPages;
+                exec.ResidualSlices = sliceParams;
+                exec.FieldRootPages = fieldRootPages;
             };
         }
 
@@ -1364,15 +1359,18 @@ internal static partial class QueryPlanBuilder
                 validatePostfixLen: true);
         }
 
-        // Extract scan parameters for residual predicates
+        // Extract scan parameters for residual predicates and stash them on the exec — the residual
+        // IL reads exec.ResidualSlices / exec.FieldRootPages directly. Longs/Doubles already live
+        // on exec; the IL reads them by baked PackedParam.Param1 indices.
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
         ScanParamExtractor.BuildResidual(ctx.Exec, indexSearcher, allocator, residualArray,
             drivingClauseIdx, field2RangeIdx,
             out var sliceParams, out var fieldRootPages);
+        ctx.Exec.ResidualSlices = sliceParams;
+        ctx.Exec.FieldRootPages = fieldRootPages;
 
         var directScan = BuildDirectScan(
-            indexSearcher, drivingMatch,
-            new ResidualParams { Longs = ctx.Exec.LongValues, Doubles = ctx.Exec.DoubleValues, Slices = sliceParams, FieldRootPages = fieldRootPages },
+            indexSearcher, drivingMatch, ctx.Exec,
             ctx.Plan.CompiledEntryPredicate, residualArray);
         directScan.DrivingTreeName = compoundFieldName;
         directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
@@ -1653,15 +1651,16 @@ internal static partial class QueryPlanBuilder
         // so SortedDrivingMatch must drain them itself (respecting nullFirst direction).
         IQueryMatch drivingMatch = BuildSortedDrivingMatch(ref ctx, provider, llt, hasTieBreak, forward);
 
-        // ── 4. Residual scan parameters ──
+        // ── 4. Residual scan parameters ── stash on exec (residual IL reads them from there).
         ScanPredicateInfo[] residualArray = residualPreds is { Count: > 0 } ? residualPreds.ToArray() : null;
         ScanParamExtractor.BuildResidual(ctx.Exec, indexSearcher, ctx.PlanParams.Allocator, residualArray,
             drivingIdx, -1,
             out var sliceParams, out var fieldRootPages);
+        ctx.Exec.ResidualSlices = sliceParams;
+        ctx.Exec.FieldRootPages = fieldRootPages;
 
         var ds = BuildDirectScan(
-            indexSearcher, drivingMatch,
-            new ResidualParams { Longs = ctx.Exec.LongValues, Doubles = ctx.Exec.DoubleValues, Slices = sliceParams, FieldRootPages = fieldRootPages },
+            indexSearcher, drivingMatch, ctx.Exec,
             ctx.Plan.CompiledEntryPredicate, residualArray);
 
         PopulateDirectScanInspection(ds, sortFieldName, drivingClauseDescription, forward, residualArray, residualPreds,
@@ -1797,7 +1796,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>Create the appropriate DirectScan match based on whether residual predicates exist.</summary>
     private static DirectScanMatchBase BuildDirectScan(
         IndexSearcher searcher, IQueryMatch drivingMatch,
-        ResidualParams residuals,
+        QueryExecution exec,
         ResidualScanIlEmitter.ResidualScanPredicate residualDelegate,
         ScanPredicateInfo[] residualArray)
     {
@@ -1805,7 +1804,7 @@ internal static partial class QueryPlanBuilder
             return new DirectScanSimpleMatch(searcher, drivingMatch, take: -1);
 
         return new DirectScanFilteredMatch(
-            searcher, drivingMatch, residuals,
+            searcher, drivingMatch, exec,
             take: -1, precompiledDelegate: residualDelegate);
     }
 
