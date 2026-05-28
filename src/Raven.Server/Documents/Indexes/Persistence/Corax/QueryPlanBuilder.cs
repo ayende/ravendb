@@ -545,291 +545,104 @@ internal static partial class QueryPlanBuilder
         }
     }
 
+    private delegate BooleanOp MethodHandler(MethodExpression method, ResolutionContext walkerCtx);
+
+    // Dispatch table for the methods allowed inside a WHERE clause. Leaf handlers add a single
+    // ClauseInfo (or none, on validation failure) and return BooleanOp.Leaf; wrapper handlers
+    // (exact/boost/when) recurse and propagate the inner BooleanOp so that e.g. exact(A OR B) is
+    // still detected as OR at the root. Any method not registered here is rejected by ParseMethod.
+    private static readonly Dictionary<MethodType, MethodHandler> MethodHandlers = new()
+    {
+        [MethodType.Search] = ParseSearchMethod,
+        [MethodType.StartsWith] = static (m, ctx) => ParseFieldValueLeaf(m, ctx, ClauseType.StartsWith, "field, prefix"),
+        [MethodType.EndsWith] = static (m, ctx) => ParseFieldValueLeaf(m, ctx, ClauseType.EndsWith, "field, prefix"),
+        [MethodType.Regex] = static (m, ctx) => ParseFieldValueLeaf(m, ctx, ClauseType.Regex, "field, pattern"),
+        [MethodType.Exists] = ParseExists,
+        [MethodType.Exact] = ParseExact,
+        [MethodType.Boost] = ParseBoost,
+        [MethodType.When] = ParseWhen,
+        [MethodType.Spatial_Within] = ParseSpatial,
+        [MethodType.Spatial_Contains] = ParseSpatial,
+        [MethodType.Spatial_Disjoint] = ParseSpatial,
+        [MethodType.Spatial_Intersects] = ParseSpatial,
+        [MethodType.Vector_Search] = ParseVectorSearch,
+        // MoreLikeThis in a WHERE clause acts as "all entries" — the actual MLT logic runs in the
+        // separate reader.MoreLikeThis() path, so here it is a no-op that matches everything.
+        [MethodType.MoreLikeThis] = static (_, _) => BooleanOp.Leaf,
+    };
+
     private static BooleanOp ParseMethod(MethodExpression method, ResolutionContext walkerCtx)
     {
         MethodType methodType = QueryMethod.GetMethodType(method.Name.Value);
-        switch (methodType)
+        if (MethodHandlers.TryGetValue(methodType, out MethodHandler handler) == false)
+            throw new InvalidOperationException($"Unexpected method '{method.Name.Value}' ({methodType}) in WHERE clause.");
+
+        return handler(method, walkerCtx);
+    }
+
+    private static BooleanOp ParseExists(MethodExpression method, ResolutionContext walkerCtx)
+    {
+        if (method.Arguments.Count == 0)
         {
-            case MethodType.Search:
-                ParseSearchMethod(method, walkerCtx);
-                break;
-
-            case MethodType.StartsWith:
-                ParsePrefixMethod(method, ClauseType.StartsWith, walkerCtx);
-                break;
-
-            case MethodType.EndsWith:
-                ParsePrefixMethod(method, ClauseType.EndsWith, walkerCtx);
-                break;
-
-            case MethodType.Exists:
-            {
-                if (method.Arguments.Count == 0)
-                {
-                    walkerCtx.Report("exists() requires a field argument.");
-                    break;
-                }
-
-                if (TryGetFieldName(method.Arguments[0], walkerCtx, out string existsFieldName) == false)
-                {
-                    walkerCtx.Report($"exists() argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
-                    break;
-                }
-
-                walkerCtx.Clauses.Add(new ClauseInfo
-                {
-                    FieldName = existsFieldName,
-                    ClauseType = ClauseType.Exists,
-                    OriginalIndex = walkerCtx.Clauses.Count
-                });
-                break;
-            }
-
-            case MethodType.Exact:
-            {
-                // exact(expr) → recurse, then mark all new clauses as exact.
-                // Propagate the inner BooleanOp so that exact(A OR B) is still detected as OR at
-                // the root — otherwise the outer ParseExpression would see Leaf and compile in
-                // AND mode, intersecting the OR branches.
-                int beforeCount = walkerCtx.Clauses.Count;
-                BooleanOp innerOp = BooleanOp.Leaf;
-                if (method.Arguments.Count > 0)
-                {
-                    innerOp = ParseExpression(method.Arguments[0], walkerCtx);
-                }
-
-                for (int c = beforeCount; c < walkerCtx.Clauses.Count; c++)
-                {
-                    walkerCtx.Clauses[c].IsExact = true;
-                }
-
-                return innerOp;
-            }
-
-            case MethodType.Boost:
-            {
-                // boost(expr, factor) → recurse, then capture the clauses' instances for later call to BoostPropagate.
-                // even if they are moved by GroupCollapse or AnalyzerRewrite later on, the instances are the same
-                int beforeCount = walkerCtx.Clauses.Count;
-                if (method.Arguments.Count is 0)
-                {
-                    return BooleanOp.Leaf;
-                }
-
-                BooleanOp innerOp = ParseExpression(method.Arguments[0], walkerCtx);
-                if (method.Arguments.Count is 1 ||
-                    walkerCtx.Clauses.Count == beforeCount ||
-                    CreateBinding(method.Arguments[1], walkerCtx) is not { } boostBinding)
-                {
-                    return innerOp;
-                }
-
-                ClauseInfo[] inner = new ClauseInfo[walkerCtx.Clauses.Count - beforeCount];
-                for (int c = 0; c < inner.Length; c++)
-                {
-                    inner[c] = walkerCtx.Clauses[beforeCount + c];
-                }
-
-                walkerCtx.RecordPendingBoost(inner, boostBinding);
-                return innerOp;
-            }
-
-            case MethodType.Regex:
-            {
-                if (method.Arguments.Count < 2)
-                {
-                    walkerCtx.Report($"regex() requires at least 2 arguments (field, pattern), but got {method.Arguments.Count}.");
-                    break;
-                }
-
-                if (TryGetFieldName(method.Arguments[0], walkerCtx, out string regexFieldName) == false)
-                {
-                    walkerCtx.Report($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
-                    break;
-                }
-
-                walkerCtx.Clauses.Add(new ClauseInfo
-                {
-                    FieldName = regexFieldName,
-                    ClauseType = ClauseType.Regex,
-                    OriginalIndex = walkerCtx.Clauses.Count,
-                    Bindings = [CreateBinding(method.Arguments[1], walkerCtx)]
-                });
-                break;
-            }
-
-            case MethodType.Spatial_Within:
-            case MethodType.Spatial_Contains:
-            case MethodType.Spatial_Disjoint:
-            case MethodType.Spatial_Intersects:
-            {
-                if (method.Arguments is [_, not MethodExpression, ..])
-                {
-                    walkerCtx.Report($"Spatial shape argument must be a method expression (spatial.circle or spatial.wkt), but got: {method.Arguments[1].Type}");
-                    break;
-                }
-
-                // Capture bindings for all spatial sub-arguments.
-                // Shape type and field name are structural; parameter values resolved per-execution.
-                string spatialFieldName;
-                if (walkerCtx.Metadata.IsDynamic && method.Arguments[0] is MethodExpression spatialPointExpr)
-                {
-                    spatialFieldName = walkerCtx.Metadata.GetSpatialFieldName(spatialPointExpr, walkerCtx.QueryParameters);
-                }
-                else if (TryGetFieldName(method.Arguments[0], walkerCtx, out string sfn))
-                {
-                    spatialFieldName = sfn;
-                }
-                else
-                {
-                    spatialFieldName = QueryBuilderHelper.ExtractIndexFieldName(walkerCtx.Metadata.Query, walkerCtx.QueryParameters, method.Arguments[0], walkerCtx.Metadata);
-                }
-
-                MethodExpression shapeExpr = (MethodExpression)method.Arguments[1];
-                MethodType shapeType = QueryMethod.GetMethodType(shapeExpr.Name.Value);
-
-                // Build spatial bindings: [0]=distErrPct, then shape-specific args
-                List<ParameterBinding> spatialBindings =
-                [
-                    method.Arguments.Count == 3
-                        ? CreateBinding(method.Arguments[2], walkerCtx)
-                        : null
-                ];
-
-                switch (shapeType, shapeExpr.Arguments.Count)
-                {
-                    case (MethodType.Spatial_Circle, >= 3):
-                        spatialBindings.Add(CreateBinding(shapeExpr.Arguments[0], walkerCtx)); // radius
-                        spatialBindings.Add(CreateBinding(shapeExpr.Arguments[1], walkerCtx)); // lat
-                        spatialBindings.Add(CreateBinding(shapeExpr.Arguments[2], walkerCtx)); // lng
-                        spatialBindings.Add(shapeExpr.Arguments.Count == 4 // units (optional)
-                            ? CreateBinding(shapeExpr.Arguments[3], walkerCtx)
-                            : null);
-                        break;
-                    case (MethodType.Spatial_Wkt, >= 1):
-                        spatialBindings.Add(CreateBinding(shapeExpr.Arguments[0], walkerCtx)); // wkt
-                        spatialBindings.Add(shapeExpr.Arguments.Count == 2 // units (optional)
-                            ? CreateBinding(shapeExpr.Arguments[1], walkerCtx)
-                            : null);
-                        break;
-                }
-
-                walkerCtx.Clauses.Add(new ClauseInfo
-                {
-                    FieldName = spatialFieldName,
-                    ClauseType = ClauseType.Spatial,
-                    SpatialMethodType = ToSpatialOp(methodType),
-                    OriginalIndex = walkerCtx.Clauses.Count,
-                    Bindings = spatialBindings.ToArray()
-                });
-                break;
-            }
-
-            case MethodType.Vector_Search:
-            {
-                // Capture bindings for vector sub-arguments.
-                // Resolve field name (structural — uses metadata for dynamic index field naming).
-                string vectorFieldName = walkerCtx.Metadata.IsDynamic
-                    ? walkerCtx.Metadata.GetVectorFieldName(method, walkerCtx.QueryParameters)
-                    : QueryBuilderHelper.ExtractIndexFieldName(walkerCtx.Metadata.Query, walkerCtx.QueryParameters, method.Arguments[0], walkerCtx.Metadata);
-
-                VectorSourceKind vecMethod = VectorSourceKind.Inline;
-                ParameterBinding vectorValueBinding = null;
-                ParameterBinding aiTaskBinding = null;
-
-                QueryExpression srcVector = method.Arguments[1];
-                if (srcVector is MethodExpression methodValue)
-                {
-                    vecMethod = methodValue.Name.ToString() switch
-                    {
-                        ClientConstants.VectorSearch.EmbeddingForDocument => VectorSourceKind.FromDocument,
-                        ClientConstants.VectorSearch.EmbeddingForRaw => VectorSourceKind.Inline,
-                        ClientConstants.VectorSearch.EmbeddingText => VectorSourceKind.FromText,
-
-                        _ => VectorSourceKind.Inline
-                    };
-                    if (methodValue.Arguments.Count > 0)
-                    {
-                        vectorValueBinding = CreateBinding(methodValue.Arguments[0], walkerCtx);
-                    }
-
-                    if (vecMethod == VectorSourceKind.FromText && methodValue.Arguments.Count > 1
-                                                               && methodValue.Arguments[1] is MethodExpression aiMethod && aiMethod.Arguments.Count > 0)
-                    {
-                        aiTaskBinding = CreateBinding(aiMethod.Arguments[0], walkerCtx);
-                    }
-                }
-                else
-                {
-                    vectorValueBinding = CreateBinding(srcVector, walkerCtx);
-                }
-
-                ParameterBinding minimumMatchBinding = method.Arguments.Count <= 2 ? null : CreateBinding(method.Arguments[2], walkerCtx);
-                ParameterBinding numberOfCandidatesBinding = method.Arguments.Count <= 3 ? null : CreateBinding(method.Arguments[3], walkerCtx);
-                walkerCtx.Clauses.Add(new ClauseInfo
-                {
-                    FieldName = vectorFieldName,
-                    ClauseType = ClauseType.Vector,
-                    OriginalIndex = walkerCtx.Clauses.Count,
-                    Bindings = [vectorValueBinding, minimumMatchBinding, numberOfCandidatesBinding, aiTaskBinding],
-                    VectorMethod = vecMethod
-                });
-                break;
-            }
-
-            case MethodType.MoreLikeThis:
-                // MoreLikeThis method in a WHERE clause acts as "all entries" —
-                // the actual MLT logic is in the separate reader.MoreLikeThis() path.
-                // When it appears in a filter expression, treat it as no-op (all entries match).
-                break;
-
-            case MethodType.When:
-            {
-                // when(condition, expr) — create a delegate that evaluates the condition
-                // against the query's BlittableJsonReaderObject parameters at execution time.
-                // Clauses whose condition evaluates to false are eliminated in BuildAndCompile.
-                //
-                // Propagate the inner BooleanOp so that when(c, A OR B) preserves the OR shape
-                // for rootOp detection (parallels Boost/Exact wrappers).
-                if (method.Arguments.Count != 2)
-                {
-                    break;
-                }
-
-                QueryExpression conditionExpr = method.Arguments[0];
-                int beforeCount = walkerCtx.Clauses.Count;
-                BooleanOp innerOp = ParseExpression(method.Arguments[1], walkerCtx);
-                for (int wi = beforeCount; wi < walkerCtx.Clauses.Count; wi++)
-                {
-                    walkerCtx.Clauses[wi].WhenCondition = queryParams =>
-                        QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(conditionExpr, walkerCtx.Metadata.Query, walkerCtx.Metadata, queryParams);
-                }
-
-                return innerOp;
-            }
-
-            default:
-                throw new InvalidOperationException(
-                    $"Unexpected method '{method.Name.Value}' ({methodType}) in WHERE clause.");
+            walkerCtx.Report("exists() requires a field argument.");
+            return BooleanOp.Leaf;
         }
 
-        // Leaf methods (Search, StartsWith, EndsWith, Exists, Regex, Spatial_*, Vector.*, MoreLikeThis, etc.)
-        // and the malformed-When fallback all add at most one ClauseInfo with no nested boolean structure.
+        if (TryGetFieldName(method.Arguments[0], walkerCtx, out string existsFieldName) == false)
+        {
+            walkerCtx.Report($"exists() argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+            return BooleanOp.Leaf;
+        }
+
+        walkerCtx.Clauses.Add(new ClauseInfo
+        {
+            FieldName = existsFieldName,
+            ClauseType = ClauseType.Exists,
+            OriginalIndex = walkerCtx.Clauses.Count
+        });
         return BooleanOp.Leaf;
     }
 
-    private static void ParseSearchMethod(MethodExpression method, ResolutionContext walkerCtx)
+    // Shared shape for the (field, value) leaf methods: startsWith, endsWith, regex.
+    // argHint names the second argument in the arity-error message ("field, prefix" / "field, pattern");
+    // the method label is derived from the clause type (e.g. ClauseType.StartsWith → "startswith").
+    private static BooleanOp ParseFieldValueLeaf(MethodExpression method, ResolutionContext walkerCtx, ClauseType clauseType, string argHint)
+    {
+        string label = clauseType.ToString().ToLowerInvariant();
+        if (method.Arguments.Count < 2)
+        {
+            walkerCtx.Report($"{label}() requires at least 2 arguments ({argHint}), but got {method.Arguments.Count}.");
+            return BooleanOp.Leaf;
+        }
+
+        if (TryGetFieldName(method.Arguments[0], walkerCtx, out string fieldName) == false)
+        {
+            walkerCtx.Report($"{label}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
+            return BooleanOp.Leaf;
+        }
+
+        walkerCtx.Clauses.Add(new ClauseInfo
+        {
+            FieldName = fieldName,
+            ClauseType = clauseType,
+            OriginalIndex = walkerCtx.Clauses.Count,
+            Bindings = [CreateBinding(method.Arguments[1], walkerCtx)]
+        });
+        return BooleanOp.Leaf;
+    }
+
+    private static BooleanOp ParseSearchMethod(MethodExpression method, ResolutionContext walkerCtx)
     {
         if (method.Arguments.Count < 2)
         {
             walkerCtx.Report($"search() requires at least 2 arguments (field, term), but got {method.Arguments.Count}.");
-            return;
+            return BooleanOp.Leaf;
         }
 
         if (TryGetFieldName(method.Arguments[0], walkerCtx, out string fieldName) == false)
         {
             walkerCtx.Report($"search() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
-            return;
+            return BooleanOp.Leaf;
         }
 
         Constants.Search.Operator searchOp = Constants.Search.Operator.Or;
@@ -851,29 +664,198 @@ internal static partial class QueryPlanBuilder
             OriginalIndex = walkerCtx.Clauses.Count,
             Bindings = [CreateBinding(method.Arguments[1], walkerCtx)]
         });
+        return BooleanOp.Leaf;
     }
 
-    private static void ParsePrefixMethod(MethodExpression method, ClauseType type, ResolutionContext walkerCtx)
+    private static BooleanOp ParseExact(MethodExpression method, ResolutionContext walkerCtx)
     {
-        if (method.Arguments.Count < 2)
+        // exact(expr) → recurse, then mark all new clauses as exact.
+        // Propagate the inner BooleanOp so that exact(A OR B) is still detected as OR at
+        // the root — otherwise the outer ParseExpression would see Leaf and compile in
+        // AND mode, intersecting the OR branches.
+        int beforeCount = walkerCtx.Clauses.Count;
+        BooleanOp innerOp = BooleanOp.Leaf;
+        if (method.Arguments.Count > 0)
         {
-            walkerCtx.Report($"{type.ToString().ToLowerInvariant()}() requires at least 2 arguments (field, prefix), but got {method.Arguments.Count}.");
-            return;
+            innerOp = ParseExpression(method.Arguments[0], walkerCtx);
         }
 
-        if (TryGetFieldName(method.Arguments[0], walkerCtx, out string fieldName) == false)
+        for (int c = beforeCount; c < walkerCtx.Clauses.Count; c++)
         {
-            walkerCtx.Report($"{type.ToString().ToLowerInvariant()}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
-            return;
+            walkerCtx.Clauses[c].IsExact = true;
+        }
+
+        return innerOp;
+    }
+
+    private static BooleanOp ParseBoost(MethodExpression method, ResolutionContext walkerCtx)
+    {
+        // boost(expr, factor) → recurse, then capture the clauses' instances for later call to BoostPropagate.
+        // even if they are moved by GroupCollapse or AnalyzerRewrite later on, the instances are the same
+        int beforeCount = walkerCtx.Clauses.Count;
+        if (method.Arguments.Count is 0)
+        {
+            return BooleanOp.Leaf;
+        }
+
+        BooleanOp innerOp = ParseExpression(method.Arguments[0], walkerCtx);
+        if (method.Arguments.Count is 1 ||
+            walkerCtx.Clauses.Count == beforeCount ||
+            CreateBinding(method.Arguments[1], walkerCtx) is not { } boostBinding)
+        {
+            return innerOp;
+        }
+
+        ClauseInfo[] inner = new ClauseInfo[walkerCtx.Clauses.Count - beforeCount];
+        for (int c = 0; c < inner.Length; c++)
+        {
+            inner[c] = walkerCtx.Clauses[beforeCount + c];
+        }
+
+        walkerCtx.RecordPendingBoost(inner, boostBinding);
+        return innerOp;
+    }
+
+    private static BooleanOp ParseWhen(MethodExpression method, ResolutionContext walkerCtx)
+    {
+        // when(condition, expr) — create a delegate that evaluates the condition
+        // against the query's BlittableJsonReaderObject parameters at execution time.
+        // Clauses whose condition evaluates to false are eliminated in BuildAndCompile.
+        //
+        // Propagate the inner BooleanOp so that when(c, A OR B) preserves the OR shape
+        // for rootOp detection (parallels Boost/Exact wrappers).
+        if (method.Arguments.Count != 2)
+        {
+            return BooleanOp.Leaf;
+        }
+
+        QueryExpression conditionExpr = method.Arguments[0];
+        int beforeCount = walkerCtx.Clauses.Count;
+        BooleanOp innerOp = ParseExpression(method.Arguments[1], walkerCtx);
+        for (int wi = beforeCount; wi < walkerCtx.Clauses.Count; wi++)
+        {
+            walkerCtx.Clauses[wi].WhenCondition = queryParams =>
+                QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(conditionExpr, walkerCtx.Metadata.Query, walkerCtx.Metadata, queryParams);
+        }
+
+        return innerOp;
+    }
+
+    private static BooleanOp ParseSpatial(MethodExpression method, ResolutionContext walkerCtx)
+    {
+        MethodType methodType = QueryMethod.GetMethodType(method.Name.Value);
+        if (method.Arguments is [_, not MethodExpression, ..])
+        {
+            walkerCtx.Report($"Spatial shape argument must be a method expression (spatial.circle or spatial.wkt), but got: {method.Arguments[1].Type}");
+            return BooleanOp.Leaf;
+        }
+
+        // Capture bindings for all spatial sub-arguments.
+        // Shape type and field name are structural; parameter values resolved per-execution.
+        string spatialFieldName;
+        if (walkerCtx.Metadata.IsDynamic && method.Arguments[0] is MethodExpression spatialPointExpr)
+        {
+            spatialFieldName = walkerCtx.Metadata.GetSpatialFieldName(spatialPointExpr, walkerCtx.QueryParameters);
+        }
+        else if (TryGetFieldName(method.Arguments[0], walkerCtx, out string sfn))
+        {
+            spatialFieldName = sfn;
+        }
+        else
+        {
+            spatialFieldName = QueryBuilderHelper.ExtractIndexFieldName(walkerCtx.Metadata.Query, walkerCtx.QueryParameters, method.Arguments[0], walkerCtx.Metadata);
+        }
+
+        MethodExpression shapeExpr = (MethodExpression)method.Arguments[1];
+        MethodType shapeType = QueryMethod.GetMethodType(shapeExpr.Name.Value);
+
+        // Build spatial bindings: [0]=distErrPct, then shape-specific args
+        List<ParameterBinding> spatialBindings =
+        [
+            method.Arguments.Count == 3
+                ? CreateBinding(method.Arguments[2], walkerCtx)
+                : null
+        ];
+
+        switch (shapeType, shapeExpr.Arguments.Count)
+        {
+            case (MethodType.Spatial_Circle, >= 3):
+                spatialBindings.Add(CreateBinding(shapeExpr.Arguments[0], walkerCtx)); // radius
+                spatialBindings.Add(CreateBinding(shapeExpr.Arguments[1], walkerCtx)); // lat
+                spatialBindings.Add(CreateBinding(shapeExpr.Arguments[2], walkerCtx)); // lng
+                spatialBindings.Add(shapeExpr.Arguments.Count == 4 // units (optional)
+                    ? CreateBinding(shapeExpr.Arguments[3], walkerCtx)
+                    : null);
+                break;
+            case (MethodType.Spatial_Wkt, >= 1):
+                spatialBindings.Add(CreateBinding(shapeExpr.Arguments[0], walkerCtx)); // wkt
+                spatialBindings.Add(shapeExpr.Arguments.Count == 2 // units (optional)
+                    ? CreateBinding(shapeExpr.Arguments[1], walkerCtx)
+                    : null);
+                break;
         }
 
         walkerCtx.Clauses.Add(new ClauseInfo
         {
-            FieldName = fieldName,
-            ClauseType = type,
+            FieldName = spatialFieldName,
+            ClauseType = ClauseType.Spatial,
+            SpatialMethodType = ToSpatialOp(methodType),
             OriginalIndex = walkerCtx.Clauses.Count,
-            Bindings = [CreateBinding(method.Arguments[1], walkerCtx)]
+            Bindings = spatialBindings.ToArray()
         });
+        return BooleanOp.Leaf;
+    }
+
+    private static BooleanOp ParseVectorSearch(MethodExpression method, ResolutionContext walkerCtx)
+    {
+        // Capture bindings for vector sub-arguments.
+        // Resolve field name (structural — uses metadata for dynamic index field naming).
+        string vectorFieldName = walkerCtx.Metadata.IsDynamic
+            ? walkerCtx.Metadata.GetVectorFieldName(method, walkerCtx.QueryParameters)
+            : QueryBuilderHelper.ExtractIndexFieldName(walkerCtx.Metadata.Query, walkerCtx.QueryParameters, method.Arguments[0], walkerCtx.Metadata);
+
+        VectorSourceKind vecMethod = VectorSourceKind.Inline;
+        ParameterBinding vectorValueBinding = null;
+        ParameterBinding aiTaskBinding = null;
+
+        QueryExpression srcVector = method.Arguments[1];
+        if (srcVector is MethodExpression methodValue)
+        {
+            vecMethod = methodValue.Name.ToString() switch
+            {
+                ClientConstants.VectorSearch.EmbeddingForDocument => VectorSourceKind.FromDocument,
+                ClientConstants.VectorSearch.EmbeddingForRaw => VectorSourceKind.Inline,
+                ClientConstants.VectorSearch.EmbeddingText => VectorSourceKind.FromText,
+
+                _ => VectorSourceKind.Inline
+            };
+            if (methodValue.Arguments.Count > 0)
+            {
+                vectorValueBinding = CreateBinding(methodValue.Arguments[0], walkerCtx);
+            }
+
+            if (vecMethod == VectorSourceKind.FromText && methodValue.Arguments.Count > 1
+                                                       && methodValue.Arguments[1] is MethodExpression aiMethod && aiMethod.Arguments.Count > 0)
+            {
+                aiTaskBinding = CreateBinding(aiMethod.Arguments[0], walkerCtx);
+            }
+        }
+        else
+        {
+            vectorValueBinding = CreateBinding(srcVector, walkerCtx);
+        }
+
+        ParameterBinding minimumMatchBinding = method.Arguments.Count <= 2 ? null : CreateBinding(method.Arguments[2], walkerCtx);
+        ParameterBinding numberOfCandidatesBinding = method.Arguments.Count <= 3 ? null : CreateBinding(method.Arguments[3], walkerCtx);
+        walkerCtx.Clauses.Add(new ClauseInfo
+        {
+            FieldName = vectorFieldName,
+            ClauseType = ClauseType.Vector,
+            OriginalIndex = walkerCtx.Clauses.Count,
+            Bindings = [vectorValueBinding, minimumMatchBinding, numberOfCandidatesBinding, aiTaskBinding],
+            VectorMethod = vecMethod
+        });
+        return BooleanOp.Leaf;
     }
 
     private static string GetFieldName(FieldExpression field, QueryMetadata metadata, BlittableJsonReaderObject queryParameters)
