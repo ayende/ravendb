@@ -925,7 +925,7 @@ internal static partial class QueryPlanBuilder
         // Spatial / Vector queries with no other clauses ( WHERE spatial.within() / WHERE vector.search() )
         // use a dedicated code path to avoid AllEntries + post-filters
         if (exec is { IsAllEntries: true, HasSpatialOrVector: true })
-            return InstantiateAllEntriesPostFilter(exec, builderParameters, walkerCtx);
+            return InstantiateAllEntriesPostFilter(exec, builderParameters, walkerCtx, wantTimings);
 
         var resolvedMatches = ResolveMatches(exec, walkerCtx);
         var termSources = ResolveTermSources(exec, walkerCtx);
@@ -972,7 +972,7 @@ internal static partial class QueryPlanBuilder
                 spatialFilters[sf] = resolvedMatches[exec.SpatialFilters[sf].MatchIndex];
             }
 
-            result = new PostFilterMatch(result, spatialFilters);
+            result = new PostFilterMatch(result, spatialFilters, wantTimings);
         }
 
         // Vector select phase: each vector wraps the bitmap so far as its filter source.
@@ -990,7 +990,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>
     /// Bypass path for queries with no real WHERE clauses — only spatial filters and/or  vector selects. 
     /// </summary>
-    private static IQueryMatch InstantiateAllEntriesPostFilter(QueryExecution exec, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
+    private static IQueryMatch InstantiateAllEntriesPostFilter(QueryExecution exec, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx, bool wantTimings)
     {
         IQueryMatch result = null;
 
@@ -1004,7 +1004,7 @@ internal static partial class QueryPlanBuilder
                 rest[i - 1] = ResolveClause(exec.SpatialFilters[i].Exec, exec, walkerCtx);
             }
 
-            result = new PostFilterMatch(primary, rest);
+            result = new PostFilterMatch(primary, rest, wantTimings);
         }
 
         // Vector: each vector wraps the (possibly null) filter so far.
