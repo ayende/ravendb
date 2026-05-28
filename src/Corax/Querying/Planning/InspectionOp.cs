@@ -15,7 +15,7 @@ public sealed class InspectionOp
     public long EstimatedCardinality;
 
     /// <summary>Index into the flat clause list (rebuilt per-execution in BuildInspectionGraph).
-    /// -1 for ops that don't map to a clause (e.g. CheckAndMaybeEntryScan, bitmap merge ops).</summary>
+    /// -1 for ops that don't map to a clause (e.g. MaybeEntryScan, bitmap merge ops).</summary>
     public int FlatClauseIndex = -1;
 
     /// <summary>True when this op is part of an AND-group inside an OR chain.

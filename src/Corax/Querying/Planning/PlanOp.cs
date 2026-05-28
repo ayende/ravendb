@@ -9,7 +9,7 @@ public struct PlanOp
     public long EstimatedCardinality;
 
     /// <summary>Controls how <see cref="ParamIndex"/> is resolved at execution time
-    /// for term ops (Fill/And/Or/AndNot WithPostings):
+    /// for the leaf ops (Fill/And/Or/AndNot WithLeaf, and the range loops):
     /// <list type="bullet">
     /// <item><see cref="MatchDispatch.QueryMatch"/> — <c>ctx.ResolvedMatches[ParamIndex]</c>
     ///   (IQueryMatch interface dispatch; vector, spatial, search, boosted clauses).</item>
@@ -21,7 +21,7 @@ public struct PlanOp
     public MatchDispatch Dispatch;
 
     /// <summary>When true, suppress the empty-check early exit after
-    /// <see cref="PlanOpKind.AndWithPostings"/>. Used for AND sub-chains inside
+    /// <see cref="PlanOpKind.AndWithLeaf"/>. Used for AND sub-chains inside
     /// an OR accumulator where an empty intermediate result is not a reason to
     /// abort the whole expression.</summary>
     public bool SkipEarlyExit;

@@ -2,82 +2,72 @@ namespace Corax.Querying.Planning;
 
 public enum PlanOpKind : byte
 {
-    /// <summary>Fill bitmap[0] from a term source, term provider, or IQueryMatch.
-    /// Dispatches to QueryPrimitives.FillBitmapFromPostingSource / FillBitmapFromTreeScan / OrWithMatch
-    /// depending on <see cref="PlanOp.Dispatch"/>.</summary>
-    FillFromPostings,
+    /// <summary>Seed bitmap[0] from one leaf operand (the operand form is chosen by
+    /// <see cref="PlanOp.Dispatch"/>). Also the whole plan for a single Equals clause.
+    /// <code>QueryPrimitives.CtxFillFromTreeScan(ctx, cursor); cursor++;</code></summary>
+    FillFromLeaf,
 
-    /// <summary>AND bitmap[0] with a term source, term provider, or IQueryMatch.
-    /// Uses bitmap[1] as scratch. Emits an early-exit branch when the result is empty
-    /// unless <see cref="PlanOp.SkipEarlyExit"/> is set (inside OR sub-chains).</summary>
-    AndWithPostings,
+    /// <summary>Seed bitmap[0] with every entry via <c>Searcher.AllEntries()</c> — used for
+    /// all-negated AND chains and match-all. No slot lookup (sidesteps IN's structural-vs-runtime
+    /// slot-index mismatch).
+    /// <code>QueryPrimitives.CtxFillAllEntries(ctx);</code></summary>
+    FillAllEntries,
 
-    /// <summary>OR a term source / provider / match into bitmap[BitmapLocal].
-    /// Fills the target bitmap slot; the caller ORs slots together with <see cref="OrBitmaps"/>.</summary>
-    OrWithPostings,
+    /// <summary>Intersect bitmap[0] with one leaf (scratch = bitmap[1]); stop the plan if the
+    /// result is empty, unless <see cref="PlanOp.SkipEarlyExit"/> is set (inside an OR sub-chain).
+    /// <code>QueryPrimitives.CtxAndFromPostingSource(ctx, cursor); cursor++; if (ctx.Bitmaps[0].IsEmpty) goto done;</code></summary>
+    AndWithLeaf,
 
-    /// <summary>ANDNOT bitmap[0] with a term source / provider / match.
-    /// Removes entries present in the operand from the current result set,
-    /// using bitmap[1] as scratch.</summary>
-    AndNotWithPostings,
+    /// <summary>Union one leaf into bitmap[BitmapLocal]. When the target is slot 0, stop once the
+    /// page limit is reached.
+    /// <code>QueryPrimitives.CtxOrFillFromPostingSource(ctx, cursor, 0); cursor++; if ((long)ctx.Bitmaps[0].Count >= ctx.Limit) goto done;</code></summary>
+    OrWithLeaf,
 
-    /// <summary>Lazy OR: same as <see cref="OrWithPostings"/> but defers container
-    /// merging to avoid repeated decompression. Requires a subsequent
-    /// <see cref="RepairAfterLazy"/> before the bitmap can be iterated.</summary>
-    LazyOrWithPostings,
+    /// <summary>Subtract one leaf from bitmap[0] (scratch = bitmap[1]).
+    /// <code>QueryPrimitives.CtxAndNotFromTreeScan(ctx, cursor); cursor++;</code></summary>
+    AndNotWithLeaf,
 
-    /// <summary>Finalize a bitmap that was built with <see cref="LazyOrWithPostings"/>.
-    /// Calls RoaringBitmap.RepairAfterLazy to reconcile deferred containers.</summary>
-    RepairAfterLazy,
+    /// <summary>Union a contiguous run of leaves (an expanded IN) into bitmap[BitmapLocal].
+    /// ParamIndex = first slot, ParamIndex2 = index into ctx.InRangeCounts for the runtime count.
+    /// <code>for (j = cursor; j &lt; cursor + ctx.InRangeCounts[r]; j++) QueryPrimitives.CtxOrFillFromPostingSource(ctx, j, slot);</code></summary>
+    OrLeafRange,
 
-    /// <summary>Heuristic check: if bitmap[0].Count is small enough relative to the
-    /// IQueryMatch.Count, branch to the entry-scan path instead of continuing the
-    /// bitmap pipeline. Emits a conditional goto to the entry-scan label.</summary>
-    CheckAndMaybeEntryScan,
+    /// <summary>Intersect a contiguous run of leaves (an AllIn) with bitmap[0], stopping early on
+    /// an empty result unless <see cref="PlanOp.SkipEarlyExit"/> is set.
+    /// <code>for (j = cursor; j &lt; cursor + ctx.InRangeCounts[r]; j++) { QueryPrimitives.CtxAndFromPostingSource(ctx, j); if (ctx.Bitmaps[0].IsEmpty) goto done; }</code></summary>
+    AndLeafRange,
 
-    /// <summary>Unconditional branch to the done label. Used as the final op in the
-    /// bitmap pipeline before the entry-scan fallback block.</summary>
-    IterateInto,
-
-    /// <summary>Same emission as <see cref="FillFromPostings"/> — fills bitmap[0] from
-    /// a source. Exists as a separate kind for plan-builder bookkeeping to distinguish
-    /// the first fill of a direct-iterate plan.</summary>
-    DirectIterate,
-
-    /// <summary>Clear a specific bitmap slot. BitmapLocal = slot index.</summary>
+    /// <summary><code>ctx.Bitmaps[slot].Clear();</code></summary>
     ClearBitmap,
 
-    /// <summary>AND two bitmap slots. BitmapLocal = target, ParamIndex2 = source.</summary>
+    /// <summary>Intersect two bitmap slots. BitmapLocal = target, ParamIndex2 = source.
+    /// <code>ctx.Bitmaps[target].AndWith(ref ctx.Bitmaps[source]);</code></summary>
     AndBitmaps,
 
-    /// <summary>ANDNOT two bitmap slots. BitmapLocal = target, ParamIndex2 = source.</summary>
+    /// <summary>Subtract the source slot from the target slot. BitmapLocal = target, ParamIndex2 = source.
+    /// <code>ctx.Bitmaps[target].AndNotWith(ref ctx.Bitmaps[source]);</code></summary>
     AndNotBitmaps,
 
-    /// <summary>Check if bitmap is empty. BitmapLocal = slot. If empty, goto done.</summary>
-    CheckEmpty,
+    /// <summary>Lazy-union two bitmap slots — defers container merging for speed, so the result
+    /// bitmap is repaired once at the done label before it can be iterated. BitmapLocal = target,
+    /// ParamIndex2 = source.
+    /// <code>ctx.Bitmaps[target].LazyOrWith(ref ctx.Bitmaps[source]);</code></summary>
+    LazyOrBitmaps,
 
-    /// <summary>OR two bitmap slots. BitmapLocal = target, ParamIndex2 = source.</summary>
-    OrBitmaps,
-
-    /// <summary>Swap contents of two bitmap slots. BitmapLocal = slot A, ParamIndex2 = slot B.</summary>
+    /// <summary>Swap the contents of two bitmap slots. BitmapLocal = slot A, ParamIndex2 = slot B.
+    /// <code>ctx.Bitmaps[a].SwapContents(ref ctx.Bitmaps[b]);</code></summary>
     SwapBitmaps,
 
-    /// <summary>OR a contiguous range of posting sources into bitmap[BitmapLocal].
-    /// ParamIndex = start index, ParamIndex2 = index into ctx.InRangeCounts for runtime count. Emits a loop in IL.
-    /// Used for IN clauses to avoid one PlanOp per term.</summary>
-    OrRange,
+    /// <summary>Short-circuit the plan when a bitmap slot is empty.
+    /// <code>if (ctx.Bitmaps[slot].IsEmpty) goto done;</code></summary>
+    GotoDoneIfEmpty,
 
-    /// <summary>AND a contiguous range of posting sources with bitmap[0].
-    /// ParamIndex = start index, ParamIndex2 = index into ctx.InRangeCounts for runtime count. Emits a loop in IL with
-    /// empty-check after each (unless SkipEarlyExit). Used for AllIn clauses.</summary>
-    AndRange,
+    /// <summary>Switch to the entry-scan tail when bitmap[0] is small relative to the next clause's
+    /// cardinality (cheaper to scan the surviving entries than to keep intersecting).
+    /// <code>if (QueryPrimitives.ShouldSwitchToEntryScan((long)ctx.Bitmaps[0].Count, ctx.Cardinalities[cursor])) goto EntryScan;</code></summary>
+    MaybeEntryScan,
 
-    /// <summary>Fill bitmap[0] with all entries via <c>ctx.Searcher.AllEntries()</c>.
-    /// Used as the seed op for AllNegated AND chains (every top-level clause is negated,
-    /// so the plan starts from "everything" and ANDNOTs each clause). Distinct from
-    /// FillFromPostings(AllEntries) because no slot lookup is needed — the IL calls
-    /// indexSearcher.AllEntries() directly. This sidesteps the structural-vs-runtime
-    /// slot-index mismatch that occurs when an IN clause's runtime InTermCount differs
-    /// from its template Bindings.Length.</summary>
-    FillAllEntries,
+    /// <summary>Terminal op: jump to the done label that ends the bitmap pipeline.
+    /// <code>goto done;</code></summary>
+    GotoDone,
 }
