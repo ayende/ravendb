@@ -16,21 +16,20 @@ namespace Corax.Querying.Matches;
 /// When timing capture is enabled (introspection JSON requested by the caller),
 /// records per-call wall time for the inner Fill and for each post-filter
 /// AndWith step, plus per-step survivor counts. When disabled, the per-call
-/// rdtsc + counter writes are skipped entirely. Stored on the heap (class,
-/// not struct) because the counters must survive across the boxing performed
-/// when this match is assigned to <c>IQueryMatch</c>.
+/// rdtsc + counter writes are skipped entirely.
 /// </summary>
 public sealed class PostFilterMatch : IQueryMatch
 {
     private readonly IQueryMatch _inner;
     private readonly IQueryMatch[] _postFilters;
 
+    // True when introspection timing capture was requested. Gates all counter writes.
+    private readonly bool _wantTimings;
+
     // Wall-clock ticks (Stopwatch.GetTimestamp()) spent inside the inner Fill / AndWith.
-    // Null when timing capture is disabled.
-    private readonly long[] _innerTicks;
+    private long _innerTicks;
     // Cumulative number of entries the inner returned across all calls.
-    // Null when timing capture is disabled.
-    private readonly long[] _innerEmitted;
+    private long _innerEmitted;
 
     // Per-post-filter cumulative ticks spent inside that filter's AndWith.
     // Null when timing capture is disabled.
@@ -46,10 +45,9 @@ public sealed class PostFilterMatch : IQueryMatch
     {
         _inner = inner;
         _postFilters = postFilters;
+        _wantTimings = wantTimings;
         if (wantTimings)
         {
-            _innerTicks = new long[1];
-            _innerEmitted = new long[1];
             _filterTicks = new long[postFilters.Length];
             _filterSurvivors = new long[postFilters.Length];
             _filterRejected = new long[postFilters.Length];
@@ -64,63 +62,44 @@ public sealed class PostFilterMatch : IQueryMatch
 
     public int Fill(Span<long> matches)
     {
-        if (_innerTicks is null)
+        long t0 = _wantTimings ? Stopwatch.GetTimestamp() : 0;
+        int read = _inner.Fill(matches);
+        if (_wantTimings)
         {
-            int r = _inner.Fill(matches);
-            return r == 0 ? 0 : ApplyPostFilters(matches, r);
+            _innerTicks += Stopwatch.GetTimestamp() - t0;
+            _innerEmitted += read;
         }
 
-        long t0 = Stopwatch.GetTimestamp();
-        int read = _inner.Fill(matches);
-        _innerTicks[0] += Stopwatch.GetTimestamp() - t0;
-        _innerEmitted[0] += read;
-
-        if (read == 0)
-            return 0;
-
-        return ApplyPostFilters(matches, read);
+        return read == 0 ? 0 : ApplyPostFilters(matches, read);
     }
 
     public int AndWith(Span<long> buffer, int matches)
     {
-        if (_innerTicks is null)
+        long t0 = _wantTimings ? Stopwatch.GetTimestamp() : 0;
+        int count = _inner.AndWith(buffer, matches);
+        if (_wantTimings)
         {
-            int c = _inner.AndWith(buffer, matches);
-            return c == 0 ? 0 : ApplyPostFilters(buffer, c);
+            _innerTicks += Stopwatch.GetTimestamp() - t0;
+            _innerEmitted += count;
         }
 
-        long t0 = Stopwatch.GetTimestamp();
-        int count = _inner.AndWith(buffer, matches);
-        _innerTicks[0] += Stopwatch.GetTimestamp() - t0;
-        _innerEmitted[0] += count;
-
-        if (count == 0)
-            return 0;
-
-        return ApplyPostFilters(buffer, count);
+        return count == 0 ? 0 : ApplyPostFilters(buffer, count);
     }
 
     private int ApplyPostFilters(Span<long> buffer, int count)
     {
-        if (_filterTicks is null)
-        {
-            for (int i = 0; i < _postFilters.Length; i++)
-            {
-                count = _postFilters[i].AndWith(buffer, count);
-                if (count == 0)
-                    return 0;
-            }
-            return count;
-        }
-
         for (int i = 0; i < _postFilters.Length; i++)
         {
             int input = count;
-            long ti = Stopwatch.GetTimestamp();
+            long ti = _wantTimings ? Stopwatch.GetTimestamp() : 0;
             count = _postFilters[i].AndWith(buffer, count);
-            _filterTicks[i] += Stopwatch.GetTimestamp() - ti;
-            _filterSurvivors[i] += count;
-            _filterRejected[i] += input - count;
+            if (_wantTimings)
+            {
+                _filterTicks[i] += Stopwatch.GetTimestamp() - ti;
+                _filterSurvivors[i] += count;
+                _filterRejected[i] += input - count;
+            }
+
             if (count == 0)
                 return 0;
         }
@@ -139,12 +118,12 @@ public sealed class PostFilterMatch : IQueryMatch
     {
         var parameters = new Dictionary<string, string>();
 
-        if (_innerTicks is not null)
+        if (_wantTimings)
         {
             double tickFreq = Stopwatch.Frequency / 1000.0;
-            if (_innerTicks[0] > 0)
-                parameters["Inner_ms"] = (_innerTicks[0] / tickFreq).ToString("F3");
-            parameters["InnerEmitted"] = _innerEmitted[0].ToString();
+            if (_innerTicks > 0)
+                parameters["Inner_ms"] = (_innerTicks / tickFreq).ToString("F3");
+            parameters["InnerEmitted"] = _innerEmitted.ToString();
 
             for (int i = 0; i < _postFilters.Length; i++)
             {
