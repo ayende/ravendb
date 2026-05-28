@@ -182,7 +182,6 @@ internal static partial class QueryPlanBuilder
             ParameterSlots = seen.ToArray(),
             SortSeekHintTemplateIdx = sortSeekHintIdx,
             SortSeekUseParam2 = sortSeekUseParam2,
-            SortSeekPrimaryOrderByFieldName = sortSeekHintIdx >= 0 ? orderByPrimaryField : null,
             // BuildSortMetadataTemplate may return null when PlanParameters lacks Index/IndexFieldsMapping
             // (direct-planner tests) — the runtime path then falls back to ComputeSortMetadataLegacy.
             SortMetadataTemplate = BuildSortMetadataTemplate(p),
