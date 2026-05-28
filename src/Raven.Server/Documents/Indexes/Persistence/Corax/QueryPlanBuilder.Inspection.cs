@@ -249,18 +249,25 @@ internal static partial class QueryPlanBuilder
             {
                 Name = op.Kind switch
                 {
-                    PlanOpKind.FillFromLeaf => "Fill",
-                    PlanOpKind.AndWithLeaf => "AND",
-                    PlanOpKind.OrWithLeaf => "OR",
-                    PlanOpKind.AndNotWithLeaf => "ANDNOT",
+                    PlanOpKind.FillFromPostingSource or PlanOpKind.FillFromTreeScan or PlanOpKind.FillFromMatch => "Fill",
+                    PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan or PlanOpKind.AndFromMatch => "AND",
+                    PlanOpKind.OrFromPostingSource or PlanOpKind.OrFromTreeScan or PlanOpKind.OrFromMatch => "OR",
+                    PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch => "ANDNOT",
                     PlanOpKind.AndBitmaps => "AND-Bitmaps",
                     PlanOpKind.AndNotBitmaps => "ANDNOT-Bitmaps",
                     PlanOpKind.MaybeEntryScan => "EntryScanCheck",
-                    PlanOpKind.OrLeafRange => $"OR-Range({op.ParamIndex2} terms)",
-                    PlanOpKind.AndLeafRange => $"AND-Range({op.ParamIndex2} terms)",
+                    PlanOpKind.OrRangeFromPostingSource or PlanOpKind.OrRangeFromMatch => $"OR-Range({op.ParamIndex2} terms)",
+                    PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch => $"AND-Range({op.ParamIndex2} terms)",
                     _ => op.Kind.ToString()
                 },
-                Dispatch = op.Dispatch switch { MatchDispatch.PostingList => "Term", MatchDispatch.TreeScan => "MultiTerm", _ => "Match" },
+                Dispatch = op.Kind switch
+                {
+                    PlanOpKind.FillFromPostingSource or PlanOpKind.AndFromPostingSource or PlanOpKind.OrFromPostingSource
+                        or PlanOpKind.AndNotFromPostingSource or PlanOpKind.OrRangeFromPostingSource or PlanOpKind.AndRangeFromPostingSource => "Term",
+                    PlanOpKind.FillFromTreeScan or PlanOpKind.AndFromTreeScan or PlanOpKind.OrFromTreeScan
+                        or PlanOpKind.AndNotFromTreeScan => "MultiTerm",
+                    _ => "Match"
+                },
                 EstimatedCardinality = op.EstimatedCardinality,
                 InsideAndGroup = insideAndGroup
             };

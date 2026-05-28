@@ -28,7 +28,7 @@ internal static partial class QueryPlanBuilder
                 // we require query match for boost, because the other options cannot compute it
                 for (int i = 0; i < ops.Length; i++)
                 {
-                    ops[i].Dispatch = MatchDispatch.QueryMatch;
+                    ops[i].Kind = ToMatchVariant(ops[i].Kind);
                 }
             }
             return (ops, bitmaps);
@@ -58,7 +58,7 @@ internal static partial class QueryPlanBuilder
         }
 
         /// <summary>Emit the PlanOp sequence for an AND chain. Single-clause Equals/NotEquals
-        /// retain their specialised plans (FillFromLeaf, FillAllEntries+AndNot). Otherwise
+        /// retain their specialised plans (FillFrom*, FillAllEntries+AndNot). Otherwise
         /// the first non-negated clause seeds slot 0 (Fill) and each subsequent clause is
         /// merged via AndInto or AndNotInto through <see cref="EmitClauseInto"/>. When every
         /// clause is negated we seed with FillAllEntries instead and AndNot all of them.
@@ -72,10 +72,9 @@ internal static partial class QueryPlanBuilder
                 case 1 when e0.ClauseType == ClauseType.Equals && e0.IsNegated is false:
                     _ops.Add(new PlanOp
                     {
-                        Kind = PlanOpKind.FillFromLeaf,
+                        Kind = ToPlanOpKind(MergeKind.Fill, GetDispatch(e0.Clause)),
                         ParamIndex = 0,
-                        EstimatedCardinality = e0.Cardinality,
-                        Dispatch = GetDispatch(e0.Clause)
+                        EstimatedCardinality = e0.Cardinality
                     });
                     return (_ops.ToArray(), 2);
                 case 1 when e0.ClauseType == ClauseType.NotEquals
@@ -87,9 +86,8 @@ internal static partial class QueryPlanBuilder
                     });
                     _ops.Add(new PlanOp
                     {
-                        Kind = PlanOpKind.AndNotWithLeaf,
-                        EstimatedCardinality = e0.Cardinality,
-                        Dispatch = GetDispatch(e0.Clause)
+                        Kind = ToPlanOpKind(MergeKind.AndNotInto, GetDispatch(e0.Clause)),
+                        EstimatedCardinality = e0.Cardinality
                     });
                     _ops.Add(new PlanOp { Kind = PlanOpKind.GotoDone });
 
@@ -216,7 +214,7 @@ internal static partial class QueryPlanBuilder
             _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
             _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
 
-            // Inside the saved context, AndWithLeaf/AndLeafRange MUST NOT early-exit to
+            // Inside the saved context, AndFrom*/AndRangeFrom* MUST NOT early-exit to
             // doneLabel — that would skip the merge-back below and leak the saved value.
             EmitGroupContentsInSlot0(exec, subExecs, suppressEarlyExit: true);
 
@@ -285,27 +283,65 @@ internal static partial class QueryPlanBuilder
         }
 
         /// <summary>Emit one PlanOp for a simple leaf clause according to <paramref name="merge"/>.
-        /// Sets SkipEarlyExit on AndWithLeaf when inside a saved-swap context.</summary>
+        /// Sets SkipEarlyExit on the AndFrom* op when inside a saved-swap context.</summary>
         private void EmitLeafMergeOp(MergeKind merge, long cardinality, MatchDispatch dispatch, bool suppressEarlyExit)
         {
-            PlanOpKind kind = merge switch
-            {
-                MergeKind.Fill => PlanOpKind.FillFromLeaf,
-                MergeKind.OrInto => PlanOpKind.OrWithLeaf,
-                MergeKind.AndInto => PlanOpKind.AndWithLeaf,
-                MergeKind.AndNotInto => PlanOpKind.AndNotWithLeaf,
-                _ => throw new InvalidOperationException($"Unhandled MergeKind: {merge}")
-            };
             _ops.Add(new PlanOp
             {
-                Kind = kind,
+                Kind = ToPlanOpKind(merge, dispatch),
                 ParamIndex = _matchIndex,
                 BitmapLocal = 0,
                 EstimatedCardinality = cardinality,
-                Dispatch = dispatch,
-                SkipEarlyExit = kind == PlanOpKind.AndWithLeaf && suppressEarlyExit
+                SkipEarlyExit = merge == MergeKind.AndInto && suppressEarlyExit
             });
         }
+
+        /// <summary>Fold a (merge-shape, dispatch-source) pair into the concrete leaf
+        /// <see cref="PlanOpKind"/>. Replaces the runtime <c>PlanOp.Dispatch</c> field:
+        /// the source is now baked into the op kind itself.</summary>
+        private static PlanOpKind ToPlanOpKind(MergeKind merge, MatchDispatch dispatch) => merge switch
+        {
+            MergeKind.Fill => dispatch switch
+            {
+                MatchDispatch.PostingList => PlanOpKind.FillFromPostingSource,
+                MatchDispatch.TreeScan => PlanOpKind.FillFromTreeScan,
+                _ => PlanOpKind.FillFromMatch
+            },
+            MergeKind.OrInto => dispatch switch
+            {
+                MatchDispatch.PostingList => PlanOpKind.OrFromPostingSource,
+                MatchDispatch.TreeScan => PlanOpKind.OrFromTreeScan,
+                _ => PlanOpKind.OrFromMatch
+            },
+            MergeKind.AndInto => dispatch switch
+            {
+                MatchDispatch.PostingList => PlanOpKind.AndFromPostingSource,
+                MatchDispatch.TreeScan => PlanOpKind.AndFromTreeScan,
+                _ => PlanOpKind.AndFromMatch
+            },
+            MergeKind.AndNotInto => dispatch switch
+            {
+                MatchDispatch.PostingList => PlanOpKind.AndNotFromPostingSource,
+                MatchDispatch.TreeScan => PlanOpKind.AndNotFromTreeScan,
+                _ => PlanOpKind.AndNotFromMatch
+            },
+            _ => throw new InvalidOperationException($"Unhandled MergeKind: {merge}")
+        };
+
+        /// <summary>Promote a leaf/range op to its IQueryMatch-dispatch variant. Used by the
+        /// boost post-pass: boosted plans must score via IQueryMatch, so every PostingSource /
+        /// TreeScan leaf op is rewritten to read <c>ctx.ResolvedMatches</c>. Non-leaf ops
+        /// (bitmap merges, FillAllEntries, control flow) are returned unchanged.</summary>
+        private static PlanOpKind ToMatchVariant(PlanOpKind kind) => kind switch
+        {
+            PlanOpKind.FillFromPostingSource or PlanOpKind.FillFromTreeScan => PlanOpKind.FillFromMatch,
+            PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan => PlanOpKind.AndFromMatch,
+            PlanOpKind.OrFromPostingSource or PlanOpKind.OrFromTreeScan => PlanOpKind.OrFromMatch,
+            PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan => PlanOpKind.AndNotFromMatch,
+            PlanOpKind.OrRangeFromPostingSource => PlanOpKind.OrRangeFromMatch,
+            PlanOpKind.AndRangeFromPostingSource => PlanOpKind.AndRangeFromMatch,
+            _ => kind
+        };
 
         /// <summary>IN clause leaf — logically (term0 ∪ term1 ∪ … ∪ termN). For Fill/OrInto
         /// merges, build directly in slot 0 via EmitInOps. For AndInto/AndNotInto, build
@@ -407,15 +443,15 @@ internal static partial class QueryPlanBuilder
         /// <summary>Turn slot 0 (currently <see cref="PlanOpKind.FillAllEntries"/>) into the
         /// complement of <paramref name="exec"/>'s positive form. IN unions the terms into slot 1
         /// then AndNotBitmaps(0, 1); AllIn intersects into slot 1 then AndNotBitmaps(0, 1).
-        /// Scalar / Exists / Range clauses use AndNotWithLeaf directly (the
-        /// <see cref="PlanOp.Dispatch"/> follows <see cref="GetDispatch"/> for the positive form).
+        /// Scalar / Exists / Range clauses use an AndNotFrom* op directly (the source family
+        /// follows <see cref="GetDispatch"/> for the positive form).
         /// Advances <see cref="_matchIndex"/> past the clause's slot footprint.</summary>
         private void EmitComplementBody(ClauseExecution exec, long cardinality)
         {
             if (exec.ClauseType is ClauseType.In)
             {
                 if (1 > _maxScratchUsed) _maxScratchUsed = 1;
-                // isSeed:true so FillFromLeaf overwrites slot 1 — no ClearBitmap needed.
+                // isSeed:true so FillFromPostingSource overwrites slot 1 — no ClearBitmap needed.
                 EmitInOps(exec.InTermCount, cardinality, bitmapLocal: 1, isSeed: true);
                 _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = 1 });
                 return;
@@ -433,14 +469,13 @@ internal static partial class QueryPlanBuilder
             }
 
             // Single-term positive form (Equals/NotEquals/Exists/StartsWith/range/...).
-            // AndNotWithLeaf reads matchIndex per Dispatch and removes those entries.
+            // The AndNotFrom* op reads matchIndex from its source family and removes those entries.
             _ops.Add(new PlanOp
             {
-                Kind = PlanOpKind.AndNotWithLeaf,
+                Kind = ToPlanOpKind(MergeKind.AndNotInto, GetDispatch(exec.Clause)),
                 ParamIndex = _matchIndex,
                 BitmapLocal = 0,
-                EstimatedCardinality = cardinality,
-                Dispatch = GetDispatch(exec.Clause)
+                EstimatedCardinality = cardinality
             });
             _matchIndex++;
         }
@@ -458,20 +493,18 @@ internal static partial class QueryPlanBuilder
 
             _ops.Add(new PlanOp
             {
-                Kind = isSeed ? PlanOpKind.FillFromLeaf : PlanOpKind.OrWithLeaf,
+                Kind = isSeed ? PlanOpKind.FillFromPostingSource : PlanOpKind.OrFromPostingSource,
                 ParamIndex = _matchIndex,
                 BitmapLocal = bitmapLocal,
-                EstimatedCardinality = Math.Max(1, cardinality / totalSlots),
-                Dispatch = MatchDispatch.PostingList
+                EstimatedCardinality = Math.Max(1, cardinality / totalSlots)
             });
             _ops.Add(new PlanOp
             {
-                Kind = PlanOpKind.OrLeafRange,
+                Kind = PlanOpKind.OrRangeFromPostingSource,
                 ParamIndex = _matchIndex + 1,
                 ParamIndex2 = rangeIdx,
                 BitmapLocal = bitmapLocal,
-                EstimatedCardinality = cardinality,
-                Dispatch = MatchDispatch.PostingList
+                EstimatedCardinality = cardinality
             });
             _matchIndex += totalSlots;
         }
@@ -492,33 +525,31 @@ internal static partial class QueryPlanBuilder
 
             _ops.Add(new PlanOp
             {
-                Kind = PlanOpKind.FillFromLeaf,
+                Kind = PlanOpKind.FillFromPostingSource,
                 ParamIndex = _matchIndex,
                 BitmapLocal = bitmapLocal,
-                EstimatedCardinality = Math.Max(1, cardinality / totalSlots),
-                Dispatch = MatchDispatch.PostingList
+                EstimatedCardinality = Math.Max(1, cardinality / totalSlots)
             });
             _ops.Add(new PlanOp
             {
-                Kind = PlanOpKind.AndLeafRange,
+                Kind = PlanOpKind.AndRangeFromPostingSource,
                 ParamIndex = _matchIndex + 1,
                 ParamIndex2 = rangeIdx,
                 BitmapLocal = bitmapLocal,
-                EstimatedCardinality = cardinality,
-                Dispatch = MatchDispatch.PostingList
+                EstimatedCardinality = cardinality
             });
             _matchIndex += totalSlots;
         }
 
         /// <summary>Set <see cref="PlanOp.SkipEarlyExit"/>=true on the most recent
-        /// <see cref="PlanOpKind.AndLeafRange"/> in <see cref="_ops"/>. Used by
+        /// <see cref="PlanOpKind.AndRangeFromPostingSource"/> in <see cref="_ops"/>. Used by
         /// <see cref="EmitComplementBody"/> after emitting the AllIn pair so that
         /// an empty intersection doesn't early-exit out of the surrounding negation.</summary>
         private void SetLastAndRangeSkipEarlyExit()
         {
             for (int i = _ops.Count - 1; i >= 0; i--)
             {
-                if (_ops[i].Kind == PlanOpKind.AndLeafRange)
+                if (_ops[i].Kind == PlanOpKind.AndRangeFromPostingSource)
                 {
                     var op = _ops[i];
                     op.SkipEarlyExit = true;
@@ -532,7 +563,7 @@ internal static partial class QueryPlanBuilder
         {
             // No bitmap needed — AllEntries already implements IQueryMatch.Fill(),
             // so we iterate it directly without materializing into a bitmap first.
-            return [new PlanOp { Kind = PlanOpKind.FillFromLeaf, ParamIndex = 0 }];
+            return [new PlanOp { Kind = PlanOpKind.FillFromMatch, ParamIndex = 0 }];
         }
 
         private static bool AreAllScanEligible(List<ClauseExecution> executions, int startIndex)

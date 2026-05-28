@@ -18,7 +18,7 @@ namespace Corax.Querying.Planning;
 public static class IlEmitterShared
 {
     public static readonly FieldInfo CtxBitmaps = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Bitmaps));
-    public static readonly FieldInfo CtxTermSources = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.PostingSources));
+    public static readonly FieldInfo CtxLeaves = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Leaves));
     public static readonly FieldInfo CtxLimit = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Limit));
 
     public static readonly MethodInfo GetTimestamp =
@@ -60,8 +60,6 @@ public static class IlEmitterShared
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.InRangeCounts));
     public static readonly FieldInfo CtxCardinalities =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Cardinalities));
-    public static readonly FieldInfo CtxTermsProviders =
-        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.TermsProviders));
     public static readonly FieldInfo CtxEntryScanTakenAtOp =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanTakenAtOp));
     public static readonly FieldInfo CtxToken =

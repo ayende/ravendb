@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+using System.Text.RegularExpressions;
 using Corax.Indexing;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
@@ -33,7 +34,10 @@ public static class QueryPrimitives
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => FillBitmapFromPostingSource(ref ctx.PostingSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
+    {
+        var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
+        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
+    }
 
     /// <summary>Seed bitmap[0] with AllEntries — used by AllNegated AND chains
     /// where the plan starts from "everything" and ANDNOTs each clause. No
@@ -46,7 +50,7 @@ public static class QueryPrimitives
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => FillBitmapFromTreeScan(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
+        => FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrWithMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
@@ -57,7 +61,8 @@ public static class QueryPrimitives
     {
         long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
         if (remaining <= 0) return;
-        FillBitmapFromPostingSource(ref ctx.PostingSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
+        var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
+        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -65,7 +70,7 @@ public static class QueryPrimitives
     {
         long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
         if (remaining <= 0) return;
-        FillBitmapFromTreeScan(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
+        FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -78,11 +83,14 @@ public static class QueryPrimitives
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndWithPostingSource(ref ctx.PostingSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1], ctx.Limit);
+    {
+        var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
+        AndWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1], ctx.Limit);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndBitmapWithTreeScan(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+        => AndBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
@@ -90,15 +98,63 @@ public static class QueryPrimitives
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndNotWithPostingSource(ref ctx.PostingSources[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    {
+        var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
+        AndNotWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndNotBitmapWithTreeScan(ctx.TermsProviders[paramIndex], ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+        => AndNotBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
         => AndNotWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+
+    // ── Lazy leaf resolution ─────────────────────────────────────────
+    // The compiled pipeline hands over value-independent metadata (field + packed
+    // parameter) per leaf in CompiledQueryMatch.Leaves; the concrete posting source /
+    // terms provider is materialized here, when the slot is consumed, instead of being
+    // pre-decoded up front by Raven.Server.
+
+    /// <summary>Materialize the native posting source for a posting-list leaf slot.</summary>
+    internal static Planning.PostingSource ResolvePostingSource(ref Planning.LeafResolveInfo info, IndexSearcher searcher, Planning.QueryExecution exec)
+    {
+        switch (info.Kind)
+        {
+            case Planning.LeafResolveKind.TermPosting:
+                return Planning.PostingSource.Decode(info.Packed.GetTermPostingListId(info.FieldMeta, searcher, exec), searcher);
+            case Planning.LeafResolveKind.NullPosting:
+                return searcher.TryGetPostingListForNull(in info.FieldMeta, out long nullPlId)
+                    ? Planning.PostingSource.Decode(nullPlId, searcher)
+                    : default;
+            case Planning.LeafResolveKind.AllPosting:
+                return new Planning.PostingSource { Kind = Planning.PostingSourceKind.All };
+            default: // EmptyPosting / unset
+                return default;
+        }
+    }
+
+    /// <summary>Materialize the <see cref="ITermsProvider"/> for a tree-scan leaf slot.
+    /// Builds the match via the existing factory query methods, then extracts its provider;
+    /// falls back to <see cref="EmptyTermsProvider.Instance"/> when the field doesn't exist.</summary>
+    internal static ITermsProvider ResolveTermsProvider(ref Planning.LeafResolveInfo info, IndexSearcher searcher, Planning.QueryExecution exec)
+    {
+        IQueryMatch match = info.ClauseType switch
+        {
+            Planning.ClauseType.Exists => searcher.ExistsQuery(info.FieldMeta),
+            Planning.ClauseType.StartsWith => searcher.StartWithQuery(info.FieldMeta, exec.StringValues[info.Packed.Param1]),
+            Planning.ClauseType.EndsWith => searcher.EndsWithQuery(info.FieldMeta, exec.StringValues[info.Packed.Param1]),
+            Planning.ClauseType.Regex => searcher.RegexQuery(info.FieldMeta, new Regex(exec.StringValues[info.Packed.Param1])),
+            Planning.ClauseType.GreaterThan or Planning.ClauseType.GreaterThanOrEqual
+                or Planning.ClauseType.LessThan or Planning.ClauseType.LessThanOrEqual
+                => info.Packed.RangeQuery(info.ClauseType, info.FieldMeta, searcher, exec),
+            Planning.ClauseType.Between => info.Packed.BetweenQuery(info.FieldMeta, searcher, exec),
+            _ => null
+        };
+
+        return match is Matches.TermsProviderMatch tpm ? tpm.Provider : EmptyTermsProvider.Instance;
+    }
 
     // Batch size for entry scan: how many bitmap entries to read per iteration.
     internal const int EntryScanBatchSize = 256;
