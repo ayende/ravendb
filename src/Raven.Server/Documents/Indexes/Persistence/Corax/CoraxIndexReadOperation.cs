@@ -609,7 +609,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         QueryParameters = query.QueryParameters,
                         Index = _index,
                         IndexFieldsMapping = _fieldMappings,
-                        FieldsToFetch = fieldsToFetch,
                         Allocator = _allocator,
                         HasDynamics = builderParameters.HasDynamics,
                         DynamicFields = builderParameters.DynamicFields,

@@ -7,36 +7,18 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>Builds the structural PlanOp sequence for a (cache-miss) query.
-    /// Pulls the previously-static EmitXxx methods together so the emission
-    /// state (ops buffer, range-count buffer, match cursor, scratch-slot counters)
-    /// lives on fields instead of being threaded through every signature.</summary>
     private sealed class PlanEmitter
     {
         private readonly List<PlanOp> _ops = [];
-        // Index counter for IN/AllIn range slots. Each EmitInOps/EmitAllInOps consumes
-        // one slot; the values themselves are computed at FinalizePlan time by
-        // CardinalityArrayBuilder.Build from the same execution-tree walk that produces
-        // cardinalities, so PlanEmitter only needs the running index to bake into
-        // PlanOp.ParamIndex2 — IL reads ctx.InRangeCounts[that idx] at runtime.
+        // Index counter for IN/AllIn range slots, baked into PlanOp.ParamIndex2 — reads ctx.InRangeCounts[that idx] at runtime.
         private int _nextRangeIdx;
         private int _matchIndex;
         private int _nextScratch = 2;
         private int _maxScratchUsed = 1;
 
-        /// <summary>Emits the structural plan for a (cache-miss) query. Stays parameter-blind:
-        /// when <see cref="QueryExecution.QueryWillReturnNoResults"/> is set the caller has already
-        /// short-circuited with <c>return default</c> (see <see cref="Build"/>) so this method
-        /// never has to encode "guaranteed zero results" — it works off the structural execution
-        /// list alone. Empty-IN clauses (InTermCount=0, HasNullTerm=false) are NOT compacted out
-        /// here: the runtime handles them via <c>ctx.InRangeCounts[i]=0</c> (range loop becomes
-        /// no-op) and the slot-0 op reading <c>TryGetPostingListForNull</c> (empty posting). Skipping
-        /// a clause based on per-execution parameter shape would poison the cached plan for
-        /// subsequent executions with different IN-array sizes — the cache key does not encode
-        /// IN array length.</summary>
         public static (PlanOp[] Ops, int RequiredBitmaps) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams)
         {
-            if (executions.Count is 0)
+            if (executions.Count is 0) // exec.QueryWillReturnNoResults was checked by caller, so that means all results, not none at all
                 return (BuildAllEntriesPlan(), 2);
 
             var emitter = new PlanEmitter();

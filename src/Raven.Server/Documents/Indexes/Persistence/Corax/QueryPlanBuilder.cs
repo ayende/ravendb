@@ -975,7 +975,6 @@ internal static partial class QueryPlanBuilder
     {
         public ByteStringContext Allocator;
         public Lazy<List<string>> DynamicFields;
-        public FieldsToFetch FieldsToFetch;
         public bool HasBoost;
         public bool HasDynamics;
         public Index Index;

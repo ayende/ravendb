@@ -98,13 +98,6 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>
-    ///     Single-pass walker producing both the per-IN term-count array and the
-    ///     per-leaf cardinality array. Slot layout is identical to the leaf walk used by
-    ///     <see cref="ResolveSlots{TResolver, TSlot}" /> and the IL emitter — keeping all
-    ///     three in step is a hard invariant: a divergence shows up as an off-by-one in
-    ///     IL slot reads, not as a data-shape error.
-    /// </summary>
     private static class CardinalityArrayBuilder
     {
         public static void Build(List<ClauseExecution> executions, bool isAllEntries,
