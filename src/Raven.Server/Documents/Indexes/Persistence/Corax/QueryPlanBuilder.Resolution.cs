@@ -834,20 +834,27 @@ internal static partial class QueryPlanBuilder
                 if (innerMatch is null) goto default;
                 return innerMatch;
             case ExecutionStrategy.CompoundField when orderByFields != null:
-                innerMatch = ConstructCompoundField(ref ctx, FindCompoundFieldField2Range(ref ctx), entriesToScan: 0, bitmapCost: 0);
+                // CompoundField is a structural candidate baked at cache-miss; the bitmap-vs-direct-scan
+                // cost gate is re-evaluated here with the CURRENT bound-parameter cardinalities so a
+                // cached plan never reuses a stale cost decision (RavenDB #4852). Cost failure → bitmap.
+                if (CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost) == false)
+                    goto default;
+                innerMatch = ConstructCompoundField(ref ctx, FindCompoundFieldField2Range(ref ctx), cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
                 return OrderBy(builderParameters, innerMatch, orderByFields, hasEmptySorts);
             case ExecutionStrategy.DirectScan when orderByFields is { Length: <= 2 }:
                 // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
                 // DirectScan plan — PageSize is not part of the plan cache key.
+                // Like CompoundField, DirectScan is a structural candidate; the cost gate runs fresh
+                // per-execution here (RavenDB #4852). Full scans have no cost gate and always pass.
                 var execs = exec.Executions;
                 bool isFullScan = execs is not { Count: > 0 };
-                if (isFullScan ||
-                    exec.Plan.SortDrivingClauseIndex >= 0 && exec.Executions[exec.Plan.SortDrivingClauseIndex].PackedParamValue.IsNone is false)
+                if (DirectScanCostEffective(ref ctx, isFullScan, out long dsEntriesToScan, out long dsBitmapCost))
                 {
                     bool hasTieBreak = orderByFields.Length == 2;
+                    string dsReason = $"entries_to_scan({dsEntriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({dsBitmapCost})";
                     innerMatch = ConstructDirectScan(ref ctx, exec.Plan.SortDrivingClauseIndex, isFullScan, hasTieBreak,
-                        reasonForInspection: "cached DirectScan strategy");
+                        reasonForInspection: dsReason);
                     if (innerMatch is not null) return innerMatch;
                 }
 
@@ -890,7 +897,7 @@ internal static partial class QueryPlanBuilder
                 if (TryCreateCompoundFieldMatch(ref ctx, out ctx.RejectReason))
                 {
                     ctx.Plan.Strategy = ExecutionStrategy.CompoundField;
-                    ctx.Plan.DecisionTrail.Record("CompoundField", true, "compound tree scan with ORDER BY");
+                    ctx.Plan.DecisionTrail.Record("CompoundField", true, "compound tree scan candidate (cost gated per-execution)");
                     return;
                 }
 
@@ -899,7 +906,7 @@ internal static partial class QueryPlanBuilder
                 if (TryCreateSimpleFieldDirectScan(ref ctx, out ctx.RejectReason))
                 {
                     ctx.Plan.Strategy = ExecutionStrategy.DirectScan;
-                    ctx.Plan.DecisionTrail.Record("DirectScan", true, "direct tree scan on sort field");
+                    ctx.Plan.DecisionTrail.Record("DirectScan", true, "direct tree scan candidate on sort field (cost gated per-execution)");
                     return;
                 }
 
@@ -1195,10 +1202,10 @@ internal static partial class QueryPlanBuilder
         return indexSearcher.TermQuery(compoundFieldMeta, new Slice(keyBuf));
     }
 
-    /// <summary>compound(field1, field2) exists in the index, and any residual clauses are
-    /// entry-scan eligible.
-    /// Returns a DirectScanMatch wrapping a compound tree StartsWith with optional
-    /// residual predicate checking.</summary>
+    /// <summary>STRUCTURAL eligibility for the CompoundField candidate: compound(field1, field2)
+    /// exists in the index, the query is not all-negated, and every residual clause is non-boosted
+    /// and entry-scan eligible. Baked once at cache-miss into <see cref="ExecutionStrategy.CompoundField"/>.
+    /// The per-execution cost gate lives in <see cref="CompoundFieldCostEffective"/>.</summary>
     private static bool TryCreateCompoundFieldMatch(ref InstCtx ctx, out string rejectReason)
     {
         if (ctx.Exec.Plan.CompoundFieldDrivingClause < 0 || ctx.Exec.Plan.Template.CompoundFieldSortName is null)
@@ -1214,25 +1221,17 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
-        var indexSearcher = ctx.PlanParams.IndexSearcher;
-
-        var drivingExec = execs[ctx.Exec.Plan.CompoundFieldDrivingClause];
-        if (drivingExec.PackedParamValue.IsNone)
-        {
-            rejectReason = "driving clause has no packed param value";
-            return false;
-        }
-
         // Find optional field2 range narrowing clause (structural — same for all
         // executions of this template).
         int field2RangeIdx = FindCompoundFieldField2Range(ref ctx);
 
-        // Residual scannability + cost check
-        long bitmapCost = 0;
-        int residualCount = 0;
+        // Residual scannability — structural only (clause-type / boost based, stable across
+        // executions). The bitmap-vs-direct-scan COST gate and the parameter-dependent
+        // PackedParamValue.IsNone guard are deliberately NOT evaluated here: both depend on the
+        // bound-parameter cardinalities and run per-execution in CompoundFieldCostEffective, so a
+        // cached plan never reuses a stale cost decision (RavenDB #4852).
         for (int i = 0; i < execs.Count; i++)
         {
-            bitmapCost += EffectiveCardinality(execs[i], indexSearcher);
             if (i == ctx.Exec.Plan.CompoundFieldDrivingClause || i == field2RangeIdx)
                 continue;
             if (IsClauseBoosted(execs[i]))
@@ -1246,20 +1245,6 @@ internal static partial class QueryPlanBuilder
                 rejectReason = "scan predicate info is null";
                 return false;
             }
-
-            residualCount++;
-        }
-
-        long drivingCardinality = EffectiveCardinality(drivingExec, indexSearcher);
-        long entriesToScan = residualCount > 0
-            ? AdjustEntriesToScanByMinResidual(execs, ctx.Exec.Plan.CompoundFieldDrivingClause, drivingCardinality, indexSearcher)
-            : drivingCardinality;
-
-        if (IsDirectScanCostEffective(entriesToScan, bitmapCost) == false)
-        {
-            rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or prefix too long";
-
-            return false;
         }
 
         rejectReason = null;
@@ -1507,116 +1492,89 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    private static bool TryCreateSimpleFieldDirectScan(
-        ref InstCtx ctx, out string rejectReason)
+    /// <summary>Structural eligibility for serving an ORDER BY via a direct tree scan
+    /// instead of the bitmap pipeline (the range/equals query already walks the tree in
+    /// sort order, so no SortingMatch wrapper is needed). This checks only template-stable
+    /// shape: ORDER BY arity, tie-break field type, sort-driving clause presence, full-scan
+    /// eligibility, and residual scannability. The cost gate (cardinality-vs-bitmap, which
+    /// is parameter-dependent) is deliberately NOT here — it runs fresh every execution in
+    /// <see cref="DirectScanCostEffective"/> so a cached <see cref="ExecutionStrategy.DirectScan"/>
+    /// candidate cannot go stale across bound-parameter values (RavenDB #4852).</summary>
+    private static bool TryCreateSimpleFieldDirectScan(ref InstCtx ctx, out string rejectReason)
     {
-        rejectReason = null;
-        bool result = TryCreateSimpleFieldDirectScan(ref ctx, out IQueryMatch directMatch);
-        if (!result)
+        if (ctx.OrderByFields == null || ctx.OrderByFields.Length == 0)
         {
-            if (ctx.OrderByFields == null || ctx.OrderByFields.Length == 0)
-                rejectReason = "no ORDER BY fields";
-            else if (ctx.OrderByFields.Length > 2)
-                rejectReason = "ORDER BY has too many fields (max 2 for direct scan)";
-            else if (ctx.OrderByFields.Length == 2 && ctx.OrderByFields[1].FieldType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
-                rejectReason = "tie-break field type is not numeric (must be Integer or Floating)";
-            else if (ctx.Exec.Executions is { Count: > 0 } && ctx.Exec.Plan.SortDrivingClauseIndex < 0)
-                rejectReason = "no range/equals clause on sort field (or WHEN eliminated the candidate)";
-            else
-                rejectReason = "cost check failed (bitmap is cheaper), non-scannable residual, or cardinality too high for tie-break";
+            rejectReason = "no ORDER BY fields";
+            return false;
         }
 
-        return result;
-    }
-
-    /// <summary>Check if a range clause on the ORDER BY field can be served by a direct
-    /// tree scan instead of the bitmap pipeline. The range query already walks the tree
-    /// in sort order, so no SortingMatch wrapper is needed.</summary>
-    private static bool TryCreateSimpleFieldDirectScan(ref InstCtx ctx, out IQueryMatch directMatch)
-    {
-        directMatch = null;
-
-        // Discovery: ORDER BY shape, sort-driving clause selection, residual
-        // scannability + cost check. Per Phase 5, all per-execution rebuilds of
-        // the live match are routed through ConstructDirectScan; this method
-        // only validates the runtime state is compatible and then delegates.
-        if (ctx.OrderByFields == null || ctx.OrderByFields.Length == 0)
-            return false;
-
         if (ctx.OrderByFields.Length > 2)
+        {
+            rejectReason = "ORDER BY has too many fields (max 2 for direct scan)";
             return false;
+        }
 
         bool hasTieBreak = ctx.OrderByFields.Length == 2;
         if (hasTieBreak)
         {
             var tieBreakType = ctx.OrderByFields[1].FieldType;
             if (tieBreakType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating or MatchCompareFieldType.Sequence))
+            {
+                rejectReason = "tie-break field type is not numeric (must be Integer, Floating, or Sequence)";
                 return false;
+            }
         }
 
-        var indexSearcher = ctx.PlanParams.IndexSearcher;
-        string sortFieldName = ctx.OrderByFields[0].Field.FieldName.ToString();
         var sortFieldType = ctx.OrderByFields[0].FieldType;
-
         var execs = ctx.Exec.Executions;
         bool isFullScan = execs == null || execs.Count == 0;
 
-        if (isFullScan && ctx.Exec.Plan.AllNegated)
-            return false;
-
-        // ── Discovery: drivingIdx + cost gate ──
-        int drivingIdx = -1;
-        long entriesToScan = 0, bitmapCost = 0;
-        List<ScanPredicateInfo> preBuiltResiduals = null;
-        if (!isFullScan)
+        if (isFullScan)
         {
-            // SortDrivingClauseIndex was pre-identified at template time (excluding clauses
-            // with WHEN conditions — see ComputeTemplateOptimizations) and remapped to its
-            // post-sort index during Build. A value of -1 here means either no candidate
-            // exists, or WHEN eliminated the candidate at runtime; both fall back to bitmap.
-            drivingIdx = ctx.Exec.Plan.SortDrivingClauseIndex;
-            if (drivingIdx == -1)
-                return false;
-
-            if (execs[drivingIdx].PackedParamValue.IsNone)
-                return false;
-
-            // Residual scannability + bitmap cost summation in one pass.
-            // The ScanPredicateInfo array built here is the same array ConstructDirectScan
-            // needs, so we collect it now and pass it forward instead of rebuilding.
-            int rsliceIdx = 0;
-            for (int i = 0; i < execs.Count; i++)
+            if (ctx.Exec.Plan.AllNegated)
             {
-                bitmapCost += EffectiveCardinality(execs[i], indexSearcher);
-                if (i == drivingIdx) continue;
-                // Boost is ruled out at template time (see ComputeOptFlags).
-                var pred = BuildScanPredicateInfo(execs[i], ref rsliceIdx);
-                if (pred == null)
-                    return false;
-                preBuiltResiduals ??= new List<ScanPredicateInfo>();
-                preBuiltResiduals.Add(pred.Value);
+                rejectReason = "all clauses are negated";
+                return false;
             }
-
-            long drivingCard = EffectiveCardinality(execs[drivingIdx], indexSearcher);
-            entriesToScan = preBuiltResiduals is { Count: > 0 }
-                ? AdjustEntriesToScanByMinResidual(execs, drivingIdx, drivingCard, indexSearcher)
-                : drivingCard;
-
-            if (IsDirectScanCostEffective(entriesToScan, bitmapCost) == false)
-                return false;
-        }
-        else
-        {
-            // Full-scan structural eligibility checks (would-cause-empty paths).
             if (ctx.OrderByFields[0].MayHaveMissingEntries)
+            {
+                rejectReason = "sort field may have missing entries";
                 return false;
+            }
             if (sortFieldType is not (MatchCompareFieldType.Sequence or MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
+            {
+                rejectReason = "full-scan sort field type is not Sequence/Integer/Floating";
                 return false;
+            }
+            rejectReason = null;
+            return true;
         }
 
-        string reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
-        directMatch = ConstructDirectScan(ref ctx, drivingIdx, isFullScan, hasTieBreak, reason, preBuiltResiduals);
-        return directMatch != null;
+        // SortDrivingClauseIndex was pre-identified at template time (excluding clauses
+        // with WHEN conditions — see ComputeTemplateOptimizations) and remapped to its
+        // post-sort index during Build. A value of -1 here means either no candidate
+        // exists, or WHEN eliminated the candidate at runtime; both fall back to bitmap.
+        int drivingIdx = ctx.Exec.Plan.SortDrivingClauseIndex;
+        if (drivingIdx < 0)
+        {
+            rejectReason = "no range/equals clause on sort field (or WHEN eliminated the candidate)";
+            return false;
+        }
+
+        // Boost is ruled out at template time (see ComputeOptFlags); here we only
+        // confirm every non-driving residual is scannable.
+        for (int i = 0; i < execs.Count; i++)
+        {
+            if (i == drivingIdx) continue;
+            if (IsScanEligible(execs[i]) == false)
+            {
+                rejectReason = "non-scannable residual clause";
+                return false;
+            }
+        }
+
+        rejectReason = null;
+        return true;
     }
 
     /// <summary>Phase 5 bake: construction-only path for the DirectScan hint.
@@ -2276,6 +2234,77 @@ internal static partial class QueryPlanBuilder
             ? long.MaxValue
             : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
         return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
+    }
+
+    /// <summary>Per-execution cost gate for the CompoundField candidate. Structural eligibility
+    /// (driving clause, compound sort field, non-boosted scannable residuals) was baked at
+    /// cache-miss by <see cref="TryCreateCompoundFieldMatch"/>; this re-evaluates the
+    /// bitmap-vs-direct-scan cost using the CURRENT bound-parameter cardinalities so a cached plan
+    /// never reuses a stale strategy decision (RavenDB #4852). Also re-checks the
+    /// parameter-dependent <c>PackedParamValue.IsNone</c> guard. <paramref name="entriesToScan"/>
+    /// and <paramref name="bitmapCost"/> are surfaced for the inspection Reason string.</summary>
+    private static bool CompoundFieldCostEffective(ref InstCtx ctx, out long entriesToScan, out long bitmapCost)
+    {
+        entriesToScan = 0;
+        bitmapCost = 0;
+        var execs = ctx.Exec.Executions;
+        int drivingIdx = ctx.Exec.Plan.CompoundFieldDrivingClause;
+        if (drivingIdx < 0 || drivingIdx >= execs.Count)
+            return false;
+
+        var drivingExec = execs[drivingIdx];
+        if (drivingExec.PackedParamValue.IsNone)
+            return false;
+
+        var indexSearcher = ctx.PlanParams.IndexSearcher;
+        int field2RangeIdx = FindCompoundFieldField2Range(ref ctx);
+        int residualCount = 0;
+        for (int i = 0; i < execs.Count; i++)
+        {
+            bitmapCost += EffectiveCardinality(execs[i], indexSearcher);
+            if (i == drivingIdx || i == field2RangeIdx)
+                continue;
+            residualCount++;
+        }
+
+        long drivingCardinality = EffectiveCardinality(drivingExec, indexSearcher);
+        entriesToScan = residualCount > 0
+            ? AdjustEntriesToScanByMinResidual(execs, drivingIdx, drivingCardinality, indexSearcher)
+            : drivingCardinality;
+
+        return IsDirectScanCostEffective(entriesToScan, bitmapCost);
+    }
+
+    /// <summary>Per-execution cost gate for the DirectScan candidate. Structural eligibility
+    /// (ORDER BY shape, sort-driving clause, scannable residuals) was baked at cache-miss by
+    /// <see cref="TryCreateSimpleFieldDirectScan"/>; this re-evaluates the cost using the CURRENT
+    /// bound-parameter cardinalities (RavenDB #4852). Full scans have no cost gate — the sort-field
+    /// tree is walked directly — so they always pass. <paramref name="entriesToScan"/> and
+    /// <paramref name="bitmapCost"/> are surfaced for the inspection Reason string.</summary>
+    private static bool DirectScanCostEffective(ref InstCtx ctx, bool isFullScan, out long entriesToScan, out long bitmapCost)
+    {
+        entriesToScan = 0;
+        bitmapCost = 0;
+        if (isFullScan)
+            return true;
+
+        var execs = ctx.Exec.Executions;
+        int drivingIdx = ctx.Exec.Plan.SortDrivingClauseIndex;
+        if (drivingIdx < 0 || drivingIdx >= execs.Count)
+            return false;
+        if (execs[drivingIdx].PackedParamValue.IsNone)
+            return false;
+
+        var indexSearcher = ctx.PlanParams.IndexSearcher;
+        for (int i = 0; i < execs.Count; i++)
+            bitmapCost += EffectiveCardinality(execs[i], indexSearcher);
+
+        long drivingCard = EffectiveCardinality(execs[drivingIdx], indexSearcher);
+        entriesToScan = execs.Count > 1
+            ? AdjustEntriesToScanByMinResidual(execs, drivingIdx, drivingCard, indexSearcher)
+            : drivingCard;
+
+        return IsDirectScanCostEffective(entriesToScan, bitmapCost);
     }
 
 
