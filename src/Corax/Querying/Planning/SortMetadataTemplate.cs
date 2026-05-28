@@ -47,12 +47,22 @@ public sealed class SortMetadataTemplate
 }
 
 /// <summary>Per-query Distance ordering builder. Closed over template-time data
-/// (the source ORDER BY descriptor + resolved field metadata) at template-build time;
-/// invoked at runtime with the per-query opaque context (a <c>QueryBuilderParameters</c>
-/// on the Raven.Server side) and the empty-field outcome to produce the slot's
-/// <see cref="OrderMetadata"/>. The opaque <see cref="object"/> context keeps this
-/// delegate Corax-clean — the consumer-side knows the concrete type.</summary>
-public delegate OrderMetadata SortDistanceMetadataBuilder(object runtimeContext, bool fieldIsEmpty);
+/// (the source ORDER BY descriptor) at template-build time; invoked at runtime with the
+/// per-query opaque context (a <c>QueryBuilderParameters</c> on the Raven.Server side),
+/// the field metadata freshly resolved against the live per-query allocator, and the
+/// empty-field outcome to produce the slot's <see cref="OrderMetadata"/>. The opaque
+/// <see cref="object"/> context keeps this delegate Corax-clean — the consumer-side
+/// knows the concrete type.</summary>
+public delegate OrderMetadata SortDistanceMetadataBuilder(object runtimeContext, FieldMetadata fieldMeta, bool fieldIsEmpty);
+
+/// <summary>Per-query field-metadata resolver. Closed over the template-stable ORDER BY
+/// field name at template-build time; invoked at runtime with the per-query opaque context
+/// (a <c>QueryBuilderParameters</c> on the Raven.Server side) to resolve the field's
+/// <see cref="FieldMetadata"/> — including its <c>FieldName</c> slice — against the live
+/// per-query allocator. The resolved metadata MUST NOT be cached on the template: the
+/// template is shared across every execution of the same query text, but the slice is only
+/// valid for the lifetime of the allocator that produced it.</summary>
+public delegate FieldMetadata SortFieldMetadataResolver(object runtimeContext);
 
 /// <summary>Per-slot runtime patch directive. Populated only when at least one slot
 /// needs runtime work; otherwise the entire array stays null and the caller returns
@@ -65,11 +75,13 @@ public struct SortSlotPatch
     public SortSlotPatchKind Kind;
 
     /// <summary>For <see cref="SortSlotPatchKind.FieldEmptyCheck"/> and
-    /// <see cref="SortSlotPatchKind.DistanceRuntime"/>: field metadata to query against
-    /// <c>IndexSearcher.GetDistinctTermCountInField</c>. Already resolved at template
-    /// time so the runtime patch avoids the <c>GetFieldIdForOrderBy</c> allocator +
-    /// dynamic-field lookup.</summary>
-    public FieldMetadata FieldMeta;
+    /// <see cref="SortSlotPatchKind.DistanceRuntime"/>: resolves the slot's field metadata
+    /// against the live per-query allocator. The <c>FieldName</c> slice it produces is only
+    /// valid for the current query, so resolution is deferred to runtime rather than baked
+    /// into the (cross-query-cached) template — caching the slice lets it dangle once the
+    /// originating allocator is reset, surfacing as either an out-of-range read or a
+    /// silently wrong field on the second execution of the same query text.</summary>
+    public SortFieldMetadataResolver FieldMetaResolver;
 
     /// <summary>For <see cref="SortSlotPatchKind.DistanceRuntime"/>: closure over
     /// template-time data (the source <c>OrderByField</c>) that resolves per-query
@@ -84,10 +96,11 @@ public enum SortSlotPatchKind : byte
     /// <summary>Slot is fully baked — runtime returns the prefab entry verbatim.</summary>
     None = 0,
 
-    /// <summary>Field slot may have zero distinct terms in the index. Runtime calls
-    /// <c>GetDistinctTermCountInField</c> with <see cref="SortSlotPatch.FieldMeta"/>;
-    /// if zero, the slot rebuilds with <c>FieldHasNoTerms = true</c> (and is either
-    /// dropped from the result or marked, per sharded/non-sharded policy).</summary>
+    /// <summary>Field slot may have zero distinct terms in the index. Runtime resolves the
+    /// field metadata via <see cref="SortSlotPatch.FieldMetaResolver"/>, calls
+    /// <c>GetDistinctTermCountInField</c> with it; if zero, the slot rebuilds with
+    /// <c>FieldHasNoTerms = true</c> (and is either dropped from the result or marked, per
+    /// sharded/non-sharded policy).</summary>
     FieldEmptyCheck,
 
     /// <summary>Random ordering with no Arguments — runtime fills the slot with
