@@ -73,56 +73,70 @@ public static class QueryIlEmitter
             if (emitTimings)
                 EmitTimingStart(ref d, startTickLocal, i);
 
-            // Resolve dispatch once per op — used by IL and C# emission.
-            var (fillMethod, andMethod, orMethod, andNotMethod) = op.Dispatch switch
-            {
-                MatchDispatch.PostingList => (
-                    IlEmitterShared.CtxFillFromPostingSource, IlEmitterShared.CtxAndFromPostingSource, IlEmitterShared.CtxOrFillFromPostingSource, IlEmitterShared.CtxAndNotFromPostingSource),
-                MatchDispatch.TreeScan => (
-                    IlEmitterShared.CtxFillFromTreeScan, IlEmitterShared.CtxAndFromTreeScan, IlEmitterShared.CtxOrFillFromTreeScan, IlEmitterShared.CtxAndNotFromTreeScan),
-                _ => (
-                    IlEmitterShared.CtxOrWithMatch, IlEmitterShared.CtxAndFromMatch, (MethodInfo)IlEmitterShared.CtxOrWithMatchSlot, IlEmitterShared.CtxAndNotFromMatch)
-            };
-
-            var (fillName, andName, orName, andNotName) = op.Dispatch switch
-            {
-                MatchDispatch.PostingList => (
-                    "QueryPrimitives.CtxFillFromPostingSource",
-                    "QueryPrimitives.CtxAndFromPostingSource",
-                    "QueryPrimitives.CtxOrFillFromPostingSource",
-                    "QueryPrimitives.CtxAndNotFromPostingSource"),
-                MatchDispatch.TreeScan => (
-                    "QueryPrimitives.CtxFillFromTreeScan",
-                    "QueryPrimitives.CtxAndFromTreeScan",
-                    "QueryPrimitives.CtxOrFillFromTreeScan",
-                    "QueryPrimitives.CtxAndNotFromTreeScan"),
-                _ => (
-                    "QueryPrimitives.CtxOrWithMatch",
-                    "QueryPrimitives.CtxAndFromMatch",
-                    "QueryPrimitives.CtxOrWithMatchSlot",
-                    "QueryPrimitives.CtxAndNotFromMatch")
-            };
-
             switch (op.Kind)
             {
-                case PlanOpKind.FillFromLeaf:
-                    d.EmitCancelledCursorCall(cursorVar, fillMethod, fillName);
+                case PlanOpKind.FillFromPostingSource:
+                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxFillFromPostingSource, "QueryPrimitives.CtxFillFromPostingSource");
+                    break;
+
+                case PlanOpKind.FillFromTreeScan:
+                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxFillFromTreeScan, "QueryPrimitives.CtxFillFromTreeScan");
+                    break;
+
+                case PlanOpKind.FillFromMatch:
+                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxOrWithMatch, "QueryPrimitives.CtxOrWithMatch");
                     break;
 
                 case PlanOpKind.FillAllEntries:
                     d.EmitFillAllEntries();
                     break;
 
-                case PlanOpKind.AndWithLeaf:
-                    d.EmitCancelledCursorCall(cursorVar, andMethod, andName);
+                case PlanOpKind.AndFromPostingSource:
+                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxAndFromPostingSource, "QueryPrimitives.CtxAndFromPostingSource");
                     if (!op.SkipEarlyExit)
                         d.EmitBitmapEmptyGoto(0, doneLabel.Il, doneLabel.Name);
                     break;
 
-                case PlanOpKind.OrWithLeaf:
-                    d.EmitCancelledCursorOrCall(cursorVar, orMethod, orName, op.BitmapLocal);
+                case PlanOpKind.AndFromTreeScan:
+                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxAndFromTreeScan, "QueryPrimitives.CtxAndFromTreeScan");
+                    if (!op.SkipEarlyExit)
+                        d.EmitBitmapEmptyGoto(0, doneLabel.Il, doneLabel.Name);
+                    break;
+
+                case PlanOpKind.AndFromMatch:
+                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxAndFromMatch, "QueryPrimitives.CtxAndFromMatch");
+                    if (!op.SkipEarlyExit)
+                        d.EmitBitmapEmptyGoto(0, doneLabel.Il, doneLabel.Name);
+                    break;
+
+                case PlanOpKind.OrFromPostingSource:
+                    d.EmitCancelledCursorOrCall(cursorVar, IlEmitterShared.CtxOrFillFromPostingSource, "QueryPrimitives.CtxOrFillFromPostingSource", op.BitmapLocal);
                     if (op.BitmapLocal == 0)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                    break;
+
+                case PlanOpKind.OrFromTreeScan:
+                    d.EmitCancelledCursorOrCall(cursorVar, IlEmitterShared.CtxOrFillFromTreeScan, "QueryPrimitives.CtxOrFillFromTreeScan", op.BitmapLocal);
+                    if (op.BitmapLocal == 0)
+                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                    break;
+
+                case PlanOpKind.OrFromMatch:
+                    d.EmitCancelledCursorOrCall(cursorVar, IlEmitterShared.CtxOrWithMatchSlot, "QueryPrimitives.CtxOrWithMatchSlot", op.BitmapLocal);
+                    if (op.BitmapLocal == 0)
+                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                    break;
+
+                case PlanOpKind.AndNotFromPostingSource:
+                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxAndNotFromPostingSource, "QueryPrimitives.CtxAndNotFromPostingSource");
+                    break;
+
+                case PlanOpKind.AndNotFromTreeScan:
+                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxAndNotFromTreeScan, "QueryPrimitives.CtxAndNotFromTreeScan");
+                    break;
+
+                case PlanOpKind.AndNotFromMatch:
+                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxAndNotFromMatch, "QueryPrimitives.CtxAndNotFromMatch");
                     break;
 
                 case PlanOpKind.ClearBitmap:
@@ -150,10 +164,6 @@ public static class QueryIlEmitter
                     d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
                     break;
 
-                case PlanOpKind.AndNotWithLeaf:
-                    d.EmitCancelledCursorCall(cursorVar, andNotMethod, andNotName);
-                    break;
-
                 case PlanOpKind.MaybeEntryScan:
                 {
                     hasEntryScan = true;
@@ -162,13 +172,27 @@ public static class QueryIlEmitter
                     break;
                 }
 
-                case PlanOpKind.OrLeafRange:
-                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, op.Dispatch, orMethod, orName, i,
+                case PlanOpKind.OrRangeFromPostingSource:
+                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, MatchDispatch.PostingList,
+                        IlEmitterShared.CtxOrFillFromPostingSource, "QueryPrimitives.CtxOrFillFromPostingSource", i,
                         earlyExit: false, skipEarlyExit: false, doneLabel);
                     break;
 
-                case PlanOpKind.AndLeafRange:
-                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, op.Dispatch, andMethod, andName, i,
+                case PlanOpKind.OrRangeFromMatch:
+                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, MatchDispatch.QueryMatch,
+                        IlEmitterShared.CtxOrWithMatchSlot, "QueryPrimitives.CtxOrWithMatchSlot", i,
+                        earlyExit: false, skipEarlyExit: false, doneLabel);
+                    break;
+
+                case PlanOpKind.AndRangeFromPostingSource:
+                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, MatchDispatch.PostingList,
+                        IlEmitterShared.CtxAndFromPostingSource, "QueryPrimitives.CtxAndFromPostingSource", i,
+                        earlyExit: true, skipEarlyExit: op.SkipEarlyExit, doneLabel);
+                    break;
+
+                case PlanOpKind.AndRangeFromMatch:
+                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, MatchDispatch.QueryMatch,
+                        IlEmitterShared.CtxAndFromMatch, "QueryPrimitives.CtxAndFromMatch", i,
                         earlyExit: true, skipEarlyExit: op.SkipEarlyExit, doneLabel);
                     break;
 
@@ -241,8 +265,9 @@ public static class QueryIlEmitter
             if (op.BitmapLocal > max) max = op.BitmapLocal;
             if (op.Kind is PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.LazyOrBitmaps or PlanOpKind.SwapBitmaps
                 && op.ParamIndex2 > max) max = op.ParamIndex2;
-            if (op.Kind is PlanOpKind.FillFromLeaf or PlanOpKind.FillAllEntries && 0 > max) max = 0;
-            if (op.Kind is PlanOpKind.AndWithLeaf or PlanOpKind.AndNotWithLeaf && 1 > max) max = 1;
+            if (op.Kind is PlanOpKind.FillFromPostingSource or PlanOpKind.FillFromTreeScan or PlanOpKind.FillFromMatch or PlanOpKind.FillAllEntries && 0 > max) max = 0;
+            if (op.Kind is PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan or PlanOpKind.AndFromMatch
+                    or PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch && 1 > max) max = 1;
         }
         return max;
     }
@@ -401,14 +426,9 @@ public static class QueryIlEmitter
         switch (dispatch)
         {
             case MatchDispatch.PostingList:
-                arrayField = IlEmitterShared.CtxTermSources;
+                arrayField = IlEmitterShared.CtxLeaves;
                 loadOp = OpCodes.Ldelema;
-                elementType = typeof(PostingSource);
-                break;
-            case MatchDispatch.TreeScan:
-                arrayField = IlEmitterShared.CtxTermsProviders;
-                loadOp = OpCodes.Ldelem_Ref;
-                elementType = null;
+                elementType = typeof(LeafResolveInfo);
                 break;
             default:
                 arrayField = IlEmitterShared.CtxResolvedMatches;

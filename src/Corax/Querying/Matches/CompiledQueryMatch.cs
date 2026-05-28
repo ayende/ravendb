@@ -19,8 +19,7 @@ public class CompiledQueryMatch(
     int bitmapCount,
     int opCount,
     IQueryMatch[] resolvedMatches,
-    PostingSource[] postingSources,
-    ITermsProvider[] termsProviders,
+    LeafResolveInfo[] leaves,
     IndexSearcher searcher,
     ByteStringContext allocator,
     bool wantTimings,
@@ -38,15 +37,19 @@ public class CompiledQueryMatch(
 
     public SortHint SortHint;
     public readonly IQueryMatch[] ResolvedMatches = resolvedMatches;
-    public readonly PostingSource[] PostingSources = postingSources;
-    public readonly ITermsProvider[] TermsProviders = termsProviders;
+
+    /// <summary>Per-leaf resolution metadata for PostingSource / TreeScan slots, parallel to
+    /// <see cref="ResolvedMatches"/>. Match slots carry <see cref="LeafResolveKind.PreResolved"/>
+    /// and read from <see cref="ResolvedMatches"/> instead. Filled by Raven.Server; the posting
+    /// source / terms provider is materialized lazily inside <c>QueryPrimitives</c>.</summary>
+    public readonly LeafResolveInfo[] Leaves = leaves;
 
     public int[] InRangeCounts;
 
     /// <summary>Per-slot planner cardinality estimate. The entry-scan heuristic reads
     /// <c>Cardinalities[cursor]</c> to decide whether bitmap[0] is small enough relative
     /// to the next clause's estimated entries to switch to per-entry scanning. Sized to
-    /// match the resolver's slot layout (<see cref="ResolvedMatches"/>/<see cref="PostingSources"/>/<see cref="TermsProviders"/>),
+    /// match the resolver's slot layout (<see cref="ResolvedMatches"/>/<see cref="Leaves"/>),
     /// so the IL cursor can index it directly regardless of dispatch.</summary>
     public long[] Cardinalities;
 

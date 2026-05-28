@@ -8,7 +8,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
-using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
@@ -83,24 +82,6 @@ internal static partial class QueryPlanBuilder
 
         /// <summary>slot 0 ← slot 0 \ clause. Negated AND-chain elements.</summary>
         AndNotInto
-    }
-
-
-    /// <summary>Singleton no-op ITermsProvider for TreeScan slots where the field doesn't exist.
-    /// FillPostingListIds returns 0 immediately, so the bitmap op is a no-op.</summary>
-    private sealed class EmptyTermsProviderInstance : ITermsProvider
-    {
-        public static readonly EmptyTermsProviderInstance Instance = new();
-        public int FillPostingListIds(Span<long> postingListIds) => 0;
-        public void Reset() { }
-
-        public bool Next(out TermMatch term)
-        {
-            term = default;
-            return false;
-        }
-
-        public QueryInspectionNode Inspect() => new("EmptyTermsProvider");
     }
 
 
@@ -197,7 +178,6 @@ internal static partial class QueryPlanBuilder
             return FinalizePlan(); // use cached plan
 
         // Cache miss — full exec emission
-        var clauseDispatch = ComputeClauseDispatch(executions, planParams.HasBoost, template);
         var (ops, requiredBitmaps) = PlanEmitter.Emit(template, executions, planParams);
 
         var scanPredicates = CreateScanPredicates();
@@ -218,7 +198,6 @@ internal static partial class QueryPlanBuilder
             InspectionTemplate = BuildInspectionTemplate(ops, executions),
             ScanPredicateInfos = scanPredicates,
             AllNegated = CheckAllNegated(),
-            ClauseDispatch = clauseDispatch,
         };
         RemapOptimizationIndices();
         planCache.Add(queryText, compiledPlan, template);
@@ -846,13 +825,13 @@ internal static partial class QueryPlanBuilder
         if (exec is { IsAllEntries: true, HasSpatialOrVector: true })
             return InstantiateAllEntriesPostFilter(exec, builderParameters, walkerCtx, wantTimings);
 
-        ResolveAllSlots(exec, walkerCtx, out var resolvedMatches, out var termSources, out var termsProviders);
+        ResolveAllSlots(exec, walkerCtx, planParams.HasBoost, out var resolvedMatches, out var leaves);
 
         if (highlightingTerms != null)
             PopulateHighlightingTerms(exec, highlightingTerms, planParams.Metadata);
 
         var compiledMatch = new CompiledQueryMatch(
-            compiledPlan, exec, compiledPlan.RequiredBitmaps, compiledPlan.OpCount, resolvedMatches, termSources, termsProviders,
+            compiledPlan, exec, compiledPlan.RequiredBitmaps, compiledPlan.OpCount, resolvedMatches, leaves,
             indexSearcher, planParams.Allocator, wantTimings, token)
         {
             InRangeCounts = exec.InRangeCounts,
@@ -1676,181 +1655,169 @@ internal static partial class QueryPlanBuilder
             take: -1, precompiledDelegate: residualDelegate);
     }
 
-    /// <summary>Single leaf walk that produces all three parallel slot arrays at once.
-    /// Replaces the former three independent <c>ResolveSlots</c> passes (one per
-    /// <c>ISlotResolver</c>). Each leaf reads its effective dispatch from
-    /// <see cref="CompiledPlan.ClauseDispatch"/> exactly once and populates the
-    /// dispatch-owned array; the other two get <c>default</c>/<c>null</c> in that slot.
-    /// Slot layout (per-leaf, IN/AllIn → InTermCount+1, groups expanded) is identical to
-    /// the IL emitter's leaf walk and <see cref="CardinalityArrayBuilder.Build"/>, keeping
-    /// IL slot indices end-to-end consistent. The arrays stay length-equal because every
-    /// add appends to all three lists.</summary>
-    private static void ResolveAllSlots(QueryExecution exec, ResolutionContext walkerCtx,
-        out IQueryMatch[] matches, out PostingSource[] termSources, out ITermsProvider[] termsProviders)
+    /// <summary>Single leaf walk that produces the two parallel slot arrays at once:
+    /// <paramref name="matches"/> (eagerly-resolved IQueryMatch slots — spatial/vector/search/
+    /// boosted) and <paramref name="leaves"/> (value-independent resolve metadata for
+    /// PostingSource / TreeScan slots, materialized lazily inside the IL pipeline). Each leaf
+    /// derives its effective dispatch inline (see <see cref="ResolveLeafIntoAll"/>). Slot layout
+    /// (per-leaf, IN/AllIn → InTermCount+1, groups expanded) is identical to the IL emitter's
+    /// leaf walk and <see cref="CardinalityArrayBuilder.Build"/>, keeping IL slot indices
+    /// end-to-end consistent. The arrays stay length-equal because every add appends to both.</summary>
+    private static void ResolveAllSlots(QueryExecution exec, ResolutionContext walkerCtx, bool planHasBoost,
+        out IQueryMatch[] matches, out LeafResolveInfo[] leaves)
     {
         Debug.Assert(!(exec.IsAllEntries && exec.HasSpatialOrVector),
             "ResolveAllSlots reached with IsAllEntries && HasSpatialOrVector — InstantiateAllEntriesPostFilter bypass should have handled this.");
 
-        // IsAllEntries plans never emit term ops (FillFromLeaf / AndWithLeaf / etc.) —
-        // match[0] is AllEntries, post-filter slots are spatial/vector. No PostingSource
-        // or TermsProvider population is needed.
+        // IsAllEntries plans never emit leaf ops — match[0] is AllEntries (served from
+        // ResolvedMatches via FillFromMatch), post-filter slots are spatial/vector. The
+        // parallel Leaves slot is PreResolved and never consumed.
         if (exec.IsAllEntries)
         {
             matches = [walkerCtx.IndexSearcher.AllEntries()];
-            termSources = [];
-            termsProviders = null;
+            leaves = [new LeafResolveInfo { Kind = LeafResolveKind.PreResolved }];
             return;
         }
 
         if (exec.Executions is not { Count: > 0 })
         {
             matches = [];
-            termSources = [];
-            termsProviders = null;
+            leaves = [];
             return;
         }
 
         var matchList = new List<IQueryMatch>();
-        var sourceList = new List<PostingSource>();
-        var providerList = new List<ITermsProvider>();
-        int clauseIdx = 0;
+        var leafList = new List<LeafResolveInfo>();
         foreach (var clauseExec in exec.Executions)
         {
-            ResolveLeafIntoAll(walkerCtx, clauseExec, exec, matchList, sourceList, providerList, ref clauseIdx);
+            ResolveLeafIntoAll(walkerCtx, clauseExec, exec, planHasBoost, matchList, leafList);
         }
 
         matches = matchList.ToArray();
-        termSources = sourceList.ToArray();
-        termsProviders = providerList.ToArray();
+        leaves = leafList.ToArray();
     }
 
     /// <summary>Recursive leaf walker for <see cref="ResolveAllSlots"/>. Groups expand to
-    /// their leaves. <see cref="ClauseInfo.IsOrChainNotEquals"/> clauses walk their positive
-    /// form (IN/AllIn → InTermCount+1 slots, scalar → 1 slot); the IL emitter handles the
-    /// complement via FillAllEntries + AndNot, picking up cancellation/timing for free. Boost
-    /// on a negated leaf is silently ignored — matches Lucene, where boosting a negation has no
-    /// effect because there is no match to score.</summary>
+    /// their leaves. The per-leaf dispatch is derived inline (mirroring the emitter): a boosted
+    /// plan forces every leaf through <see cref="MatchDispatch.QueryMatch"/> (so the matching
+    /// <c>*FromMatch</c> ops read <see cref="CompiledQueryMatch.ResolvedMatches"/>); IN/AllIn are
+    /// always <see cref="MatchDispatch.PostingList"/>; every other clause uses
+    /// <see cref="GetDispatch"/>. Match-dispatch slots are resolved eagerly into
+    /// <paramref name="matches"/>; PostingList / TreeScan slots store value-independent metadata
+    /// in <paramref name="leaves"/> for lazy resolution inside the IL pipeline. Boost on a negated
+    /// leaf is silently ignored — matches Lucene, where boosting a negation has no effect.</summary>
     private static void ResolveLeafIntoAll(ResolutionContext walkerCtx,
-        ClauseExecution clauseExec, QueryExecution root,
-        List<IQueryMatch> matches, List<PostingSource> sources, List<ITermsProvider> providers,
-        ref int clauseIdx)
+        ClauseExecution clauseExec, QueryExecution root, bool planHasBoost,
+        List<IQueryMatch> matches, List<LeafResolveInfo> leaves)
     {
-        var clauseDispatch = root.Plan.ClauseDispatch;
         switch (clauseExec.ClauseType)
         {
             case ClauseType.OrGroup or ClauseType.AndGroup:
                 foreach (var it in clauseExec.SubExecutions)
                 {
-                    ResolveLeafIntoAll(walkerCtx, it, root, matches, sources, providers, ref clauseIdx);
+                    ResolveLeafIntoAll(walkerCtx, it, root, planHasBoost, matches, leaves);
                 }
 
                 break;
             case ClauseType.AllIn or ClauseType.In:
             {
-                MatchDispatch dispatch = clauseDispatch[clauseIdx++];
+                MatchDispatch dispatch = planHasBoost ? MatchDispatch.QueryMatch : MatchDispatch.PostingList;
                 for (int i = 0; i < clauseExec.InTermCount; i++)
                 {
-                    AddInTermSlot(dispatch, clauseExec, i, root, walkerCtx, matches, sources, providers);
+                    AddInTermSlot(dispatch, clauseExec, i, root, walkerCtx, matches, leaves);
                 }
 
-                // Null-term slot is always allocated; dispatch decides which array populates.
-                AddNullTermSlot(dispatch, clauseExec, walkerCtx, matches, sources, providers);
+                // Null-term slot is always allocated; dispatch decides how it resolves.
+                AddNullTermSlot(dispatch, clauseExec, walkerCtx, matches, leaves);
                 break;
             }
             default:
             {
-                MatchDispatch dispatch = clauseDispatch[clauseIdx++];
-                AddDefaultSlot(dispatch, clauseExec, root, walkerCtx, matches, sources, providers);
+                MatchDispatch dispatch = planHasBoost ? MatchDispatch.QueryMatch : GetDispatch(clauseExec.Clause);
+                AddDefaultSlot(dispatch, clauseExec, root, walkerCtx, matches, leaves);
                 break;
             }
         }
     }
 
-    /// <summary>Append one IN/AllIn term slot to all three arrays; only the dispatch-owned
-    /// array gets a resolved value.</summary>
+    /// <summary>Append one IN/AllIn term slot. Match dispatch resolves the term query eagerly;
+    /// PostingList dispatch stores the per-term packed parameter + field metadata for lazy
+    /// resolution. The slot count stays in lockstep with the IL emitter's leaf walk.</summary>
     private static void AddInTermSlot(MatchDispatch dispatch, ClauseExecution clauseExec, int termIndex,
         QueryExecution root, ResolutionContext walkerCtx,
-        List<IQueryMatch> matches, List<PostingSource> sources, List<ITermsProvider> providers)
+        List<IQueryMatch> matches, List<LeafResolveInfo> leaves)
     {
-        switch (dispatch)
+        if (dispatch == MatchDispatch.QueryMatch)
         {
-            case MatchDispatch.QueryMatch:
-                matches.Add(ResolveInTerm(clauseExec, termIndex, root, walkerCtx));
-                sources.Add(default);
-                providers.Add(null);
-                break;
-            case MatchDispatch.PostingList:
-                matches.Add(null);
-                sources.Add(ResolveInTermSource(clauseExec, termIndex, root, walkerCtx));
-                providers.Add(null);
-                break;
-            default: // TreeScan — IN terms have no tree-scan provider form.
-                matches.Add(null);
-                sources.Add(default);
-                providers.Add(null);
-                break;
+            matches.Add(ResolveInTerm(clauseExec, termIndex, root, walkerCtx));
+            leaves.Add(new LeafResolveInfo { Kind = LeafResolveKind.PreResolved });
+            return;
         }
+
+        // PostingList — IN/AllIn have no tree-scan form.
+        matches.Add(null);
+        leaves.Add(new LeafResolveInfo
+        {
+            Kind = LeafResolveKind.TermPosting,
+            ClauseType = clauseExec.ClauseType,
+            Packed = clauseExec.PackedParamValue.WithTermOffset(termIndex),
+            FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
+        });
     }
 
     /// <summary>Append the always-allocated null-term slot. Match dispatch emits a real match
     /// (TermQuery(null) or CreateEmpty) so the OR/AND step is a no-op when there is no null term;
-    /// PostingList dispatch resolves the null posting list (or All for AllIn so the AND range loop
-    /// can always cover the null slot); TreeScan never populates.</summary>
+    /// PostingList dispatch stores a null/all/empty resolve descriptor for lazy resolution.</summary>
     private static void AddNullTermSlot(MatchDispatch dispatch, ClauseExecution clauseExec,
         ResolutionContext walkerCtx,
-        List<IQueryMatch> matches, List<PostingSource> sources, List<ITermsProvider> providers)
+        List<IQueryMatch> matches, List<LeafResolveInfo> leaves)
     {
-        switch (dispatch)
+        if (dispatch == MatchDispatch.QueryMatch)
         {
-            case MatchDispatch.QueryMatch:
-            {
-                var indexSearcher = walkerCtx.IndexSearcher;
-                FieldMetadata nullMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx);
-                matches.Add(clauseExec.HasNullTerm
-                    ? indexSearcher.TermQuery(nullMeta, null)
-                    : TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator));
-                sources.Add(default);
-                providers.Add(null);
-                break;
-            }
-            case MatchDispatch.PostingList:
-                matches.Add(null);
-                sources.Add(ResolveNullTermSource(clauseExec, walkerCtx));
-                providers.Add(null);
-                break;
-            default: // TreeScan
-                matches.Add(null);
-                sources.Add(default);
-                providers.Add(null);
-                break;
+            var indexSearcher = walkerCtx.IndexSearcher;
+            FieldMetadata nullMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx);
+            matches.Add(clauseExec.HasNullTerm
+                ? indexSearcher.TermQuery(nullMeta, null)
+                : TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator));
+            leaves.Add(new LeafResolveInfo { Kind = LeafResolveKind.PreResolved });
+            return;
         }
+
+        // PostingList
+        matches.Add(null);
+        leaves.Add(ResolveNullTermLeaf(clauseExec, walkerCtx));
     }
 
-    /// <summary>Resolve the null-term posting source. When the clause carries no null term,
-    /// AllIn returns All (so AND-ing the null slot is a no-op) and IN returns Empty (so OR-ing
-    /// is a no-op). <see cref="AccumulateInRangeCounts"/> always uses InTermCount as the AllIn
-    /// range, mirroring this.</summary>
-    private static PostingSource ResolveNullTermSource(ClauseExecution clauseExec, ResolutionContext walkerCtx)
+    /// <summary>Build the null-term leaf descriptor. When the clause carries no null term,
+    /// AllIn resolves to All (so AND-ing the null slot is a no-op) and IN resolves to Empty
+    /// (so OR-ing is a no-op). Otherwise NullPosting carries the field metadata so the IL
+    /// pipeline can resolve the null posting list lazily. <see cref="AccumulateInRangeCounts"/>
+    /// always uses InTermCount as the AllIn range, mirroring this.</summary>
+    private static LeafResolveInfo ResolveNullTermLeaf(ClauseExecution clauseExec, ResolutionContext walkerCtx)
     {
         if (!clauseExec.HasNullTerm)
         {
-            return clauseExec.ClauseType == ClauseType.AllIn
-                ? new PostingSource { Kind = PostingSourceKind.All }
-                : default;
+            return new LeafResolveInfo
+            {
+                Kind = clauseExec.ClauseType == ClauseType.AllIn ? LeafResolveKind.AllPosting : LeafResolveKind.EmptyPosting
+            };
         }
 
-        FieldMetadata nullMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx);
-        return walkerCtx.IndexSearcher.TryGetPostingListForNull(in nullMeta, out long nullPlId)
-            ? DecodePostingListId(nullPlId, walkerCtx.IndexSearcher)
-            : default;
+        return new LeafResolveInfo
+        {
+            Kind = LeafResolveKind.NullPosting,
+            ClauseType = clauseExec.ClauseType,
+            FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
+        };
     }
 
-    /// <summary>Append a scalar (non-IN) leaf slot to all three arrays; only the dispatch-owned
-    /// array gets a resolved value. Match dispatch wraps the resolved clause in Boost when a
-    /// boost factor is set.</summary>
+    /// <summary>Append a scalar (non-IN) leaf slot. Match dispatch resolves the clause eagerly
+    /// (wrapping in Boost when a boost factor is set); PostingList / TreeScan dispatch store
+    /// value-independent metadata (field + packed parameter) for lazy resolution inside the IL
+    /// pipeline.</summary>
     private static void AddDefaultSlot(MatchDispatch dispatch, ClauseExecution clauseExec,
         QueryExecution root, ResolutionContext walkerCtx,
-        List<IQueryMatch> matches, List<PostingSource> sources, List<ITermsProvider> providers)
+        List<IQueryMatch> matches, List<LeafResolveInfo> leaves)
     {
         switch (dispatch)
         {
@@ -1860,19 +1827,28 @@ internal static partial class QueryPlanBuilder
                 if (clauseExec.BoostFactor is not 0)
                     match = walkerCtx.IndexSearcher.Boost(match, clauseExec.BoostFactor);
                 matches.Add(match);
-                sources.Add(default);
-                providers.Add(null);
+                leaves.Add(new LeafResolveInfo { Kind = LeafResolveKind.PreResolved });
                 break;
             }
             case MatchDispatch.PostingList:
                 matches.Add(null);
-                sources.Add(ResolveSingleTermSource(clauseExec, root, walkerCtx));
-                providers.Add(null);
+                leaves.Add(new LeafResolveInfo
+                {
+                    Kind = LeafResolveKind.TermPosting,
+                    ClauseType = clauseExec.ClauseType,
+                    Packed = clauseExec.PackedParamValue,
+                    FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
+                });
                 break;
             default: // TreeScan
                 matches.Add(null);
-                sources.Add(default);
-                providers.Add(ResolveSingleTermsProvider(clauseExec, root, walkerCtx));
+                leaves.Add(new LeafResolveInfo
+                {
+                    Kind = LeafResolveKind.TreeScan,
+                    ClauseType = clauseExec.ClauseType,
+                    Packed = clauseExec.PackedParamValue,
+                    FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
+                });
                 break;
         }
     }
@@ -2083,47 +2059,6 @@ internal static partial class QueryPlanBuilder
         return (fieldMeta, exec.PackedParamValue.WithTermOffset(termIndex));
     }
 
-    private static ITermsProvider ResolveSingleTermsProvider(ClauseExecution exec,
-        QueryExecution queryExec, ResolutionContext walkerCtx)
-    {
-        if (IsTreeScanEligibleClause(exec.Clause) == false)
-            return null;
-
-        // Create the match via the existing factory methods, then extract the provider.
-        // The factory methods handle all complexity (analyzer, CompactKey, tree lookup).
-        var match = ResolveClause(exec, queryExec, walkerCtx);
-        if (match is TermsProviderMatch tpm)
-            return tpm.Provider;
-
-        // Factory returned something other than TermsProviderMatch (e.g. TermMatch.Empty
-        // when the field doesn't exist). Return an empty provider so the IL's TreeScan
-        // dispatch gets a valid (no-op) provider instead of null.
-        return EmptyTermsProviderInstance.Instance;
-    }
-
-    /// <summary>Resolve a single Equals / NotEquals clause to a posting-list ID and
-    /// decode it into a <see cref="PostingSource"/>. Returns Empty when the clause
-    /// is non-term-shaped or the term doesn't exist in the index.</summary>
-    private static PostingSource ResolveSingleTermSource(ClauseExecution exec,
-        QueryExecution queryExec, ResolutionContext walkerCtx)
-    {
-        if (IsTermSourceEligibleClause(exec.Clause) == false)
-            return default; // Kind == Empty
-
-        FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, walkerCtx);
-        long postingListId = exec.PackedParamValue.GetTermPostingListId(fieldMeta, walkerCtx.IndexSearcher, queryExec);
-        return DecodePostingListId(postingListId, walkerCtx.IndexSearcher);
-    }
-
-    /// <summary>Resolve a single In/AllIn term to a posting-list source (posting-list path).
-    /// Uses <see cref="ResolveInTermParam"/> for field resolution and index arithmetic.</summary>
-    private static PostingSource ResolveInTermSource(ClauseExecution exec, int termIndex,
-        QueryExecution queryExec, ResolutionContext walkerCtx)
-    {
-        var (fieldMeta, termPacked) = ResolveInTermParam(exec, termIndex, walkerCtx);
-        return DecodePostingListId(termPacked.GetTermPostingListId(fieldMeta, walkerCtx.IndexSearcher, queryExec), walkerCtx.IndexSearcher);
-    }
-
     /// <summary>Resolve field metadata for a term-source clause. Mirrors the
     /// non-Spatial/Vector/Search branch of <see cref="ResolveClause"/>.</summary>
     private static FieldMetadata ResolveFieldMetadata(ClauseInfo clause, ResolutionContext walkerCtx)
@@ -2141,48 +2076,6 @@ internal static partial class QueryPlanBuilder
                                    && builderParams.Index.Configuration.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery;
         return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact,
             hasBoost: builderParams.HasBoost, forceDefaultSearchAnalyzer: forceSearchAnalyzer);
-    }
-
-    /// <summary>Decode a raw posting-list ID (with TermIdMask bits) into a
-    /// <see cref="PostingSource"/>. Returns Empty when the term doesn't exist (-1).
-    /// For PostingList kind, opens a fresh iterator on the underlying set.</summary>
-    private static PostingSource DecodePostingListId(long postingListId, IndexSearcher indexSearcher)
-    {
-        if (postingListId == -1)
-        {
-            return default; // Kind == Empty
-        }
-
-        var termType = (TermIdMask)postingListId & TermIdMask.EnsureIsSingleMask;
-        switch (termType)
-        {
-            case TermIdMask.Single:
-                return new PostingSource
-                {
-                    Kind = PostingSourceKind.Single,
-                    SingleEntryId = (long)EntryIdEncodings.GetContainerId(postingListId),
-                };
-
-            case TermIdMask.SmallPostingList:
-                return new PostingSource
-                {
-                    Kind = PostingSourceKind.SmallPostingList,
-                    SmallPostingListId = (long)EntryIdEncodings.GetContainerId(postingListId),
-                };
-
-            case TermIdMask.PostingList:
-            {
-                var postingList = indexSearcher.GetPostingList(postingListId);
-                return new PostingSource
-                {
-                    Kind = PostingSourceKind.PostingList,
-                    LargeIterator = postingList.Iterate(),
-                };
-            }
-
-            default:
-                return default;
-        }
     }
 
     // ── Scan parameter extraction ────────────────────────────────────────
@@ -2468,57 +2361,6 @@ internal static partial class QueryPlanBuilder
             return MatchDispatch.TreeScan;
 
         return MatchDispatch.QueryMatch;
-    }
-
-    /// <summary>Per-leaf effective dispatch in the same recursive walk order as
-    /// <see cref="ResolveClauseLeavesInto{TResolver, TSlot}"/> and
-    /// <see cref="CountClauseLeaves"/>. Or/AndGroup recurses into sub-executions; IN/AllIn
-    /// collapses to one entry (its dispatch applies to every term + null slot the clause
-    /// emits); every other clause type contributes one entry. Boost forces every entry to
-    /// <see cref="MatchDispatch.QueryMatch"/> — mirroring the boost-override loop that
-    /// already promoted every <see cref="PlanOp.Dispatch"/>. Empty for IsAllEntries plans
-    /// and for plans with no executions.</summary>
-    private static List<MatchDispatch> ComputeClauseDispatch(List<ClauseExecution> executions, bool planHasBoost, PlanTemplate template)
-    {
-        var list = new List<MatchDispatch>(executions.Count);
-        foreach (var clauseExec in executions)
-        {
-            AppendClauseDispatch(clauseExec, planHasBoost, list);
-        }
-
-        // Spatial/vector clauses are separated by GroupCollapse at template time, they always resolve through IQueryMatch.
-        int postFilterCount = (template.SpatialClauses?.Count ?? 0) + (template.VectorClauses?.Count ?? 0);
-        for (int i = 0; i < postFilterCount; i++)
-        {
-            list.Add(MatchDispatch.QueryMatch);
-        }
-
-        return list;
-    }
-
-
-    private static void AppendClauseDispatch(ClauseExecution clauseExec, bool planHasBoost, List<MatchDispatch> list)
-    {
-        RuntimeHelpers.EnsureSufficientExecutionStack();
-        switch (clauseExec.ClauseType)
-        {
-            case ClauseType.OrGroup or ClauseType.AndGroup:
-                foreach (var sub in clauseExec.SubExecutions)
-                {
-                    AppendClauseDispatch(sub, planHasBoost, list);
-                }
-
-                break;
-            // IN/AllIn always resolve as individual posting-list lookups (EmitInOps /
-            // EmitAllInOps hardcode PostingList on the emitted ops). GetDispatch would
-            // return QueryMatch for the parent clause type, causing a mismatch.
-            case ClauseType.In or ClauseType.AllIn:
-                list.Add(planHasBoost ? MatchDispatch.QueryMatch : MatchDispatch.PostingList);
-                break;
-            default:
-                list.Add(planHasBoost ? MatchDispatch.QueryMatch : GetDispatch(clauseExec.Clause));
-                break;
-        }
     }
 
     internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseExecution exec, ref int sliceIndex)
