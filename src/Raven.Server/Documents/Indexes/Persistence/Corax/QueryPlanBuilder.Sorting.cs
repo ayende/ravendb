@@ -46,17 +46,19 @@ internal static partial class QueryPlanBuilder
         if (idx < 0)
             return;
 
+        if (orderByFields is null || orderByFields.Length == 0)
+            return;
+
+        var sortExec = exec.Executions[idx];
+
         // Empty-field-skip guard: in the non-sharded case, GetSortMetadata drops an
         // OrderBy whose field has zero distinct terms in this index. If that happens to
         // the primary ORDER BY, orderByFields[0] is now the second template ORDER BY,
         // and the cached hint (computed against the template's primary) is invalid.
-        var primaryName = plan.Template.SortSeekPrimaryOrderByFieldName;
-        if (primaryName is null || orderByFields is null || orderByFields.Length == 0)
+        // The clause-bound field name is the primary ORDER BY at template time (that's
+        // what makes the clause eligible), so we compare against orderByFields[0] directly.
+        if (orderByFields[0].Field.FieldName.ToString() != sortExec.Clause.FieldName)
             return;
-        if (orderByFields[0].Field.FieldName.ToString() != primaryName)
-            return;
-
-        var sortExec = exec.Executions[idx];
         var packed = sortExec.PackedParamValue;
         if (packed.IsNone)
             return;
@@ -169,10 +171,15 @@ internal static partial class QueryPlanBuilder
             {
                 // Distance ordering: spatial factory + per-method point/round resolution. Even if
                 // all arguments are constant, the spatial factory only exists at execution time
-                // (it's on QueryBuilderParameters.Factories, not PlanParameters). Defer to runtime.
+                // (it's on QueryBuilderParameters.Factories, not PlanParameters). Defer to runtime
+                // via a closure over the OrderByField — Corax-side SortSlotPatch only sees the
+                // delegate, not the Raven.Server AST node.
+                var fieldCopy = field;
+                var fmCopy = fieldMetadata;
                 patches[i].Kind = SortSlotPatchKind.DistanceRuntime;
                 patches[i].FieldMeta = fieldMetadata;
-                patches[i].Source = field;
+                patches[i].DistanceBuilder = (ctx, isEmpty) =>
+                    BuildDistanceOrderMetadata((QueryBuilderParameters)ctx, fieldCopy, fmCopy, isEmpty);
                 anyPatch = true;
                 // Distance slots are still subject to the empty-field-skip rule — record the field
                 // metadata so the runtime materializer can call GetDistinctTermCountInField without
@@ -311,7 +318,7 @@ internal static partial class QueryPlanBuilder
                         hasEmpty = true;
                     }
 
-                    result[outIdx++] = BuildDistanceOrderMetadata(builderParameters, patch.Source, patch.FieldMeta, fieldIsEmpty);
+                    result[outIdx++] = patch.DistanceBuilder(builderParameters, fieldIsEmpty);
                     break;
                 }
             }
