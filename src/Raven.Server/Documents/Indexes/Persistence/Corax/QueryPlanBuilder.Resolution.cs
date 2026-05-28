@@ -201,7 +201,12 @@ internal static partial class QueryPlanBuilder
     {
         var queryText = planParams.Metadata.Query.QueryText;
         var planCache = planParams.IndexSearcher.PlanCache;
-        return planCache.TryGetTemplate(queryText) ?? ParseTemplate(planParams);
+        if (planCache.TryGetTemplate(queryText) is { } template)
+            return template;
+
+        template = ParseTemplate(planParams);
+        template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams);
+        return template;
     }
 
     public static IQueryMatch BuildAndCompile(

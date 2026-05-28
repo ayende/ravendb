@@ -82,7 +82,7 @@ internal static partial class QueryPlanBuilder
     /// not once per query. Slots that depend on per-query state (argument-less random seed, the
     /// data-dependent empty-term check, parameter-bound Distance args) are emitted as
     /// <see cref="SortSlotPatch"/> directives for the runtime materializer.</summary>
-    internal static SortMetadataTemplate BuildSortMetadataTemplate(QueryPlanBuilder.PlanParameters p)
+    internal static SortMetadataTemplate BuildSortMetadataTemplate(PlanParameters p)
     {
         var orderByFields = p.Metadata.OrderBy;
 
@@ -91,8 +91,7 @@ internal static partial class QueryPlanBuilder
             // Auto-promote to ORDER BY score() when boosting is involved and the index/config opt in.
             // Index configuration is template-stable; HasBoost is template-stable per PlanParameters.
             if (p.HasBoost && p.Index is { } indexForScore &&
-                (indexForScore.Configuration.OrderByScoreAutomaticallyWhenBoostingIsInvolved
-                 || indexForScore.Configuration.CoraxVectorSearchOrderByScoreAutomatically))
+                (indexForScore.Configuration.OrderByScoreAutomaticallyWhenBoostingIsInvolved || indexForScore.Configuration.CoraxVectorSearchOrderByScoreAutomatically))
             {
                 return new SortMetadataTemplate
                 {
