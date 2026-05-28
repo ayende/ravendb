@@ -172,17 +172,15 @@ internal static partial class QueryPlanBuilder
                 // all arguments are constant, the spatial factory only exists at execution time
                 // (it's on QueryBuilderParameters.Factories, not PlanParameters). Defer to runtime
                 // via a closure over the OrderByField — Corax-side SortSlotPatch only sees the
-                // delegate, not the Raven.Server AST node.
+                // delegate, not the Raven.Server AST node. The field metadata is resolved per query
+                // against the live allocator (FieldMetaResolver), not baked in, because the template
+                // is cached across executions but the FieldName slice is allocator-lifetime-bound.
                 var fieldCopy = field;
-                var fmCopy = fieldMetadata;
                 patches[i].Kind = SortSlotPatchKind.DistanceRuntime;
-                patches[i].FieldMeta = fieldMetadata;
-                patches[i].DistanceBuilder = (ctx, isEmpty) =>
-                    BuildDistanceOrderMetadata((QueryBuilderParameters)ctx, fieldCopy, fmCopy, isEmpty);
+                patches[i].FieldMetaResolver = ResolveOrderByFieldMetaLive(fieldCopy);
+                patches[i].DistanceBuilder = (ctx, fieldMeta, isEmpty) =>
+                    BuildDistanceOrderMetadata((QueryBuilderParameters)ctx, fieldCopy, fieldMeta, isEmpty);
                 anyPatch = true;
-                // Distance slots are still subject to the empty-field-skip rule — record the field
-                // metadata so the runtime materializer can call GetDistinctTermCountInField without
-                // re-resolving. (We keep the empty check inside DistanceRuntime patching.)
                 continue;
             }
 
@@ -208,11 +206,15 @@ internal static partial class QueryPlanBuilder
                 _ => MatchCompareFieldType.Sequence,
             };
 
-            // FieldHasNoTerms baked as false; runtime patch may rebuild with true.
+            // prebuilt[i] carries only the template-stable ordering scalars (Ascending, compare
+            // type, nulls mode, mayHaveMissingEntries). Its embedded FieldMetadata is a build-time
+            // placeholder: the runtime materializer always rebuilds field slots with metadata
+            // re-resolved against the live allocator, so the placeholder's FieldName slice is never
+            // dereferenced (FieldHasNoTerms baked as false; runtime patch may rebuild with true).
             prebuilt[i] = new OrderMetadata(fieldMetadata, field.Ascending, compareType,
                 fieldHasNoTerms: false, nullsSortMode, mayHaveMissingEntries);
             patches[i].Kind = SortSlotPatchKind.FieldEmptyCheck;
-            patches[i].FieldMeta = fieldMetadata;
+            patches[i].FieldMetaResolver = ResolveOrderByFieldMetaLive(field);
             anyPatch = true;
             anyEmptyCheck = true;
         }
@@ -222,6 +224,21 @@ internal static partial class QueryPlanBuilder
             Prebuilt = prebuilt,
             Patches = anyPatch ? patches : null,
             AnyEmptyCheckPending = anyEmptyCheck,
+        };
+    }
+
+    /// <summary>Builds a per-query resolver that re-derives the ORDER BY field's metadata —
+    /// including its allocator-bound <c>FieldName</c> slice — against the live query context.
+    /// Stored on the cached template in place of a pre-resolved <see cref="FieldMetadata"/>,
+    /// whose slice would dangle once the per-query allocator that produced it is reset (the
+    /// template is shared across every execution of the same query text).</summary>
+    private static SortFieldMetadataResolver ResolveOrderByFieldMetaLive(OrderByField field)
+    {
+        return ctx =>
+        {
+            var bp = (QueryBuilderParameters)ctx;
+            return QueryBuilderHelper.GetFieldIdForOrderBy(bp.Allocator, field.Name, bp.Index,
+                bp.HasDynamics, bp.DynamicFields, bp.IndexFieldsMapping, false);
         };
     }
 
@@ -289,10 +306,17 @@ internal static partial class QueryPlanBuilder
 
                 case SortSlotPatchKind.FieldEmptyCheck:
                 {
-                    bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(patch.FieldMeta) == 0;
+                    // Resolve field metadata against the live per-query allocator (the template is
+                    // cached across executions, so its FieldName slice cannot be). Rebuild the slot
+                    // from the template-stable ordering scalars + the freshly resolved metadata.
+                    var fieldMeta = patch.FieldMetaResolver(builderParameters);
+                    bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
+                    var p = prebuilt[i];
+
                     if (fieldIsEmpty == false)
                     {
-                        result[outIdx++] = prebuilt[i];
+                        result[outIdx++] = new OrderMetadata(fieldMeta, p.Ascending, p.FieldType,
+                            fieldHasNoTerms: false, p.NullsSortMode, p.MayHaveMissingEntries);
                         break;
                     }
 
@@ -301,15 +325,15 @@ internal static partial class QueryPlanBuilder
 
                     hasEmpty = true;
                     // Rebuild slot with FieldHasNoTerms = true; preserve all other prebuilt fields.
-                    var p = prebuilt[i];
-                    result[outIdx++] = new OrderMetadata(p.Field, p.Ascending, p.FieldType,
+                    result[outIdx++] = new OrderMetadata(fieldMeta, p.Ascending, p.FieldType,
                         fieldHasNoTerms: true, p.NullsSortMode, p.MayHaveMissingEntries);
                     break;
                 }
 
                 case SortSlotPatchKind.DistanceRuntime:
                 {
-                    bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(patch.FieldMeta) == 0;
+                    var fieldMeta = patch.FieldMetaResolver(builderParameters);
+                    bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
                     if (fieldIsEmpty)
                     {
                         if (isSharded == false)
@@ -317,7 +341,7 @@ internal static partial class QueryPlanBuilder
                         hasEmpty = true;
                     }
 
-                    result[outIdx++] = patch.DistanceBuilder(builderParameters, fieldIsEmpty);
+                    result[outIdx++] = patch.DistanceBuilder(builderParameters, fieldMeta, fieldIsEmpty);
                     break;
                 }
             }
