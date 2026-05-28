@@ -13,11 +13,12 @@ namespace Corax.Querying.Matches;
 /// but the construct itself is just an AndWith-chain — nothing here is
 /// spatial-specific.
 ///
-/// Records per-call wall time for the inner Fill and for each post-filter
-/// AndWith step, plus per-step survivor counts. Surfaced via <see cref="Inspect"/>
-/// so spatial query introspection JSON shows where time and rejection happen.
-/// Stored on the heap (class, not struct) because the counters must survive
-/// across the boxing performed when this match is assigned to <c>IQueryMatch</c>.
+/// When timing capture is enabled (introspection JSON requested by the caller),
+/// records per-call wall time for the inner Fill and for each post-filter
+/// AndWith step, plus per-step survivor counts. When disabled, the per-call
+/// rdtsc + counter writes are skipped entirely. Stored on the heap (class,
+/// not struct) because the counters must survive across the boxing performed
+/// when this match is assigned to <c>IQueryMatch</c>.
 /// </summary>
 public sealed class PostFilterMatch : IQueryMatch
 {
@@ -25,24 +26,34 @@ public sealed class PostFilterMatch : IQueryMatch
     private readonly IQueryMatch[] _postFilters;
 
     // Wall-clock ticks (Stopwatch.GetTimestamp()) spent inside the inner Fill / AndWith.
-    private long _innerTicks;
+    // Null when timing capture is disabled.
+    private readonly long[] _innerTicks;
     // Cumulative number of entries the inner returned across all calls.
-    private long _innerEmitted;
+    // Null when timing capture is disabled.
+    private readonly long[] _innerEmitted;
 
     // Per-post-filter cumulative ticks spent inside that filter's AndWith.
+    // Null when timing capture is disabled.
     private readonly long[] _filterTicks;
     // Per-post-filter cumulative survivor count (after that filter ran).
+    // Null when timing capture is disabled.
     private readonly long[] _filterSurvivors;
     // Per-post-filter cumulative rejection count: input - survivors aggregated across calls.
+    // Null when timing capture is disabled.
     private readonly long[] _filterRejected;
 
-    public PostFilterMatch(IQueryMatch inner, IQueryMatch[] postFilters)
+    public PostFilterMatch(IQueryMatch inner, IQueryMatch[] postFilters, bool wantTimings)
     {
         _inner = inner;
         _postFilters = postFilters;
-        _filterTicks = new long[postFilters.Length];
-        _filterSurvivors = new long[postFilters.Length];
-        _filterRejected = new long[postFilters.Length];
+        if (wantTimings)
+        {
+            _innerTicks = new long[1];
+            _innerEmitted = new long[1];
+            _filterTicks = new long[postFilters.Length];
+            _filterSurvivors = new long[postFilters.Length];
+            _filterRejected = new long[postFilters.Length];
+        }
     }
 
     public long Count => _inner.Count;
@@ -53,10 +64,16 @@ public sealed class PostFilterMatch : IQueryMatch
 
     public int Fill(Span<long> matches)
     {
+        if (_innerTicks is null)
+        {
+            int r = _inner.Fill(matches);
+            return r == 0 ? 0 : ApplyPostFilters(matches, r);
+        }
+
         long t0 = Stopwatch.GetTimestamp();
         int read = _inner.Fill(matches);
-        _innerTicks += Stopwatch.GetTimestamp() - t0;
-        _innerEmitted += read;
+        _innerTicks[0] += Stopwatch.GetTimestamp() - t0;
+        _innerEmitted[0] += read;
 
         if (read == 0)
             return 0;
@@ -66,11 +83,16 @@ public sealed class PostFilterMatch : IQueryMatch
 
     public int AndWith(Span<long> buffer, int matches)
     {
-        // First apply inner's AndWith, then each post-filter in order.
+        if (_innerTicks is null)
+        {
+            int c = _inner.AndWith(buffer, matches);
+            return c == 0 ? 0 : ApplyPostFilters(buffer, c);
+        }
+
         long t0 = Stopwatch.GetTimestamp();
         int count = _inner.AndWith(buffer, matches);
-        _innerTicks += Stopwatch.GetTimestamp() - t0;
-        _innerEmitted += count;
+        _innerTicks[0] += Stopwatch.GetTimestamp() - t0;
+        _innerEmitted[0] += count;
 
         if (count == 0)
             return 0;
@@ -80,6 +102,17 @@ public sealed class PostFilterMatch : IQueryMatch
 
     private int ApplyPostFilters(Span<long> buffer, int count)
     {
+        if (_filterTicks is null)
+        {
+            for (int i = 0; i < _postFilters.Length; i++)
+            {
+                count = _postFilters[i].AndWith(buffer, count);
+                if (count == 0)
+                    return 0;
+            }
+            return count;
+        }
+
         for (int i = 0; i < _postFilters.Length; i++)
         {
             int input = count;
@@ -104,20 +137,23 @@ public sealed class PostFilterMatch : IQueryMatch
 
     public QueryInspectionNode Inspect()
     {
-        double tickFreq = Stopwatch.Frequency / 1000.0;
         var parameters = new Dictionary<string, string>();
 
-        if (_innerTicks > 0)
-            parameters["Inner_ms"] = (_innerTicks / tickFreq).ToString("F3");
-        parameters["InnerEmitted"] = _innerEmitted.ToString();
-
-        for (int i = 0; i < _postFilters.Length; i++)
+        if (_innerTicks is not null)
         {
-            string prefix = $"Filter[{i}]_";
-            if (_filterTicks[i] > 0)
-                parameters[prefix + "ms"] = (_filterTicks[i] / tickFreq).ToString("F3");
-            parameters[prefix + "kept"] = _filterSurvivors[i].ToString();
-            parameters[prefix + "rejected"] = _filterRejected[i].ToString();
+            double tickFreq = Stopwatch.Frequency / 1000.0;
+            if (_innerTicks[0] > 0)
+                parameters["Inner_ms"] = (_innerTicks[0] / tickFreq).ToString("F3");
+            parameters["InnerEmitted"] = _innerEmitted[0].ToString();
+
+            for (int i = 0; i < _postFilters.Length; i++)
+            {
+                string prefix = $"Filter[{i}]_";
+                if (_filterTicks[i] > 0)
+                    parameters[prefix + "ms"] = (_filterTicks[i] / tickFreq).ToString("F3");
+                parameters[prefix + "kept"] = _filterSurvivors[i].ToString();
+                parameters[prefix + "rejected"] = _filterRejected[i].ToString();
+            }
         }
 
         var children = new List<QueryInspectionNode>(_postFilters.Length + 1)
