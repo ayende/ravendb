@@ -163,7 +163,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualLongs);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelem_I8);
-        CsStack.Push($"residuals.Longs[{idx}]");
+        CsStack.Push($"exec.LongValues[{idx}]");
     }
 
     public void LoadDoubleParam(int idx)
@@ -172,7 +172,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualDoubles);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelem_R8);
-        CsStack.Push($"residuals.Doubles[{idx}]");
+        CsStack.Push($"exec.DoubleValues[{idx}]");
     }
 
     public void LoadSliceSpan(int idx)
@@ -182,7 +182,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelema, typeof(Slice));
         Il.Emit(OpCodes.Call, IlEmitterShared.SliceAsReadOnlySpan);
-        CsStack.Push($"residuals.Slices[{idx}].AsReadOnlySpan()");
+        CsStack.Push($"exec.ResidualSlices[{idx}].AsReadOnlySpan()");
     }
 
     public void LoadFieldRootPage(int rootIdx)
@@ -191,7 +191,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualFieldRootPages);
         IlEmitterShared.EmitLdcI4(Il, rootIdx);
         Il.Emit(OpCodes.Ldelem_I8);
-        CsStack.Push($"residuals.FieldRootPages[{rootIdx}]");
+        CsStack.Push($"exec.FieldRootPages[{rootIdx}]");
     }
 
     public void Ceq()

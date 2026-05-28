@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using Corax.Mappings;
 using Corax.Querying;
@@ -65,6 +66,24 @@ public class QueryExecution
     /// the IL indexes it by the runtime cursor. One long per match slot (same layout as the
     /// dispatch arrays — IN/AllIn occupy <c>InTermCount + 1</c> consecutive slots).</summary>
     public long[] Cardinalities;
+
+    /// <summary>Flat array of analyzer-encoded string slices referenced by the entry-scan/direct-scan
+    /// residual predicates. Sized to match <see cref="ScanPredicateInfo.ParamIndex"/>; the emitted
+    /// residual IL reads <c>exec.ResidualSlices[paramIdx]</c> via <c>Ldfld</c>+<c>Ldelema</c>+
+    /// <c>AsReadOnlySpan</c>. Populated lazily by <c>PopulateScanParams</c> on first entry-scan
+    /// trigger because most queries never reach this path.</summary>
+    public Slice[] ResidualSlices;
+
+    /// <summary>Per-predicate field-root page identifiers consumed by the residual IL via
+    /// <c>EntryTermsReader.FindNext(fieldRootPage)</c>. Index parallels <see cref="ResidualSlices"/>'s
+    /// predicate ordering (one entry per leaf scan predicate, including children of group predicates).
+    /// Populated lazily alongside <see cref="ResidualSlices"/>.</summary>
+    public long[] FieldRootPages;
+
+    /// <summary>Lazy populate hook for <see cref="ResidualSlices"/>/<see cref="FieldRootPages"/>.
+    /// Invoked once on first entry-scan trigger; the bitmap pipeline never pays the analyzer/
+    /// field-root cost for queries that complete entirely from the bitmap.</summary>
+    public Action PopulateScanParams;
 
     public bool HasSpatialOrVector => SpatialFilters is { Length: > 0 } || VectorSelects is { Length: > 0 };
 

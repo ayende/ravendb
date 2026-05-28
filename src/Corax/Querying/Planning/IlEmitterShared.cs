@@ -104,13 +104,13 @@ public static class IlEmitterShared
             [typeof(long), typeof(long)])!;
 
     public static readonly FieldInfo ResidualLongs =
-        typeof(ResidualParams).GetField(nameof(ResidualParams.Longs))!;
+        typeof(QueryExecution).GetField(nameof(QueryExecution.LongValues))!;
     public static readonly FieldInfo ResidualDoubles =
-        typeof(ResidualParams).GetField(nameof(ResidualParams.Doubles))!;
+        typeof(QueryExecution).GetField(nameof(QueryExecution.DoubleValues))!;
     public static readonly FieldInfo ResidualSlices =
-        typeof(ResidualParams).GetField(nameof(ResidualParams.Slices))!;
+        typeof(QueryExecution).GetField(nameof(QueryExecution.ResidualSlices))!;
     public static readonly FieldInfo ResidualFieldRootPages =
-        typeof(ResidualParams).GetField(nameof(ResidualParams.FieldRootPages))!;
+        typeof(QueryExecution).GetField(nameof(QueryExecution.FieldRootPages))!;
 
     public static readonly MethodInfo ReaderReset =
         typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset));

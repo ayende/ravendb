@@ -159,14 +159,14 @@ public sealed class DirectScanSimpleMatch(IndexSearcher searcher, IQueryMatch dr
 public sealed class DirectScanFilteredMatch(
     IndexSearcher searcher,
     IQueryMatch drivingMatch,
-    ResidualParams residuals,
+    QueryExecution exec,
     int take,
     ResidualScanIlEmitter.ResidualScanPredicate precompiledDelegate)
     : DirectScanMatchBase(searcher, drivingMatch, take)
 {
-    /// <summary>Residual scan state, embedded as a field so the emitted IL can <c>Ldfld</c>
-    /// through a managed pointer rather than dispatching through an interface.</summary>
-    private ResidualParams _residuals = residuals;
+    /// <summary>Per-execution state — the emitted IL loads analyzer-encoded slices,
+    /// field-root pages, and direct long/double values from this object via baked field indices.</summary>
+    private readonly QueryExecution _exec = exec;
 
     [SkipLocalsInit]
     public override unsafe int Fill(Span<long> matches)
@@ -244,7 +244,7 @@ public sealed class DirectScanFilteredMatch(
                     packed++;
                 }
 
-                int matched = precompiledDelegate(ref _residuals,
+                int matched = precompiledDelegate(_exec,
                     readersArr.AsSpan(0, packed),
                     packedIds[..packed],
                     packedOrigIdx[..packed]);

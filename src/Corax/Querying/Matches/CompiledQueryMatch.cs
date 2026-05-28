@@ -15,6 +15,7 @@ public sealed record SortHint(string FieldName, object Value);
 
 public class CompiledQueryMatch(
     CompiledPlan compiledPlan,
+    QueryExecution exec,
     int bitmapCount,
     int opCount,
     IQueryMatch[] resolvedMatches,
@@ -30,6 +31,10 @@ public class CompiledQueryMatch(
         wantTimings ? compiledPlan.CompiledTimedDelegate : compiledPlan.CompiledDelegate;
 
     public readonly ResidualScanIlEmitter.ResidualScanPredicate CompiledEntryPredicate = compiledPlan.CompiledEntryPredicate;
+
+    /// <summary>Per-execution state — entry-scan IL reads this for analyzer-encoded slices,
+    /// field-root pages, and direct long/double values via baked field indices.</summary>
+    public readonly QueryExecution Exec = exec;
 
     public SortHint SortHint;
     public readonly IQueryMatch[] ResolvedMatches = resolvedMatches;
@@ -242,16 +247,4 @@ public class CompiledQueryMatch(
         Llt = null; // release transaction reference so it is not kept alive longer than needed
     }
 
-    /// <summary>Residual scan state passed by <c>ref</c> to the emitted
-    /// <see cref="ResidualScanIlEmitter.ResidualScanPredicate"/> delegate. Embedded as a field
-    /// so the emitted IL can <c>Ldfld</c> directly through a managed pointer — no virtcall.</summary>
-    public ResidualParams Residuals;
-
-    /// <summary>Deferred populate hook for <see cref="Residuals"/>'s analyzer-encoded slice array
-    /// and field-root-page array. Most queries never reach entry-scan; this avoids analyzer
-    /// invocations and per-predicate field-root lookups on the common path. Invoked once by
-    /// <see cref="CompiledQueryHelper.RunEntryScan"/> the first time the entry-scan path fires,
-    /// then cleared so the cost is paid at most once per <c>Build()</c>. Null when the plan has
-    /// no scan-eligible predicates.</summary>
-    public Action PopulateScanParams;
 }

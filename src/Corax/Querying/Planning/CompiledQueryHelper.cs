@@ -82,10 +82,11 @@ public static class CompiledQueryHelper
         // Lazy scan-param setup: the bitmap pipeline skips analyzer/field-root work at
         // construction time and defers it until entry-scan actually triggers. Most queries
         // never reach this path, so the cost stays off the common path.
-        if (ctx.PopulateScanParams is { } populate)
+        var exec = ctx.Exec;
+        if (exec.PopulateScanParams is { } populate)
         {
             populate();
-            ctx.PopulateScanParams = null;
+            exec.PopulateScanParams = null;
         }
 
         try
@@ -118,7 +119,7 @@ public static class CompiledQueryHelper
                 if (validCount == 0)
                     continue;
 
-                int passed = predicate(ref ctx.Residuals, readers.AsSpan(0, validCount), buffer[..validCount], Span<int>.Empty);
+                int passed = predicate(exec, readers.AsSpan(0, validCount), buffer[..validCount], Span<int>.Empty);
                 ctx.EntryScanEntriesPassed += passed;
                 for (int i = 0; i < passed; i++)
                     targetBitmap.Add(buffer[i]);

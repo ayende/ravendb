@@ -29,7 +29,7 @@ namespace Corax.Querying.Planning;
 public static class ResidualScanIlEmitter
 {
     public delegate int ResidualScanPredicate(
-        ref ResidualParams residuals,
+        QueryExecution exec,
         Span<EntryTermsReader> readers,
         Span<long> entryIds,
         Span<int> originalIndexes);
@@ -51,8 +51,8 @@ public static class ResidualScanIlEmitter
         var dm = new DynamicMethod(
             "ResidualScan",
             typeof(int),
-            [typeof(ResidualParams).MakeByRefType(), typeof(Span<EntryTermsReader>), typeof(Span<long>), typeof(Span<int>)],
-            typeof(ResidualParams).Module,
+            [typeof(QueryExecution), typeof(Span<EntryTermsReader>), typeof(Span<long>), typeof(Span<int>)],
+            typeof(QueryExecution).Module,
             skipVisibility: true)
         {
             InitLocals = false
@@ -62,14 +62,15 @@ public static class ResidualScanIlEmitter
         var cs = new StringBuilder();
         var d = new DualEmit(il, cs);
 
-        // Register arguments for C# name tracking.
-        var residualsIdx = d.RegisterArg("residuals");
+        // Register arguments for C# name tracking. exec (arg 0) is used implicitly by
+        // LoadLongParam/LoadDoubleParam/LoadSliceSpan/LoadFieldRootPage, which emit Ldarg_0.
+        _ = d.RegisterArg("exec");
         var readersIdx = d.RegisterArg("readers");
         var entryIdsIdx =  d.RegisterArg("entryIds");
         var originalIndexesIdx = d.RegisterArg("originalIndexes");
 
         // C# function signature (no IL equivalent).
-        d.CsLine("static int ResidualScan(ref ResidualParams residuals, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
+        d.CsLine("static int ResidualScan(QueryExecution exec, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
         d.CsLine("{");
 
         // Locals
