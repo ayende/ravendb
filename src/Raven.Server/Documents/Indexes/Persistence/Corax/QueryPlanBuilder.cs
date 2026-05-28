@@ -1,117 +1,70 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using Corax.Querying.Planning;
 using Corax.Mappings;
+using Corax.Querying.Planning;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Json;
 using Sparrow.Server;
+using Voron;
 using Constants = Corax.Constants;
 using ClientConstants = Raven.Client.Constants;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
-/// <summary>
-/// Builds a QueryExecution from a parsed RQL query.
-///
-/// The planner has three independent concerns, each in its own partial file:
-///
-///   QueryPlanBuilder.cs (this file) — structural
-///     Data model (ClauseType, ClauseInfo, PlanParameters), RQL AST parsing,
-///     cardinality estimation, plan emission (EmitPlan), dispatch classification.
-///     Output: a QueryExecution with PlanOp[] — per-execution, consumed by the IL delegate.
-///
-///   QueryPlanBuilder.Resolution.cs — per-execution
-///     BuildAndCompile entry point, match/term-source resolution, scan parameter
-///     extraction, highlighting, sorting, spatial/vector materialization.
-///     Runs once per query execution; binds concrete posting lists to the cached plan.
-///
-///   QueryPlanBuilder.Inspection.cs — diagnostic
-///     BuildInspectionGraph, BuildInspectionTemplate. Studio visualization tree
-///     built from the cached InspectionTemplate plus runtime telemetry.
-///
-/// Expression types handled:
-/// - BinaryExpression (AND, OR, =, !=, >, >=, &lt;, &lt;=)
-/// - BetweenExpression
-/// - InExpression
-/// - NegatedExpression
-/// - TrueExpression (constant folding)
-/// - MethodExpression (search, startsWith, endsWith, exists, boost, exact, regex)
-///
-/// MoreLikeThis is handled by a separate execution path (Index.cs → reader.MoreLikeThis())
-/// and never reaches this planner.
-/// </summary>
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>
-    /// Parameters needed by the planner for field metadata resolution,
-    /// analyzer setup, and cardinality estimation.
-    /// </summary>
-    internal class PlanParameters
+    private static ParamValueType ToParamValueType(ValueTokenType t)
     {
-        public IndexSearcher IndexSearcher;
-        public QueryMetadata Metadata;
-        public BlittableJsonReaderObject QueryParameters;
-        public Index Index;
-        public IndexFieldsMapping IndexFieldsMapping;
-        public FieldsToFetch FieldsToFetch;
-        public ByteStringContext Allocator;
-        public bool HasDynamics;
-        public Lazy<List<string>> DynamicFields;
-        public bool HasBoost;
+        return t switch
+        {
+            ValueTokenType.Long => ParamValueType.Long,
+            ValueTokenType.Double => ParamValueType.Double,
+            ValueTokenType.Parameter => ParamValueType.Parameter,
+            _ => ParamValueType.String
+        };
     }
 
-    private static ParamValueType ToParamValueType(ValueTokenType t) => t switch
+    private static ValueTokenType ToValueTokenType(ParamValueType t)
     {
-        ValueTokenType.Long => ParamValueType.Long,
-        ValueTokenType.Double => ParamValueType.Double,
-        ValueTokenType.Parameter => ParamValueType.Parameter,
-        _ => ParamValueType.String
-    };
+        return t switch
+        {
+            ParamValueType.Long => ValueTokenType.Long,
+            ParamValueType.Double => ValueTokenType.Double,
+            ParamValueType.Parameter => ValueTokenType.Parameter,
+            _ => ValueTokenType.String
+        };
+    }
 
-    private static ValueTokenType ToValueTokenType(ParamValueType t) => t switch
+    private static SpatialOperationType ToSpatialOp(MethodType t)
     {
-        ParamValueType.Long => ValueTokenType.Long,
-        ParamValueType.Double => ValueTokenType.Double,
-        ParamValueType.Parameter => ValueTokenType.Parameter,
-        _ => ValueTokenType.String
-    };
+        return t switch
+        {
+            MethodType.Spatial_Within => SpatialOperationType.Within,
+            MethodType.Spatial_Contains => SpatialOperationType.Contains,
+            MethodType.Spatial_Disjoint => SpatialOperationType.Disjoint,
+            MethodType.Spatial_Intersects => SpatialOperationType.Intersects,
+            _ => SpatialOperationType.Within
+        };
+    }
 
-    private static SpatialOperationType ToSpatialOp(MethodType t) => t switch
+    private static PlanTemplate ParseTemplate(PlanParameters p)
     {
-        MethodType.Spatial_Within => SpatialOperationType.Within,
-        MethodType.Spatial_Contains => SpatialOperationType.Contains,
-        MethodType.Spatial_Disjoint => SpatialOperationType.Disjoint,
-        MethodType.Spatial_Intersects => SpatialOperationType.Intersects,
-        _ => SpatialOperationType.Within
-    };
-
-    private enum BooleanOp { And, Or, True, False, Leaf }
-
-    /// <summary>Parse the RQL AST into a structural plan template.
-    /// Captures field names, clause types, parameter bindings, and literal values.
-    /// No cardinality estimation, no sorting, no plan emission.
-    /// Those happen in BuildAndCompile after PopulateClauseValues.</summary>
-    public static PlanTemplate ParseTemplate(PlanParameters p)
-    {
-        var query = p.Metadata.Query;
+        Query query = p.Metadata.Query;
         if (query.Where == null)
-            return new PlanTemplate { Clauses = [], SortMetadataTemplate = BuildSortMetadataTemplate(p) };
+            return new PlanTemplate { Clauses = [],  };
 
-        // Phase 1: materialize the AST into ClauseInfo[]. Each Parse method validates
-        // its own preconditions (field name, argument count, type compatibility) and
-        // reports errors to walkerCtx.Errors — they are thrown as a single
-        // InvalidQueryException after materialization completes.
-        var walkerCtx = new ResolutionContext(p) { Clauses = [] };
-        var rootOp = ParseExpression(query.Where, walkerCtx);
+        ResolutionContext walkerCtx = new(p) { Clauses = [] };
+        BooleanOp rootOp = ParseExpression(query.Where, walkerCtx);
         PlanWalker.ThrowIfErrors(walkerCtx);
 
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
-            return new PlanTemplate { Clauses = [], SortMetadataTemplate = BuildSortMetadataTemplate(p) };
+            return new PlanTemplate { Clauses = [] };
 
         Debug.Assert(rootOp != BooleanOp.False,
             "No RQL expression currently reduces to BooleanOp.False at template time. " +
@@ -120,13 +73,8 @@ internal static partial class QueryPlanBuilder
 
         walkerCtx.IsOr = rootOp == BooleanOp.Or;
 
-        // Phase 3: walker — rewrite/register steps on the materialized ClauseInfo list
-        // before freezing. Currently, runs GroupCollapse (spatial/vector partition) then
-        // WhenRegister; future steps slot in here.
         PlanWalker.RewriteClauses(walkerCtx);
 
-        // Spatial-only or vector-only AND query with no remaining filter clauses
-        // returns an IsAllEntries template that carries the aux arrays only.
         if (walkerCtx.Clauses.Count == 0 && (walkerCtx.SpatialClauses ?? walkerCtx.VectorClauses) is not null)
         {
             FreezeAll(walkerCtx.SpatialClauses);
@@ -136,7 +84,6 @@ internal static partial class QueryPlanBuilder
                 Clauses = [],
                 SpatialClauses = walkerCtx.SpatialClauses,
                 VectorClauses = walkerCtx.VectorClauses,
-                SortMetadataTemplate = BuildSortMetadataTemplate(p),
             };
         }
 
@@ -144,22 +91,14 @@ internal static partial class QueryPlanBuilder
         FreezeAll(walkerCtx.SpatialClauses);
         FreezeAll(walkerCtx.VectorClauses);
 
-        // Primary ORDER BY field name from the query metadata (null if no ORDER BY or
-        // ORDER BY score/random/etc. which have no field name).
         string orderByPrimaryField = p.Metadata.OrderBy is { Length: > 0 }
             ? p.Metadata.OrderBy[0].Name?.Value
             : null;
         bool orderByPrimaryAscending = p.Metadata.OrderBy is { Length: > 0 } && p.Metadata.OrderBy[0].Ascending;
 
-        var optFlags = ComputeTemplateOptimizations(walkerCtx, p, orderByPrimaryField, orderByPrimaryAscending,
+        PlanOptimizationFlags optFlags = ComputeTemplateOptimizations(walkerCtx, p, orderByPrimaryField, orderByPrimaryAscending,
             out int sortDrivingIdx, out int sortSeekHintIdx, out bool sortSeekUseParam2);
-
-        // Collect unique query-parameter names in first-appearance order.
-        // Literals are excluded — their types are fixed at template time and cannot
-        // vary across executions. ParameterSlots drives the cheap TypeSignature
-        // computation at execution time (classify blittable values directly, skip
-        // walking the full clause/execution list).
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        HashSet<string> seen = [];
         CollectParameterNames(walkerCtx.Clauses, seen);
         CollectParameterNames(walkerCtx.SpatialClauses, seen);
         CollectParameterNames(walkerCtx.VectorClauses, seen);
@@ -182,23 +121,21 @@ internal static partial class QueryPlanBuilder
             ParameterSlots = seen.ToArray(),
             SortSeekHintTemplateIdx = sortSeekHintIdx,
             SortSeekUseParam2 = sortSeekUseParam2,
-            // BuildSortMetadataTemplate may return null when PlanParameters lacks Index/IndexFieldsMapping
-            // (direct-planner tests) — the runtime path then falls back to ComputeSortMetadataLegacy.
-            SortMetadataTemplate = BuildSortMetadataTemplate(p),
         };
     }
 
-    /// <summary>Recursively walk clauses and their sub-clauses, collecting unique parameter
-    /// names from <see cref="BindingSource.QueryParameter"/> bindings in first-appearance order.</summary>
     private static void CollectParameterNames(List<ClauseInfo> clauses, HashSet<string> seen)
     {
-        foreach (var clause in clauses ?? [])
+        foreach (ClauseInfo clause in clauses ?? [])
         {
-            foreach (var binding in clause.Bindings ?? [])
+            foreach (ParameterBinding binding in clause.Bindings ?? [])
             {
                 if (binding is { Source: BindingSource.QueryParameter, ParameterName: not null })
+                {
                     seen.Add(binding.ParameterName);
+                }
             }
+
             CollectParameterNames(clause.SubClauses, seen); // recurse into groups
         }
     }
@@ -211,8 +148,8 @@ internal static partial class QueryPlanBuilder
         sortDrivingIdx = -1;
         sortSeekHintIdx = -1;
         sortSeekUseParam2 = false;
-        var flags = PlanOptimizationFlags.None;
-        var clauses = walkerCtx.Clauses;
+        PlanOptimizationFlags flags = PlanOptimizationFlags.None;
+        List<ClauseInfo> clauses = walkerCtx.Clauses;
 
         // Collect non-negated, non-boosted Equals clause indices for compound lookups.
         const int maxStackAllocSize = 64;
@@ -221,7 +158,7 @@ internal static partial class QueryPlanBuilder
 
         for (int i = 0; i < clauses.Count; i++)
         {
-            var c = clauses[i];
+            ClauseInfo c = clauses[i];
 
             if (HasBoostRecursive(c)) // Any boost anywhere rules out DirectScan and CompoundField (no scoring stage).
                 return PlanOptimizationFlags.None;
@@ -230,7 +167,9 @@ internal static partial class QueryPlanBuilder
                 continue;
 
             if (c.ClauseType == ClauseType.Equals)
+            {
                 eqBuf[eqCount++] = i;
+            }
 
             if (orderByPrimaryField is null || c.FieldName != orderByPrimaryField)
                 continue;
@@ -240,51 +179,47 @@ internal static partial class QueryPlanBuilder
                 ClauseType.GreaterThanOrEqual or ClauseType.LessThan or
                 ClauseType.LessThanOrEqual or ClauseType.Between)
                )
+            {
                 continue;
+            }
 
             flags |= PlanOptimizationFlags.DirectScanCandidate;
-            // Skip clauses that may be eliminated at runtime by their WHEN condition: the
-            // ClauseExecution remap (by OriginalIndex) cannot find them when they're dropped,
-            // and DirectScan has no safe per-execution fallback that doesn't redo discovery.
-            // Bitmap pipeline is always a correct fallback for these cases.
-            if (sortDrivingIdx == -1 && c.WhenCondition is null) sortDrivingIdx = i;
+            if (sortDrivingIdx == -1 && c.WhenCondition is null)
+                sortDrivingIdx = i;
 
-            // Sort-seek-hint candidate: range predicate on the primary ORDER BY field whose
-            // direction is compatible with the sort direction. (Equals isn't a useful hint —
-            // a SortedIndexReader doesn't gain anything from seeking to a single exact term;
-            // its purpose is to skip the half of the term range that the WHERE excludes.)
-            //   ASC + GT/GTE   → seek to lower bound  (read Param1)
-            //   DESC + LT/LTE  → seek to upper bound  (read Param1)
-            //   BETWEEN ASC    → seek to lower bound  (read Param1)
-            //   BETWEEN DESC   → seek to upper bound  (read Param2)
-            if (sortSeekHintIdx == -1)
+            if (sortSeekHintIdx != -1)
+                continue;
+
+            // a SortedIndexReader is all about optimizing range seeks
+            //   ASC + GT/GTE   → seek to lower bound (read Param1)
+            //   DESC + LT/LTE  → seek to upper bound (read Param1)
+            //   BETWEEN ASC    → seek to lower bound (read Param1)
+            //   BETWEEN DESC   → seek to upper bound (read Param2)
+            switch (c.ClauseType, orderByPrimaryAscending)
             {
-                switch (c.ClauseType, orderByPrimaryAscending)
-                {
-                    case (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual, true):
-                    case (ClauseType.LessThan or ClauseType.LessThanOrEqual, false):
-                        sortSeekHintIdx = i;
-                        sortSeekUseParam2 = false;
-                        break;
-                    case (ClauseType.Between, true):
-                        sortSeekHintIdx = i;
-                        sortSeekUseParam2 = false;
-                        break;
-                    case (ClauseType.Between, false):
-                        sortSeekHintIdx = i;
-                        sortSeekUseParam2 = true;
-                        break;
-                }
+                case (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual, true):
+                case (ClauseType.LessThan or ClauseType.LessThanOrEqual, false):
+                    sortSeekHintIdx = i;
+                    sortSeekUseParam2 = false;
+                    break;
+                case (ClauseType.Between, _):
+                    sortSeekHintIdx = i;
+                    sortSeekUseParam2 = !orderByPrimaryAscending;
+                    break;
             }
         }
 
         if (eqCount >= 2)
+        {
             flags |= PlanOptimizationFlags.CompoundExactCandidate;
+        }
 
         if (walkerCtx.IsOr || // cannot optimize: `where a OR b`  
             p.Index is not { HasCompoundFields: true } ||
             eqCount is 0)
+        {
             return flags;
+        }
 
         // Compound-exact pair: two Equals clauses whose fields form a compound field.
         if (eqCount >= 2) TryFindCompoundFieldEqualMatches(eqBuf);
@@ -325,34 +260,34 @@ internal static partial class QueryPlanBuilder
         {
             if (c.HasBoost)
                 return true;
-            foreach (var t in c.SubClauses ?? [])
+
+            foreach (ClauseInfo t in c.SubClauses ?? [])
             {
                 if (HasBoostRecursive(t))
                     return true;
             }
-
             return false;
         }
 
         void TryFindCompoundFieldEqualMatches(Span<int> eqBuf)
         {
-            for (int a = 0; a < eqCount && walkerCtx.CompoundExactClauseA < 0; a++)
+            for (int a = 0; a < eqCount; a++)
             {
-                var c1 = clauses[eqBuf[a]];
+                ClauseInfo c1 = clauses[eqBuf[a]];
                 string f1 = c1.ResolvedFieldName ?? c1.FieldName;
                 for (int b = a + 1; b < eqCount; b++)
                 {
-                    var c2 = clauses[eqBuf[b]];
+                    ClauseInfo c2 = clauses[eqBuf[b]];
                     string f2 = c2.ResolvedFieldName ?? c2.FieldName;
-                    using (Voron.Slice.From(p.Allocator, f1, out var s1))
-                    using (Voron.Slice.From(p.Allocator, f2, out var s2))
+                    using (Slice.From(p.Allocator, f1, out Slice s1))
+                    using (Slice.From(p.Allocator, f2, out Slice s2))
                     {
                         if (p.Index.HasCompoundField(s1, s2))
                         {
                             walkerCtx.CompoundExactClauseA = eqBuf[a];
                             walkerCtx.CompoundExactClauseB = eqBuf[b];
                             walkerCtx.CompoundExactAFirst = true;
-                            break;
+                            return;
                         }
 
                         if (p.Index.HasCompoundField(s2, s1))
@@ -360,7 +295,7 @@ internal static partial class QueryPlanBuilder
                             walkerCtx.CompoundExactClauseA = eqBuf[a];
                             walkerCtx.CompoundExactClauseB = eqBuf[b];
                             walkerCtx.CompoundExactAFirst = false;
-                            break;
+                            return;
                         }
                     }
                 }
@@ -375,7 +310,7 @@ internal static partial class QueryPlanBuilder
         if (clauses is not { Count: > 0 })
             return;
 
-        foreach (var c in clauses)
+        foreach (ClauseInfo c in clauses)
         {
             if (c == null || c.IsFrozen)
                 continue;
@@ -424,9 +359,9 @@ internal static partial class QueryPlanBuilder
             case OperatorType.And:
             {
                 // For AND, handle OR sub-expressions as grouped clauses
-                var left = be.Left is BinaryExpression { Operator: OperatorType.Or } ? HandleGroup(be.Left, ClauseType.OrGroup) : ParseExpression(be.Left, walkerCtx);
+                BooleanOp left = be.Left is BinaryExpression { Operator: OperatorType.Or } ? HandleGroup(be.Left, ClauseType.OrGroup) : ParseExpression(be.Left, walkerCtx);
 
-                var right = be.Right is BinaryExpression { Operator: OperatorType.Or } ? HandleGroup(be.Right, ClauseType.OrGroup) : ParseExpression(be.Right, walkerCtx);
+                BooleanOp right = be.Right is BinaryExpression { Operator: OperatorType.Or } ? HandleGroup(be.Right, ClauseType.OrGroup) : ParseExpression(be.Right, walkerCtx);
 
                 return (left, right) switch
                 {
@@ -439,9 +374,9 @@ internal static partial class QueryPlanBuilder
 
             case OperatorType.Or:
             {
-                var left = be.Left is BinaryExpression { Operator: OperatorType.And } ? HandleGroup(be.Left, ClauseType.AndGroup) : ParseExpression(be.Left, walkerCtx);
+                BooleanOp left = be.Left is BinaryExpression { Operator: OperatorType.And } ? HandleGroup(be.Left, ClauseType.AndGroup) : ParseExpression(be.Left, walkerCtx);
 
-                var right = be.Right is BinaryExpression { Operator: OperatorType.And } ? HandleGroup(be.Right, ClauseType.AndGroup) : ParseExpression(be.Right, walkerCtx);
+                BooleanOp right = be.Right is BinaryExpression { Operator: OperatorType.And } ? HandleGroup(be.Right, ClauseType.AndGroup) : ParseExpression(be.Right, walkerCtx);
 
                 return (left, right) switch
                 {
@@ -474,10 +409,10 @@ internal static partial class QueryPlanBuilder
 
         BooleanOp HandleGroup(QueryExpression queryExpression, ClauseType clauseType)
         {
-            var saved = walkerCtx.Clauses;
+            List<ClauseInfo> saved = walkerCtx.Clauses;
             walkerCtx.Clauses = [];
-            var expr = ParseExpression(queryExpression, walkerCtx);
-            var clauses = walkerCtx.Clauses;
+            BooleanOp expr = ParseExpression(queryExpression, walkerCtx);
+            List<ClauseInfo> clauses = walkerCtx.Clauses;
             walkerCtx.Clauses = saved;
 
             ClauseInfo clauseInfo = new() { ClauseType = clauseType, OriginalIndex = walkerCtx.Clauses.Count, SubClauses = clauses };
@@ -524,7 +459,7 @@ internal static partial class QueryPlanBuilder
                 OperatorType.LessThanEqual => ClauseType.LessThanOrEqual,
                 _ => ClauseType.Equals
             },
-            OriginalIndex = walkerCtx.Clauses.Count,
+            OriginalIndex = walkerCtx.Clauses.Count
         });
     }
 
@@ -536,20 +471,17 @@ internal static partial class QueryPlanBuilder
             return;
         }
 
-        var minBinding = CreateBinding(between.Min, walkerCtx);
-        var maxBinding = CreateBinding(between.Max, walkerCtx);
+        ParameterBinding minBinding = CreateBinding(between.Min, walkerCtx);
+        ParameterBinding maxBinding = CreateBinding(between.Max, walkerCtx);
 
-        // Validate literal-type compatibility. Parameter-typed bindings are validated later
-        // in PopulateParameters, when the actual value is known. Sentinel bounds ("*"/"NULL")
-        // are allowed with any other type — they're rewritten away by BetweenRewriteSentinels.
-        bool minIsSentinel = minBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery };
-        bool maxIsSentinel = maxBinding is { LiteralType: ParamValueType.String, LiteralValue: Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery };
+        bool minIsSentinel = minBinding is { LiteralType: ParamValueType.String, LiteralValue: ClientConstants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery };
+        bool maxIsSentinel = maxBinding is { LiteralType: ParamValueType.String, LiteralValue: ClientConstants.Documents.Querying.Terms.RightNullValueOfBetweenQuery };
         bool bothAstStrings = between is { Min.Value: ValueTokenType.String, Max.Value: ValueTokenType.String };
-        if (minIsSentinel == false && maxIsSentinel == false
-                                   && bothAstStrings == false
-                                   && minBinding is { LiteralType: not ParamValueType.Parameter }
-                                   && maxBinding is { LiteralType: not ParamValueType.Parameter }
-                                   && minBinding.LiteralType != maxBinding.LiteralType)
+        if (!minIsSentinel && !maxIsSentinel
+                           && !bothAstStrings
+                           && minBinding is { LiteralType: not ParamValueType.Parameter }
+                           && maxBinding is { LiteralType: not ParamValueType.Parameter }
+                           && minBinding.LiteralType != maxBinding.LiteralType)
         {
             walkerCtx.Report(
                 $"BETWEEN bounds for field '{resolvedFieldName}' have different types: " +
@@ -581,15 +513,15 @@ internal static partial class QueryPlanBuilder
         }
 
         // Capture bindings for each IN term. Array parameters expand at PopulateParameters time.
-        var inBindings = new List<ParameterBinding>();
-        foreach (var value in inExpr.Values)
+        List<ParameterBinding> inBindings = new();
+        foreach (QueryExpression value in inExpr.Values)
         {
             if (CreateBinding(value, walkerCtx) is { } binding)
+            {
                 inBindings.Add(binding);
+            }
         }
 
-        // Empty IN() with no bindings still creates an In clause —
-        // PopulateClauseValues sets InTermCount=0, EmitPlan handles empty IN.
         walkerCtx.Clauses.Add(new ClauseInfo
         {
             FieldName = resolvedFieldName,
@@ -601,12 +533,12 @@ internal static partial class QueryPlanBuilder
 
     private static void ParseNegated(NegatedExpression negated, ResolutionContext walkerCtx)
     {
-        var saved = walkerCtx.Clauses;
+        List<ClauseInfo> saved = walkerCtx.Clauses;
         walkerCtx.Clauses = [];
         ParseExpression(negated.Expression, walkerCtx);
-        var innerClauses = walkerCtx.Clauses;
+        List<ClauseInfo> innerClauses = walkerCtx.Clauses;
         walkerCtx.Clauses = saved;
-        foreach (var inner in innerClauses)
+        foreach (ClauseInfo inner in innerClauses)
         {
             inner.IsNegated = true;
             walkerCtx.Clauses.Add(inner);
@@ -615,7 +547,7 @@ internal static partial class QueryPlanBuilder
 
     private static BooleanOp ParseMethod(MethodExpression method, ResolutionContext walkerCtx)
     {
-        var methodType = QueryMethod.GetMethodType(method.Name.Value);
+        MethodType methodType = QueryMethod.GetMethodType(method.Name.Value);
         switch (methodType)
         {
             case MethodType.Search:
@@ -638,7 +570,7 @@ internal static partial class QueryPlanBuilder
                     break;
                 }
 
-                if (TryGetFieldName(method.Arguments[0], walkerCtx, out var existsFieldName) == false)
+                if (TryGetFieldName(method.Arguments[0], walkerCtx, out string existsFieldName) == false)
                 {
                     walkerCtx.Report($"exists() argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
                     break;
@@ -680,14 +612,19 @@ internal static partial class QueryPlanBuilder
                 // even if they are moved by GroupCollapse or AnalyzerRewrite later on, the instances are the same
                 int beforeCount = walkerCtx.Clauses.Count;
                 if (method.Arguments.Count is 0)
+                {
                     return BooleanOp.Leaf;
-                var innerOp = ParseExpression(method.Arguments[0], walkerCtx);
+                }
+
+                BooleanOp innerOp = ParseExpression(method.Arguments[0], walkerCtx);
                 if (method.Arguments.Count is 1 ||
                     walkerCtx.Clauses.Count == beforeCount ||
                     CreateBinding(method.Arguments[1], walkerCtx) is not { } boostBinding)
+                {
                     return innerOp;
+                }
 
-                var inner = new ClauseInfo[walkerCtx.Clauses.Count - beforeCount];
+                ClauseInfo[] inner = new ClauseInfo[walkerCtx.Clauses.Count - beforeCount];
                 for (int c = 0; c < inner.Length; c++)
                 {
                     inner[c] = walkerCtx.Clauses[beforeCount + c];
@@ -705,7 +642,7 @@ internal static partial class QueryPlanBuilder
                     break;
                 }
 
-                if (TryGetFieldName(method.Arguments[0], walkerCtx, out var regexFieldName) == false)
+                if (TryGetFieldName(method.Arguments[0], walkerCtx, out string regexFieldName) == false)
                 {
                     walkerCtx.Report($"regex() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
                     break;
@@ -739,7 +676,7 @@ internal static partial class QueryPlanBuilder
                 {
                     spatialFieldName = walkerCtx.Metadata.GetSpatialFieldName(spatialPointExpr, walkerCtx.QueryParameters);
                 }
-                else if (TryGetFieldName(method.Arguments[0], walkerCtx, out var sfn))
+                else if (TryGetFieldName(method.Arguments[0], walkerCtx, out string sfn))
                 {
                     spatialFieldName = sfn;
                 }
@@ -748,8 +685,8 @@ internal static partial class QueryPlanBuilder
                     spatialFieldName = QueryBuilderHelper.ExtractIndexFieldName(walkerCtx.Metadata.Query, walkerCtx.QueryParameters, method.Arguments[0], walkerCtx.Metadata);
                 }
 
-                var shapeExpr = (MethodExpression)method.Arguments[1];
-                var shapeType = QueryMethod.GetMethodType(shapeExpr.Name.Value);
+                MethodExpression shapeExpr = (MethodExpression)method.Arguments[1];
+                MethodType shapeType = QueryMethod.GetMethodType(shapeExpr.Name.Value);
 
                 // Build spatial bindings: [0]=distErrPct, then shape-specific args
                 List<ParameterBinding> spatialBindings =
@@ -859,12 +796,12 @@ internal static partial class QueryPlanBuilder
                     break;
                 }
 
-                var conditionExpr = method.Arguments[0];
+                QueryExpression conditionExpr = method.Arguments[0];
                 int beforeCount = walkerCtx.Clauses.Count;
                 BooleanOp innerOp = ParseExpression(method.Arguments[1], walkerCtx);
                 for (int wi = beforeCount; wi < walkerCtx.Clauses.Count; wi++)
                 {
-                    walkerCtx.Clauses[wi].WhenCondition = (queryParams) =>
+                    walkerCtx.Clauses[wi].WhenCondition = queryParams =>
                         QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(conditionExpr, walkerCtx.Metadata.Query, walkerCtx.Metadata, queryParams);
                 }
 
@@ -889,17 +826,17 @@ internal static partial class QueryPlanBuilder
             return;
         }
 
-        if (TryGetFieldName(method.Arguments[0], walkerCtx, out var fieldName) == false)
+        if (TryGetFieldName(method.Arguments[0], walkerCtx, out string fieldName) == false)
         {
             walkerCtx.Report($"search() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
             return;
         }
 
-        var searchOp = Constants.Search.Operator.Or;
+        Constants.Search.Operator searchOp = Constants.Search.Operator.Or;
         if (method.Arguments.Count >= 3 && method.Arguments[2] is FieldExpression opField
                                         && opField.Compound.Count == 1)
         {
-            var op = opField.Compound[0].Value;
+            string op = opField.Compound[0].Value;
             if (string.Equals("AND", op, StringComparison.OrdinalIgnoreCase))
             {
                 searchOp = Constants.Search.Operator.And;
@@ -924,7 +861,7 @@ internal static partial class QueryPlanBuilder
             return;
         }
 
-        if (TryGetFieldName(method.Arguments[0], walkerCtx, out var fieldName) == false)
+        if (TryGetFieldName(method.Arguments[0], walkerCtx, out string fieldName) == false)
         {
             walkerCtx.Report($"{type.ToString().ToLowerInvariant()}() first argument must be a field name, but got: {method.Arguments[0].Type} ({method.Arguments[0]}).");
             return;
@@ -939,50 +876,28 @@ internal static partial class QueryPlanBuilder
         });
     }
 
-    /// <summary>Extract the field name with proper alias resolution using query metadata.</summary>
     private static string GetFieldName(FieldExpression field, QueryMetadata metadata, BlittableJsonReaderObject queryParameters)
     {
         return metadata != null ? metadata.GetIndexFieldName(field, queryParameters).Value : field.FieldValue;
     }
 
-    /// <summary>Try to extract a field name from a query expression that may be a
-    /// <see cref="FieldExpression"/> (normal field), a <see cref="ValueExpression"/>
-    /// (quoted field name like <c>'Order'</c>), or a <see cref="MethodExpression"/>
-    /// for the <c>id()</c> function. Returns false if the expression is none of these.</summary>
     private static bool TryGetFieldName(QueryExpression expr, ResolutionContext ctx, out string fieldName)
     {
-        if (expr is FieldExpression fe)
+        fieldName = expr switch
         {
-            fieldName = GetFieldName(fe, ctx.Metadata, ctx.QueryParameters);
-            return true;
-        }
-
-        // Quoted field names (e.g. 'Order' for reserved words) are parsed as ValueExpression
-        if (expr is ValueExpression ve)
-        {
-            var resolved = ve.GetValue(ctx.QueryParameters)?.ToString();
-            if (resolved != null)
-            {
-                fieldName = ctx.Metadata != null
+            FieldExpression fe => GetFieldName(fe, ctx.Metadata, ctx.QueryParameters),
+            // Quoted field names (e.g. 'Order' for reserved words) are parsed as ValueExpression
+            ValueExpression ve when ve.GetValue(ctx.QueryParameters)?.ToString() is { } resolved =>
+                ctx.Metadata != null
                     ? ctx.Metadata.GetIndexFieldName(new QueryFieldName(resolved, ve.Value == ValueTokenType.String), ctx.QueryParameters).Value
-                    : resolved;
-                return true;
-            }
-        }
-
-        if (expr is MethodExpression me && string.Equals(me.Name.Value, "id", StringComparison.OrdinalIgnoreCase))
-        {
-            fieldName = Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName;
-            return true;
-        }
-
-        fieldName = null;
-        return false;
+                    : resolved,
+            MethodExpression me when string.Equals(me.Name.Value, "id", StringComparison.OrdinalIgnoreCase) =>
+                ClientConstants.Documents.Indexing.Fields.DocumentIdFieldName,
+            _ => null
+        };
+        return fieldName != null;
     }
 
-    /// <summary>Detect the native type of resolved SCALAR parameter value.
-    /// Must not be called with arrays or blittable objects — callers must check
-    /// and handle those before calling this method.</summary>
     private static (object Value, ValueTokenType Type) ResolveParameterValue(object value)
     {
         Debug.Assert(value is not BlittableJsonReaderArray and not BlittableJsonReaderObject,
@@ -1015,10 +930,10 @@ internal static partial class QueryPlanBuilder
                 return ((double)lnv, ValueTokenType.Double);
             default:
             {
-                var str = value.ToString();
+                string str = value.ToString();
                 if (str is { Length: > 18 and < 35 } && str.Contains('T')
-                                                     && DateTime.TryParse(str, System.Globalization.CultureInfo.InvariantCulture,
-                                                         System.Globalization.DateTimeStyles.RoundtripKind, out var parsed))
+                                                     && DateTime.TryParse(str, CultureInfo.InvariantCulture,
+                                                         DateTimeStyles.RoundtripKind, out DateTime parsed))
                 {
                     return (parsed.Ticks, ValueTokenType.Long);
                 }
@@ -1028,33 +943,28 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Build a ParameterBinding from a query expression. For parameters, captures only the
-    /// name (value resolved later by PopulateParameters). For literals, resolves and caches the
-    /// constant value since it never changes. For method expressions (cmpxchg, now, today),
-    /// stores the expression for deferred resolution at execution time.</summary>
     private static ParameterBinding CreateBinding(QueryExpression expr, ResolutionContext ctx)
     {
         switch (expr)
         {
             case MethodExpression me:
-                // Method expressions like cmpxchg(), now(), today() must be resolved at execution
-                // time (not template creation time) because their values can change between executions.
-                // Create a closure delegate that captures the AST node and evaluates it with
-                // the QueryBuilderParameters provided at invocation time (boxed as object).
+                // Method expressions like cmpxchg(), now(), today() must be resolved at execution time
                 return new ParameterBinding
                 {
                     Source = BindingSource.DeferredMethod,
                     DeferredExpression = (builderParamsObj, qp) =>
                     {
-                        var bp = (QueryBuilderParameters)builderParamsObj;
-                        var resolvedExpr = QueryBuilderHelper.EvaluateMethod(
+                        QueryBuilderParameters bp = (QueryBuilderParameters)builderParamsObj;
+                        QueryExpression resolvedExpr = QueryBuilderHelper.EvaluateMethod(
                             bp.Query.Metadata.Query,
                             bp.Metadata,
                             bp.ServerContext,
                             bp.DocumentsContext.DocumentDatabase.CompareExchangeStorage,
                             me, qp, bp.QueryTime);
                         if (resolvedExpr is not ValueExpression valueExpression || valueExpression.Value == ValueTokenType.Null)
+                        {
                             return null;
+                        }
 
                         return valueExpression.GetValue(qp);
                     },
@@ -1063,7 +973,8 @@ internal static partial class QueryPlanBuilder
             case ValueExpression ve:
                 if (ve.Value == ValueTokenType.Parameter)
                     return new ParameterBinding { Source = BindingSource.QueryParameter, ParameterName = ve.Token.Value, LiteralType = ParamValueType.Parameter };
-                var value = ve.GetValue(ctx.QueryParameters);
+
+                object value = ve.GetValue(ctx.QueryParameters);
 
                 if (ve.Value == ValueTokenType.Null || value is null)
                     return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = null, LiteralType = ParamValueType.String };
@@ -1071,19 +982,26 @@ internal static partial class QueryPlanBuilder
                 if (value is bool b)
                     return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = b ? "true" : "false", LiteralType = ParamValueType.String };
 
-                var (resolved, resolvedType) = ResolveParameterValue(value);
+                (object resolved, ValueTokenType resolvedType) = ResolveParameterValue(value);
                 return new ParameterBinding { Source = BindingSource.Literal, LiteralValue = resolved, LiteralType = ToParamValueType(resolvedType) };
             default:
                 return null;
         }
     }
 
-    /// <summary>Derive the term value type from a clause's binding. Used for sub-clauses
-    /// in OrGroup/AndGroup where the caller doesn't have per-subclause term types.</summary>
-    private static ParamValueType InferTermType(ClauseInfo clause)
+    internal class PlanParameters
     {
-        if (clause.Bindings is [{ LiteralType: not ParamValueType.Parameter } lit, ..])
-            return lit.LiteralType;
-        return ParamValueType.String;
+        public ByteStringContext Allocator;
+        public Lazy<List<string>> DynamicFields;
+        public FieldsToFetch FieldsToFetch;
+        public bool HasBoost;
+        public bool HasDynamics;
+        public Index Index;
+        public IndexFieldsMapping IndexFieldsMapping;
+        public IndexSearcher IndexSearcher;
+        public QueryMetadata Metadata;
+        public BlittableJsonReaderObject QueryParameters;
     }
+
+    private enum BooleanOp { And, Or, True, False, Leaf }
 }
