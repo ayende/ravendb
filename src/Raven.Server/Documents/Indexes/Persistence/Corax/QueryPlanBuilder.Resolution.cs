@@ -423,7 +423,7 @@ internal static partial class QueryPlanBuilder
         List<ScanPredicateInfo> CreateScanPredicates()
         {
             // Scan predicates only apply to multi-clause AND chains (clause 0 is the seed, 1..N are evaluated per-entry).
-            // OR chains and single-clause queries skip this — the IL won't emit CheckAndMaybeEntryScan for them.
+            // OR chains and single-clause queries skip this — the IL won't emit MaybeEntryScan for them.
             if (template.IsOr || executions.Count <= 1)
                 return null;
 
@@ -1786,7 +1786,7 @@ internal static partial class QueryPlanBuilder
 
     private static PostingSource[] ResolveTermSources(QueryExecution exec, ResolutionContext walkerCtx)
     {
-        // IsAllEntries plans never emit term ops (FillFromPostings / AndWith / etc.) —
+        // IsAllEntries plans never emit term ops (FillFromLeaf / AndWithLeaf / etc.) —
         // their match[0] is AllEntries, post-filter slots are spatial/vector. No
         // PostingSource population is needed.
         if (exec.IsAllEntries || exec.Executions is not { Count: > 0 })

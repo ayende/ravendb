@@ -105,8 +105,7 @@ public static class QueryIlEmitter
 
             switch (op.Kind)
             {
-                case PlanOpKind.FillFromPostings:
-                case PlanOpKind.DirectIterate:
+                case PlanOpKind.FillFromLeaf:
                     d.EmitCancelledCursorCall(cursorVar, fillMethod, fillName);
                     break;
 
@@ -114,14 +113,13 @@ public static class QueryIlEmitter
                     d.EmitFillAllEntries();
                     break;
 
-                case PlanOpKind.AndWithPostings:
+                case PlanOpKind.AndWithLeaf:
                     d.EmitCancelledCursorCall(cursorVar, andMethod, andName);
                     if (!op.SkipEarlyExit)
                         d.EmitBitmapEmptyGoto(0, doneLabel.Il, doneLabel.Name);
                     break;
 
-                case PlanOpKind.OrWithPostings:
-                case PlanOpKind.LazyOrWithPostings:
+                case PlanOpKind.OrWithLeaf:
                     d.EmitCancelledCursorOrCall(cursorVar, orMethod, orName, op.BitmapLocal);
                     if (op.BitmapLocal == 0)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
@@ -139,7 +137,7 @@ public static class QueryIlEmitter
                     d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.AndNotWith, "AndNotWith");
                     break;
 
-                case PlanOpKind.OrBitmaps:
+                case PlanOpKind.LazyOrBitmaps:
                     d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.LazyOrWith, "LazyOrWith");
                     needsLazyRepair = true;
                     break;
@@ -148,19 +146,15 @@ public static class QueryIlEmitter
                     d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.SwapContents, "SwapContents");
                     break;
 
-                case PlanOpKind.CheckEmpty:
+                case PlanOpKind.GotoDoneIfEmpty:
                     d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
                     break;
 
-                case PlanOpKind.AndNotWithPostings:
+                case PlanOpKind.AndNotWithLeaf:
                     d.EmitCancelledCursorCall(cursorVar, andNotMethod, andNotName);
                     break;
 
-                case PlanOpKind.RepairAfterLazy:
-                    d.EmitBitmapUnaryCall(0, IlEmitterShared.RepairAfterLazy, "RepairAfterLazy");
-                    break;
-
-                case PlanOpKind.CheckAndMaybeEntryScan:
+                case PlanOpKind.MaybeEntryScan:
                 {
                     hasEntryScan = true;
                     entryScanOpIndex = i;
@@ -168,17 +162,17 @@ public static class QueryIlEmitter
                     break;
                 }
 
-                case PlanOpKind.OrRange:
+                case PlanOpKind.OrLeafRange:
                     EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, op.Dispatch, orMethod, orName, i,
                         earlyExit: false, skipEarlyExit: false, doneLabel);
                     break;
 
-                case PlanOpKind.AndRange:
+                case PlanOpKind.AndLeafRange:
                     EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, op.Dispatch, andMethod, andName, i,
                         earlyExit: true, skipEarlyExit: op.SkipEarlyExit, doneLabel);
                     break;
 
-                case PlanOpKind.IterateInto:
+                case PlanOpKind.GotoDone:
                     d.EmitGotoDone(doneLabel.Il, doneLabel.Name);
                     break;
             }
@@ -245,10 +239,10 @@ public static class QueryIlEmitter
         {
             ref PlanOp op = ref ops[i];
             if (op.BitmapLocal > max) max = op.BitmapLocal;
-            if (op.Kind is PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.OrBitmaps or PlanOpKind.SwapBitmaps
+            if (op.Kind is PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.LazyOrBitmaps or PlanOpKind.SwapBitmaps
                 && op.ParamIndex2 > max) max = op.ParamIndex2;
-            if (op.Kind is PlanOpKind.FillFromPostings or PlanOpKind.DirectIterate or PlanOpKind.FillAllEntries && 0 > max) max = 0;
-            if (op.Kind is PlanOpKind.AndWithPostings or PlanOpKind.AndNotWithPostings && 1 > max) max = 1;
+            if (op.Kind is PlanOpKind.FillFromLeaf or PlanOpKind.FillAllEntries && 0 > max) max = 0;
+            if (op.Kind is PlanOpKind.AndWithLeaf or PlanOpKind.AndNotWithLeaf && 1 > max) max = 1;
         }
         return max;
     }

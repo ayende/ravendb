@@ -237,27 +237,27 @@ internal static partial class QueryPlanBuilder
                 continue;
             }
 
-            if (op.Kind == PlanOpKind.OrBitmaps)
+            if (op.Kind == PlanOpKind.LazyOrBitmaps)
             {
-                insideAndGroup = false; 
+                insideAndGroup = false;
                 continue;
             }
-            if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.CheckEmpty or PlanOpKind.RepairAfterLazy or PlanOpKind.IterateInto) 
+            if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.GotoDoneIfEmpty or PlanOpKind.GotoDone)
                 continue;
 
             var inspOp = new InspectionOp
             {
                 Name = op.Kind switch
                 {
-                    PlanOpKind.FillFromPostings or PlanOpKind.DirectIterate => "Fill",
-                    PlanOpKind.AndWithPostings => "AND",
-                    PlanOpKind.OrWithPostings or PlanOpKind.LazyOrWithPostings => "OR",
-                    PlanOpKind.AndNotWithPostings => "ANDNOT",
+                    PlanOpKind.FillFromLeaf => "Fill",
+                    PlanOpKind.AndWithLeaf => "AND",
+                    PlanOpKind.OrWithLeaf => "OR",
+                    PlanOpKind.AndNotWithLeaf => "ANDNOT",
                     PlanOpKind.AndBitmaps => "AND-Bitmaps",
                     PlanOpKind.AndNotBitmaps => "ANDNOT-Bitmaps",
-                    PlanOpKind.CheckAndMaybeEntryScan => "EntryScanCheck",
-                    PlanOpKind.OrRange => $"OR-Range({op.ParamIndex2} terms)",
-                    PlanOpKind.AndRange => $"AND-Range({op.ParamIndex2} terms)",
+                    PlanOpKind.MaybeEntryScan => "EntryScanCheck",
+                    PlanOpKind.OrLeafRange => $"OR-Range({op.ParamIndex2} terms)",
+                    PlanOpKind.AndLeafRange => $"AND-Range({op.ParamIndex2} terms)",
                     _ => op.Kind.ToString()
                 },
                 Dispatch = op.Dispatch switch { MatchDispatch.PostingList => "Term", MatchDispatch.TreeScan => "MultiTerm", _ => "Match" },
