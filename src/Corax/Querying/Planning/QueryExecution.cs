@@ -42,6 +42,14 @@ public class QueryExecution
 
     public Slice[] ResidualSlices;
 
+    /// <summary>Per-IN/ALL-IN residual predicate value sets, materialized per execution and
+    /// indexed positionally by the IN-leaf walk order (the same order in which
+    /// <see cref="ResidualScanIlEmitter"/> bakes its set index and
+    /// <see cref="QueryPlanBuilder"/>'s scan-param extractor fills it). Self-contained
+    /// per predicate so the residual IL never has to thread a runtime-variable base offset:
+    /// the value count is simply the populated array's length.</summary>
+    public ResidualInValues[] ResidualInSets;
+
     public SpatialFilterOp[] SpatialFilters;
     
     public string[] StringValues;
@@ -65,4 +73,17 @@ public class QueryExecution
         _analyzedSlices.Add((fieldName, slot, analyzed));
         return analyzed;
     }
+}
+
+/// <summary>Value set for a single IN / ALL IN residual predicate, materialized per execution.
+/// Exactly one of <see cref="Slices"/> / <see cref="Longs"/> / <see cref="Doubles"/> is populated,
+/// matching the predicate's <see cref="ScanValueType"/>. <see cref="HasNull"/> records whether the
+/// IN list contained a null term (so the residual scan can match documents whose field is null,
+/// mirroring the bitmap pipeline's null-term posting list).</summary>
+public struct ResidualInValues
+{
+    public Slice[] Slices;
+    public long[] Longs;
+    public double[] Doubles;
+    public bool HasNull;
 }

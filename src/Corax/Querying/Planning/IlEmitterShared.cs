@@ -140,6 +140,30 @@ public static class IlEmitterShared
     public static readonly MethodInfo CheckFieldTermEndsWith =
         typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermEndsWith));
 
+    public static readonly MethodInfo CheckFieldTermInSlice =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermInSlice));
+    public static readonly MethodInfo CheckFieldTermInLong =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermInLong));
+    public static readonly MethodInfo CheckFieldTermInDouble =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermInDouble));
+    public static readonly MethodInfo CheckFieldTermAllInSlice =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermAllInSlice));
+    public static readonly MethodInfo CheckFieldTermAllInLong =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermAllInLong));
+    public static readonly MethodInfo CheckFieldTermAllInDouble =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.CheckFieldTermAllInDouble));
+
+    public static readonly FieldInfo ResidualInSets =
+        typeof(QueryExecution).GetField(nameof(QueryExecution.ResidualInSets))!;
+    public static readonly FieldInfo ResidualInValuesSlices =
+        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.Slices))!;
+    public static readonly FieldInfo ResidualInValuesLongs =
+        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.Longs))!;
+    public static readonly FieldInfo ResidualInValuesDoubles =
+        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.Doubles))!;
+    public static readonly FieldInfo ResidualInValuesHasNull =
+        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.HasNull))!;
+
     public static void EmitLdcI4(ILGenerator il, int value)
     {
         switch (value)
