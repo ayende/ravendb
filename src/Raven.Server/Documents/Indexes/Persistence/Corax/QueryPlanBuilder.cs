@@ -430,10 +430,12 @@ internal static partial class QueryPlanBuilder
             return;
         }
 
+        bool isNotEqual = be.Operator == OperatorType.NotEqual;
         walkerCtx.Clauses.Add(new ClauseInfo
         {
             FieldName = fieldName,
-            ClauseType = be.Operator == OperatorType.NotEqual ? ClauseType.NotEquals : ClauseType.Equals,
+            ClauseType = isNotEqual ? ClauseType.NotEquals : ClauseType.Equals,
+            IsNegated = isNotEqual,
             OriginalIndex = walkerCtx.Clauses.Count,
             Bindings = [CreateBinding(be.Right, walkerCtx)]
         });
