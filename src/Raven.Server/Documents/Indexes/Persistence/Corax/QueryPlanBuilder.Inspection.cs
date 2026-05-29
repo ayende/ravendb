@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
@@ -129,50 +130,44 @@ internal static partial class QueryPlanBuilder
 
     }
 
-    /// <summary>Rebuild the flat clause-execution list from the current QueryExecution, in the
-    /// same walk order as BuildInspectionTemplate's structural flatten. Each entry's
-    /// PackedParamValue and InTermCount reflect the current execution, not the cached template.</summary>
     private static List<ClauseExecution> BuildFlatClauseExecutions(QueryExecution exec)
     {
         var flat = new List<ClauseExecution>();
-        if (exec?.Executions is not { Count: > 0 })
-            return flat;
-
-        foreach (var clauseExec in exec.Executions)
+        foreach (var clauseExecution in exec.Executions)
         {
-            var clause = clauseExec.Clause;
-            switch (clause.ClauseType)
+            BuildFlatClauseExecutionsInternal(flat, clauseExecution);
+        }
+        return flat;
+
+        static void BuildFlatClauseExecutionsInternal(List<ClauseExecution> list, ClauseExecution clauseExec)
+        {
+            RuntimeHelpers.EnsureSufficientExecutionStack();
+            switch (clauseExec.Clause.ClauseType)
             {
                 case ClauseType.OrGroup or ClauseType.AndGroup:
                 {
                     foreach (var cur in clauseExec.SubExecutions)
-                        flat.Add(cur);
+                        BuildFlatClauseExecutionsInternal(list, cur);
                     break;
                 }
                 case ClauseType.In or ClauseType.AllIn when clauseExec.InTermCount > 0:
                 {
-                    var p = clauseExec.PackedParamValue;
                     for (int t = 0; t < clauseExec.InTermCount; t++)
                     {
-                        flat.Add(new ClauseExecution(clause)
+                        list.Add(new ClauseExecution(clauseExec.Clause)
                         {
-                            PackedParamValue = p.WithTermOffset(t)
+                            PackedParamValue = clauseExec.PackedParamValue.WithTermOffset(t)
                         });
                     }
-
                     break;
                 }
                 default:
-                    flat.Add(clauseExec);
+                    list.Add(clauseExec);
                     break;
             }
         }
-
-        return flat;
     }
 
-    // Covers VectorSearch and Spatial post-filter ops — both expose Inspect() subtrees
-    // appended to the compiled-query root.
     private static void AppendPostFilterNodes(QueryInspectionNode source, QueryInspectionNode target)
     {
         if (source.Operation.Contains("VectorSearch") || source.Operation.Contains("Spatial"))
@@ -186,44 +181,14 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Build an inspection template from plan ops + clause structure. Created once, cached.
-    /// Only structural clause metadata (FieldName, ClauseType, IsNegated) is stored — per-execution
-    /// values (PackedParam, InTermCount) are resolved at display time in BuildInspectionGraph.</summary>
     private static InspectionOp[] BuildInspectionTemplate(PlanOp[] ops, List<ClauseExecution> executions)
     {
         if (ops == null || ops.Length == 0) return [];
 
-        // Flatten clause tree to align with op.ParamIndex (same walk order as the emitter).
         var flatClauses = new List<ClauseInfo>();
         foreach (var clauseExec in executions)
         {
-            var clause = clauseExec.Clause;
-            switch (clause.ClauseType)
-            {
-                case ClauseType.OrGroup or ClauseType.AndGroup:
-                {
-                    foreach (ClauseInfo v in clause.SubClauses)
-                        flatClauses.Add(v);
-                    break;
-                }
-                case ClauseType.In or ClauseType.AllIn:
-                {
-                    for (int t = 0; t < clauseExec.InTermCount; t++)
-                    {
-                        flatClauses.Add(new ClauseInfo
-                        {
-                            FieldName = clause.FieldName,
-                            ClauseType = clause.ClauseType,
-                            IsNegated = clause.IsNegated
-                        });
-                    }
-
-                    break;
-                }
-                default:
-                    flatClauses.Add(clause);
-                    break;
-            }
+            ExtractFlatClausesInternal(clauseExec);
         }
 
         var result = new List<InspectionOp>();
@@ -286,5 +251,36 @@ internal static partial class QueryPlanBuilder
         }
 
         return result.ToArray();
+
+        void ExtractFlatClausesInternal(ClauseExecution clauseExec)
+        {
+            RuntimeHelpers.EnsureSufficientExecutionStack();
+            switch (clauseExec.Clause.ClauseType)
+            {
+                case ClauseType.OrGroup or ClauseType.AndGroup:
+                {
+                    foreach (ClauseInfo v in clauseExec.Clause.SubClauses)
+                        ExtractFlatClausesInternal(v);
+                    break;
+                }
+                case ClauseType.In or ClauseType.AllIn:
+                {
+                    for (int t = 0; t < clauseExec.InTermCount; t++)
+                    {
+                        flatClauses.Add(new ClauseInfo
+                        {
+                            FieldName = clauseExec.Clause.FieldName,
+                            ClauseType = clauseExec.Clause.ClauseType,
+                            IsNegated = clauseExec.Clause.IsNegated
+                        });
+                    }
+
+                    break;
+                }
+                default:
+                    flatClauses.Add(clauseExec.Clause);
+                    break;
+            }
+        }
     }
 }
