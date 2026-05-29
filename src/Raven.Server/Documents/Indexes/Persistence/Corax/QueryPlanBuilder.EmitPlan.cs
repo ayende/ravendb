@@ -149,9 +149,10 @@ internal static partial class QueryPlanBuilder
 
             using var _ = AllocateScratchSlot(out int saveSlot);
 
-            _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
+            // Swap the live accumulator into saveSlot; slot 0 now holds saveSlot's old buffer, which the
+            // group build below re-seeds (Fill clears-on-seed, FillAllEntries absorbs stale ⊆ AllEntries).
             _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-            
+
             EmitGroupContentsInSlot0(exec, subExecs, suppressEarlyExit: true); // AndFrom*/AndRangeFrom* MUST NOT early-exit to doneLabel.
 
             switch (merge)
@@ -168,8 +169,6 @@ internal static partial class QueryPlanBuilder
                     _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
                     break;
             }
-
-            _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
         }
 
         private void EmitGroupContentsInSlot0(ClauseExecution exec, List<ClauseExecution> subExecs, bool suppressEarlyExit)
@@ -224,8 +223,10 @@ internal static partial class QueryPlanBuilder
         {
             if (merge is MergeKind.Fill or MergeKind.OrInto)
             {
+                // Seed (Fill) or merge (Or) the union straight into the slot-0 accumulator: both ops
+                // accumulate into BitmapLocal, so no separate merge-back is needed.
                 var firstKind = merge == MergeKind.Fill ? PlanOpKind.FillFromPostingSource : PlanOpKind.OrFromPostingSource;
-                EmitCommonInOps(exec.InTermCount, cardinality, EphemeralBitmap, firstKind, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false);
+                EmitCommonInOps(exec.InTermCount, cardinality, bitmapLocal: 0, firstKind, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false);
                 return;
             }
             EmitCommonInOps(exec.InTermCount, cardinality, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false);
@@ -263,7 +264,6 @@ internal static partial class QueryPlanBuilder
                     _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
                     break;
             }
-            _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
         }
 
         private void EmitNegatedLeafInto(ClauseExecution exec, MergeKind merge, long cardinality)
@@ -280,14 +280,14 @@ internal static partial class QueryPlanBuilder
 
             using var _ = AllocateScratchSlot(out int saveSlot);
 
-            _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
+            // Swap the live accumulator into saveSlot; the FillAllEntries below re-seeds slot 0
+            // (it ORs AllEntries, which absorbs saveSlot's old buffer since stale ⊆ AllEntries).
             _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
 
             _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
             EmitComplementBody(exec, cardinality);
 
             _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-            _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
         }
 
         private void EmitComplementBody(ClauseExecution exec, long cardinality)
