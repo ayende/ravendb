@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using Corax.Querying.Planning;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
@@ -488,21 +489,17 @@ internal static partial class QueryPlanBuilder
             _matchIndex += totalSlots;
         }
 
-        /// <summary>Set <see cref="PlanOp.SkipEarlyExit"/>=true on the most recent
-        /// <see cref="PlanOpKind.AndRangeFromPostingSource"/> in <see cref="_ops"/>. Used by
-        /// <see cref="EmitComplementBody"/> after emitting the AllIn pair so that
-        /// an empty intersection doesn't early-exit out of the surrounding negation.</summary>
         private void SetLastAndRangeSkipEarlyExit()
         {
-            for (int i = _ops.Count - 1; i >= 0; i--)
+            var ops = CollectionsMarshal.AsSpan(_ops);
+            for (int i = ops.Length - 1; i >= 0; i--)
             {
-                if (_ops[i].Kind == PlanOpKind.AndRangeFromPostingSource)
-                {
-                    var op = _ops[i];
-                    op.SkipEarlyExit = true;
-                    _ops[i] = op;
-                    return;
-                }
+                ref var op = ref ops[i] ;
+                if (op.Kind != PlanOpKind.AndRangeFromPostingSource) 
+                    continue;
+                
+                op.SkipEarlyExit = true;
+                return;
             }
         }
 
