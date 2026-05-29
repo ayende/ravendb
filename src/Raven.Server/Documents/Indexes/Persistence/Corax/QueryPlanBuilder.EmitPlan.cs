@@ -52,11 +52,9 @@ internal static partial class QueryPlanBuilder
             return new ScratchSlotScope(this);
         }
 
-        private readonly struct ScratchSlotScope : IDisposable
+        private readonly struct ScratchSlotScope(PlanEmitter emitter) : IDisposable
         {
-            private readonly PlanEmitter _emitter;
-            public ScratchSlotScope(PlanEmitter emitter) => _emitter = emitter;
-            public void Dispose() => _emitter._nextScratch--;
+            public void Dispose() => emitter._nextScratch--;
         }
 
         private (PlanOp[] Ops, int RequiredBitmaps) EmitOrPlan(List<ClauseExecution> executions)
@@ -227,14 +225,15 @@ internal static partial class QueryPlanBuilder
         /// first sub (or FillAllEntries if first is negated), AND/ANDNOT rest.</summary>
         private void EmitGroupContentsInSlot0(ClauseExecution exec, List<ClauseExecution> subExecs, bool suppressEarlyExit)
         {
-            bool firstNegated = subExecs[0].IsNegated && exec.ClauseType != ClauseType.OrGroup;
+            bool isOr = exec.ClauseType != ClauseType.OrGroup;
+            bool firstNegated = isOr && subExecs[0].IsNegated;
             if (firstNegated)
                 _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
-            var followupAction = exec.ClauseType != ClauseType.OrGroup ? MergeKind.AndInto : MergeKind.OrInto;
+            var followupAction = isOr ? MergeKind.AndInto : MergeKind.OrInto;
             EmitClauseInto(subExecs[0], firstNegated ? MergeKind.AndNotInto : MergeKind.Fill, subExecs[0].Cardinality, suppressEarlyExit);
             for (int i = 1; i < subExecs.Count; i++)
             {
-                MergeKind kind = subExecs[i].IsNegated && exec.ClauseType != ClauseType.OrGroup ? MergeKind.AndNotInto : followupAction;
+                MergeKind kind = isOr && subExecs[i].IsNegated ? MergeKind.AndNotInto : followupAction;
                 EmitClauseInto(subExecs[i], kind, subExecs[i].Cardinality, suppressEarlyExit);
             }
         }
@@ -300,24 +299,19 @@ internal static partial class QueryPlanBuilder
             _ => kind
         };
 
-        /// <summary>IN clause leaf — logically (term0 ∪ term1 ∪ … ∪ termN). For Fill/OrInto
-        /// merges, build directly in slot 0 via EmitInOps. For AndInto/AndNotInto, build
-        /// the union in slot 1 (slot 1 is freshly cleared first), then merge into slot 0
-        /// via AndBitmaps/AndNotBitmaps. OrRange ignores SkipEarlyExit so suppression
-        /// doesn't need to propagate here.</summary>
+        /// <summary>IN clause leaf — logically (term0 ∪ term1 ∪ … ∪ termN).</summary>
         private void EmitInLeaf(ClauseExecution exec, long cardinality, MergeKind merge)
         {
-            int inTermCount = exec.InTermCount;
             if (merge is MergeKind.Fill or MergeKind.OrInto)
             {
-                EmitInOps(inTermCount, cardinality, bitmapLocal: 0, isSeed: merge == MergeKind.Fill);
+                EmitInOps(exec.InTermCount, cardinality, bitmapLocal: 0, isSeed: merge == MergeKind.Fill);
                 return;
             }
 
             // AndInto / AndNotInto: union IN terms in slot 1, then merge with slot 0.
             if (1 > _maxScratchUsed) _maxScratchUsed = 1;
             _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-            EmitInOps(inTermCount, cardinality, bitmapLocal: 1, isSeed: false);
+            EmitInOps(exec.InTermCount, cardinality, bitmapLocal: 1, isSeed: false);
             _ops.Add(new PlanOp
             {
                 Kind = merge == MergeKind.AndInto ? PlanOpKind.AndBitmaps : PlanOpKind.AndNotBitmaps,
