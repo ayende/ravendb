@@ -8,9 +8,6 @@ public struct PlanOp
     public int BitmapLocal;
     public long EstimatedCardinality;
 
-    /// <summary>When true, suppress the empty-check early exit after
-    /// <see cref="PlanOpKind.AndFromPostingSource"/>. Used for AND sub-chains inside
-    /// an OR accumulator where an empty intermediate result is not a reason to
-    /// abort the whole expression.</summary>
+    /// <summary>When true, suppress the empty-check early exit after an AND. Used for AND inside an OR, where we can't just abort</summary>
     public bool SkipEarlyExit;
 }

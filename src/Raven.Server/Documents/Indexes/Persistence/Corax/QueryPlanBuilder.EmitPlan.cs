@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Runtime.InteropServices;
 using Corax.Querying.Planning;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
@@ -11,8 +10,7 @@ internal static partial class QueryPlanBuilder
     private sealed class PlanEmitter
     {
         private readonly List<PlanOp> _ops = [];
-        // Index counter for IN/AllIn range slots, baked into PlanOp.ParamIndex2 — reads ctx.InRangeCounts[that idx] at runtime.
-        private int _nextRangeIdx;
+        private int _nextRangeIdx; // index for ctx.InRangeCounts[that idx] at runtime.
         private int _matchIndex;
 
         // Slot 0 is the live accumulator; EphemeralBitmap stages "build a set then merge into slot 0"
@@ -313,9 +311,7 @@ internal static partial class QueryPlanBuilder
                 EmitInOps(exec.InTermCount, cardinality, bitmapLocal: 0, isSeed: merge == MergeKind.Fill);
                 return;
             }
-
-            // AndInto / AndNotInto: union IN terms in the ephemeral bitmap, then merge with slot 0.
-            // isSeed:true so FillFromPostingSource overwrites the ephemeral bitmap — no ClearBitmap needed.
+            // for AND, use the ephemeral bitmap to hold this, then merge with slot 0.
             EmitInOps(exec.InTermCount, cardinality, bitmapLocal: EphemeralBitmap, isSeed: true);
             _ops.Add(new PlanOp
             {
@@ -325,19 +321,12 @@ internal static partial class QueryPlanBuilder
             });
         }
 
-        /// <summary>AllIn clause leaf — logically (term0 ∩ term1 ∩ … ∩ termN). For Fill merge,
-        /// build directly in slot 0. For OrInto/AndInto/AndNotInto, save slot 0 to a scratch
-        /// slot, build the intersection in slot 0 (Fill + AndRange), then merge back. The
-        /// AndRange op honors SkipEarlyExit; in a saved context we must set it so the loop
-        /// doesn't jump to doneLabel mid-intersection.</summary>
+        /// <summary>AllIn clause leaf — logically (term0 ∩ term1 ∩ … ∩ termN).</summary>
         private void EmitAllInLeaf(ClauseExecution exec, long cardinality, MergeKind merge, bool suppressEarlyExit)
         {
-            int inTermCount = exec.InTermCount;
             if (merge == MergeKind.Fill)
             {
-                EmitAllInOps(inTermCount, cardinality, bitmapLocal: 0);
-                if (suppressEarlyExit)
-                    SetLastAndRangeSkipEarlyExit();
+                EmitAllInOps(exec.InTermCount, cardinality, bitmapLocal: 0, suppressEarlyExit);
                 return;
             }
 
@@ -345,10 +334,7 @@ internal static partial class QueryPlanBuilder
 
             _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
             _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-            EmitAllInOps(inTermCount, cardinality, bitmapLocal: 0);
-            // Inside save-swap: AndRange must not jump to doneLabel — that would skip
-            // the merge-back and leak the saved accumulator.
-            SetLastAndRangeSkipEarlyExit();
+            EmitAllInOps(exec.InTermCount, cardinality, bitmapLocal: 0, suppressEarlyExit: true);
 
             switch (merge)
             {
@@ -410,10 +396,7 @@ internal static partial class QueryPlanBuilder
 
             if (exec.ClauseType is ClauseType.AllIn)
             {
-                EmitAllInOps(exec.InTermCount, cardinality, bitmapLocal: EphemeralBitmap);
-                // AndRange would early-exit to doneLabel if the ephemeral bitmap empties mid-intersection,
-                // skipping our AndNotBitmaps and the rest of the OR chain. Suppress it.
-                SetLastAndRangeSkipEarlyExit();
+                EmitAllInOps(exec.InTermCount, cardinality, bitmapLocal: EphemeralBitmap, suppressEarlyExit: true);
                 _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = EphemeralBitmap });
                 return;
             }
@@ -433,13 +416,6 @@ internal static partial class QueryPlanBuilder
         private void EmitInOps(int inTermCount, long cardinality, int bitmapLocal, bool isSeed)
         {
             int totalSlots = inTermCount + 1; // inTermCount non-null terms + 1 null-term slot
-            // Range iterates over the slots AFTER slot 0 (which Fill handles). When the parameter
-            // list has no null, the trailing null slot is Empty — ORing with Empty is a no-op, so
-            // we can safely include it (rangeCount = totalSlots - 1). When the list HAS a null
-            // term, that slot is non-empty and we want to OR it in. Both cases use the same range.
-            // The value stored at this index is filled in at FinalizePlan time by the
-            // fused CardinalityArrayBuilder.Build walk.
-            int rangeIdx = _nextRangeIdx++;
 
             _ops.Add(new PlanOp
             {
@@ -452,7 +428,7 @@ internal static partial class QueryPlanBuilder
             {
                 Kind = PlanOpKind.OrRangeFromPostingSource,
                 ParamIndex = _matchIndex + 1,
-                ParamIndex2 = rangeIdx,
+                ParamIndex2 = _nextRangeIdx++, // where to find the count of terms for this in ctx.InRangeCounts[...]
                 BitmapLocal = bitmapLocal,
                 EstimatedCardinality = cardinality
             });
@@ -464,7 +440,7 @@ internal static partial class QueryPlanBuilder
         /// terms lives in <c>ctx.InRangeCounts</c> rather than the op shape itself.
         /// <paramref name="inTermCount"/> must match <c>exec.InTermCount</c> so the slot
         /// layout agrees with the resolver walk.</summary>
-        private void EmitAllInOps(int inTermCount, long cardinality, int bitmapLocal)
+        private void EmitAllInOps(int inTermCount, long cardinality, int bitmapLocal, bool suppressEarlyExit)
         {
             int totalSlots = inTermCount + 1; // inTermCount non-null terms + 1 null-term slot
             // Fill consumes slot 0, AndRange iterates the rest. The range count
@@ -486,23 +462,10 @@ internal static partial class QueryPlanBuilder
                 ParamIndex = _matchIndex + 1,
                 ParamIndex2 = rangeIdx,
                 BitmapLocal = bitmapLocal,
-                EstimatedCardinality = cardinality
+                EstimatedCardinality = cardinality,
+                SkipEarlyExit = suppressEarlyExit
             });
             _matchIndex += totalSlots;
-        }
-
-        private void SetLastAndRangeSkipEarlyExit()
-        {
-            var ops = CollectionsMarshal.AsSpan(_ops);
-            for (int i = ops.Length - 1; i >= 0; i--)
-            {
-                ref var op = ref ops[i] ;
-                if (op.Kind != PlanOpKind.AndRangeFromPostingSource) 
-                    continue;
-                
-                op.SkipEarlyExit = true;
-                return;
-            }
         }
 
         private static PlanOp[] BuildAllEntriesPlan()
