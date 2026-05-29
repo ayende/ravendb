@@ -14,8 +14,13 @@ internal static partial class QueryPlanBuilder
         // Index counter for IN/AllIn range slots, baked into PlanOp.ParamIndex2 — reads ctx.InRangeCounts[that idx] at runtime.
         private int _nextRangeIdx;
         private int _matchIndex;
-        private int _nextScratch = 2;
-        private int _maxScratchUsed = 1;
+
+        // Slot 0 is the live accumulator; EphemeralBitmap stages "build a set then merge into slot 0"
+        // (IN/AllIn). Its value never outlives one leaf emission, so a single fixed slot is reusable at
+        // any nesting depth and never counts against the scratch high-water mark; save-stack starts above it.
+        private const int EphemeralBitmap = 1;
+        private int _nextScratch = EphemeralBitmap + 1;
+        private int _maxScratchUsed = EphemeralBitmap;
 
         public static (PlanOp[] Ops, int RequiredBitmaps) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams)
         {
@@ -309,15 +314,14 @@ internal static partial class QueryPlanBuilder
                 return;
             }
 
-            // AndInto / AndNotInto: union IN terms in slot 1, then merge with slot 0.
-            if (1 > _maxScratchUsed) _maxScratchUsed = 1;
-            _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 1 });
-            EmitInOps(exec.InTermCount, cardinality, bitmapLocal: 1, isSeed: false);
+            // AndInto / AndNotInto: union IN terms in the ephemeral bitmap, then merge with slot 0.
+            // isSeed:true so FillFromPostingSource overwrites the ephemeral bitmap — no ClearBitmap needed.
+            EmitInOps(exec.InTermCount, cardinality, bitmapLocal: EphemeralBitmap, isSeed: true);
             _ops.Add(new PlanOp
             {
                 Kind = merge == MergeKind.AndInto ? PlanOpKind.AndBitmaps : PlanOpKind.AndNotBitmaps,
                 BitmapLocal = 0,
-                ParamIndex2 = 1
+                ParamIndex2 = EphemeralBitmap
             });
         }
 
@@ -389,8 +393,8 @@ internal static partial class QueryPlanBuilder
         }
 
         /// <summary>Turn slot 0 (currently <see cref="PlanOpKind.FillAllEntries"/>) into the
-        /// complement of <paramref name="exec"/>'s positive form. IN unions the terms into slot 1
-        /// then AndNotBitmaps(0, 1); AllIn intersects into slot 1 then AndNotBitmaps(0, 1).
+        /// complement of <paramref name="exec"/>'s positive form. IN unions the terms into the
+        /// ephemeral bitmap then AndNotBitmaps(0, ephemeral); AllIn intersects there then AndNotBitmaps.
         /// Scalar / Exists / Range clauses use an AndNotFrom* op directly (the source family
         /// follows <see cref="GetDispatch"/> for the positive form).
         /// Advances <see cref="_matchIndex"/> past the clause's slot footprint.</summary>
@@ -398,21 +402,19 @@ internal static partial class QueryPlanBuilder
         {
             if (exec.ClauseType is ClauseType.In)
             {
-                if (1 > _maxScratchUsed) _maxScratchUsed = 1;
-                // isSeed:true so FillFromPostingSource overwrites slot 1 — no ClearBitmap needed.
-                EmitInOps(exec.InTermCount, cardinality, bitmapLocal: 1, isSeed: true);
-                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = 1 });
+                // isSeed:true so FillFromPostingSource overwrites the ephemeral bitmap — no ClearBitmap needed.
+                EmitInOps(exec.InTermCount, cardinality, bitmapLocal: EphemeralBitmap, isSeed: true);
+                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = EphemeralBitmap });
                 return;
             }
 
             if (exec.ClauseType is ClauseType.AllIn)
             {
-                if (1 > _maxScratchUsed) _maxScratchUsed = 1;
-                EmitAllInOps(exec.InTermCount, cardinality, bitmapLocal: 1);
-                // AndRange would early-exit to doneLabel if slot 1 empties mid-intersection,
+                EmitAllInOps(exec.InTermCount, cardinality, bitmapLocal: EphemeralBitmap);
+                // AndRange would early-exit to doneLabel if the ephemeral bitmap empties mid-intersection,
                 // skipping our AndNotBitmaps and the rest of the OR chain. Suppress it.
                 SetLastAndRangeSkipEarlyExit();
-                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = 1 });
+                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = EphemeralBitmap });
                 return;
             }
 
