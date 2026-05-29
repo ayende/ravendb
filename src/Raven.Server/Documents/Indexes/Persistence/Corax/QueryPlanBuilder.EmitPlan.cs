@@ -40,6 +40,25 @@ internal static partial class QueryPlanBuilder
             return (_ops.ToArray(), Math.Max(2, _maxScratchUsed + 1));
         }
 
+        /// <summary>Reserve a fresh scratch bitmap slot for save/restore of slot 0 around a
+        /// nested build. The returned scope releases the slot on Dispose — use with
+        /// <c>using var _ = AllocateScratchSlot(out var slot);</c>. The high-water mark
+        /// feeds <see cref="Complete"/>'s RequiredBitmaps so the runtime allocates enough bitmaps.</summary>
+        private ScratchSlotScope AllocateScratchSlot(out int slot)
+        {
+            slot = _nextScratch++;
+            if (slot > _maxScratchUsed)
+                _maxScratchUsed = slot;
+            return new ScratchSlotScope(this);
+        }
+
+        private readonly struct ScratchSlotScope : IDisposable
+        {
+            private readonly PlanEmitter _emitter;
+            public ScratchSlotScope(PlanEmitter emitter) => _emitter = emitter;
+            public void Dispose() => _emitter._nextScratch--;
+        }
+
         private (PlanOp[] Ops, int RequiredBitmaps) EmitOrPlan(List<ClauseExecution> executions)
         {
             Debug.Assert(executions.Count > 0);
@@ -187,8 +206,7 @@ internal static partial class QueryPlanBuilder
                 return;
             }
 
-            int saveSlot = _nextScratch++;
-            if (saveSlot > _maxScratchUsed) _maxScratchUsed = saveSlot;
+            using var _ = AllocateScratchSlot(out int saveSlot);
 
             _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
             _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
@@ -215,7 +233,6 @@ internal static partial class QueryPlanBuilder
             }
 
             _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
-            _nextScratch--;
         }
 
         /// <summary>Build a group's complete result in slot 0 (slot 0 must be empty/usable
@@ -364,8 +381,7 @@ internal static partial class QueryPlanBuilder
                 return;
             }
 
-            int saveSlot = _nextScratch++;
-            if (saveSlot > _maxScratchUsed) _maxScratchUsed = saveSlot;
+            using var _ = AllocateScratchSlot(out int saveSlot);
 
             _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
             _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
@@ -388,7 +404,6 @@ internal static partial class QueryPlanBuilder
                     break;
             }
             _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
-            _nextScratch--;
         }
 
         private void EmitNegatedLeafInto(ClauseExecution exec, MergeKind merge, long cardinality)
@@ -405,8 +420,7 @@ internal static partial class QueryPlanBuilder
 
             // OrInto: save the accumulator out, build a fresh complement in slot 0, OR back.
             // Mirrors the save-swap pattern in EmitGroupInto / EmitAllInLeaf.
-            int saveSlot = _nextScratch++;
-            if (saveSlot > _maxScratchUsed) _maxScratchUsed = saveSlot;
+            using var _ = AllocateScratchSlot(out int saveSlot);
 
             _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
             _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
@@ -416,7 +430,6 @@ internal static partial class QueryPlanBuilder
 
             _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
             _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
-            _nextScratch--;
         }
 
         /// <summary>Turn slot 0 (currently <see cref="PlanOpKind.FillAllEntries"/>) into the
