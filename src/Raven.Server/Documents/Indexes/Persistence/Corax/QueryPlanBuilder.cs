@@ -720,27 +720,22 @@ internal static partial class QueryPlanBuilder
 
     private static BooleanOp ParseWhen(MethodExpression method, ResolutionContext walkerCtx)
     {
-        // when(condition, expr) — create a delegate that evaluates the condition
-        // against the query's BlittableJsonReaderObject parameters at execution time.
-        // Clauses whose condition evaluates to false are eliminated in BuildAndCompile.
-        //
-        // Propagate the inner BooleanOp so that when(c, A OR B) preserves the OR shape
-        // for rootOp detection (parallels Boost/Exact wrappers).
-        if (method.Arguments.Count != 2)
-        {
-            return BooleanOp.Leaf;
-        }
-
         QueryExpression conditionExpr = method.Arguments[0];
         int beforeCount = walkerCtx.Clauses.Count;
         BooleanOp innerOp = ParseExpression(method.Arguments[1], walkerCtx);
+        var whenCondition = new WhenConditionEvaluator(conditionExpr, walkerCtx.Metadata).Evaluate;
         for (int wi = beforeCount; wi < walkerCtx.Clauses.Count; wi++)
         {
-            walkerCtx.Clauses[wi].WhenCondition = queryParams =>
-                QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(conditionExpr, walkerCtx.Metadata.Query, walkerCtx.Metadata, queryParams);
+            walkerCtx.Clauses[wi].WhenCondition = whenCondition;
         }
 
         return innerOp;
+    }
+
+    private sealed class WhenConditionEvaluator(QueryExpression condition, QueryMetadata metadata)
+    {   // using a dedicated class here for this, to explicitly control what is captured 
+        public bool Evaluate(BlittableJsonReaderObject queryParams) =>
+            QueryBuilderHelper.EvaluateConstantExpressionForWhenQuery(condition, metadata.Query, metadata, queryParams);
     }
 
     private static BooleanOp ParseSpatial(MethodExpression method, ResolutionContext walkerCtx)
