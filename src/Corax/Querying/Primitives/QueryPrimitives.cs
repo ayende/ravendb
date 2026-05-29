@@ -32,11 +32,15 @@ public static class QueryPrimitives
     // Called from DynamicMethod IL. Take CompiledQueryMatch by value (ref type)
     // so the emitter just pushes ldarg.0 + int constants — no per-field ldfld chains.
 
+    // Fill seeds a bitmap slot: it clears the target first, so the slot holds exactly this source's
+    // entries regardless of prior contents. This lets IN/AllIn build their union/intersection in the
+    // ephemeral slot (or a save-slot) without a separate ClearBitmap op.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
+    public static void CtxFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
+        ctx.Bitmaps[bitmapSlot].Clear();
         var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
+        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Limit);
     }
 
     /// <summary>Seed bitmap[0] with AllEntries — used by AllNegated AND chains
@@ -49,8 +53,11 @@ public static class QueryPrimitives
         => OrWithMatch(ctx.Searcher.AllEntries(), ref ctx.Bitmaps[0], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[0], ctx.Limit);
+    public static void CtxFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    {
+        ctx.Bitmaps[bitmapSlot].Clear();
+        FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Limit);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrWithMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
@@ -79,6 +86,15 @@ public static class QueryPrimitives
         long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
         if (remaining <= 0) return;
         OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], remaining);
+    }
+
+    // Boost-rewrite target of CtxFillFromPostingSource/CtxFillFromTreeScan (see ToMatchVariant).
+    // Same clear-then-seed contract: the slot ends up holding exactly this match's entries.
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void CtxFillFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    {
+        ctx.Bitmaps[bitmapSlot].Clear();
+        OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ctx.Limit);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

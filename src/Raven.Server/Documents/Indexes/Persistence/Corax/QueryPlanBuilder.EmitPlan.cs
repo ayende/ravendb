@@ -311,7 +311,8 @@ internal static partial class QueryPlanBuilder
                 EmitInOps(exec.InTermCount, cardinality, bitmapLocal: 0, isSeed: merge == MergeKind.Fill);
                 return;
             }
-            // for AND, use the ephemeral bitmap to hold this, then merge with slot 0.
+            // AndInto / AndNotInto: union IN terms in the ephemeral bitmap, then merge with slot 0.
+            // The seeding Fill clears the ephemeral slot first, so no separate ClearBitmap is needed.
             EmitInOps(exec.InTermCount, cardinality, bitmapLocal: EphemeralBitmap, isSeed: true);
             _ops.Add(new PlanOp
             {
@@ -321,7 +322,11 @@ internal static partial class QueryPlanBuilder
             });
         }
 
-        /// <summary>AllIn clause leaf — logically (term0 ∩ term1 ∩ … ∩ termN).</summary>
+        /// <summary>AllIn clause leaf — logically (term0 ∩ term1 ∩ … ∩ termN). For Fill merge,
+        /// build directly in slot 0. For OrInto/AndInto/AndNotInto, build the intersection in a
+        /// scratch slot (the seeding Fill clears it), then merge it into the slot-0 accumulator.
+        /// The AndRange op honors SkipEarlyExit; building in a scratch slot we suppress it so the
+        /// loop doesn't jump to doneLabel mid-intersection and skip the merge.</summary>
         private void EmitAllInLeaf(ClauseExecution exec, long cardinality, MergeKind merge, bool suppressEarlyExit)
         {
             if (merge == MergeKind.Fill)
@@ -332,9 +337,10 @@ internal static partial class QueryPlanBuilder
 
             using var _ = AllocateScratchSlot(out int saveSlot);
 
-            _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = saveSlot });
-            _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-            EmitAllInOps(exec.InTermCount, cardinality, bitmapLocal: 0, suppressEarlyExit: true);
+            // Build the intersection in the scratch slot (the seeding Fill clears it), then merge
+            // into the slot-0 accumulator. suppressEarlyExit so AndRange doesn't jump to doneLabel
+            // mid-intersection and skip that merge.
+            EmitAllInOps(exec.InTermCount, cardinality, bitmapLocal: saveSlot, suppressEarlyExit: true);
 
             switch (merge)
             {
@@ -345,7 +351,6 @@ internal static partial class QueryPlanBuilder
                     _ops.Add(new PlanOp { Kind = PlanOpKind.AndBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
                     break;
                 case MergeKind.AndNotInto:
-                    _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
                     _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
                     break;
             }
@@ -388,7 +393,8 @@ internal static partial class QueryPlanBuilder
         {
             if (exec.ClauseType is ClauseType.In)
             {
-                // isSeed:true so FillFromPostingSource overwrites the ephemeral bitmap — no ClearBitmap needed.
+                // isSeed:true — the seeding Fill clears the ephemeral bitmap first, so the union
+                // is built there in isolation before AndNotBitmaps removes it from slot 0.
                 EmitInOps(exec.InTermCount, cardinality, bitmapLocal: EphemeralBitmap, isSeed: true);
                 _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = EphemeralBitmap });
                 return;
@@ -416,6 +422,8 @@ internal static partial class QueryPlanBuilder
         private void EmitInOps(int inTermCount, long cardinality, int bitmapLocal, bool isSeed)
         {
             int totalSlots = inTermCount + 1; // inTermCount non-null terms + 1 null-term slot
+            // The seed op (Fill or Or) handles the first term into bitmapLocal; OrRange iterates the
+            // remaining slots (including the trailing null-term slot) into the same bitmapLocal.
 
             _ops.Add(new PlanOp
             {
@@ -435,16 +443,16 @@ internal static partial class QueryPlanBuilder
             _matchIndex += totalSlots;
         }
 
-        /// <summary>Emit ops for an AllIn clause (as a seed): Fill slot 0 + AndRange for the rest.
-        /// Same fixed shape rationale as <see cref="EmitInOps"/> — the count of remaining
+        /// <summary>Emit ops for an AllIn clause (as a seed): Fill the first term into bitmapLocal
+        /// + AndRange for the rest. Same fixed shape rationale as <see cref="EmitInOps"/> — the count of remaining
         /// terms lives in <c>ctx.InRangeCounts</c> rather than the op shape itself.
         /// <paramref name="inTermCount"/> must match <c>exec.InTermCount</c> so the slot
         /// layout agrees with the resolver walk.</summary>
         private void EmitAllInOps(int inTermCount, long cardinality, int bitmapLocal, bool suppressEarlyExit)
         {
             int totalSlots = inTermCount + 1; // inTermCount non-null terms + 1 null-term slot
-            // Fill consumes slot 0, AndRange iterates the rest. The range count
-            // covers all slots after slot 0 (including the null-term slot).
+            // The seeding Fill consumes the first term into bitmapLocal, AndRange iterates the rest.
+            // The range count covers all slots after the first (including the null-term slot).
             // The value at this index is filled in at FinalizePlan time by the
             // fused CardinalityArrayBuilder.Build walk.
             int rangeIdx = _nextRangeIdx++;
