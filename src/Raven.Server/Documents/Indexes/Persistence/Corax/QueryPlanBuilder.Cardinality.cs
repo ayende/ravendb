@@ -73,21 +73,19 @@ internal static partial class QueryPlanBuilder
 
                     case ClauseType.OrGroup:
                         long orSum = 0;
-                        if (e.SubExecutions == null) return orSum;
-                        for (int si = 0; si < clause.SubClauses.Count; si++)
+                        foreach (ClauseExecution subExec in e.SubExecutions)
                         {
-                            ClauseExecution subExec = e.SubExecutions[si];
-                            if (subExec.Cardinality < 0) subExec.Cardinality = EstimateClause(subExec);
+                            if (subExec.Cardinality < 0) 
+                                subExec.Cardinality = EstimateClause(subExec);
                             orSum += subExec.Cardinality;
                         }
                         return Math.Min(orSum, indexSearcher.NumberOfEntries);
                     case ClauseType.AndGroup:
                         long andMin = indexSearcher.NumberOfEntries;
-                        if (e.SubExecutions == null) return andMin;
-                        for (int si = 0; si < clause.SubClauses.Count; si++)
+                        foreach (ClauseExecution subExec in e.SubExecutions)
                         {
-                            ClauseExecution subExec = e.SubExecutions[si];
-                            if (subExec.Cardinality < 0) subExec.Cardinality = EstimateClause(subExec);
+                            if (subExec.Cardinality < 0) 
+                                subExec.Cardinality = EstimateClause(subExec);
                             andMin = Math.Min(andMin, subExec.Cardinality);
                         }
                         return andMin;
@@ -108,7 +106,7 @@ internal static partial class QueryPlanBuilder
             if (isAllEntries)
                 cards.Add(0); // reserve slot 0 for the synthetic AllEntries match
 
-            foreach (ClauseExecution exec in executions ?? [])
+            foreach (ClauseExecution exec in executions)
             {
                 Walk(exec);
             }
@@ -124,7 +122,7 @@ internal static partial class QueryPlanBuilder
                 {
                     case ClauseType.OrGroup:
                     case ClauseType.AndGroup:
-                        foreach (ClauseExecution sub in exec.SubExecutions ?? [])
+                        foreach (ClauseExecution sub in exec.SubExecutions)
                         {
                             Walk(sub);
                         }
