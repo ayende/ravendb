@@ -172,26 +172,22 @@ internal static partial class QueryPlanBuilder
                 return;
             }
 
-            if (TryGetGroupFanOut(exec.Clause, exec, out _, out var subExecs))
+            switch (exec.ClauseType)
             {
-                EmitGroupInto(exec, subExecs, merge, suppressEarlyExit);
-                return;
+                case ClauseType.OrGroup or ClauseType.AndGroup when exec.Clause.SubClauses is { Count: > 0 }:
+                    EmitGroupInto(exec, exec.SubExecutions, merge, suppressEarlyExit);
+                    break;
+                case ClauseType.In:
+                    EmitInLeaf(exec, cardinality, merge);
+                    break;
+                case ClauseType.AllIn:
+                    EmitAllInLeaf(exec, cardinality, merge, suppressEarlyExit);
+                    break;
+                default:
+                    EmitLeafMergeOp(merge, cardinality, GetDispatch(exec.Clause), suppressEarlyExit);
+                    _matchIndex++;
+                    break;
             }
-
-            if (exec.ClauseType is ClauseType.In)
-            {
-                EmitInLeaf(exec, cardinality, merge);
-                return;
-            }
-
-            if (exec.ClauseType is ClauseType.AllIn)
-            {
-                EmitAllInLeaf(exec, cardinality, merge, suppressEarlyExit);
-                return;
-            }
-
-            EmitLeafMergeOp(merge, cardinality, GetDispatch(exec.Clause), suppressEarlyExit);
-            _matchIndex++;
         }
 
         /// <summary>Emit a group (OrGroup or AndGroup) merged into slot 0. For Fill merge,
@@ -224,9 +220,7 @@ internal static partial class QueryPlanBuilder
                     _ops.Add(new PlanOp { Kind = PlanOpKind.AndBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
                     break;
                 case MergeKind.AndNotInto:
-                    // AndNotBitmaps[0, saveSlot] = slot 0 \ saveSlot. After build,
-                    // slot 0 = group result, saveSlot = original accumulator. We
-                    // want (orig \ group) so swap operands back first.
+                    // AndNotBitmaps[0, saveSlot] = slot 0 \ saveSlot. After build, slot 0 = group result, saveSlot = original accumulator, swap them first.
                     _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
                     _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
                     break;
@@ -241,40 +235,15 @@ internal static partial class QueryPlanBuilder
         /// first sub (or FillAllEntries if first is negated), AND/ANDNOT rest.</summary>
         private void EmitGroupContentsInSlot0(ClauseExecution exec, List<ClauseExecution> subExecs, bool suppressEarlyExit)
         {
-            int subCount = subExecs.Count;
-            long subCard = exec.Cardinality / Math.Max(1, subCount);
-            bool isOr = exec.ClauseType == ClauseType.OrGroup;
-
-            if (isOr)
-            {
-                for (int si = 0; si < subCount; si++)
-                {
-                    EmitClauseInto(subExecs[si],
-                        si == 0 ? MergeKind.Fill : MergeKind.OrInto,
-                        subCard, suppressEarlyExit);
-                }
-                return;
-            }
-
-            // AndGroup
-            bool firstIsNeg = subExecs[0].IsNegated || subExecs[0].ClauseType == ClauseType.NotEquals;
-            int start;
-            if (firstIsNeg)
-            {
+            bool firstNegated = subExecs[0].IsNegated && exec.ClauseType != ClauseType.OrGroup;
+            if (firstNegated)
                 _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
-                start = 0;
-            }
-            else
+            var followupAction = exec.ClauseType != ClauseType.OrGroup ? MergeKind.AndInto : MergeKind.OrInto;
+            EmitClauseInto(subExecs[0], firstNegated ? MergeKind.AndNotInto : MergeKind.Fill, subExecs[0].Cardinality, suppressEarlyExit);
+            for (int i = 1; i < subExecs.Count; i++)
             {
-                EmitClauseInto(subExecs[0], MergeKind.Fill, subCard, suppressEarlyExit);
-                start = 1;
-            }
-            for (int si = start; si < subCount; si++)
-            {
-                bool subNeg = subExecs[si].IsNegated || subExecs[si].ClauseType == ClauseType.NotEquals;
-                EmitClauseInto(subExecs[si],
-                    subNeg ? MergeKind.AndNotInto : MergeKind.AndInto,
-                    subCard, suppressEarlyExit);
+                MergeKind kind = subExecs[i].IsNegated ? MergeKind.AndNotInto : followupAction;
+                EmitClauseInto(subExecs[i], kind, subExecs[i].Cardinality, suppressEarlyExit);
             }
         }
 
