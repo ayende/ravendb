@@ -1,78 +1,44 @@
-using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using Corax.Querying.Planning;
 using Raven.Server.Documents.Queries;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
-/// <summary>
-/// Highlighting term extraction from the compiled query plan.
-/// Populates <see cref="CoraxHighlightingTermIndex"/> dictionaries that
-/// the bitmap pipeline hands off to the highlighter after query execution.
-/// </summary>
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>
-    /// Populate the highlighting terms dictionary from the plan's clauses.
-    /// The old CoraxQueryBuilder did this as a side effect during query building.
-    /// The bitmap pipeline must do it explicitly after plan building.
-    /// </summary>
     private static void PopulateHighlightingTerms(QueryExecution exec, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata)
     {
-        var execs = exec.Executions;
-        if (highlightingTerms == null || execs is not { Count: > 0 })
-            return;
-
-        for (int ci = 0; ci < execs.Count; ci++)
+        foreach (var cur in exec.Executions)
         {
-            var clauseObj = execs[ci].Clause;
-            var clauseExec2 = execs[ci];
-
-            // Recurse into sub-clauses before checking FieldName: OrGroup/AndGroup have
-            // FieldName==null (they are structural wrappers, not field clauses), so a
-            // FieldName-first guard would skip their children entirely.
-            switch (clauseObj?.ClauseType)
-            {
-                case ClauseType.OrGroup or ClauseType.AndGroup when clauseObj.SubClauses is { Count: > 0 }:
-                {
-                    for (int si = 0; si < clauseObj.SubClauses.Count; si++)
-                    {
-                        var subExec = clauseExec2?.SubExecutions != null && si < clauseExec2.SubExecutions.Count ? clauseExec2.SubExecutions[si] : null;
-                        PopulateHighlightingForClause(clauseObj.SubClauses[si], subExec, highlightingTerms, metadata, exec);
-                    }
-
-                    break;
-                }
-            }
-
-            if (clauseObj?.FieldName == null)
-                continue;
-
-            PopulateHighlightingForClause(clauseObj, clauseExec2, highlightingTerms, metadata, exec);
+            PopulateHighlightingForClause(cur, highlightingTerms, metadata, exec);
         }
     }
 
-    private static void PopulateHighlightingForClause(ClauseInfo clause, ClauseExecution exec, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata, QueryExecution queryExec)
+    private static void PopulateHighlightingForClause(ClauseExecution exec, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, QueryMetadata metadata, QueryExecution queryExec)
     {
-        string fieldName = clause.FieldName;
-        if (fieldName == null)
-            return;
-
-        // Skip highlighting for null-valued clauses (e.g. WHERE City == null).
-        // Null is not a search term — there's nothing to highlight. Without this
-        // guard, the highlighter produces a spurious result for null fields (#4781).
-        if (clause.ClauseType is ClauseType.Equals or ClauseType.NotEquals)
+        RuntimeHelpers.EnsureSufficientExecutionStack();
+        switch (exec.ClauseType)
         {
-            var packed = exec?.PackedParamValue ?? PackedParam.None;
-            if (packed.IsNone || (packed is { ValueType: PackedParam.TypeString, Param1: >= 0 } && queryExec.StringValues != null
-                                                                                                && packed.Param1 < queryExec.StringValues.Length
-                                                                                                && queryExec.StringValues[packed.Param1] == null))
+            case ClauseType.OrGroup or ClauseType.AndGroup:
             {
+                foreach (var subExecution in exec.SubExecutions)
+                {
+                    PopulateHighlightingForClause(subExecution, highlightingTerms, metadata, queryExec);
+                }
                 return;
             }
         }
+        
+        ClauseInfo clause = exec.Clause;
+        if (clause.FieldName == null)
+            return; // can happen if we have a method, etc 
 
-        if (highlightingTerms.TryGetValue(fieldName, out var existingTerm))
+        if (exec is not { ClauseType : ClauseType.Equals or ClauseType.NotEquals, PackedParamValue.IsNone: false } || // not a string parameter 
+            queryExec.StringValues[exec.PackedParamValue.Param1] is null)   // or the string parameter is set to null, nothing we can do here
+            return;
+
+        if (highlightingTerms.TryGetValue(clause.FieldName, out var existingTerm))
         {
             existingTerm.Values ??= GetHighlightingValues(clause, exec, queryExec);
             return;
@@ -80,44 +46,44 @@ internal static partial class QueryPlanBuilder
 
         var term = new CoraxHighlightingTermIndex
         {
-            FieldName = fieldName,
+            FieldName = clause.FieldName,
             Values = GetHighlightingValues(clause, exec, queryExec)
         };
+        if (metadata.IsDynamic)
+        {
+            if (clause.ClauseType == ClauseType.Search)
+                term.DynamicFieldName = AutoIndexField.GetSearchAutoIndexFieldName(clause.FieldName);
+            else if (clause.IsExact)
+                term.DynamicFieldName = AutoIndexField.GetExactAutoIndexFieldName(clause.FieldName);
+        }
+        
+        highlightingTerms[clause.FieldName] = term;
 
-        if (metadata.IsDynamic && clause.ClauseType == ClauseType.Search)
-            term.DynamicFieldName = AutoIndexField.GetSearchAutoIndexFieldName(fieldName);
-        else if (metadata.IsDynamic && clause.IsExact)
-            term.DynamicFieldName = AutoIndexField.GetExactAutoIndexFieldName(fieldName);
-
-        highlightingTerms[fieldName] = term;
-
-        // For dynamic indexes, also add the dynamic field name variant
-        if (term.DynamicFieldName != null)
+        if (term.DynamicFieldName != null) // For dynamic indexes, also add the dynamic field name variant
             highlightingTerms[term.DynamicFieldName] = term;
     }
 
     private static object GetHighlightingValues(ClauseInfo clause, ClauseExecution exec, QueryExecution queryExec)
     {
-        var packed = exec?.PackedParamValue ?? PackedParam.None;
         if (clause.ClauseType == ClauseType.Between)
         {
-            return new Tuple<string, string>(
-                FormatValueFromPlan(packed, queryExec),
-                FormatValue2FromPlan(packed, queryExec));
+            return new List<string>
+            {
+                FormatValueFromPlan(exec.PackedParamValue, queryExec), 
+                FormatValue2FromPlan(exec.PackedParamValue, queryExec)
+            };
         }
 
-        int inTermCount = exec?.InTermCount ?? 0;
-        bool hasNullTerm = exec?.HasNullTerm ?? false;
-        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && (inTermCount > 0 || hasNullTerm))
+        if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && (exec.InTermCount > 0 || exec.HasNullTerm))
         {
-            var terms = new List<string>(inTermCount + (hasNullTerm ? 1 : 0));
-            for (int t = 0; t < inTermCount; t++)
-                terms.Add(FormatValueFromPlan(packed.WithTermOffset(t), queryExec));
-            if (hasNullTerm)
+            var terms = new List<string>(exec.InTermCount + (exec.HasNullTerm ? 1 : 0));
+            for (int t = 0; t < exec.InTermCount; t++)
+                terms.Add(FormatValueFromPlan(exec.PackedParamValue.WithTermOffset(t), queryExec));
+            if (exec.HasNullTerm)
                 terms.Add(null);
             return terms;
         }
 
-        return FormatValueFromPlan(packed, queryExec);
+        return FormatValueFromPlan(exec.PackedParamValue, queryExec);
     }
 }

@@ -7,17 +7,8 @@ using Corax.Querying.Planning;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
-/// <summary>
-/// Diagnostic / inspection methods for the compiled query plan.
-/// Builds the Studio-facing QueryInspectionNode tree from the cached
-/// InspectionTemplate plus runtime telemetry (timings, row counts,
-/// entry-scan triggers).
-/// </summary>
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>Build the inspection graph from the cached template and runtime telemetry.
-    /// Values are formatted from the current <see cref="QueryExecution"/>'s typed arrays,
-    /// not baked into the cached template.</summary>
     public static QueryInspectionNode BuildInspectionGraph(BuildCompileAndOptimizeResult result)
     {
         long[] timings = null;
@@ -150,25 +141,30 @@ internal static partial class QueryPlanBuilder
         foreach (var clauseExec in exec.Executions)
         {
             var clause = clauseExec.Clause;
-            if (clause.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup && clauseExec.SubExecutions != null)
+            switch (clause.ClauseType)
             {
-                for (int si = 0; si < clauseExec.SubExecutions.Count; si++)
-                    flat.Add(clauseExec.SubExecutions[si]);
-            }
-            else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clauseExec.InTermCount > 0)
-            {
-                var p = clauseExec.PackedParamValue;
-                for (int t = 0; t < clauseExec.InTermCount; t++)
+                case ClauseType.OrGroup or ClauseType.AndGroup:
                 {
-                    flat.Add(new ClauseExecution(clause)
-                    {
-                        PackedParamValue = p.WithTermOffset(t)
-                    });
+                    foreach (var cur in clauseExec.SubExecutions)
+                        flat.Add(cur);
+                    break;
                 }
-            }
-            else
-            {
-                flat.Add(clauseExec);
+                case ClauseType.In or ClauseType.AllIn when clauseExec.InTermCount > 0:
+                {
+                    var p = clauseExec.PackedParamValue;
+                    for (int t = 0; t < clauseExec.InTermCount; t++)
+                    {
+                        flat.Add(new ClauseExecution(clause)
+                        {
+                            PackedParamValue = p.WithTermOffset(t)
+                        });
+                    }
+
+                    break;
+                }
+                default:
+                    flat.Add(clauseExec);
+                    break;
             }
         }
 
@@ -202,26 +198,31 @@ internal static partial class QueryPlanBuilder
         foreach (var clauseExec in executions)
         {
             var clause = clauseExec.Clause;
-            if (clause.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup && clause.SubClauses != null)
+            switch (clause.ClauseType)
             {
-                for (int si = 0; si < clause.SubClauses.Count; si++)
-                    flatClauses.Add(clause.SubClauses[si]);
-            }
-            else if (clause.ClauseType is ClauseType.In or ClauseType.AllIn && clauseExec.InTermCount > 0)
-            {
-                for (int t = 0; t < clauseExec.InTermCount; t++)
+                case ClauseType.OrGroup or ClauseType.AndGroup:
                 {
-                    flatClauses.Add(new ClauseInfo
-                    {
-                        FieldName = clause.FieldName,
-                        ClauseType = clause.ClauseType,
-                        IsNegated = clause.IsNegated
-                    });
+                    foreach (ClauseInfo v in clause.SubClauses)
+                        flatClauses.Add(v);
+                    break;
                 }
-            }
-            else
-            {
-                flatClauses.Add(clause);
+                case ClauseType.In or ClauseType.AllIn:
+                {
+                    for (int t = 0; t < clauseExec.InTermCount; t++)
+                    {
+                        flatClauses.Add(new ClauseInfo
+                        {
+                            FieldName = clause.FieldName,
+                            ClauseType = clause.ClauseType,
+                            IsNegated = clause.IsNegated
+                        });
+                    }
+
+                    break;
+                }
+                default:
+                    flatClauses.Add(clause);
+                    break;
             }
         }
 

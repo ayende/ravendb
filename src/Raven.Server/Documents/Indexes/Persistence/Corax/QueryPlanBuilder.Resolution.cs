@@ -344,7 +344,7 @@ internal static partial class QueryPlanBuilder
     private static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
-        foreach (var it in exec.SubExecutions ?? [])
+        foreach (var it in exec.SubExecutions)
         {   // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
             PopulateClauseValues(it, queryParameters, writer, builderParameters);
         }
@@ -2388,14 +2388,11 @@ internal static partial class QueryPlanBuilder
             case ClauseType.AndGroup:
             case ClauseType.OrGroup:
             {
-                if (clause.SubClauses is not { Count: > 0 } subs)
-                    return null;
-
                 var subExecs = exec.SubExecutions;
                 var branches = new List<ScanPredicateInfo>();
                 // Save slice index so we can roll back if any subclause is unscannable.
                 int slc = sliceIndex;
-                for (int si = 0; si < subs.Count; si++)
+                for (int si = 0; si < subExecs.Count; si++)
                 {
                     var subTermType = subExecs[si].TermValueType;
                     var subPred = BuildScanPredicateInfoCore(subExecs[si], subTermType, ref slc);
@@ -2407,7 +2404,7 @@ internal static partial class QueryPlanBuilder
                 sliceIndex = slc;
                 return new ScanPredicateInfo
                 {
-                    FieldName = clause.FieldName ?? subs[0].FieldName,
+                    FieldName = clause.FieldName ?? subExecs[0].Clause.FieldName,
                     SubPredicates = branches.ToArray(),
                     Group = clause.ClauseType == ClauseType.AndGroup ? GroupKind.And : GroupKind.Or
                 };
