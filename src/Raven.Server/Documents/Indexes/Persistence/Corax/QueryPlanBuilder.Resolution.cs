@@ -31,13 +31,6 @@ using Range = Corax.Querying.Matches.Meta.Range;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
-/// <summary>
-/// Per-execution resolution: compiles plans, resolves matches and term sources
-/// from clause metadata, extracts typed scan parameters, handles highlighting,
-/// sorting, and spatial/vector materialization.
-///
-/// Methods here run once per query execution (not cached).
-/// </summary>
 internal static partial class QueryPlanBuilder
 {
     internal readonly record struct BuildCompileAndOptimizeResult(
@@ -70,20 +63,11 @@ internal static partial class QueryPlanBuilder
 
     private enum MergeKind
     {
-        /// <summary>Slot 0 ← clause result. First op of an OR chain or first
-        /// non-negated element of an AND chain.</summary>
-        Fill,
-
-        /// <summary>slot 0 ← slot 0 ∪ clause. Subsequent OR-chain elements.</summary>
-        OrInto,
-
-        /// <summary>slot 0 ← slot 0 ∩ clause. Subsequent positive AND-chain elements.</summary>
-        AndInto,
-
-        /// <summary>slot 0 ← slot 0 \ clause. Negated AND-chain elements.</summary>
-        AndNotInto
+        Fill, // slot 0 ← clause result. First op of an OR chain or first non-negated element of an AND chain
+        OrInto, // slot 0 ← slot 0 ∪ clause. Subsequent OR-chain elements
+        AndInto, // slot 0 ← slot 0 ∩ clause. Subsequent positive AND-chain elements
+        AndNotInto // slot 0 ← slot 0 \ clause. Negated AND-chain elements
     }
-
 
     public static PlanTemplate BuildTemplate(PlanParameters planParams)
     {
@@ -109,20 +93,14 @@ internal static partial class QueryPlanBuilder
         var indexSearcher = planParams.IndexSearcher;
         var walkerCtx = new ResolutionContext(builderParameters);
 
-        // Phase 1: structural template (cached per queryText).
         var template = BuildTemplate(planParams);
 
-        // Phase 2: parameter resolution, exec emission, IL compile (with cache miss handling).
         (compiledPlanOut, exec) = Build(template, planParams, builderParameters, walkerCtx);
         if (compiledPlanOut == null)
             return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
 
-        // Phase 3: live binding (resolved matches, term sources, spatial/vector/highlighting wrappers).
-        // BuildAndCompile uses the unconditional bitmap path — ORDER BY optimization dispatch
-        // (CompoundExact / CompoundField / DirectScan) belongs to BuildCompileAndOptimize.
         return InstantiateBitmapPipeline(compiledPlanOut, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
     }
-
 
     public static BuildCompileAndOptimizeResult BuildCompileAndOptimize(PlanParameters planParams,
         QueryBuilderParameters builderParameters,
@@ -133,10 +111,8 @@ internal static partial class QueryPlanBuilder
         var indexSearcher = planParams.IndexSearcher;
         var walkerCtx = new ResolutionContext(builderParameters);
 
-        // Phase 1: structural template (cached per queryText).
         var template = BuildTemplate(planParams);
 
-        // Phase 2: parameter resolution, plan emission, IL compile (with cache-miss handling).
         var (plan, exec) = Build(template, planParams, builderParameters, walkerCtx);
         if (plan == null)
         {
@@ -144,9 +120,7 @@ internal static partial class QueryPlanBuilder
             return new(emptyMatch, emptyMatch, null, null, null, builderParameters, null);
         }
 
-        // Phase 3a: resolve ORDER BY metadata (needed by Instantiate's strategy dispatch).
         var orderByFields = GetSortMetadata(builderParameters, plan.Template, out var hasEmptySorts);
-        // Phase 3b: dispatch on the cached ExecutionStrategy (fast path) or run  discovery (cache-miss only). 
         var queryMatch = Instantiate(plan, exec, orderByFields, hasEmptySorts,
             planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
         return new(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, exec, builderParameters, orderByFields);
@@ -156,12 +130,8 @@ internal static partial class QueryPlanBuilder
     private static (CompiledPlan, QueryExecution) Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
     {
         var indexSearcher = planParams.IndexSearcher;
-        var queryText = planParams.Metadata.Query.QueryText;
-        var planCache = indexSearcher.PlanCache;
-
-        // Build the per-execution exec list from the template, evaluating WHEN clauses against bound parameters as we go.
-        int whenFlags = 0;
-        var executions = EvaluateWhenAndFilterClauses();
+        
+        var (executions, whenFlags) = EvaluateWhenAndFilterClauses(); // evaluating WHEN clauses against bound parameters as we go.
 
         var writer = new ValueWriter();
         QueryExecution exec = CreateQueryExecution();
@@ -169,40 +139,41 @@ internal static partial class QueryPlanBuilder
         if (exec.QueryWillReturnNoResults) // there are no results here..., return immediately
             return default;
 
-        // Compute cache key components (cheap) 
         int operandOrdering = ComputeOperandOrdering();
-
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature();
-
-        if (planCache.Get(queryText, operandOrdering, typeSignature, fullKinds, whenFlags) is { } compiledPlan)
+        if (indexSearcher.PlanCache.Get(planParams.Metadata.Query.QueryText, operandOrdering, typeSignature, fullKinds, whenFlags) is { } compiledPlan)
             return FinalizePlan(); // use cached plan
+        
+        return BuildOnCacheMiss(); // Cache miss — full exec emission
 
-        // Cache miss — full exec emission
-        var (ops, requiredBitmaps) = PlanEmitter.Emit(template, executions, planParams);
-
-        var scanPredicates = CreateScanPredicates();
-        compiledPlan = new CompiledPlan
+        (CompiledPlan, QueryExecution) BuildOnCacheMiss()
         {
-            CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
-            CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
-            CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(CollectionsMarshal.AsSpan(scanPredicates), out var scanCsharp),
+            var (ops, requiredBitmaps) = PlanEmitter.Emit(template, executions, planParams);
 
-            Template = template,
-            Source = csharpText + "\n" + scanCsharp,
-            Ordering = operandOrdering,
-            TypeSignature = typeSignature,
-            FullKinds = fullKinds,
-            WhenFlags = whenFlags,
-            OpCount = ops.Length,
-            RequiredBitmaps = requiredBitmaps,
-            InspectionTemplate = BuildInspectionTemplate(ops, executions),
-            ScanPredicateInfos = scanPredicates,
-            AllNegated = CheckAllNegated(),
-        };
-        RemapOptimizationIndices();
-        planCache.Add(queryText, compiledPlan, template);
+            var scanPredicates = CreateScanPredicates();
+            compiledPlan = new CompiledPlan
+            {
+                CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
+                CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
+                CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(CollectionsMarshal.AsSpan(scanPredicates), out var scanCsharp),
 
-        return FinalizePlan();
+                Template = template,
+                Source = csharpText + "\n" + scanCsharp,
+                Ordering = operandOrdering,
+                TypeSignature = typeSignature,
+                FullKinds = fullKinds,
+                WhenFlags = whenFlags,
+                OpCount = ops.Length,
+                RequiredBitmaps = requiredBitmaps,
+                InspectionTemplate = BuildInspectionTemplate(ops, executions),
+                ScanPredicateInfos = scanPredicates,
+                AllNegated = CheckAllNegated(),
+            };
+            RemapOptimizationIndices();
+            indexSearcher.PlanCache.Add(planParams.Metadata.Query.QueryText, compiledPlan, template);
+
+            return FinalizePlan();
+        }
 
         (CompiledPlan, QueryExecution ) FinalizePlan()
         {
@@ -212,8 +183,7 @@ internal static partial class QueryPlanBuilder
             exec.Cardinalities = cards;
 
             AttachSpatialAndVectorClauses(exec, template, planParams, builderParameters, writer);
-            // Re-snapshot typed arrays into exec: AttachSpatialAndVectorClauses appended
-            writer.SetValues(exec);
+            writer.SetValues(exec); // // Re-snapshot typed arrays into exec, AttachSpatialAndVectorClauses may have modified them
             return (compiledPlan, exec);
         }
 
@@ -225,8 +195,7 @@ internal static partial class QueryPlanBuilder
             foreach (var it in executions)
             {
                 PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters);
-                // Constant propagation — a contradictory BETWEEN rewrites into the empty-IN flavor,
-                PropagateBetweenContradiction(it, writer);
+                PropagateBetweenContradiction(it, writer); // a contradictory BETWEEN rewrites into the empty-IN flavor
                 hasEmptyIn |= IsEmptyIn(it);
 
                 if (it.Cardinality < 0)
@@ -235,14 +204,12 @@ internal static partial class QueryPlanBuilder
                     drivingClauseCardinality = it.Cardinality;
             }
 
-            // sort executions by cardinality
-            executions.Sort();
+            executions.Sort(); // sort executions by cardinality (smaller clauses first)
 
             return new QueryExecution
             {
                 Executions = executions,
-                // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
-                QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false,
+                QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false, // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
                 IsAllEntries = executions.Count is 0,
                 DrivingClauseCardinality = drivingClauseCardinality,
             };
@@ -266,21 +233,19 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        List<ClauseExecution> EvaluateWhenAndFilterClauses()
+        (List<ClauseExecution> Executions, int WhenFlags)  EvaluateWhenAndFilterClauses()
         {
             var execList = new List<ClauseExecution>(template.Clauses.Count);
-            if (template.WhenCount == 0)
+            if (template.WhenCount == 0) // Fast path: no WHEN clauses anywhere in the template — skip the per-clause
             {
-                // Fast path: no WHEN clauses anywhere in the template — skip the per-clause
-                // WhenCondition null check. Common case for non-conditional queries.
                 foreach (var cached in template.Clauses)
                 {
                     execList.Add(CreateExecution(cached));
                 }
 
-                return execList;
-            }
+                return (execList, 0); }
 
+            int whenFlags = 0;
             int whenBit = 0;
             foreach (var cached in template.Clauses)
             {
@@ -299,17 +264,14 @@ internal static partial class QueryPlanBuilder
                 execList.Add(CreateExecution(cached));
             }
 
-            return execList;
+            return (execList, whenFlags);
         }
 
-        // Scan predicates allow us to do a direct scan of the entries to reduce the number of document loads
-        // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public'
-        // If Tags = 'good' gave us 100 items, we don't want to do an AndWith Status = 'Public' (may have 1M items)
+        // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
         // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly
         List<ScanPredicateInfo> CreateScanPredicates()
         {
             // Scan predicates only apply to multi-clause AND chains (clause 0 is the seed, 1..N are evaluated per-entry).
-            // OR chains and single-clause queries skip this — the IL won't emit MaybeEntryScan for them.
             if (template.IsOr || executions.Count <= 1)
                 return null;
 
@@ -326,7 +288,7 @@ internal static partial class QueryPlanBuilder
             return predicates;
         }
 
-        bool CheckAllNegated() => executions is [{ IsNegated: true }, ..];
+        bool CheckAllNegated() => executions is [{ IsNegated: true }, ..]; // negated clauses are always sorted first, so we can just check the first
 
         int ComputeOperandOrdering()
         {
@@ -339,8 +301,7 @@ internal static partial class QueryPlanBuilder
             if (planParams.HasBoost)
                 ordering |= QueryExecution.HasBoostBit;
 
-            // Cardinality cliff bit: queries under vs. over the cliff get different compiled plans, so the bit is part of the cache key.
-            // exec.DrivingClauseCardinality was captured during the cardinality pass; no second walk needed.
+            // Cardinality cliff bit: queries under vs. over the cliff get different compiled plans, so the bit is part of the cache key and we give them different plans
             long drivingCard = exec.DrivingClauseCardinality;
             if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
                 ordering |= QueryExecution.CardinalityCliffBit;
@@ -349,8 +310,7 @@ internal static partial class QueryPlanBuilder
 
         (int TypeSignature, byte[] FullKinds) ComputeTypeSignature()
         {
-            // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong). Literals are excluded — their types are fixed at template time.
-            int types = 0;
+            int types = 0; // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong), literals are handled via the query text (separate)
             var full = template.ParameterSlots.Length > 16 ? new byte[template.ParameterSlots.Length] : null;
             for (int i = 0; i < template.ParameterSlots.Length; i++)
             {
@@ -384,13 +344,11 @@ internal static partial class QueryPlanBuilder
     private static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
-        // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
         foreach (var it in exec.SubExecutions ?? [])
-        {
+        {   // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
             PopulateClauseValues(it, queryParameters, writer, builderParameters);
         }
 
-        // Resolve boost factor if this clause is boosted
         if (exec.Clause is { HasBoost: true, Bindings.Length: > 0 })
         {
             ResolveBoostFactor(exec, queryParameters);
@@ -2184,8 +2142,10 @@ internal static partial class QueryPlanBuilder
             return false;
 
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        for (int i = 0; i < execs.Count; i++)
-            bitmapCost += EffectiveCardinality(execs[i], indexSearcher);
+        foreach (var it in execs)
+        {
+            bitmapCost += EffectiveCardinality(it, indexSearcher);
+        }
 
         long drivingCard = EffectiveCardinality(execs[drivingIdx], indexSearcher);
         entriesToScan = execs.Count > 1
