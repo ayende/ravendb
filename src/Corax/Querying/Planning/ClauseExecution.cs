@@ -8,10 +8,10 @@ namespace Corax.Querying.Planning;
 /// parallel arrays. Populated by PopulateClauseValues each execution (not cached).
 /// Implements <see cref="IComparable{ClauseExecution}"/> for cardinality-based
 /// operand reordering (negated clauses sort last, ties broken by ascending cardinality).</summary>
-public sealed class ClauseExecution(ClauseInfo clause) : IComparable<ClauseExecution>
+public sealed class ClauseExecution : IComparable<ClauseExecution>
 {
     /// <summary>Back-reference to the template clause this execution belongs to.</summary>
-    public readonly ClauseInfo Clause = clause;
+    public readonly ClauseInfo Clause;
 
     public PackedParam PackedParamValue = PackedParam.None;
     public ParamValueType TermValueType;
@@ -36,15 +36,22 @@ public sealed class ClauseExecution(ClauseInfo clause) : IComparable<ClauseExecu
                 IsNegated = true;
             field = value;
         }
-    } = clause.ClauseType;
+    }
 
     /// <summary>Negation flag for this execution. Initialized from
     /// <see cref="ClauseInfo.IsNegated"/> at creation; mutable for per-execution rewrites
     /// (e.g. standalone NotEquals marking).</summary>
-    public bool IsNegated = clause.IsNegated;
+    public bool IsNegated;
 
     /// <summary>Per-execution state for OrGroup/AndGroup subclauses. Parallel to <see cref="ClauseInfo.SubClauses"/>.</summary>
     public List<ClauseExecution> SubExecutions;
+
+    public ClauseExecution(ClauseInfo clause)
+    {
+        Clause = clause;
+        IsNegated = clause.IsNegated;
+        ClauseType = clause.ClauseType;
+    }
 
     /// <summary>Negated clauses sort last; ties broken by ascending cardinality.</summary>
     public int CompareTo(ClauseExecution other)

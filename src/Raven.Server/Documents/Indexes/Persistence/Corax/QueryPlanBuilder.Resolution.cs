@@ -2246,24 +2246,6 @@ internal static partial class QueryPlanBuilder
         EncodeNumericValue(dest, encoding.Packed.ValueType, encoding.SourceSlot, exec);
     }
 
-    /// <summary>For an OrGroup or AndGroup clause, returns the parallel (sub-clauses, sub-executions)
-    /// arrays that callers iterate to fan out one match slot per sub-term. Returns false for any
-    /// other clause type, or for empty groups.</summary>
-    internal static bool TryGetGroupFanOut(ClauseInfo clause, ClauseExecution exec,
-        out List<ClauseInfo> subClauses, out List<ClauseExecution> subExecs)
-    {
-        if (clause.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup && clause.SubClauses is { Count: > 0 })
-        {
-            subClauses = clause.SubClauses;
-            subExecs = exec.SubExecutions;
-            return true;
-        }
-
-        subClauses = null;
-        subExecs = null;
-        return false;
-    }
-
 
     /// <summary>Decide whether a clause type can be expressed as a single
     /// <see cref="PostingSource"/>. Boosted clauses go through the IQueryMatch path
