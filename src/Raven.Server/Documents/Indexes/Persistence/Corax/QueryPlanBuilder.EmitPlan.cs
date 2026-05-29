@@ -40,30 +40,18 @@ internal static partial class QueryPlanBuilder
             return (_ops.ToArray(), Math.Max(2, _maxScratchUsed + 1));
         }
 
-        /// <summary>Emit the PlanOp sequence for an OR chain. All clauses are merged into
-        /// slot 0: the first via Fill, the rest via OrInto. Groups recurse through
-        /// <see cref="EmitClauseInto"/>, allocating scratch slots on demand. SkipEarlyExit
-        /// is forced on every AND-step because remaining OR terms may still match.
-        /// Returns RequiredBitmaps = max(2, deepest scratch slot used + 1).</summary>
         private (PlanOp[] Ops, int RequiredBitmaps) EmitOrPlan(List<ClauseExecution> executions)
         {
-            for (int i = 0; i < executions.Count; i++)
+            Debug.Assert(executions.Count > 0);
+            
+            EmitClauseInto(executions[0],MergeKind.Fill, executions[0].Cardinality, suppressEarlyExit: true);
+            for (int i = 1; i < executions.Count; i++)
             {
-                var exec = executions[i];
-                EmitClauseInto(exec,
-                    i == 0 ? MergeKind.Fill : MergeKind.OrInto,
-                    exec.Cardinality, suppressEarlyExit: true);
+                EmitClauseInto(executions[i], MergeKind.OrInto, executions[i].Cardinality, suppressEarlyExit: true);
             }
             return Complete();
         }
 
-        /// <summary>Emit the PlanOp sequence for an AND chain. Single-clause Equals/NotEquals
-        /// retain their specialised plans (FillFrom*, FillAllEntries+AndNot). Otherwise
-        /// the first non-negated clause seeds slot 0 (Fill) and each subsequent clause is
-        /// merged via AndInto or AndNotInto through <see cref="EmitClauseInto"/>. When every
-        /// clause is negated we seed with FillAllEntries instead and AndNot all of them.
-        /// MaybeEntryScan is emitted before each iteration when remaining clauses
-        /// are scan-eligible; GotoDoneIfEmpty follows each non-negated step.</summary>
         private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions)
         {
             var e0 = executions[0];
@@ -159,15 +147,6 @@ internal static partial class QueryPlanBuilder
 
         private void EmitClauseInto(ClauseExecution exec, MergeKind merge, long cardinality, bool suppressEarlyExit)
         {
-            // Negated leaf of an OR chain. Build the complement at IL time via FillAllEntries +
-            // AndNot of the positive form (single term, IN union, or AllIn intersection). The slot
-            // footprint follows the POSITIVE form's layout — CountClauseLeaves and
-            // ResolveClauseLeavesInto agree. Cancellation and timing come for free from the per-term
-            // cursor machinery.
-            //
-            // Boost on a negated leaf is intentionally a no-op (matches Lucene): boosting is
-            // scoring for a match, and a negation produces a complement, not a match — there's
-            // nothing to score. The BoostFactor on such a clause is silently ignored.
             if (exec.Clause.IsOrChainNotEquals)
             {
                 EmitNegatedLeafInto(exec, merge, cardinality);
