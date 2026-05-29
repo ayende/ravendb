@@ -799,7 +799,7 @@ internal static partial class QueryPlanBuilder
         {
             exec.PopulateScanParams = () =>
             {
-                ScanParamExtractor.Extract(exec, indexSearcher, out var sliceParams, out var fieldRootPages);
+                ScanParamExtractor.Extract(exec, indexSearcher, walkerCtx, out var sliceParams, out var fieldRootPages);
                 exec.ResidualSlices = sliceParams;
                 exec.FieldRootPages = fieldRootPages;
             };
@@ -2344,9 +2344,33 @@ internal static partial class QueryPlanBuilder
             case ClauseType.Regex:
             case ClauseType.Spatial:
             case ClauseType.Vector:
+                return null;
+
             case ClauseType.In:
             case ClauseType.AllIn:
-                return null;
+            {
+                // Negated or boosted IN falls back to the bitmap posting-list union: the residual
+                // scan expresses neither negation nor boost scoring. The value set itself is
+                // materialized per execution into QueryExecution.ResidualInSets (see ScanParamExtractor);
+                // the residual IL only carries the field + compare op + value-type, all cache-stable
+                // (the runtime value count is the materialized array's length).
+                if (exec.IsNegated || clause.HasBoost)
+                    return null;
+
+                ScanValueType inValueType = exec.PackedParamValue.ValueType switch
+                {
+                    PackedParam.TypeLong => ScanValueType.Long,
+                    PackedParam.TypeDouble => ScanValueType.Double,
+                    _ => ScanValueType.Slice
+                };
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = inValueType,
+                    CompareOp = clause.ClauseType == ClauseType.In ? ScanCompareOp.In : ScanCompareOp.AllIn,
+                    ParamIndex = 0
+                };
+            }
 
             case ClauseType.StartsWith:
                 if (termType != ParamValueType.String)

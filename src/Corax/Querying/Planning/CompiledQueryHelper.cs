@@ -5,6 +5,7 @@ using Corax.Querying.Matches;
 using Corax.Querying.Primitives;
 using Corax.Utils;
 using Sparrow;
+using Voron;
 using Voron.Data.Containers;
 using Voron.Data.RoaringBitmaps;
 
@@ -55,6 +56,175 @@ public static class CompiledQueryHelper
                 return true;
         }
         return false;
+    }
+
+    // ── IN / ALL IN against an entry's terms ────────────────────────────
+    //
+    // IN (OR semantics): the field has at least one term equal to one of the values.
+    // ALL IN (set containment): the field's terms cover every value in the set.
+    // Both iterate ALL terms for the field (multi-value support) and compare the entry's
+    // stored term against the per-execution value set. Null terms are matched only when the
+    // IN list itself contained a null (<paramref name="includeNull"/>), mirroring the bitmap
+    // pipeline's null-term posting list. These run only on the entry-scan / direct-scan path,
+    // so the small per-call scratch in ALL IN is off the common query path.
+
+    public static bool CheckFieldTermInSlice(ref EntryTermsReader reader, long fieldRootPage, Slice[] values, bool includeNull)
+    {
+        reader.Reset();
+        while (reader.FindNext(fieldRootPage))
+        {
+            if (reader.IsNull)
+            {
+                if (includeNull)
+                    return true;
+                continue;
+            }
+
+            ReadOnlySpan<byte> term = reader.Current.Decoded();
+            for (int k = 0; k < values.Length; k++)
+            {
+                if (term.SequenceEqual(values[k].AsReadOnlySpan()))
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    public static bool CheckFieldTermInLong(ref EntryTermsReader reader, long fieldRootPage, long[] values, bool includeNull)
+    {
+        reader.Reset();
+        while (reader.FindNext(fieldRootPage))
+        {
+            if (reader.IsNull)
+            {
+                if (includeNull)
+                    return true;
+                continue;
+            }
+
+            long term = reader.CurrentLong;
+            for (int k = 0; k < values.Length; k++)
+            {
+                if (term == values[k])
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    public static bool CheckFieldTermInDouble(ref EntryTermsReader reader, long fieldRootPage, double[] values, bool includeNull)
+    {
+        reader.Reset();
+        while (reader.FindNext(fieldRootPage))
+        {
+            if (reader.IsNull)
+            {
+                if (includeNull)
+                    return true;
+                continue;
+            }
+
+            double term = reader.CurrentDouble;
+            for (int k = 0; k < values.Length; k++)
+            {
+                if (term == values[k])
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    public static bool CheckFieldTermAllInSlice(ref EntryTermsReader reader, long fieldRootPage, Slice[] values, bool includeNull)
+    {
+        Span<bool> matched = values.Length <= 256 ? stackalloc bool[values.Length] : new bool[values.Length];
+        matched.Clear();
+        bool nullMatched = false;
+
+        reader.Reset();
+        while (reader.FindNext(fieldRootPage))
+        {
+            if (reader.IsNull)
+            {
+                nullMatched = true;
+                continue;
+            }
+
+            ReadOnlySpan<byte> term = reader.Current.Decoded();
+            for (int k = 0; k < values.Length; k++)
+            {
+                if (matched[k] == false && term.SequenceEqual(values[k].AsReadOnlySpan()))
+                    matched[k] = true;
+            }
+        }
+
+        for (int k = 0; k < values.Length; k++)
+        {
+            if (matched[k] == false)
+                return false;
+        }
+        return includeNull == false || nullMatched;
+    }
+
+    public static bool CheckFieldTermAllInLong(ref EntryTermsReader reader, long fieldRootPage, long[] values, bool includeNull)
+    {
+        Span<bool> matched = values.Length <= 256 ? stackalloc bool[values.Length] : new bool[values.Length];
+        matched.Clear();
+        bool nullMatched = false;
+
+        reader.Reset();
+        while (reader.FindNext(fieldRootPage))
+        {
+            if (reader.IsNull)
+            {
+                nullMatched = true;
+                continue;
+            }
+
+            long term = reader.CurrentLong;
+            for (int k = 0; k < values.Length; k++)
+            {
+                if (matched[k] == false && term == values[k])
+                    matched[k] = true;
+            }
+        }
+
+        for (int k = 0; k < values.Length; k++)
+        {
+            if (matched[k] == false)
+                return false;
+        }
+        return includeNull == false || nullMatched;
+    }
+
+    public static bool CheckFieldTermAllInDouble(ref EntryTermsReader reader, long fieldRootPage, double[] values, bool includeNull)
+    {
+        Span<bool> matched = values.Length <= 256 ? stackalloc bool[values.Length] : new bool[values.Length];
+        matched.Clear();
+        bool nullMatched = false;
+
+        reader.Reset();
+        while (reader.FindNext(fieldRootPage))
+        {
+            if (reader.IsNull)
+            {
+                nullMatched = true;
+                continue;
+            }
+
+            double term = reader.CurrentDouble;
+            for (int k = 0; k < values.Length; k++)
+            {
+                if (matched[k] == false && term == values[k])
+                    matched[k] = true;
+            }
+        }
+
+        for (int k = 0; k < values.Length; k++)
+        {
+            if (matched[k] == false)
+                return false;
+        }
+        return includeNull == false || nullMatched;
     }
 
     // ── Entry scan iteration loop ───────────────────────────────────────

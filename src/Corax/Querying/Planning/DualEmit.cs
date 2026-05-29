@@ -194,6 +194,35 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsStack.Push($"exec.FieldRootPages[{rootIdx}]");
     }
 
+    /// <summary>Push the typed value array of <c>exec.ResidualInSets[idx]</c> matching
+    /// <paramref name="valueType"/> (Slices / Longs / Doubles).</summary>
+    public void LoadInValueArray(int idx, ScanValueType valueType)
+    {
+        var (field, member) = valueType switch
+        {
+            ScanValueType.Long => (IlEmitterShared.ResidualInValuesLongs, "Longs"),
+            ScanValueType.Double => (IlEmitterShared.ResidualInValuesDoubles, "Doubles"),
+            _ => (IlEmitterShared.ResidualInValuesSlices, "Slices"),
+        };
+        Il.Emit(OpCodes.Ldarg_0);
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualInSets);
+        IlEmitterShared.EmitLdcI4(Il, idx);
+        Il.Emit(OpCodes.Ldelema, typeof(ResidualInValues));
+        Il.Emit(OpCodes.Ldfld, field);
+        CsStack.Push($"exec.ResidualInSets[{idx}].{member}");
+    }
+
+    /// <summary>Push the <c>HasNull</c> flag of <c>exec.ResidualInSets[idx]</c>.</summary>
+    public void LoadInHasNull(int idx)
+    {
+        Il.Emit(OpCodes.Ldarg_0);
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualInSets);
+        IlEmitterShared.EmitLdcI4(Il, idx);
+        Il.Emit(OpCodes.Ldelema, typeof(ResidualInValues));
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualInValuesHasNull);
+        CsStack.Push($"exec.ResidualInSets[{idx}].HasNull");
+    }
+
     public void Ceq()
     {
         Il.Emit(OpCodes.Ceq);

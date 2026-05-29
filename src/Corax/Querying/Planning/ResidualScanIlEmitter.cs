@@ -103,10 +103,11 @@ public static class ResidualScanIlEmitter
 
         // Per-predicate emission (already through DualEmit).
         int rootIdx = 0;
+        int inSetIdx = 0;
         for (int p = 0; p < predicates.Length; p++)
         {
             d.CsLine("");
-            EmitPredicate(ref d, in predicates[p], rejected.Il, ref rootIdx, readerRefLocal, p);
+            EmitPredicate(ref d, in predicates[p], rejected.Il, ref rootIdx, ref inSetIdx, readerRefLocal, p);
         }
 
         // All passed: entryIds[writeIdx] = entryIds[i]
@@ -208,6 +209,7 @@ public static class ResidualScanIlEmitter
         in ScanPredicateInfo pred,
         Label failLabel,
         ref int rootIdx,
+        ref int inSetIdx,
         LocalBuilder readerRefLocal,
         int pIdx)
     {
@@ -219,7 +221,7 @@ public static class ResidualScanIlEmitter
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
                     var nextSub = d.DefineLabelPair("nextBranch");
-                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], nextSub.Il, nextSub.Name, rootIdx, readerRefLocal);
+                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], nextSub.Il, nextSub.Name, rootIdx, ref inSetIdx, readerRefLocal);
                     // Branch succeeded — skip remaining alternatives.
                     d.GotoAlways(groupPassed);
                     d.MarkLabel(nextSub);
@@ -234,14 +236,14 @@ public static class ResidualScanIlEmitter
             {
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
-                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], failLabel, "rejected", rootIdx, readerRefLocal);
+                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], failLabel, "rejected", rootIdx, ref inSetIdx, readerRefLocal);
                     rootIdx++;
                 }
             }
             return;
         }
 
-        EmitLeafPredicate(ref d, in pred, failLabel, "rejected", rootIdx, readerRefLocal);
+        EmitLeafPredicate(ref d, in pred, failLabel, "rejected", rootIdx, ref inSetIdx, readerRefLocal);
         rootIdx++;
     }
 
@@ -254,12 +256,43 @@ public static class ResidualScanIlEmitter
         Label failIl,
         string failName,
         int rootIdx,
+        ref int inSetIdx,
         LocalBuilder readerRefLocal)
     {
         // reader.Reset();
         d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
         d.Il.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);
         d.CsLine("reader.Reset();");
+
+        // IN / ALL IN iterate ALL terms for the field against a per-execution value set
+        // (CompiledQueryHelper does the loop + null handling), mirroring StartsWith/EndsWith.
+        if (pred.CompareOp == ScanCompareOp.In || pred.CompareOp == ScanCompareOp.AllIn)
+        {
+            bool allIn = pred.CompareOp == ScanCompareOp.AllIn;
+            var (helper, helperName) = pred.ValueType switch
+            {
+                ScanValueType.Long => allIn
+                    ? (IlEmitterShared.CheckFieldTermAllInLong, "CompiledQueryHelper.CheckFieldTermAllInLong")
+                    : (IlEmitterShared.CheckFieldTermInLong, "CompiledQueryHelper.CheckFieldTermInLong"),
+                ScanValueType.Double => allIn
+                    ? (IlEmitterShared.CheckFieldTermAllInDouble, "CompiledQueryHelper.CheckFieldTermAllInDouble")
+                    : (IlEmitterShared.CheckFieldTermInDouble, "CompiledQueryHelper.CheckFieldTermInDouble"),
+                _ => allIn
+                    ? (IlEmitterShared.CheckFieldTermAllInSlice, "CompiledQueryHelper.CheckFieldTermAllInSlice")
+                    : (IlEmitterShared.CheckFieldTermInSlice, "CompiledQueryHelper.CheckFieldTermInSlice"),
+            };
+
+            // ref reader, fieldRootPage, values[], includeNull
+            d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+            d.CsStack.Push("ref reader");
+            d.LoadFieldRootPage(rootIdx);
+            d.LoadInValueArray(inSetIdx, pred.ValueType);
+            d.LoadInHasNull(inSetIdx);
+            d.CallReturning(helper, arity: 4, csTemplate: helperName + "({0}, {1}, {2}, {3})");
+            EmitBranchFalse(ref d, failIl, failName);
+            inSetIdx++;
+            return;
+        }
 
         // StartsWith / EndsWith are full-field scans rather than positioning calls — they
         // wrap FindNext internally, so they replace the usual FindNext+compare sequence.
