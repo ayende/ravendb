@@ -245,7 +245,7 @@ internal static partial class QueryPlanBuilder
 
                 return (execList, 0); }
 
-            int whenFlags = 0;
+            int flags = 0;
             int whenBit = 0;
             foreach (var cached in template.Clauses)
             {
@@ -257,14 +257,14 @@ internal static partial class QueryPlanBuilder
                         continue;
                     }
 
-                    whenFlags |= 1 << whenBit;
+                    flags |= 1 << whenBit;
                     whenBit++;
                 }
 
                 execList.Add(CreateExecution(cached));
             }
 
-            return (execList, whenFlags);
+            return (execList, flags);
         }
 
         // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
@@ -370,9 +370,7 @@ internal static partial class QueryPlanBuilder
         var bindings = exec.Clause.Bindings;
         switch (exec.Clause.ClauseType)
         {
-            // BETWEEN: Literal sentinel bounds are rewritten at template time.
-            // Parameter-bound sentinels are detected here at execution time.
-            case ClauseType.Between:
+            case ClauseType.Between: // BETWEEN: Literal sentinel bounds are rewritten at template time. Parameter-bound sentinels are detected here at execution time. 
             {
                 var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters, builderParameters);
                 var (high, highType) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
@@ -400,19 +398,17 @@ internal static partial class QueryPlanBuilder
                 }
             }
             case ClauseType.In or ClauseType.AllIn:
-                // Boosted clauses store the boost factor in the trailing binding (read by
-                // ResolveBoostFactor via Bindings[^1]); exclude it from the IN-term walk.
-                var inBindings = exec.Clause.HasBoost
-                    ? bindings.AsSpan(0, bindings.Length - 1).ToArray()
-                    : bindings;
+                Span<ParameterBinding> inBindings =  bindings;
+                if(exec.Clause.HasBoost)
+                {   // Boosted clauses store the boost factor in the trailing binding (read by ResolveBoostFactor via Bindings[^1]); exclude it from the IN-term walk.
+                    inBindings = inBindings[..^1];
+                }
                 ResolveInFromBindings(exec, queryParameters, writer, inBindings, builderParameters);
                 break;
-            default:
-                // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
+            default: // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
                 var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters, builderParameters);
-                // startsWith/endsWith/search/regex require a String argument — reject Null (matches Lucene behavior).
                 if (value == null && exec.Clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith or ClauseType.Search or ClauseType.Regex)
-                    ThrowInvalidMethodArgument(exec.Clause);
+                    ThrowInvalidMethodArgument(exec.Clause); // reject null (matches Lucene behavior).
 
                 exec.TermValueType = valueType;
                 exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
@@ -422,7 +418,7 @@ internal static partial class QueryPlanBuilder
 
 
     private static void ResolveInFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer,
-        ParameterBinding[] bindings, QueryBuilderParameters builderParameters)
+        Span<ParameterBinding> bindings, QueryBuilderParameters builderParameters)
     {
         var resolvedValues = new List<object>(bindings.Length);
         var termTypes = new List<ParamValueType>(bindings.Length);
@@ -445,8 +441,7 @@ internal static partial class QueryPlanBuilder
 
                 case BindingSource.QueryParameter:
                 {
-                    // Parameter — resolve from blittable. May be scalar or array.
-                    queryParameters.TryGet(it.ParameterName, out object inRaw);
+                    queryParameters.TryGet(it.ParameterName, out object inRaw); // Parameter — resolve from blittable. May be scalar or array.
                     if (inRaw is BlittableJsonReaderArray arr)
                     {
                         foreach (var elem in arr)
