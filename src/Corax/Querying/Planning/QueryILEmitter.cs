@@ -76,15 +76,15 @@ public static class QueryIlEmitter
             switch (op.Kind)
             {
                 case PlanOpKind.FillFromPostingSource:
-                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxFillFromPostingSource, "QueryPrimitives.CtxFillFromPostingSource");
+                    d.EmitCancelledCursorOrCall(cursorVar, IlEmitterShared.CtxFillFromPostingSource, "QueryPrimitives.CtxFillFromPostingSource", op.BitmapLocal);
                     break;
 
                 case PlanOpKind.FillFromTreeScan:
-                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxFillFromTreeScan, "QueryPrimitives.CtxFillFromTreeScan");
+                    d.EmitCancelledCursorOrCall(cursorVar, IlEmitterShared.CtxFillFromTreeScan, "QueryPrimitives.CtxFillFromTreeScan", op.BitmapLocal);
                     break;
 
                 case PlanOpKind.FillFromMatch:
-                    d.EmitCancelledCursorCall(cursorVar, IlEmitterShared.CtxOrWithMatch, "QueryPrimitives.CtxOrWithMatch");
+                    d.EmitCancelledCursorOrCall(cursorVar, IlEmitterShared.CtxFillFromMatch, "QueryPrimitives.CtxFillFromMatch", op.BitmapLocal);
                     break;
 
                 case PlanOpKind.FillAllEntries:

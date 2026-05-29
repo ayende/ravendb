@@ -72,6 +72,7 @@ public static class IlEmitterShared
     public static readonly MethodInfo CtxFillAllEntries = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillAllEntries))!;
     public static readonly MethodInfo CtxFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromTreeScan))!;
     public static readonly MethodInfo CtxOrWithMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrWithMatch))!;
+    public static readonly MethodInfo CtxFillFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromMatch))!;
     public static readonly MethodInfo CtxOrFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromPostingSource))!;
     public static readonly MethodInfo CtxOrFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromTreeScan))!;
     public static readonly MethodInfo CtxOrWithMatchSlot = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrWithMatchSlot))!;
