@@ -173,11 +173,11 @@ internal static partial class QueryPlanBuilder
                 // (it's on QueryBuilderParameters.Factories, not PlanParameters). Defer to runtime
                 // via a closure over the OrderByField — Corax-side SortSlotPatch only sees the
                 // delegate, not the Raven.Server AST node. The field metadata is resolved per query
-                // against the live allocator (FieldMetaResolver), not baked in, because the template
-                // is cached across executions but the FieldName slice is allocator-lifetime-bound.
+                // against the live allocator (from the cached FieldName), not baked in, because the
+                // template is cached across executions but the FieldName slice is allocator-bound.
                 var fieldCopy = field;
                 patches[i].Kind = SortSlotPatchKind.DistanceRuntime;
-                patches[i].FieldMetaResolver = ResolveOrderByFieldMetaLive(fieldCopy);
+                patches[i].FieldName = field.Name;
                 patches[i].DistanceBuilder = (ctx, fieldMeta, isEmpty) =>
                     BuildDistanceOrderMetadata((QueryBuilderParameters)ctx, fieldCopy, fieldMeta, isEmpty);
                 anyPatch = true;
@@ -214,7 +214,7 @@ internal static partial class QueryPlanBuilder
             prebuilt[i] = new OrderMetadata(fieldMetadata, field.Ascending, compareType,
                 fieldHasNoTerms: false, nullsSortMode, mayHaveMissingEntries);
             patches[i].Kind = SortSlotPatchKind.FieldEmptyCheck;
-            patches[i].FieldMetaResolver = ResolveOrderByFieldMetaLive(field);
+            patches[i].FieldName = field.Name;
             anyPatch = true;
             anyEmptyCheck = true;
         }
@@ -224,21 +224,6 @@ internal static partial class QueryPlanBuilder
             Prebuilt = prebuilt,
             Patches = anyPatch ? patches : null,
             AnyEmptyCheckPending = anyEmptyCheck,
-        };
-    }
-
-    /// <summary>Builds a per-query resolver that re-derives the ORDER BY field's metadata —
-    /// including its allocator-bound <c>FieldName</c> slice — against the live query context.
-    /// Stored on the cached template in place of a pre-resolved <see cref="FieldMetadata"/>,
-    /// whose slice would dangle once the per-query allocator that produced it is reset (the
-    /// template is shared across every execution of the same query text).</summary>
-    private static SortFieldMetadataResolver ResolveOrderByFieldMetaLive(OrderByField field)
-    {
-        return ctx =>
-        {
-            var bp = (QueryBuilderParameters)ctx;
-            return QueryBuilderHelper.GetFieldIdForOrderBy(bp.Allocator, field.Name, bp.Index,
-                bp.HasDynamics, bp.DynamicFields, bp.IndexFieldsMapping, false);
         };
     }
 
@@ -309,7 +294,7 @@ internal static partial class QueryPlanBuilder
                     // Resolve field metadata against the live per-query allocator (the template is
                     // cached across executions, so its FieldName slice cannot be). Rebuild the slot
                     // from the template-stable ordering scalars + the freshly resolved metadata.
-                    var fieldMeta = patch.FieldMetaResolver(builderParameters);
+                    var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
                     bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
                     var p = prebuilt[i];
 
@@ -332,7 +317,7 @@ internal static partial class QueryPlanBuilder
 
                 case SortSlotPatchKind.DistanceRuntime:
                 {
-                    var fieldMeta = patch.FieldMetaResolver(builderParameters);
+                    var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
                     bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
                     if (fieldIsEmpty)
                     {
@@ -348,6 +333,16 @@ internal static partial class QueryPlanBuilder
         }
 
         return outIdx == prebuilt.Length ? result : result[..outIdx];
+    }
+
+    /// <summary>Resolve an ORDER BY field's metadata against the live per-query allocator.
+    /// The template caches only the field name (a stable string), never the resolved
+    /// <see cref="FieldMetadata"/>, because its <c>FieldName</c> slice is bound to the
+    /// per-query allocator's lifetime and the template is shared across executions.</summary>
+    private static FieldMetadata ResolveSortFieldMeta(QueryBuilderParameters builderParameters, string fieldName)
+    {
+        return QueryBuilderHelper.GetFieldIdForOrderBy(builderParameters.Allocator, fieldName, builderParameters.Index,
+            builderParameters.HasDynamics, builderParameters.DynamicFields, builderParameters.IndexFieldsMapping, false);
     }
 
     /// <summary>Distance ordering construction extracted so both the runtime patcher and the
