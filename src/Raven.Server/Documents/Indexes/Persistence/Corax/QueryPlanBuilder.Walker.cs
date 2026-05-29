@@ -195,7 +195,7 @@ internal static partial class QueryPlanBuilder
             {
                 foreach (var c in clauses)
                 {
-                    if (c.IsNegated || c.ClauseType == ClauseType.NotEquals)
+                    if (c.IsNegated)
                     {
                         c.IsOrChainNotEquals = true;
                     }
@@ -214,7 +214,7 @@ internal static partial class QueryPlanBuilder
                 bool subIsOr = c.ClauseType == ClauseType.OrGroup;
                 foreach (var sub in subs)
                 {
-                    if (subIsOr && (sub.IsNegated || sub.ClauseType == ClauseType.NotEquals))
+                    if (subIsOr && sub.IsNegated)
                         sub.IsOrChainNotEquals = true;
                 }
                 NotCanonicalizeRecursive(subs);
@@ -232,7 +232,7 @@ internal static partial class QueryPlanBuilder
                 bool subIsOr = c.ClauseType == ClauseType.OrGroup;
                 foreach (var sub in subs)
                 {
-                    if (subIsOr && (sub.IsNegated || sub.ClauseType == ClauseType.NotEquals))
+                    if (subIsOr && sub.IsNegated)
                         sub.IsOrChainNotEquals = true;
                 }
                 NotCanonicalizeRecursive(subs);

@@ -97,14 +97,6 @@ internal static partial class QueryPlanBuilder
                         EstimatedCardinality = e0.Cardinality
                     });
                     _ops.Add(new PlanOp { Kind = PlanOpKind.GotoDone });
-
-                    // Mark clause as negated so ResolveMatches/ResolveTermSources
-                    // produce [AllEntries, TermMatch].
-                    if (!e0.IsNegated)
-                    {
-                        e0.IsNegated = true;
-                    }
-
                     return (_ops.ToArray(), 2);
             }
 
@@ -114,7 +106,7 @@ internal static partial class QueryPlanBuilder
             // AndNot every clause. FillAllEntries calls indexSearcher.AllEntries() directly,
             // avoiding the structural-vs-runtime slot-index mismatch that bites IN with a
             // parameter-bound array of different length.
-            bool firstIsNegated = e0.IsNegated || e0.ClauseType == ClauseType.NotEquals;
+            bool firstIsNegated = e0.IsNegated;
             int startIndex;
 
             if (firstIsNegated)
@@ -147,7 +139,7 @@ internal static partial class QueryPlanBuilder
                 }
 
                 var execI = executions[i];
-                bool stepNegated = execI.IsNegated || execI.ClauseType == ClauseType.NotEquals;
+                bool stepNegated = execI.IsNegated;
                 MergeKind merge = stepNegated ? MergeKind.AndNotInto : MergeKind.AndInto;
 
                 EmitClauseInto(execI, merge, execI.Cardinality, suppressEarlyExit: false);
@@ -242,7 +234,7 @@ internal static partial class QueryPlanBuilder
             EmitClauseInto(subExecs[0], firstNegated ? MergeKind.AndNotInto : MergeKind.Fill, subExecs[0].Cardinality, suppressEarlyExit);
             for (int i = 1; i < subExecs.Count; i++)
             {
-                MergeKind kind = subExecs[i].IsNegated ? MergeKind.AndNotInto : followupAction;
+                MergeKind kind = subExecs[i].IsNegated && exec.ClauseType != ClauseType.OrGroup ? MergeKind.AndNotInto : followupAction;
                 EmitClauseInto(subExecs[i], kind, subExecs[i].Cardinality, suppressEarlyExit);
             }
         }
