@@ -32,11 +32,21 @@ internal static partial class QueryPlanBuilder
         
         ClauseInfo clause = exec.Clause;
         if (clause.FieldName == null)
-            return; // can happen if we have a method, etc 
+            return; // can happen if we have a method, etc
 
-        if (exec is not { ClauseType : ClauseType.Equals or ClauseType.NotEquals, PackedParamValue.IsNone: false } || // not a string parameter 
-            queryExec.StringValues[exec.PackedParamValue.Param1] is null)   // or the string parameter is set to null, nothing we can do here
-            return;
+        // Skip highlighting only for null-valued Equals/NotEquals clauses (e.g. WHERE City == null):
+        // null is not a search term. All other clause types (Search, In, Between, ...) are highlighted.
+        // The query shape guarantees a TypeString param's Param1 is a valid StringValues index, so the
+        // only runtime fact to check is whether the resolved string value itself is null.
+        if (clause.ClauseType is ClauseType.Equals or ClauseType.NotEquals)
+        {
+            PackedParam packed = exec.PackedParamValue;
+            if (packed.IsNone ||
+                (packed.ValueType == PackedParam.TypeString && queryExec.StringValues[packed.Param1] == null))
+            {
+                return;
+            }
+        }
 
         if (highlightingTerms.TryGetValue(clause.FieldName, out var existingTerm))
         {

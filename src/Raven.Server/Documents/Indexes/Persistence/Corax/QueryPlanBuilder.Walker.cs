@@ -68,7 +68,7 @@ internal static partial class QueryPlanBuilder
         {
             var clauses = ctx.Clauses;
             BoostPropagate(ctx);
-            NotCanonicalize(clauses);
+            NotCanonicalize(clauses, ctx);
             BetweenRewriteSentinels(clauses, ctx.IsOr);
             if (ctx.Metadata.IsDynamic)
                 DynamicFieldNameResolve(clauses);
@@ -106,23 +106,29 @@ internal static partial class QueryPlanBuilder
                 $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
         }
 
-        /// <summary>For OR-rooted templates, mark every top-level negated clause with <see cref="ClauseInfo.IsOrChainNotEquals"/> = true.</summary>
-        private static void NotCanonicalize(List<ClauseInfo> clauses)
+        /// <summary>Mark every negated clause that is a direct child of an OR context with
+        /// <see cref="ClauseInfo.IsOrChainNotEquals"/> = true. The top-level clause list is an OR
+        /// context iff the root expression is OR (<see cref="ResolutionContext.IsOr"/>); nested
+        /// OrGroup clauses are always OR contexts. The flag tells the IL emitter (EmitNegatedLeafInto)
+        /// to materialize the complement (FillAllEntries + AndNot(positive)) for the OR chain.</summary>
+        private static void NotCanonicalize(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             foreach (var c in clauses)
             {
+                if (ctx.IsOr && c.IsNegated)
+                    c.IsOrChainNotEquals = true;
                 NotCanonizeRecursive(c);
             }
-            
+
             void NotCanonizeRecursive(ClauseInfo c)
             {
                 RuntimeHelpers.EnsureSufficientExecutionStack();
                 bool subIsOr = c.ClauseType == ClauseType.OrGroup;
                 foreach (var sub in c.SubClauses ?? [])
                 {
-                    NotCanonizeRecursive(sub);
                     if (subIsOr && sub.IsNegated)
                         sub.IsOrChainNotEquals = true;
+                    NotCanonizeRecursive(sub);
                 }
             }
         }
