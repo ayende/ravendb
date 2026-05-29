@@ -134,97 +134,92 @@ public static class CompiledQueryHelper
         return false;
     }
 
+    // ALL IN scans the field's terms once per value and fails fast on the first value that no
+    // term covers. A single shared match counter can't replace the per-value scan: a duplicate
+    // entry term (e.g. Tags=["x","x"] against ALL IN ('x','y')) would bump the counter to the
+    // value count while 'y' is still missing — a false positive. Scanning per value is immune to
+    // both duplicate entry terms and duplicate IN values, costs no scratch buffer, and stays
+    // O(values * terms) like the previous bitmask version.
     public static bool CheckFieldTermAllInSlice(ref EntryTermsReader reader, long fieldRootPage, Slice[] values, bool includeNull)
     {
-        Span<bool> matched = values.Length <= 256 ? stackalloc bool[values.Length] : new bool[values.Length];
-        matched.Clear();
-        bool nullMatched = false;
-
-        reader.Reset();
-        while (reader.FindNext(fieldRootPage))
-        {
-            if (reader.IsNull)
-            {
-                nullMatched = true;
-                continue;
-            }
-
-            ReadOnlySpan<byte> term = reader.Current.Decoded();
-            for (int k = 0; k < values.Length; k++)
-            {
-                if (matched[k] == false && term.SequenceEqual(values[k].AsReadOnlySpan()))
-                    matched[k] = true;
-            }
-        }
-
         for (int k = 0; k < values.Length; k++)
         {
-            if (matched[k] == false)
+            ReadOnlySpan<byte> needle = values[k].AsReadOnlySpan();
+            bool found = false;
+            reader.Reset();
+            while (reader.FindNext(fieldRootPage))
+            {
+                if (reader.IsNull == false && reader.Current.Decoded().SequenceEqual(needle))
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (found == false)
                 return false;
         }
-        return includeNull == false || nullMatched;
+
+        return includeNull == false || FieldHasNull(ref reader, fieldRootPage);
     }
 
     public static bool CheckFieldTermAllInLong(ref EntryTermsReader reader, long fieldRootPage, long[] values, bool includeNull)
     {
-        Span<bool> matched = values.Length <= 256 ? stackalloc bool[values.Length] : new bool[values.Length];
-        matched.Clear();
-        bool nullMatched = false;
-
-        reader.Reset();
-        while (reader.FindNext(fieldRootPage))
-        {
-            if (reader.IsNull)
-            {
-                nullMatched = true;
-                continue;
-            }
-
-            long term = reader.CurrentLong;
-            for (int k = 0; k < values.Length; k++)
-            {
-                if (matched[k] == false && term == values[k])
-                    matched[k] = true;
-            }
-        }
-
         for (int k = 0; k < values.Length; k++)
         {
-            if (matched[k] == false)
+            long needle = values[k];
+            bool found = false;
+            reader.Reset();
+            while (reader.FindNext(fieldRootPage))
+            {
+                if (reader.IsNull == false && reader.CurrentLong == needle)
+                {
+                    found = true;
+                    break;
+                }
+            }
+
+            if (found == false)
                 return false;
         }
-        return includeNull == false || nullMatched;
+
+        return includeNull == false || FieldHasNull(ref reader, fieldRootPage);
     }
 
     public static bool CheckFieldTermAllInDouble(ref EntryTermsReader reader, long fieldRootPage, double[] values, bool includeNull)
     {
-        Span<bool> matched = values.Length <= 256 ? stackalloc bool[values.Length] : new bool[values.Length];
-        matched.Clear();
-        bool nullMatched = false;
+        for (int k = 0; k < values.Length; k++)
+        {
+            double needle = values[k];
+            bool found = false;
+            reader.Reset();
+            while (reader.FindNext(fieldRootPage))
+            {
+                if (reader.IsNull == false && reader.CurrentDouble == needle)
+                {
+                    found = true;
+                    break;
+                }
+            }
 
+            if (found == false)
+                return false;
+        }
+
+        return includeNull == false || FieldHasNull(ref reader, fieldRootPage);
+    }
+
+    /// <summary>True if the field has at least one null term for the current entry. Used by ALL IN
+    /// when the IN list contained a null, mirroring the bitmap pipeline's null-term posting list.</summary>
+    private static bool FieldHasNull(ref EntryTermsReader reader, long fieldRootPage)
+    {
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
         {
             if (reader.IsNull)
-            {
-                nullMatched = true;
-                continue;
-            }
-
-            double term = reader.CurrentDouble;
-            for (int k = 0; k < values.Length; k++)
-            {
-                if (matched[k] == false && term == values[k])
-                    matched[k] = true;
-            }
+                return true;
         }
-
-        for (int k = 0; k < values.Length; k++)
-        {
-            if (matched[k] == false)
-                return false;
-        }
-        return includeNull == false || nullMatched;
+        return false;
     }
 
     // ── Entry scan iteration loop ───────────────────────────────────────
