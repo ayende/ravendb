@@ -259,11 +259,11 @@ internal static partial class QueryPlanBuilder
             {
                 case ClauseType.OrGroup or ClauseType.AndGroup:
                 {
-                    foreach (ClauseInfo v in clauseExec.Clause.SubClauses)
+                    foreach (ClauseExecution v in clauseExec.SubExecutions)
                         ExtractFlatClausesInternal(v);
                     break;
                 }
-                case ClauseType.In or ClauseType.AllIn:
+                case ClauseType.In or ClauseType.AllIn when clauseExec.InTermCount > 0:
                 {
                     for (int t = 0; t < clauseExec.InTermCount; t++)
                     {

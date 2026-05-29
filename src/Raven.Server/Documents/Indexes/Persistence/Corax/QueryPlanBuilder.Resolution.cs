@@ -344,7 +344,7 @@ internal static partial class QueryPlanBuilder
     private static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
-        foreach (var it in exec.SubExecutions)
+        foreach (var it in exec.SubExecutions ?? [])
         {   // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
             PopulateClauseValues(it, queryParameters, writer, builderParameters);
         }
