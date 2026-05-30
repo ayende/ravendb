@@ -156,9 +156,11 @@ internal static partial class QueryPlanBuilder
 
         (CompiledPlan, QueryExecution) BuildOnCacheMiss()
         {
-            var (ops, requiredBitmaps) = PlanEmitter.Emit(template, executions, planParams);
-
             var (scanPredicates, scanClauseIndices, perClause) = BuildScanPredicates();
+
+            // perClause carries entry-scan eligibility for every clause, so the emitter consults it for
+            // the MaybeEntryScan decision instead of re-running the eligibility switch.
+            var (ops, requiredBitmaps) = PlanEmitter.Emit(template, executions, planParams, perClause);
             compiledPlan = new CompiledPlan
             {
                 CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
@@ -2262,12 +2264,6 @@ internal static partial class QueryPlanBuilder
 
     internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseExecution exec, ref int sliceIndex)
         => BuildScanPredicateInfoCore(exec, exec.TermValueType, ref sliceIndex);
-
-    private static bool IsScanEligible(ClauseExecution exec)
-    {
-        int s = 0;
-        return BuildScanPredicateInfo(exec, ref s) is not null;
-    }
 
     /// <summary>Build a <see cref="ScanPredicateInfo"/> for a single clause execution. For numeric
     /// (long/double) predicates, <c>ParamIndex</c>/<c>ParamIndex2</c> are the original
