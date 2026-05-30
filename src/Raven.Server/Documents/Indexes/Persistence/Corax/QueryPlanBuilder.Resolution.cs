@@ -799,9 +799,7 @@ internal static partial class QueryPlanBuilder
         {
             exec.PopulateScanParams = () =>
             {
-                ScanParamExtractor.Extract(exec, indexSearcher, walkerCtx, out var sliceParams, out var fieldRootPages);
-                exec.ResidualSlices = sliceParams;
-                exec.FieldRootPages = fieldRootPages;
+                ScanParamExtractor.Extract(exec, indexSearcher, walkerCtx);
             };
         }
 
@@ -1190,11 +1188,8 @@ internal static partial class QueryPlanBuilder
         // IL reads exec.ResidualSlices / exec.FieldRootPages directly. Longs/Doubles already live
         // on exec; the IL reads them by baked PackedParam.Param1 indices.
         ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
-        ScanParamExtractor.BuildResidual(ctx.Exec, indexSearcher, allocator, residualArray,
-            drivingClauseIdx, field2RangeIdx,
-            out var sliceParams, out var fieldRootPages);
-        ctx.Exec.ResidualSlices = sliceParams;
-        ctx.Exec.FieldRootPages = fieldRootPages;
+        ScanParamExtractor. BuildResidual(ctx.Exec, indexSearcher, allocator, residualArray,
+            drivingClauseIdx, field2RangeIdx);
 
         var directScan = BuildDirectScan(
             indexSearcher, drivingMatch, ctx.Exec,
@@ -1454,11 +1449,8 @@ internal static partial class QueryPlanBuilder
         // ── 4. Residual scan parameters ── stash on exec (residual IL reads them from there).
         ScanPredicateInfo[] residualArray = residualPreds is { Count: > 0 } ? residualPreds.ToArray() : null;
         ScanParamExtractor.BuildResidual(ctx.Exec, indexSearcher, ctx.PlanParams.Allocator, residualArray,
-            drivingIdx, -1,
-            out var sliceParams, out var fieldRootPages);
-        ctx.Exec.ResidualSlices = sliceParams;
-        ctx.Exec.FieldRootPages = fieldRootPages;
-
+            drivingIdx, -1);
+ 
         var ds = BuildDirectScan(
             indexSearcher, drivingMatch, ctx.Exec,
             ctx.Plan.CompiledEntryPredicate, residualArray);

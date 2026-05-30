@@ -211,9 +211,6 @@ internal static partial class QueryPlanBuilder
 
                 case SortSlotPatchKind.FieldEmptyCheck:
                 {
-                    // Only field-backed slots carry a FieldName; resolving metadata for a None /
-                    // RandomFreshSeed slot (FieldName == null) would NRE, so the resolve + empty-term
-                    // check stay inside the cases that actually need them.
                     var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
                     bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
                     var p = template.Prebuilt[i];
