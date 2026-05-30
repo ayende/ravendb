@@ -431,75 +431,41 @@ internal static partial class QueryPlanBuilder
 
         foreach (var it in bindings)
         {
-            switch (it.Source)
+            // The only IN-specific shape: an array-valued query parameter expands into N terms.
+            // Everything else is a single value — exactly what ResolveBindingScalar resolves.
+            if (it.Source == BindingSource.QueryParameter
+                && queryParameters.TryGet(it.ParameterName, out object raw)
+                && raw is BlittableJsonReaderArray arr)
             {
-                case BindingSource.Literal:
-                    if (it.LiteralValue == null)
-                    {
-                        hasNullTerm = true;
-                        continue;
-                    }
-
-                    resolvedValues.Add(it.LiteralValue);
-                    termTypes.Add(it.LiteralType);
-                    break;
-
-                case BindingSource.QueryParameter:
+                foreach (var elem in arr)
                 {
-                    queryParameters.TryGet(it.ParameterName, out object inRaw); // Parameter — resolve from blittable. May be scalar or array.
-                    if (inRaw is BlittableJsonReaderArray arr)
-                    {
-                        foreach (var elem in arr)
-                        {
-                            var (elemVal, elemType) = ResolveParameterValue(elem);
-                            if (elemVal == null)
-                            {
-                                hasNullTerm = true;
-                                continue;
-                            }
-
-                            resolvedValues.Add(elemVal);
-                            termTypes.Add(ToParamValueType(elemType));
-                        }
-                    }
-                    else if (inRaw != null)
-                    {
-                        var (singleVal, singleType) = ResolveParameterValue(inRaw);
-                        if (singleVal == null)
-                        {
-                            hasNullTerm = true;
-                            continue;
-                        }
-
-                        resolvedValues.Add(singleVal);
-                        termTypes.Add(ToParamValueType(singleType));
-                    }
-                    else
-                    {
-                        hasNullTerm = true;
-                    }
-
-                    break;
+                    var (elemVal, elemType) = ResolveParameterValue(elem);
+                    Add(elemVal, ToParamValueType(elemType));
                 }
 
-                case BindingSource.DeferredMethod:
-                {
-                    var (val, type) = ResolveBindingScalar(it, queryParameters, builderParameters);
-                    if (val == null)
-                    {
-                        hasNullTerm = true;
-                        continue;
-                    }
-
-                    resolvedValues.Add(val);
-                    termTypes.Add(type);
-                    break;
-                }
+                continue;
             }
+
+            var (val, type) = ResolveBindingScalar(it, queryParameters, builderParameters);
+            Add(val, type);
         }
 
         ParamValueType dominantType = resolvedValues.Count > 0 ? termTypes[0] : ParamValueType.String;
         EmitInTerms(exec, writer, dominantType, resolvedValues, hasNullTerm);
+
+        // A null value means the IN list contained a null term (matches the null-field posting list);
+        // otherwise collect the term. Local — captures hasNullTerm/lists by ref, no closure allocation.
+        void Add(object val, ParamValueType type)
+        {
+            if (val == null)
+            {
+                hasNullTerm = true;
+                return;
+            }
+
+            resolvedValues.Add(val);
+            termTypes.Add(type);
+        }
     }
 
 
