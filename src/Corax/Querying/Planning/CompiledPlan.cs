@@ -7,7 +7,7 @@ namespace Corax.Querying.Planning;
 /// cache hit, Instantiate dispatches directly on Strategy without re-running Try*.</summary>
 public enum ExecutionStrategy : byte
 {
-    /// <summary>The first execution hasn't completed yet — Try* discovery has not run.
+    /// <summary>The first execution hasn't completed yet — discovery has not run.
     /// Treated as "run discovery" by the dispatch path.</summary>
     NotEvaluated = 0,
     /// <summary>No ORDER BY optimization applies. Use the bitmap pipeline (CompiledQueryMatch)

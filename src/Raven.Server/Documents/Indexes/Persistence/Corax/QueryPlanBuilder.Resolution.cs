@@ -433,31 +433,27 @@ internal static partial class QueryPlanBuilder
 
         foreach (var it in bindings)
         {
-            // The only IN-specific shape: an array-valued query parameter expands into N terms.
-            // Everything else is a single value — exactly what ResolveBindingScalar resolves.
-            if (it.Source == BindingSource.QueryParameter
+            if (it.Source == BindingSource.QueryParameter // handle array-valued query parameters
                 && queryParameters.TryGet(it.ParameterName, out object raw)
                 && raw is BlittableJsonReaderArray arr)
             {
                 foreach (var elem in arr)
                 {
                     var (elemVal, elemType) = ResolveParameterValue(elem);
-                    Add(elemVal, ToParamValueType(elemType));
+                    AddInValue(elemVal, ToParamValueType(elemType));
                 }
 
                 continue;
             }
 
-            var (val, type) = ResolveBindingScalar(it, queryParameters, builderParameters);
-            Add(val, type);
+            var (val, type) = ResolveBindingScalar(it, queryParameters, builderParameters); // normal parameter
+            AddInValue(val, type);
         }
 
         ParamValueType dominantType = resolvedValues.Count > 0 ? termTypes[0] : ParamValueType.String;
         EmitInTerms(exec, writer, dominantType, resolvedValues, hasNullTerm);
 
-        // A null value means the IN list contained a null term (matches the null-field posting list);
-        // otherwise collect the term. Local — captures hasNullTerm/lists by ref, no closure allocation.
-        void Add(object val, ParamValueType type)
+        void AddInValue(object val, ParamValueType type)
         {
             if (val == null)
             {
@@ -470,7 +466,6 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-
     private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType, List<object> values, bool hasNullTerm)
     {
         var (packedType, startIdx) = writer.ResolveInSlot(dominantType);
@@ -479,8 +474,7 @@ internal static partial class QueryPlanBuilder
         int written = 0;
         for (int i = 0; i < values.Count; i++)
         {
-            // Mixed-type IN: dominantType is inferred from the first value, but sibling values may differ (IN [long, "Shalom"]).
-            // Silently drop it instead of throwing, Matches Lucene's behavior.
+            // Mixed-type IN: (IN [long, "Shalom"]). Silently drop it instead of throwing, Matches Lucene's behavior.
             if (writer.TryAdd(values[i], dominantTokenType) is null)
                 continue;
             written++;
@@ -490,8 +484,6 @@ internal static partial class QueryPlanBuilder
         exec.InTermCount = written;
         exec.HasNullTerm = hasNullTerm;
     }
-
-
 
     private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
     {
@@ -521,7 +513,6 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-
     private static (object Value, ParamValueType Type) ResolveBindingRaw(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
     {
         if (binding.LiteralType != ParamValueType.Parameter)
@@ -530,7 +521,6 @@ internal static partial class QueryPlanBuilder
             return (raw, ParamValueType.Parameter); // raw from blittable — caller decides how to interpret
         return (null, ParamValueType.Null);
     }
-
 
     private static void ResolveBoostFactor(ClauseExecution exec, BlittableJsonReaderObject queryParameters)
     {
@@ -549,7 +539,6 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-
     private static void ThrowInvalidMethodArgument(ClauseInfo clause)
     {
         string methodName = clause.ClauseType switch
@@ -564,12 +553,9 @@ internal static partial class QueryPlanBuilder
             $"Method {methodName}() expects to get an argument of type String while it got Null");
     }
 
-
-    /// <summary>Per-clause constant propagation: a numeric BETWEEN whose low &gt; high can never
-    /// match, so we rewrite it into the empty-IN flavor that downstream code already handles
-    /// (Cardinality = 0 skips estimation, ClauseType.In + InTermCount = 0 feeds the empty-IN
-    /// short-circuit). String bounds are skipped because analyzer rewriting makes raw comparison
-    /// meaningless. Called from the single per-clause pass in <see cref="Build"/>.</summary>
+    /// <summary>
+    /// Foo BETWEEN $x AND $y - where $y > $x - returns nothing, this re-writes the clause to directly reflect this  
+    /// </summary>
     private static void PropagateBetweenContradiction(ClauseExecution exec, ValueWriter writer)
     {
         var p = exec.PackedParamValue;
@@ -591,40 +577,29 @@ internal static partial class QueryPlanBuilder
         exec.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
     }
 
-    /// <summary>Classify a query parameter's runtime type from the blittable JSON value.
-    /// Mirrors the type-branching in <see cref="ResolveParameterValue"/> — long, double,
-    /// string, or SliceLong (string exceeding 255 UTF-8 bytes). Used to compute the
-    /// TypeSignature cache-key component cheaply from <see cref="PlanTemplate.ParameterSlots"/>
-    /// without walking the full clause/execution list.</summary>
     private static ScanValueType ClassifyParamType(BlittableJsonReaderObject queryParams, string name)
     {
         if (queryParams.TryGet(name, out object raw) == false || raw == null)
             return ScanValueType.Slice;
-        return raw switch
-        {
-            long => ScanValueType.Long,
-            double => ScanValueType.Double,
-            LazyNumberValue lnv => lnv.TryParseLong(out _) ? ScanValueType.Long : ScanValueType.Double,
-            string { Length: < 83 } => ScanValueType.Slice, // statically skip Encoding.UTF8.GetByteCount() < 255 here, since we _know_ it's < 255 regardless
-            string s when Encoding.UTF8.GetByteCount(s) < byte.MaxValue => ScanValueType.Slice,
-            string => ScanValueType.SliceLong,
-            LazyStringValue lsv => lsv.Size > byte.MaxValue ? ScanValueType.SliceLong : ScanValueType.Slice,
-            BlittableJsonReaderArray arr => arr.Length > 0 ? ClassifyParamTypeFirstElement(arr[0]) : ScanValueType.Slice,
-            _ => ScanValueType.Slice
-        };
-    }
+        return ClassifyValue(raw);
 
-    /// <summary>Classify the first element of a parameter array (for IN/AllIn parameter bindings).
-    /// Arrays are typed by their first element in the same manner as <see cref="ResolveParameterValue"/>.</summary>
-    private static ScanValueType ClassifyParamTypeFirstElement(object element)
-    {
-        return element switch
+        static ScanValueType ClassifyValue(object raw)
         {
-            long => ScanValueType.Long,
-            double => ScanValueType.Double,
-            LazyNumberValue lnv => lnv.TryParseLong(out _) ? ScanValueType.Long : ScanValueType.Double,
-            _ => ScanValueType.Slice
-        };
+            RuntimeHelpers.EnsureSufficientExecutionStack();
+            return raw switch
+            {
+                long => ScanValueType.Long,
+                double => ScanValueType.Double,
+                LazyNumberValue lnv => lnv.TryParseLong(out _) ? ScanValueType.Long : ScanValueType.Double,
+                string { Length: < 83 } => ScanValueType.Slice, // statically skip Encoding.UTF8.GetByteCount() < 255 here, since we _know_ it's < 255 regardless
+                string s when Encoding.UTF8.GetByteCount(s) < byte.MaxValue => ScanValueType.Slice,
+                // we distinguish between strings > 255 because they cannot use compound field optimizations, so this ensures that we have a separate plan for them 
+                string => ScanValueType.SliceLong,
+                LazyStringValue lsv => lsv.Size > byte.MaxValue ? ScanValueType.SliceLong : ScanValueType.Slice,
+                BlittableJsonReaderArray arr => arr.Length > 0 ? ClassifyValue(arr[0]) : ScanValueType.Slice,
+                _ => ScanValueType.Slice
+            };
+        }
     }
 
     private static IQueryMatch Instantiate(
@@ -650,16 +625,15 @@ internal static partial class QueryPlanBuilder
                 innerMatch = ConstructCompoundExact(ref ctx);
                 if (innerMatch is null) goto default;
                 return innerMatch;
+            // orderByFields can be null when page size is 0, in which case, we need to get the actual total count
+            // no advantage of using compound field here, since we can't stop midway (like we do with paging)
             case ExecutionStrategy.CompoundField when orderByFields != null:
-                // CompoundField is a structural candidate baked at cache-miss; the bitmap-vs-direct-scan
-                // cost gate is re-evaluated here with the CURRENT bound-parameter cardinalities so a
-                // cached plan never reuses a stale cost decision (RavenDB #4852). Cost failure → bitmap.
                 if (CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost) == false)
-                    goto default;
+                    goto default; // if this isn't expected to benefit us, just use a bitmap query option
                 innerMatch = ConstructCompoundField(ref ctx, ctx.Exec.Plan.CompoundFieldField2RangeIdx, cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
                 return OrderBy(builderParameters, innerMatch, orderByFields, hasEmptySorts);
-            case ExecutionStrategy.DirectScan when orderByFields is { Length: <= 2 }:
+            case ExecutionStrategy.DirectScan when orderByFields != null:
                 // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
                 // DirectScan plan — PageSize is not part of the plan cache key.
                 // Like CompoundField, DirectScan is a structural candidate; the cost gate runs fresh
@@ -1064,14 +1038,7 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    /// <summary>Phase 5 bake: construction-only path for the CompoundField hint.
-    /// Caller has either run TryCreateCompoundFieldMatch's discovery (compile-miss)
-    /// or read the cached ExecutionStrategy and is dispatching directly.
-    /// Returns null on per-execution failure (e.g. analyzed prefix exceeds 255 bytes);
-    /// caller falls back to the next optimization or bitmap.</summary>
-    private static IQueryMatch ConstructCompoundField(
-        ref InstCtx ctx,
-        int field2RangeIdx, long entriesToScan, long bitmapCost)
+    private static IQueryMatch ConstructCompoundField(ref InstCtx ctx, int field2RangeIdx, long entriesToScan, long bitmapCost)
     {
         var execs = ctx.Exec.Executions;
         var indexSearcher = ctx.PlanParams.IndexSearcher;
@@ -1984,37 +1951,40 @@ internal static partial class QueryPlanBuilder
     private static long EffectiveCardinality(in ClauseExecution exec, IndexSearcher indexSearcher)
         => exec.Cardinality > 0 ? exec.Cardinality : indexSearcher.NumberOfEntries;
 
-    /// <summary>Adjust the driving-clause cardinality by the most-selective residual's
-    /// pass rate to estimate how many entries the scan will actually touch. The min
-    /// residual is the tightest filter we'll apply during the scan — its selectivity
-    /// shrinks the effective entries-to-scan. Skips only <paramref name="drivingIdx"/>
-    /// (other "structural" clauses like a field2 range still count as residuals here,
-    /// matching pre-extraction behavior).</summary>
-    private static long AdjustEntriesToScanByMinResidual(List<ClauseExecution> execs,
+    private static long ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
         int drivingIdx, long drivingCard, IndexSearcher indexSearcher)
     {
+        // first, we find the most selective residual clause
         long minResidual = long.MaxValue;
         for (int i = 0; i < execs.Count; i++)
         {
             if (i == drivingIdx) continue;
             long c = EffectiveCardinality(execs[i], indexSearcher);
-            if (c < minResidual) minResidual = c;
+            minResidual = Math.Min(c, minResidual);
         }
 
         if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
         {
+            // here we, check what is the pass rate of the most selective residual clause (i.e, 1% of entries matched, etc)
             double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
             if (passRate > 0)
+            {
+                // if pass rate is 1%, we have to scan through 10_000 entries to get 100, etc, so we need to inflate the costs
                 return (long)(drivingCard / passRate);
+            }
         }
 
         return drivingCard;
     }
 
+    /// <summary>
+    /// Are we expecting to go through more entries by weighted cost or via bitmap
+    /// And if we are going through direct cost, will we need to read more than 32K  entries
+    /// </summary>
     private static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)
     {
-        long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier
-            ? long.MaxValue
+        long directCost =  entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier
+            ? long.MaxValue // avoid overflow
             : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
         return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
     }
@@ -2023,17 +1993,13 @@ internal static partial class QueryPlanBuilder
     /// (driving clause, compound sort field, non-boosted scannable residuals) was baked at
     /// cache-miss by <see cref="TryCreateCompoundFieldMatch"/>; this re-evaluates the
     /// bitmap-vs-direct-scan cost using the CURRENT bound-parameter cardinalities so a cached plan
-    /// never reuses a stale strategy decision (RavenDB #4852). Also re-checks the
-    /// parameter-dependent <c>PackedParamValue.IsNone</c> guard. <paramref name="entriesToScan"/>
-    /// and <paramref name="bitmapCost"/> are surfaced for the inspection Reason string.</summary>
+    /// never reuses a stale strategy decision.</summary>
     private static bool CompoundFieldCostEffective(ref InstCtx ctx, out long entriesToScan, out long bitmapCost)
     {
         entriesToScan = 0;
         bitmapCost = 0;
-        var execs = ctx.Exec.Executions;
+        var execs  = ctx.Exec.Executions;
         int drivingIdx = ctx.Exec.Plan.CompoundFieldDrivingClause;
-        if (drivingIdx < 0 || drivingIdx >= execs.Count)
-            return false;
 
         var drivingExec = execs[drivingIdx];
         if (drivingExec.PackedParamValue.IsNone)
@@ -2052,7 +2018,7 @@ internal static partial class QueryPlanBuilder
 
         long drivingCardinality = EffectiveCardinality(drivingExec, indexSearcher);
         entriesToScan = residualCount > 0
-            ? AdjustEntriesToScanByMinResidual(execs, drivingIdx, drivingCardinality, indexSearcher)
+            ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCardinality, indexSearcher)
             : drivingCardinality;
 
         return IsDirectScanCostEffective(entriesToScan, bitmapCost);
@@ -2086,7 +2052,7 @@ internal static partial class QueryPlanBuilder
 
         long drivingCard = EffectiveCardinality(execs[drivingIdx], indexSearcher);
         entriesToScan = execs.Count > 1
-            ? AdjustEntriesToScanByMinResidual(execs, drivingIdx, drivingCard, indexSearcher)
+            ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCard, indexSearcher)
             : drivingCard;
 
         return IsDirectScanCostEffective(entriesToScan, bitmapCost);
