@@ -138,12 +138,12 @@ public sealed class CompiledPlan
     /// against the plan-stable exclusion set {<see cref="CompoundFieldDrivingClause"/>,
     /// <see cref="CompoundFieldField2RangeIdx"/>}. The filter result is itself plan-stable, so it is
     /// computed once instead of per query.</summary>
-    public ResidualPredicateSet CompoundFieldResiduals { get; set; }
+    public ScanPredicateInfo[] CompoundFieldResiduals { get; set; }
 
     /// <summary>Residual entry-scan predicates for the DirectScan dispatch path, filtered once at
     /// cache-miss time from the per-clause predicate array against the plan-stable exclusion of
     /// {<see cref="SortDrivingClauseIndex"/>}. Plan-stable, so computed once instead of per query.</summary>
-    public ResidualPredicateSet DirectScanResiduals { get; set; }
+    public ScanPredicateInfo[] DirectScanResiduals { get; set; }
 
     // ── Structural fields moved from QueryExecution ─────────────────────
     // Set once at cache-miss time (by Build + RemapOptimizationIndices) then
@@ -181,28 +181,4 @@ public sealed class CompiledPlan
     /// this template, or when WHEN elimination dropped the candidate clause for this
     /// specific execution.</summary>
     public int SortSeekClauseExecIdx { get; set; } = -1;
-}
-
-/// <summary>Plan-stable residual entry-scan predicates for one strategy, filtered once at
-/// cache-miss time from the per-clause predicate array against that strategy's exclusion set.
-/// <see cref="Predicates"/> is null when no residual clauses remain (the strategy degrades to a
-/// simple driving scan). <see cref="Unscannable"/> is true when a non-excluded clause is not
-/// expressible as an entry-scan predicate, so the strategy must abort to the bitmap pipeline.
-/// Discovery (TryCreateSimpleFieldDirectScan / TryCreateCompoundFieldMatch) reads this same flag to
-/// reject the strategy at cache-miss, so a chosen strategy never carries Unscannable = true.
-/// NOTE: slice <see cref="ScanPredicateInfo.ParamIndex"/> values in <see cref="Predicates"/> are
-/// per-clause local, NOT the IL-aligned dense indices carried by <see cref="CompiledPlan.ScanPredicateInfos"/>
-/// (the entry-scan IL). The DirectScan/CompoundField residual paths read slice/numeric values from
-/// <see cref="QueryExecution"/> directly (see ScanParamExtractor.BuildResidual) and never consume
-/// this array's ParamIndex — only FieldName/ValueType/CompareOp/SubPredicates/Group and null-ness.</summary>
-public readonly struct ResidualPredicateSet
-{
-    public ResidualPredicateSet(ScanPredicateInfo[] predicates, bool unscannable)
-    {
-        Predicates = predicates;
-        Unscannable = unscannable;
-    }
-
-    public ScanPredicateInfo[] Predicates { get; }
-    public bool Unscannable { get; }
 }

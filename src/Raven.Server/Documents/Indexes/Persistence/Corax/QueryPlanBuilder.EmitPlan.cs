@@ -81,7 +81,8 @@ internal static partial class QueryPlanBuilder
 
             EmitClauseInto(e0, e0.IsNegated ? MergeKind.AndNotInto : MergeKind.Fill, e0.Cardinality, suppressEarlyExit: false);
 
-            bool allScanEligible = AreAllScanEligible(perClause, 1);
+            // check if we have any clause after the first that we cannot scan on, we don't bother with the first since we always run it normally
+            bool allScanEligible = perClause.AsSpan()[1..].Contains(null) is false;
 
             for (int i = 1; i < executions.Count; i++)
             {
@@ -335,19 +336,6 @@ internal static partial class QueryPlanBuilder
             // No bitmap needed — AllEntries already implements IQueryMatch.Fill(),
             // so we iterate it directly without materializing into a bitmap first.
             return [new PlanOp { Kind = PlanOpKind.FillFromMatch, ParamIndex = 0 }];
-        }
-
-        private static bool AreAllScanEligible(ScanPredicateInfo?[] perClause, int startIndex)
-        {
-            // If any clause (In, AllIn, Spatial, Vector, Search, etc.) can't be scanned, we must not emit MaybeEntryScan — entry scan would skip them entirely.
-            // A null perClause entry means that clause produced no entry-scan predicate (the same condition the eligibility switch reports).
-            for (int j = startIndex; j < perClause.Length; j++)
-            {
-                if (perClause[j] is null)
-                    return false;
-            }
-
-            return true;
         }
     }
 }
