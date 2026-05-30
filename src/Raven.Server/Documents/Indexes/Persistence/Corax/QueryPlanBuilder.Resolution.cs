@@ -175,10 +175,19 @@ internal static partial class QueryPlanBuilder
                 RequiredBitmaps = requiredBitmaps,
                 InspectionTemplate = BuildInspectionTemplate(ops, executions),
                 ScanPredicateInfos = scanPredicates,
-                PerClauseScanPredicates = BuildPerClauseScanPredicates(),
                 AllNegated = CheckAllNegated(),
             };
             RemapOptimizationIndices();
+
+            // The CompoundField and DirectScan residual arrays are filtered from the per-clause
+            // predicates against plan-stable exclusion sets, so the result is itself plan-stable —
+            // build it once here instead of rebuilding it on every query in the construct paths.
+            var perClause = BuildPerClauseScanPredicates();
+            compiledPlan.CompoundFieldResiduals = BuildResidualSet(perClause,
+                compiledPlan.CompoundFieldDrivingClause, compiledPlan.CompoundFieldField2RangeIdx);
+            compiledPlan.DirectScanResiduals = BuildResidualSet(perClause,
+                compiledPlan.SortDrivingClauseIndex, skip2: -1);
+
             indexSearcher.PlanCache.Add(planParams.Metadata.Query.QueryText, compiledPlan, template);
 
             return FinalizePlan();
@@ -314,6 +323,24 @@ internal static partial class QueryPlanBuilder
             }
 
             return perClause;
+        }
+
+        // Filter the per-clause predicates against a strategy's plan-stable exclusion set (skip1/skip2).
+        // A null entry on a non-excluded clause means the residual is non-scannable for that strategy,
+        // so the construct path must abort to the bitmap pipeline (Unscannable = true).
+        static ResidualPredicateSet BuildResidualSet(ScanPredicateInfo?[] perClause, int skip1, int skip2)
+        {
+            List<ScanPredicateInfo> residuals = null;
+            for (int i = 0; i < perClause.Length; i++)
+            {
+                if (i == skip1 || i == skip2)
+                    continue;
+                if (perClause[i] is not { } pred)
+                    return new ResidualPredicateSet(predicates: null, unscannable: true);
+                (residuals ??= []).Add(pred);
+            }
+
+            return new ResidualPredicateSet(residuals?.ToArray(), unscannable: false);
         }
 
         bool CheckAllNegated() => executions is [{ IsNegated: true }, ..]; // negated clauses are always sorted first, so we can just check the first
@@ -1074,19 +1101,13 @@ internal static partial class QueryPlanBuilder
         var drivingExec = execs[drivingClauseIdx];
         var packed = drivingExec.PackedParamValue;
 
-        // Residual predicates: filter the per-clause predicates precomputed at plan-build time,
-        // excluding the driving clause and the field2-range narrowing clause. A null entry means a
-        // non-scannable clause — abort to the bitmap pipeline.
-        var perClause = ctx.Exec.Plan.PerClauseScanPredicates;
-        var residualPreds = new List<ScanPredicateInfo>();
-        for (int i = 0; i < execs.Count; i++)
-        {
-            if (i == drivingClauseIdx || i == field2RangeIdx)
-                continue;
-            if (perClause[i] is not { } pred)
-                return null;
-            residualPreds.Add(pred);
-        }
+        // Residual predicates were filtered once at plan-build time against the plan-stable
+        // exclusion {drivingClause, field2-range}; Unscannable means a non-scannable clause slipped
+        // through (defensive — discovery prevents it), so abort to the bitmap pipeline.
+        var residualSet = ctx.Exec.Plan.CompoundFieldResiduals;
+        if (residualSet.Unscannable)
+            return null;
+        ScanPredicateInfo[] residualArray = residualSet.Predicates;
 
         string field1Name = drivingClause.FieldName;
         string compoundFieldName = ctx.Exec.Plan.Template.CompoundFieldName;
@@ -1128,7 +1149,6 @@ internal static partial class QueryPlanBuilder
         // Extract scan parameters for residual predicates and stash them on the exec — the residual
         // IL reads exec.ResidualSlices / exec.FieldRootPages directly. Longs/Doubles already live
         // on exec; the IL reads them by baked PackedParam.Param1 indices.
-        ScanPredicateInfo[] residualArray = residualPreds.Count > 0 ? residualPreds.ToArray() : null;
         ScanParamExtractor. BuildResidual(ctx.Exec, indexSearcher, allocator, residualArray,
             drivingClauseIdx, field2RangeIdx);
 
@@ -1145,9 +1165,7 @@ internal static partial class QueryPlanBuilder
             directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
             directScan.SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)";
             directScan.Direction = ctx.OrderByFields[0].Ascending ? "Forward" : "Backward";
-            directScan.ResidualDescription = residualArray != null
-                ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
-                : null;
+            directScan.ResidualDescription = DescribeResiduals(residualArray);
             directScan.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
         }
 
@@ -1373,8 +1391,7 @@ internal static partial class QueryPlanBuilder
     private static IQueryMatch ConstructDirectScan(
         ref InstCtx ctx,
         int drivingIdx, bool isFullScan, bool hasTieBreak,
-        string reasonForInspection,
-        List<ScanPredicateInfo> preBuiltResiduals = null)
+        string reasonForInspection)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         // sortFieldName feeds only the inspection node; skip the ToString on the common path.
@@ -1386,9 +1403,13 @@ internal static partial class QueryPlanBuilder
                 out ITermsProvider provider, out LowLevelTransaction llt, out string drivingClauseDescription) == false)
             return null;
 
-        // ── 2. Residual predicates (rebuilt on cache-hit path; passed through on the discovery path) ──
-        if (TryGetResidualPredicates(ref ctx, drivingIdx, isFullScan, preBuiltResiduals, out List<ScanPredicateInfo> residualPreds) == false)
+        // ── 2. Residual predicates were filtered once at plan-build time against {drivingClause}.
+        //       Unscannable means a non-scannable clause slipped through (defensive — discovery
+        //       prevents it), so abort to the bitmap pipeline.
+        var residualSet = ctx.Exec.Plan.DirectScanResiduals;
+        if (residualSet.Unscannable)
             return null;
+        ScanPredicateInfo[] residualArray = residualSet.Predicates;
 
         // ── 3. Driving match: SortedDrivingMatch or its tie-break variant ──
         // BetweenQuery and StartWithQuery don't include nulls in their term output,
@@ -1396,17 +1417,16 @@ internal static partial class QueryPlanBuilder
         IQueryMatch drivingMatch = BuildSortedDrivingMatch(ref ctx, provider, llt, hasTieBreak, forward);
 
         // ── 4. Residual scan parameters ── stash on exec (residual IL reads them from there).
-        ScanPredicateInfo[] residualArray = residualPreds is { Count: > 0 } ? residualPreds.ToArray() : null;
         ScanParamExtractor.BuildResidual(ctx.Exec, indexSearcher, ctx.PlanParams.Allocator, residualArray,
             drivingIdx, -1);
- 
+
         var ds = BuildDirectScan(
             indexSearcher, drivingMatch, ctx.Exec,
             ctx.Plan.CompiledEntryPredicate, residualArray);
 
         // Inspection node is read only on `include timings()` / explain queries.
         if (ctx.WantTimings)
-            PopulateDirectScanInspection(ds, sortFieldName, drivingClauseDescription, forward, residualArray, residualPreds,
+            PopulateDirectScanInspection(ds, sortFieldName, drivingClauseDescription, forward, residualArray,
                 isFullScan ? "full index-only scan (no WHERE clause)" : reasonForInspection);
         return ds;
     }
@@ -1458,32 +1478,6 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    /// <summary>Residual predicates list. On the discovery path (<see cref="TryCreateSimpleFieldDirectScan"/>)
-    /// the list is built during cost analysis and threaded through; on the cache-hit dispatch path
-    /// (<see cref="BuildSortedQuery"/>) the list is rebuilt here.
-    /// Returns false when a residual predicate is non-scannable — a structural property that didn't
-    /// change since the decision was cached, so the assertion of consistency here is genuine.</summary>
-    private static bool TryGetResidualPredicates(
-        ref InstCtx ctx, int drivingIdx, bool isFullScan,
-        List<ScanPredicateInfo> preBuiltResiduals, out List<ScanPredicateInfo> residualPreds)
-    {
-        residualPreds = preBuiltResiduals;
-        if (residualPreds != null || isFullScan)
-            return true;
-
-        var execs = ctx.Exec.Executions;
-        var perClause = ctx.Exec.Plan.PerClauseScanPredicates;
-        for (int i = 0; i < execs.Count; i++)
-        {
-            if (i == drivingIdx) continue;
-            if (perClause[i] is not { } pred)
-                return false;
-            residualPreds ??= new List<ScanPredicateInfo>();
-            residualPreds.Add(pred);
-        }
-        return true;
-    }
-
     /// <summary>Resolve "nulls first vs last" for a single ORDER BY field given its NullsSortMode
     /// (per-field override or index default) and the scan direction.</summary>
     private static bool ResolveNullFirst(in OrderMetadata orderByField, NullsSortMode indexDefault, bool forward)
@@ -1524,15 +1518,23 @@ internal static partial class QueryPlanBuilder
     /// match's Fill/AndWith path never reads these — they exist solely for query introspection.</summary>
     private static void PopulateDirectScanInspection(
         DirectScanMatchBase ds, string sortFieldName, string drivingClauseDescription, bool forward,
-        ScanPredicateInfo[] residualArray, List<ScanPredicateInfo> residualPreds, string reason)
+        ScanPredicateInfo[] residualArray, string reason)
     {
         ds.DrivingTreeName = sortFieldName;
         ds.DrivingClause = drivingClauseDescription;
         ds.Direction = forward ? "Forward" : "Backward";
-        ds.ResidualDescription = residualArray != null
-            ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
-            : null;
+        ds.ResidualDescription = DescribeResiduals(residualArray);
         ds.Reason = reason;
+    }
+
+    /// <summary>Format the residual predicate array as a "field op, field op" inspection string.
+    /// Returns null for a null array. Inspection-only — read solely on `include timings()` / explain.</summary>
+    private static string DescribeResiduals(ScanPredicateInfo[] residualArray)
+    {
+        if (residualArray == null)
+            return null;
+
+        return string.Join(", ", Array.ConvertAll(residualArray, p => $"{p.FieldName} {p.CompareOp}"));
     }
 
     /// <summary>Create the appropriate DirectScan match based on whether residual predicates exist.</summary>
