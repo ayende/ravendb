@@ -20,13 +20,13 @@ internal static partial class QueryPlanBuilder
         private int _nextScratch = EphemeralBitmap + 1;
         private int _maxScratchUsed = EphemeralBitmap;
 
-        public static (PlanOp[] Ops, int RequiredBitmaps) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams)
+        public static (PlanOp[] Ops, int RequiredBitmaps) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams, ScanPredicateInfo?[] perClause)
         {
             if (executions.Count is 0) // exec.QueryWillReturnNoResults was checked by caller, so that means all results, not none at all
                 return (BuildAllEntriesPlan(), 2);
 
             var emitter = new PlanEmitter();
-            var (ops, bitmaps) = template.IsOr ? emitter.EmitOrPlan(executions) : emitter.EmitAndPlan(executions);
+            var (ops, bitmaps) = template.IsOr ? emitter.EmitOrPlan(executions) : emitter.EmitAndPlan(executions, perClause);
             if (planParams.HasBoost)
             {
                 // we require query match for boost, because the other options cannot compute it
@@ -73,15 +73,15 @@ internal static partial class QueryPlanBuilder
             return Complete();
         }
 
-        private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions)
+        private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions, ScanPredicateInfo?[] perClause)
         {
             var e0 = executions[0];
             if (e0.IsNegated)
                 _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
 
             EmitClauseInto(e0, e0.IsNegated ? MergeKind.AndNotInto : MergeKind.Fill, e0.Cardinality, suppressEarlyExit: false);
-            
-            bool allScanEligible = AreAllScanEligible(executions, 1);
+
+            bool allScanEligible = AreAllScanEligible(perClause, 1);
 
             for (int i = 1; i < executions.Count; i++)
             {
@@ -337,12 +337,13 @@ internal static partial class QueryPlanBuilder
             return [new PlanOp { Kind = PlanOpKind.FillFromMatch, ParamIndex = 0 }];
         }
 
-        private static bool AreAllScanEligible(List<ClauseExecution> executions, int startIndex)
+        private static bool AreAllScanEligible(ScanPredicateInfo?[] perClause, int startIndex)
         {
             // If any clause (In, AllIn, Spatial, Vector, Search, etc.) can't be scanned, we must not emit MaybeEntryScan — entry scan would skip them entirely.
-            for (int j = startIndex; j < executions.Count; j++)
+            // A null perClause entry means that clause produced no entry-scan predicate (the same condition the eligibility switch reports).
+            for (int j = startIndex; j < perClause.Length; j++)
             {
-                if (IsScanEligible(executions[j]) == false)
+                if (perClause[j] is null)
                     return false;
             }
 
