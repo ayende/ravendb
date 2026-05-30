@@ -49,13 +49,18 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private ref struct InstCtx(CompiledPlan plan, QueryExecution exec, OrderMetadata[] orderByFields, PlanParameters planParams, QueryBuilderParameters builderParams)
+    private ref struct InstCtx(CompiledPlan plan, QueryExecution exec, OrderMetadata[] orderByFields, PlanParameters planParams, QueryBuilderParameters builderParams, bool wantTimings)
     {
         public readonly CompiledPlan Plan = plan;
         public readonly QueryExecution Exec = exec;
         public readonly OrderMetadata[] OrderByFields = orderByFields; // may be null when PageSize == 0
         public readonly PlanParameters PlanParams = planParams;
         public readonly QueryBuilderParameters BuilderParams = builderParams;
+
+        /// <summary>True only for `include timings()` / explain queries (queryTimings != null), the
+        /// only case where a match's Inspect() is read. Free-form DirectScan inspection strings are
+        /// built solely under this flag, so the common query path skips their per-execution allocation.</summary>
+        public readonly bool WantTimings = wantTimings;
 
         public string RejectReason;
     }
@@ -170,6 +175,7 @@ internal static partial class QueryPlanBuilder
                 RequiredBitmaps = requiredBitmaps,
                 InspectionTemplate = BuildInspectionTemplate(ops, executions),
                 ScanPredicateInfos = scanPredicates,
+                PerClauseScanPredicates = BuildPerClauseScanPredicates(),
                 AllNegated = CheckAllNegated(),
             };
             RemapOptimizationIndices();
@@ -292,6 +298,22 @@ internal static partial class QueryPlanBuilder
             }
 
             return predicates;
+        }
+
+        // One ScanPredicateInfo per execution (in post-sort order), built once per compiled plan.
+        // The DirectScan and CompoundField construct paths filter this by their exclusion set every
+        // query rather than re-running the BuildScanPredicateInfo switch. Slice ParamIndex here is
+        // per-clause local (unused by those residual paths — see CompiledPlan.PerClauseScanPredicates).
+        ScanPredicateInfo?[] BuildPerClauseScanPredicates()
+        {
+            var perClause = new ScanPredicateInfo?[executions.Count];
+            for (int i = 0; i < executions.Count; i++)
+            {
+                int sliceIndex = 0;
+                perClause[i] = BuildScanPredicateInfo(executions[i], ref sliceIndex);
+            }
+
+            return perClause;
         }
 
         bool CheckAllNegated() => executions is [{ IsNegated: true }, ..]; // negated clauses are always sorted first, so we can just check the first
@@ -615,7 +637,7 @@ internal static partial class QueryPlanBuilder
         out IQueryMatch innerMatch,
         CancellationToken token)
     {
-        var ctx = new InstCtx(compiledPlan, exec, orderByFields, planParams, builderParameters);
+        var ctx = new InstCtx(compiledPlan, exec, orderByFields, planParams, builderParameters, wantTimings);
         if (compiledPlan.Strategy == ExecutionStrategy.NotEvaluated)
             SelectExecutionStrategy(ref ctx);
 
@@ -643,7 +665,9 @@ internal static partial class QueryPlanBuilder
                 if (DirectScanCostEffective(ref ctx, isFullScan, out long dsEntriesToScan, out long dsBitmapCost))
                 {
                     bool hasTieBreak = orderByFields.Length == 2;
-                    string dsReason = $"entries_to_scan({dsEntriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({dsBitmapCost})";
+                    string dsReason = ctx.WantTimings
+                        ? $"entries_to_scan({dsEntriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({dsBitmapCost})"
+                        : null;
                     innerMatch = ConstructDirectScan(ref ctx, exec.Plan.SortDrivingClauseIndex, isFullScan, hasTieBreak,
                         reasonForInspection: dsReason);
                     if (innerMatch is not null) return innerMatch;
@@ -1050,22 +1074,22 @@ internal static partial class QueryPlanBuilder
         var drivingExec = execs[drivingClauseIdx];
         var packed = drivingExec.PackedParamValue;
 
-        // Rebuild residual predicates (Construct rebuilds; the structural shape is
-        // identical to what discovery just walked, so List growth is bounded).
+        // Residual predicates: filter the per-clause predicates precomputed at plan-build time,
+        // excluding the driving clause and the field2-range narrowing clause. A null entry means a
+        // non-scannable clause — abort to the bitmap pipeline.
+        var perClause = ctx.Exec.Plan.PerClauseScanPredicates;
         var residualPreds = new List<ScanPredicateInfo>();
-        int rSliceIdx = 0;
         for (int i = 0; i < execs.Count; i++)
         {
             if (i == drivingClauseIdx || i == field2RangeIdx)
                 continue;
-            var pred = BuildScanPredicateInfo(execs[i], ref rSliceIdx);
-            if (pred == null)
+            if (perClause[i] is not { } pred)
                 return null;
-            residualPreds.Add(pred.Value);
+            residualPreds.Add(pred);
         }
 
         string field1Name = drivingClause.FieldName;
-        var compoundFieldName = $"compound({field1Name},{sortFieldName})";
+        string compoundFieldName = ctx.Exec.Plan.Template.CompoundFieldName;
         var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
 
         // Build the prefix bytes for field1's value.
@@ -1111,14 +1135,21 @@ internal static partial class QueryPlanBuilder
         var directScan = BuildDirectScan(
             indexSearcher, drivingMatch, ctx.Exec,
             ctx.Plan.CompiledEntryPredicate, residualArray);
-        directScan.DrivingTreeName = compoundFieldName;
-        directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
-        directScan.SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)";
-        directScan.Direction = ctx.OrderByFields[0].Ascending ? "Forward" : "Backward";
-        directScan.ResidualDescription = residualArray != null
-            ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
-            : null;
-        directScan.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
+
+        // Free-form inspection strings are read only by Inspect() on `include timings()` / explain
+        // queries (queryTimings != null). Skip building them — and the field1ValueStr formatting —
+        // on the common query path.
+        if (ctx.WantTimings)
+        {
+            directScan.DrivingTreeName = compoundFieldName;
+            directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
+            directScan.SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)";
+            directScan.Direction = ctx.OrderByFields[0].Ascending ? "Forward" : "Backward";
+            directScan.ResidualDescription = residualArray != null
+                ? string.Join(", ", residualPreds.ConvertAll(p => $"{p.FieldName} {p.CompareOp}"))
+                : null;
+            directScan.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
+        }
 
         return directScan;
     }
@@ -1142,16 +1173,16 @@ internal static partial class QueryPlanBuilder
             }
             case PackedParam.TypeLong:
             {
-                long longVal = ctx.Exec.LongValues[packed.Param1];
-                field1ValueStr = longVal.ToString();
+                // field1ValueStr feeds only the inspection strings (see ConstructCompoundField); skip
+                // the ToString allocation unless this is an inspected query.
+                field1ValueStr = ctx.WantTimings ? ctx.Exec.LongValues[packed.Param1].ToString() : null;
                 ctx.PlanParams.Allocator.Allocate(sizeof(long), out ByteString buf);
                 EncodeNumericValue(buf.ToSpan(), PackedParam.TypeLong, packed.Param1, ctx.Exec);
                 return new Slice(buf);
             }
             case PackedParam.TypeDouble:
             {
-                double dblVal = ctx.Exec.DoubleValues[packed.Param1];
-                field1ValueStr = dblVal.ToString(CultureInfo.InvariantCulture);
+                field1ValueStr = ctx.WantTimings ? ctx.Exec.DoubleValues[packed.Param1].ToString(CultureInfo.InvariantCulture) : null;
                 ctx.PlanParams.Allocator.Allocate(sizeof(long), out ByteString buf);
                 EncodeNumericValue(buf.ToSpan(), PackedParam.TypeDouble, packed.Param1, ctx.Exec);
                 return new Slice(buf);
@@ -1346,7 +1377,8 @@ internal static partial class QueryPlanBuilder
         List<ScanPredicateInfo> preBuiltResiduals = null)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        string sortFieldName = ctx.OrderByFields[0].Field.FieldName.ToString();
+        // sortFieldName feeds only the inspection node; skip the ToString on the common path.
+        string sortFieldName = ctx.WantTimings ? ctx.OrderByFields[0].Field.FieldName.ToString() : null;
         bool forward = ctx.OrderByFields[0].Ascending;
 
         // ── 1. Driving provider (term iterator wrapped as TermsProviderMatch) ──
@@ -1372,8 +1404,10 @@ internal static partial class QueryPlanBuilder
             indexSearcher, drivingMatch, ctx.Exec,
             ctx.Plan.CompiledEntryPredicate, residualArray);
 
-        PopulateDirectScanInspection(ds, sortFieldName, drivingClauseDescription, forward, residualArray, residualPreds,
-            isFullScan ? "full index-only scan (no WHERE clause)" : reasonForInspection);
+        // Inspection node is read only on `include timings()` / explain queries.
+        if (ctx.WantTimings)
+            PopulateDirectScanInspection(ds, sortFieldName, drivingClauseDescription, forward, residualArray, residualPreds,
+                isFullScan ? "full index-only scan (no WHERE clause)" : reasonForInspection);
         return ds;
     }
 
@@ -1403,7 +1437,7 @@ internal static partial class QueryPlanBuilder
             }
             provider = tpm.Provider;
             llt = tpm.Llt;
-            drivingClauseDescription = $"{fieldMeta.FieldName} [all]";
+            drivingClauseDescription = ctx.WantTimings ? $"{fieldMeta.FieldName} [all]" : null;
             return true;
         }
 
@@ -1420,7 +1454,7 @@ internal static partial class QueryPlanBuilder
         }
         provider = resolved.Provider;
         llt = resolved.Llt;
-        drivingClauseDescription = $"{drivingExec.Clause.FieldName} {drivingExec.ClauseType}";
+        drivingClauseDescription = ctx.WantTimings ? $"{drivingExec.Clause.FieldName} {drivingExec.ClauseType}" : null;
         return true;
     }
 
@@ -1438,15 +1472,14 @@ internal static partial class QueryPlanBuilder
             return true;
 
         var execs = ctx.Exec.Executions;
-        int sliceIdx = 0;
+        var perClause = ctx.Exec.Plan.PerClauseScanPredicates;
         for (int i = 0; i < execs.Count; i++)
         {
             if (i == drivingIdx) continue;
-            var pred = BuildScanPredicateInfo(execs[i], ref sliceIdx);
-            if (pred == null)
+            if (perClause[i] is not { } pred)
                 return false;
             residualPreds ??= new List<ScanPredicateInfo>();
-            residualPreds.Add(pred.Value);
+            residualPreds.Add(pred);
         }
         return true;
     }
@@ -1952,8 +1985,15 @@ internal static partial class QueryPlanBuilder
         => exec.Cardinality > 0 ? exec.Cardinality : indexSearcher.NumberOfEntries;
 
     private static long ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
-        int drivingIdx, long drivingCard, IndexSearcher indexSearcher)
+        int drivingIdx, long drivingCard, long pageSize, IndexSearcher indexSearcher)
     {
+        // The scan walks the driving stream in sort order and stops once the page is full, so the
+        // number of *results* we actually need is bounded by the page size — there is no point in
+        // costing the scan as if it produced every driving match when the caller only asked for the
+        // first `pageSize` of them. A `pageSize` of int.MaxValue ("get everything") leaves the
+        // driving cardinality as the binding limit, so this only narrows the estimate for top-N queries.
+        long resultsWanted = Math.Min(drivingCard, pageSize);
+
         // first, we find the most selective residual clause
         long minResidual = long.MaxValue;
         for (int i = 0; i < execs.Count; i++)
@@ -1969,12 +2009,14 @@ internal static partial class QueryPlanBuilder
             double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
             if (passRate > 0)
             {
-                // if pass rate is 1%, we have to scan through 10_000 entries to get 100, etc, so we need to inflate the costs
-                return (long)(drivingCard / passRate);
+                // if pass rate is 1%, we have to scan through 10_000 entries to get 100, etc, so we need to inflate the costs.
+                // We inflate the *results wanted* (page-bounded) rather than the full driving cardinality: filling a 10-row
+                // page through a 1%-selective residual means scanning ~1_000 entries, regardless of how large the driving set is.
+                return (long)(resultsWanted / passRate);
             }
         }
 
-        return drivingCard;
+        return resultsWanted;
     }
 
     /// <summary>
@@ -2018,7 +2060,7 @@ internal static partial class QueryPlanBuilder
 
         long drivingCardinality = EffectiveCardinality(drivingExec, indexSearcher);
         entriesToScan = residualCount > 0
-            ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCardinality, indexSearcher)
+            ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCardinality, ctx.BuilderParams.Query.PageSize, indexSearcher)
             : drivingCardinality;
 
         return IsDirectScanCostEffective(entriesToScan, bitmapCost);
@@ -2052,7 +2094,7 @@ internal static partial class QueryPlanBuilder
 
         long drivingCard = EffectiveCardinality(execs[drivingIdx], indexSearcher);
         entriesToScan = execs.Count > 1
-            ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCard, indexSearcher)
+            ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher)
             : drivingCard;
 
         return IsDirectScanCostEffective(entriesToScan, bitmapCost);

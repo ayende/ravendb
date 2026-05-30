@@ -117,6 +117,7 @@ internal static partial class QueryPlanBuilder
             CompoundExactAFirst = walkerCtx.CompoundExactAFirst,
             CompoundFieldDrivingClause = walkerCtx.CompoundFieldDrivingClause,
             CompoundFieldSortName = walkerCtx.CompoundFieldSortName,
+            CompoundFieldName = walkerCtx.CompoundFieldName,
             CompoundFieldIsMultiSort = walkerCtx.CompoundFieldIsMultiSort,
             CompoundFieldField2Range = walkerCtx.CompoundFieldField2Range,
             ParameterSlots = seen.ToArray(),
@@ -260,6 +261,12 @@ internal static partial class QueryPlanBuilder
         // bake the template-position index here instead of recomputing on every Construct call.
         if (walkerCtx.CompoundFieldDrivingClause != -1)
         {
+            // Field names are template-stable, so bake the compound tree name once here instead of
+            // interpolating it on every execution in ConstructCompoundField. Mirror that method's
+            // use of FieldName (not ResolvedFieldName) so the baked name matches exactly.
+            walkerCtx.CompoundFieldName =
+                $"compound({clauses[walkerCtx.CompoundFieldDrivingClause].FieldName},{walkerCtx.CompoundFieldSortName})";
+
             for (int i = 0; i < clauses.Count; i++)
             {
                 if (i == walkerCtx.CompoundFieldDrivingClause) continue;

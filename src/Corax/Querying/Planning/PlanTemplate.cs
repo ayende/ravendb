@@ -73,6 +73,10 @@ public sealed class PlanTemplate
     /// <summary>Sort field name for the compound-field match (the second field in the compound pair).
     /// Null when CompoundFieldDrivingClause is -1.</summary>
     public string CompoundFieldSortName;
+    /// <summary>Pre-built <c>compound({field1},{sortField})</c> tree name for the compound-field match.
+    /// Field names are template-stable, so this is baked here instead of being interpolated on every
+    /// execution in <c>ConstructCompoundField</c>. Null when CompoundFieldDrivingClause is -1.</summary>
+    public string CompoundFieldName;
     /// <summary>True when compound-field match uses two ORDER BY fields (multi-sort mode).</summary>
     public bool CompoundFieldIsMultiSort;
 

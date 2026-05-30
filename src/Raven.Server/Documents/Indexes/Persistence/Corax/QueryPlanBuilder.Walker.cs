@@ -30,6 +30,7 @@ internal static partial class QueryPlanBuilder
         public bool CompoundExactAFirst;
         public int CompoundFieldDrivingClause = -1;
         public string CompoundFieldSortName;
+        public string CompoundFieldName;
         public bool CompoundFieldIsMultiSort;
         public int CompoundFieldField2Range = -1;
 
