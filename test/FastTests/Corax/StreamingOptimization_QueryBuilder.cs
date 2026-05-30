@@ -599,7 +599,13 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
                     IndexSearcher = indexSearcher,
                     Metadata = indexQueryServerSide.Metadata,
                     QueryParameters = blittableParameters,
-                    Allocator = bsc
+                    Allocator = bsc,
+                    Index = index,
+                    IndexFieldsMapping = mapping,
+                    HasDynamics = index.Definition.HasDynamicFields,
+                    DynamicFields = index.Definition.HasDynamicFields
+                        ? new Lazy<List<string>>(() => indexSearcher.GetFields())
+                        : null,
                 };
                 var coraxQuery = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(indexSearcher, bsc, indexQueryServerSide.Metadata, blittableParameters, mapping), out _, out _, null, false, default);
 
