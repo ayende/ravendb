@@ -33,7 +33,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 internal static partial class QueryPlanBuilder
 {
-    internal readonly record struct BuildCompileAndOptimizeResult(
+    internal readonly record struct CompiledQuery(
         IQueryMatch QueryMatch,
         IQueryMatch ExecutedMatch,
         IQueryMatch SortingWrapper,
@@ -48,7 +48,6 @@ internal static partial class QueryPlanBuilder
             (SortingWrapper as IDisposable)?.Dispose();
         }
     }
-
 
     private ref struct InstCtx(CompiledPlan plan, QueryExecution exec, OrderMetadata[] orderByFields, PlanParameters planParams, QueryBuilderParameters builderParams)
     {
@@ -81,7 +80,11 @@ internal static partial class QueryPlanBuilder
         return template;
     }
 
-    public static IQueryMatch BuildAndCompile(
+    /// <summary>
+    /// This gets the query match without any sorting. This is used by callers who care about the results but not the order.
+    /// For example, facets, more-like-this, etc.
+    /// </summary>
+    public static IQueryMatch BuildFilterMatch(
         PlanParameters planParams,
         QueryBuilderParameters builderParameters,
         out QueryExecution exec,
@@ -102,7 +105,7 @@ internal static partial class QueryPlanBuilder
         return InstantiateBitmapPipeline(compiledPlanOut, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
     }
 
-    public static BuildCompileAndOptimizeResult BuildCompileAndOptimize(PlanParameters planParams,
+    public static CompiledQuery BuildSortedQuery(PlanParameters planParams,
         QueryBuilderParameters builderParameters,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         bool wantTimings,
@@ -158,7 +161,7 @@ internal static partial class QueryPlanBuilder
                 CompiledEntryPredicate = ResidualScanIlEmitter.EmitDelegate(CollectionsMarshal.AsSpan(scanPredicates), out var scanCsharp),
 
                 Template = template,
-                Source = csharpText + "\n" + scanCsharp,
+                Source = csharpText + Environment.NewLine + scanCsharp,
                 Ordering = operandOrdering,
                 TypeSignature = typeSignature,
                 FullKinds = fullKinds,
@@ -183,9 +186,9 @@ internal static partial class QueryPlanBuilder
             exec.Cardinalities = cards;
 
             AttachSpatialAndVectorClauses(exec, template, planParams, builderParameters, writer);
-            writer.SetValues(exec); // // Re-snapshot typed arrays into exec, AttachSpatialAndVectorClauses may have modified them
+            writer.SetValues(exec);
             return (compiledPlan, exec);
-        }
+        } 
 
         QueryExecution CreateQueryExecution()
         {
@@ -238,12 +241,13 @@ internal static partial class QueryPlanBuilder
             var execList = new List<ClauseExecution>(template.Clauses.Count);
             if (template.WhenCount == 0) // Fast path: no WHEN clauses anywhere in the template — skip the per-clause
             {
-                foreach (var cached in template.Clauses)
+                foreach (var clause in template.Clauses)
                 {
-                    execList.Add(CreateExecution(cached));
+                    execList.Add(CreateExecution(clause));
                 }
 
-                return (execList, 0); }
+                return (execList, 0);
+            }
 
             int flags = 0;
             int whenBit = 0;
@@ -268,7 +272,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
-        // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly
+        // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly, this runs _once_ per cached compiled plan
         List<ScanPredicateInfo> CreateScanPredicates()
         {
             // Scan predicates only apply to multi-clause AND chains (clause 0 is the seed, 1..N are evaluated per-entry).
@@ -326,9 +330,10 @@ internal static partial class QueryPlanBuilder
 
     private static ClauseExecution CreateExecution(ClauseInfo clause)
     {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
         var exec = new ClauseExecution(clause);
 
-        if (clause.SubClauses is not { Count: > 0 })
+        if (clause.SubClauses is null)
             return exec;
 
         exec.SubExecutions = new List<ClauseExecution>(clause.SubClauses.Count);
@@ -1509,7 +1514,7 @@ internal static partial class QueryPlanBuilder
 
     /// <summary>Residual predicates list. On the discovery path (<see cref="TryCreateSimpleFieldDirectScan"/>)
     /// the list is built during cost analysis and threaded through; on the cache-hit dispatch path
-    /// (<see cref="BuildCompileAndOptimize"/>) the list is rebuilt here.
+    /// (<see cref="BuildSortedQuery"/>) the list is rebuilt here.
     /// Returns false when a residual predicate is non-scannable — a structural property that didn't
     /// change since the decision was cached, so the assertion of consistency here is genuine.</summary>
     private static bool TryGetResidualPredicates(

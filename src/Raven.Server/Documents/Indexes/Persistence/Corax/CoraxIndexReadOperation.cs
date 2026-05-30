@@ -602,7 +602,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             bool runQuery = true;
             while (runQuery)
             {
-                QueryPlanBuilder.BuildCompileAndOptimizeResult compileResult;
+                QueryPlanBuilder.CompiledQuery compileResult;
                 using (queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false)?.Start())
                 {
                     TransactionOperationContext serverContext = null;
@@ -625,7 +625,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         DynamicFields = builderParameters.DynamicFields,
                         HasBoost = builderParameters.HasBoost
                     };
-                    compileResult = QueryPlanBuilder.BuildCompileAndOptimize(
+                    compileResult = QueryPlanBuilder.BuildSortedQuery(
                         planParams, builderParameters, highlightings.Terms, wantTimings: queryTimings != null,
                         token: token);
 
@@ -1298,7 +1298,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 _fieldMappings, null, null, -1, deduplicationDisabled: false,
                 indexReadOperation: this, token: token);
             
-            IQueryMatch queryMatch = QueryPlanBuilder.BuildAndCompile(
+            IQueryMatch queryMatch = QueryPlanBuilder.BuildFilterMatch(
                 new QueryPlanBuilder.PlanParameters
                 {
                     IndexSearcher = IndexSearcher,
@@ -1497,7 +1497,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 DynamicFields = builderParameters.DynamicFields,
                 HasBoost = builderParameters.HasBoost
             };
-            return QueryPlanBuilder.BuildAndCompile(
+            return QueryPlanBuilder.BuildFilterMatch(
                 planParams, builderParameters, out _, out _, highlightingTerms: null, wantTimings: false, builderParameters.Token);
         }
     }

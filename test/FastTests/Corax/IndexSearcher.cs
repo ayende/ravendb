@@ -1303,7 +1303,7 @@ namespace FastTests.Corax
                     IndexSearcher = searcher, Metadata = queryMetadata,
                     QueryParameters = emptyParams, Allocator = Allocator
                 };
-                var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, emptyParams, fields), out _, out _, null, false, default);
+                var match = QueryPlanBuilder.BuildFilterMatch(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, emptyParams, fields), out _, out _, null, false, default);
                 Span<long> buf = stackalloc long[64];
                 Assert.Equal(0, match.Fill(buf));
             }
@@ -1317,7 +1317,7 @@ namespace FastTests.Corax
                     IndexSearcher = searcher, Metadata = queryMetadata,
                     QueryParameters = realParams, Allocator = Allocator
                 };
-                var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, realParams, fields), out _, out _, null, false, default);
+                var match = QueryPlanBuilder.BuildFilterMatch(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, realParams, fields), out _, out _, null, false, default);
                 Span<long> buf = stackalloc long[64];
                 Assert.Equal(1, match.Fill(buf));
             }
@@ -1356,7 +1356,7 @@ namespace FastTests.Corax
                     IndexSearcher = searcher, Metadata = queryMetadata,
                     QueryParameters = emptyParams, Allocator = Allocator
                 };
-                var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, emptyParams, fields), out _, out _, null, false, default);
+                var match = QueryPlanBuilder.BuildFilterMatch(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, emptyParams, fields), out _, out _, null, false, default);
                 Span<long> buf = stackalloc long[64];
                 Assert.Equal(1, match.Fill(buf));
             }
@@ -1371,7 +1371,7 @@ namespace FastTests.Corax
                     IndexSearcher = searcher, Metadata = queryMetadata,
                     QueryParameters = realParams, Allocator = Allocator
                 };
-                var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, realParams, fields), out _, out _, null, false, default);
+                var match = QueryPlanBuilder.BuildFilterMatch(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, realParams, fields), out _, out _, null, false, default);
                 Span<long> buf = stackalloc long[64];
                 Assert.Equal(2, match.Fill(buf));
             }
@@ -1602,7 +1602,7 @@ namespace FastTests.Corax
                 Allocator = Allocator
             };
 
-            var match = QueryPlanBuilder.BuildAndCompile(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, paramsJson, fields), out _, out _, null, false, default);
+            var match = QueryPlanBuilder.BuildFilterMatch(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, paramsJson, fields), out _, out _, null, false, default);
             Span<long> buffer = stackalloc long[256];
             int count = match.Fill(buffer);
             Assert.Equal(2, count);
@@ -1630,7 +1630,7 @@ namespace FastTests.Corax
             };
 
             // BuildAndCompile: RQL → QueryExecution → IL compilation → CompiledQueryMatch
-            var compiledMatch = QueryPlanBuilder.BuildAndCompile(
+            var compiledMatch = QueryPlanBuilder.BuildFilterMatch(
                 planParams,
                 new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, fields),
                 out var debugPlan,

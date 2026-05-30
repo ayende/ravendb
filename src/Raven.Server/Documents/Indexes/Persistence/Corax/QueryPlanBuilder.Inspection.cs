@@ -10,7 +10,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 internal static partial class QueryPlanBuilder
 {
-    public static QueryInspectionNode BuildInspectionGraph(BuildCompileAndOptimizeResult result)
+    public static QueryInspectionNode BuildInspectionGraph(CompiledQuery result)
     {
         long[] timings = null;
         long[] resultCounts = null;
