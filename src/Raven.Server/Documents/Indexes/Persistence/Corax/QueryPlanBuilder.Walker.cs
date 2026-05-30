@@ -106,21 +106,30 @@ internal static partial class QueryPlanBuilder
                 $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
         }
 
+        /// <summary>Mark every negated clause whose immediate enclosing context is OR with
+        /// <see cref="ClauseInfo.IsOrChainNotEquals"/> = true, telling the IL emitter
+        /// (EmitNegatedLeafInto) to materialize the complement (FillAllEntries + AndNot(positive))
+        /// instead of emitting the positive form. The enclosing context is OR for a top-level clause
+        /// iff the root expression is OR (<see cref="ResolutionContext.IsOr"/>), and for a nested
+        /// clause iff its parent is an <see cref="ClauseType.OrGroup"/>. The distinction matters: a
+        /// negated leaf inside a nested OrGroup must be flagged even under an AND root, and a negated
+        /// leaf inside a nested AndGroup must NOT be flagged even under an OR root.</summary>
         private static void NotCanonicalize(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             foreach (var c in clauses)
             {
-                NotCanonizeRecursive(c);
+                NotCanonizeRecursive(c, ctx.IsOr);
             }
 
-            void NotCanonizeRecursive(ClauseInfo c)
+            static void NotCanonizeRecursive(ClauseInfo c, bool enclosingIsOr)
             {
                 RuntimeHelpers.EnsureSufficientExecutionStack();
-                c.IsOrChainNotEquals |= ctx.IsOr && c.IsNegated;
+                if (enclosingIsOr && c.IsNegated)
+                    c.IsOrChainNotEquals = true;
                 bool subIsOr = c.ClauseType == ClauseType.OrGroup;
                 foreach (var sub in c.SubClauses ?? [])
                 {
-                    NotCanonizeRecursive(sub);
+                    NotCanonizeRecursive(sub, subIsOr);
                 }
             }
         }

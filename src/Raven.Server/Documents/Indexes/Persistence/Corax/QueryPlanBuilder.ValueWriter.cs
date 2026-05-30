@@ -1,3 +1,5 @@
+#pragma warning disable CS8632 // nullable annotations used outside a #nullable context; intentional here
+
 using System;
 using System.Collections.Generic;
 using Corax.Querying.Planning;
