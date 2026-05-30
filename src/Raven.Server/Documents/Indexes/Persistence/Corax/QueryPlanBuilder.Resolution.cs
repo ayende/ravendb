@@ -158,7 +158,7 @@ internal static partial class QueryPlanBuilder
         {
             var (ops, requiredBitmaps) = PlanEmitter.Emit(template, executions, planParams);
 
-            var scanPredicates = CreateScanPredicates();
+            var (scanPredicates, scanClauseIndices, perClause) = BuildScanPredicates();
             compiledPlan = new CompiledPlan
             {
                 CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
@@ -175,14 +175,15 @@ internal static partial class QueryPlanBuilder
                 RequiredBitmaps = requiredBitmaps,
                 InspectionTemplate = BuildInspectionTemplate(ops, executions),
                 ScanPredicateInfos = scanPredicates,
+                ScanPredicateClauseIndices = scanClauseIndices,
                 AllNegated = CheckAllNegated(),
             };
             RemapOptimizationIndices();
 
             // The CompoundField and DirectScan residual arrays are filtered from the per-clause
-            // predicates against plan-stable exclusion sets, so the result is itself plan-stable —
-            // build it once here instead of rebuilding it on every query in the construct paths.
-            var perClause = BuildPerClauseScanPredicates();
+            // predicates (built above in the single BuildScanPredicates pass) against plan-stable
+            // exclusion sets, so the result is itself plan-stable — build it once here instead of
+            // rebuilding it on every query in the construct paths.
             compiledPlan.CompoundFieldResiduals = BuildResidualSet(perClause,
                 compiledPlan.CompoundFieldDrivingClause, compiledPlan.CompoundFieldField2RangeIdx);
             compiledPlan.DirectScanResiduals = BuildResidualSet(perClause,
@@ -289,40 +290,47 @@ internal static partial class QueryPlanBuilder
         }
 
         // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
-        // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly, this runs _once_ per cached compiled plan
-        List<ScanPredicateInfo> CreateScanPredicates()
-        {
-            // Scan predicates only apply to multi-clause AND chains (clause 0 is the seed, 1..N are evaluated per-entry).
-            if (template.IsOr || executions.Count <= 1)
-                return null;
-
-            var allNegated = CheckAllNegated();
-            List<ScanPredicateInfo> predicates = [];
-            int scanStart = allNegated ? 0 : 1; // Skip clause 0 (the seed) unless all clauses are negated (then we start from AllEntries, so every clause is a scan predicate).
-            int sliceIndex = 0;
-            for (int i = scanStart; i < executions.Count; i++)
-            {
-                if (BuildScanPredicateInfo(executions[i], ref sliceIndex) is { } pred)
-                    predicates.Add(pred);
-            }
-
-            return predicates;
-        }
-
-        // One ScanPredicateInfo per execution (in post-sort order), built once per compiled plan.
-        // The DirectScan and CompoundField construct paths filter this by their exclusion set every
-        // query rather than re-running the BuildScanPredicateInfo switch. Slice ParamIndex here is
-        // per-clause local (unused by those residual paths — see CompiledPlan.PerClauseScanPredicates).
-        ScanPredicateInfo?[] BuildPerClauseScanPredicates()
+        // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly. A single pass over the
+        // BuildScanPredicateInfo switch (run _once_ per cached compiled plan) feeds every downstream consumer:
+        //  - ScanList: the seed-skipped, non-null entry-scan predicates with dense slice ParamIndex; this is the
+        //    list the entry-scan IL is emitted from. ClauseIndices records the exec position of each entry so the
+        //    per-query extractor maps predicate -> ClauseExecution directly (no per-query scan-eligibility re-walk).
+        //  - PerClause: one optional ScanPredicateInfo per execution (post-sort order), consumed by the DirectScan
+        //    and CompoundField residual filtering. Those paths ignore slice ParamIndex, so the seed clause keeps a
+        //    throwaway local index — only ScanList needs the dense, IL-aligned slice numbering.
+        (List<ScanPredicateInfo> ScanList, int[] ClauseIndices, ScanPredicateInfo?[] PerClause) BuildScanPredicates()
         {
             var perClause = new ScanPredicateInfo?[executions.Count];
+
+            // Scan predicates only apply to multi-clause AND chains (clause 0 is the seed, 1..N are evaluated per-entry).
+            bool hasScanList = template.IsOr == false && executions.Count > 1;
+            // Skip clause 0 (the seed) unless all clauses are negated (then we start from AllEntries, so every clause is a scan predicate).
+            int scanStart = CheckAllNegated() ? 0 : 1;
+
+            List<ScanPredicateInfo> scanList = hasScanList ? [] : null;
+            List<int> clauseIndices = hasScanList ? [] : null;
+            int sliceIndex = 0;
             for (int i = 0; i < executions.Count; i++)
             {
-                int sliceIndex = 0;
-                perClause[i] = BuildScanPredicateInfo(executions[i], ref sliceIndex);
+                if (hasScanList && i >= scanStart)
+                {
+                    // The dense running sliceIndex must advance only across the seed-skipped scan candidates,
+                    // because that is the order the entry-scan IL reads ResidualSlices in.
+                    if (BuildScanPredicateInfo(executions[i], ref sliceIndex) is { } pred)
+                    {
+                        scanList.Add(pred);
+                        clauseIndices.Add(i);
+                        perClause[i] = pred;
+                    }
+
+                    continue;
+                }
+
+                int throwaway = 0; // seed / OR / single-clause: residual paths ignore slice ParamIndex.
+                perClause[i] = BuildScanPredicateInfo(executions[i], ref throwaway);
             }
 
-            return perClause;
+            return (scanList, clauseIndices?.ToArray(), perClause);
         }
 
         // Filter the per-clause predicates against a strategy's plan-stable exclusion set (skip1/skip2).
@@ -1077,12 +1085,14 @@ internal static partial class QueryPlanBuilder
                 rejectReason = "boosted clause found";
                 return false;
             }
+        }
 
-            if (IsScanEligible(execs[i]) == false)
-            {
-                rejectReason = "scan predicate info is null";
-                return false;
-            }
+        // CompoundFieldResiduals was filtered at cache-miss against the same {drivingClause, field2Range}
+        // exclusion, so its Unscannable flag is exactly the result of re-checking scan-eligibility here.
+        if (ctx.Exec.Plan.CompoundFieldResiduals.Unscannable)
+        {
+            rejectReason = "scan predicate info is null";
+            return false;
         }
 
         rejectReason = null;
@@ -1365,15 +1375,13 @@ internal static partial class QueryPlanBuilder
         }
 
         // Boost is ruled out at template time (see ComputeOptFlags); here we only
-        // confirm every non-driving residual is scannable.
-        for (int i = 0; i < execs.Count; i++)
+        // confirm every non-driving residual is scannable. DirectScanResiduals was filtered at
+        // cache-miss against the same {drivingIdx} exclusion, so its Unscannable flag is exactly the
+        // result of re-checking every non-driving clause here.
+        if (ctx.Exec.Plan.DirectScanResiduals.Unscannable)
         {
-            if (i == drivingIdx) continue;
-            if (IsScanEligible(execs[i]) == false)
-            {
-                rejectReason = "non-scannable residual clause";
-                return false;
-            }
+            rejectReason = "non-scannable residual clause";
+            return false;
         }
 
         rejectReason = null;
