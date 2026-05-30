@@ -126,19 +126,17 @@ public sealed class CompiledPlan
     /// Null when the plan has no entry-scan predicates (single-clause, OR, etc.).</summary>
     public List<ScanPredicateInfo> ScanPredicateInfos { get; init; }
 
-    /// <summary>Per-execution structural scan predicate, indexed by post-sort exec position
-    /// (parallel to <see cref="QueryExecution.Executions"/>). The exec order is part of the cache
-    /// key, so this index is stable across every execution sharing this plan. A null entry means
-    /// the clause is not expressible as an entry-scan predicate. Built once at cache-miss time so
-    /// the DirectScan and CompoundField construct paths assemble their residual arrays by filtering
-    /// this array against their exclusion set, instead of rebuilding <see cref="ScanPredicateInfo"/>
-    /// per query.
-    /// NOTE: slice <see cref="ScanPredicateInfo.ParamIndex"/> values in this array are per-clause
-    /// local, NOT the IL-aligned dense indices carried by <see cref="ScanPredicateInfos"/> (the
-    /// entry-scan IL). The DirectScan/CompoundField residual paths read slice/numeric values from
-    /// <see cref="QueryExecution"/> directly (see ScanParamExtractor.BuildResidual) and never consume
-    /// this array's ParamIndex — only FieldName/ValueType/CompareOp/SubPredicates/Group and null-ness.</summary>
-    public ScanPredicateInfo?[] PerClauseScanPredicates { get; init; }
+    /// <summary>Residual entry-scan predicates for the CompoundField strategy, filtered once at
+    /// cache-miss time (after <c>RemapOptimizationIndices</c>) from the per-clause predicate array
+    /// against the plan-stable exclusion set {<see cref="CompoundFieldDrivingClause"/>,
+    /// <see cref="CompoundFieldField2RangeIdx"/>}. The filter result is itself plan-stable, so it is
+    /// computed once instead of per query.</summary>
+    public ResidualPredicateSet CompoundFieldResiduals { get; set; }
+
+    /// <summary>Residual entry-scan predicates for the DirectScan dispatch path, filtered once at
+    /// cache-miss time from the per-clause predicate array against the plan-stable exclusion of
+    /// {<see cref="SortDrivingClauseIndex"/>}. Plan-stable, so computed once instead of per query.</summary>
+    public ResidualPredicateSet DirectScanResiduals { get; set; }
 
     // ── Structural fields moved from QueryExecution ─────────────────────
     // Set once at cache-miss time (by Build + RemapOptimizationIndices) then
@@ -176,4 +174,27 @@ public sealed class CompiledPlan
     /// this template, or when WHEN elimination dropped the candidate clause for this
     /// specific execution.</summary>
     public int SortSeekClauseExecIdx { get; set; } = -1;
+}
+
+/// <summary>Plan-stable residual entry-scan predicates for one strategy, filtered once at
+/// cache-miss time from the per-clause predicate array against that strategy's exclusion set.
+/// <see cref="Predicates"/> is null when no residual clauses remain (the strategy degrades to a
+/// simple driving scan). <see cref="Unscannable"/> is true when a non-excluded clause is not
+/// expressible as an entry-scan predicate, so the strategy must abort to the bitmap pipeline — a
+/// defensive state that discovery's IsScanEligible check prevents for a correctly-chosen strategy.
+/// NOTE: slice <see cref="ScanPredicateInfo.ParamIndex"/> values in <see cref="Predicates"/> are
+/// per-clause local, NOT the IL-aligned dense indices carried by <see cref="CompiledPlan.ScanPredicateInfos"/>
+/// (the entry-scan IL). The DirectScan/CompoundField residual paths read slice/numeric values from
+/// <see cref="QueryExecution"/> directly (see ScanParamExtractor.BuildResidual) and never consume
+/// this array's ParamIndex — only FieldName/ValueType/CompareOp/SubPredicates/Group and null-ness.</summary>
+public readonly struct ResidualPredicateSet
+{
+    public ResidualPredicateSet(ScanPredicateInfo[] predicates, bool unscannable)
+    {
+        Predicates = predicates;
+        Unscannable = unscannable;
+    }
+
+    public ScanPredicateInfo[] Predicates { get; }
+    public bool Unscannable { get; }
 }
