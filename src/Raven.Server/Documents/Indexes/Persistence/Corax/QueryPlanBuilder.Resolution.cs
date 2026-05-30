@@ -157,7 +157,6 @@ internal static partial class QueryPlanBuilder
         (CompiledPlan, QueryExecution) BuildOnCacheMiss()
         {
             var (scanPredicates, scanClauseIndices, perClause) = BuildScanPredicates();
-
             var (ops, requiredBitmaps) = PlanEmitter.Emit(template, executions, planParams, perClause);
             compiledPlan = new CompiledPlan
             {
@@ -180,14 +179,8 @@ internal static partial class QueryPlanBuilder
             };
             RemapOptimizationIndices();
 
-            // The CompoundField and DirectScan residual arrays are filtered from the per-clause
-            // predicates (built above in the single BuildScanPredicates pass) against plan-stable
-            // exclusion sets, so the result is itself plan-stable — build it once here instead of
-            // rebuilding it on every query in the construct paths.
-            compiledPlan.CompoundFieldResiduals = BuildResidualSet(perClause,
-                compiledPlan.CompoundFieldDrivingClause, compiledPlan.CompoundFieldField2RangeIdx);
-            compiledPlan.DirectScanResiduals = BuildResidualSet(perClause,
-                compiledPlan.SortDrivingClauseIndex, skip2: -1);
+            compiledPlan.CompoundFieldResiduals = BuildResidualSet(perClause, compiledPlan.CompoundFieldDrivingClause, compiledPlan.CompoundFieldField2RangeIdx);
+            compiledPlan.DirectScanResiduals = BuildResidualSet(perClause, compiledPlan.SortDrivingClauseIndex, skip2: -1);
 
             indexSearcher.PlanCache.Add(planParams.Metadata.Query.QueryText, compiledPlan, template);
 
@@ -290,14 +283,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
-        // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly. A single pass over the
-        // BuildScanPredicateInfo switch (run _once_ per cached compiled plan) feeds every downstream consumer:
-        //  - ScanList: the seed-skipped, non-null entry-scan predicates with dense slice ParamIndex; this is the
-        //    list the entry-scan IL is emitted from. ClauseIndices records the exec position of each entry so the
-        //    per-query extractor maps predicate -> ClauseExecution directly (no per-query scan-eligibility re-walk).
-        //  - PerClause: one optional ScanPredicateInfo per execution (post-sort order), consumed by the DirectScan
-        //    and CompoundField residual filtering. Those paths ignore slice ParamIndex, so the seed clause keeps a
-        //    throwaway local index — only ScanList needs the dense, IL-aligned slice numbering.
+        // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly.
         (List<ScanPredicateInfo> ScanList, int[] ClauseIndices, ScanPredicateInfo?[] PerClause) BuildScanPredicates()
         {
             var perClause = new ScanPredicateInfo?[executions.Count];
@@ -310,26 +296,18 @@ internal static partial class QueryPlanBuilder
             List<ScanPredicateInfo> scanList = hasScanList ? [] : null;
             List<int> clauseIndices = hasScanList ? [] : null;
 
-            // Single forwarder onto the recursive switch — one call site per clause. Groups recurse
-            // into BuildScanPredicateInfoCore directly with their own rolled-back slice index.
-            static ScanPredicateInfo? BuildPredicate(ClauseExecution clauseExec, ref int slice)
-                => BuildScanPredicateInfoCore(clauseExec, clauseExec.TermValueType, ref slice);
-
-            int sliceIndex = 0;
+            int sliceIndex = 0; // keep state across calls
             for (int i = 0; i < executions.Count; i++)
             {
                 bool isScanCandidate = hasScanList && i >= scanStart;
-
-                // Only scan candidates advance the dense, IL-aligned slice index — that is the order
-                // the entry-scan IL reads ResidualSlices in. Seed / OR / single-clause predicates build
-                // with a throwaway counter because the residual paths that read them ignore slice ParamIndex.
                 int throwaway = sliceIndex;
                 ref int slice = ref (isScanCandidate ? ref sliceIndex : ref throwaway);
 
-                ScanPredicateInfo? pred = BuildPredicate(executions[i], ref slice);
+                ClauseExecution clauseExec = executions[i];
+                ScanPredicateInfo? pred = BuildScanPredicateInfoCore(clauseExec, clauseExec.TermValueType, ref slice);
                 perClause[i] = pred;
 
-                if (isScanCandidate && pred is { } p)
+                if (isScanCandidate && pred is {} p)
                 {
                     scanList.Add(p);
                     clauseIndices.Add(i);
@@ -337,14 +315,153 @@ internal static partial class QueryPlanBuilder
             }
 
             return (scanList, clauseIndices?.ToArray(), perClause);
-        }
 
-        // Filter the per-clause predicates against a strategy's plan-stable exclusion set (skip1/skip2).
-        // Three-way result:
-        //   null   → a non-excluded clause is unscannable; the construct path must abort to the bitmap pipeline.
-        //   empty  → scannable, but no residual clauses remain (e.g. a single driving clause); drive the
-        //            scan with no residual filter (BuildDirectScan picks DirectScanSimpleMatch).
-        //   filled → scannable with residual predicates to evaluate per entry.
+            static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType, ref int sliceIndex)
+            {
+                var clause = exec.Clause;
+                switch (clause.ClauseType)
+                {
+                    // These clause types cannot be expressed as entry-scan predicates.
+                    case ClauseType.Search:
+                    case ClauseType.Regex:
+                    case ClauseType.Spatial:
+                    case ClauseType.Vector:
+                        return null;
+
+                    case ClauseType.In:
+                    case ClauseType.AllIn:
+                    {
+                        // Negated or boosted IN falls back to the bitmap posting-list union: the residual
+                        // scan expresses neither negation nor boost scoring. The value set itself is
+                        // materialized per execution into QueryExecution.ResidualInSets (see ScanParamExtractor);
+                        // the residual IL only carries the field + compare op + value-type, all cache-stable
+                        // (the runtime value count is the materialized array's length).
+                        if (exec.IsNegated || clause.HasBoost)
+                            return null;
+
+                        ScanValueType inValueType = exec.PackedParamValue.ValueType switch
+                        {
+                            PackedParam.TypeLong => ScanValueType.Long,
+                            PackedParam.TypeDouble => ScanValueType.Double,
+                            _ => ScanValueType.Slice
+                        };
+                        return new ScanPredicateInfo
+                        {
+                            FieldName = clause.FieldName,
+                            ValueType = inValueType,
+                            CompareOp = clause.ClauseType == ClauseType.In ? ScanCompareOp.In : ScanCompareOp.AllIn,
+                            ParamIndex = 0
+                        };
+                    }
+
+                    case ClauseType.StartsWith:
+                        if (termType != ParamValueType.String)
+                            return null;
+                        sliceIndex++;
+                        return new ScanPredicateInfo
+                        {
+                            FieldName = clause.FieldName,
+                            ValueType = ScanValueType.Slice,
+                            CompareOp = ScanCompareOp.StartsWith,
+                            ParamIndex = sliceIndex - 1
+                        };
+                    case ClauseType.EndsWith:
+                        if (termType != ParamValueType.String)
+                            return null;
+                        sliceIndex++;
+                        return new ScanPredicateInfo
+                        {
+                            FieldName = clause.FieldName,
+                            ValueType = ScanValueType.Slice,
+                            CompareOp = ScanCompareOp.EndsWith,
+                            ParamIndex = sliceIndex - 1
+                        };
+                    case ClauseType.Exists:
+                        return new ScanPredicateInfo
+                        {
+                            FieldName = clause.FieldName,
+                            ValueType = ScanValueType.Long,
+                            CompareOp = ScanCompareOp.Exists,
+                            ParamIndex = 0
+                        };
+
+                    case ClauseType.AndGroup:
+                    case ClauseType.OrGroup:
+                    {
+                        var subExecs = exec.SubExecutions;
+                        var branches = new List<ScanPredicateInfo>();
+                        // Save slice index so we can roll back if any subclause is unscannable.
+                        int slc = sliceIndex;
+                        foreach (var it in subExecs)
+                        {
+                            var subTermType = it.TermValueType;
+                            var subPred = BuildScanPredicateInfoCore(it, subTermType, ref slc);
+                            if (subPred == null)
+                                return null;
+                            branches.Add(subPred.Value);
+                        }
+
+                        sliceIndex = slc;
+                        return new ScanPredicateInfo
+                        {
+                            FieldName = clause.FieldName ?? subExecs[0].Clause.FieldName,
+                            SubPredicates = branches.ToArray(),
+                            Group = clause.ClauseType == ClauseType.AndGroup ? GroupKind.And : GroupKind.Or
+                        };
+                    }
+                }
+
+                // Determine value type and comparison op
+                ScanCompareOp compareOp = clause.ClauseType switch
+                {
+                    ClauseType.Equals => ScanCompareOp.Equal,
+                    ClauseType.NotEquals => ScanCompareOp.NotEqual,
+                    ClauseType.GreaterThan => ScanCompareOp.GreaterThan,
+                    ClauseType.GreaterThanOrEqual => ScanCompareOp.GreaterThanOrEqual,
+                    ClauseType.LessThan => ScanCompareOp.LessThan,
+                    ClauseType.LessThanOrEqual => ScanCompareOp.LessThanOrEqual,
+                    ClauseType.Between => ScanCompareOp.Between,
+                    _ => ScanCompareOp.Equal
+                };
+
+                ScanValueType valueType = termType switch
+                {
+                    ParamValueType.Long => ScanValueType.Long,
+                    ParamValueType.Double => ScanValueType.Double,
+                    _ => ScanValueType.Slice // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
+                };
+
+                // Numeric predicates use the packed source indices directly (PackedParam.Param1/Param2 into
+                // QueryExecution.LongValues/DoubleValues). Plan-cache key invariance: whenFlags + fullKinds
+                // captures sentinel rewrites and clause-type variants, so for a given cache key the writer
+                // emits the same per-clause slot assignment across executions.
+                // Slice predicates keep a dense local index because their values are analyzer-encoded and live
+                // in a separate ResidualParams.Slices array.
+                var packed = exec.PackedParamValue;
+                int idx, idx2;
+                if (valueType == ScanValueType.Slice)
+                {
+                    bool isBetween = clause.ClauseType == ClauseType.Between;
+                    idx = sliceIndex++;
+                    idx2 = isBetween ? sliceIndex++ : -1;
+                }
+                else
+                {
+                    idx = packed.Param1;
+                    idx2 = packed.Param2 != PackedParam.NoParamValue ? packed.Param2 : -1;
+                }
+
+                return new ScanPredicateInfo
+                {
+                    FieldName = clause.FieldName,
+                    ValueType = valueType,
+                    CompareOp = compareOp,
+                    ParamIndex = idx,
+                    ParamIndex2 = idx2
+                };
+            }
+        }
+           
         static ScanPredicateInfo[] BuildResidualSet(ScanPredicateInfo?[] perClause, int skip1, int skip2)
         {
             var residuals = new List<ScanPredicateInfo>();
@@ -2268,158 +2385,6 @@ internal static partial class QueryPlanBuilder
             return MatchDispatch.TreeScan;
 
         return MatchDispatch.QueryMatch;
-    }
-
-    /// <summary>Build a <see cref="ScanPredicateInfo"/> for a single clause execution. For numeric
-    /// (long/double) predicates, <c>ParamIndex</c>/<c>ParamIndex2</c> are the original
-    /// <see cref="PackedParam.Param1"/>/<see cref="PackedParam.Param2"/> indices into
-    /// <see cref="QueryExecution.LongValues"/>/<see cref="QueryExecution.DoubleValues"/> — the
-    /// emitted IL reads those arrays directly via baked literals (no per-residual array copy).
-    /// Slice predicates retain a dense local index because their values flow through the analyzer
-    /// and live in a separate analyzed-slice array.</summary>
-    private static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType, ref int sliceIndex)
-    {
-        var clause = exec.Clause;
-        switch (clause.ClauseType)
-        {
-            // These clause types cannot be expressed as entry-scan predicates.
-            case ClauseType.Search:
-            case ClauseType.Regex:
-            case ClauseType.Spatial:
-            case ClauseType.Vector:
-                return null;
-
-            case ClauseType.In:
-            case ClauseType.AllIn:
-            {
-                // Negated or boosted IN falls back to the bitmap posting-list union: the residual
-                // scan expresses neither negation nor boost scoring. The value set itself is
-                // materialized per execution into QueryExecution.ResidualInSets (see ScanParamExtractor);
-                // the residual IL only carries the field + compare op + value-type, all cache-stable
-                // (the runtime value count is the materialized array's length).
-                if (exec.IsNegated || clause.HasBoost)
-                    return null;
-
-                ScanValueType inValueType = exec.PackedParamValue.ValueType switch
-                {
-                    PackedParam.TypeLong => ScanValueType.Long,
-                    PackedParam.TypeDouble => ScanValueType.Double,
-                    _ => ScanValueType.Slice
-                };
-                return new ScanPredicateInfo
-                {
-                    FieldName = clause.FieldName,
-                    ValueType = inValueType,
-                    CompareOp = clause.ClauseType == ClauseType.In ? ScanCompareOp.In : ScanCompareOp.AllIn,
-                    ParamIndex = 0
-                };
-            }
-
-            case ClauseType.StartsWith:
-                if (termType != ParamValueType.String)
-                    return null;
-                sliceIndex++;
-                return new ScanPredicateInfo
-                {
-                    FieldName = clause.FieldName,
-                    ValueType = ScanValueType.Slice,
-                    CompareOp = ScanCompareOp.StartsWith,
-                    ParamIndex = sliceIndex - 1
-                };
-            case ClauseType.EndsWith:
-                if (termType != ParamValueType.String)
-                    return null;
-                sliceIndex++;
-                return new ScanPredicateInfo
-                {
-                    FieldName = clause.FieldName,
-                    ValueType = ScanValueType.Slice,
-                    CompareOp = ScanCompareOp.EndsWith,
-                    ParamIndex = sliceIndex - 1
-                };
-            case ClauseType.Exists:
-                return new ScanPredicateInfo
-                {
-                    FieldName = clause.FieldName,
-                    ValueType = ScanValueType.Long,
-                    CompareOp = ScanCompareOp.Exists,
-                    ParamIndex = 0
-                };
-
-            case ClauseType.AndGroup:
-            case ClauseType.OrGroup:
-            {
-                var subExecs = exec.SubExecutions;
-                var branches = new List<ScanPredicateInfo>();
-                // Save slice index so we can roll back if any subclause is unscannable.
-                int slc = sliceIndex;
-                foreach (var it in subExecs)
-                {
-                    var subTermType = it.TermValueType;
-                    var subPred = BuildScanPredicateInfoCore(it, subTermType, ref slc);
-                    if (subPred == null)
-                        return null;
-                    branches.Add(subPred.Value);
-                }
-
-                sliceIndex = slc;
-                return new ScanPredicateInfo
-                {
-                    FieldName = clause.FieldName ?? subExecs[0].Clause.FieldName,
-                    SubPredicates = branches.ToArray(),
-                    Group = clause.ClauseType == ClauseType.AndGroup ? GroupKind.And : GroupKind.Or
-                };
-            }
-        }
-
-        // Determine value type and comparison op
-        ScanCompareOp compareOp = clause.ClauseType switch
-        {
-            ClauseType.Equals => ScanCompareOp.Equal,
-            ClauseType.NotEquals => ScanCompareOp.NotEqual,
-            ClauseType.GreaterThan => ScanCompareOp.GreaterThan,
-            ClauseType.GreaterThanOrEqual => ScanCompareOp.GreaterThanOrEqual,
-            ClauseType.LessThan => ScanCompareOp.LessThan,
-            ClauseType.LessThanOrEqual => ScanCompareOp.LessThanOrEqual,
-            ClauseType.Between => ScanCompareOp.Between,
-            _ => ScanCompareOp.Equal
-        };
-
-        ScanValueType valueType = termType switch
-        {
-            ParamValueType.Long => ScanValueType.Long,
-            ParamValueType.Double => ScanValueType.Double,
-            _ => ScanValueType.Slice // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
-        };
-
-        // Numeric predicates use the packed source indices directly (PackedParam.Param1/Param2 into
-        // QueryExecution.LongValues/DoubleValues). Plan-cache key invariance: whenFlags + fullKinds
-        // captures sentinel rewrites and clause-type variants, so for a given cache key the writer
-        // emits the same per-clause slot assignment across executions.
-        // Slice predicates keep a dense local index because their values are analyzer-encoded and live
-        // in a separate ResidualParams.Slices array.
-        var packed = exec.PackedParamValue;
-        int idx, idx2;
-        if (valueType == ScanValueType.Slice)
-        {
-            bool isBetween = clause.ClauseType == ClauseType.Between;
-            idx = sliceIndex++;
-            idx2 = isBetween ? sliceIndex++ : -1;
-        }
-        else
-        {
-            idx = packed.Param1;
-            idx2 = packed.Param2 != PackedParam.NoParamValue ? packed.Param2 : -1;
-        }
-
-        return new ScanPredicateInfo
-        {
-            FieldName = clause.FieldName,
-            ValueType = valueType,
-            CompareOp = compareOp,
-            ParamIndex = idx,
-            ParamIndex2 = idx2
-        };
     }
 
 
