@@ -126,6 +126,13 @@ public sealed class CompiledPlan
     /// Null when the plan has no entry-scan predicates (single-clause, OR, etc.).</summary>
     public List<ScanPredicateInfo> ScanPredicateInfos { get; init; }
 
+    /// <summary>Post-sort exec position of each predicate in <see cref="ScanPredicateInfos"/>,
+    /// parallel by index (entry <c>i</c> is the clause that produced <c>ScanPredicateInfos[i]</c>).
+    /// Recorded once at cache-miss while building the entry-scan list, so the per-query extractor
+    /// maps a predicate to its <see cref="QueryExecution.Executions"/> entry directly instead of
+    /// re-running scan-eligibility over the clauses. Null when <see cref="ScanPredicateInfos"/> is null.</summary>
+    public int[] ScanPredicateClauseIndices { get; init; }
+
     /// <summary>Residual entry-scan predicates for the CompoundField strategy, filtered once at
     /// cache-miss time (after <c>RemapOptimizationIndices</c>) from the per-clause predicate array
     /// against the plan-stable exclusion set {<see cref="CompoundFieldDrivingClause"/>,
@@ -180,8 +187,9 @@ public sealed class CompiledPlan
 /// cache-miss time from the per-clause predicate array against that strategy's exclusion set.
 /// <see cref="Predicates"/> is null when no residual clauses remain (the strategy degrades to a
 /// simple driving scan). <see cref="Unscannable"/> is true when a non-excluded clause is not
-/// expressible as an entry-scan predicate, so the strategy must abort to the bitmap pipeline — a
-/// defensive state that discovery's IsScanEligible check prevents for a correctly-chosen strategy.
+/// expressible as an entry-scan predicate, so the strategy must abort to the bitmap pipeline.
+/// Discovery (TryCreateSimpleFieldDirectScan / TryCreateCompoundFieldMatch) reads this same flag to
+/// reject the strategy at cache-miss, so a chosen strategy never carries Unscannable = true.
 /// NOTE: slice <see cref="ScanPredicateInfo.ParamIndex"/> values in <see cref="Predicates"/> are
 /// per-clause local, NOT the IL-aligned dense indices carried by <see cref="CompiledPlan.ScanPredicateInfos"/>
 /// (the entry-scan IL). The DirectScan/CompoundField residual paths read slice/numeric values from

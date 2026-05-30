@@ -52,15 +52,14 @@ internal static partial class QueryPlanBuilder
 
         private void ExtractAll(List<ScanPredicateInfo> predicates)
         {
-            int scanStart = _exec.Plan.AllNegated ? 0 : 1;
-            int clauseIdx = scanStart;
+            // ScanPredicateClauseIndices is parallel to predicates: it carries the exec position each
+            // predicate was built from (recorded once at cache-miss in BuildScanPredicates), so there is
+            // no need to re-walk the clauses skipping non-scannable ones on every query.
             var execs = _exec.Executions;
-            foreach (ScanPredicateInfo pred in predicates)
+            int[] clauseIndices = _exec.Plan.ScanPredicateClauseIndices;
+            for (int p = 0; p < predicates.Count; p++)
             {
-                while (IsScanEligible(execs[clauseIdx]) == false)
-                    clauseIdx++;
-
-                ExtractFromPredicate(pred, execs[clauseIdx++]);
+                ExtractFromPredicate(predicates[p], execs[clauseIndices[p]]);
             }
 
             StoreResults();
