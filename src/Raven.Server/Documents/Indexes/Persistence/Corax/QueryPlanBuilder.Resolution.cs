@@ -708,7 +708,7 @@ internal static partial class QueryPlanBuilder
                 innerMatch = InstantiateBitmapPipeline(ctx.Plan, ctx.Exec, ctx.PlanParams, ctx.BuilderParams, walkerCtx, highlightingTerms, wantTimings, token);
                 if (ctx.OrderByFields == null) return innerMatch;
                 if (innerMatch is CompiledQueryMatch seekMatch)
-                    TrySetSortSeekHint(seekMatch, ctx.Plan, ctx.Exec, ctx.OrderByFields);
+                    TrySetSortSeekHint(seekMatch, ctx.Plan, ctx.Exec);
                 return OrderBy(ctx.BuilderParams, innerMatch, ctx.OrderByFields, hasEmptySorts);
         }
 
@@ -1917,7 +1917,7 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Vector:
             {
-                var vectorItem = HandleVector(builderParams, cur, false);
+                var vectorItem = HandleVector(builderParams, cur);
                 return vectorItem.Materialize(null);
             }
 

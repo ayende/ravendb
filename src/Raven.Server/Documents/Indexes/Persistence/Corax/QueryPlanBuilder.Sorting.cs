@@ -12,59 +12,28 @@ using Raven.Server.Documents.Queries.AST;
 using Spatial4n.Shapes;
 using Sparrow;
 using Constants = Corax.Constants;
-using IndexSearcher = Corax.Querying.IndexSearcher;
 using SpatialUnits = Raven.Client.Documents.Indexes.Spatial.SpatialUnits;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
-/// <summary>
-/// Sorting / ORDER BY resolution: validates ORDER BY fields, resolves field
-/// metadata, classifies direction/analyzer, applies SortingMatch wrappers,
-/// and provides seek-hint optimizations.
-/// </summary>
 internal static partial class QueryPlanBuilder
 {
     /// <summary>Maximum number of ORDER BY fields supported by Corax.</summary>
     private const int MaxSortFields = 16;
 
-    // ── Sort seek hint ────────────────────────────────────────────────────
-
-    /// <summary>O(1) seek-hint dispatch. The eligible clause (range predicate on the primary
-    /// ORDER BY field with a direction-compatible operator) was identified once at template
-    /// build time (<see cref="PlanTemplate.SortSeekHintTemplateIdx"/>) and remapped to an
-    /// execution-position index on the <see cref="CompiledPlan"/>
-    /// (<see cref="CompiledPlan.SortSeekClauseExecIdx"/>). At query time we only need to:
-    /// (1) verify <c>orderByFields[0]</c> still matches the primary field — <c>GetSortMetadata</c>
-    /// may have dropped the primary OrderBy when the index has zero terms in that field
-    /// (non-sharded empty-field-skip case), promoting the secondary to slot 0; and
-    /// (2) read the runtime parameter value through the baked <c>PackedParam</c> + <c>SortSeekUseParam2</c>
-    /// pair. No clause scan, no per-clause <c>FieldName.ToString()</c>.</summary>
-    public static void TrySetSortSeekHint(CompiledQueryMatch match, CompiledPlan plan,
-        QueryExecution exec, OrderMetadata[] orderByFields)
+    /// <summary>At template time, we detect that we can optimize using sort hint. At query time, we just need to read the runtime value.</summary>
+    private static void TrySetSortSeekHint(CompiledQueryMatch match, CompiledPlan plan, QueryExecution exec)
     {
-        int idx = plan.SortSeekClauseExecIdx;
-        if (idx < 0)
+        if (plan.SortSeekClauseExecIdx < 0)
             return;
 
-        if (orderByFields is null || orderByFields.Length == 0)
+        var sortExec = exec.Executions[plan.SortSeekClauseExecIdx];
+
+        if (sortExec.PackedParamValue.IsNone)
             return;
 
-        var sortExec = exec.Executions[idx];
-
-        // Empty-field-skip guard: in the non-sharded case, GetSortMetadata drops an
-        // OrderBy whose field has zero distinct terms in this index. If that happens to
-        // the primary ORDER BY, orderByFields[0] is now the second template ORDER BY,
-        // and the cached hint (computed against the template's primary) is invalid.
-        // The clause-bound field name is the primary ORDER BY at template time (that's
-        // what makes the clause eligible), so we compare against orderByFields[0] directly.
-        if (orderByFields[0].Field.FieldName.ToString() != sortExec.Clause.FieldName)
-            return;
-        var packed = sortExec.PackedParamValue;
-        if (packed.IsNone)
-            return;
-
-        int paramIdx = plan.Template.SortSeekUseParam2 ? packed.Param2 : packed.Param1;
-        object seekValue = packed.ValueType switch
+        int paramIdx = plan.Template.SortSeekUseParam2 ? sortExec.PackedParamValue.Param2 : sortExec.PackedParamValue.Param1;
+        object seekValue = sortExec.PackedParamValue.ValueType switch
         {
             PackedParam.TypeLong => exec.LongValues[paramIdx],
             PackedParam.TypeDouble => exec.DoubleValues[paramIdx],
@@ -76,13 +45,7 @@ internal static partial class QueryPlanBuilder
             match.SortHint = new SortHint(sortExec.Clause.FieldName, seekValue);
     }
 
-    /// <summary>Compute the per-template sort-metadata snapshot. Resolves <see cref="FieldMetadata"/>,
-    /// classifies ordering types, derives <c>nullsSortMode</c>, rewrites Implicit→Long for time
-    /// fields, and bakes random seeds for constant-arg <c>random()</c> ordering — once per template,
-    /// not once per query. Slots that depend on per-query state (argument-less random seed, the
-    /// data-dependent empty-term check, parameter-bound Distance args) are emitted as
-    /// <see cref="SortSlotPatch"/> directives for the runtime materializer.</summary>
-    internal static SortMetadataTemplate BuildSortMetadataTemplate(PlanParameters p)
+    private static SortMetadataTemplate BuildSortMetadataTemplate(PlanParameters p)
     {
         var orderByFields = p.Metadata.OrderBy;
 
@@ -96,7 +59,7 @@ internal static partial class QueryPlanBuilder
                 return new SortMetadataTemplate
                 {
                     ImplicitScore = true,
-                    ImplicitScoreSkipAssert = p.Metadata.HasVectorSearch,
+                    HasVectorSearch = p.Metadata.HasVectorSearch,
                     Prebuilt = [new OrderMetadata(true, MatchCompareFieldType.Score)],
                 };
             }
@@ -113,90 +76,64 @@ internal static partial class QueryPlanBuilder
         var prebuilt = new OrderMetadata[orderByFields.Length];
         var patches = new SortSlotPatch[orderByFields.Length];
         bool anyPatch = false;
-        bool anyEmptyCheck = false;
 
         for (int i = 0; i < orderByFields.Length; i++)
         {
             var field = orderByFields[i];
 
-            var nullsSortMode = (field.NullsOrdering, field.Ascending) switch
+            var orderingType = field.OrderingType;
+            switch (field.OrderingType)
             {
-                (NullsOrderingType.First, Ascending: true) => NullsSortMode.NullsSmallest,
-                (NullsOrderingType.First, Ascending: false) => NullsSortMode.NullsLargest,
-                (NullsOrderingType.Last, Ascending: true) => NullsSortMode.NullsLargest,
-                (NullsOrderingType.Last, Ascending: false) => NullsSortMode.NullsSmallest,
-                _ => (NullsSortMode?)null
-            };
-
-            if (field.OrderingType == OrderByFieldType.Random)
-            {
-                if (field.Arguments is { Length: > 0 })
-                {
-                    // Hash of the textual argument — fully template-stable (NameOrValue is the literal
-                    // or parameter *name*, not the resolved value).
-                    var seed = (int)Hashing.XXHash32.CalculateRaw(field.Arguments[0].NameOrValue);
-                    prebuilt[i] = new OrderMetadata(seed);
-                }
-                else
-                {
-                    // No args → fresh Random.Shared.Next() per query. Prefab is a placeholder
-                    // (zero seed); runtime materializer rebuilds the slot.
-                    prebuilt[i] = new OrderMetadata(0);
-                    patches[i].Kind = SortSlotPatchKind.RandomFreshSeed;
+                case OrderByFieldType.Random:
+                    if (field.Arguments is { Length: > 0 }) // we have a seed to use
+                    {
+                        var seed = (int)Hashing.XXHash32.CalculateRaw(field.Arguments[0].NameOrValue);
+                        prebuilt[i] = new OrderMetadata(seed);
+                    }
+                    else
+                    {
+                        prebuilt[i] = new OrderMetadata(0);
+                        patches[i].Kind = SortSlotPatchKind.RandomFreshSeed;
+                        anyPatch = true;
+                    }
+                    continue;
+                case OrderByFieldType.Score:
+                    prebuilt[i] = new OrderMetadata(true, MatchCompareFieldType.Score, field.Ascending);
+                    continue;
+                case OrderByFieldType.Distance:
+                    patches[i].Kind = SortSlotPatchKind.DistanceRuntime;
+                    patches[i].FieldName = field.Name;
+                    patches[i].DistanceBuilder = GetDistanceBuilder(field);
                     anyPatch = true;
-                }
-                continue;
+                    continue;
+                case OrderByFieldType.Implicit when p.Index.Configuration.OrderByTicksAutomaticallyWhenDatesAreInvolved && p.Index.IndexFieldsPersistence.HasTimeValues(field.Name.Value):
+                    orderingType = OrderByFieldType.Long;
+                    break;
             }
-
-            if (field.OrderingType == OrderByFieldType.Score)
-            {
-                // EntryComparerByScore.Compare is intentionally inverted (returns y.CompareTo(x)),
-                // so ascending=true -> highest scores first (the default "most relevant first" search engine order).
-                // ascending=false -> Descending<EntryComparerByScore> -> lowest scores first.
-                prebuilt[i] = new OrderMetadata(true, MatchCompareFieldType.Score, field.Ascending);
-                continue;
-            }
-
-            // Field-based ordering. Index / IndexFieldsMapping are required from here on; PlanParameters
-            // built from the direct-planner test constructor doesn't carry them, in which case we leave
-            // the slot un-prebuilt and the runtime materializer falls back to the legacy path.
-            if (p.Index is null)
-                return null;
-
+            
             var fieldMetadata = QueryBuilderHelper.GetFieldIdForOrderBy(p.Allocator, field.Name, p.Index,
                 p.HasDynamics, p.DynamicFields, p.IndexFieldsMapping, false);
 
-            if (field.OrderingType == OrderByFieldType.Distance)
-            {
-                // Distance ordering: spatial factory + per-method point/round resolution. Even if
-                // all arguments are constant, the spatial factory only exists at execution time
-                // (it's on QueryBuilderParameters.Factories, not PlanParameters). Defer to runtime
-                // via a closure over the OrderByField — Corax-side SortSlotPatch only sees the
-                // delegate, not the Raven.Server AST node. The field metadata is resolved per query
-                // against the live allocator (from the cached FieldName), not baked in, because the
-                // template is cached across executions but the FieldName slice is allocator-bound.
-                var fieldCopy = field;
-                patches[i].Kind = SortSlotPatchKind.DistanceRuntime;
-                patches[i].FieldName = field.Name;
-                patches[i].DistanceBuilder = (ctx, fieldMeta, isEmpty) =>
-                    BuildDistanceOrderMetadata((QueryBuilderParameters)ctx, fieldCopy, fieldMeta, isEmpty);
-                anyPatch = true;
-                continue;
-            }
-
-            var orderingType = field.OrderingType;
-            if (orderingType is OrderByFieldType.Implicit
-                && p.Index.Configuration.OrderByTicksAutomaticallyWhenDatesAreInvolved
-                && p.Index.IndexFieldsPersistence.HasTimeValues(field.Name.Value))
-                orderingType = OrderByFieldType.Long;
-
-            // Dynamic CreateField fields: no IndexFieldsMapping entry, FieldId == DynamicField (-2).
-            // Such fields are written per-document only when the index function emits CreateField;
-            // docs that don't emit the field have NO entry (not even a NonExisting marker) in the
-            // field's tree, so StreamAndIntersect (which walks tree + null/nonExisting lists) would
-            // silently drop them. Route through ExtractAndSort instead — see SortingMatch.Fill.
             bool mayHaveMissingEntries = fieldMetadata.FieldId == Constants.IndexWriter.DynamicField;
 
+            prebuilt[i] = new OrderMetadata(fieldMetadata, field.Ascending, GetMatchCompareFieldType(orderingType),
+                fieldHasNoTerms: false, GetNullsSortMode(field), mayHaveMissingEntries);
+            patches[i].Kind = SortSlotPatchKind.FieldEmptyCheck;
+            patches[i].FieldName = field.Name;
+            anyPatch = true;
+        }
+
+        return new SortMetadataTemplate
+        {
+            Prebuilt = prebuilt,
+            Patches = anyPatch ? patches : null,
+        };
+        
+        SortDistanceMetadataBuilder GetDistanceBuilder(OrderByField field) => // side effect for this method, we aren't accidently capturing the wrong instance in a loop
+            (ctx, fieldMeta, isEmpty) => BuildDistanceOrderMetadata((QueryBuilderParameters)ctx, field, fieldMeta, isEmpty);
+
+        MatchCompareFieldType GetMatchCompareFieldType(OrderByFieldType orderingType)
+        {
             var compareType = orderingType switch
             {
                 OrderByFieldType.Custom => throw new NotSupportedInCoraxException($"{nameof(Corax)} doesn't support Custom OrderBy."),
@@ -205,48 +142,35 @@ internal static partial class QueryPlanBuilder
                 OrderByFieldType.Double => MatchCompareFieldType.Floating,
                 _ => MatchCompareFieldType.Sequence,
             };
-
-            // prebuilt[i] carries only the template-stable ordering scalars (Ascending, compare
-            // type, nulls mode, mayHaveMissingEntries). Its embedded FieldMetadata is a build-time
-            // placeholder: the runtime materializer always rebuilds field slots with metadata
-            // re-resolved against the live allocator, so the placeholder's FieldName slice is never
-            // dereferenced (FieldHasNoTerms baked as false; runtime patch may rebuild with true).
-            prebuilt[i] = new OrderMetadata(fieldMetadata, field.Ascending, compareType,
-                fieldHasNoTerms: false, nullsSortMode, mayHaveMissingEntries);
-            patches[i].Kind = SortSlotPatchKind.FieldEmptyCheck;
-            patches[i].FieldName = field.Name;
-            anyPatch = true;
-            anyEmptyCheck = true;
+            return compareType;
         }
-
-        return new SortMetadataTemplate
+    }
+    
+    private static NullsSortMode? GetNullsSortMode(OrderByField field)
+    {
+        var nullsSortMode = (field.NullsOrdering, field.Ascending) switch
         {
-            Prebuilt = prebuilt,
-            Patches = anyPatch ? patches : null,
-            AnyEmptyCheckPending = anyEmptyCheck,
+            (NullsOrderingType.First, Ascending: true) => NullsSortMode.NullsSmallest,
+            (NullsOrderingType.First, Ascending: false) => NullsSortMode.NullsLargest,
+            (NullsOrderingType.Last, Ascending: true) => NullsSortMode.NullsLargest,
+            (NullsOrderingType.Last, Ascending: false) => NullsSortMode.NullsSmallest,
+            _ => (NullsSortMode?)null
         };
+        return nullsSortMode;
     }
 
-    public static OrderMetadata[] GetSortMetadata(QueryBuilderParameters builderParameters, PlanTemplate planTemplate, out bool hasEmpty)
+
+    private static OrderMetadata[] GetSortMetadata(QueryBuilderParameters builderParameters, PlanTemplate planTemplate, out bool hasEmpty)
     {
         hasEmpty = false;
-
-        // PageSize == 0 (count-only) is per-query and short-circuits all sort work.
+        // PageSize == 0 (count-only) is per-query and short-circuits all the sort work.
         if (builderParameters.Query.PageSize == 0)
             return null;
-
-        // Production path: pre-built sort-metadata template from ParseTemplate.
-        if (planTemplate?.SortMetadataTemplate is SortMetadataTemplate template)
-            return MaterializeSortMetadata(template, builderParameters, out hasEmpty);
-
-        // Fallback path: direct-planner tests construct PlanParameters without Index/IndexFieldsMapping
-        // (so BuildSortMetadataTemplate returns null). Use the same per-query computation as before.
-        return ComputeSortMetadataLegacy(builderParameters, out hasEmpty);
+        
+        return MaterializeSortMetadata(planTemplate.SortMetadataTemplate, builderParameters, out hasEmpty);
     }
 
-    /// <summary>Runtime materializer: apply per-query patches to the template's prebuilt array.
-    /// Hot path (no patches needed) returns the prebuilt array directly. The slow path walks only
-    /// the slots that carry a patch directive — typically the empty-term check.</summary>
+    /// <summary>Runtime materializer: apply per-query patches to the template's prebuilt array.</summary>
     private static OrderMetadata[] MaterializeSortMetadata(SortMetadataTemplate template,
         QueryBuilderParameters builderParameters, out bool hasEmpty)
     {
@@ -257,32 +181,30 @@ internal static partial class QueryPlanBuilder
 
         if (template.ImplicitScore)
         {
-            if (template.ImplicitScoreSkipAssert == false)
-                builderParameters.IndexReadOperation?.AssertCanOrderByScoreAutomaticallyWhenBoostingOrVectorSearchIsInvolved();
+            builderParameters.IndexReadOperation.AssertCanOrderByScoreAutomaticallyWhenBoostingOrVectorSearchIsInvolved(template.HasVectorSearch);
             return template.Prebuilt;
         }
 
-        var prebuilt = template.Prebuilt;
-        var patches = template.Patches;
-
         // Hot path: nothing to patch — return the prebuilt array directly.
-        if (patches is null)
-            return prebuilt;
+        if (template.Patches is null)
+            return template.Prebuilt;
 
         var indexSearcher = builderParameters.IndexSearcher;
         bool isSharded = builderParameters.IndexReadOperation?.IsSharded ?? false;
 
         // Result is up to prebuilt.Length, but may be shorter when non-sharded empty-field-skip drops slots.
-        var result = new OrderMetadata[prebuilt.Length];
+        var result = new OrderMetadata[template.Prebuilt.Length];
         int outIdx = 0;
 
-        for (int i = 0; i < prebuilt.Length; i++)
+        for (int i = 0; i < template.Prebuilt.Length; i++)
         {
-            ref var patch = ref patches[i];
+            ref var patch = ref template.Patches[i];
+            var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
+            bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
             switch (patch.Kind)
             {
                 case SortSlotPatchKind.None:
-                    result[outIdx++] = prebuilt[i];
+                    result[outIdx++] = template.Prebuilt[i];
                     break;
 
                 case SortSlotPatchKind.RandomFreshSeed:
@@ -290,13 +212,7 @@ internal static partial class QueryPlanBuilder
                     break;
 
                 case SortSlotPatchKind.FieldEmptyCheck:
-                {
-                    // Resolve field metadata against the live per-query allocator (the template is
-                    // cached across executions, so its FieldName slice cannot be). Rebuild the slot
-                    // from the template-stable ordering scalars + the freshly resolved metadata.
-                    var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
-                    bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
-                    var p = prebuilt[i];
+                   var p = template.Prebuilt[i];
 
                     if (fieldIsEmpty == false)
                     {
@@ -313,12 +229,8 @@ internal static partial class QueryPlanBuilder
                     result[outIdx++] = new OrderMetadata(fieldMeta, p.Ascending, p.FieldType,
                         fieldHasNoTerms: true, p.NullsSortMode, p.MayHaveMissingEntries);
                     break;
-                }
 
                 case SortSlotPatchKind.DistanceRuntime:
-                {
-                    var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
-                    bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
                     if (fieldIsEmpty)
                     {
                         if (isSharded == false)
@@ -328,40 +240,25 @@ internal static partial class QueryPlanBuilder
 
                     result[outIdx++] = patch.DistanceBuilder(builderParameters, fieldMeta, fieldIsEmpty);
                     break;
-                }
             }
         }
 
-        return outIdx == prebuilt.Length ? result : result[..outIdx];
+        return outIdx == template.Prebuilt.Length ? result : result[..outIdx];
     }
 
-    /// <summary>Resolve an ORDER BY field's metadata against the live per-query allocator.
-    /// The template caches only the field name (a stable string), never the resolved
-    /// <see cref="FieldMetadata"/>, because its <c>FieldName</c> slice is bound to the
-    /// per-query allocator's lifetime and the template is shared across executions.</summary>
     private static FieldMetadata ResolveSortFieldMeta(QueryBuilderParameters builderParameters, string fieldName)
     {
+        // FieldMetadata hold slices, which are tied to the current transaction, so have to do this per query 
         return QueryBuilderHelper.GetFieldIdForOrderBy(builderParameters.Allocator, fieldName, builderParameters.Index,
             builderParameters.HasDynamics, builderParameters.DynamicFields, builderParameters.IndexFieldsMapping, false);
     }
 
-    /// <summary>Distance ordering construction extracted so both the runtime patcher and the
-    /// legacy fallback share one code path.</summary>
     private static OrderMetadata BuildDistanceOrderMetadata(QueryBuilderParameters builderParameters,
         OrderByField field, FieldMetadata fieldMetadata, bool fieldIsEmpty)
     {
         var query = builderParameters.Query;
-        var getSpatialField = builderParameters.Factories?.GetSpatialFieldFactory;
+        var getSpatialField = builderParameters.Factories.GetSpatialFieldFactory;
         var spatialField = getSpatialField(field.Name);
-
-        var nullsSortMode = (field.NullsOrdering, field.Ascending) switch
-        {
-            (NullsOrderingType.First, Ascending: true) => NullsSortMode.NullsSmallest,
-            (NullsOrderingType.First, Ascending: false) => NullsSortMode.NullsLargest,
-            (NullsOrderingType.Last, Ascending: true) => NullsSortMode.NullsLargest,
-            (NullsOrderingType.Last, Ascending: false) => NullsSortMode.NullsSmallest,
-            _ => (NullsSortMode?)null
-        };
 
         int lastArgument;
         IPoint point;
@@ -391,7 +288,7 @@ internal static partial class QueryPlanBuilder
                 point = spatialField.ReadPoint(pLatitude, pLongitude).Center;
                 break;
             default:
-                throw new ArgumentOutOfRangeException();
+                throw new ArgumentOutOfRangeException(field.Method.ToString());
         }
 
         var roundTo = field.Arguments.Length > lastArgument
@@ -401,116 +298,10 @@ internal static partial class QueryPlanBuilder
         return new OrderMetadata(fieldMetadata, field.Ascending, MatchCompareFieldType.Spatial, point, roundTo,
             spatialField.Units is SpatialUnits.Kilometers
                 ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
-                : global::Corax.Utils.Spatial.SpatialUnits.Miles, fieldIsEmpty, nullsSortMode);
+                : global::Corax.Utils.Spatial.SpatialUnits.Miles, fieldIsEmpty, GetNullsSortMode(field));
     }
 
-    /// <summary>Legacy per-query path retained for direct-planner tests that build
-    /// <see cref="QueryBuilderParameters"/> without a full <see cref="Index"/> / <see cref="IndexFieldsMapping"/>
-    /// stack — in those cases <c>BuildSortMetadataTemplate</c> returns null and we fall back here.
-    /// Behaviorally equivalent to the pre-template implementation.</summary>
-    private static OrderMetadata[] ComputeSortMetadataLegacy(QueryBuilderParameters builderParameters, out bool hasEmpty)
-    {
-        hasEmpty = false;
-        var query = builderParameters.Query;
-        var index = builderParameters.Index;
-        var indexMapping = builderParameters.IndexFieldsMapping;
-        var allocator = builderParameters.Allocator;
-
-        var orderByFields = query.Metadata.OrderBy;
-
-        if (orderByFields == null)
-        {
-            if (builderParameters.HasBoost && (
-                    index.Configuration.OrderByScoreAutomaticallyWhenBoostingIsInvolved
-                    || index.Configuration.CoraxVectorSearchOrderByScoreAutomatically))
-            {
-                if (builderParameters.Metadata.HasVectorSearch == false)
-                    builderParameters.IndexReadOperation?.AssertCanOrderByScoreAutomaticallyWhenBoostingOrVectorSearchIsInvolved();
-
-                return [new OrderMetadata(true, MatchCompareFieldType.Score)];
-            }
-
-            return null;
-        }
-
-        if (orderByFields.Length == 0)
-            return null;
-
-        if (orderByFields.Length > MaxSortFields)
-            throw new InvalidOperationException($"Corax does not support ordering by more than {MaxSortFields} properties.");
-
-        int sortIndex = 0;
-        var sortArray = new OrderMetadata[MaxSortFields];
-
-        foreach (var field in orderByFields)
-        {
-            var nullsSortMode = (field.NullsOrdering, field.Ascending) switch
-            {
-                (NullsOrderingType.First, Ascending: true) => NullsSortMode.NullsSmallest,
-                (NullsOrderingType.First, Ascending: false) => NullsSortMode.NullsLargest,
-                (NullsOrderingType.Last, Ascending: true) => NullsSortMode.NullsLargest,
-                (NullsOrderingType.Last, Ascending: false) => NullsSortMode.NullsSmallest,
-                _ => (NullsSortMode?)null
-            };
-
-            if (field.OrderingType == OrderByFieldType.Random)
-            {
-                var seed = field.Arguments is { Length: > 0 } ? (int)Hashing.XXHash32.CalculateRaw(field.Arguments[0].NameOrValue) : Random.Shared.Next();
-                sortArray[sortIndex++] = new OrderMetadata(seed);
-                continue;
-            }
-
-            if (field.OrderingType == OrderByFieldType.Score)
-            {
-                sortArray[sortIndex++] = new OrderMetadata(true, MatchCompareFieldType.Score, field.Ascending);
-                continue;
-            }
-
-            var fieldMetadata = QueryBuilderHelper.GetFieldIdForOrderBy(allocator, field.Name, index, builderParameters.HasDynamics,
-                builderParameters.DynamicFields, indexMapping, false);
-
-            bool fieldIsEmpty = builderParameters.IndexSearcher.GetDistinctTermCountInField(fieldMetadata) == 0;
-            if (fieldIsEmpty)
-            {
-                if (builderParameters.IndexReadOperation.IsSharded == false)
-                    continue;
-                hasEmpty = true;
-            }
-
-            if (field.OrderingType == OrderByFieldType.Distance)
-            {
-                sortArray[sortIndex++] = BuildDistanceOrderMetadata(builderParameters, field, fieldMetadata, fieldIsEmpty);
-                continue;
-            }
-
-            var orderingType = field.OrderingType;
-            if (orderingType is OrderByFieldType.Implicit && index.Configuration.OrderByTicksAutomaticallyWhenDatesAreInvolved && index.IndexFieldsPersistence.HasTimeValues(field.Name.Value))
-                orderingType = OrderByFieldType.Long;
-
-            bool mayHaveMissingEntries = fieldMetadata.FieldId == Constants.IndexWriter.DynamicField;
-            OrderMetadata? temporaryOrder = null;
-            switch (orderingType)
-            {
-                case OrderByFieldType.Custom:
-                    throw new NotSupportedInCoraxException($"{nameof(Corax)} doesn't support Custom OrderBy.");
-                case OrderByFieldType.AlphaNumeric:
-                    sortArray[sortIndex++] = new OrderMetadata(fieldMetadata, field.Ascending, MatchCompareFieldType.Alphanumeric, fieldIsEmpty, nullsSortMode, mayHaveMissingEntries);
-                    continue;
-                case OrderByFieldType.Long:
-                    temporaryOrder = new OrderMetadata(fieldMetadata, field.Ascending, MatchCompareFieldType.Integer, fieldIsEmpty, nullsSortMode, mayHaveMissingEntries);
-                    break;
-                case OrderByFieldType.Double:
-                    temporaryOrder = new OrderMetadata(fieldMetadata, field.Ascending, MatchCompareFieldType.Floating, fieldIsEmpty, nullsSortMode, mayHaveMissingEntries);
-                    break;
-            }
-
-            sortArray[sortIndex++] = temporaryOrder ?? new OrderMetadata(fieldMetadata, field.Ascending, MatchCompareFieldType.Sequence, fieldIsEmpty, nullsSortMode, mayHaveMissingEntries);
-        }
-
-        return sortArray[0..sortIndex];
-    }
-
-    public static IQueryMatch OrderBy(QueryBuilderParameters builderParameters, IQueryMatch match, in OrderMetadata[] orderMetadataSource, bool hasEmptySortingMatches)
+    private static IQueryMatch OrderBy(QueryBuilderParameters builderParameters, IQueryMatch match, in OrderMetadata[] orderMetadataSource, bool hasEmptySortingMatches)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         var indexSearcher = builderParameters.IndexSearcher;
@@ -544,18 +335,8 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    // ── Search helpers (used by ResolveClause for Search clause type) ────
 
-    /// <summary>
-    /// Replaces the search analyzer with an appropriate wildcard analyzer.
-    /// LuceneAnalyzerAdapter wrapping KeywordAnalyzer has IsExactAnalyzer=false
-    /// (because LuceneAnalyzerAdapter passes NoTransformers), so the generic
-    /// CreateWildcardAnalyzer in the Legacy path would incorrectly lowercase the term.
-    /// This matches the old CoraxQueryBuilder.ReplaceAnalyzerForWildcardQueries logic.
-    /// </summary>
-    private static FieldMetadata ReplaceAnalyzerForWildcardQueries(
-        FieldMetadata searchMeta,
-        ResolutionContext walkerCtx)
+    private static FieldMetadata ReplaceAnalyzerForWildcardQueries(FieldMetadata searchMeta, ResolutionContext walkerCtx)
     {
         var result = searchMeta;
         var indexFieldsMapping = walkerCtx.BuilderParams.IndexFieldsMapping;
