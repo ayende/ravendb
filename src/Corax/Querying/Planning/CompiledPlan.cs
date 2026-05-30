@@ -126,6 +126,20 @@ public sealed class CompiledPlan
     /// Null when the plan has no entry-scan predicates (single-clause, OR, etc.).</summary>
     public List<ScanPredicateInfo> ScanPredicateInfos { get; init; }
 
+    /// <summary>Per-execution structural scan predicate, indexed by post-sort exec position
+    /// (parallel to <see cref="QueryExecution.Executions"/>). The exec order is part of the cache
+    /// key, so this index is stable across every execution sharing this plan. A null entry means
+    /// the clause is not expressible as an entry-scan predicate. Built once at cache-miss time so
+    /// the DirectScan and CompoundField construct paths assemble their residual arrays by filtering
+    /// this array against their exclusion set, instead of rebuilding <see cref="ScanPredicateInfo"/>
+    /// per query.
+    /// NOTE: slice <see cref="ScanPredicateInfo.ParamIndex"/> values in this array are per-clause
+    /// local, NOT the IL-aligned dense indices carried by <see cref="ScanPredicateInfos"/> (the
+    /// entry-scan IL). The DirectScan/CompoundField residual paths read slice/numeric values from
+    /// <see cref="QueryExecution"/> directly (see ScanParamExtractor.BuildResidual) and never consume
+    /// this array's ParamIndex — only FieldName/ValueType/CompareOp/SubPredicates/Group and null-ness.</summary>
+    public ScanPredicateInfo?[] PerClauseScanPredicates { get; init; }
+
     // ── Structural fields moved from QueryExecution ─────────────────────
     // Set once at cache-miss time (by Build + RemapOptimizationIndices) then
     // read-only on every subsequent cache hit. Not duplicated on QueryExecution.
