@@ -189,6 +189,11 @@ public sealed class ShardedCoraxIndexReadOperation : CoraxIndexReadOperation
 
         return result;
     }
-    
-    internal override void AssertCanOrderByScoreAutomaticallyWhenBoostingOrVectorSearchIsInvolved() => throw new NotSupportedInShardingException($"Ordering by score is not supported in sharding. You received this exception because your index has boosting, and we attempted to sort the results since the configuration `{RavenConfiguration.GetKey(i => i.Indexing.OrderByScoreAutomaticallyWhenBoostingIsInvolved)}` is enabled or, when you used `vector.search` method in the query when having `{RavenConfiguration.GetKey(i => i.Indexing.CoraxVectorSearchOrderByScoreAutomatically)}` enabled.");
+
+    internal override void AssertCanOrderByScoreAutomaticallyWhenBoostingOrVectorSearchIsInvolved(bool hasVectorSearch)
+    {
+        if(hasVectorSearch) return;
+        throw new NotSupportedInShardingException(
+            $"Ordering by score is not supported in sharding. You received this exception because your index has boosting, and we attempted to sort the results since the configuration `{RavenConfiguration.GetKey(i => i.Indexing.OrderByScoreAutomaticallyWhenBoostingIsInvolved)}` is enabled or, when you used `vector.search` method in the query when having `{RavenConfiguration.GetKey(i => i.Indexing.CoraxVectorSearchOrderByScoreAutomatically)}` enabled.");
+    }
 }

@@ -4,95 +4,23 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using Corax.Querying.Matches;
-using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
-using Corax.Mappings;
 using Corax.Utils;
 using Raven.Client.Documents.Indexes.Vector;
 using Raven.Client.Exceptions;
-using Raven.Client.Exceptions.Corax;
 using VectorOptions = Raven.Client.Documents.Indexes.Vector.VectorOptions;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Indexes.VectorSearch;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
-using Spatial4n.Shapes;
 using Sparrow;
 using Sparrow.Json;
-using RavenConstants = Raven.Client.Constants;
-using SpatialUnits = Raven.Client.Documents.Indexes.Spatial.SpatialUnits;
-using IndexSearcher = Corax.Querying.IndexSearcher;
-using SpatialRelation = Corax.Utils.Spatial.SpatialRelation;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
-/// <summary>
-/// Spatial and vector query materialization: resolves spatial shapes, vector
-/// embeddings, and attaches post-filter phases (spatial AND, vector select)
-/// to the query execution pipeline.
-///
-/// Extracted from Resolution.cs — all methods are pure extraction, no logic changes.
-/// </summary>
 internal static partial class QueryPlanBuilder
 {
-    // ── Spatial / Vector binding resolution ──────────────────────────────
-
-    /// <summary>Resolve spatial parameters from cached bindings (no MethodExpression dependency).</summary>
-    private static void ResolveSpatialFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters)
-    {
-        var bindings = exec.Clause.Bindings;
-        var sp = new SpatialParams();
-
-        // [0] = distanceErrorPct
-        if (bindings.Length > 0 && bindings[BindingIndex.SpatialDistErrPct] != null)
-        {
-            var (depVal, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialDistErrPct], queryParameters, builderParameters: null);
-            sp.DistanceErrorPct = depVal != null ? Convert.ToDouble(depVal) : -1;
-        }
-
-        // Shape type determined by the number of bindings:
-        // circle has 5 (distErrPct, radius, lat, lng, units), WKT has 3 (distErrPct, wkt, units)
-        if (bindings.Length >= BindingIndex.SpatialCircleBindingCount - 1) // circle: at least distErrPct + radius + lat + lng
-        {
-            sp.ShapeType = SpatialShapeType.Circle;
-            var (r, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialRadius], queryParameters, builderParameters: null);
-            var (lat, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLatitude], queryParameters, builderParameters: null);
-            var (lng, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLongitude], queryParameters, builderParameters: null);
-            sp.CircleRadius = Convert.ToDouble(r);
-            sp.CircleLatitude = Convert.ToDouble(lat);
-            sp.CircleLongitude = Convert.ToDouble(lng);
-            if (bindings.Length > BindingIndex.SpatialUnits && bindings[BindingIndex.SpatialUnits] != null)
-            {
-                var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialUnits], queryParameters, builderParameters: null);
-                if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                    sp.Units = (SpatialUnits)su == SpatialUnits.Kilometers
-                        ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
-                        : global::Corax.Utils.Spatial.SpatialUnits.Miles;
-            }
-        }
-        else // WKT: distErrPct, wkt, [units]
-        {
-            sp.ShapeType = SpatialShapeType.Wkt;
-            if (bindings.Length > BindingIndex.SpatialWkt && bindings[BindingIndex.SpatialWkt] != null)
-            {
-                var (wkt, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWkt], queryParameters, builderParameters: null);
-                sp.Wkt = wkt?.ToString();
-                if (bindings.Length > BindingIndex.SpatialWktUnits && bindings[BindingIndex.SpatialWktUnits] != null)
-                {
-                    var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWktUnits], queryParameters, builderParameters: null);
-                    if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                        sp.Units = (SpatialUnits)su == SpatialUnits.Kilometers
-                            ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
-                            : global::Corax.Utils.Spatial.SpatialUnits.Miles;
-                }
-            }
-        }
-
-        exec.Spatial = sp;
-    }
-
     /// <summary>Resolve vector parameters from cached bindings (no MethodExpression dependency).</summary>
     private static void ResolveVectorFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters)
     {
@@ -100,7 +28,20 @@ internal static partial class QueryPlanBuilder
 
         var vec = exec.Vector = new VectorParams { Method = exec.Clause.VectorMethod };
 
-        // [1]=minimumMatch, [2]=numberOfCandidates, [3]=aiTask
+        if (bindings.Length > BindingIndex.VectorValue && bindings[BindingIndex.VectorValue] != null)
+        {
+            var (val, valType) = ResolveBindingRaw(bindings[BindingIndex.VectorValue], queryParameters);
+            vec.ResolvedValue = val;
+            vec.ResolvedValueType = valType;
+            // For scalar parameters, resolve the native type
+            if (valType == ParamValueType.Parameter && val is not (BlittableJsonReaderArray or BlittableJsonReaderObject))
+            {
+                var (resolved, resolvedType) = ResolveParameterValue(val);
+                vec.ResolvedValue = resolved;
+                vec.ResolvedValueType = ToParamValueType(resolvedType);
+            }
+        }
+        
         if (bindings.Length > BindingIndex.VectorMinMatch && bindings[BindingIndex.VectorMinMatch] != null)
         {
             var (simVal, _) = ResolveBindingScalar(bindings[BindingIndex.VectorMinMatch], queryParameters, builderParameters: null);
@@ -125,177 +66,19 @@ internal static partial class QueryPlanBuilder
             vec.AiTaskName = taskVal?.ToString();
         }
 
-        // [0]=vector value (may be scalar, array, or blittable object)
-        if (bindings.Length > BindingIndex.VectorValue && bindings[BindingIndex.VectorValue] != null)
-        {
-            var (val, valType) = ResolveBindingRaw(bindings[BindingIndex.VectorValue], queryParameters);
-            vec.ResolvedValue = val;
-            vec.ResolvedValueType = valType;
-            // For scalar parameters, resolve the native type
-            if (valType == ParamValueType.Parameter && val is not (BlittableJsonReaderArray or BlittableJsonReaderObject))
-            {
-                var (resolved, resolvedType) = ResolveParameterValue(val);
-                vec.ResolvedValue = resolved;
-                vec.ResolvedValueType = ToParamValueType(resolvedType);
-            }
-        }
     }
 
-    // ── Spatial / Vector post-filter attachment ─────────────────────────
-
-    /// <summary>Populate ClauseExecution slots for any template-recorded spatial / vector
-    /// post-filter clauses (each a separate phase outside the main bitmap pipeline), then
-    /// call <see cref="AttachPostFilterPhases"/> to wire them onto the plan. No-op when
-    /// the template has neither.</summary>
-    private static void AttachSpatialAndVectorClauses(
-        QueryExecution exec, PlanTemplate template, PlanParameters planParams,
-        QueryBuilderParameters builderParameters, ValueWriter writer)
-    {
-        if (template.SpatialClauses == null && template.VectorClauses == null)
-            return;
-
-        ClauseInfo[] spatialArr = null;
-        ClauseInfo[] vectorArr = null;
-        ClauseExecution[] spatialExecs = null;
-        ClauseExecution[] vectorExecs = null;
-
-        if (template.SpatialClauses != null)
-        {
-            int sLen = template.SpatialClauses.Count;
-            spatialArr = new ClauseInfo[sLen];
-            spatialExecs = new ClauseExecution[sLen];
-            for (int si = 0; si < sLen; si++)
-            {
-                var sc = template.SpatialClauses[si];
-                var scExec = new ClauseExecution(sc);
-                PopulateClauseValues(scExec, planParams.QueryParameters, writer, builderParameters);
-                spatialArr[si] = sc;
-                spatialExecs[si] = scExec;
-            }
-        }
-
-        if (template.VectorClauses != null)
-        {
-            int vLen = template.VectorClauses.Count;
-            vectorArr = new ClauseInfo[vLen];
-            vectorExecs = new ClauseExecution[vLen];
-            for (int vi = 0; vi < vLen; vi++)
-            {
-                var vc = template.VectorClauses[vi];
-                var vcExec = new ClauseExecution(vc);
-                PopulateClauseValues(vcExec, planParams.QueryParameters, writer, builderParameters);
-                vectorArr[vi] = vc;
-                vectorExecs[vi] = vcExec;
-            }
-        }
-
-        AttachPostFilterPhases(exec, spatialArr, spatialExecs, vectorArr, vectorExecs);
-    }
-
-    private static void AttachPostFilterPhases(QueryExecution exec,
-        ClauseInfo[] spatialClauses, ClauseExecution[] spatialExecs,
-        ClauseInfo[] vectorClauses, ClauseExecution[] vectorExecs)
-    {
-        if (spatialClauses == null && vectorClauses == null)
-        {
-            return;
-        }
-
-        // Extend Executions array to include spatial/vector post-filter clauses.
-        var execs = exec.Executions ??= [];
-
-        // Spatial/Vector ops get MatchIndex slots appended after the base resolved
-        // matches. The base slot count is the length of Cardinalities — populated
-        // by CardinalityArrayBuilder.Build in FinalizePlan before this call, and
-        // already accounts for IsAllEntries (slot 0 reserved for AllEntries) and
-        // every In/AllIn fanout. Falls back to (IsAllEntries ? 1 : 0) when no
-        // base clauses exist (Cardinalities is null in that case).
-        int matchIndex = exec.Cardinalities?.Length ?? (exec.IsAllEntries ? 1 : 0);
-
-        if (spatialClauses != null)
-        {
-            exec.SpatialFilters = new SpatialFilterOp[spatialClauses.Length];
-            for (int i = 0; i < spatialClauses.Length; i++)
-            {
-                var spatialExec = spatialExecs?[i] ?? new ClauseExecution(spatialClauses[i]);
-                execs.Add(spatialExec);
-                exec.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i], Exec = spatialExec };
-            }
-        }
-
-        if (vectorClauses != null)
-        {
-            exec.VectorSelects = new VectorSearchOp[vectorClauses.Length];
-            for (int i = 0; i < vectorClauses.Length; i++)
-            {
-                var vectorExec = vectorExecs?[i] ?? new ClauseExecution(vectorClauses[i]);
-                execs.Add(vectorExec);
-                exec.VectorSelects[i] = new VectorSearchOp
-                {
-                    Clause = vectorClauses[i], Exec = vectorExec
-                };
-            }
-        }
-
-        exec.Executions = execs;
-    }
-
-    // ── Vector / Spatial resolution ──────────────────────────────────────
-
-    /// <summary>
-    /// Resolve vector select operations from the plan into CoraxVectorItem instances.
-    /// These are NOT materialized yet — the caller materializes them with the bitmap-producing
-    /// match as the filterQuery. Returns null if the plan has no vectors.
-    /// </summary>
     private static List<CoraxVectorItem> ResolveVectorItems(QueryExecution exec, QueryBuilderParameters builderParams)
     {
         var items = new List<CoraxVectorItem>(exec.VectorSelects.Length);
         foreach (var vec in exec.VectorSelects)
         {
-            items.Add(HandleVector(builderParams, vec.Exec, false));
+            items.Add(HandleVector(builderParams, vec.Exec));
         }
         return items;
     }
 
-    private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, ClauseExecution exec, SpatialOperationType spatialMethod)
-    {
-        var index = builderParameters.Index;
-        var allocator = builderParameters.Allocator;
-
-        // Field name was pre-resolved during parsing.
-        string fieldName = exec.Clause.FieldName
-                           ?? throw new InvalidOperationException("Spatial clause has no pre-resolved field name.");
-
-        var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, builderParameters.IndexFieldsMapping,
-            builderParameters.HasDynamics, builderParameters.DynamicFields, hasBoost: builderParameters.HasBoost);
-
-        var sp = exec.Spatial;
-        var distanceErrorPct = sp.DistanceErrorPct >= 0
-            ? sp.DistanceErrorPct
-            : RavenConstants.Documents.Indexing.Spatial.DefaultDistanceErrorPct;
-
-        var spatialField = builderParameters.Factories.GetSpatialFieldFactory(fieldName);
-
-        // Build shape from pre-resolved parameters — no GetValue calls
-        IShape shape;
-        SpatialUnits? units = sp.Units.HasValue ? (SpatialUnits)sp.Units.Value : null;
-        if (sp.ShapeType == SpatialShapeType.Circle)
-        {
-            shape = spatialField.ReadCircle(sp.CircleRadius, sp.CircleLatitude, sp.CircleLongitude, units);
-        }
-        else if (sp.Wkt != null)
-        {
-            shape = spatialField.ReadShape(sp.Wkt, units);
-        }
-        else
-        {
-            throw new InvalidOperationException("Spatial clause has no pre-resolved shape parameters.");
-        }
-
-        return builderParameters.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), (SpatialRelation)spatialMethod, token: builderParameters.Token);
-    }
-
-    private static CoraxVectorItem HandleVector(QueryBuilderParameters builderParameters, ClauseExecution exec, bool exact)
+    private static CoraxVectorItem HandleVector(QueryBuilderParameters builderParameters, ClauseExecution exec)
     {
         Debug.Assert(exec.ClauseType ==ClauseType.Vector);
         IndexField indexField;
@@ -306,11 +89,7 @@ internal static partial class QueryPlanBuilder
             ? vec.MinimumMatch
             : builderParameters.Index.Configuration.CoraxVectorSearchDefaultMinimumSimilarity;
 
-        // Treat 0 as "unspecified" (fall back to config default). The binding-resolution path can
-        // emit 0 when the client omits numberOfCandidates and the parameter slot is materialized
-        // with a default-int value; a configured 0 is meaningless to HNSW (it terminates the
-        // search after the entry point and yields only the seed node).
-        int numberOfCandidates = vec.NumberOfCandidates > 0
+        int numberOfCandidates = vec.NumberOfCandidates > 0 // NumberOfCandidates == 0 has no meaning
             ? vec.NumberOfCandidates
             : builderParameters.Index.Configuration.CoraxVectorDefaultNumberOfCandidatesForQuerying;
 
@@ -322,7 +101,6 @@ internal static partial class QueryPlanBuilder
         // Use pre-resolved vector value and method kind from parsing
         object methodParameter = vec.ResolvedValue;
         ValueTokenType valueTokenType = ToValueTokenType(vec.ResolvedValueType);
-
         if (vec.Method != VectorSourceKind.Inline)
         {
             var method = vec.Method switch
@@ -336,12 +114,12 @@ internal static partial class QueryPlanBuilder
             {
                 return (method, methodParameter) switch
                 {
-                    (method: VectorHelpers.MethodVectorValue.ForDocument, string docId) => CoraxVectorItem.BuildForDocVector(builderParameters, fieldMetadata, docId, numberOfCandidates, minimumMatch, exact),
-                    (method: VectorHelpers.MethodVectorValue.ForDocument, StringSegment docIdSegment) => CoraxVectorItem.BuildForDocVector(builderParameters, fieldMetadata, docIdSegment.Value, numberOfCandidates, minimumMatch, exact),
+                    (method: VectorHelpers.MethodVectorValue.ForDocument, string docId) => CoraxVectorItem.BuildForDocVector(builderParameters, fieldMetadata, docId, numberOfCandidates, minimumMatch, false),
+                    (method: VectorHelpers.MethodVectorValue.ForDocument, StringSegment docIdSegment) => CoraxVectorItem.BuildForDocVector(builderParameters, fieldMetadata, docIdSegment.Value, numberOfCandidates, minimumMatch, false),
                     (method: VectorHelpers.MethodVectorValue.ForRaw, string vectorAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata,
-                        GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, vectorAsBase64), numberOfCandidates, minimumMatch, exact),
+                        GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, vectorAsBase64), numberOfCandidates, minimumMatch, false),
                     (method: VectorHelpers.MethodVectorValue.ForRaw, StringSegment stringSegmentAsBase64) => CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata,
-                        GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, stringSegmentAsBase64.ToString()), numberOfCandidates, minimumMatch, exact),
+                        GenerateEmbeddings.FromBase64Array(VectorOptions.Default, builderParameters.Allocator, stringSegmentAsBase64.ToString()), numberOfCandidates, minimumMatch, false),
                     (_, BlittableJsonReaderArray { Length: > 0 }) => throw new InvalidDataException("Cannot perform search on empty value."),
                     _ => throw new InvalidQueryException(
                         $"Unknown method in value ({vec.Method}. Parameter type: {methodParameter?.GetType().FullName}, Value: {methodParameter}")
@@ -365,9 +143,9 @@ internal static partial class QueryPlanBuilder
             var vector = VectorHelpers.GetEmbeddingsForQueryParameter(builderParameters, valueTokenType, methodParameter, embeddingsGenerationTaskIdentifier, vectorOptions, fieldName);
 
             if (vector.SingleVector != null)
-                return CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, vector.SingleVector.Value, numberOfCandidates, minimumMatch, exact);
+                return CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, vector.SingleVector.Value, numberOfCandidates, minimumMatch, false);
 
-            return CoraxVectorItem.BuildMultiVector(builderParameters, fieldMetadata, vector.MultiVector, numberOfCandidates, minimumMatch, exact);
+            return CoraxVectorItem.BuildMultiVector(builderParameters, fieldMetadata, vector.MultiVector, numberOfCandidates, minimumMatch, false);
         }
 
         // Direct value (not a method call) — use pre-resolved value
@@ -449,7 +227,7 @@ internal static partial class QueryPlanBuilder
 
             if (indexField != null)
                 AssertDimensions(singleVector);
-            return CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, singleVector, numberOfCandidates, minimumMatch, exact);
+            return CoraxVectorItem.BuildSingleVector(builderParameters, fieldMetadata, singleVector, numberOfCandidates, minimumMatch, false);
         }
 
         if (transformedEmbeddings.MultiVector != null)
@@ -462,7 +240,7 @@ internal static partial class QueryPlanBuilder
                     AssertDimensions(vector);
             }
 
-            return CoraxVectorItem.BuildMultiVector(builderParameters, fieldMetadata, multiVector, numberOfCandidates, minimumMatch, exact);
+            return CoraxVectorItem.BuildMultiVector(builderParameters, fieldMetadata, multiVector, numberOfCandidates, minimumMatch, false);
         }
 
         throw new InvalidDataException("Expected to get single or multiple embeddings of VectorValue type but none was provided");
@@ -541,11 +319,7 @@ internal static partial class QueryPlanBuilder
             var bytesUsed = array.Length * (vectorOptions.SourceEmbeddingType is VectorEmbeddingType.Single ? sizeof(float) : 1);
             var memScope = parameters.Allocator.Allocate(bytesUsed, out Memory<byte> mem);
 
-            // Hoist the per-element type switch out of the loop: SourceEmbeddingType is
-            // constant for the whole array, so dispatching once and then running a tight
-            // typed copy loop avoids repeating the branch (and the three ref captures) per
-            // element.
-            switch (vectorOptions.SourceEmbeddingType)
+            switch (vectorOptions.SourceEmbeddingType) 
             {
                 case VectorEmbeddingType.Single:
                     CopyFloats(array, MemoryMarshal.Cast<byte, float>(mem.Span));
@@ -598,8 +372,6 @@ internal static partial class QueryPlanBuilder
                 && (builderParameters.Index.Definition.IndexFields.TryGetValue(fieldName, out indexField)) == false)
                 PortableExceptions.Throw<InvalidDataException>($"Cannot find `{fieldName}` field in the index.");
 
-            // VectorOptions can be null when a user does not specify the configuration.
-            // In such cases, we will choose the input depending on the value type (similar to how we handle it during indexing).
             if (indexField.Vector != null)
                 return indexField.Vector;
 
