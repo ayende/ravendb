@@ -1,5 +1,4 @@
-#pragma warning disable CS8632 // nullable annotations used outside a #nullable context; intentional here
-
+#nullable enable
 using System;
 using System.Collections.Generic;
 using Corax.Querying.Planning;
@@ -9,17 +8,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>
-    /// Accumulates typed parameter values during query plan building.
-    /// Each Add call stores the native value in the appropriate-typed list
-    /// and returns a <see cref="PackedParam"/> encoding (type + index) for the clause.
-    /// Values are stored as their native types — no string round-trips.
-    /// </summary>
     private sealed class ValueWriter
     {
         private readonly List<long> _longs = [];
         private readonly List<double> _doubles = [];
-        private readonly List<string> _strings = [];
+        private readonly List<string?> _strings = [];
 
         private PackedParam? TryAddLong(long? value) => value is null ? null : AddLong(value.Value);
         
@@ -37,7 +30,7 @@ internal static partial class QueryPlanBuilder
             return new PackedParam(PackedParam.TypeDouble, _doubles.Count - 1);
         }
 
-        private PackedParam AddString(string value)
+        private PackedParam AddString(string? value)
         {
             _strings.Add(value);
             return new PackedParam(PackedParam.TypeString, _strings.Count - 1);
@@ -45,7 +38,7 @@ internal static partial class QueryPlanBuilder
 
         /// <summary>Add a resolved value by its detected type. Used by Parse* methods
         /// after <see cref="ResolveTermValue"/> determines the native type.</summary>
-        public PackedParam Add(object value, ValueTokenType type)
+        public PackedParam Add(object? value, ValueTokenType type)
         {
             return type switch
             {
@@ -80,7 +73,7 @@ internal static partial class QueryPlanBuilder
         }
 
         /// <summary>Add a pair of resolved values (for BETWEEN).</summary>
-        public PackedParam AddPair(object value1, object value2, ValueTokenType type)
+        public PackedParam AddPair(object? value1, object? value2, ValueTokenType type)
         {
             return type switch
             {
@@ -107,7 +100,7 @@ internal static partial class QueryPlanBuilder
                 return new PackedParam(PackedParam.TypeDouble, _doubles.Count - 2, _doubles.Count - 1);
             }
 
-            PackedParam AddStringPair(string low, string high)
+            PackedParam AddStringPair(string? low, string? high)
             {
                 _strings.Add(low);
                 _strings.Add(high);
@@ -115,13 +108,9 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        public int LongCount => _longs.Count;
-        public int DoubleCount => _doubles.Count;
-        public int StringCount => _strings.Count;
-
         public long GetLong(int index) => _longs[index];
         public double GetDouble(int index) => _doubles[index];
-        public string GetString(int index) => _strings[index];
+        public string? GetString(int index) => _strings[index];
 
         public void SetValues(QueryExecution exec)
         {
@@ -140,9 +129,9 @@ internal static partial class QueryPlanBuilder
             };
             int startIdx = packedType switch
             {
-                PackedParam.TypeLong => LongCount,
-                PackedParam.TypeDouble => DoubleCount,
-                _ => StringCount
+                PackedParam.TypeLong => _longs.Count,
+                PackedParam.TypeDouble => _doubles.Count,
+                _ => _strings.Count
             };
             return (packedType, startIdx);
         }

@@ -124,12 +124,10 @@ internal static partial class QueryPlanBuilder
             static void NotCanonizeRecursive(ClauseInfo c, bool enclosingIsOr)
             {
                 RuntimeHelpers.EnsureSufficientExecutionStack();
-                if (enclosingIsOr && c.IsNegated)
-                    c.IsOrChainNotEquals = true;
-                bool subIsOr = c.ClauseType == ClauseType.OrGroup;
+                c.IsOrChainNotEquals |= enclosingIsOr && c.IsNegated;
                 foreach (var sub in c.SubClauses ?? [])
                 {
-                    NotCanonizeRecursive(sub, subIsOr);
+                    NotCanonizeRecursive(sub, c.ClauseType == ClauseType.OrGroup);
                 }
             }
         }
