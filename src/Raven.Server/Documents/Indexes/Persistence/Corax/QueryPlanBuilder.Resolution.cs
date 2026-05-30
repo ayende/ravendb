@@ -309,46 +309,55 @@ internal static partial class QueryPlanBuilder
 
             List<ScanPredicateInfo> scanList = hasScanList ? [] : null;
             List<int> clauseIndices = hasScanList ? [] : null;
+
+            // Single forwarder onto the recursive switch — one call site per clause. Groups recurse
+            // into BuildScanPredicateInfoCore directly with their own rolled-back slice index.
+            static ScanPredicateInfo? BuildPredicate(ClauseExecution clauseExec, ref int slice)
+                => BuildScanPredicateInfoCore(clauseExec, clauseExec.TermValueType, ref slice);
+
             int sliceIndex = 0;
             for (int i = 0; i < executions.Count; i++)
             {
-                if (hasScanList && i >= scanStart)
+                bool isScanCandidate = hasScanList && i >= scanStart;
+
+                // Only scan candidates advance the dense, IL-aligned slice index — that is the order
+                // the entry-scan IL reads ResidualSlices in. Seed / OR / single-clause predicates build
+                // with a throwaway counter because the residual paths that read them ignore slice ParamIndex.
+                int throwaway = sliceIndex;
+                ref int slice = ref (isScanCandidate ? ref sliceIndex : ref throwaway);
+
+                ScanPredicateInfo? pred = BuildPredicate(executions[i], ref slice);
+                perClause[i] = pred;
+
+                if (isScanCandidate && pred is { } p)
                 {
-                    // The dense running sliceIndex must advance only across the seed-skipped scan candidates,
-                    // because that is the order the entry-scan IL reads ResidualSlices in.
-                    if (BuildScanPredicateInfo(executions[i], ref sliceIndex) is { } pred)
-                    {
-                        scanList.Add(pred);
-                        clauseIndices.Add(i);
-                        perClause[i] = pred;
-                    }
-
-                    continue;
+                    scanList.Add(p);
+                    clauseIndices.Add(i);
                 }
-
-                int throwaway = 0; // seed / OR / single-clause: residual paths ignore slice ParamIndex.
-                perClause[i] = BuildScanPredicateInfo(executions[i], ref throwaway);
             }
 
             return (scanList, clauseIndices?.ToArray(), perClause);
         }
 
         // Filter the per-clause predicates against a strategy's plan-stable exclusion set (skip1/skip2).
-        // A null entry on a non-excluded clause means the residual is non-scannable for that strategy,
-        // so the construct path must abort to the bitmap pipeline (Unscannable = true).
+        // Three-way result:
+        //   null   → a non-excluded clause is unscannable; the construct path must abort to the bitmap pipeline.
+        //   empty  → scannable, but no residual clauses remain (e.g. a single driving clause); drive the
+        //            scan with no residual filter (BuildDirectScan picks DirectScanSimpleMatch).
+        //   filled → scannable with residual predicates to evaluate per entry.
         static ScanPredicateInfo[] BuildResidualSet(ScanPredicateInfo?[] perClause, int skip1, int skip2)
         {
-            List<ScanPredicateInfo> residuals = null;
+            var residuals = new List<ScanPredicateInfo>();
             for (int i = 0; i < perClause.Length; i++)
             {
                 if (i == skip1 || i == skip2)
                     continue;
                 if (perClause[i] is not { } pred)
                     return null;
-                (residuals ??= []).Add(pred);
+                residuals.Add(pred);
             }
 
-            return residuals?.ToArray();
+            return residuals.ToArray();
         }
 
         bool CheckAllNegated() => executions is [{ IsNegated: true }, ..]; // negated clauses are always sorted first, so we can just check the first
@@ -1550,7 +1559,10 @@ internal static partial class QueryPlanBuilder
         ResidualScanIlEmitter.ResidualScanPredicate residualDelegate,
         ScanPredicateInfo[] residualArray)
     {
-        if (residualArray == null)
+        // null = unscannable (caller already aborted); empty = scannable with no residual filter.
+        // Both drive the scan without a per-entry predicate. The filtered match needs a non-null
+        // CompiledEntryPredicate, which is only emitted when the scan list is non-empty.
+        if (residualArray is null or { Length: 0 })
             return new DirectScanSimpleMatch(searcher, drivingMatch, take: -1);
 
         return new DirectScanFilteredMatch(
@@ -2257,9 +2269,6 @@ internal static partial class QueryPlanBuilder
 
         return MatchDispatch.QueryMatch;
     }
-
-    internal static ScanPredicateInfo? BuildScanPredicateInfo(ClauseExecution exec, ref int sliceIndex)
-        => BuildScanPredicateInfoCore(exec, exec.TermValueType, ref sliceIndex);
 
     /// <summary>Build a <see cref="ScanPredicateInfo"/> for a single clause execution. For numeric
     /// (long/double) predicates, <c>ParamIndex</c>/<c>ParamIndex2</c> are the original
