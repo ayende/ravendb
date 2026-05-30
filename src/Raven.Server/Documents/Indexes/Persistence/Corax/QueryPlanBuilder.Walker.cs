@@ -31,6 +31,7 @@ internal static partial class QueryPlanBuilder
         public int CompoundFieldDrivingClause = -1;
         public string CompoundFieldSortName;
         public bool CompoundFieldIsMultiSort;
+        public int CompoundFieldField2Range = -1;
 
         public ResolutionContext(PlanParameters p)
             : this(p.QueryParameters, p.Metadata, p.IndexSearcher)

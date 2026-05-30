@@ -152,6 +152,11 @@ public sealed class CompiledPlan
     /// index (runtime, remapped from template). -1 when none.</summary>
     public int CompoundFieldDrivingClause { get; set; } = -1;
 
+    /// <summary>Optional field2 range narrowing clause (runtime exec-position index, remapped from
+    /// <see cref="PlanTemplate.CompoundFieldField2Range"/>). -1 when none. A GT/GTE/LT/LTE/Between
+    /// on the compound sort field that narrows the prefix scan.</summary>
+    public int CompoundFieldField2RangeIdx { get; set; } = -1;
+
     /// <summary>Runtime exec-position index of the sort-seek-hint clause (remapped from
     /// <see cref="PlanTemplate.SortSeekHintTemplateIdx"/>). -1 when no hint applies for
     /// this template, or when WHEN elimination dropped the candidate clause for this

@@ -118,6 +118,7 @@ internal static partial class QueryPlanBuilder
             CompoundFieldDrivingClause = walkerCtx.CompoundFieldDrivingClause,
             CompoundFieldSortName = walkerCtx.CompoundFieldSortName,
             CompoundFieldIsMultiSort = walkerCtx.CompoundFieldIsMultiSort,
+            CompoundFieldField2Range = walkerCtx.CompoundFieldField2Range,
             ParameterSlots = seen.ToArray(),
             SortSeekHintTemplateIdx = sortSeekHintIdx,
             SortSeekUseParam2 = sortSeekUseParam2,
@@ -252,6 +253,25 @@ internal static partial class QueryPlanBuilder
                 }
 
                 break;
+        }
+
+        // Optional field2 range narrowing clause: a GT/GTE/LT/LTE/Between on the compound
+        // sort field. Structural (clause-type + field name only), so it is template-stable —
+        // bake the template-position index here instead of recomputing on every Construct call.
+        if (walkerCtx.CompoundFieldDrivingClause != -1)
+        {
+            for (int i = 0; i < clauses.Count; i++)
+            {
+                if (i == walkerCtx.CompoundFieldDrivingClause) continue;
+                ClauseInfo c = clauses[i];
+                if (c.FieldName != walkerCtx.CompoundFieldSortName) continue;
+                if (c.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+                    or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between)
+                {
+                    walkerCtx.CompoundFieldField2Range = i;
+                    break;
+                }
+            }
         }
 
         return flags;
