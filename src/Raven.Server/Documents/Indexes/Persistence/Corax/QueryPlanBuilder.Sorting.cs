@@ -199,8 +199,6 @@ internal static partial class QueryPlanBuilder
         for (int i = 0; i < template.Prebuilt.Length; i++)
         {
             ref var patch = ref template.Patches[i];
-            var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
-            bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
             switch (patch.Kind)
             {
                 case SortSlotPatchKind.None:
@@ -212,7 +210,13 @@ internal static partial class QueryPlanBuilder
                     break;
 
                 case SortSlotPatchKind.FieldEmptyCheck:
-                   var p = template.Prebuilt[i];
+                {
+                    // Only field-backed slots carry a FieldName; resolving metadata for a None /
+                    // RandomFreshSeed slot (FieldName == null) would NRE, so the resolve + empty-term
+                    // check stay inside the cases that actually need them.
+                    var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
+                    bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
+                    var p = template.Prebuilt[i];
 
                     if (fieldIsEmpty == false)
                     {
@@ -229,8 +233,12 @@ internal static partial class QueryPlanBuilder
                     result[outIdx++] = new OrderMetadata(fieldMeta, p.Ascending, p.FieldType,
                         fieldHasNoTerms: true, p.NullsSortMode, p.MayHaveMissingEntries);
                     break;
+                }
 
                 case SortSlotPatchKind.DistanceRuntime:
+                {
+                    var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
+                    bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
                     if (fieldIsEmpty)
                     {
                         if (isSharded == false)
@@ -240,6 +248,7 @@ internal static partial class QueryPlanBuilder
 
                     result[outIdx++] = patch.DistanceBuilder(builderParameters, fieldMeta, fieldIsEmpty);
                     break;
+                }
             }
         }
 
