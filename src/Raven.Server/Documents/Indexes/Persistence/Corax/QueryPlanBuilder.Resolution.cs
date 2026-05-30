@@ -231,6 +231,8 @@ internal static partial class QueryPlanBuilder
                     compiledPlan.CompoundExactClauseB = i;
                 if (it.Clause.OriginalIndex == template.CompoundFieldDrivingClause)
                     compiledPlan.CompoundFieldDrivingClause = i;
+                if (it.Clause.OriginalIndex == template.CompoundFieldField2Range)
+                    compiledPlan.CompoundFieldField2RangeIdx = i;
                 if (it.Clause.OriginalIndex == template.SortSeekHintTemplateIdx)
                     compiledPlan.SortSeekClauseExecIdx = i;
             }
@@ -654,7 +656,7 @@ internal static partial class QueryPlanBuilder
                 // cached plan never reuses a stale cost decision (RavenDB #4852). Cost failure → bitmap.
                 if (CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost) == false)
                     goto default;
-                innerMatch = ConstructCompoundField(ref ctx, FindCompoundFieldField2Range(ref ctx), cfEntriesToScan, cfBitmapCost);
+                innerMatch = ConstructCompoundField(ref ctx, ctx.Exec.Plan.CompoundFieldField2RangeIdx, cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
                 return OrderBy(builderParameters, innerMatch, orderByFields, hasEmptySorts);
             case ExecutionStrategy.DirectScan when orderByFields is { Length: <= 2 }:
@@ -1032,9 +1034,9 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
-        // Find optional field2 range narrowing clause (structural — same for all
-        // executions of this template).
-        int field2RangeIdx = FindCompoundFieldField2Range(ref ctx);
+        // Optional field2 range narrowing clause — baked at template time
+        // (structural; same for all executions of this template).
+        int field2RangeIdx = ctx.Exec.Plan.CompoundFieldField2RangeIdx;
 
         // Residual scannability — structural only (clause-type / boost based, stable across
         // executions). The bitmap-vs-direct-scan COST gate and the parameter-dependent
@@ -1060,29 +1062,6 @@ internal static partial class QueryPlanBuilder
 
         rejectReason = null;
         return true;
-    }
-
-    /// <summary>Locate an optional GT/GTE/LT/LTE/Between clause on the sort field
-    /// that can narrow the compound prefix scan. Structural — same for all executions
-    /// of a given template, but cheap enough to recompute on each Construct call
-    /// rather than threading another field through QueryExecution.</summary>
-    private static int FindCompoundFieldField2Range(ref InstCtx ctx)
-    {
-        var executions = ctx.Exec.Executions;
-        int drivingClauseIdx = ctx.Plan.CompoundFieldDrivingClause;
-        var sortFieldName = ctx.Plan.Template.CompoundFieldSortName;
-
-        for (int i = 0; i < executions.Count; i++)
-        {
-            if (i == drivingClauseIdx) continue;
-            var cl = executions[i].Clause;
-            if (cl.FieldName != sortFieldName) continue;
-            if (cl.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-                or ClauseType.LessThan or ClauseType.LessThanOrEqual or ClauseType.Between)
-                return i;
-        }
-
-        return -1;
     }
 
     /// <summary>Phase 5 bake: construction-only path for the CompoundField hint.
@@ -2061,7 +2040,7 @@ internal static partial class QueryPlanBuilder
             return false;
 
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        int field2RangeIdx = FindCompoundFieldField2Range(ref ctx);
+        int field2RangeIdx = ctx.Exec.Plan.CompoundFieldField2RangeIdx;
         int residualCount = 0;
         for (int i = 0; i < execs.Count; i++)
         {

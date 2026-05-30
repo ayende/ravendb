@@ -76,6 +76,12 @@ public sealed class PlanTemplate
     /// <summary>True when compound-field match uses two ORDER BY fields (multi-sort mode).</summary>
     public bool CompoundFieldIsMultiSort;
 
+    /// <summary>Pre-identified optional field2 range narrowing clause (template position) — a
+    /// GT/GTE/LT/LTE/Between on <see cref="CompoundFieldSortName"/> that narrows the compound
+    /// prefix scan. -1 when none. Structural (clause-type + field name), so it is template-stable.
+    /// Build remaps this to the post-sort runtime index on <see cref="CompiledPlan.CompoundFieldField2RangeIdx"/>.</summary>
+    public int CompoundFieldField2Range = -1;
+
     /// <summary>Count of clauses that carry a <see cref="ClauseInfo.WhenCondition"/>,
     /// in template traversal order. Computed once at template construction. If this
     /// exceeds <see cref="MaxWhenClauses"/>, template construction throws
