@@ -38,9 +38,6 @@ public class QueryExecution
 
     public bool QueryWillReturnNoResults;
 
-    /// <summary>True when any clause in this query is a BETWEEN whose sentinel bound ("*"/"NULL") was delivered by a query parameter. Generates a different cached query plan.</summary>
-    public bool HasParameterSentinel;
-
     /// <summary>Holds the analyzed slices for each field, indexed by the field's slot.</summary>
     public Slice[] AnalyzedSlices;
 
