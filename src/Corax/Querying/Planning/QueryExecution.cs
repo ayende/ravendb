@@ -38,15 +38,7 @@ public class QueryExecution
 
     public bool QueryWillReturnNoResults;
 
-    /// <summary>Analyzer-encoded single-value slices, parallel to <see cref="StringValues"/> and
-    /// indexed by <see cref="PackedParam.Param1"/> / <see cref="PackedParam.Param2"/> — the same
-    /// addressing scheme <see cref="LongValues"/> / <see cref="DoubleValues"/> use. The single source of
-    /// truth for analyzed slices: lazily allocated and filled on first touch by <see cref="GetAnalyzedSlice"/>,
-    /// which every consumer routes through — bitmap term/range/between queries, the compound-field key
-    /// encoding, and the residual-scan extractor (which forces the slots the IL will read to be populated).
-    /// The residual-scan IL then reads <c>AnalyzedSlices[ParamIndex].AsReadOnlySpan()</c> directly. Slot is
-    /// 1:1 with field (the append-only ValueWriter never reuses a slot), so the slot index alone is the key
-    /// and an unset slot stays <c>default</c> — its <see cref="Slice.HasValue"/> is the "not yet analyzed" flag.</summary>
+    /// <summary>Holds the analyzed slices for each field, indexed by the field's slot.</summary>
     public Slice[] AnalyzedSlices;
 
     /// <summary>Per-IN/ALL-IN residual predicate value sets, materialized per execution and
