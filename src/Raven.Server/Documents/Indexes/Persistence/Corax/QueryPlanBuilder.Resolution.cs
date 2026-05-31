@@ -228,6 +228,11 @@ internal static partial class QueryPlanBuilder
             };
         }
 
+        static bool IsEmptyIn(ClauseExecution e) =>
+            e.ClauseType is ClauseType.In or ClauseType.AllIn &&
+            (e.InTermCount == 0) &&
+            e.HasNullTerm is false;
+
         void RemapOptimizationIndices()
         {
             for (int i = 0; i < executions.Count; i++)
@@ -824,6 +829,107 @@ internal static partial class QueryPlanBuilder
 
             ctx.Plan.DecisionTrail.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
         }
+        
+        static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)
+        {
+            long directCost =  entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier
+                ? long.MaxValue // avoid overflow
+                : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+            // check what will be more costly, and set a hard limit (32K) to how many entries we may scan
+            return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
+        }
+        
+        static bool CompoundFieldCostEffective(ref InstCtx ctx, out long entriesToScan, out long bitmapCost)
+        {
+            entriesToScan = 0;
+            bitmapCost = 0;
+            var execs  = ctx.Exec.Executions;
+            int drivingIdx = ctx.Exec.Plan.CompoundFieldDrivingClause;
+
+            var drivingExec = execs[drivingIdx];
+            if (drivingExec.PackedParamValue.IsNone)
+                return false;
+
+            var indexSearcher = ctx.PlanParams.IndexSearcher;
+            int field2RangeIdx = ctx.Exec.Plan.CompoundFieldField2RangeIdx;
+            int residualCount = 0;
+            for (int i = 0; i < execs.Count; i++)
+            {
+                bitmapCost += execs[i].GetEffectiveCardinality(indexSearcher);
+                if (i == drivingIdx || i == field2RangeIdx)
+                    continue;
+                residualCount++;
+            }
+
+            long drivingCardinality = drivingExec.GetEffectiveCardinality(indexSearcher);
+            entriesToScan = residualCount > 0
+                ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCardinality, ctx.BuilderParams.Query.PageSize, indexSearcher)
+                : drivingCardinality;
+
+            return IsDirectScanCostEffective(entriesToScan, bitmapCost);
+        }
+        
+        static bool DirectScanCostEffective(ref InstCtx ctx, bool isFullScan, out string directScanReason)
+        {
+            if (isFullScan)
+            {
+                directScanReason = "full scan requested";
+                return true;
+            }
+
+            directScanReason = null;
+        
+            var execs = ctx.Exec.Executions;
+            int drivingIdx = ctx.Exec.Plan.SortDrivingClauseIndex;
+            if (drivingIdx < 0 || drivingIdx >= execs.Count)
+                return false;
+            if (execs[drivingIdx].PackedParamValue.IsNone)
+                return false;
+
+            long bitmapCost = 0;
+            var indexSearcher = ctx.PlanParams.IndexSearcher;
+            foreach (var it in execs)
+            {
+                bitmapCost += it.GetEffectiveCardinality(indexSearcher);
+            }
+
+            long drivingCard = execs[drivingIdx].GetEffectiveCardinality(indexSearcher);
+            var entriesToScan = execs.Count > 1
+                ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher)
+                : drivingCard;
+
+            if (ctx.WantTimings)
+                directScanReason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
+            return IsDirectScanCostEffective(entriesToScan, bitmapCost);
+        }
+
+        static long ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
+            int drivingIdx, long drivingCard, long pageSize, IndexSearcher indexSearcher)
+        {
+            long resultsWanted = Math.Min(drivingCard, pageSize);
+
+            long minResidual = long.MaxValue;
+            for (int i = 0; i < execs.Count; i++)
+            {
+                if (i == drivingIdx) continue;
+                long c = execs[i].GetEffectiveCardinality(indexSearcher);
+                minResidual = Math.Min(c, minResidual);
+            }
+
+            if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
+            {
+                // here we check what is the pass rate of the most selective residual clause (i.e, 1% of entries matched, etc)
+                double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
+                if (passRate > 0)
+                {
+                    // if the pass rate is 1%, we have to scan through 10_000 entries to get 100, etc, so we need to inflate the costs.
+                    // We inflate the *results wanted* (page-bounded) rather than the full driving cardinality: filling a 10-row
+                    // page through a 1%-selective residual means scanning ~1_000 entries, regardless of how large the driving set is.
+                    return (long)(resultsWanted / passRate);
+                }
+            }
+            return resultsWanted;
+        }
     }
 
     private static IQueryMatch InstantiateBitmapPipeline(
@@ -975,8 +1081,8 @@ internal static partial class QueryPlanBuilder
             ? (eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName, eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName, eA, eB)
             : (eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName, eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName, eB, eA);
         
-        if (TryGetCompoundFieldEncoding(firstField, firstExec.PackedParamValue, firstExec.PackedParamValue.Param1, ref ctx, out var enc1) == false || 
-            TryGetCompoundFieldEncoding(secondField, secondExec.PackedParamValue, secondExec.PackedParamValue.Param1, ref ctx, out var enc2) == false)
+        if (TryGetCompoundFieldEncoding(ref ctx, firstField, firstExec.PackedParamValue, firstExec.PackedParamValue.Param1, out var enc1) == false || 
+            TryGetCompoundFieldEncoding(ref ctx, secondField, secondExec.PackedParamValue, secondExec.PackedParamValue.Param1, out var enc2) == false)
             return null;
 
         int totalLen = enc1.Size + enc2.Size + 1;
@@ -1132,12 +1238,12 @@ internal static partial class QueryPlanBuilder
         if (field2Packed.IsNone)
             return false;
 
-        if (TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param1, ref ctx, out var encLow) == false)
+        if (TryGetCompoundFieldEncoding(ref ctx, sortFieldName, field2Packed, field2Packed.Param1, out var encLow) == false)
             return false;
         
         CompoundFieldEncoding encHigh = default;
         if (field2Exec.Clause.ClauseType is ClauseType.Between && 
-            TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param2, ref ctx, out encHigh) == false)
+            TryGetCompoundFieldEncoding(ref ctx, sortFieldName, field2Packed, field2Packed.Param2, out encHigh) == false)
             return false;
 
         var (lowEnc, highEnc, lowSuffixSize, highSuffixSize) = field2Exec.Clause.ClauseType switch
@@ -1156,12 +1262,11 @@ internal static partial class QueryPlanBuilder
             analyzedPrefix.Size + highSuffixSize + 1 > Constants.Terms.MaxLength)
             return false;
 
-        lowSlice = WriteCompositeRangeKey(ref ctx, analyzedPrefix, lowSuffixSize, lowEnc, openFill: 0x00);
-        highSlice = WriteCompositeRangeKey(ref ctx, analyzedPrefix, highSuffixSize, highEnc, openFill: 0xFF);
+        lowSlice = WriteCompositeRangeKey(ref ctx, analyzedPrefix, lowSuffixSize, in lowEnc, openFill: 0x00);
+        highSlice = WriteCompositeRangeKey(ref ctx, analyzedPrefix, highSuffixSize, in highEnc, openFill: 0xFF);
         return true;
         
-        static Slice WriteCompositeRangeKey(ref InstCtx ctx, Slice analyzedPrefix, int suffixSize,
-            CompoundFieldEncoding? suffixEncoding, byte openFill)
+        static Slice WriteCompositeRangeKey(ref InstCtx ctx, Slice analyzedPrefix, int suffixSize, in CompoundFieldEncoding  suffixEncoding, byte openFill)
         {
             int len = analyzedPrefix.Size + suffixSize + 1;
             ctx.PlanParams.Allocator.Allocate(len, out ByteString buf);
@@ -1648,14 +1753,11 @@ internal static partial class QueryPlanBuilder
 
         Debug.Assert(exec.SentinelRewriteType == ClauseType.GreaterThanOrEqual);
         IQueryMatch rangeMatch = exec.PackedParamValue.RangeQuery(ClauseType.GreaterThanOrEqual, fieldMeta, indexSearcher, queryExec);
-        if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _)) // BETWEEN low AND 'NULL' must include null-valued docs (Lucene parity)
-        {
-            // Defer the OR to execution time (first Fill): keeps the cost out of plan-build
-            // timing and lets Inspect() report the real Or(range, null-term) structure.
-            return new LazyOrMatch(indexSearcher.Allocator, rangeMatch, indexSearcher.TermQuery(fieldMeta, null));
-        }
-
-        return rangeMatch;
+        if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _) is false) 
+            return rangeMatch;
+        
+        // BETWEEN low AND 'NULL' must include null-valued docs (Lucene parity)
+        return new LazyOrMatch(indexSearcher.Allocator, rangeMatch, indexSearcher.TermQuery(fieldMeta, null));
     }
 
     private static IQueryMatch ResolveInTerm(ClauseExecution exec, int termIndex, QueryExecution queryExec, ResolutionContext walkerCtx)
@@ -1678,140 +1780,9 @@ internal static partial class QueryPlanBuilder
             hasBoost: builderParams.HasBoost, forceDefaultSearchAnalyzer: forceSearchAnalyzer);
     }
 
-    private static long ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
-        int drivingIdx, long drivingCard, long pageSize, IndexSearcher indexSearcher)
-    {
-        long resultsWanted = Math.Min(drivingCard, pageSize);
-
-        long minResidual = long.MaxValue;
-        for (int i = 0; i < execs.Count; i++)
-        {
-            if (i == drivingIdx) continue;
-            long c = execs[i].GetEffectiveCardinality(indexSearcher);
-            minResidual = Math.Min(c, minResidual);
-        }
-
-        if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
-        {
-            // here we, check what is the pass rate of the most selective residual clause (i.e, 1% of entries matched, etc)
-            double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
-            if (passRate > 0)
-            {
-                // if pass rate is 1%, we have to scan through 10_000 entries to get 100, etc, so we need to inflate the costs.
-                // We inflate the *results wanted* (page-bounded) rather than the full driving cardinality: filling a 10-row
-                // page through a 1%-selective residual means scanning ~1_000 entries, regardless of how large the driving set is.
-                return (long)(resultsWanted / passRate);
-            }
-        }
-
-        return resultsWanted;
-    }
-
-    private static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)
-    {
-        long directCost =  entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier
-            ? long.MaxValue // avoid overflow
-            : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
-        // check what will be more costly, and set a hard limit (32K) to how many entries we may scan
-        return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
-    }
-
-    private static bool CompoundFieldCostEffective(ref InstCtx ctx, out long entriesToScan, out long bitmapCost)
-    {
-        entriesToScan = 0;
-        bitmapCost = 0;
-        var execs  = ctx.Exec.Executions;
-        int drivingIdx = ctx.Exec.Plan.CompoundFieldDrivingClause;
-
-        var drivingExec = execs[drivingIdx];
-        if (drivingExec.PackedParamValue.IsNone)
-            return false;
-
-        var indexSearcher = ctx.PlanParams.IndexSearcher;
-        int field2RangeIdx = ctx.Exec.Plan.CompoundFieldField2RangeIdx;
-        int residualCount = 0;
-        for (int i = 0; i < execs.Count; i++)
-        {
-            bitmapCost += execs[i].GetEffectiveCardinality(indexSearcher);
-            if (i == drivingIdx || i == field2RangeIdx)
-                continue;
-            residualCount++;
-        }
-
-        long drivingCardinality = drivingExec.GetEffectiveCardinality(indexSearcher);
-        entriesToScan = residualCount > 0
-            ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCardinality, ctx.BuilderParams.Query.PageSize, indexSearcher)
-            : drivingCardinality;
-
-        return IsDirectScanCostEffective(entriesToScan, bitmapCost);
-    }
-
-    /// <summary>Per-execution cost gate for the DirectScan candidate. Structural eligibility
-    /// (ORDER BY shape, sort-driving clause, scannable residuals) was baked at cache-miss by
-    /// <see cref="TryCreateSimpleFieldDirectScan"/>; this re-evaluates the cost using the CURRENT
-    /// bound-parameter cardinalities (RavenDB #4852). Full scans have no cost gate — the sort-field
-    /// tree is walked directly — so they always pass. <paramref name="entriesToScan"/> and
-    /// <paramref name="bitmapCost"/> are surfaced for the inspection Reason string.</summary>
-    private static bool DirectScanCostEffective(ref InstCtx ctx, bool isFullScan, out string directScanReason)
-    {
-        if (isFullScan)
-        {
-            directScanReason = "full scan requested";
-            return true;
-        }
-
-        directScanReason = null;
-        
-        var execs = ctx.Exec.Executions;
-        int drivingIdx = ctx.Exec.Plan.SortDrivingClauseIndex;
-        if (drivingIdx < 0 || drivingIdx >= execs.Count)
-            return false;
-        if (execs[drivingIdx].PackedParamValue.IsNone)
-            return false;
-
-        long bitmapCost = 0;
-        var indexSearcher = ctx.PlanParams.IndexSearcher;
-        foreach (var it in execs)
-        {
-            bitmapCost += it.GetEffectiveCardinality(indexSearcher);
-        }
-
-        long drivingCard = execs[drivingIdx].GetEffectiveCardinality(indexSearcher);
-        var entriesToScan = execs.Count > 1
-            ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher)
-            : drivingCard;
-
-        if (ctx.WantTimings)
-            directScanReason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
-        return IsDirectScanCostEffective(entriesToScan, bitmapCost);
-    }
-
-
-    private static bool IsEmptyIn(ClauseExecution e) =>
-        // HasNullTerm must also block the empty-IN path: a list whose only entry
-        // is null arrives as InTermCount=0+HasNullTerm=true and still has to match
-        // docs with a null in that field via the null-term posting list (Fill@0
-        // reads the null PL, OrRange/AndRange becomes a runtime no-op when
-        // InRangeCounts[rangeIdx] resolves to 0).
-        e.ClauseType is ClauseType.In or ClauseType.AllIn &&
-        (e.InTermCount == 0) &&
-        e.HasNullTerm is false;
-
-    // ── Plan helpers ─────────────────────────────────────────────────────
-
-    /// <summary>True iff <paramref name="exec"/> carries any boost — either annotated at
-    /// template time (<see cref="ClauseInfo.HasBoost"/>) or with a resolved runtime
-    /// factor (<see cref="ClauseExecution.BoostFactor"/> &gt; 0). Compound-key and
-    /// direct-scan paths can't propagate scores, so they reject any boosted clause.</summary>
     private static bool IsClauseBoosted(ClauseExecution exec)
         => exec.Clause.HasBoost || exec.BoostFactor > 0;
 
-    /// <summary>Encode a numeric (long/double) field value at <paramref name="paramIdx"/>
-    /// into 8 big-endian sortable bytes — the same encoding indexing uses for compound-key
-    /// long/double fields. Doubles map through <see cref="Bits.DoubleToSortableLong"/>
-    /// first so that descending order matches IEEE-754 semantics. Writes directly into
-    /// <paramref name="dest"/> (which must be exactly <c>sizeof(long)</c> bytes), so the
-    /// caller controls the allocation strategy and no managed <c>byte[]</c> is needed.</summary>
     private static void EncodeNumericValue(Span<byte> dest, int valueType, int paramIdx, QueryExecution exec)
     {
         long raw = valueType == PackedParam.TypeDouble
@@ -1820,11 +1791,6 @@ internal static partial class QueryPlanBuilder
         BinaryPrimitives.WriteInt64BigEndian(dest, Bits.SwapBytes(raw));
     }
 
-    /// <summary>One value-slot of a compound key: the resolved size plus the source
-    /// (typed packed-param, plus the cached analyzed <see cref="Slice"/> for the string
-    /// case so <c>EncodeAndApplyAnalyzer</c> doesn't run twice — once to size, once to
-    /// write). Numeric slots carry only <see cref="Packed"/>; <see cref="Analyzed"/>
-    /// stays <c>default</c>.</summary>
     private struct CompoundFieldEncoding
     {
         public PackedParam Packed;
@@ -1833,8 +1799,7 @@ internal static partial class QueryPlanBuilder
         public int Size;
     }
 
-    private static bool TryGetCompoundFieldEncoding(string fieldName, PackedParam packed, int paramSlot,
-        ref InstCtx ctx, out CompoundFieldEncoding encoding)
+    private static bool TryGetCompoundFieldEncoding(ref InstCtx ctx, string fieldName, PackedParam packed, int paramSlot, out CompoundFieldEncoding encoding)
     {
         encoding = default;
         encoding.Packed = packed;
@@ -1856,11 +1821,7 @@ internal static partial class QueryPlanBuilder
                 return false;
         }
     }
-
-    /// <summary>Write the encoded bytes of a compound-key slot into <paramref name="dest"/>.
-    /// <paramref name="dest"/> must be exactly <see cref="CompoundFieldEncoding.Size"/> bytes long.
-    /// String: copies the cached analyzed bytes. Numeric: delegates to
-    /// <see cref="EncodeNumericValue"/> for 8-byte big-endian sortable encoding.</summary>
+    
     private static void WriteCompoundFieldEncoding(Span<byte> dest, CompoundFieldEncoding encoding, QueryExecution exec)
     {
         if (encoding.Packed.ValueType == PackedParam.TypeString)
@@ -1870,20 +1831,7 @@ internal static partial class QueryPlanBuilder
         }
         EncodeNumericValue(dest, encoding.Packed.ValueType, encoding.SourceSlot, exec);
     }
-
-
-    /// <summary>Decide whether a clause type can be expressed as a single
-    /// <see cref="PostingSource"/>. Boosted clauses go through the IQueryMatch path
-    /// even when they're term-shaped, so scoring still works.</summary>
-    internal static bool IsTermSourceEligibleClause(ClauseInfo clause)
-    {
-        return clause is { HasBoost: false, ClauseType: ClauseType.Equals or ClauseType.NotEquals };
-    }
-
-    /// <summary>TreeScan-eligible: multi-term clauses that have a direct ITermsProvider
-    /// (StartsWith, EndsWith, Exists, Regex, ranges). Boosted clauses go through QueryMatch
-    /// for scoring. Contains is excluded because its tree walk pattern doesn't benefit
-    /// from the direct dispatch (it walks the full tree regardless).</summary>
+    
     internal static bool IsTreeScanEligibleClause(ClauseInfo clause)
     {
         if (clause.HasBoost)
@@ -1910,13 +1858,9 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause at plan-build time.
-    /// Equals / NotEquals (unboosted) → <c>PostingList</c> (native posting-list).
-    /// Multi-term (unboosted) → <c>TreeScan</c> (direct ITermsProvider, no IQueryMatch wrapper).
-    /// All other clause types → <c>QueryMatch</c> (IQueryMatch interface dispatch).</summary>
     private static MatchDispatch GetDispatch(ClauseInfo clause)
     {
-        if (IsTermSourceEligibleClause(clause))
+        if (clause is { HasBoost: false, ClauseType: ClauseType.Equals or ClauseType.NotEquals })
             return MatchDispatch.PostingList;
 
         if (IsTreeScanEligibleClause(clause))
@@ -1925,14 +1869,7 @@ internal static partial class QueryPlanBuilder
         return MatchDispatch.QueryMatch;
     }
 
-
-    internal static string FormatValueFromPlan(PackedParam packed, QueryExecution exec) => FormatValueFromPlanInternal(packed, exec, packed.Param1);
-
-    /// <summary>Format the second value (BETWEEN high bound) from the exec's typed arrays.</summary>
-    internal static string FormatValue2FromPlan(PackedParam packed, QueryExecution exec) => FormatValueFromPlanInternal(packed, exec, packed.Param2);
-
-
-    private static string FormatValueFromPlanInternal(PackedParam packed, QueryExecution exec, int idx)
+    private static string FormatValueFromPlan(PackedParam packed, QueryExecution exec, int idx)
     {
         if (idx is PackedParam.NoParamValue)
             return null;

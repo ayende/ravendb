@@ -7,32 +7,11 @@ using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Matches;
 
-/// <summary>
-/// Lazily ORs two child matches into a RoaringBitmap on the first Fill()/Count call,
-/// then iterates the bitmap for subsequent fills. Mirrors <see cref="TermsProviderMatch"/>:
-/// no work is done at construction time, so the cost lands in query execution rather than
-/// plan-build, and <see cref="Inspect"/> reports the real Or structure (with both children)
-/// instead of an opaque already-materialized bitmap.
-///
-/// Used for sentinel-rewritten BETWEEN clauses such as "x BETWEEN low AND 'NULL'", which
-/// rewrite to "x >= low" but must also include null-valued documents for Lucene parity.
-/// </summary>
-public sealed class LazyOrMatch : IBitmapQueryMatch, IDisposable
+public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, IQueryMatch right) : IBitmapQueryMatch, IDisposable
 {
-    private readonly IQueryMatch _left;
-    private readonly IQueryMatch _right;
-    private RoaringBitmap _bitmap;
+    private RoaringBitmap _bitmap = new(allocator);
     private RoaringBitmapIterator _iterator;
     private bool _initialized;
-
-    public LazyOrMatch(ByteStringContext allocator, IQueryMatch left, IQueryMatch right)
-    {
-        _left = left;
-        _right = right;
-        _bitmap = new RoaringBitmap(allocator);
-        _iterator = default;
-        _initialized = false;
-    }
 
     public bool IsBoosting => false;
 
@@ -93,16 +72,7 @@ public sealed class LazyOrMatch : IBitmapQueryMatch, IDisposable
     public int AndWith(Span<long> buffer, int matches)
     {
         Initialize();
-        // The buffer may arrive in sort-field order (e.g. from SortedIndexReader), not in
-        // entry-ID order, so we cannot use a sorted intersection here — test membership
-        // against the materialized bitmap one entry at a time, mirroring TermsProviderMatch.
-        int kept = 0;
-        for (int i = 0; i < matches; i++)
-        {
-            if (_bitmap.Contains(buffer[i]))
-                buffer[kept++] = buffer[i];
-        }
-        return kept;
+        return _bitmap.AndWith(buffer, matches);
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
@@ -120,7 +90,7 @@ public sealed class LazyOrMatch : IBitmapQueryMatch, IDisposable
     public QueryInspectionNode Inspect()
     {
         return new QueryInspectionNode($"{nameof(LazyOrMatch)} [Or]",
-            children: new List<QueryInspectionNode> { _left.Inspect(), _right.Inspect() },
+            children: [left.Inspect(), right.Inspect()],
             parameters: new Dictionary<string, string>
             {
                 { Constants.QueryInspectionNode.IsBoosting, IsBoosting.ToString() },
@@ -134,8 +104,8 @@ public sealed class LazyOrMatch : IBitmapQueryMatch, IDisposable
         if (_initialized)
             return;
         _bitmap.Clear();
-        QueryPrimitives.OrWithMatch(_left, ref _bitmap);
-        QueryPrimitives.OrWithMatch(_right, ref _bitmap);
+        QueryPrimitives.OrWithMatch(left, ref _bitmap);
+        QueryPrimitives.OrWithMatch(right, ref _bitmap);
         _bitmap.PrepareForReading();
         _iterator = _bitmap.GetIterator();
         _initialized = true;
@@ -146,7 +116,7 @@ public sealed class LazyOrMatch : IBitmapQueryMatch, IDisposable
         if (_initialized)
             _iterator.Dispose();
         _bitmap.Dispose();
-        (_left as IDisposable)?.Dispose();
-        (_right as IDisposable)?.Dispose();
+        (left as IDisposable)?.Dispose();
+        (right as IDisposable)?.Dispose();
     }
 }
