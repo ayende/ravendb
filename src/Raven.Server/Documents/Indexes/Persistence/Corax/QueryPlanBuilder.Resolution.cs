@@ -857,33 +857,44 @@ internal static partial class QueryPlanBuilder
             exec.PopulateScanParams = () => ScanParamExtractor.Extract(exec, indexSearcher, walkerCtx);
         }
 
-        return FinalQueryMatch(compiledMatch);
-
-        IQueryMatch FinalQueryMatch(IQueryMatch result)
+        // Spatial filters were already resolved into resolvedMatches during ResolveAllSlots; pull them
+        // out by slot index and let ApplyPostFilters wrap the compiled match in them (plus any vectors).
+        IQueryMatch[] spatialMatches = null;
+        if (exec.SpatialFilters is { Length: > 0 })
         {
-            // Wrap the result in spatial & vector matches
-            
-            if (exec.SpatialFilters is { Length: > 0 })
-            {
-                var spatialFilters = new IQueryMatch[exec.SpatialFilters.Length];
-                for (int sf = 0; sf < exec.SpatialFilters.Length; sf++)
-                {
-                    spatialFilters[sf] = resolvedMatches[exec.SpatialFilters[sf].MatchIndex];
-                }
-
-                result = new PostFilterMatch(result, spatialFilters, wantTimings);
-            }
-
-            if (exec.VectorSelects is { Length: > 0 })
-            {
-                foreach (var item in ResolveVectorItems(exec, builderParameters))
-                {
-                    result = item.Materialize(result);
-                }
-            }
-
-            return result;
+            spatialMatches = new IQueryMatch[exec.SpatialFilters.Length];
+            for (int sf = 0; sf < exec.SpatialFilters.Length; sf++)
+                spatialMatches[sf] = resolvedMatches[exec.SpatialFilters[sf].MatchIndex];
         }
+
+        return ApplyPostFilters(compiledMatch, spatialMatches, exec, builderParameters, wantTimings);
+    }
+
+    /// <summary>Wrap a (possibly null) source match in the query's spatial PostFilterMatch and then its
+    /// vector selects. When <paramref name="source"/> is null — the no-WHERE bypass in
+    /// <see cref="InstantiateAllEntriesPostFilter"/> — the first spatial filter becomes the driving match
+    /// rather than scanning AllEntries; otherwise all spatial filters post-filter the source.</summary>
+    private static IQueryMatch ApplyPostFilters(
+        IQueryMatch source, IQueryMatch[] spatialMatches,
+        QueryExecution exec, QueryBuilderParameters builderParameters, bool wantTimings)
+    {
+        IQueryMatch result = source;
+
+        if (spatialMatches is { Length: > 0 })
+        {
+            result = result is null
+                ? new PostFilterMatch(spatialMatches[0],
+                    spatialMatches.Length is 1 ? Array.Empty<IQueryMatch>() : spatialMatches[1..], wantTimings)
+                : new PostFilterMatch(result, spatialMatches, wantTimings);
+        }
+
+        if (exec.VectorSelects is { Length: > 0 })
+        {
+            foreach (var item in ResolveVectorItems(exec, builderParameters))
+                result = item.Materialize(result);
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -891,31 +902,17 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     private static IQueryMatch InstantiateAllEntriesPostFilter(QueryExecution exec, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx, bool wantTimings)
     {
-        IQueryMatch result = null;
-
-        // Spatial: resolve each spatial clause directly, then chain via PostFilterMatch.
+        // No real WHERE clause, so the spatial clauses aren't in resolvedMatches — resolve them directly.
+        // Passing source: null tells ApplyPostFilters to use the first spatial filter as the driving match.
+        IQueryMatch[] spatialMatches = null;
         if (exec.SpatialFilters is { Length: > 0 })
         {
-            var primary = ResolveClause(exec.SpatialFilters[0].Exec, exec, walkerCtx);
-            var rest = exec.SpatialFilters.Length is 1 ? Array.Empty<IQueryMatch>() : new IQueryMatch[exec.SpatialFilters.Length - 1];
-            for (int i = 1; i < exec.SpatialFilters.Length; i++)
-            {
-                rest[i - 1] = ResolveClause(exec.SpatialFilters[i].Exec, exec, walkerCtx);
-            }
-
-            result = new PostFilterMatch(primary, rest, wantTimings);
+            spatialMatches = new IQueryMatch[exec.SpatialFilters.Length];
+            for (int i = 0; i < exec.SpatialFilters.Length; i++)
+                spatialMatches[i] = ResolveClause(exec.SpatialFilters[i].Exec, exec, walkerCtx);
         }
 
-        // Vector: each vector wraps the (possibly null) filter so far.
-        if (exec.VectorSelects is { Length: > 0 })
-        {
-            foreach (var item in ResolveVectorItems(exec, builderParameters))
-            {
-                result = item.Materialize(result);
-            }
-        }
-
-        return result;
+        return ApplyPostFilters(source: null, spatialMatches, exec, builderParameters, wantTimings);
     }
 
 
