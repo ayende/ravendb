@@ -839,7 +839,7 @@ internal static partial class QueryPlanBuilder
         if (exec is { IsAllEntries: true, HasSpatialOrVector: true })
             return InstantiateAllEntriesPostFilter(exec, builderParameters, walkerCtx, wantTimings);
 
-        ResolveAllSlots(exec, walkerCtx, planParams.HasBoost, out var resolvedMatches, out var leaves);
+        var (resolvedMatches, leaves) = ResolveAllSlots(exec, walkerCtx, planParams.HasBoost);
 
         if (highlightingTerms != null)
             PopulateHighlightingTerms(exec, highlightingTerms, planParams.Metadata);
@@ -1081,7 +1081,7 @@ internal static partial class QueryPlanBuilder
             directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
             directScan.SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)";
             directScan.Direction = context.OrderByFields[0].Ascending ? "Forward" : "Backward";
-            directScan.ResidualDescription = DescribeResiduals(context.Exec.Plan.CompoundFieldResiduals);
+            directScan.ResidualDescription = context.Exec.Plan.CompoundFieldResiduals == null ? null : string.Join(", ", Array.ConvertAll(context.Exec.Plan.CompoundFieldResiduals, p => $"{p.FieldName} {p.CompareOp}"));
             directScan.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
         }
     }
@@ -1138,19 +1138,15 @@ internal static partial class QueryPlanBuilder
 
         var (lowEnc, highEnc, lowSuffixSize, highSuffixSize) = field2Exec.Clause.ClauseType switch
         {
-            // e.g. WHERE field1 = X AND field2 > Y (or >=) ORDER BY field1, field2
-            ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual => (encLow, null, encLow.Size, encLow.Size),
-
-            // e.g. WHERE field1 = X AND field2 < Y (or <=) ORDER BY field1, field2
-            ClauseType.LessThan or ClauseType.LessThanOrEqual =>  (null, encLow, encLow.Size, encLow.Size),
-
             // e.g. WHERE field1 = X AND field2 BETWEEN Y AND Z ORDER BY field1, field2
             ClauseType.Between => (encLow, encHigh, encLow.Size, encHigh.Size),
-
-            // Fall back to a prefix-only scan
-            _ => (null, null, int.MaxValue, int.MaxValue)
+            // e.g. WHERE field1 = X AND field2 > Y (or >=) ORDER BY field1, field2
+            ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual => (encLow, default, encLow.Size, encLow.Size),
+            // e.g. WHERE field1 = X AND field2 < Y (or <=) ORDER BY field1, field2
+            ClauseType.LessThan or ClauseType.LessThanOrEqual =>  (default, encLow, encLow.Size, encLow.Size),
+            // Fall back to a prefix-only scan, will fail the length check
+            _ => (default(CompoundFieldEncoding), default(CompoundFieldEncoding), Constants.Terms.MaxLength, Constants.Terms.MaxLength)
         };
-
 
         if (analyzedPrefix.Size + lowSuffixSize + 1 > Constants.Terms.MaxLength ||
             analyzedPrefix.Size + highSuffixSize + 1 > Constants.Terms.MaxLength)
@@ -1159,42 +1155,29 @@ internal static partial class QueryPlanBuilder
         lowSlice = WriteCompositeRangeKey(ref ctx, analyzedPrefix, lowSuffixSize, lowEnc, openFill: 0x00);
         highSlice = WriteCompositeRangeKey(ref ctx, analyzedPrefix, highSuffixSize, highEnc, openFill: 0xFF);
         return true;
+        
+        static Slice WriteCompositeRangeKey(ref InstCtx ctx, Slice analyzedPrefix, int suffixSize,
+            CompoundFieldEncoding? suffixEncoding, byte openFill)
+        {
+            int len = analyzedPrefix.Size + suffixSize + 1;
+            ctx.PlanParams.Allocator.Allocate(len, out ByteString buf);
+            Span<byte> span = buf.ToSpan();
+            analyzedPrefix.CopyTo(span);
+
+            Span<byte> suffix = span.Slice(analyzedPrefix.Size, suffixSize);
+            if (suffixEncoding is { } enc)
+                WriteCompoundFieldEncoding(suffix, enc, ctx.Exec);
+            else
+                suffix.Fill(openFill);
+
+            span[len - 1] = (byte)analyzedPrefix.Size;
+            return new Slice(buf);
+        }
     }
-
-    /// <summary>Writes one composite range key into a freshly allocated buffer in the
-    /// <c>[field1 prefix][field2 suffix][1 trailing byte = prefix length]</c> layout. When
-    /// <paramref name="suffixEncoding"/> is non-null its bytes fill the field2 suffix; otherwise
-    /// the suffix is filled with <paramref name="openFill"/> (0x00 for an open lower bound, 0xFF
-    /// for an open upper bound).</summary>
-    private static Slice WriteCompositeRangeKey(ref InstCtx ctx, Slice analyzedPrefix, int suffixSize,
-        CompoundFieldEncoding? suffixEncoding, byte openFill)
-    {
-        int len = analyzedPrefix.Size + suffixSize + 1;
-        ctx.PlanParams.Allocator.Allocate(len, out ByteString buf);
-        Span<byte> span = buf.ToSpan();
-        analyzedPrefix.AsReadOnlySpan().CopyTo(span);
-
-        Span<byte> suffix = span.Slice(analyzedPrefix.Size, suffixSize);
-        if (suffixEncoding is { } enc)
-            WriteCompoundFieldEncoding(suffix, enc, ctx.Exec);
-        else
-            suffix.Fill(openFill);
-
-        span[len - 1] = (byte)analyzedPrefix.Size;
-        return new Slice(buf);
-    }
-
-    /// <summary>Structural eligibility for serving an ORDER BY via a direct tree scan
-    /// instead of the bitmap pipeline (the range/equals query already walks the tree in
-    /// sort order, so no SortingMatch wrapper is needed). This checks only template-stable
-    /// shape: ORDER BY arity, tie-break field type, sort-driving clause presence, full-scan
-    /// eligibility, and residual scannability. The cost gate (cardinality-vs-bitmap, which
-    /// is parameter-dependent) is deliberately NOT here — it runs fresh every execution in
-    /// <see cref="DirectScanCostEffective"/> so a cached <see cref="ExecutionStrategy.DirectScan"/>
-    /// candidate cannot go stale across bound-parameter values (RavenDB #4852).</summary>
+    
     private static bool TryCreateSimpleFieldDirectScan(ref InstCtx ctx, out string rejectReason)
     {
-        if (ctx.OrderByFields == null || ctx.OrderByFields.Length == 0)
+        if (ctx.OrderByFields is not { Length: not 0 })
         {
             rejectReason = "no ORDER BY fields";
             return false;
@@ -1212,14 +1195,13 @@ internal static partial class QueryPlanBuilder
             var tieBreakType = ctx.OrderByFields[1].FieldType;
             if (tieBreakType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating or MatchCompareFieldType.Sequence))
             {
-                rejectReason = "tie-break field type is not numeric (must be Integer, Floating, or Sequence)";
+                rejectReason = "tie-break field type isn't numeric or string";
                 return false;
             }
         }
 
-        var sortFieldType = ctx.OrderByFields[0].FieldType;
         var execs = ctx.Exec.Executions;
-        bool isFullScan = execs == null || execs.Count == 0;
+        bool isFullScan = execs is not { Count: not 0 };
 
         if (isFullScan)
         {
@@ -1233,19 +1215,15 @@ internal static partial class QueryPlanBuilder
                 rejectReason = "sort field may have missing entries";
                 return false;
             }
-            if (sortFieldType is not (MatchCompareFieldType.Sequence or MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
+            if (ctx.OrderByFields[0].FieldType is not (MatchCompareFieldType.Sequence or MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
             {
-                rejectReason = "full-scan sort field type is not Sequence/Integer/Floating";
+                rejectReason = "full-scan sort field type is not numeric or string";
                 return false;
             }
             rejectReason = null;
             return true;
         }
 
-        // SortDrivingClauseIndex was pre-identified at template time (excluding clauses
-        // with WHEN conditions — see ComputeTemplateOptimizations) and remapped to its
-        // post-sort index during Build. A value of -1 here means either no candidate
-        // exists, or WHEN eliminated the candidate at runtime; both fall back to bitmap.
         int drivingIdx = ctx.Exec.Plan.SortDrivingClauseIndex;
         if (drivingIdx < 0)
         {
@@ -1253,10 +1231,6 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
-        // Boost is ruled out at template time (see ComputeOptFlags); here we only
-        // confirm every non-driving residual is scannable. DirectScanResiduals was filtered at
-        // cache-miss against the same {drivingIdx} exclusion, so its Unscannable flag is exactly the
-        // result of re-checking every non-driving clause here.
         if (ctx.Exec.Plan.DirectScanResiduals is null)
         {
             rejectReason = "non-scannable residual clause";
@@ -1267,17 +1241,14 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    private static IQueryMatch ConstructDirectScan(
-        ref InstCtx ctx, ResolutionContext walkerCtx,
-        int drivingIdx, bool isFullScan, bool hasTieBreak,
-        string reasonForInspection)
+    private static IQueryMatch ConstructDirectScan(ref InstCtx ctx, ResolutionContext walkerCtx,
+        int drivingIdx, bool isFullScan, bool hasTieBreak, string reasonForInspection)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         string sortFieldName = ctx.WantTimings ? ctx.OrderByFields[0].Field.FieldName.ToString() : null;
         bool forward = ctx.OrderByFields[0].Ascending;
-        
-        var residualSet = ctx.Exec.Plan.DirectScanResiduals;
-        if (residualSet is null)
+
+        if (ctx.Exec.Plan.DirectScanResiduals is null)
             return null;
 
         var (drivingMatchProvider, drivingClauseDescription) = isFullScan ? 
@@ -1287,142 +1258,86 @@ internal static partial class QueryPlanBuilder
         if (drivingMatchProvider is not TermsProviderMatch tpm)
             return null; // can happen if we have no entries for this field
 
-        IQueryMatch drivingMatch = BuildSortedDrivingMatch(ref ctx, tpm.Provider, tpm.Llt, hasTieBreak, forward);
+        bool nullFirst = ResolveNullFirst(ctx.OrderByFields[0], ctx.BuilderParams.Index.Configuration.NullsSortMode, forward);
+        IQueryMatch drivingMatch = hasTieBreak
+            ? BuildSortedDrivingWithTieBreakMatch(ctx, tpm.Provider, tpm.Llt, ctx.BuilderParams.Index.Configuration.NullsSortMode, indexSearcher, nullFirst)
+            : new SortedDrivingMatch(tpm.Provider, tpm.Llt, ctx.PlanParams.Allocator, indexSearcher, ctx.OrderByFields[0].Field, nullFirst);
+
         ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx);
-        var ds = BuildDirectScan(indexSearcher, drivingMatch, ctx.Exec, ctx.Plan.CompiledEntryPredicate, residualSet);
+        DirectScanMatchBase ds = ctx.Exec.Plan.DirectScanResiduals is null or { Length: 0 }
+            ? new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: Constants.IndexSearcher.TakeAll)
+            : new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: Constants.IndexSearcher.TakeAll, precompiledDelegate: ctx.Plan.CompiledEntryPredicate);
 
         if (ctx.WantTimings)
         {
-            PopulateDirectScanInspection(ds, sortFieldName, drivingClauseDescription, forward, residualSet,
+            PopulateDirectScanInspection(ds, sortFieldName, drivingClauseDescription, forward, ctx.Exec.Plan.DirectScanResiduals,
                 isFullScan ? "full index-only scan (no WHERE clause)" : reasonForInspection);
         }
         return ds;
-    }
-
-    private static (IQueryMatch, string) ResolveDrivingProvider(ref InstCtx ctx, ResolutionContext walkerCtx, int drivingIdx, bool forward)
-    {
-        var drivingExec = ctx.Exec.Executions[drivingIdx];
-        var match = drivingExec.ClauseType == ClauseType.Equals
-            ? ResolveEqualsClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx)
-            : ResolveRangeClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx);
         
-        return (match, ctx.WantTimings ? $"{drivingExec.Clause.FieldName} {drivingExec.ClauseType}" : null);
-    }
-
-    private static (IQueryMatch, string) ResolveFullScanDrivingProvider(ref InstCtx ctx, bool forward)
-    {
-        var indexSearcher = ctx.PlanParams.IndexSearcher;
-        var fieldMeta = ctx.OrderByFields[0].Field;
-        var sortFieldType = ctx.OrderByFields[0].FieldType;
-        var match = sortFieldType switch
+        static (IQueryMatch, string) ResolveDrivingProvider(ref InstCtx ctx, ResolutionContext walkerCtx, int drivingIdx, bool forward)
         {
-            MatchCompareFieldType.Integer => indexSearcher.BetweenQuery(fieldMeta, long.MinValue, long.MaxValue, forward: forward),
-            MatchCompareFieldType.Floating => indexSearcher.BetweenQuery(fieldMeta, double.MinValue, double.MaxValue, forward: forward),
-            _ => indexSearcher.ExistsQuery(fieldMeta, forward: forward)
-        };
-        return (match, ctx.WantTimings ? $"{fieldMeta.FieldName} [all]" : null);
+            var drivingExec = ctx.Exec.Executions[drivingIdx];
+            var match = drivingExec.ClauseType == ClauseType.Equals
+                ? ResolveEqualsClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx)
+                : ResolveRangeClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx);
+        
+            return (match, ctx.WantTimings ? $"{drivingExec.Clause.FieldName} {drivingExec.ClauseType}" : null);
+        }
+
+        static (IQueryMatch, string) ResolveFullScanDrivingProvider(ref InstCtx ctx, bool forward)
+        {
+            var indexSearcher = ctx.PlanParams.IndexSearcher;
+            var fieldMeta = ctx.OrderByFields[0].Field;
+            var sortFieldType = ctx.OrderByFields[0].FieldType;
+            var match = sortFieldType switch
+            {
+                MatchCompareFieldType.Integer => indexSearcher.BetweenQuery(fieldMeta, long.MinValue, long.MaxValue, forward: forward),
+                MatchCompareFieldType.Floating => indexSearcher.BetweenQuery(fieldMeta, double.MinValue, double.MaxValue, forward: forward),
+                _ => indexSearcher.ExistsQuery(fieldMeta, forward: forward)
+            };
+            return (match, ctx.WantTimings ? $"{fieldMeta.FieldName} [all]" : null);
+        }
+        
+        static void PopulateDirectScanInspection(DirectScanMatchBase ds, string sortFieldName, string drivingClauseDescription, bool forward,
+            ScanPredicateInfo[] residualArray, string reason)
+        {
+            ds.DrivingTreeName = sortFieldName;
+            ds.DrivingClause = drivingClauseDescription;
+            ds.Direction = forward ? "Forward" : "Backward";
+            ds.ResidualDescription = residualArray == null ? null : string.Join(", ", Array.ConvertAll(residualArray, p => $"{p.FieldName} {p.CompareOp}"));
+            ds.Reason = reason;
+        }
     }
 
-    /// <summary>Resolve "nulls first vs last" for a single ORDER BY field given its NullsSortMode
-    /// (per-field override or index default) and the scan direction.</summary>
     private static bool ResolveNullFirst(in OrderMetadata orderByField, NullsSortMode indexDefault, bool forward)
     {
         bool nullIsSmallest = (orderByField.NullsSortMode ?? indexDefault) == NullsSortMode.NullsSmallest;
-        return forward ? nullIsSmallest : !nullIsSmallest;
+        return forward ? nullIsSmallest : nullIsSmallest is false;
     }
 
-    /// <summary>Build the SortedDrivingMatch (or its tie-break variant) that walks the term tree
-    /// in sort order, draining the per-field null list itself.</summary>
-    private static IQueryMatch BuildSortedDrivingMatch(
-        ref InstCtx ctx, ITermsProvider provider, LowLevelTransaction llt, bool hasTieBreak, bool forward)
+    private static IQueryMatch BuildSortedDrivingWithTieBreakMatch(InstCtx ctx, ITermsProvider provider, LowLevelTransaction llt, NullsSortMode indexDefaultNullsSortMode,
+        IndexSearcher indexSearcher, bool nullFirst)
     {
-        var indexSearcher = ctx.PlanParams.IndexSearcher;
-        var indexDefaultNullsSortMode = ctx.BuilderParams.Index.Configuration.NullsSortMode;
-        bool nullFirst = ResolveNullFirst(ctx.OrderByFields[0], indexDefaultNullsSortMode, forward);
-
-        if (hasTieBreak)
-        {
-            // Secondary field uses its own NullsSortMode — distinct from the primary field's.
-            // ResolveNullFirst's "forward" arg is the primary scan direction; the secondary's nullIsSmallest
-            // is passed directly through (the tie-break match interprets it relative to its own descending flag).
-            bool secondaryNullIsSmallest = (ctx.OrderByFields[1].NullsSortMode ?? indexDefaultNullsSortMode) == NullsSortMode.NullsSmallest;
-            int take = ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll;
-            return new SortedDrivingWithTieBreakMatch(
-                provider, llt, ctx.PlanParams.Allocator, indexSearcher,
-                ctx.OrderByFields[0].Field, ctx.OrderByFields[1].Field,
-                ctx.OrderByFields[1].FieldType, secondaryDescending: !ctx.OrderByFields[1].Ascending,
-                nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest,
-                take: take);
-        }
-
-        return new SortedDrivingMatch(provider, llt, ctx.PlanParams.Allocator,
-            indexSearcher, ctx.OrderByFields[0].Field, nullFirst);
+        bool secondaryNullIsSmallest = (ctx.OrderByFields[1].NullsSortMode ?? indexDefaultNullsSortMode) == NullsSortMode.NullsSmallest;
+        int take = ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll;
+        return new SortedDrivingWithTieBreakMatch(
+            provider, llt, ctx.PlanParams.Allocator, indexSearcher,
+            ctx.OrderByFields[0].Field, ctx.OrderByFields[1].Field,
+            ctx.OrderByFields[1].FieldType, secondaryDescending: !ctx.OrderByFields[1].Ascending,
+            nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest,
+            take: take);
     }
 
-    /// <summary>Populate the free-form inspection strings on a constructed DirectScan match. The
-    /// match's Fill/AndWith path never reads these — they exist solely for query introspection.</summary>
-    private static void PopulateDirectScanInspection(
-        DirectScanMatchBase ds, string sortFieldName, string drivingClauseDescription, bool forward,
-        ScanPredicateInfo[] residualArray, string reason)
+    private static (IQueryMatch[], LeafResolveInfo[]) ResolveAllSlots(QueryExecution exec, ResolutionContext walkerCtx, bool planHasBoost)
     {
-        ds.DrivingTreeName = sortFieldName;
-        ds.DrivingClause = drivingClauseDescription;
-        ds.Direction = forward ? "Forward" : "Backward";
-        ds.ResidualDescription = DescribeResiduals(residualArray);
-        ds.Reason = reason;
-    }
+        Debug.Assert((exec.IsAllEntries && exec.HasSpatialOrVector) is false);
 
-    /// <summary>Format the residual predicate array as a "field op, field op" inspection string.
-    /// Returns null for a null array. Inspection-only — read solely on `include timings()` / explain.</summary>
-    private static string DescribeResiduals(ScanPredicateInfo[] residualArray)
-    {
-        if (residualArray == null)
-            return null;
-
-        return string.Join(", ", Array.ConvertAll(residualArray, p => $"{p.FieldName} {p.CompareOp}"));
-    }
-
-    /// <summary>Create the appropriate DirectScan match based on whether residual predicates exist.</summary>
-    private static DirectScanMatchBase BuildDirectScan(IndexSearcher searcher, IQueryMatch drivingMatch,
-        QueryExecution exec,ResidualScanIlEmitter.ResidualScanPredicate residualDelegate, ScanPredicateInfo[] residualArray)
-    {
-        return residualArray is null or { Length: 0 }
-            ? new DirectScanSimpleMatch(searcher, drivingMatch, take: -1)
-            : new DirectScanFilteredMatch(
-                searcher, drivingMatch, exec,
-                take: -1, precompiledDelegate: residualDelegate);
-    }
-
-    /// <summary>Single leaf walk that produces the two parallel slot arrays at once:
-    /// <paramref name="matches"/> (eagerly-resolved IQueryMatch slots — spatial/vector/search/
-    /// boosted) and <paramref name="leaves"/> (value-independent resolve metadata for
-    /// PostingSource / TreeScan slots, materialized lazily inside the IL pipeline). Each leaf
-    /// derives its effective dispatch inline (see <see cref="ResolveLeafIntoAll"/>). Slot layout
-    /// (per-leaf, IN/AllIn → InTermCount+1, groups expanded) is identical to the IL emitter's
-    /// leaf walk and <see cref="CardinalityArrayBuilder.Build"/>, keeping IL slot indices
-    /// end-to-end consistent. The arrays stay length-equal because every add appends to both.</summary>
-    private static void ResolveAllSlots(QueryExecution exec, ResolutionContext walkerCtx, bool planHasBoost,
-        out IQueryMatch[] matches, out LeafResolveInfo[] leaves)
-    {
-        Debug.Assert(!(exec.IsAllEntries && exec.HasSpatialOrVector),
-            "ResolveAllSlots reached with IsAllEntries && HasSpatialOrVector — InstantiateAllEntriesPostFilter bypass should have handled this.");
-
-        // IsAllEntries plans never emit leaf ops — match[0] is AllEntries (served from
-        // ResolvedMatches via FillFromMatch), post-filter slots are spatial/vector. The
-        // parallel Leaves slot is PreResolved and never consumed.
-        if (exec.IsAllEntries)
-        {
-            matches = [walkerCtx.IndexSearcher.AllEntries()];
-            leaves = [new LeafResolveInfo { Kind = LeafResolveKind.PreResolved }];
-            return;
-        }
+        if (exec.IsAllEntries) // nothing to do here
+            return ( [walkerCtx.IndexSearcher.AllEntries()], [new LeafResolveInfo { Kind = LeafResolveKind.PreResolved }]);
 
         if (exec.Executions is not { Count: > 0 })
-        {
-            matches = [];
-            leaves = [];
-            return;
-        }
+            return ([], []);
 
         var matchList = new List<IQueryMatch>();
         var leafList = new List<LeafResolveInfo>();
@@ -1431,23 +1346,14 @@ internal static partial class QueryPlanBuilder
             ResolveLeafIntoAll(walkerCtx, clauseExec, exec, planHasBoost, matchList, leafList);
         }
 
-        matches = matchList.ToArray();
-        leaves = leafList.ToArray();
+        return (matchList.ToArray(), leafList.ToArray());
     }
 
-    /// <summary>Recursive leaf walker for <see cref="ResolveAllSlots"/>. Groups expand to
-    /// their leaves. The per-leaf dispatch is derived inline (mirroring the emitter): a boosted
-    /// plan forces every leaf through <see cref="MatchDispatch.QueryMatch"/> (so the matching
-    /// <c>*FromMatch</c> ops read <see cref="CompiledQueryMatch.ResolvedMatches"/>); IN/AllIn are
-    /// always <see cref="MatchDispatch.PostingList"/>; every other clause uses
-    /// <see cref="GetDispatch"/>. Match-dispatch slots are resolved eagerly into
-    /// <paramref name="matches"/>; PostingList / TreeScan slots store value-independent metadata
-    /// in <paramref name="leaves"/> for lazy resolution inside the IL pipeline. Boost on a negated
-    /// leaf is silently ignored — matches Lucene, where boosting a negation has no effect.</summary>
     private static void ResolveLeafIntoAll(ResolutionContext walkerCtx,
         ClauseExecution clauseExec, QueryExecution root, bool planHasBoost,
         List<IQueryMatch> matches, List<LeafResolveInfo> leaves)
     {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
         switch (clauseExec.ClauseType)
         {
             case ClauseType.OrGroup or ClauseType.AndGroup:
@@ -1455,75 +1361,101 @@ internal static partial class QueryPlanBuilder
                 {
                     ResolveLeafIntoAll(walkerCtx, it, root, planHasBoost, matches, leaves);
                 }
-
                 break;
             case ClauseType.AllIn or ClauseType.In:
             {
                 MatchDispatch dispatch = planHasBoost ? MatchDispatch.QueryMatch : MatchDispatch.PostingList;
                 for (int i = 0; i < clauseExec.InTermCount; i++)
                 {
-                    AddInTermSlot(dispatch, clauseExec, i, root, walkerCtx, matches, leaves);
+                    AddInTermSlot(dispatch,  i);
                 }
-
-                // Null-term slot is always allocated; dispatch decides how it resolves.
-                AddNullTermSlot(dispatch, clauseExec, walkerCtx, matches, leaves);
+                AddNullTermSlot(dispatch); // Null-term slot is always allocated; dispatch decides how it resolves.
                 break;
             }
             default:
             {
-                MatchDispatch dispatch = planHasBoost ? MatchDispatch.QueryMatch : GetDispatch(clauseExec.Clause);
-                AddDefaultSlot(dispatch, clauseExec, root, walkerCtx, matches, leaves);
+                AddDefaultSlot(planHasBoost ? MatchDispatch.QueryMatch : GetDispatch(clauseExec.Clause));
                 break;
             }
         }
-    }
-
-    /// <summary>Append one IN/AllIn term slot. Match dispatch resolves the term query eagerly;
-    /// PostingList dispatch stores the per-term packed parameter + field metadata for lazy
-    /// resolution. The slot count stays in lockstep with the IL emitter's leaf walk.</summary>
-    private static void AddInTermSlot(MatchDispatch dispatch, ClauseExecution clauseExec, int termIndex,
-        QueryExecution root, ResolutionContext walkerCtx,
-        List<IQueryMatch> matches, List<LeafResolveInfo> leaves)
-    {
-        if (dispatch == MatchDispatch.QueryMatch)
+        
+        void AddInTermSlot(MatchDispatch dispatch, int termIndex)
         {
-            matches.Add(ResolveInTerm(clauseExec, termIndex, root, walkerCtx));
-            leaves.Add(new LeafResolveInfo { Kind = LeafResolveKind.PreResolved });
-            return;
+            switch (dispatch)
+            {
+                case MatchDispatch.QueryMatch:
+                    matches.Add(ResolveInTerm(clauseExec, termIndex, root, walkerCtx));
+                    leaves.Add(new LeafResolveInfo { Kind = LeafResolveKind.PreResolved });
+                    return;
+                default: 
+                    matches.Add(null);
+                    leaves.Add(new LeafResolveInfo
+                    {
+                        Kind = LeafResolveKind.TermPosting,
+                        ClauseType = clauseExec.ClauseType,
+                        Packed = clauseExec.PackedParamValue.WithTermOffset(termIndex),
+                        FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
+                    });
+                    break;
+            }
         }
-
-        // PostingList — IN/AllIn have no tree-scan form.
-        matches.Add(null);
-        leaves.Add(new LeafResolveInfo
+        
+        void AddNullTermSlot(MatchDispatch dispatch)
         {
-            Kind = LeafResolveKind.TermPosting,
-            ClauseType = clauseExec.ClauseType,
-            Packed = clauseExec.PackedParamValue.WithTermOffset(termIndex),
-            FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
-        });
-    }
-
-    /// <summary>Append the always-allocated null-term slot. Match dispatch emits a real match
-    /// (TermQuery(null) or CreateEmpty) so the OR/AND step is a no-op when there is no null term;
-    /// PostingList dispatch stores a null/all/empty resolve descriptor for lazy resolution.</summary>
-    private static void AddNullTermSlot(MatchDispatch dispatch, ClauseExecution clauseExec,
-        ResolutionContext walkerCtx,
-        List<IQueryMatch> matches, List<LeafResolveInfo> leaves)
-    {
-        if (dispatch == MatchDispatch.QueryMatch)
-        {
-            var indexSearcher = walkerCtx.IndexSearcher;
-            FieldMetadata nullMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx);
-            matches.Add(clauseExec.HasNullTerm
-                ? indexSearcher.TermQuery(nullMeta, null)
-                : TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator));
-            leaves.Add(new LeafResolveInfo { Kind = LeafResolveKind.PreResolved });
-            return;
+            switch (dispatch)
+            {
+                case MatchDispatch.QueryMatch:
+                    var indexSearcher = walkerCtx.IndexSearcher;
+                    FieldMetadata nullMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx);
+                    matches.Add(clauseExec.HasNullTerm
+                        ? indexSearcher.TermQuery(nullMeta, null)
+                        : TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator));
+                    leaves.Add(new LeafResolveInfo { Kind = LeafResolveKind.PreResolved });
+                    return;
+                default: 
+                    matches.Add(null);
+                    leaves.Add(ResolveNullTermLeaf(clauseExec, walkerCtx));
+                    break;
+            }
         }
-
-        // PostingList
-        matches.Add(null);
-        leaves.Add(ResolveNullTermLeaf(clauseExec, walkerCtx));
+        
+        void AddDefaultSlot(MatchDispatch dispatch)
+        {
+            switch (dispatch)
+            {
+                case MatchDispatch.QueryMatch:
+                {
+                    IQueryMatch match = ResolveClause(clauseExec, root, walkerCtx);
+                    if (clauseExec.BoostFactor is not 0)
+                        match = walkerCtx.IndexSearcher.Boost(match, clauseExec.BoostFactor);
+                    matches.Add(match);
+                    leaves.Add(new LeafResolveInfo { Kind = LeafResolveKind.PreResolved });
+                    break;
+                }
+                case MatchDispatch.PostingList:
+                    matches.Add(null);
+                    leaves.Add(new LeafResolveInfo
+                    {
+                        Kind = LeafResolveKind.TermPosting,
+                        ClauseType = clauseExec.ClauseType,
+                        Packed = clauseExec.PackedParamValue,
+                        FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
+                    });
+                    break;
+                case MatchDispatch.TreeScan:
+                    matches.Add(null);
+                    leaves.Add(new LeafResolveInfo
+                    {
+                        Kind = LeafResolveKind.TreeScan,
+                        ClauseType = clauseExec.ClauseType,
+                        Packed = clauseExec.PackedParamValue,
+                        FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
+                    });
+                    break;
+                default:
+                    throw new ArgumentOutOfRangeException(dispatch.ToString()); 
+            }
+        }
     }
 
     /// <summary>Build the null-term leaf descriptor. When the clause carries no null term,
@@ -1549,47 +1481,6 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    /// <summary>Append a scalar (non-IN) leaf slot. Match dispatch resolves the clause eagerly
-    /// (wrapping in Boost when a boost factor is set); PostingList / TreeScan dispatch store
-    /// value-independent metadata (field + packed parameter) for lazy resolution inside the IL
-    /// pipeline.</summary>
-    private static void AddDefaultSlot(MatchDispatch dispatch, ClauseExecution clauseExec,
-        QueryExecution root, ResolutionContext walkerCtx,
-        List<IQueryMatch> matches, List<LeafResolveInfo> leaves)
-    {
-        switch (dispatch)
-        {
-            case MatchDispatch.QueryMatch:
-            {
-                IQueryMatch match = ResolveClause(clauseExec, root, walkerCtx);
-                if (clauseExec.BoostFactor is not 0)
-                    match = walkerCtx.IndexSearcher.Boost(match, clauseExec.BoostFactor);
-                matches.Add(match);
-                leaves.Add(new LeafResolveInfo { Kind = LeafResolveKind.PreResolved });
-                break;
-            }
-            case MatchDispatch.PostingList:
-                matches.Add(null);
-                leaves.Add(new LeafResolveInfo
-                {
-                    Kind = LeafResolveKind.TermPosting,
-                    ClauseType = clauseExec.ClauseType,
-                    Packed = clauseExec.PackedParamValue,
-                    FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
-                });
-                break;
-            default: // TreeScan
-                matches.Add(null);
-                leaves.Add(new LeafResolveInfo
-                {
-                    Kind = LeafResolveKind.TreeScan,
-                    ClauseType = clauseExec.ClauseType,
-                    Packed = clauseExec.PackedParamValue,
-                    FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
-                });
-                break;
-        }
-    }
 
     private static IQueryMatch ResolveClause(ClauseExecution cur, QueryExecution root, ResolutionContext walkerCtx)
     {
@@ -2023,7 +1914,7 @@ internal static partial class QueryPlanBuilder
     {
         if (encoding.Packed.ValueType == PackedParam.TypeString)
         {
-            encoding.Analyzed.AsReadOnlySpan().CopyTo(dest);
+            encoding.Analyzed.CopyTo(dest);
             return;
         }
         EncodeNumericValue(dest, encoding.Packed.ValueType, encoding.SourceSlot, exec);
