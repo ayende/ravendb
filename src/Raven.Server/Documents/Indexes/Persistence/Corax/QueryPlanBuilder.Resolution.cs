@@ -465,14 +465,26 @@ internal static partial class QueryPlanBuilder
         (int TypeSignature, byte[] FullKinds) ComputeTypeSignature()
         {
             int types = 0; // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong), literals are handled via the query text (separate)
-            var full = template.ParameterSlots.Length > 16 ? new byte[template.ParameterSlots.Length] : null;
+
+            // A parameter-bound BETWEEN sentinel ("*"/"NULL") is QueryMatch-dispatched (that dispatch is
+            // baked into the compiled IL), while a non-sentinel BETWEEN of the same query text is
+            // TreeScan-dispatched. For numeric fields the sentinel string already shifts the type
+            // signature, but for string fields the sentinel value classifies identically to a real bound,
+            // so the two would collide on one cache entry. We reuse the FullKinds escape array (otherwise
+            // only allocated for >16 params) as the carrier and mark the bound parameter slots, forcing a
+            // distinct compiled plan. Sentinel queries are rare, so the extra allocation is acceptable.
+            bool hasSentinel = HasParameterSentinelBetween(exec.Executions);
+            var full = template.ParameterSlots.Length > 16 || hasSentinel ? new byte[template.ParameterSlots.Length] : null;
             for (int i = 0; i < template.ParameterSlots.Length; i++)
             {
                 int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0x3;
                 full?[i] = (byte)kind;
-                if (i > 16) continue;
+                if (i > 15) continue; // param 15 fills bits 30-31; index 16 would shift by 32 and wrap (mod-32) back onto param 0
                 types |= kind << (i * 2);
             }
+
+            if (hasSentinel)
+                MarkSentinelSlots(exec.Executions, full, template.ParameterSlots);
 
             return (types, full);
         }
@@ -493,6 +505,65 @@ internal static partial class QueryPlanBuilder
         }
 
         return exec;
+    }
+
+    /// <summary>Marker bit OR-ed into a sentinel-bound parameter's FullKinds byte (kind occupies bits 0-1).
+    /// Forces a distinct plan-cache entry for parameter-bound BETWEEN sentinels — see ComputeTypeSignature.</summary>
+    private const byte SentinelParamMark = 1 << 2;
+
+    /// <summary>True if any clause (recursively) is a parameter-bound BETWEEN that PopulateClauseValues
+    /// rewrote to a sentinel form. Literal sentinels are excluded — those are already encoded in the
+    /// query text (and rewritten away at template time), so they need no cache-key marker.</summary>
+    private static bool HasParameterSentinelBetween(List<ClauseExecution> executions)
+    {
+        foreach (var e in executions)
+        {
+            if (IsParameterSentinelBetween(e))
+                return true;
+            if (e.SubExecutions is { Count: > 0 } && HasParameterSentinelBetween(e.SubExecutions))
+                return true;
+        }
+
+        return false;
+    }
+
+    private static bool IsParameterSentinelBetween(ClauseExecution e)
+    {
+        if (e.ClauseType != ClauseType.Between || e.SentinelRewriteType == null)
+            return false;
+
+        foreach (var b in e.Clause.Bindings ?? [])
+        {
+            if (b is { Source: BindingSource.QueryParameter })
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>Set <see cref="SentinelParamMark"/> on the FullKinds byte of every query-parameter slot
+    /// bound by a sentinel-rewritten BETWEEN (recursively). This keeps sentinel and non-sentinel plans
+    /// for the same query text on separate cache entries.</summary>
+    private static void MarkSentinelSlots(List<ClauseExecution> executions, byte[] full, string[] parameterSlots)
+    {
+        foreach (var e in executions)
+        {
+            if (IsParameterSentinelBetween(e))
+            {
+                foreach (var b in e.Clause.Bindings)
+                {
+                    if (b is { Source: BindingSource.QueryParameter, ParameterName: not null })
+                    {
+                        int slot = Array.IndexOf(parameterSlots, b.ParameterName);
+                        if (slot >= 0)
+                            full[slot] |= SentinelParamMark;
+                    }
+                }
+            }
+
+            if (e.SubExecutions is { Count: > 0 })
+                MarkSentinelSlots(e.SubExecutions, full, parameterSlots);
+        }
     }
 
 
@@ -1514,7 +1585,7 @@ internal static partial class QueryPlanBuilder
             }
             default:
             {
-                AddDefaultSlot(planHasBoost ? MatchDispatch.QueryMatch : GetDispatch(clauseExec.Clause));
+                AddDefaultSlot(planHasBoost ? MatchDispatch.QueryMatch : GetDispatch(clauseExec));
                 break;
             }
         }
@@ -1831,37 +1902,36 @@ internal static partial class QueryPlanBuilder
         }
         EncodeNumericValue(dest, encoding.Packed.ValueType, encoding.SourceSlot, exec);
     }
-    
+
+    /// <summary>TreeScan-eligible: multi-term clauses with a direct ITermsProvider (StartsWith,
+    /// EndsWith, Exists, Regex, ranges, BETWEEN). Boosted clauses go through QueryMatch for scoring.
+    /// Sentinel-rewritten BETWEEN is handled by GetDispatch, not here, because it needs the
+    /// per-execution SentinelRewriteType.</summary>
     internal static bool IsTreeScanEligibleClause(ClauseInfo clause)
     {
         if (clause.HasBoost)
             return false;
 
-        if (clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith
+        return clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith
             or ClauseType.Exists or ClauseType.Regex
             or ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
-            or ClauseType.LessThan or ClauseType.LessThanOrEqual)
-            return true;
-
-        if (clause.ClauseType != ClauseType.Between)
-            return false;
-
-        // Parameter-bound BETWEEN sentinels use QueryMatch dispatch, not TreeScan.
-        // Because we have to deal with sentinals (NULL/*) in the parameters, which change how
-        // we process the query (may need to also include from the null posting list, etc. 
-        foreach (var t in clause.Bindings)
-        {
-            if (t is { Source: BindingSource.QueryParameter })
-                return false;
-        }
-
-        return true;
+            or ClauseType.LessThan or ClauseType.LessThanOrEqual
+            or ClauseType.Between;
     }
 
-    private static MatchDispatch GetDispatch(ClauseInfo clause)
+    /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause execution at plan-build time.
+    /// Equals / NotEquals (unboosted) → <c>PostingList</c>. Multi-term (unboosted) → <c>TreeScan</c>.
+    /// All other clause types → <c>QueryMatch</c>. A sentinel-rewritten BETWEEN ("*"/"NULL" bounds)
+    /// always takes the QueryMatch path: ResolveSentinelRewrittenBetween reads SentinelRewriteType at
+    /// resolve time and may fold in the null posting list, so it cannot be expressed as a plain TreeScan.</summary>
+    private static MatchDispatch GetDispatch(ClauseExecution exec)
     {
+        var clause = exec.Clause;
         if (clause is { HasBoost: false, ClauseType: ClauseType.Equals or ClauseType.NotEquals })
             return MatchDispatch.PostingList;
+
+        if (exec.SentinelRewriteType != null)
+            return MatchDispatch.QueryMatch;
 
         if (IsTreeScanEligibleClause(clause))
             return MatchDispatch.TreeScan;
