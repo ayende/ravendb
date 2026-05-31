@@ -35,6 +35,11 @@ public sealed class ParameterBinding
     /// <summary>For parameters: name to look up in blittable ("p0"). Null for literals.</summary>
     public string ParameterName;
 
+    /// <summary>Index of this binding's parameter in <see cref="PlanTemplate.ParameterSlots"/>, assigned
+    /// once at template-build time. -1 for literal/deferred bindings (no slot). Lets the FullKinds sentinel
+    /// marker write directly into the slot byte without an Array.IndexOf lookup at query time.</summary>
+    public int ParameterSlot = -1;
+
     /// <summary>For deferred method expressions (e.g. cmpxchg(), now(), today()) that must
     /// be resolved at execution time rather than template creation time. The first parameter
     /// is the QueryBuilderParameters boxed as object (cast at the resolution site in

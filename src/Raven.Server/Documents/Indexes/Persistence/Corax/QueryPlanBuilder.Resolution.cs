@@ -203,6 +203,7 @@ internal static partial class QueryPlanBuilder
         QueryExecution CreateQueryExecution()
         {
             bool hasEmptyIn = false;
+            bool hasParameterSentinel = false;
             int sortDrivingIdx = template.SortDrivingClauseIndex;
             long drivingClauseCardinality = -1;
             foreach (var it in executions)
@@ -210,6 +211,7 @@ internal static partial class QueryPlanBuilder
                 PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters);
                 PropagateBetweenContradiction(it, writer); // a contradictory BETWEEN is rewritten into an empty-IN
                 hasEmptyIn |= IsEmptyIn(it);
+                hasParameterSentinel |= it.HasParameterSentinel;
 
                 if (it.Cardinality < 0)
                     it.Cardinality = CardinalityEstimator.Estimate(it, indexSearcher, writer, walkerCtx);
@@ -225,6 +227,7 @@ internal static partial class QueryPlanBuilder
                 QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false, // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
                 IsAllEntries = executions.Count is 0,
                 DrivingClauseCardinality = drivingClauseCardinality,
+                HasParameterSentinel = hasParameterSentinel,
             };
         }
 
@@ -468,8 +471,8 @@ internal static partial class QueryPlanBuilder
 
             // A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to QueryMatch-dispatched, while a non-sentinel BETWEEN of the same query text can be
             // TreeScan-dispatched. We reuse the FullKinds escape array as the carrier and mark the bound parameter slots, forcing a distinct compiled plan.
-            bool hasSentinel = HasParameterSentinelBetween(exec.Executions);
-            
+            bool hasSentinel = exec.HasParameterSentinel; // aggregated during the PopulateClauseValues walk — no tree re-walk here
+
             var full = template.ParameterSlots.Length > 16 || hasSentinel ? new byte[template.ParameterSlots.Length] : null;
             for (int i = 0; i < template.ParameterSlots.Length; i++)
             {
@@ -480,7 +483,7 @@ internal static partial class QueryPlanBuilder
             }
 
             if (hasSentinel)
-                MarkSentinelSlots(exec.Executions, full, template.ParameterSlots);
+                MarkSentinelSlots(exec.Executions, full);
 
             return (types, full);
         }
@@ -507,53 +510,33 @@ internal static partial class QueryPlanBuilder
     /// Forces a distinct plan-cache entry for parameter-bound BETWEEN sentinels — see ComputeTypeSignature.</summary>
     private const byte SentinelParamMark = 1 << 2;
 
-    /// <summary>True if any clause (recursively) is a BETWEEN whose sentinel bound was delivered by a query
-    /// parameter — recorded by PopulateClauseValues in <see cref="ClauseExecution.HasParameterSentinel"/>.
-    /// Literal sentinels are excluded: they are encoded in the query text, so they need no cache-key marker.</summary>
-    private static bool HasParameterSentinelBetween(List<ClauseExecution> executions)
-    {
-        RuntimeHelpers.EnsureSufficientExecutionStack();
-        foreach (var e in executions)
-        {
-            if (e.HasParameterSentinel)
-                return true;
-            if (e.SubExecutions is { Count: > 0 } && HasParameterSentinelBetween(e.SubExecutions))
-                return true;
-        }
-
-        return false;
-    }
-
     /// <summary>Set <see cref="SentinelParamMark"/> on the FullKinds byte of every query-parameter slot that
-    /// supplied a BETWEEN sentinel bound (recursively). Only the sentinel side(s) — identified by
+    /// supplied a BETWEEN sentinel bound (recursively). Subtrees with no parameter sentinel are pruned via
+    /// <see cref="ClauseExecution.HasParameterSentinel"/>; only the sentinel side(s) — identified by
     /// <see cref="ClauseExecution.SentinelRewriteType"/> — are marked, so a literal sentinel paired with a
     /// real parameter on the other side never marks the real parameter's slot.</summary>
-    private static void MarkSentinelSlots(List<ClauseExecution> executions, byte[] full, string[] parameterSlots)
+    private static void MarkSentinelSlots(List<ClauseExecution> executions, byte[] full)
     {
         foreach (var e in executions)
         {
-            if (e.HasParameterSentinel)
-            {
-                var bindings = e.Clause.Bindings;
-                if (e.SentinelRewriteType is ClauseType.LessThanOrEqual or ClauseType.Exists)
-                    MarkParameterSlot(bindings[BindingIndex.BetweenLow], full, parameterSlots);
-                if (e.SentinelRewriteType is ClauseType.GreaterThanOrEqual or ClauseType.Exists)
-                    MarkParameterSlot(bindings[BindingIndex.BetweenHigh], full, parameterSlots);
-            }
+            if (e.HasParameterSentinel == false)
+                continue; // this subtree contains no parameter sentinel — skip it entirely
+
+            var bindings = e.Clause.Bindings;
+            if (e.SentinelRewriteType is ClauseType.LessThanOrEqual or ClauseType.Exists)
+                MarkParameterSlot(bindings[BindingIndex.BetweenLow], full);
+            if (e.SentinelRewriteType is ClauseType.GreaterThanOrEqual or ClauseType.Exists)
+                MarkParameterSlot(bindings[BindingIndex.BetweenHigh], full);
 
             if (e.SubExecutions is { Count: > 0 })
-                MarkSentinelSlots(e.SubExecutions, full, parameterSlots);
+                MarkSentinelSlots(e.SubExecutions, full);
         }
     }
 
-    private static void MarkParameterSlot(ParameterBinding binding, byte[] full, string[] parameterSlots)
+    private static void MarkParameterSlot(ParameterBinding binding, byte[] full)
     {
-        if (binding is not { Source: BindingSource.QueryParameter, ParameterName: not null })
-            return;
-
-        int slot = Array.IndexOf(parameterSlots, binding.ParameterName);
-        if (slot >= 0)
-            full[slot] |= SentinelParamMark;
+        if (binding.ParameterSlot >= 0) // -1 for literal/deferred bounds (sentinel encoded in query text, no marker needed)
+            full[binding.ParameterSlot] |= SentinelParamMark;
     }
 
 
@@ -563,6 +546,7 @@ internal static partial class QueryPlanBuilder
         foreach (var it in exec.SubExecutions ?? [])
         {   // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
             PopulateClauseValues(it, queryParameters, writer, builderParameters);
+            exec.HasParameterSentinel |= it.HasParameterSentinel; // bubble sentinel presence up to the group
         }
 
         if (exec.Clause is { HasBoost: true, Bindings.Length: > 0 })
