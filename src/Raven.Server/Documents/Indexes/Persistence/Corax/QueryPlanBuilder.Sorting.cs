@@ -22,7 +22,7 @@ internal static partial class QueryPlanBuilder
     private const int MaxSortFields = 16;
 
     /// <summary>At template time, we detect that we can optimize using sort hint. At query time, we just need to read the runtime value.</summary>
-    private static void TrySetSortSeekHint(CompiledQueryMatch match, CompiledPlan plan, QueryExecution exec)
+    private static void TrySetSortSeekHint(CompiledPlan plan, QueryExecution exec, CompiledQueryMatch match)
     {
         if (plan.SortSeekClauseExecIdx < 0)
             return;
