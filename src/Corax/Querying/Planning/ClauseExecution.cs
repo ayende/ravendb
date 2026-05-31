@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 
 namespace Corax.Querying.Planning;
 
@@ -60,4 +61,7 @@ public sealed class ClauseExecution : IComparable<ClauseExecution>
             return IsNegated ? 1 : -1;
         return Cardinality.CompareTo(other.Cardinality);
     }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public long GetEffectiveCardinality(IndexSearcher indexSearcher) => Cardinality > 0 ? Cardinality : indexSearcher.NumberOfEntries;
 }
