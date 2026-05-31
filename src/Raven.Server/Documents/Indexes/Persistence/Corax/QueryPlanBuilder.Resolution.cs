@@ -1194,7 +1194,7 @@ internal static partial class QueryPlanBuilder
             {
                 return indexSearcher.RangeBuilder<Range.Inclusive, Range.Inclusive>(
                     compoundFieldMeta, lowSlice, highSlice,
-                    forward: context.OrderByFields[0].Ascending, CancellationToken.None);
+                    forward: context.OrderByFields[0].Ascending);
             }
 
             // No field2 narrowing available: run a prefix scan on field1 only and let entry-scan residuals filter the rest.
