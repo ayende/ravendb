@@ -466,20 +466,16 @@ internal static partial class QueryPlanBuilder
         {
             int types = 0; // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong), literals are handled via the query text (separate)
 
-            // A parameter-bound BETWEEN sentinel ("*"/"NULL") is QueryMatch-dispatched (that dispatch is
-            // baked into the compiled IL), while a non-sentinel BETWEEN of the same query text is
-            // TreeScan-dispatched. For numeric fields the sentinel string already shifts the type
-            // signature, but for string fields the sentinel value classifies identically to a real bound,
-            // so the two would collide on one cache entry. We reuse the FullKinds escape array (otherwise
-            // only allocated for >16 params) as the carrier and mark the bound parameter slots, forcing a
-            // distinct compiled plan. Sentinel queries are rare, so the extra allocation is acceptable.
+            // A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to QueryMatch-dispatched, while a non-sentinel BETWEEN of the same query text can be
+            // TreeScan-dispatched. We reuse the FullKinds escape array as the carrier and mark the bound parameter slots, forcing a distinct compiled plan.
             bool hasSentinel = HasParameterSentinelBetween(exec.Executions);
+            
             var full = template.ParameterSlots.Length > 16 || hasSentinel ? new byte[template.ParameterSlots.Length] : null;
             for (int i = 0; i < template.ParameterSlots.Length; i++)
             {
                 int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0x3;
                 full?[i] = (byte)kind;
-                if (i > 15) continue; // param 15 fills bits 30-31; index 16 would shift by 32 and wrap (mod-32) back onto param 0
+                if (i > 15) continue;
                 types |= kind << (i * 2);
             }
 
@@ -516,11 +512,11 @@ internal static partial class QueryPlanBuilder
     /// query text (and rewritten away at template time), so they need no cache-key marker.</summary>
     private static bool HasParameterSentinelBetween(List<ClauseExecution> executions)
     {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
         foreach (var e in executions)
         {
-            if (IsParameterSentinelBetween(e))
-                return true;
-            if (e.SubExecutions is { Count: > 0 } && HasParameterSentinelBetween(e.SubExecutions))
+            if (IsParameterSentinelBetween(e) || 
+                e.SubExecutions != null && HasParameterSentinelBetween(e.SubExecutions))
                 return true;
         }
 
