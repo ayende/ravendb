@@ -994,10 +994,6 @@ internal static partial class QueryPlanBuilder
         return indexSearcher.TermQuery(compoundFieldMeta, new Slice(keyBuf));
     }
 
-    /// <summary>STRUCTURAL eligibility for the CompoundField candidate: compound(field1, field2)
-    /// exists in the index, the query is not all-negated, and every residual clause is non-boosted
-    /// and entry-scan eligible. Baked once at cache-miss into <see cref="ExecutionStrategy.CompoundField"/>.
-    /// The per-execution cost gate lives in <see cref="CompoundFieldCostEffective"/>.</summary>
     private static bool TryCreateCompoundFieldMatch(ref InstCtx ctx, out string rejectReason)
     {
         if (ctx.Exec.Plan.CompoundFieldDrivingClause < 0 || ctx.Exec.Plan.Template.CompoundFieldSortName is null)
@@ -1006,25 +1002,16 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
-        var execs = ctx.Exec.Executions;
-        if (ctx.Exec.Plan.CompoundFieldDrivingClause >= execs.Count || ctx.Exec.Plan.AllNegated)
+        if (ctx.Exec.Plan.AllNegated)
         {
             rejectReason = "all clauses are negated";
             return false;
         }
 
-        // Optional field2 range narrowing clause — baked at template time
-        // (structural; same for all executions of this template).
-        int field2RangeIdx = ctx.Exec.Plan.CompoundFieldField2RangeIdx;
-
-        // Residual scannability — structural only (clause-type / boost based, stable across
-        // executions). The bitmap-vs-direct-scan COST gate and the parameter-dependent
-        // PackedParamValue.IsNone guard are deliberately NOT evaluated here: both depend on the
-        // bound-parameter cardinalities and run per-execution in CompoundFieldCostEffective, so a
-        // cached plan never reuses a stale cost decision (RavenDB #4852).
+        var execs = ctx.Exec.Executions;
         for (int i = 0; i < execs.Count; i++)
         {
-            if (i == ctx.Exec.Plan.CompoundFieldDrivingClause || i == field2RangeIdx)
+            if (i == ctx.Exec.Plan.CompoundFieldDrivingClause || i == ctx.Exec.Plan.CompoundFieldField2RangeIdx)
                 continue;
             if (IsClauseBoosted(execs[i]))
             {
@@ -1033,8 +1020,6 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        // CompoundFieldResiduals was filtered at cache-miss against the same {drivingClause, field2Range}
-        // exclusion, so its Unscannable flag is exactly the result of re-checking scan-eligibility here.
         if (ctx.Exec.Plan.CompoundFieldResiduals is null)
         {
             rejectReason = "scan predicate info is null";
@@ -1053,8 +1038,7 @@ internal static partial class QueryPlanBuilder
 
         var packed = execs[drivingClauseIdx].PackedParamValue;
 
-        var residualSet = ctx.Exec.Plan.CompoundFieldResiduals;
-        if (residualSet is null)
+        if (ctx.Exec.Plan.CompoundFieldResiduals is null)
             return null;
 
         string field1Name = execs[drivingClauseIdx].Clause.FieldName;
@@ -1066,18 +1050,15 @@ internal static partial class QueryPlanBuilder
         if (analyzedPrefix.HasValue == false || analyzedPrefix.Size > byte.MaxValue) // if too long, cannot be used for compound
             return null; // fall back to bitmap
 
-        IQueryMatch drivingMatch = CreateDrivingMatch(ref ctx);
-
         ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx);
 
-        var directScan = BuildDirectScan(
-            indexSearcher, drivingMatch, ctx.Exec,
-            ctx.Plan.CompiledEntryPredicate, residualSet);
+        IQueryMatch drivingMatch = CreateDrivingMatch(ref ctx);
+        DirectScanMatchBase directScan = (ctx.Exec.Plan.CompoundFieldResiduals is null or { Length: 0 }
+            ? new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: -1)
+            : new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: -1, precompiledDelegate: ctx.Plan.CompiledEntryPredicate));
 
-        if (ctx.WantTimings)
-        {   // only used when we use include timings()
+        if (ctx.WantTimings) // only used when we use include timings()
             SetDirectScanPropertiesForIntrospection(ref ctx);
-        }
 
         return directScan;
 
@@ -1104,13 +1085,12 @@ internal static partial class QueryPlanBuilder
             directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
             directScan.SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)";
             directScan.Direction = context.OrderByFields[0].Ascending ? "Forward" : "Backward";
-            directScan.ResidualDescription = DescribeResiduals(residualSet);
+            directScan.ResidualDescription = DescribeResiduals(context.Exec.Plan.CompoundFieldResiduals);
             directScan.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
         }
     }
 
-    private static Slice BuildField1Prefix(ref InstCtx ctx, string field1Name, PackedParam packed,
-        out string field1ValueStrForIntrospection)
+    private static Slice BuildField1Prefix(ref InstCtx ctx, string field1Name, PackedParam packed, out string field1ValueStrForIntrospection)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         switch (packed.ValueType)
@@ -1142,23 +1122,8 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Build the composite low/high <see cref="Slice"/> keys for a CompoundField range scan.
-    /// Returns false (and the caller falls back to the prefix-only StartsWith path) when:
-    ///   - the field2 packed param is None,
-    ///   - field2 is a String value that exceeds 255 bytes (low or high bound),
-    ///   - field2 is an unsupported value type,
-    ///   - the resulting composite key (prefix + suffix + 1 length byte) exceeds
-    ///     <see cref="Constants.Terms.MaxLength"/>.
-    /// Each successful return allocates exactly two allocator-backed buffers (one per slice);
-    /// the field2 bytes are written directly into them with no managed <c>byte[]</c> hop.
-    /// </summary>
-    private static bool TryBuildCompositeRangeKeys(
-        ref InstCtx ctx,
-        Slice analyzedPrefix,
-        string sortFieldName,
-        ClauseExecution field2Exec,
-        out Slice lowSlice,
-        out Slice highSlice)
+    private static bool TryBuildCompositeRangeKeys(ref InstCtx ctx, Slice analyzedPrefix, string sortFieldName,
+        ClauseExecution field2Exec, out Slice lowSlice, out Slice highSlice)
     {
         lowSlice = default;
         highSlice = default;
@@ -1424,21 +1389,14 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Create the appropriate DirectScan match based on whether residual predicates exist.</summary>
-    private static DirectScanMatchBase BuildDirectScan(
-        IndexSearcher searcher, IQueryMatch drivingMatch,
-        QueryExecution exec,
-        ResidualScanIlEmitter.ResidualScanPredicate residualDelegate,
-        ScanPredicateInfo[] residualArray)
+    private static DirectScanMatchBase BuildDirectScan(IndexSearcher searcher, IQueryMatch drivingMatch,
+        QueryExecution exec,ResidualScanIlEmitter.ResidualScanPredicate residualDelegate, ScanPredicateInfo[] residualArray)
     {
-        // null = unscannable (caller already aborted); empty = scannable with no residual filter.
-        // Both drive the scan without a per-entry predicate. The filtered match needs a non-null
-        // CompiledEntryPredicate, which is only emitted when the scan list is non-empty.
-        if (residualArray is null or { Length: 0 })
-            return new DirectScanSimpleMatch(searcher, drivingMatch, take: -1);
-
-        return new DirectScanFilteredMatch(
-            searcher, drivingMatch, exec,
-            take: -1, precompiledDelegate: residualDelegate);
+        return residualArray is null or { Length: 0 }
+            ? new DirectScanSimpleMatch(searcher, drivingMatch, take: -1)
+            : new DirectScanFilteredMatch(
+                searcher, drivingMatch, exec,
+                take: -1, precompiledDelegate: residualDelegate);
     }
 
     /// <summary>Single leaf walk that produces the two parallel slot arrays at once:
