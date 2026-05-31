@@ -1623,22 +1623,18 @@ internal static partial class QueryPlanBuilder
                 handleSearch: true, hasBoost: builderParams.HasBoost,
                 forceDefaultSearchAnalyzer: forceSearch);
 
-            IndexSearcher.SearchQueryOptions searchQueryOptions = builderParams.Index.CoraxSearchQueryOptions;
-
             var searchTerm = root.StringValues[packed.Param1];
-            if (searchQueryOptions == IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments
+            if (builderParams.Index.CoraxSearchQueryOptions == IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments
                 && searchTerm is { Length: >= 1 }
                 && (searchTerm[0] == '*' || (searchTerm.Length >= 2 && searchTerm[^1] == '*')))
             {
                 searchMeta = ReplaceAnalyzerForWildcardQueries(searchMeta, walkerCtx);
             }
 
-            var searchValues = QueryBuilderHelper.SplitSearchValue(searchTerm);
-
             return indexSearcher.SearchQuery(searchMeta,
-                searchValues,
+                QueryBuilderHelper.SplitSearchValue(searchTerm),
                 (Constants.Search.Operator)clause.SearchOperator,
-                searchQueryOptions);
+                builderParams.Index.CoraxSearchQueryOptions);
         }
     }
 
@@ -1663,71 +1659,36 @@ internal static partial class QueryPlanBuilder
         return rangeMatch;
     }
 
-    private static IQueryMatch ResolveInTerm(ClauseExecution exec, int termIndex,
-        QueryExecution queryExec, ResolutionContext walkerCtx)
+    private static IQueryMatch ResolveInTerm(ClauseExecution exec, int termIndex, QueryExecution queryExec, ResolutionContext walkerCtx)
     {
-        var (fieldMeta, termPacked) = ResolveInTermParam(exec, termIndex, walkerCtx);
+        FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, walkerCtx);
+        var termPacked = exec.PackedParamValue.WithTermOffset(termIndex);
         return termPacked.TermQuery(fieldMeta, walkerCtx.IndexSearcher, queryExec);
     }
 
-    // ── Term-source resolution ───────────────────────────────────────────
-
-    /// <summary>Compute the field metadata and packed parameter for an IN term at the given index.
-    /// Shared by <see cref="ResolveInTerm"/> (bitmap path) and <see cref="ResolveInTermSource"/>
-    /// (posting-list path) to ensure field resolution and index arithmetic stay in sync.</summary>
-    private static (FieldMetadata FieldMeta, PackedParam TermPacked) ResolveInTermParam(
-        ClauseExecution exec, int termIndex, ResolutionContext walkerCtx)
-    {
-        FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, walkerCtx);
-        return (fieldMeta, exec.PackedParamValue.WithTermOffset(termIndex));
-    }
-
-    /// <summary>Resolve field metadata for a term-source clause. Mirrors the
-    /// non-Spatial/Vector/Search branch of <see cref="ResolveClause"/>.</summary>
     private static FieldMetadata ResolveFieldMetadata(ClauseInfo clause, ResolutionContext walkerCtx)
     {
         var builderParams = walkerCtx.BuilderParams;
-        // Dynamic field name variants are pre-resolved by DynamicFieldNameResolve at template time.
         string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;
-
-        // When forceDefaultSearchAnalyzer is enabled for indexes with dynamic fields (CreateField),
-        // non-exact non-search clauses should use the search analyzer (#4778 fix).
-        // HasDynamics short-circuits the Index dereference for the direct-test path.
         bool forceSearchAnalyzer = builderParams.HasDynamics
                                    && !clause.IsExact
                                    && clause.ClauseType != ClauseType.Search
                                    && builderParams.Index.Configuration.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery;
+        
         return QueryBuilderHelper.GetFieldMetadata(in builderParams, resolvedFieldName, exact: clause.IsExact,
             hasBoost: builderParams.HasBoost, forceDefaultSearchAnalyzer: forceSearchAnalyzer);
     }
 
-    // ── Scan parameter extraction ────────────────────────────────────────
-
-    // ── Execution-phase methods (moved from QueryPlanBuilder.cs) ──────────
-
-    /// <summary>Cardinality used for cost estimation; <c>NumberOfEntries</c> is the
-    /// fallback when a clause hasn't computed a cardinality yet (e.g. multi-term or
-    /// regex). Callers treat the fallback as "could match everything."</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static long EffectiveCardinality(in ClauseExecution exec, IndexSearcher indexSearcher)
-        => exec.Cardinality > 0 ? exec.Cardinality : indexSearcher.NumberOfEntries;
-
     private static long ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
         int drivingIdx, long drivingCard, long pageSize, IndexSearcher indexSearcher)
     {
-        // The scan walks the driving stream in sort order and stops once the page is full, so the
-        // number of *results* we actually need is bounded by the page size — there is no point in
-        // costing the scan as if it produced every driving match when the caller only asked for the
-        // first `pageSize` of them. A `pageSize` of int.MaxValue ("get everything") leaves the
-        // driving cardinality as the binding limit, so this only narrows the estimate for top-N queries.
         long resultsWanted = Math.Min(drivingCard, pageSize);
 
-        // first, we find the most selective residual clause
         long minResidual = long.MaxValue;
         for (int i = 0; i < execs.Count; i++)
         {
             if (i == drivingIdx) continue;
-            long c = EffectiveCardinality(execs[i], indexSearcher);
+            long c = execs[i].GetEffectiveCardinality(indexSearcher);
             minResidual = Math.Min(c, minResidual);
         }
 
@@ -1747,15 +1708,12 @@ internal static partial class QueryPlanBuilder
         return resultsWanted;
     }
 
-    /// <summary>
-    /// Are we expecting to go through more entries by weighted cost or via bitmap
-    /// And if we are going through direct cost, will we need to read more than 32K  entries
-    /// </summary>
     private static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)
     {
         long directCost =  entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier
             ? long.MaxValue // avoid overflow
             : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+        // check what will be more costly, and set a hard limit (32K) to how many entries we may scan
         return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
     }
 
@@ -1775,13 +1733,13 @@ internal static partial class QueryPlanBuilder
         int residualCount = 0;
         for (int i = 0; i < execs.Count; i++)
         {
-            bitmapCost += EffectiveCardinality(execs[i], indexSearcher);
+            bitmapCost += execs[i].GetEffectiveCardinality(indexSearcher);
             if (i == drivingIdx || i == field2RangeIdx)
                 continue;
             residualCount++;
         }
 
-        long drivingCardinality = EffectiveCardinality(drivingExec, indexSearcher);
+        long drivingCardinality = drivingExec.GetEffectiveCardinality(indexSearcher);
         entriesToScan = residualCount > 0
             ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCardinality, ctx.BuilderParams.Query.PageSize, indexSearcher)
             : drivingCardinality;
@@ -1816,10 +1774,10 @@ internal static partial class QueryPlanBuilder
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         foreach (var it in execs)
         {
-            bitmapCost += EffectiveCardinality(it, indexSearcher);
+            bitmapCost += it.GetEffectiveCardinality(indexSearcher);
         }
 
-        long drivingCard = EffectiveCardinality(execs[drivingIdx], indexSearcher);
+        long drivingCard = execs[drivingIdx].GetEffectiveCardinality(indexSearcher);
         var entriesToScan = execs.Count > 1
             ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher)
             : drivingCard;

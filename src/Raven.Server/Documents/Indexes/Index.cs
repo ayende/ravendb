@@ -624,20 +624,18 @@ namespace Raven.Server.Documents.Indexes
 
         public IndexDefinitionBaseServerSide Definition { get; private set; }
 
-        private global::Corax.Querying.IndexSearcher.SearchQueryOptions? _coraxSearchQueryOptions;
+        private Corax.Querying.IndexSearcher.SearchQueryOptions? _coraxSearchQueryOptions;
 
-        /// <summary>The Corax <c>search()</c> dialect for this index. Determined solely by the
-        /// index version, which is immutable after creation, so it is computed once and cached.</summary>
-        public global::Corax.Querying.IndexSearcher.SearchQueryOptions CoraxSearchQueryOptions =>
+        public Corax.Querying.IndexSearcher.SearchQueryOptions CoraxSearchQueryOptions =>
             _coraxSearchQueryOptions ??= ComputeCoraxSearchQueryOptions(Definition.Version);
 
-        private static global::Corax.Querying.IndexSearcher.SearchQueryOptions ComputeCoraxSearchQueryOptions(long indexVersion)
+        private static Corax.Querying.IndexSearcher.SearchQueryOptions ComputeCoraxSearchQueryOptions(long indexVersion)
         {
             if (IndexDefinitionBaseServerSide.IndexVersion.IsCoraxSearchWildcardAdjustmentSupported(indexVersion))
-                return global::Corax.Querying.IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments;
+                return Corax.Querying.IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments;
             if (indexVersion >= IndexDefinitionBaseServerSide.IndexVersion.PhraseQuerySupportInCoraxIndexes)
-                return global::Corax.Querying.IndexSearcher.SearchQueryOptions.PhraseQuery;
-            return global::Corax.Querying.IndexSearcher.SearchQueryOptions.Legacy;
+                return Corax.Querying.IndexSearcher.SearchQueryOptions.PhraseQuery;
+            return Corax.Querying.IndexSearcher.SearchQueryOptions.Legacy;
         }
 
         public string Name => Definition?.Name;
