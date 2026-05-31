@@ -1650,10 +1650,9 @@ internal static partial class QueryPlanBuilder
         IQueryMatch rangeMatch = exec.PackedParamValue.RangeQuery(ClauseType.GreaterThanOrEqual, fieldMeta, indexSearcher, queryExec);
         if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _)) // BETWEEN low AND 'NULL' must include null-valued docs (Lucene parity)
         {
-            var bm = new BitmapMatch(indexSearcher.Allocator);
-            QueryPrimitives.OrWithMatch(rangeMatch, ref bm.BitmapState);
-            QueryPrimitives.OrWithMatch(indexSearcher.TermQuery(fieldMeta, null), ref bm.BitmapState);
-            return bm;
+            // Defer the OR to execution time (first Fill): keeps the cost out of plan-build
+            // timing and lets Inspect() report the real Or(range, null-term) structure.
+            return new LazyOrMatch(indexSearcher.Allocator, rangeMatch, indexSearcher.TermQuery(fieldMeta, null));
         }
 
         return rangeMatch;
