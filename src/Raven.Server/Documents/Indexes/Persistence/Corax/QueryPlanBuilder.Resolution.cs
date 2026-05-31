@@ -988,8 +988,7 @@ internal static partial class QueryPlanBuilder
         WriteCompoundFieldEncoding(keySpan.Slice(enc1.Size, enc2.Size), enc2, ctx.Exec);
         keySpan[totalLen - 1] = (byte)enc1.Size;
 
-        var compoundFieldName = $"compound({firstField},{secondField})";
-        var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
+        var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(ctx.Exec.Plan.Template.CompoundExactName, hasBoost: false);
 
         return indexSearcher.TermQuery(compoundFieldMeta, new Slice(keyBuf));
     }

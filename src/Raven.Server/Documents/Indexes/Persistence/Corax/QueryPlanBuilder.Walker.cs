@@ -28,6 +28,7 @@ internal static partial class QueryPlanBuilder
         public int CompoundExactClauseA = -1;
         public int CompoundExactClauseB = -1;
         public bool CompoundExactAFirst;
+        public string CompoundExactName;
         public int CompoundFieldDrivingClause = -1;
         public string CompoundFieldSortName;
         public string CompoundFieldName;

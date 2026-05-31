@@ -118,6 +118,7 @@ internal static partial class QueryPlanBuilder
             CompoundExactClauseA = walkerCtx.CompoundExactClauseA,
             CompoundExactClauseB = walkerCtx.CompoundExactClauseB,
             CompoundExactAFirst = walkerCtx.CompoundExactAFirst,
+            CompoundExactName = walkerCtx.CompoundExactName,
             CompoundFieldDrivingClause = walkerCtx.CompoundFieldDrivingClause,
             CompoundFieldSortName = walkerCtx.CompoundFieldSortName,
             CompoundFieldName = walkerCtx.CompoundFieldName,
@@ -317,6 +318,7 @@ internal static partial class QueryPlanBuilder
                             walkerCtx.CompoundExactClauseA = eqBuf[a];
                             walkerCtx.CompoundExactClauseB = eqBuf[b];
                             walkerCtx.CompoundExactAFirst = true;
+                            walkerCtx.CompoundExactName = $"compound({f1},{f2})";
                             return;
                         }
 
@@ -325,6 +327,7 @@ internal static partial class QueryPlanBuilder
                             walkerCtx.CompoundExactClauseA = eqBuf[a];
                             walkerCtx.CompoundExactClauseB = eqBuf[b];
                             walkerCtx.CompoundExactAFirst = false;
+                            walkerCtx.CompoundExactName = $"compound({f2},{f1})";
                             return;
                         }
                     }

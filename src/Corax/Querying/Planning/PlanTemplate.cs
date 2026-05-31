@@ -65,6 +65,10 @@ public sealed class PlanTemplate
     public int CompoundExactClauseB = -1;
     /// <summary>True when compound field order is (A, B); false when (B, A).</summary>
     public bool CompoundExactAFirst;
+    /// <summary>Pre-built <c>compound({firstField},{secondField})</c> tree name for the compound-exact match.
+    /// Field names are template-stable, so this is baked here instead of being interpolated on every
+    /// execution in <c>ConstructCompoundExact</c>. Null when no qualifying pair exists.</summary>
+    public string CompoundExactName;
 
     /// <summary>Pre-identified compound-field-match (WHERE Equals + ORDER BY) driving clause
     /// index (template position). -1 when no qualifying clause/compound-field pair exists.
