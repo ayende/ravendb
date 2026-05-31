@@ -1623,13 +1623,7 @@ internal static partial class QueryPlanBuilder
                 handleSearch: true, hasBoost: builderParams.HasBoost,
                 forceDefaultSearchAnalyzer: forceSearch);
 
-            IndexSearcher.SearchQueryOptions searchQueryOptions;
-            if (IndexDefinitionBaseServerSide.IndexVersion.IsCoraxSearchWildcardAdjustmentSupported(builderParams.Index.Definition.Version))
-                searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments;
-            else if (builderParams.Index.Definition.Version >= IndexDefinitionBaseServerSide.IndexVersion.PhraseQuerySupportInCoraxIndexes)
-                searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQuery;
-            else
-                searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
+            IndexSearcher.SearchQueryOptions searchQueryOptions = builderParams.Index.CoraxSearchQueryOptions;
 
             var searchTerm = root.StringValues[packed.Param1];
             if (searchQueryOptions == IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments
