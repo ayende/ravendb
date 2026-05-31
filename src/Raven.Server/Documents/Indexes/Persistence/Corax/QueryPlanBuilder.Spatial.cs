@@ -151,40 +151,4 @@ internal static partial class QueryPlanBuilder
 
         exec.Executions = execs;
     }
-
-    private static IQueryMatch HandleSpatial(QueryBuilderParameters builderParameters, ClauseExecution exec, SpatialOperationType spatialMethod)
-    {
-        var index = builderParameters.Index;
-        var allocator = builderParameters.Allocator;
-        
-        string fieldName = exec.Clause.FieldName 
-                           ?? throw new InvalidOperationException("Spatial clause has no pre-resolved field name.");
-
-        var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, builderParameters.IndexFieldsMapping,
-            builderParameters.HasDynamics, builderParameters.DynamicFields, hasBoost: builderParameters.HasBoost);
-
-        var sp = exec.Spatial;
-        var distanceErrorPct = sp.DistanceErrorPct >= 0
-            ? sp.DistanceErrorPct
-            : RavenConstants.Documents.Indexing.Spatial.DefaultDistanceErrorPct;
-
-        var spatialField = builderParameters.Factories.GetSpatialFieldFactory(fieldName);
-
-        IShape shape;
-        SpatialUnits? units = sp.Units.HasValue ? (SpatialUnits)sp.Units.Value : null;
-        if (sp.ShapeType == SpatialShapeType.Circle)
-        {
-            shape = spatialField.ReadCircle(sp.CircleRadius, sp.CircleLatitude, sp.CircleLongitude, units);
-        }
-        else if (sp.Wkt != null)
-        {
-            shape = spatialField.ReadShape(sp.Wkt, units);
-        }
-        else
-        {
-            throw new InvalidOperationException("Spatial clause has no pre-resolved shape parameters.");
-        }
-
-        return builderParameters.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), (SpatialRelation)spatialMethod, token: builderParameters.Token);
-    }
 }
