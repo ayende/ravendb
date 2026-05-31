@@ -910,16 +910,12 @@ internal static partial class QueryPlanBuilder
     }
 
 
-    /// <summary>
-    /// Compiles the more-like-this base-document sub-expression as a standalone, unsorted filter,
-    /// routed through the normal cached/compiled query pipeline (BuildTemplate → Build →
-    /// <see cref="CompiledQueryMatch"/>). The sub-expression has no query text of its own, so the
-    /// plan cache is keyed on its rendered text under a dedicated prefix that can never collide with
-    /// a real query. The parent ORDER BY is ignored (the override path produces an unsorted filter).
-    /// </summary>
+    
     public static IQueryMatch BuildQueryForMoreLikeThis(QueryBuilderParameters builderParams, QueryExpression expression)
     {
-        var planParams = new PlanParameters
+        const string moreLikeThisCacheKeyPrefix = "$mlt$:";
+
+        return BuildFilterMatch(new PlanParameters
         {
             IndexSearcher = builderParams.IndexSearcher,
             Metadata = builderParams.Query.Metadata,
@@ -931,16 +927,12 @@ internal static partial class QueryPlanBuilder
             DynamicFields = builderParams.DynamicFields,
             HasBoost = builderParams.HasBoost,
             WhereOverride = expression,
-            CacheKeyOverride = MoreLikeThisCacheKeyPrefix + expression.GetText(builderParams.Query),
-        };
-
-        return BuildFilterMatch(planParams, builderParams, out _, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
+            CacheKeyOverride = moreLikeThisCacheKeyPrefix + expression.GetText(builderParams.Query),
+        }, builderParams, out _, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
     }
 
-    private const string MoreLikeThisCacheKeyPrefix = "$mlt$:";
-
-    private static bool TryCreateCompoundExactMatch(
-        ref InstCtx ctx, out string rejectReason)
+    
+    private static bool TryCreateCompoundExactMatch(ref InstCtx ctx, out string rejectReason)
     {
         if (ctx.PlanParams.Index is null || ctx.Exec is not
             {
@@ -990,8 +982,6 @@ internal static partial class QueryPlanBuilder
         if (totalLen > Constants.Terms.MaxLength) 
             return null;
 
-        // Single allocator-backed buffer; write each field directly into its slice.
-        // The trailing byte stores field1 length (used at scan time to split the composite key).
         ctx.PlanParams.Allocator.Allocate(totalLen, out ByteString keyBuf);
         var keySpan = keyBuf.ToSpan();
         WriteCompoundFieldEncoding(keySpan.Slice(0, enc1.Size), enc1, ctx.Exec);
