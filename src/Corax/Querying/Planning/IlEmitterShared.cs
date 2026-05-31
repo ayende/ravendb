@@ -156,14 +156,21 @@ public static class IlEmitterShared
 
     public static readonly FieldInfo ResidualInSets =
         typeof(QueryExecution).GetField(nameof(QueryExecution.ResidualInSets))!;
-    public static readonly FieldInfo ResidualInValuesSlices =
-        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.Slices))!;
-    public static readonly FieldInfo ResidualInValuesLongs =
-        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.Longs))!;
-    public static readonly FieldInfo ResidualInValuesDoubles =
-        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.Doubles))!;
+    public static readonly FieldInfo ResidualInValuesBase =
+        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.Base))!;
+    public static readonly FieldInfo ResidualInValuesCount =
+        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.Count))!;
     public static readonly FieldInfo ResidualInValuesHasNull =
         typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.HasNull))!;
+
+    // Constructs ReadOnlySpan<T>(T[] array, int start, int length) over the flat per-execution value
+    // arrays, so the IN helpers receive the [Base, Base+Count) window without a per-predicate copy.
+    public static readonly ConstructorInfo ReadOnlySpanLongCtor =
+        typeof(ReadOnlySpan<long>).GetConstructor([typeof(long[]), typeof(int), typeof(int)])!;
+    public static readonly ConstructorInfo ReadOnlySpanDoubleCtor =
+        typeof(ReadOnlySpan<double>).GetConstructor([typeof(double[]), typeof(int), typeof(int)])!;
+    public static readonly ConstructorInfo ReadOnlySpanSliceCtor =
+        typeof(ReadOnlySpan<Slice>).GetConstructor([typeof(Slice[]), typeof(int), typeof(int)])!;
 
     public static void EmitLdcI4(ILGenerator il, int value)
     {

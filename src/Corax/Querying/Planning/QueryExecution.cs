@@ -41,12 +41,13 @@ public class QueryExecution
     /// <summary>Holds the analyzed slices for each field, indexed by the field's slot.</summary>
     public Slice[] AnalyzedSlices;
 
-    /// <summary>Per-IN/ALL-IN residual predicate value sets, materialized per execution and
-    /// indexed positionally by the IN-leaf walk order (the same order in which
-    /// <see cref="ResidualScanIlEmitter"/> bakes its set index and
-    /// <see cref="QueryPlanBuilder"/>'s scan-param extractor fills it). Self-contained
-    /// per predicate so the residual IL never has to thread a runtime-variable base offset:
-    /// the value count is simply the populated array's length.</summary>
+    /// <summary>Per-IN/ALL-IN residual predicate descriptors, indexed positionally by the IN-leaf
+    /// walk order (the same order in which <see cref="ResidualScanIlEmitter"/> bakes its set index
+    /// and <see cref="QueryPlanBuilder"/>'s scan-param extractor fills it). Each entry only records
+    /// where the IN values live in the flat per-execution arrays (<see cref="ResidualInValues.Base"/>
+    /// + <see cref="ResidualInValues.Count"/>) and whether the list had a null term — the values
+    /// themselves are not copied; the residual IL slices <see cref="LongValues"/> / <see cref="DoubleValues"/>
+    /// / <see cref="AnalyzedSlices"/> directly.</summary>
     public ResidualInValues[] ResidualInSets;
 
     public SpatialFilterOp[] SpatialFilters;
@@ -67,15 +68,16 @@ public class QueryExecution
     }
 }
 
-/// <summary>Value set for a single IN / ALL IN residual predicate, materialized per execution.
-/// Exactly one of <see cref="Slices"/> / <see cref="Longs"/> / <see cref="Doubles"/> is populated,
-/// matching the predicate's <see cref="ScanValueType"/>. <see cref="HasNull"/> records whether the
-/// IN list contained a null term (so the residual scan can match documents whose field is null,
-/// mirroring the bitmap pipeline's null-term posting list).</summary>
+/// <summary>Descriptor for a single IN / ALL IN residual predicate. The values themselves are not
+/// copied — they already live contiguously in the flat per-execution arrays (<see cref="QueryExecution.LongValues"/>
+/// / <see cref="QueryExecution.DoubleValues"/> / <see cref="QueryExecution.AnalyzedSlices"/>) at
+/// <c>[Base, Base + Count)</c>, the same slots a single-value predicate would read. <see cref="Base"/>
+/// is the first slot (PackedParam.Param1), <see cref="Count"/> the term count (InTermCount), and
+/// <see cref="HasNull"/> records whether the IN list contained a null term (so the residual scan can
+/// match null-valued fields, mirroring the bitmap pipeline's null-term posting list).</summary>
 public struct ResidualInValues
 {
-    public Slice[] Slices;
-    public long[] Longs;
-    public double[] Doubles;
+    public int Base;
+    public int Count;
     public bool HasNull;
 }
