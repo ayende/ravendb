@@ -1128,9 +1128,6 @@ internal static partial class QueryPlanBuilder
         if (field2Packed.IsNone)
             return false;
 
-        // Resolve the field2 bound encoding(s). Param1 is the bound for GT/GTE/LT/LTE and the
-        // lower bound for Between; Param2 is Between's upper bound. TryGetCompoundFieldEncoding
-        // rejects string encodings >255 bytes (the compound-key format's length byte is one byte).
         if (TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param1, ref ctx, out var encLow) == false)
             return false;
         
@@ -1139,36 +1136,21 @@ internal static partial class QueryPlanBuilder
             TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param2, ref ctx, out encHigh) == false)
             return false;
 
-        // Pick each key's field2 suffix. A null encoding marks an open bound, filled in by
-        // WriteCompositeRangeKey: 0x00 sorts below every real value (open lower), 0xFF above
-        // every real value (open upper). The compound prefix (field1) is always pinned by an
-        // equality clause; only field2 carries the range, so these keys bracket the field2 span
-        // within the field1 prefix in the compound(field1, field2) tree.
-        CompoundFieldEncoding? lowEnc, highEnc;
-        int lowSuffixSize, highSuffixSize;
-        switch (field2Exec.Clause.ClauseType)
+        var (lowEnc, highEnc, lowSuffixSize, highSuffixSize) = field2Exec.Clause.ClauseType switch
         {
             // e.g. WHERE field1 = X AND field2 > Y (or >=) ORDER BY field1, field2
-            // low = Y, high = open above (every entry with field2 >= Y under prefix X).
-            case ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual:
-                lowEnc = encLow; highEnc = null;
-                lowSuffixSize = highSuffixSize = encLow.Size;
-                break;
+            ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual => (encLow, null, encLow.Size, encLow.Size),
+
             // e.g. WHERE field1 = X AND field2 < Y (or <=) ORDER BY field1, field2
-            // low = open below, high = Y (every entry with field2 <= Y under prefix X).
-            case ClauseType.LessThan or ClauseType.LessThanOrEqual:
-                lowEnc = null; highEnc = encLow;
-                lowSuffixSize = highSuffixSize = encLow.Size;
-                break;
+            ClauseType.LessThan or ClauseType.LessThanOrEqual =>  (null, encLow, encLow.Size, encLow.Size),
+
             // e.g. WHERE field1 = X AND field2 BETWEEN Y AND Z ORDER BY field1, field2
-            // low = Y, high = Z (every entry with Y <= field2 <= Z under prefix X).
-            case ClauseType.Between:
-                lowEnc = encLow; highEnc = encHigh;
-                lowSuffixSize = encLow.Size; highSuffixSize = encHigh.Size;
-                break;
-            default:
-                return false; // not a range clause — fall back to a prefix-only scan
-        }
+            ClauseType.Between => (encLow, encHigh, encLow.Size, encHigh.Size),
+
+            // Fall back to a prefix-only scan
+            _ => (null, null, int.MaxValue, int.MaxValue)
+        };
+
 
         if (analyzedPrefix.Size + lowSuffixSize + 1 > Constants.Terms.MaxLength ||
             analyzedPrefix.Size + highSuffixSize + 1 > Constants.Terms.MaxLength)
