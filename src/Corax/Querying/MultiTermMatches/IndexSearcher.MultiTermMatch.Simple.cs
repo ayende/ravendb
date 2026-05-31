@@ -96,7 +96,7 @@ public partial class IndexSearcher
 
         ITermsProvider provider = forward
             ? new RegexTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, terms, field, regex)
-            : (ITermsProvider)new RegexTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, terms, field, regex);
+            : new RegexTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, terms, field, regex);
 
         return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
     }
