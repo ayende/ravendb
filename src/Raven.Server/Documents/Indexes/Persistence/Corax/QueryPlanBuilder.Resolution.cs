@@ -1288,6 +1288,37 @@ internal static partial class QueryPlanBuilder
         
             return (match, ctx.WantTimings ? $"{drivingExec.Clause.FieldName} {drivingExec.ClauseType}" : null);
         }
+        
+        
+        static IQueryMatch ResolveEqualsClauseWithDirection(ClauseExecution drivingExec, QueryExecution queryExec, bool forward, ResolutionContext walkerCtx)
+        {
+            var indexSearcher = walkerCtx.IndexSearcher;
+            FieldMetadata fieldMeta = ResolveFieldMetadata(drivingExec.Clause, walkerCtx);
+            var packed = drivingExec.PackedParamValue;
+            return packed.ValueType switch
+            {
+                PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, queryExec.LongValues[packed.Param1], queryExec.LongValues[packed.Param1], forward: forward),
+                PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, queryExec.DoubleValues[packed.Param1], queryExec.DoubleValues[packed.Param1], forward: forward),
+                _ => indexSearcher.BetweenQuery(fieldMeta, queryExec.StringValues[packed.Param1], queryExec.StringValues[packed.Param1], forward: forward)
+            };
+        }
+
+        static IQueryMatch ResolveRangeClauseWithDirection(ClauseExecution drivingExec, QueryExecution queryExec, bool forward, ResolutionContext walkerCtx)
+        {
+            var indexSearcher = walkerCtx.IndexSearcher;
+            FieldMetadata fieldMeta = ResolveFieldMetadata(drivingExec.Clause, walkerCtx);
+            var packed = drivingExec.PackedParamValue;
+
+            return drivingExec.ClauseType switch
+            {
+                ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual or ClauseType.LessThan or ClauseType.LessThanOrEqual
+                    => packed.RangeQuery(drivingExec.ClauseType, fieldMeta, indexSearcher, queryExec, forward),
+                ClauseType.Between when drivingExec.SentinelRewriteType != null =>
+                    ResolveSentinelRewrittenBetween(drivingExec, fieldMeta, indexSearcher, queryExec),
+                ClauseType.Between => packed.BetweenQuery(fieldMeta, indexSearcher, queryExec, forward),
+                _ => ResolveClause(drivingExec, queryExec, walkerCtx) // fallback
+            };
+        }
 
         static (IQueryMatch, string) ResolveFullScanDrivingProvider(ref InstCtx ctx, bool forward)
         {
@@ -1418,8 +1449,7 @@ internal static partial class QueryPlanBuilder
                     return;
                 default: 
                     matches.Add(null);
-                    LeafResolveInfo ret;
-                    ret = clauseExec.HasNullTerm is false
+                    LeafResolveInfo ret = clauseExec.HasNullTerm is false
                         ? new LeafResolveInfo
                         {
                             Kind = clauseExec.ClauseType == ClauseType.AllIn ? LeafResolveKind.AllPosting : LeafResolveKind.EmptyPosting
@@ -1618,55 +1648,17 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Converts an Equals clause into a BetweenQuery(low==high==value) so
-    /// it produces a TermsProviderMatch that SortedDrivingMatch can walk in sort order.</summary>
-    private static IQueryMatch ResolveEqualsClauseWithDirection(ClauseExecution exec,
-        QueryExecution queryExec, bool forward, ResolutionContext walkerCtx)
-    {
-        var indexSearcher = walkerCtx.IndexSearcher;
-        FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, walkerCtx);
-        var packed = exec.PackedParamValue;
-        return packed.ValueType switch
-        {
-            PackedParam.TypeLong => indexSearcher.BetweenQuery(fieldMeta, queryExec.LongValues[packed.Param1], queryExec.LongValues[packed.Param1], forward: forward),
-            PackedParam.TypeDouble => indexSearcher.BetweenQuery(fieldMeta, queryExec.DoubleValues[packed.Param1], queryExec.DoubleValues[packed.Param1], forward: forward),
-            _ => indexSearcher.BetweenQuery(fieldMeta, queryExec.StringValues[packed.Param1], queryExec.StringValues[packed.Param1], forward: forward)
-        };
-    }
-
-
-    private static IQueryMatch ResolveRangeClauseWithDirection(ClauseExecution exec,
-        QueryExecution queryExec, bool forward, ResolutionContext walkerCtx)
-    {
-        var indexSearcher = walkerCtx.IndexSearcher;
-        FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, walkerCtx);
-        var packed = exec.PackedParamValue;
-
-        return exec.ClauseType switch
-        {
-            ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual or ClauseType.LessThan or ClauseType.LessThanOrEqual
-                => packed.RangeQuery(exec.ClauseType, fieldMeta, indexSearcher, queryExec, forward),
-            ClauseType.Between when exec.SentinelRewriteType != null =>
-                ResolveSentinelRewrittenBetween(exec, fieldMeta, indexSearcher, queryExec),
-            ClauseType.Between => packed.BetweenQuery(fieldMeta, indexSearcher, queryExec, forward),
-            _ => ResolveClause(exec, queryExec, walkerCtx) // fallback
-        };
-    }
-
-
     private static IQueryMatch ResolveSentinelRewrittenBetween(ClauseExecution exec, FieldMetadata fieldMeta,
         IndexSearcher indexSearcher, QueryExecution queryExec)
     {
         if (exec.SentinelRewriteType == ClauseType.Exists)
             return indexSearcher.AllEntries();
-        var packed = exec.PackedParamValue;
         if (exec.SentinelRewriteType == ClauseType.LessThanOrEqual)
-            return packed.RangeQuery(ClauseType.LessThanOrEqual, fieldMeta, indexSearcher, queryExec);
+            return exec.PackedParamValue.RangeQuery(ClauseType.LessThanOrEqual, fieldMeta, indexSearcher, queryExec);
 
         Debug.Assert(exec.SentinelRewriteType == ClauseType.GreaterThanOrEqual);
-        IQueryMatch rangeMatch = packed.RangeQuery(ClauseType.GreaterThanOrEqual, fieldMeta, indexSearcher, queryExec);
-        // BETWEEN low AND 'NULL' must include null-valued docs (Lucene parity)
-        if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _))
+        IQueryMatch rangeMatch = exec.PackedParamValue.RangeQuery(ClauseType.GreaterThanOrEqual, fieldMeta, indexSearcher, queryExec);
+        if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _)) // BETWEEN low AND 'NULL' must include null-valued docs (Lucene parity)
         {
             var bm = new BitmapMatch(indexSearcher.Allocator);
             QueryPrimitives.OrWithMatch(rangeMatch, ref bm.BitmapState);
