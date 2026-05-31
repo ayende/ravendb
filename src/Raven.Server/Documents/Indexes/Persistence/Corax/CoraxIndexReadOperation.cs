@@ -1283,11 +1283,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             
             var builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, null,
-                documentsContext, query, _index, query.QueryParameters, QueryBuilderFactories, 
-                _fieldMappings, null, null, -1, deduplicationDisabled: false,
+                documentsContext, query, _index, query.QueryParameters, QueryBuilderFactories,
+                _fieldMappings, null, null, (int)take, deduplicationDisabled: false,
                 indexReadOperation: this, token: token);
-            
-            IQueryMatch queryMatch = QueryPlanBuilder.BuildFilterMatch(
+
+            // Route through the sorted pipeline so the raw-entries view honors ORDER BY, matching Lucene.
+            using var compileResult = QueryPlanBuilder.BuildSortedQuery(
                 new QueryPlanBuilder.PlanParameters
                 {
                     IndexSearcher = IndexSearcher,
@@ -1299,16 +1300,37 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     HasDynamics = builderParameters.HasDynamics,
                     DynamicFields = builderParameters.DynamicFields,
                     HasBoost = builderParameters.HasBoost
-                }, builderParameters, out _, out _, highlightingTerms: null, wantTimings: false, token);
+                }, builderParameters, highlightingTerms: null, wantTimings: false, token);
+
+            IQueryMatch queryMatch = compileResult.QueryMatch;
 
             var ids = QueryPool.Rent(CoraxBufferSize(IndexSearcher, take, query));
+
+            SortingDataTransfer sortingData = default;
+            var hasOrderByDistance = query.Metadata.OrderBy is [{ OrderingType: OrderByFieldType.Distance }, ..] && _index.Configuration.CoraxIncludeSpatialDistance;
+            if (compileResult.QueryBuilderParams.HasBoost || hasOrderByDistance)
+            {
+                sortingData = new SortingDataTransfer
+                {
+                    ScoresBuffer = compileResult.QueryBuilderParams.NeedsScoresBuffer()
+                        ? ScorePool.Rent(ids.Length)
+                        : null,
+                    DistancesBuffer = _index.Configuration.CoraxIncludeSpatialDistance && hasOrderByDistance
+                        ? DistancePool.Rent(ids.Length)
+                        : null
+                };
+
+                if (queryMatch is IRequireSortingDataTransfer s)
+                    s.SetSortingDataTransfer(sortingData);
+            }
+
             int docsToLoad = CoraxBufferSize(IndexSearcher, pageSize, query);
             using var coraxEntryReader = new CoraxIndexedEntriesReader(documentsContext, IndexSearcher);
             int read;
             long i = Skip();
             Page page = default;
             var alreadySeenDocuments = new HashSet<long>();
-            
+
             while (true)
             {
                 token.ThrowIfCancellationRequested();
@@ -1317,7 +1339,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     var coraxInternalEntryId = ids[i];
                     if (alreadySeenDocuments.Add(coraxInternalEntryId) == false)
                         continue;
-                    
+
                     token.ThrowIfCancellationRequested();
                     var reader = IndexSearcher.GetEntryTermsReader(coraxInternalEntryId, ref page);
                     var id = _documentIdReader.GetTermFor(coraxInternalEntryId);
@@ -1330,6 +1352,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             QueryPool.Return(ids);
+            if (sortingData.IncludeScores)
+                ScorePool.Return(sortingData.ScoresBuffer);
+            if (sortingData.IncludeDistances)
+                DistancePool.Return(sortingData.DistancesBuffer);
             long Skip()
             {
                 while (true)
