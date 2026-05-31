@@ -332,8 +332,9 @@ internal static partial class QueryPlanBuilder
                     case ClauseType.In:
                     case ClauseType.AllIn:
                     {
-                        // Negated or boosted IN falls back to the bitmap posting-list union
-                        if (exec.IsNegated || clause.HasBoost)
+                        // Boosted IN stays on the scoring bitmap path (a complement has no match to score).
+                        // Negation is fine: the per-entry helper returns a membership boolean we simply invert.
+                        if (clause.HasBoost)
                             return null;
 
                         return new ScanPredicateInfo
@@ -346,7 +347,8 @@ internal static partial class QueryPlanBuilder
                                 _ => ScanValueType.Slice
                             },
                             CompareOp = clause.ClauseType == ClauseType.In ? ScanCompareOp.In : ScanCompareOp.AllIn,
-                            ParamIndex = 0
+                            ParamIndex = 0,
+                            Negated = exec.IsNegated
                         };
                     }
 
