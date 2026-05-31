@@ -80,6 +80,8 @@ internal static partial class QueryPlanBuilder
         ClauseInfo[] vectorArr = null;
         ClauseExecution[] spatialExecs = null;
         ClauseExecution[] vectorExecs = null;
+        
+        byte[] _ = null;
 
         if (template.SpatialClauses != null)
         {
@@ -90,7 +92,7 @@ internal static partial class QueryPlanBuilder
             {
                 var sc = template.SpatialClauses[si];
                 var scExec = new ClauseExecution(sc);
-                PopulateClauseValues(scExec, planParams.QueryParameters, writer, builderParameters);
+                PopulateClauseValues(scExec, planParams.QueryParameters, writer, builderParameters, 0, ref _);
                 spatialArr[si] = sc;
                 spatialExecs[si] = scExec;
             }
@@ -105,7 +107,7 @@ internal static partial class QueryPlanBuilder
             {
                 var vc = template.VectorClauses[vi];
                 var vcExec = new ClauseExecution(vc);
-                PopulateClauseValues(vcExec, planParams.QueryParameters, writer, builderParameters);
+                PopulateClauseValues(vcExec, planParams.QueryParameters, writer, builderParameters, 0, ref _);
                 vectorArr[vi] = vc;
                 vectorExecs[vi] = vcExec;
             }

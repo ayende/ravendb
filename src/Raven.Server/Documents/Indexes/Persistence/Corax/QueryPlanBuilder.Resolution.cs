@@ -140,8 +140,6 @@ internal static partial class QueryPlanBuilder
         var (executions, whenFlags) = EvaluateWhenAndFilterClauses(); // evaluating WHEN clauses against bound parameters as we go.
 
         var writer = new ValueWriter();
-        // Lazily allocated by the PopulateClauseValues walk only if a parameter-bound BETWEEN sentinel is found;
-        // reused as the FullKinds carrier in ComputeTypeSignature (see there). Null when no sentinel is present.
         byte[] sentinelFull = null;
         QueryExecution exec = CreateQueryExecution();
 
@@ -467,14 +465,11 @@ internal static partial class QueryPlanBuilder
             int types = 0; // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong), literals are handled via the query text (separate)
 
             // A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to QueryMatch-dispatched, while a non-sentinel BETWEEN of the same query text can be TreeScan-dispatched.
-            // The PopulateClauseValues walk already allocated `sentinelFull` and marked the bound parameter slots if any sentinel was present, forcing a distinct compiled plan.
-            // Reuse it as the FullKinds carrier here (kind occupies bits 0-1, the sentinel marker bit 2 — so OR the kinds in to preserve it); otherwise allocate only for the >16-param escape.
             var full = sentinelFull ?? (template.ParameterSlots.Length > 16 ? new byte[template.ParameterSlots.Length] : null);
             for (int i = 0; i < template.ParameterSlots.Length; i++)
             {
                 int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0x3;
-                if (full != null)
-                    full[i] |= (byte)kind;
+                full?[i] |= (byte)kind;
                 if (i > 15) continue;
                 types |= kind << (i * 2);
             }
@@ -508,16 +503,10 @@ internal static partial class QueryPlanBuilder
     /// No-op for literal/deferred bounds (ParameterSlot == -1 — the sentinel is encoded in the query text, no marker needed).</summary>
     private static void MarkSentinel(ref byte[] full, int parameterSlotCount, ParameterBinding binding)
     {
-        if (binding.ParameterSlot < 0)
+        if (binding.ParameterSlot < 0 || parameterSlotCount is 0)
             return;
         full ??= new byte[parameterSlotCount];
         full[binding.ParameterSlot] |= SentinelParamMark;
-    }
-
-    private static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters)
-    {   // Spatial/vector clauses never carry a BETWEEN sentinel, so they route through here with no FullKinds carrier.
-        byte[] noSentinel = null;
-        PopulateClauseValues(exec, queryParameters, writer, builderParameters, parameterSlotCount: 0, ref noSentinel);
     }
 
     private static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters,
@@ -556,24 +545,22 @@ internal static partial class QueryPlanBuilder
                 var (high, highType) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
                 bool lowIsSentinel = low is RavenConstants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
                 bool highIsSentinel = high is RavenConstants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
-                bool lowIsParam = bindings[BindingIndex.BetweenLow].Source == BindingSource.QueryParameter;
-                bool highIsParam = bindings[BindingIndex.BetweenHigh].Source == BindingSource.QueryParameter;
                 switch (lowIsSentinel, highIsSentinel)
                 {
                     case (true, true):
                         exec.SentinelRewriteType = ClauseType.Exists;
-                        if (lowIsParam) MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenLow]);
-                        if (highIsParam) MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenHigh]);
+                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenLow]);
+                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenHigh]);
                         return;
                     case (true, false):
                         exec.SentinelRewriteType = ClauseType.LessThanOrEqual;
-                        if (lowIsParam) MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenLow]);
+                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenLow]);
                         exec.TermValueType = highType;
                         exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType));
                         return;
                     case (false, true):
                         exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual;
-                        if (highIsParam) MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenHigh]);
+                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenHigh]);
                         exec.TermValueType = lowType;
                         exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType));
                         return;
