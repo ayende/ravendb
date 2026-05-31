@@ -28,7 +28,6 @@ internal static partial class QueryPlanBuilder
             new ScanParamExtractor(exec, indexSearcher, walkerCtx).ExtractAll(predicates);
         }
 
-        private Slice[] _analyzedSlices;
         private readonly List<long> _roots = [];
         private readonly List<ResidualInValues> _inSets = [];
 
@@ -61,17 +60,16 @@ internal static partial class QueryPlanBuilder
         private void StoreResults()
         {
             _exec.FieldRootPages = _roots.Count > 0 ? _roots.ToArray() : null;
-            _exec.AnalyzedSlices = _analyzedSlices;
             _exec.ResidualInSets = _inSets.Count > 0 ? _inSets.ToArray() : null;
         }
 
-        /// <summary>Analyze the string at <paramref name="slot"/> (a <see cref="QueryExecution.StringValues"/>
-        /// index, i.e. a packed Param1/Param2) and store it into <see cref="QueryExecution.AnalyzedSlices"/>
-        /// at the same slot, mirroring how long/double values are addressed by their packed index.</summary>
-        private void StoreAnalyzedSlice(in FieldMetadata fieldMeta, int slot)
+        /// <summary>Force the string at <paramref name="slot"/> (a <see cref="QueryExecution.StringValues"/>
+        /// index, i.e. a packed Param1/Param2) to be analyzed into <see cref="QueryExecution.AnalyzedSlices"/>
+        /// at the same slot, so the slot the residual-scan IL will read is populated before the scan runs.
+        /// The lazy fill lives in <see cref="QueryExecution.GetAnalyzedSlice"/>; we discard the return here.</summary>
+        private void EnsureAnalyzedSlice(in FieldMetadata fieldMeta, int slot)
         {
-            _analyzedSlices ??= new Slice[_exec.StringValues.Length];
-            _analyzedSlices[slot] = _exec.GetAnalyzedSlice(_indexSearcher, fieldMeta, slot);
+            _exec.GetAnalyzedSlice(_indexSearcher, fieldMeta, slot);
         }
 
         private ResidualInValues BuildInSet(ScanPredicateInfo pred, ClauseExecution exec)
@@ -142,9 +140,9 @@ internal static partial class QueryPlanBuilder
                 case ScanValueType.Slice:
                 case ScanValueType.SliceLong:
                     FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, _walkerCtx);
-                    StoreAnalyzedSlice(fieldMeta, idx1);
+                    EnsureAnalyzedSlice(fieldMeta, idx1);
                     if (idx2 != PackedParam.NoParamValue)
-                        StoreAnalyzedSlice(fieldMeta, idx2);
+                        EnsureAnalyzedSlice(fieldMeta, idx2);
                     break;
             }
         }

@@ -16,8 +16,6 @@ public class QueryExecution
     /// </summary>
     public const int CardinalityCliffBit = 1 << 31;
 
-    private List<(Slice Field, int Slot, Slice Analyzed)> _analyzedSlices;
-
     public long[] Cardinalities;
     
     public double[] DoubleValues;
@@ -40,12 +38,15 @@ public class QueryExecution
 
     public bool QueryWillReturnNoResults;
 
-    /// <summary>Analyzed single-value slice predicates, parallel to <see cref="StringValues"/> and
+    /// <summary>Analyzer-encoded single-value slices, parallel to <see cref="StringValues"/> and
     /// indexed by <see cref="PackedParam.Param1"/> / <see cref="PackedParam.Param2"/> — the same
-    /// addressing scheme <see cref="LongValues"/> / <see cref="DoubleValues"/> use. Each slot holds the
-    /// analyzer-encoded form of <see cref="StringValues"/>[slot]; non-slice slots stay default. The
-    /// residual-scan IL reads <c>AnalyzedSlices[ParamIndex].AsReadOnlySpan()</c> directly, so there is no
-    /// dense per-scan slice counter and both the bitmap and direct-scan extraction paths fill it identically.</summary>
+    /// addressing scheme <see cref="LongValues"/> / <see cref="DoubleValues"/> use. The single source of
+    /// truth for analyzed slices: lazily allocated and filled on first touch by <see cref="GetAnalyzedSlice"/>,
+    /// which every consumer routes through — bitmap term/range/between queries, the compound-field key
+    /// encoding, and the residual-scan extractor (which forces the slots the IL will read to be populated).
+    /// The residual-scan IL then reads <c>AnalyzedSlices[ParamIndex].AsReadOnlySpan()</c> directly. Slot is
+    /// 1:1 with field (the append-only ValueWriter never reuses a slot), so the slot index alone is the key
+    /// and an unset slot stays <c>default</c> — its <see cref="Slice.HasValue"/> is the "not yet analyzed" flag.</summary>
     public Slice[] AnalyzedSlices;
 
     /// <summary>Per-IN/ALL-IN residual predicate value sets, materialized per execution and
@@ -66,17 +67,10 @@ public class QueryExecution
 
     public Slice GetAnalyzedSlice(IndexSearcher indexSearcher, in FieldMetadata fieldMeta, int slot)
     {
-        // count is small (typically &lt; 20); a linear scan beats hashing for these sizes and
-        Slice fieldName = fieldMeta.FieldName;
-        List<(Slice Field, int Slot, Slice Analyzed)> list = _analyzedSlices ??= [];
-        foreach ((Slice field, int slotIdx, Slice slice) in list)
-        {
-            if (slotIdx == slot && SliceComparer.AreEqual(field, fieldName))
-                return slice;
-        }
-
-        Slice analyzed = indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, StringValues[slot]);
-        _analyzedSlices.Add((fieldName, slot, analyzed));
+        AnalyzedSlices ??= new Slice[StringValues.Length];
+        ref Slice analyzed = ref AnalyzedSlices[slot];
+        if (analyzed.HasValue == false)
+            analyzed = indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, StringValues[slot]);
         return analyzed;
     }
 }
