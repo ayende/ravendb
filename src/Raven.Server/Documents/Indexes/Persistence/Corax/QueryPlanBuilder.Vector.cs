@@ -67,6 +67,15 @@ internal static partial class QueryPlanBuilder
         }
 
     }
+    
+    private static (object Value, ParamValueType Type) ResolveBindingRaw(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
+    {
+        if (binding.LiteralType != ParamValueType.Parameter)
+            return (binding.LiteralValue, binding.LiteralType);
+        if (queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
+            return (raw, ParamValueType.Parameter); // raw from blittable — caller decides how to interpret
+        return (null, ParamValueType.Null);
+    }
 
     private static List<CoraxVectorItem> ResolveVectorItems(QueryExecution exec, QueryBuilderParameters builderParams)
     {

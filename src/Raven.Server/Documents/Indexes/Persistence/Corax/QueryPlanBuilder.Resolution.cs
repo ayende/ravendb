@@ -57,9 +57,6 @@ internal static partial class QueryPlanBuilder
         public readonly PlanParameters PlanParams = planParams;
         public readonly QueryBuilderParameters BuilderParams = builderParams;
 
-        /// <summary>True only for `include timings()` / explain queries (queryTimings != null), the
-        /// only case where a match's Inspect() is read. Free-form DirectScan inspection strings are
-        /// built solely under this flag, so the common query path skips their per-execution allocation.</summary>
         public readonly bool WantTimings = wantTimings;
 
         public string RejectReason;
@@ -207,7 +204,7 @@ internal static partial class QueryPlanBuilder
             foreach (var it in executions)
             {
                 PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters);
-                PropagateBetweenContradiction(it, writer); // a contradictory BETWEEN rewrites into the empty-IN flavor
+                PropagateBetweenContradiction(it, writer); // a contradictory BETWEEN is rewritten into an empty-IN
                 hasEmptyIn |= IsEmptyIn(it);
 
                 if (it.Cardinality < 0)
@@ -290,7 +287,7 @@ internal static partial class QueryPlanBuilder
 
             // Scan predicates only apply to multi-clause AND chains (clause 0 is the seed, 1..N are evaluated per-entry).
             bool hasScanList = template.IsOr == false && executions.Count > 1;
-            // Skip clause 0 (the seed) unless all clauses are negated (then we start from AllEntries, so every clause is a scan predicate).
+            // Skip clause 0 (the seed) unless all clauses are negated (then we start from AllEntries, so every clause would be a scan predicate).
             int scanStart = CheckAllNegated() ? 0 : 1;
 
             List<ScanPredicateInfo> scanList = hasScanList ? [] : null;
@@ -304,11 +301,11 @@ internal static partial class QueryPlanBuilder
                 ScanPredicateInfo? pred = BuildScanPredicateInfoCore(clauseExec, clauseExec.TermValueType);
                 perClause[i] = pred;
 
-                if (isScanCandidate && pred is {} p)
-                {
-                    scanList.Add(p);
-                    clauseIndices.Add(i);
-                }
+                if (isScanCandidate is false || pred is not { } p) 
+                    continue;
+                
+                scanList.Add(p);
+                clauseIndices.Add(i);
             }
 
             return (scanList, clauseIndices?.ToArray(), perClause);
@@ -328,24 +325,19 @@ internal static partial class QueryPlanBuilder
                     case ClauseType.In:
                     case ClauseType.AllIn:
                     {
-                        // Negated or boosted IN falls back to the bitmap posting-list union: the residual
-                        // scan expresses neither negation nor boost scoring. The value set itself is
-                        // materialized per execution into QueryExecution.ResidualInSets (see ScanParamExtractor);
-                        // the residual IL only carries the field + compare op + value-type, all cache-stable
-                        // (the runtime value count is the materialized array's length).
+                        // Negated or boosted IN falls back to the bitmap posting-list union
                         if (exec.IsNegated || clause.HasBoost)
                             return null;
 
-                        ScanValueType inValueType = exec.PackedParamValue.ValueType switch
-                        {
-                            PackedParam.TypeLong => ScanValueType.Long,
-                            PackedParam.TypeDouble => ScanValueType.Double,
-                            _ => ScanValueType.Slice
-                        };
                         return new ScanPredicateInfo
                         {
                             FieldName = clause.FieldName,
-                            ValueType = inValueType,
+                            ValueType = exec.PackedParamValue.ValueType switch
+                            {
+                                PackedParam.TypeLong => ScanValueType.Long,
+                                PackedParam.TypeDouble => ScanValueType.Double,
+                                _ => ScanValueType.Slice
+                            },
                             CompareOp = clause.ClauseType == ClauseType.In ? ScanCompareOp.In : ScanCompareOp.AllIn,
                             ParamIndex = 0
                         };
@@ -375,17 +367,14 @@ internal static partial class QueryPlanBuilder
                         return new ScanPredicateInfo
                         {
                             FieldName = clause.FieldName,
-                            ValueType = ScanValueType.Long,
                             CompareOp = ScanCompareOp.Exists,
-                            ParamIndex = 0
                         };
 
                     case ClauseType.AndGroup:
                     case ClauseType.OrGroup:
                     {
-                        var subExecs = exec.SubExecutions;
                         var branches = new List<ScanPredicateInfo>();
-                        foreach (var it in subExecs)
+                        foreach (var it in exec.SubExecutions)
                         {
                             var subTermType = it.TermValueType;
                             var subPred = BuildScanPredicateInfoCore(it, subTermType);
@@ -396,50 +385,35 @@ internal static partial class QueryPlanBuilder
 
                         return new ScanPredicateInfo
                         {
-                            FieldName = clause.FieldName ?? subExecs[0].Clause.FieldName,
+                            FieldName = clause.FieldName ?? exec.SubExecutions[0].Clause.FieldName,
                             SubPredicates = branches.ToArray(),
                             Group = clause.ClauseType == ClauseType.AndGroup ? GroupKind.And : GroupKind.Or
                         };
                     }
                 }
 
-                // Determine value type and comparison op
-                ScanCompareOp compareOp = clause.ClauseType switch
-                {
-                    ClauseType.Equals => ScanCompareOp.Equal,
-                    ClauseType.NotEquals => ScanCompareOp.NotEqual,
-                    ClauseType.GreaterThan => ScanCompareOp.GreaterThan,
-                    ClauseType.GreaterThanOrEqual => ScanCompareOp.GreaterThanOrEqual,
-                    ClauseType.LessThan => ScanCompareOp.LessThan,
-                    ClauseType.LessThanOrEqual => ScanCompareOp.LessThanOrEqual,
-                    ClauseType.Between => ScanCompareOp.Between,
-                    _ => ScanCompareOp.Equal
-                };
-
-                ScanValueType valueType = termType switch
-                {
-                    ParamValueType.Long => ScanValueType.Long,
-                    ParamValueType.Double => ScanValueType.Double,
-                    _ => ScanValueType.Slice // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
-                };
-
-                // All predicate value types use the packed source indices directly: numerics read
-                // QueryExecution.LongValues/DoubleValues, slices read QueryExecution.AnalyzedSlices — all
-                // addressed by PackedParam.Param1/Param2 (the StringValues slot for slices, analyzed in place
-                // by ScanParamExtractor). Plan-cache key invariance: whenFlags + fullKinds captures sentinel
-                // rewrites and clause-type variants, so for a given cache key the writer emits the same
-                // per-clause slot assignment across executions.
-                var packed = exec.PackedParamValue;
-                int idx = packed.Param1;
-                int idx2 = packed.Param2 != PackedParam.NoParamValue ? packed.Param2 : -1;
-
                 return new ScanPredicateInfo
                 {
                     FieldName = clause.FieldName,
-                    ValueType = valueType,
-                    CompareOp = compareOp,
-                    ParamIndex = idx,
-                    ParamIndex2 = idx2
+                    ValueType = termType switch
+                    {
+                        ParamValueType.Long => ScanValueType.Long,
+                        ParamValueType.Double => ScanValueType.Double,
+                        _ => ScanValueType.Slice // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
+                    },
+                    CompareOp = clause.ClauseType switch
+                    {
+                        ClauseType.Equals => ScanCompareOp.Equal,
+                        ClauseType.NotEquals => ScanCompareOp.NotEqual,
+                        ClauseType.GreaterThan => ScanCompareOp.GreaterThan,
+                        ClauseType.GreaterThanOrEqual => ScanCompareOp.GreaterThanOrEqual,
+                        ClauseType.LessThan => ScanCompareOp.LessThan,
+                        ClauseType.LessThanOrEqual => ScanCompareOp.LessThanOrEqual,
+                        ClauseType.Between => ScanCompareOp.Between,
+                        _ => ScanCompareOp.Equal
+                    },
+                    ParamIndex = exec.PackedParamValue.Param1,
+                    ParamIndex2 = exec.PackedParamValue.Param2 != PackedParam.NoParamValue ? exec.PackedParamValue.Param2 : -1
                 };
             }
         }
@@ -580,7 +554,10 @@ internal static partial class QueryPlanBuilder
             default: // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
                 var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters, builderParameters);
                 if (value == null && exec.Clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith or ClauseType.Search or ClauseType.Regex)
-                    ThrowInvalidMethodArgument(exec.Clause); // reject null (matches Lucene behavior).
+                {
+                    throw new InvalidQueryException(  // reject null (matches Lucene behavior).
+                        $"Method {exec.Clause.ClauseType}() expects to get an argument of type String while it got Null");
+                }
 
                 exec.TermValueType = valueType;
                 exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
@@ -678,15 +655,6 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static (object Value, ParamValueType Type) ResolveBindingRaw(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
-    {
-        if (binding.LiteralType != ParamValueType.Parameter)
-            return (binding.LiteralValue, binding.LiteralType);
-        if (queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
-            return (raw, ParamValueType.Parameter); // raw from blittable — caller decides how to interpret
-        return (null, ParamValueType.Null);
-    }
-
     private static void ResolveBoostFactor(ClauseExecution exec, BlittableJsonReaderObject queryParameters)
     {
         var (boostVal, boostType) = ResolveBindingScalar(exec.Clause.Bindings[^1], queryParameters, builderParameters: null);
@@ -704,22 +672,8 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static void ThrowInvalidMethodArgument(ClauseInfo clause)
-    {
-        string methodName = clause.ClauseType switch
-        {
-            ClauseType.StartsWith => "startsWith",
-            ClauseType.EndsWith => "endsWith",
-            ClauseType.Search => "search",
-            ClauseType.Regex => "regex",
-            _ => clause.ClauseType.ToString()
-        };
-        throw new InvalidQueryException(
-            $"Method {methodName}() expects to get an argument of type String while it got Null");
-    }
-
     /// <summary>
-    /// Foo BETWEEN $x AND $y - where $y > $x - returns nothing, this re-writes the clause to directly reflect this  
+    /// Foo BETWEEN $x AND $y - where $y > $x - returns nothing, this re-writes the clause so we can optimize this 
     /// </summary>
     private static void PropagateBetweenContradiction(ClauseExecution exec, ValueWriter writer)
     {
@@ -795,34 +749,27 @@ internal static partial class QueryPlanBuilder
             case ExecutionStrategy.CompoundField when orderByFields != null:
                 if (CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost) == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
-                innerMatch = ConstructCompoundField(ref ctx, ctx.Exec.Plan.CompoundFieldField2RangeIdx, cfEntriesToScan, cfBitmapCost);
+                innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.Plan.CompoundFieldField2RangeIdx, cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
                 return OrderBy(builderParameters, innerMatch, orderByFields, hasEmptySorts);
             case ExecutionStrategy.DirectScan when orderByFields != null:
-                // orderByFields can be null on a per-execution PageSize==0 reuse of a cached
-                // DirectScan plan — PageSize is not part of the plan cache key.
-                // Like CompoundField, DirectScan is a structural candidate; the cost gate runs fresh
-                // per-execution here (RavenDB #4852). Full scans have no cost gate and always pass.
                 var execs = exec.Executions;
                 bool isFullScan = execs is not { Count: > 0 };
-                if (DirectScanCostEffective(ref ctx, isFullScan, out long dsEntriesToScan, out long dsBitmapCost))
+                if (DirectScanCostEffective(ref ctx, isFullScan, out var directScanReason))
                 {
                     bool hasTieBreak = orderByFields.Length == 2;
-                    string dsReason = ctx.WantTimings
-                        ? $"entries_to_scan({dsEntriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({dsBitmapCost})"
-                        : null;
-                    innerMatch = ConstructDirectScan(ref ctx, exec.Plan.SortDrivingClauseIndex, isFullScan, hasTieBreak,
-                        reasonForInspection: dsReason);
-                    if (innerMatch is not null) return innerMatch;
+                    int drivingIdx = exec.Plan.SortDrivingClauseIndex;
+                    innerMatch = ConstructDirectScan(ref ctx, walkerCtx, drivingIdx, isFullScan, hasTieBreak, directScanReason);
+                    if (innerMatch is not null) 
+                        return innerMatch;
                 }
-
                 goto default;
             case ExecutionStrategy.BitmapSort:
             default: // may either be the selected strategy or a one-off (because of bad parameters preventing a faster strategy)
                 innerMatch = InstantiateBitmapPipeline(ctx.Plan, ctx.Exec, ctx.PlanParams, ctx.BuilderParams, walkerCtx, highlightingTerms, wantTimings, token);
                 if (ctx.OrderByFields == null) return innerMatch;
                 if (innerMatch is CompiledQueryMatch seekMatch)
-                    TrySetSortSeekHint(seekMatch, ctx.Plan, ctx.Exec);
+                    TrySetSortSeekHint(ctx.Plan, ctx.Exec, seekMatch);
                 return OrderBy(ctx.BuilderParams, innerMatch, ctx.OrderByFields, hasEmptySorts);
         }
 
@@ -905,42 +852,38 @@ internal static partial class QueryPlanBuilder
             Cardinalities = exec.Cardinalities,
         };
 
-        // Attach the deferred scan-param populate on QueryExecution only when the plan actually has
-        // scan-eligible predicates. Most queries don't, so the closure allocation is skipped on the
-        // common path. LongValues/DoubleValues are already populated on exec; only AnalyzedSlices
-        // and FieldRootPages need lazy materialization (they trigger analyzer + field-root lookups).
         if (exec.Plan.ScanPredicateInfos is { Count: > 0 })
         {
-            exec.PopulateScanParams = () =>
-            {
-                ScanParamExtractor.Extract(exec, indexSearcher, walkerCtx);
-            };
+            exec.PopulateScanParams = () => ScanParamExtractor.Extract(exec, indexSearcher, walkerCtx);
         }
 
-        IQueryMatch result = compiledMatch;
+        return FinalQueryMatch(compiledMatch);
 
-        // Spatial post-filter phase: AND each spatial match with the candidate bitmap.
-        if (exec.SpatialFilters is { Length: > 0 })
+        IQueryMatch FinalQueryMatch(IQueryMatch result)
         {
-            var spatialFilters = new IQueryMatch[exec.SpatialFilters.Length];
-            for (int sf = 0; sf < exec.SpatialFilters.Length; sf++)
+            // Wrap the result in spatial & vector matches
+            
+            if (exec.SpatialFilters is { Length: > 0 })
             {
-                spatialFilters[sf] = resolvedMatches[exec.SpatialFilters[sf].MatchIndex];
+                var spatialFilters = new IQueryMatch[exec.SpatialFilters.Length];
+                for (int sf = 0; sf < exec.SpatialFilters.Length; sf++)
+                {
+                    spatialFilters[sf] = resolvedMatches[exec.SpatialFilters[sf].MatchIndex];
+                }
+
+                result = new PostFilterMatch(result, spatialFilters, wantTimings);
             }
 
-            result = new PostFilterMatch(result, spatialFilters, wantTimings);
-        }
-
-        // Vector select phase: each vector wraps the bitmap so far as its filter source.
-        if (exec.VectorSelects is { Length: > 0 })
-        {
-            foreach (var item in ResolveVectorItems(exec, builderParameters))
+            if (exec.VectorSelects is { Length: > 0 })
             {
-                result = item.Materialize(result);
+                foreach (var item in ResolveVectorItems(exec, builderParameters))
+                {
+                    result = item.Materialize(result);
+                }
             }
-        }
 
-        return result;
+            return result;
+        }
     }
 
     /// <summary>
@@ -1207,122 +1150,99 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    private static IQueryMatch ConstructCompoundField(ref InstCtx ctx, int field2RangeIdx, long entriesToScan, long bitmapCost)
+    private static IQueryMatch ConstructCompoundField(ref InstCtx ctx, ResolutionContext walkerCtx, int field2RangeIdx, long entriesToScan, long bitmapCost)
     {
         var execs = ctx.Exec.Executions;
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         int drivingClauseIdx = ctx.Exec.Plan.CompoundFieldDrivingClause;
-        string sortFieldName = ctx.Exec.Plan.Template.CompoundFieldSortName;
 
-        var drivingClause = execs[drivingClauseIdx].Clause;
-        var drivingExec = execs[drivingClauseIdx];
-        var packed = drivingExec.PackedParamValue;
+        var packed = execs[drivingClauseIdx].PackedParamValue;
 
-        // Residual predicates were filtered once at plan-build time against the plan-stable
-        // exclusion {drivingClause, field2-range}; Unscannable means a non-scannable clause slipped
-        // through (defensive — discovery prevents it), so abort to the bitmap pipeline.
         var residualSet = ctx.Exec.Plan.CompoundFieldResiduals;
         if (residualSet is null)
             return null;
 
-        string field1Name = drivingClause.FieldName;
+        string field1Name = execs[drivingClauseIdx].Clause.FieldName;
         string compoundFieldName = ctx.Exec.Plan.Template.CompoundFieldName;
         var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
 
         // Build the prefix bytes for field1's value.
-        // String: analyzed via field1's analyzer (cached). Numeric: 8-byte big-endian sortable encoding
-        // written directly into a single allocator-backed ByteString (no managed byte[] hop).
         Slice analyzedPrefix = BuildField1Prefix(ref ctx, field1Name, packed, out string field1ValueStr);
-        if (analyzedPrefix.HasValue == false)
-            return null;
+        if (analyzedPrefix.HasValue == false || analyzedPrefix.Size > byte.MaxValue) // if too long, cannot be used for compound
+            return null; // fall back to bitmap
 
-        // Compound key trailing byte stores field1 length as a single byte.
-        // If the analyzed prefix exceeds 255 bytes, the compound key format can't represent it.
-        // Fall back to the bitmap pipeline which queries individual fields normally.
-        if (analyzedPrefix.Size > byte.MaxValue)
-            return null;
+        IQueryMatch drivingMatch = CreateDrivingMatch(ref ctx);
 
-        bool ascending = ctx.OrderByFields[0].Ascending;
-
-        IQueryMatch drivingMatch;
-        if (field2RangeIdx >= 0
-            && TryBuildCompositeRangeKeys(ref ctx, analyzedPrefix, sortFieldName,
-                execs[field2RangeIdx], out var lowSlice, out var highSlice))
-        {
-            drivingMatch = indexSearcher.RangeBuilder<Range.Inclusive, Range.Inclusive>(
-                compoundFieldMeta, lowSlice, highSlice,
-                forward: ascending, CancellationToken.None);
-        }
-        else
-        {
-            // No field2 narrowing (or it would overflow / use an unsupported value type):
-            // run a prefix scan on field1 only and let entry-scan residuals filter the rest.
-            drivingMatch = indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
-                isNegated: false, forward: ascending,
-                validatePostfixLen: true);
-        }
-
-        // Extract scan parameters and stash them on the exec — the residual IL reads exec.AnalyzedSlices /
-        // exec.FieldRootPages directly. This is the same full-ScanList analyzed walk the bitmap pipeline
-        // defers through PopulateScanParams; slices are analyzed and addressed by PackedParam.Param1, and
-        // the driving clause is re-evaluated harmlessly rather than skipped with raw slices.
-        ScanParamExtractor.Extract(ctx.Exec, indexSearcher, new ResolutionContext(ctx.BuilderParams));
+        ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx);
 
         var directScan = BuildDirectScan(
             indexSearcher, drivingMatch, ctx.Exec,
             ctx.Plan.CompiledEntryPredicate, residualSet);
 
-        // Free-form inspection strings are read only by Inspect() on `include timings()` / explain
-        // queries (queryTimings != null). Skip building them — and the field1ValueStr formatting —
-        // on the common query path.
         if (ctx.WantTimings)
+        {   // only used when we use include timings()
+            SetDirectScanPropertiesForIntrospection(ref ctx);
+        }
+
+        return directScan;
+
+        IQueryMatch CreateDrivingMatch(ref InstCtx context)
+        {
+            string fieldName = context.Exec.Plan.Template.CompoundFieldSortName;
+            if (field2RangeIdx >= 0 && 
+                TryBuildCompositeRangeKeys(ref context, analyzedPrefix, fieldName, execs[field2RangeIdx], out var lowSlice, out var highSlice))
+            {
+                return indexSearcher.RangeBuilder<Range.Inclusive, Range.Inclusive>(
+                    compoundFieldMeta, lowSlice, highSlice,
+                    forward: context.OrderByFields[0].Ascending, CancellationToken.None);
+            }
+
+            // No field2 narrowing available: run a prefix scan on field1 only and let entry-scan residuals filter the rest.
+            return indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
+                isNegated: false, forward: context.OrderByFields[0].Ascending,
+                validatePostfixLen: true);
+        }
+
+        void SetDirectScanPropertiesForIntrospection(ref InstCtx context)
         {
             directScan.DrivingTreeName = compoundFieldName;
             directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
             directScan.SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)";
-            directScan.Direction = ctx.OrderByFields[0].Ascending ? "Forward" : "Backward";
+            directScan.Direction = context.OrderByFields[0].Ascending ? "Forward" : "Backward";
             directScan.ResidualDescription = DescribeResiduals(residualSet);
             directScan.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
         }
-
-        return directScan;
     }
 
-    /// <summary>Build the field1 prefix <see cref="Slice"/> for the CompoundField driving match.
-    /// String case returns the cached analyzed slice directly (no allocation). Numeric cases
-    /// allocate a single 8-byte allocator-backed buffer and write the big-endian sortable
-    /// encoding straight in — no managed <c>byte[]</c> intermediate. Unsupported value types
-    /// return <c>default(Slice)</c>; caller treats that as a failure.</summary>
     private static Slice BuildField1Prefix(ref InstCtx ctx, string field1Name, PackedParam packed,
-        out string field1ValueStr)
+        out string field1ValueStrForIntrospection)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         switch (packed.ValueType)
         {
             case PackedParam.TypeString:
             {
-                field1ValueStr = ctx.Exec.StringValues[packed.Param1];
+                field1ValueStrForIntrospection = ctx.Exec.StringValues[packed.Param1];
                 var field1Meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, field1Name, hasBoost: false);
                 return ctx.Exec.GetAnalyzedSlice(indexSearcher, field1Meta, packed.Param1);
             }
             case PackedParam.TypeLong:
             {
-                // field1ValueStr feeds only the inspection strings (see ConstructCompoundField); skip
-                // the ToString allocation unless this is an inspected query.
-                field1ValueStr = ctx.WantTimings ? ctx.Exec.LongValues[packed.Param1].ToString() : null;
+                // skip the ToString allocation unless this is an inspected query.
+                field1ValueStrForIntrospection = ctx.WantTimings ? ctx.Exec.LongValues[packed.Param1].ToString() : null;
                 ctx.PlanParams.Allocator.Allocate(sizeof(long), out ByteString buf);
                 EncodeNumericValue(buf.ToSpan(), PackedParam.TypeLong, packed.Param1, ctx.Exec);
                 return new Slice(buf);
             }
             case PackedParam.TypeDouble:
             {
-                field1ValueStr = ctx.WantTimings ? ctx.Exec.DoubleValues[packed.Param1].ToString(CultureInfo.InvariantCulture) : null;
+                field1ValueStrForIntrospection = ctx.WantTimings ? ctx.Exec.DoubleValues[packed.Param1].ToString(CultureInfo.InvariantCulture) : null;
                 ctx.PlanParams.Allocator.Allocate(sizeof(long), out ByteString buf);
                 EncodeNumericValue(buf.ToSpan(), PackedParam.TypeDouble, packed.Param1, ctx.Exec);
                 return new Slice(buf);
             }
             default:
-                field1ValueStr = null;
+                field1ValueStrForIntrospection = null;
                 return default;
         }
     }
@@ -1352,11 +1272,6 @@ internal static partial class QueryPlanBuilder
         if (field2Packed.IsNone)
             return false;
 
-        var field2ClauseType = field2Exec.Clause.ClauseType;
-        bool isBetween = field2ClauseType == ClauseType.Between;
-        bool isGt = field2ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual;
-        bool isLt = field2ClauseType is ClauseType.LessThan or ClauseType.LessThanOrEqual;
-
         // Resolve low (and high for Between) encodings. String slots reject early on >255 bytes.
         if (TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param1, ref ctx, out var encLow) == false)
             return false;
@@ -1364,7 +1279,7 @@ internal static partial class QueryPlanBuilder
             return false;
 
         CompoundFieldEncoding encHigh = default;
-        if (isBetween)
+        if (field2Exec.Clause.ClauseType is ClauseType.Between)
         {
             if (TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param2, ref ctx, out encHigh) == false)
                 return false;
@@ -1372,39 +1287,43 @@ internal static partial class QueryPlanBuilder
                 return false;
         }
 
-        int prefixSize = analyzedPrefix.Size;
         int lowSuffixSize = encLow.Size;
-        int highSuffixSize = isBetween ? encHigh.Size : encLow.Size;
-        int lowLen = prefixSize + lowSuffixSize + 1;
-        int highLen = prefixSize + highSuffixSize + 1;
+        int highSuffixSize = field2Exec.Clause.ClauseType == ClauseType.Between ? encHigh.Size : encLow.Size;
+        int lowLen = analyzedPrefix.Size + lowSuffixSize + 1;
+        int highLen = analyzedPrefix.Size + highSuffixSize + 1;
 
         if (lowLen > Constants.Terms.MaxLength || highLen > Constants.Terms.MaxLength)
             return false;
 
-        var allocator = ctx.PlanParams.Allocator;
         var prefixSpan = analyzedPrefix.AsReadOnlySpan();
 
         // Low key. GT/GTE → low suffix = field2 bound; LT/LTE → low suffix = 0x00; Between → low = low bound.
-        allocator.Allocate(lowLen, out ByteString lowBuf);
-        var lowSpan = lowBuf.ToSpan();
+        ctx.PlanParams.Allocator.Allocate(lowLen, out ByteString lowBuf);
+        Span<byte> lowSpan = lowBuf.ToSpan();
         prefixSpan.CopyTo(lowSpan);
-        if (isGt || isBetween)
-            WriteCompoundFieldEncoding(lowSpan.Slice(prefixSize, lowSuffixSize), encLow, ctx.Exec);
+        if (field2Exec.Clause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual or ClauseType.Between)
+            WriteCompoundFieldEncoding(lowSpan.Slice(analyzedPrefix.Size, lowSuffixSize), encLow, ctx.Exec);
         else
-            lowSpan.Slice(prefixSize, lowSuffixSize).Clear();
-        lowSpan[lowLen - 1] = (byte)prefixSize;
+            lowSpan.Slice(analyzedPrefix.Size, lowSuffixSize).Clear();
+        lowSpan[lowLen - 1] = (byte)analyzedPrefix.Size;
 
         // High key. LT/LTE → high suffix = field2 bound; GT/GTE → high suffix = 0xFF; Between → high = high bound.
-        allocator.Allocate(highLen, out ByteString highBuf);
-        var highSpan = highBuf.ToSpan();
+        ctx.PlanParams.Allocator.Allocate(highLen, out ByteString highBuf);
+        Span<byte> highSpan = highBuf.ToSpan();
         prefixSpan.CopyTo(highSpan);
-        if (isLt)
-            WriteCompoundFieldEncoding(highSpan.Slice(prefixSize, highSuffixSize), encLow, ctx.Exec);
-        else if (isBetween)
-            WriteCompoundFieldEncoding(highSpan.Slice(prefixSize, highSuffixSize), encHigh, ctx.Exec);
-        else
-            highSpan.Slice(prefixSize, highSuffixSize).Fill(0xFF);
-        highSpan[highLen - 1] = (byte)prefixSize;
+        switch (field2Exec.Clause.ClauseType)
+        {
+            case ClauseType.LessThan or ClauseType.LessThanOrEqual:
+                WriteCompoundFieldEncoding(highSpan.Slice(analyzedPrefix.Size, highSuffixSize), encLow, ctx.Exec);
+                break;
+            case ClauseType.Between:
+                WriteCompoundFieldEncoding(highSpan.Slice(analyzedPrefix.Size, highSuffixSize), encHigh, ctx.Exec);
+                break;
+            default:
+                highSpan.Slice(analyzedPrefix.Size, highSuffixSize).Fill(0xFF);
+                break;
+        }
+        highSpan[highLen - 1] = (byte)analyzedPrefix.Size;
 
         lowSlice = new Slice(lowBuf);
         highSlice = new Slice(highBuf);
@@ -1494,102 +1413,60 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    /// <summary>Phase 5 bake: construction-only path for the DirectScan hint.
-    /// Discovery (clause selection, cost gate, residual scannability) already passed
-    /// in either TryCreateSimpleFieldDirectScan or by virtue of a cached
-    /// <see cref="ExecutionStrategy.DirectScan"/>. Returns null when a per-execution
-    /// runtime check fails (e.g. driving match resolution returns non-TermsProviderMatch
-    /// because the field has no terms in this index).</summary>
-    /// <param name="reasonForInspection">Free-form decision-trail string surfaced through
-    /// <c>DirectScanMatchBase.Reason</c>; isFullScan overrides it with a fixed string.</param>
     private static IQueryMatch ConstructDirectScan(
-        ref InstCtx ctx,
+        ref InstCtx ctx, ResolutionContext walkerCtx,
         int drivingIdx, bool isFullScan, bool hasTieBreak,
         string reasonForInspection)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        // sortFieldName feeds only the inspection node; skip the ToString on the common path.
         string sortFieldName = ctx.WantTimings ? ctx.OrderByFields[0].Field.FieldName.ToString() : null;
         bool forward = ctx.OrderByFields[0].Ascending;
-
-        // ── 1. Driving provider (term iterator wrapped as TermsProviderMatch) ──
-        if (ResolveDrivingProvider(ref ctx, drivingIdx, isFullScan, forward,
-                out ITermsProvider provider, out LowLevelTransaction llt, out string drivingClauseDescription) == false)
-            return null;
-
-        // ── 2. Residual predicates were filtered once at plan-build time against {drivingClause}.
-        //       Unscannable means a non-scannable clause slipped through (defensive — discovery
-        //       prevents it), so abort to the bitmap pipeline.
+        
         var residualSet = ctx.Exec.Plan.DirectScanResiduals;
         if (residualSet is null)
             return null;
 
-        // ── 3. Driving match: SortedDrivingMatch or its tie-break variant ──
-        // BetweenQuery and StartWithQuery don't include nulls in their term output,
-        // so SortedDrivingMatch must drain them itself (respecting nullFirst direction).
-        IQueryMatch drivingMatch = BuildSortedDrivingMatch(ref ctx, provider, llt, hasTieBreak, forward);
+        var (drivingMatchProvider, drivingClauseDescription) = isFullScan ? 
+            ResolveFullScanDrivingProvider(ref ctx, forward) : 
+            ResolveDrivingProvider(ref ctx, walkerCtx, drivingIdx, forward);
+        
+        if (drivingMatchProvider is not TermsProviderMatch tpm)
+            return null; // can happen if we have no entries for this field
 
-        // ── 4. Scan parameters ── stash on exec (residual IL reads them from there). This is the same
-        //       full-ScanList analyzed walk the bitmap pipeline defers through PopulateScanParams, so the
-        //       driving clause is analyzed and re-evaluated harmlessly rather than skipped with raw slices.
-        ScanParamExtractor.Extract(ctx.Exec, indexSearcher, new ResolutionContext(ctx.BuilderParams));
+        IQueryMatch drivingMatch = BuildSortedDrivingMatch(ref ctx, tpm.Provider, tpm.Llt, hasTieBreak, forward);
+        ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx);
+        var ds = BuildDirectScan(indexSearcher, drivingMatch, ctx.Exec, ctx.Plan.CompiledEntryPredicate, residualSet);
 
-        var ds = BuildDirectScan(
-            indexSearcher, drivingMatch, ctx.Exec,
-            ctx.Plan.CompiledEntryPredicate, residualSet);
-
-        // Inspection node is read only on `include timings()` / explain queries.
         if (ctx.WantTimings)
+        {
             PopulateDirectScanInspection(ds, sortFieldName, drivingClauseDescription, forward, residualSet,
                 isFullScan ? "full index-only scan (no WHERE clause)" : reasonForInspection);
+        }
         return ds;
     }
 
-    /// <summary>Resolve the term iterator that walks the sort field in sort order, for full-scan or
-    /// from the driving range/equals clause. Returns false when the underlying factory yielded a
-    /// non-<see cref="TermsProviderMatch"/> (typically because the field has no terms in this index).</summary>
-    private static bool ResolveDrivingProvider(
-        ref InstCtx ctx, int drivingIdx, bool isFullScan, bool forward,
-        out ITermsProvider provider, out LowLevelTransaction llt, out string drivingClauseDescription)
+    private static (IQueryMatch, string) ResolveDrivingProvider(ref InstCtx ctx, ResolutionContext walkerCtx, int drivingIdx, bool forward)
     {
-        var indexSearcher = ctx.PlanParams.IndexSearcher;
-
-        if (isFullScan)
-        {
-            var fieldMeta = ctx.OrderByFields[0].Field;
-            var sortFieldType = ctx.OrderByFields[0].FieldType;
-            IQueryMatch fullScanMatch = sortFieldType switch
-            {
-                MatchCompareFieldType.Integer => indexSearcher.BetweenQuery(fieldMeta, long.MinValue, long.MaxValue, forward: forward),
-                MatchCompareFieldType.Floating => indexSearcher.BetweenQuery(fieldMeta, double.MinValue, double.MaxValue, forward: forward),
-                _ => indexSearcher.ExistsQuery(fieldMeta, forward: forward)
-            };
-            if (fullScanMatch is not TermsProviderMatch tpm)
-            {
-                provider = null; llt = null; drivingClauseDescription = null;
-                return false;
-            }
-            provider = tpm.Provider;
-            llt = tpm.Llt;
-            drivingClauseDescription = ctx.WantTimings ? $"{fieldMeta.FieldName} [all]" : null;
-            return true;
-        }
-
-        var walkerCtx = new ResolutionContext(ctx.BuilderParams);
         var drivingExec = ctx.Exec.Executions[drivingIdx];
-        IQueryMatch drivingMatch = drivingExec.ClauseType == ClauseType.Equals
+        var match = drivingExec.ClauseType == ClauseType.Equals
             ? ResolveEqualsClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx)
             : ResolveRangeClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx);
+        
+        return (match, ctx.WantTimings ? $"{drivingExec.Clause.FieldName} {drivingExec.ClauseType}" : null);
+    }
 
-        if (drivingMatch is not TermsProviderMatch resolved)
+    private static (IQueryMatch, string) ResolveFullScanDrivingProvider(ref InstCtx ctx, bool forward)
+    {
+        var indexSearcher = ctx.PlanParams.IndexSearcher;
+        var fieldMeta = ctx.OrderByFields[0].Field;
+        var sortFieldType = ctx.OrderByFields[0].FieldType;
+        var match = sortFieldType switch
         {
-            provider = null; llt = null; drivingClauseDescription = null;
-            return false;
-        }
-        provider = resolved.Provider;
-        llt = resolved.Llt;
-        drivingClauseDescription = ctx.WantTimings ? $"{drivingExec.Clause.FieldName} {drivingExec.ClauseType}" : null;
-        return true;
+            MatchCompareFieldType.Integer => indexSearcher.BetweenQuery(fieldMeta, long.MinValue, long.MaxValue, forward: forward),
+            MatchCompareFieldType.Floating => indexSearcher.BetweenQuery(fieldMeta, double.MinValue, double.MaxValue, forward: forward),
+            _ => indexSearcher.ExistsQuery(fieldMeta, forward: forward)
+        };
+        return (match, ctx.WantTimings ? $"{fieldMeta.FieldName} [all]" : null);
     }
 
     /// <summary>Resolve "nulls first vs last" for a single ORDER BY field given its NullsSortMode
@@ -2150,11 +2027,6 @@ internal static partial class QueryPlanBuilder
         return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
     }
 
-    /// <summary>Per-execution cost gate for the CompoundField candidate. Structural eligibility
-    /// (driving clause, compound sort field, non-boosted scannable residuals) was baked at
-    /// cache-miss by <see cref="TryCreateCompoundFieldMatch"/>; this re-evaluates the
-    /// bitmap-vs-direct-scan cost using the CURRENT bound-parameter cardinalities so a cached plan
-    /// never reuses a stale strategy decision.</summary>
     private static bool CompoundFieldCostEffective(ref InstCtx ctx, out long entriesToScan, out long bitmapCost)
     {
         entriesToScan = 0;
@@ -2191,13 +2063,16 @@ internal static partial class QueryPlanBuilder
     /// bound-parameter cardinalities (RavenDB #4852). Full scans have no cost gate — the sort-field
     /// tree is walked directly — so they always pass. <paramref name="entriesToScan"/> and
     /// <paramref name="bitmapCost"/> are surfaced for the inspection Reason string.</summary>
-    private static bool DirectScanCostEffective(ref InstCtx ctx, bool isFullScan, out long entriesToScan, out long bitmapCost)
+    private static bool DirectScanCostEffective(ref InstCtx ctx, bool isFullScan, out string directScanReason)
     {
-        entriesToScan = 0;
-        bitmapCost = 0;
         if (isFullScan)
+        {
+            directScanReason = "full scan requested";
             return true;
+        }
 
+        directScanReason = null;
+        
         var execs = ctx.Exec.Executions;
         int drivingIdx = ctx.Exec.Plan.SortDrivingClauseIndex;
         if (drivingIdx < 0 || drivingIdx >= execs.Count)
@@ -2205,6 +2080,7 @@ internal static partial class QueryPlanBuilder
         if (execs[drivingIdx].PackedParamValue.IsNone)
             return false;
 
+        long bitmapCost = 0;
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         foreach (var it in execs)
         {
@@ -2212,10 +2088,12 @@ internal static partial class QueryPlanBuilder
         }
 
         long drivingCard = EffectiveCardinality(execs[drivingIdx], indexSearcher);
-        entriesToScan = execs.Count > 1
+        var entriesToScan = execs.Count > 1
             ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher)
             : drivingCard;
 
+        if (ctx.WantTimings)
+            directScanReason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
         return IsDirectScanCostEffective(entriesToScan, bitmapCost);
     }
 

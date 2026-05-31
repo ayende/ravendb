@@ -41,14 +41,13 @@ internal static partial class QueryPlanBuilder
             int baseIdx = packed.Param1;
             int count = exec1.InTermCount;
 
-            // The IN values are not copied: Long/Double already live in exec.LongValues/DoubleValues at
-            // [base, base+count). Slice values still need analyzing into exec.AnalyzedSlices[base+k] so the
-            // residual IL — which slices that array directly — finds them populated.
-            if (pred.ValueType is not (ScanValueType.Long or ScanValueType.Double))
-            {
+            if (pred.ValueType is ScanValueType.Slice or ScanValueType.SliceLong)
+            {   // we need to analyze the strings
                 FieldMetadata fieldMeta = ResolveFieldMetadata(exec1.Clause, walkerCtx);
                 for (int k = 0; k < count; k++)
-                    exec.GetAnalyzedSlice(indexSearcher, fieldMeta, baseIdx + k);
+                {   // running this for the side effect of setting the AnalyzedSlices value 
+                    _ = exec.GetAnalyzedSlice(indexSearcher, fieldMeta, baseIdx + k);
+                }
             }
 
             return new ResidualInValues { Base = baseIdx, Count = count, HasNull = exec1.HasNullTerm };
@@ -73,20 +72,15 @@ internal static partial class QueryPlanBuilder
                 return;
             }
 
-            if (cur.PackedParamValue.IsNone)
+            if (cur.PackedParamValue.IsNone || 
+                pred.ValueType is not (ScanValueType.Slice or ScanValueType.SliceLong)) 
                 return;
 
-            switch (pred.ValueType)
-            {
-                case ScanValueType.Slice:
-                case ScanValueType.SliceLong:
-                    FieldMetadata fieldMeta = ResolveFieldMetadata(cur.Clause, walkerCtx);
-                    // ensure that the relevant slices are analyzed
-                    exec.GetAnalyzedSlice(indexSearcher, fieldMeta, cur.PackedParamValue.Param1);
-                    if (cur.PackedParamValue.Param2 != PackedParam.NoParamValue)
-                        exec.GetAnalyzedSlice(indexSearcher, fieldMeta, cur.PackedParamValue.Param2);
-                    break;
-            }
+            // ensure that the relevant slices are analyzed
+            FieldMetadata fieldMeta = ResolveFieldMetadata(cur.Clause, walkerCtx);
+            exec.GetAnalyzedSlice(indexSearcher, fieldMeta, cur.PackedParamValue.Param1);
+            if (cur.PackedParamValue.Param2 != PackedParam.NoParamValue)
+                exec.GetAnalyzedSlice(indexSearcher, fieldMeta, cur.PackedParamValue.Param2);
         }
     }
 }
