@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Corax.Mappings;
 using Corax.Querying.Planning;
-using Sparrow.Server;
 using Voron;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
@@ -12,41 +11,35 @@ internal static partial class QueryPlanBuilder
 {
      private sealed class ScanParamExtractor
     {
+        /// <summary>Single extraction entry point for both the bitmap pipeline (deferred via
+        /// <see cref="QueryExecution.PopulateScanParams"/>) and the direct-scan / compound-field paths
+        /// (called eagerly at construct time). Walks the full <see cref="CompiledPlan.ScanPredicateInfos"/>
+        /// list recursively — analyzing every slice and IN value — so the per-entry arrays the residual IL
+        /// reads (<see cref="QueryExecution.AnalyzedSlices"/>, <see cref="QueryExecution.FieldRootPages"/>,
+        /// <see cref="QueryExecution.ResidualInSets"/>) are identical regardless of which path filled them.
+        /// The direct paths re-evaluate driving-clause predicates harmlessly (they were already satisfied by
+        /// the tree scan), which keeps the dense root/IN-set counters aligned with the shared IL delegate.</summary>
         public static void Extract(QueryExecution exec, IndexSearcher indexSearcher, ResolutionContext walkerCtx)
         {
             var predicates = exec.Plan.ScanPredicateInfos;
             if (predicates == null || predicates.Count == 0)
                 return;
 
-            new ScanParamExtractor(exec, indexSearcher, allocator: null, walkerCtx).ExtractAll(predicates);
+            new ScanParamExtractor(exec, indexSearcher, walkerCtx).ExtractAll(predicates);
         }
 
-
-        public static void BuildResidual(
-            QueryExecution exec, IndexSearcher indexSearcher, ByteStringContext allocator,
-            ScanPredicateInfo[] residualArray, int skipClauseIdx1, int skipClauseIdx2)
-        {
-            var execs = exec.Executions;
-            if (residualArray == null || execs == null)
-                return;
-
-            new ScanParamExtractor(exec, indexSearcher, allocator, walkerCtx: null).BuildResidualCore(residualArray, skipClauseIdx1, skipClauseIdx2);
-        }
-        
-        private readonly List<Slice> _slices = [];
+        private Slice[] _analyzedSlices;
         private readonly List<long> _roots = [];
         private readonly List<ResidualInValues> _inSets = [];
 
         private readonly QueryExecution _exec;
         private readonly IndexSearcher _indexSearcher;
-        private readonly ByteStringContext _allocator;
         private readonly ResolutionContext _walkerCtx;
 
-        private ScanParamExtractor(QueryExecution exec, IndexSearcher indexSearcher, ByteStringContext allocator, ResolutionContext walkerCtx)
+        private ScanParamExtractor(QueryExecution exec, IndexSearcher indexSearcher, ResolutionContext walkerCtx)
         {
             _exec = exec;
             _indexSearcher = indexSearcher;
-            _allocator = allocator;
             _walkerCtx = walkerCtx;
         }
 
@@ -68,59 +61,20 @@ internal static partial class QueryPlanBuilder
         private void StoreResults()
         {
             _exec.FieldRootPages = _roots.Count > 0 ? _roots.ToArray() : null;
-            _exec.ResidualSlices = _slices.Count > 0 ? _slices.ToArray() : null;
+            _exec.AnalyzedSlices = _analyzedSlices;
             _exec.ResidualInSets = _inSets.Count > 0 ? _inSets.ToArray() : null;
         }
 
-        private void BuildResidualCore(ScanPredicateInfo[] residualArray, int skipClauseIdx1, int skipClauseIdx2)
+        /// <summary>Analyze the string at <paramref name="slot"/> (a <see cref="QueryExecution.StringValues"/>
+        /// index, i.e. a packed Param1/Param2) and store it into <see cref="QueryExecution.AnalyzedSlices"/>
+        /// at the same slot, mirroring how long/double values are addressed by their packed index.</summary>
+        private void StoreAnalyzedSlice(in FieldMetadata fieldMeta, int slot)
         {
-            var execs = _exec.Executions;
-
-            int residualIdx = 0;
-            for (int i = 0; i < execs.Count; i++)
-            {
-                if (i == skipClauseIdx1 || i == skipClauseIdx2) continue;
-                _roots.Add(_indexSearcher.FieldCache.GetLookupRootPage(execs[i].Clause.FieldName));
-
-                ScanPredicateInfo residualPred = residualArray[residualIdx];
-                if (residualPred.CompareOp is ScanCompareOp.In or ScanCompareOp.AllIn)
-                {
-                    _inSets.Add(BuildInSet(residualPred, execs[i], analyzed: false));
-                    residualIdx++;
-                    continue;
-                }
-
-                PackedParam packed = execs[i].PackedParamValue;
-                if (packed.IsNone)
-                {
-                    residualIdx++;
-                    continue;
-                }
-
-                int idx1 = packed.Param1;
-                int idx2 = packed.Param2;
-                switch (residualArray[residualIdx].ValueType)
-                {
-                    case ScanValueType.Slice:
-                    case ScanValueType.SliceLong:
-                        Slice.From(_allocator, _exec.StringValues[idx1], out Slice s1);
-                        _slices.Add(s1);
-                        if (idx2 != PackedParam.NoParamValue)
-                        {
-                            Slice.From(_allocator, _exec.StringValues[idx2], out Slice s2);
-                            _slices.Add(s2);
-                        }
-
-                        break;
-                }
-
-                residualIdx++;
-            }
-
-            StoreResults();
+            _analyzedSlices ??= new Slice[_exec.StringValues.Length];
+            _analyzedSlices[slot] = _exec.GetAnalyzedSlice(_indexSearcher, fieldMeta, slot);
         }
 
-        private ResidualInValues BuildInSet(ScanPredicateInfo pred, ClauseExecution exec, bool analyzed)
+        private ResidualInValues BuildInSet(ScanPredicateInfo pred, ClauseExecution exec)
         {
             PackedParam packed = exec.PackedParamValue;
             int baseIdx = packed.Param1;
@@ -145,20 +99,9 @@ internal static partial class QueryPlanBuilder
 
                 default:
                     var slices = new Slice[count];
-                    if (analyzed)
-                    {
-                        FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, _walkerCtx);
-                        for (int k = 0; k < count; k++)
-                            slices[k] = _exec.GetAnalyzedSlice(_indexSearcher, fieldMeta, baseIdx + k);
-                    }
-                    else
-                    {
-                        for (int k = 0; k < count; k++)
-                        {
-                            Slice.From(_allocator, _exec.StringValues[baseIdx + k], out Slice s);
-                            slices[k] = s;
-                        }
-                    }
+                    FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, _walkerCtx);
+                    for (int k = 0; k < count; k++)
+                        slices[k] = _exec.GetAnalyzedSlice(_indexSearcher, fieldMeta, baseIdx + k);
                     set.Slices = slices;
                     break;
             }
@@ -182,12 +125,12 @@ internal static partial class QueryPlanBuilder
 
             if (pred.CompareOp is ScanCompareOp.In or ScanCompareOp.AllIn)
             {
-                _inSets.Add(BuildInSet(pred, exec, analyzed: true));
+                _inSets.Add(BuildInSet(pred, exec));
                 return;
             }
 
-            // Slice values flow through the analyzer; long/double are read directly from
-            // QueryExecution by the IL using baked PackedParam.Param1 indices, so no copy.
+            // Slice values flow through the analyzer into AnalyzedSlices[Param1]; long/double are read
+            // directly from QueryExecution by the IL using baked PackedParam.Param1 indices, so no copy.
             var packed = exec.PackedParamValue;
             if (packed.IsNone)
                 return;
@@ -199,9 +142,9 @@ internal static partial class QueryPlanBuilder
                 case ScanValueType.Slice:
                 case ScanValueType.SliceLong:
                     FieldMetadata fieldMeta = ResolveFieldMetadata(exec.Clause, _walkerCtx);
-                    _slices.Add(_exec.GetAnalyzedSlice(_indexSearcher, fieldMeta, idx1));
+                    StoreAnalyzedSlice(fieldMeta, idx1);
                     if (idx2 != PackedParam.NoParamValue)
-                        _slices.Add(_exec.GetAnalyzedSlice(_indexSearcher, fieldMeta, idx2));
+                        StoreAnalyzedSlice(fieldMeta, idx2);
                     break;
             }
         }

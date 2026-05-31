@@ -40,7 +40,13 @@ public class QueryExecution
 
     public bool QueryWillReturnNoResults;
 
-    public Slice[] ResidualSlices;
+    /// <summary>Analyzed single-value slice predicates, parallel to <see cref="StringValues"/> and
+    /// indexed by <see cref="PackedParam.Param1"/> / <see cref="PackedParam.Param2"/> — the same
+    /// addressing scheme <see cref="LongValues"/> / <see cref="DoubleValues"/> use. Each slot holds the
+    /// analyzer-encoded form of <see cref="StringValues"/>[slot]; non-slice slots stay default. The
+    /// residual-scan IL reads <c>AnalyzedSlices[ParamIndex].AsReadOnlySpan()</c> directly, so there is no
+    /// dense per-scan slice counter and both the bitmap and direct-scan extraction paths fill it identically.</summary>
+    public Slice[] AnalyzedSlices;
 
     /// <summary>Per-IN/ALL-IN residual predicate value sets, materialized per execution and
     /// indexed positionally by the IN-leaf walk order (the same order in which

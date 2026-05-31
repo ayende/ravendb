@@ -296,15 +296,12 @@ internal static partial class QueryPlanBuilder
             List<ScanPredicateInfo> scanList = hasScanList ? [] : null;
             List<int> clauseIndices = hasScanList ? [] : null;
 
-            int sliceIndex = 0; // keep state across calls
             for (int i = 0; i < executions.Count; i++)
             {
                 bool isScanCandidate = hasScanList && i >= scanStart;
-                int throwaway = sliceIndex;
-                ref int slice = ref (isScanCandidate ? ref sliceIndex : ref throwaway);
 
                 ClauseExecution clauseExec = executions[i];
-                ScanPredicateInfo? pred = BuildScanPredicateInfoCore(clauseExec, clauseExec.TermValueType, ref slice);
+                ScanPredicateInfo? pred = BuildScanPredicateInfoCore(clauseExec, clauseExec.TermValueType);
                 perClause[i] = pred;
 
                 if (isScanCandidate && pred is {} p)
@@ -316,7 +313,7 @@ internal static partial class QueryPlanBuilder
 
             return (scanList, clauseIndices?.ToArray(), perClause);
 
-            static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType, ref int sliceIndex)
+            static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType)
             {
                 var clause = exec.Clause;
                 switch (clause.ClauseType)
@@ -357,24 +354,22 @@ internal static partial class QueryPlanBuilder
                     case ClauseType.StartsWith:
                         if (termType != ParamValueType.String)
                             return null;
-                        sliceIndex++;
                         return new ScanPredicateInfo
                         {
                             FieldName = clause.FieldName,
                             ValueType = ScanValueType.Slice,
                             CompareOp = ScanCompareOp.StartsWith,
-                            ParamIndex = sliceIndex - 1
+                            ParamIndex = exec.PackedParamValue.Param1
                         };
                     case ClauseType.EndsWith:
                         if (termType != ParamValueType.String)
                             return null;
-                        sliceIndex++;
                         return new ScanPredicateInfo
                         {
                             FieldName = clause.FieldName,
                             ValueType = ScanValueType.Slice,
                             CompareOp = ScanCompareOp.EndsWith,
-                            ParamIndex = sliceIndex - 1
+                            ParamIndex = exec.PackedParamValue.Param1
                         };
                     case ClauseType.Exists:
                         return new ScanPredicateInfo
@@ -390,18 +385,15 @@ internal static partial class QueryPlanBuilder
                     {
                         var subExecs = exec.SubExecutions;
                         var branches = new List<ScanPredicateInfo>();
-                        // Save slice index so we can roll back if any subclause is unscannable.
-                        int slc = sliceIndex;
                         foreach (var it in subExecs)
                         {
                             var subTermType = it.TermValueType;
-                            var subPred = BuildScanPredicateInfoCore(it, subTermType, ref slc);
+                            var subPred = BuildScanPredicateInfoCore(it, subTermType);
                             if (subPred == null)
                                 return null;
                             branches.Add(subPred.Value);
                         }
 
-                        sliceIndex = slc;
                         return new ScanPredicateInfo
                         {
                             FieldName = clause.FieldName ?? subExecs[0].Clause.FieldName,
@@ -431,25 +423,15 @@ internal static partial class QueryPlanBuilder
                     _ => ScanValueType.Slice // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
                 };
 
-                // Numeric predicates use the packed source indices directly (PackedParam.Param1/Param2 into
-                // QueryExecution.LongValues/DoubleValues). Plan-cache key invariance: whenFlags + fullKinds
-                // captures sentinel rewrites and clause-type variants, so for a given cache key the writer
-                // emits the same per-clause slot assignment across executions.
-                // Slice predicates keep a dense local index because their values are analyzer-encoded and live
-                // in a separate ResidualParams.Slices array.
+                // All predicate value types use the packed source indices directly: numerics read
+                // QueryExecution.LongValues/DoubleValues, slices read QueryExecution.AnalyzedSlices — all
+                // addressed by PackedParam.Param1/Param2 (the StringValues slot for slices, analyzed in place
+                // by ScanParamExtractor). Plan-cache key invariance: whenFlags + fullKinds captures sentinel
+                // rewrites and clause-type variants, so for a given cache key the writer emits the same
+                // per-clause slot assignment across executions.
                 var packed = exec.PackedParamValue;
-                int idx, idx2;
-                if (valueType == ScanValueType.Slice)
-                {
-                    bool isBetween = clause.ClauseType == ClauseType.Between;
-                    idx = sliceIndex++;
-                    idx2 = isBetween ? sliceIndex++ : -1;
-                }
-                else
-                {
-                    idx = packed.Param1;
-                    idx2 = packed.Param2 != PackedParam.NoParamValue ? packed.Param2 : -1;
-                }
+                int idx = packed.Param1;
+                int idx2 = packed.Param2 != PackedParam.NoParamValue ? packed.Param2 : -1;
 
                 return new ScanPredicateInfo
                 {
@@ -925,7 +907,7 @@ internal static partial class QueryPlanBuilder
 
         // Attach the deferred scan-param populate on QueryExecution only when the plan actually has
         // scan-eligible predicates. Most queries don't, so the closure allocation is skipped on the
-        // common path. LongValues/DoubleValues are already populated on exec; only ResidualSlices
+        // common path. LongValues/DoubleValues are already populated on exec; only AnalyzedSlices
         // and FieldRootPages need lazy materialization (they trigger analyzer + field-root lookups).
         if (exec.Plan.ScanPredicateInfos is { Count: > 0 })
         {
@@ -1229,7 +1211,6 @@ internal static partial class QueryPlanBuilder
     {
         var execs = ctx.Exec.Executions;
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        var allocator = ctx.PlanParams.Allocator;
         int drivingClauseIdx = ctx.Exec.Plan.CompoundFieldDrivingClause;
         string sortFieldName = ctx.Exec.Plan.Template.CompoundFieldSortName;
 
@@ -1281,11 +1262,11 @@ internal static partial class QueryPlanBuilder
                 validatePostfixLen: true);
         }
 
-        // Extract scan parameters for residual predicates and stash them on the exec — the residual
-        // IL reads exec.ResidualSlices / exec.FieldRootPages directly. Longs/Doubles already live
-        // on exec; the IL reads them by baked PackedParam.Param1 indices.
-        ScanParamExtractor. BuildResidual(ctx.Exec, indexSearcher, allocator, residualSet,
-            drivingClauseIdx, field2RangeIdx);
+        // Extract scan parameters and stash them on the exec — the residual IL reads exec.AnalyzedSlices /
+        // exec.FieldRootPages directly. This is the same full-ScanList analyzed walk the bitmap pipeline
+        // defers through PopulateScanParams; slices are analyzed and addressed by PackedParam.Param1, and
+        // the driving clause is re-evaluated harmlessly rather than skipped with raw slices.
+        ScanParamExtractor.Extract(ctx.Exec, indexSearcher, new ResolutionContext(ctx.BuilderParams));
 
         var directScan = BuildDirectScan(
             indexSearcher, drivingMatch, ctx.Exec,
@@ -1548,9 +1529,10 @@ internal static partial class QueryPlanBuilder
         // so SortedDrivingMatch must drain them itself (respecting nullFirst direction).
         IQueryMatch drivingMatch = BuildSortedDrivingMatch(ref ctx, provider, llt, hasTieBreak, forward);
 
-        // ── 4. Residual scan parameters ── stash on exec (residual IL reads them from there).
-        ScanParamExtractor.BuildResidual(ctx.Exec, indexSearcher, ctx.PlanParams.Allocator, residualSet,
-            drivingIdx, -1);
+        // ── 4. Scan parameters ── stash on exec (residual IL reads them from there). This is the same
+        //       full-ScanList analyzed walk the bitmap pipeline defers through PopulateScanParams, so the
+        //       driving clause is analyzed and re-evaluated harmlessly rather than skipped with raw slices.
+        ScanParamExtractor.Extract(ctx.Exec, indexSearcher, new ResolutionContext(ctx.BuilderParams));
 
         var ds = BuildDirectScan(
             indexSearcher, drivingMatch, ctx.Exec,
