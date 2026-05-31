@@ -971,11 +971,8 @@ internal static partial class QueryPlanBuilder
             ? (eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName, eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName, eA, eB)
             : (eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName, eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName, eB, eA);
         
-        if (TryGetCompoundFieldEncoding(firstField, firstExec.PackedParamValue, firstExec.PackedParamValue.Param1, ref ctx, out var enc1) == false
-            || enc1.Size > byte.MaxValue)
-            return null;
-
-        if (TryGetCompoundFieldEncoding(secondField, secondExec.PackedParamValue, secondExec.PackedParamValue.Param1, ref ctx, out var enc2) == false)
+        if (TryGetCompoundFieldEncoding(firstField, firstExec.PackedParamValue, firstExec.PackedParamValue.Param1, ref ctx, out var enc1) == false || 
+            TryGetCompoundFieldEncoding(secondField, secondExec.PackedParamValue, secondExec.PackedParamValue.Param1, ref ctx, out var enc2) == false)
             return null;
 
         int totalLen = enc1.Size + enc2.Size + 1;
@@ -1134,17 +1131,11 @@ internal static partial class QueryPlanBuilder
         // Resolve low (and high for Between) encodings. String slots reject early on >255 bytes.
         if (TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param1, ref ctx, out var encLow) == false)
             return false;
-        if (field2Packed.ValueType == PackedParam.TypeString && encLow.Size > byte.MaxValue)
-            return false;
-
+        
         CompoundFieldEncoding encHigh = default;
-        if (field2Exec.Clause.ClauseType is ClauseType.Between)
-        {
-            if (TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param2, ref ctx, out encHigh) == false)
-                return false;
-            if (field2Packed.ValueType == PackedParam.TypeString && encHigh.Size > byte.MaxValue)
-                return false;
-        }
+        if (field2Exec.Clause.ClauseType is ClauseType.Between && 
+            TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param2, ref ctx, out encHigh) == false)
+            return false;
 
         int lowSuffixSize = encLow.Size;
         int highSuffixSize = field2Exec.Clause.ClauseType == ClauseType.Between ? encHigh.Size : encLow.Size;
@@ -1991,22 +1982,11 @@ internal static partial class QueryPlanBuilder
     private struct CompoundFieldEncoding
     {
         public PackedParam Packed;
-        /// <summary>String case only: analyzed value (from the per-execution analyzed-slice
-        /// cache). For Between, <see cref="Packed.Param2"/> selects the high bound — but
-        /// this struct only holds one bound, so callers build two encodings.</summary>
         public Slice Analyzed;
-        /// <summary>For the string case, the slot index inside the typed-value array that
-        /// <see cref="Analyzed"/> was resolved from. Used when the caller wants the high
-        /// bound (Between) and asks for the encoding at <see cref="PackedParam.Param2"/>
-        /// rather than <c>Param1</c>.</summary>
         public int SourceSlot;
         public int Size;
     }
 
-    /// <summary>Resolve a compound-key value slot to its size + write-source.
-    /// String slots run the analyzer (cached) and reject sizes &gt;255 (the trailing
-    /// length byte in the compound-key format is a single byte). Numeric slots return
-    /// <c>sizeof(long)</c>. Any other ValueType returns false.</summary>
     private static bool TryGetCompoundFieldEncoding(string fieldName, PackedParam packed, int paramSlot,
         ref InstCtx ctx, out CompoundFieldEncoding encoding)
     {
@@ -2014,21 +1994,21 @@ internal static partial class QueryPlanBuilder
         encoding.Packed = packed;
         encoding.SourceSlot = paramSlot;
 
-        if (packed.ValueType == PackedParam.TypeString)
+        switch (packed.ValueType)
         {
-            var meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, fieldName, hasBoost: false);
-            encoding.Analyzed = ctx.Exec.GetAnalyzedSlice(ctx.PlanParams.IndexSearcher, meta, paramSlot);
-            encoding.Size = encoding.Analyzed.Size;
-            return true;
+            case PackedParam.TypeString:
+            {
+                var meta = QueryBuilderHelper.GetFieldMetadata(in ctx.BuilderParams, fieldName, hasBoost: false);
+                encoding.Analyzed = ctx.Exec.GetAnalyzedSlice(ctx.PlanParams.IndexSearcher, meta, paramSlot);
+                encoding.Size = encoding.Analyzed.Size;
+                return encoding.Size <= byte.MaxValue;
+            }
+            case PackedParam.TypeLong or PackedParam.TypeDouble:
+                encoding.Size = sizeof(long);
+                return true;
+            default:
+                return false;
         }
-
-        if (packed.ValueType is PackedParam.TypeLong or PackedParam.TypeDouble)
-        {
-            encoding.Size = sizeof(long);
-            return true;
-        }
-
-        return false;
     }
 
     /// <summary>Write the encoded bytes of a compound-key slot into <paramref name="dest"/>.
