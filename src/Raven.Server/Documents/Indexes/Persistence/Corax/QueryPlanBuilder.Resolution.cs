@@ -857,8 +857,6 @@ internal static partial class QueryPlanBuilder
             exec.PopulateScanParams = () => ScanParamExtractor.Extract(exec, indexSearcher, walkerCtx);
         }
 
-        // Spatial filters were already resolved into resolvedMatches during ResolveAllSlots; pull them
-        // out by slot index and let ApplyPostFilters wrap the compiled match in them (plus any vectors).
         IQueryMatch[] spatialMatches = null;
         if (exec.SpatialFilters is { Length: > 0 })
         {
@@ -870,10 +868,6 @@ internal static partial class QueryPlanBuilder
         return ApplyPostFilters(compiledMatch, spatialMatches, exec, builderParameters, wantTimings);
     }
 
-    /// <summary>Wrap a (possibly null) source match in the query's spatial PostFilterMatch and then its
-    /// vector selects. When <paramref name="source"/> is null — the no-WHERE bypass in
-    /// <see cref="InstantiateAllEntriesPostFilter"/> — the first spatial filter becomes the driving match
-    /// rather than scanning AllEntries; otherwise all spatial filters post-filter the source.</summary>
     private static IQueryMatch ApplyPostFilters(
         IQueryMatch source, IQueryMatch[] spatialMatches,
         QueryExecution exec, QueryBuilderParameters builderParameters, bool wantTimings)
@@ -883,15 +877,16 @@ internal static partial class QueryPlanBuilder
         if (spatialMatches is { Length: > 0 })
         {
             result = result is null
-                ? new PostFilterMatch(spatialMatches[0],
-                    spatialMatches.Length is 1 ? Array.Empty<IQueryMatch>() : spatialMatches[1..], wantTimings)
+                ? new PostFilterMatch(spatialMatches[0], spatialMatches.Length is 1 ? [] : spatialMatches[1..], wantTimings)
                 : new PostFilterMatch(result, spatialMatches, wantTimings);
         }
 
         if (exec.VectorSelects is { Length: > 0 })
         {
             foreach (var item in ResolveVectorItems(exec, builderParameters))
+            {
                 result = item.Materialize(result);
+            }
         }
 
         return result;
@@ -903,7 +898,6 @@ internal static partial class QueryPlanBuilder
     private static IQueryMatch InstantiateAllEntriesPostFilter(QueryExecution exec, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx, bool wantTimings)
     {
         // No real WHERE clause, so the spatial clauses aren't in resolvedMatches — resolve them directly.
-        // Passing source: null tells ApplyPostFilters to use the first spatial filter as the driving match.
         IQueryMatch[] spatialMatches = null;
         if (exec.SpatialFilters is { Length: > 0 })
         {
@@ -974,50 +968,27 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    /// <summary>Phase 5 bake: construction-only path for the CompoundExact hint.
-    /// Assumes structural discovery has already validated this optimization applies
-    /// (called either right after <see cref="TryCreateCompoundExactMatch"/>'s checks pass
-    /// on compile-miss, or directly on cache-hit when <c>compiledPlan.Strategy == ExecutionStrategy.CompoundExact</c>).
-    /// Returns null when a per-execution byte-length check fails — the caller must fall
-    /// back to the next optimization (or bitmap). No cost gates here — those are encoded
-    /// in the plan-cache key (cardinality cliff bit 31 of Ordering).</summary>
     private static IQueryMatch ConstructCompoundExact(ref InstCtx ctx)
     {
         var execs = ctx.Exec.Executions;
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        int idxA = ctx.Exec.Plan.CompoundExactClauseA;
-        int idxB = ctx.Exec.Plan.CompoundExactClauseB;
-        var eA = execs[idxA];
-        var eB = execs[idxB];
+        var eA = execs[ctx.Exec.Plan.CompoundExactClauseA];
+        var eB = execs[ctx.Exec.Plan.CompoundExactClauseB];
 
-        string firstField, secondField;
-        ClauseExecution firstExec, secondExec;
-        if (ctx.Exec.Plan.Template.CompoundExactAFirst)
-        {
-            firstField = eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName;
-            secondField = eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName;
-            firstExec = eA;
-            secondExec = eB;
-        }
-        else
-        {
-            firstField = eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName;
-            secondField = eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName;
-            firstExec = eB;
-            secondExec = eA;
-        }
-
-        if (TryGetCompoundFieldEncoding(firstField, firstExec.PackedParamValue,
-                firstExec.PackedParamValue.Param1, ref ctx, out var enc1) == false
+        var (firstField, secondField, firstExec, secondExec) = ctx.Exec.Plan.Template.CompoundExactAFirst
+            ? (eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName, eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName, eA, eB)
+            : (eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName, eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName, eB, eA);
+        
+        if (TryGetCompoundFieldEncoding(firstField, firstExec.PackedParamValue, firstExec.PackedParamValue.Param1, ref ctx, out var enc1) == false
             || enc1.Size > byte.MaxValue)
             return null;
 
-        if (TryGetCompoundFieldEncoding(secondField, secondExec.PackedParamValue,
-                secondExec.PackedParamValue.Param1, ref ctx, out var enc2) == false)
+        if (TryGetCompoundFieldEncoding(secondField, secondExec.PackedParamValue, secondExec.PackedParamValue.Param1, ref ctx, out var enc2) == false)
             return null;
 
         int totalLen = enc1.Size + enc2.Size + 1;
-        if (totalLen > Constants.Terms.MaxLength) return null;
+        if (totalLen > Constants.Terms.MaxLength) 
+            return null;
 
         // Single allocator-backed buffer; write each field directly into its slice.
         // The trailing byte stores field1 length (used at scan time to split the composite key).
