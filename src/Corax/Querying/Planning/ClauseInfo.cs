@@ -20,11 +20,6 @@ namespace Corax.Querying.Planning;
 ///   instead of pattern-matching AST node types and method names.
 /// - Planning annotations (Cardinality, IsExact, BoostFactor, IsNegated) are attached per
 ///   clause for operand reordering, dispatch classification, and entry-scan eligibility.
-///
-/// <para>ClauseInfo is the param-independent template, shared by reference across all
-/// executions of a cached plan. Per-execution mutable state lives on
-/// <see cref="ClauseExecution"/>; rewrites that vary by parameter values must clone the
-/// ClauseInfo rather than mutating it in place.</para>
 /// </summary>
 public sealed class ClauseInfo
 {
@@ -37,7 +32,7 @@ public sealed class ClauseInfo
     /// allocation per clause per query execution.</summary>
     public string ResolvedFieldName { get; set; }
 
-    public ClauseType ClauseType { get; set; }
+    public ClauseType ClauseType { get; init; }
 
     public int OriginalIndex { get; init; }
 
@@ -65,7 +60,7 @@ public sealed class ClauseInfo
     /// <summary>Sub-clauses for OrGroup / AndGroup nodes. Mutually exclusive with other
     /// group-type usage — a clause is either OrGroup or AndGroup (never both), determined
     /// by <see cref="ClauseType"/>.</summary>
-    public List<ClauseInfo> SubClauses { get; set; }
+    public List<ClauseInfo> SubClauses { get; init; }
 
     /// <summary>Parameter bindings indexed by <see cref="BindingIndex"/> constants.
     /// If <see cref="HasBoost"/> is true, the last entry is the boost factor binding.</summary>

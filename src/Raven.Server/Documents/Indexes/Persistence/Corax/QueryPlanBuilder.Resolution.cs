@@ -17,7 +17,6 @@ using Corax.Querying.Primitives;
 using Corax.Utils;
 using Raven.Client.Documents.Indexes.Spatial;
 using Raven.Client.Exceptions;
-using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Binary;
@@ -25,13 +24,11 @@ using Sparrow.Json;
 using Sparrow.Server;
 using Spatial4n.Shapes;
 using Voron;
-using Voron.Data.RoaringBitmaps;
 using Voron.Impl;
 using Constants = Corax.Constants;
 using RavenConstants = Raven.Client.Constants;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 using Range = Corax.Querying.Matches.Meta.Range;
-using SpatialRelation = Spatial4n.Shapes.SpatialRelation;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
@@ -469,11 +466,10 @@ internal static partial class QueryPlanBuilder
         {
             int types = 0; // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong), literals are handled via the query text (separate)
 
-            // A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to QueryMatch-dispatched, while a non-sentinel BETWEEN of the same query text can be
-            // TreeScan-dispatched. We reuse the FullKinds escape array as the carrier and mark the bound parameter slots, forcing a distinct compiled plan.
-            bool hasSentinel = exec.HasParameterSentinel; // aggregated during the PopulateClauseValues walk — no tree re-walk here
+            // A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to QueryMatch-dispatched, while a non-sentinel BETWEEN of the same query text can be TreeScan-dispatched.
+            // We reuse the FullKinds escape array as the carrier and mark the bound parameter slots, forcing a distinct compiled plan.
 
-            var full = template.ParameterSlots.Length > 16 || hasSentinel ? new byte[template.ParameterSlots.Length] : null;
+            var full = template.ParameterSlots.Length > 16 || exec.HasParameterSentinel ? new byte[template.ParameterSlots.Length] : null;
             for (int i = 0; i < template.ParameterSlots.Length; i++)
             {
                 int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0x3;
@@ -482,7 +478,7 @@ internal static partial class QueryPlanBuilder
                 types |= kind << (i * 2);
             }
 
-            if (hasSentinel)
+            if (exec.HasParameterSentinel)
                 MarkSentinelSlots(exec.Executions, full);
 
             return (types, full);
@@ -510,23 +506,23 @@ internal static partial class QueryPlanBuilder
     /// Forces a distinct plan-cache entry for parameter-bound BETWEEN sentinels — see ComputeTypeSignature.</summary>
     private const byte SentinelParamMark = 1 << 2;
 
-    /// <summary>Set <see cref="SentinelParamMark"/> on the FullKinds byte of every query-parameter slot that
-    /// supplied a BETWEEN sentinel bound (recursively). Subtrees with no parameter sentinel are pruned via
-    /// <see cref="ClauseExecution.HasParameterSentinel"/>; only the sentinel side(s) — identified by
-    /// <see cref="ClauseExecution.SentinelRewriteType"/> — are marked, so a literal sentinel paired with a
-    /// real parameter on the other side never marks the real parameter's slot.</summary>
     private static void MarkSentinelSlots(List<ClauseExecution> executions, byte[] full)
     {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
         foreach (var e in executions)
         {
             if (e.HasParameterSentinel == false)
                 continue; // this subtree contains no parameter sentinel — skip it entirely
 
             var bindings = e.Clause.Bindings;
-            if (e.SentinelRewriteType is ClauseType.LessThanOrEqual or ClauseType.Exists)
-                MarkParameterSlot(bindings[BindingIndex.BetweenLow], full);
-            if (e.SentinelRewriteType is ClauseType.GreaterThanOrEqual or ClauseType.Exists)
-                MarkParameterSlot(bindings[BindingIndex.BetweenHigh], full);
+            var index = e.SentinelRewriteType switch
+            {
+                ClauseType.LessThanOrEqual or ClauseType.Exists => BindingIndex.BetweenLow,
+                ClauseType.GreaterThanOrEqual => BindingIndex.BetweenHigh,
+                _ => -1
+            };
+            if (index >= 0 && bindings[index].ParameterSlot >= 0) 
+                full[bindings[index].ParameterSlot] |= SentinelParamMark;
 
             if (e.SubExecutions is { Count: > 0 })
                 MarkSentinelSlots(e.SubExecutions, full);
