@@ -25,6 +25,12 @@ public sealed class ClauseExecution : IComparable<ClauseExecution>
 
     public ClauseType? SentinelRewriteType;
 
+    /// <summary>True when this clause is a BETWEEN whose sentinel bound ("*"/"NULL") was delivered by a
+    /// query parameter (not a literal in the query text). Recorded by PopulateClauseValues at the moment
+    /// the sentinel side is identified. Drives the FullKinds cache-key marker so that a parameter-bound
+    /// sentinel BETWEEN and a non-sentinel BETWEEN of the same query text get distinct compiled plans.</summary>
+    public bool HasParameterSentinel;
+
     /// <summary>Clause type for this execution. Initialized from
     /// <see cref="ClauseInfo.ClauseType"/> at creation; mutable for per-execution rewrites
     /// (e.g. contradictory BETWEEN → empty-IN).</summary>

@@ -507,59 +507,53 @@ internal static partial class QueryPlanBuilder
     /// Forces a distinct plan-cache entry for parameter-bound BETWEEN sentinels — see ComputeTypeSignature.</summary>
     private const byte SentinelParamMark = 1 << 2;
 
-    /// <summary>True if any clause (recursively) is a parameter-bound BETWEEN that PopulateClauseValues
-    /// rewrote to a sentinel form. Literal sentinels are excluded — those are already encoded in the
-    /// query text (and rewritten away at template time), so they need no cache-key marker.</summary>
+    /// <summary>True if any clause (recursively) is a BETWEEN whose sentinel bound was delivered by a query
+    /// parameter — recorded by PopulateClauseValues in <see cref="ClauseExecution.HasParameterSentinel"/>.
+    /// Literal sentinels are excluded: they are encoded in the query text, so they need no cache-key marker.</summary>
     private static bool HasParameterSentinelBetween(List<ClauseExecution> executions)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         foreach (var e in executions)
         {
-            if (IsParameterSentinelBetween(e) || 
-                e.SubExecutions != null && HasParameterSentinelBetween(e.SubExecutions))
+            if (e.HasParameterSentinel)
+                return true;
+            if (e.SubExecutions is { Count: > 0 } && HasParameterSentinelBetween(e.SubExecutions))
                 return true;
         }
 
         return false;
     }
 
-    private static bool IsParameterSentinelBetween(ClauseExecution e)
-    {
-        if (e.ClauseType != ClauseType.Between || e.SentinelRewriteType == null)
-            return false;
-
-        foreach (var b in e.Clause.Bindings ?? [])
-        {
-            if (b is { Source: BindingSource.QueryParameter })
-                return true;
-        }
-
-        return false;
-    }
-
-    /// <summary>Set <see cref="SentinelParamMark"/> on the FullKinds byte of every query-parameter slot
-    /// bound by a sentinel-rewritten BETWEEN (recursively). This keeps sentinel and non-sentinel plans
-    /// for the same query text on separate cache entries.</summary>
+    /// <summary>Set <see cref="SentinelParamMark"/> on the FullKinds byte of every query-parameter slot that
+    /// supplied a BETWEEN sentinel bound (recursively). Only the sentinel side(s) — identified by
+    /// <see cref="ClauseExecution.SentinelRewriteType"/> — are marked, so a literal sentinel paired with a
+    /// real parameter on the other side never marks the real parameter's slot.</summary>
     private static void MarkSentinelSlots(List<ClauseExecution> executions, byte[] full, string[] parameterSlots)
     {
         foreach (var e in executions)
         {
-            if (IsParameterSentinelBetween(e))
+            if (e.HasParameterSentinel)
             {
-                foreach (var b in e.Clause.Bindings)
-                {
-                    if (b is { Source: BindingSource.QueryParameter, ParameterName: not null })
-                    {
-                        int slot = Array.IndexOf(parameterSlots, b.ParameterName);
-                        if (slot >= 0)
-                            full[slot] |= SentinelParamMark;
-                    }
-                }
+                var bindings = e.Clause.Bindings;
+                if (e.SentinelRewriteType is ClauseType.LessThanOrEqual or ClauseType.Exists)
+                    MarkParameterSlot(bindings[BindingIndex.BetweenLow], full, parameterSlots);
+                if (e.SentinelRewriteType is ClauseType.GreaterThanOrEqual or ClauseType.Exists)
+                    MarkParameterSlot(bindings[BindingIndex.BetweenHigh], full, parameterSlots);
             }
 
             if (e.SubExecutions is { Count: > 0 })
                 MarkSentinelSlots(e.SubExecutions, full, parameterSlots);
         }
+    }
+
+    private static void MarkParameterSlot(ParameterBinding binding, byte[] full, string[] parameterSlots)
+    {
+        if (binding is not { Source: BindingSource.QueryParameter, ParameterName: not null })
+            return;
+
+        int slot = Array.IndexOf(parameterSlots, binding.ParameterName);
+        if (slot >= 0)
+            full[slot] |= SentinelParamMark;
     }
 
 
@@ -598,18 +592,23 @@ internal static partial class QueryPlanBuilder
                 var (high, highType) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
                 bool lowIsSentinel = low is RavenConstants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
                 bool highIsSentinel = high is RavenConstants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
+                bool lowIsParam = bindings[BindingIndex.BetweenLow].Source == BindingSource.QueryParameter;
+                bool highIsParam = bindings[BindingIndex.BetweenHigh].Source == BindingSource.QueryParameter;
                 switch (lowIsSentinel, highIsSentinel)
                 {
                     case (true, true):
                         exec.SentinelRewriteType = ClauseType.Exists;
+                        exec.HasParameterSentinel = lowIsParam || highIsParam;
                         return;
                     case (true, false):
                         exec.SentinelRewriteType = ClauseType.LessThanOrEqual;
+                        exec.HasParameterSentinel = lowIsParam;
                         exec.TermValueType = highType;
                         exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType));
                         return;
                     case (false, true):
                         exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual;
+                        exec.HasParameterSentinel = highIsParam;
                         exec.TermValueType = lowType;
                         exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType));
                         return;
