@@ -63,9 +63,9 @@ internal static partial class QueryPlanBuilder
                 var packed = clauseExec.PackedParamValue;
                 int inTermCount = clauseExec.InTermCount;
 
-                var term = FormatValueFromPlan(packed, exec);
+                var term = FormatValueFromPlan(packed, exec, packed.Param1);
                 if (term != null) parameters["Term"] = term;
-                var term2 = FormatValue2FromPlan(packed, exec);
+                var term2 = FormatValueFromPlan(packed, exec, packed.Param2);
                 if (term2 != null) parameters["Term2"] = term2;
 
                 if (inTermCount > 0)
@@ -73,7 +73,11 @@ internal static partial class QueryPlanBuilder
                     int displayCount = Math.Min(inTermCount, 5);
                     var displayTerms = new string[displayCount];
                     for (int dt = 0; dt < displayCount; dt++)
-                        displayTerms[dt] = FormatValueFromPlan(packed.WithTermOffset(dt), exec);
+                    {
+                        PackedParam packed1 = packed.WithTermOffset(dt);
+                        displayTerms[dt] = FormatValueFromPlan(packed1, exec, packed1.Param1);
+                    }
+
                     parameters["Terms"] = string.Join(", ", displayTerms) + (inTermCount > 5 ? $" ... ({inTermCount} total)" : "");
                 }
             }

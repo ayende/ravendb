@@ -8,31 +8,17 @@ using Voron.Impl;
 namespace Corax.Querying.Matches;
 
 /// <summary>
-/// Lazily fills a RoaringBitmap from the ITermsProvider on first Fill() call,
-/// then iterates the bitmap for subsequent fills.
-/// Created by IndexSearcher factory methods (StartsWithQuery, EndsWithQuery, InQuery,
-/// ExistsQuery, RegexQuery, range queries, etc.) for use outside the CompiledQueryMatch pipeline.
+/// Lazily fills a RoaringBitmap from the ITermsProvider on first Fill() call, then iterates the bitmap for subsequent fills.
+/// Created by IndexSearcher factory methods (StartsWithQuery, EndsWithQuery, InQuery, ExistsQuery, RegexQuery, range queries, etc.) for use outside the CompiledQueryMatch pipeline.
 /// </summary>
-public sealed class TermsProviderMatch : IBitmapQueryMatch, IDisposable
+public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator) : IBitmapQueryMatch, IDisposable
 {
-    private readonly ITermsProvider _provider;
-    private readonly LowLevelTransaction _llt;
+    public ITermsProvider Provider => provider;
 
-    public ITermsProvider Provider => _provider;
-
-    public LowLevelTransaction Llt => _llt;
-    private RoaringBitmap _bitmap;
+    public LowLevelTransaction Llt => llt;
+    private RoaringBitmap _bitmap = new(allocator);
     private RoaringBitmapIterator _iterator;
     private bool _initialized;
-
-    public TermsProviderMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator)
-    {
-        _provider = provider;
-        _llt = llt;
-        _bitmap = new RoaringBitmap(allocator);
-        _iterator = default;
-        _initialized = false;
-    }
 
     public bool IsBoosting => false;
 
@@ -94,24 +80,11 @@ public sealed class TermsProviderMatch : IBitmapQueryMatch, IDisposable
     public int AndWith(Span<long> buffer, int matches)
     {
         Initialize();
-        // Cannot use AndWithSorted here: the buffer comes from SortedIndexReader
-        // which returns entry IDs in sort-field order (e.g. alphabetical), not in
-        // entry-ID order. The bitmap's container structure requires ID-sorted input.
-        int kept = 0;
-        for (int i = 0; i < matches; i++)
-        {
-            if (_bitmap.Contains(buffer[i]))
-                buffer[kept++] = buffer[i];
-        }
-        return kept;
+        return _bitmap.AndWith(buffer, matches);
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
-        // For multi-term matches (startsWith, endsWith, contains, regex, etc.) there is no
-        // per-term BM25 frequency tracking, so we contribute a flat boostFactor for each
-        // entry that is present in the bitmap. This ensures that entries matched by a
-        // boosted multi-term clause rank above entries that are not matched at all.
         if (boostFactor == 0f)
             return;
         Initialize();
@@ -124,7 +97,7 @@ public sealed class TermsProviderMatch : IBitmapQueryMatch, IDisposable
 
     public QueryInspectionNode Inspect()
     {
-        return _provider.Inspect();
+        return provider.Inspect();
     }
 
     private void Initialize()
@@ -132,7 +105,7 @@ public sealed class TermsProviderMatch : IBitmapQueryMatch, IDisposable
         if (_initialized)
             return;
         _bitmap.Clear();
-        QueryPrimitives.FillBitmapFromTreeScan(_provider, _llt, ref _bitmap);
+        QueryPrimitives.FillBitmapFromTreeScan(provider, llt, ref _bitmap);
         _bitmap.PrepareForReading();
         _iterator = _bitmap.GetIterator();
         _initialized = true;

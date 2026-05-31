@@ -74,8 +74,8 @@ internal static partial class QueryPlanBuilder
         {
             return new List<string>
             {
-                FormatValueFromPlan(exec.PackedParamValue, queryExec), 
-                FormatValue2FromPlan(exec.PackedParamValue, queryExec)
+                FormatValueFromPlan(exec.PackedParamValue, queryExec, exec.PackedParamValue.Param1), 
+                FormatValueFromPlan(exec.PackedParamValue, queryExec, exec.PackedParamValue.Param2)
             };
         }
 
@@ -83,12 +83,16 @@ internal static partial class QueryPlanBuilder
         {
             var terms = new List<string>(exec.InTermCount + (exec.HasNullTerm ? 1 : 0));
             for (int t = 0; t < exec.InTermCount; t++)
-                terms.Add(FormatValueFromPlan(exec.PackedParamValue.WithTermOffset(t), queryExec));
+            {
+                PackedParam packed = exec.PackedParamValue.WithTermOffset(t);
+                terms.Add(FormatValueFromPlan(packed, queryExec, packed.Param1));
+            }
+
             if (exec.HasNullTerm)
                 terms.Add(null);
             return terms;
         }
 
-        return FormatValueFromPlan(exec.PackedParamValue, queryExec);
+        return FormatValueFromPlan(exec.PackedParamValue, queryExec, exec.PackedParamValue.Param1);
     }
 }
