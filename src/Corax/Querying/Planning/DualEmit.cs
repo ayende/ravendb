@@ -194,33 +194,43 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsStack.Push($"exec.FieldRootPages[{rootIdx}]");
     }
 
-    /// <summary>Push the typed value array of <c>exec.ResidualInSets[idx]</c> matching
-    /// <paramref name="valueType"/> (Slices / Longs / Doubles).</summary>
+    /// <summary>Push <c>new ReadOnlySpan&lt;T&gt;(exec.{flatArray}, exec.ResidualInSets[idx].Base,
+    /// exec.ResidualInSets[idx].Count)</c> — the <c>[Base, Base+Count)</c> window of the flat
+    /// per-execution value array matching <paramref name="valueType"/>, with no per-predicate copy.</summary>
     public void LoadInValueArray(int idx, ScanValueType valueType)
     {
-        var (field, member) = valueType switch
+        var (arrayField, spanCtor, csArray, csElem) = valueType switch
         {
-            ScanValueType.Long => (IlEmitterShared.ResidualInValuesLongs, "Longs"),
-            ScanValueType.Double => (IlEmitterShared.ResidualInValuesDoubles, "Doubles"),
-            _ => (IlEmitterShared.ResidualInValuesSlices, "Slices"),
+            ScanValueType.Long => (IlEmitterShared.ResidualLongs, IlEmitterShared.ReadOnlySpanLongCtor, "exec.LongValues", "long"),
+            ScanValueType.Double => (IlEmitterShared.ResidualDoubles, IlEmitterShared.ReadOnlySpanDoubleCtor, "exec.DoubleValues", "double"),
+            _ => (IlEmitterShared.AnalyzedSlices, IlEmitterShared.ReadOnlySpanSliceCtor, "exec.AnalyzedSlices", "Slice"),
         };
+        // flat array
         Il.Emit(OpCodes.Ldarg_0);
-        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualInSets);
-        IlEmitterShared.EmitLdcI4(Il, idx);
-        Il.Emit(OpCodes.Ldelema, typeof(ResidualInValues));
-        Il.Emit(OpCodes.Ldfld, field);
-        CsStack.Push($"exec.ResidualInSets[{idx}].{member}");
+        Il.Emit(OpCodes.Ldfld, arrayField);
+        // start = exec.ResidualInSets[idx].Base, length = exec.ResidualInSets[idx].Count
+        EmitLoadInSetField(idx, IlEmitterShared.ResidualInValuesBase);
+        EmitLoadInSetField(idx, IlEmitterShared.ResidualInValuesCount);
+        Il.Emit(OpCodes.Newobj, spanCtor);
+        CsStack.Push($"new ReadOnlySpan<{csElem}>({csArray}, exec.ResidualInSets[{idx}].Base, exec.ResidualInSets[{idx}].Count)");
     }
 
     /// <summary>Push the <c>HasNull</c> flag of <c>exec.ResidualInSets[idx]</c>.</summary>
     public void LoadInHasNull(int idx)
     {
+        EmitLoadInSetField(idx, IlEmitterShared.ResidualInValuesHasNull);
+        CsStack.Push($"exec.ResidualInSets[{idx}].HasNull");
+    }
+
+    /// <summary>Emit (IL only, no C# fragment) a load of <paramref name="field"/> from
+    /// <c>exec.ResidualInSets[idx]</c>, used for the Base/Count/HasNull descriptor fields.</summary>
+    private void EmitLoadInSetField(int idx, FieldInfo field)
+    {
         Il.Emit(OpCodes.Ldarg_0);
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualInSets);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelema, typeof(ResidualInValues));
-        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualInValuesHasNull);
-        CsStack.Push($"exec.ResidualInSets[{idx}].HasNull");
+        Il.Emit(OpCodes.Ldfld, field);
     }
 
     public void Ceq()

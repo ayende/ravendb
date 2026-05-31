@@ -2,7 +2,6 @@ using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Corax.Mappings;
 using Corax.Querying.Planning;
-using Voron;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
@@ -41,34 +40,18 @@ internal static partial class QueryPlanBuilder
             PackedParam packed = exec1.PackedParamValue;
             int baseIdx = packed.Param1;
             int count = exec1.InTermCount;
-            var set = new ResidualInValues { HasNull = exec1.HasNullTerm };
 
-            switch (pred.ValueType)
+            // The IN values are not copied: Long/Double already live in exec.LongValues/DoubleValues at
+            // [base, base+count). Slice values still need analyzing into exec.AnalyzedSlices[base+k] so the
+            // residual IL — which slices that array directly — finds them populated.
+            if (pred.ValueType is not (ScanValueType.Long or ScanValueType.Double))
             {
-                case ScanValueType.Long:
-                    var longs = new long[count];
-                    for (int k = 0; k < count; k++)
-                        longs[k] = exec.LongValues[baseIdx + k];
-                    set.Longs = longs;
-                    break;
-
-                case ScanValueType.Double:
-                    var doubles = new double[count];
-                    for (int k = 0; k < count; k++)
-                        doubles[k] = exec.DoubleValues[baseIdx + k];
-                    set.Doubles = doubles;
-                    break;
-
-                default:
-                    var slices = new Slice[count];
-                    FieldMetadata fieldMeta = ResolveFieldMetadata(exec1.Clause, walkerCtx);
-                    for (int k = 0; k < count; k++)
-                        slices[k] = exec.GetAnalyzedSlice(indexSearcher, fieldMeta, baseIdx + k);
-                    set.Slices = slices;
-                    break;
+                FieldMetadata fieldMeta = ResolveFieldMetadata(exec1.Clause, walkerCtx);
+                for (int k = 0; k < count; k++)
+                    exec.GetAnalyzedSlice(indexSearcher, fieldMeta, baseIdx + k);
             }
 
-            return set;
+            return new ResidualInValues { Base = baseIdx, Count = count, HasNull = exec1.HasNullTerm };
         }
 
         private void ExtractFromPredicate(ScanPredicateInfo pred, ClauseExecution cur)

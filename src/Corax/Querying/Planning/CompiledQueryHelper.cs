@@ -68,7 +68,7 @@ public static class CompiledQueryHelper
     // pipeline's null-term posting list. These run only on the entry-scan / direct-scan path,
     // so the small per-call scratch in ALL IN is off the common query path.
 
-    public static bool CheckFieldTermInSlice(ref EntryTermsReader reader, long fieldRootPage, Slice[] values, bool includeNull)
+    public static bool CheckFieldTermInSlice(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<Slice> values, bool includeNull)
     {
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
@@ -90,7 +90,7 @@ public static class CompiledQueryHelper
         return false;
     }
 
-    public static bool CheckFieldTermInLong(ref EntryTermsReader reader, long fieldRootPage, long[] values, bool includeNull)
+    public static bool CheckFieldTermInLong(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<long> values, bool includeNull)
     {
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
@@ -112,7 +112,7 @@ public static class CompiledQueryHelper
         return false;
     }
 
-    public static bool CheckFieldTermInDouble(ref EntryTermsReader reader, long fieldRootPage, double[] values, bool includeNull)
+    public static bool CheckFieldTermInDouble(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<double> values, bool includeNull)
     {
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
@@ -140,7 +140,7 @@ public static class CompiledQueryHelper
     // value count while 'y' is still missing — a false positive. Scanning per value is immune to
     // both duplicate entry terms and duplicate IN values, costs no scratch buffer, and stays
     // O(values * terms) like the previous bitmask version.
-    public static bool CheckFieldTermAllInSlice(ref EntryTermsReader reader, long fieldRootPage, Slice[] values, bool includeNull)
+    public static bool CheckFieldTermAllInSlice(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<Slice> values, bool includeNull)
     {
         for (int k = 0; k < values.Length; k++)
         {
@@ -163,7 +163,7 @@ public static class CompiledQueryHelper
         return includeNull == false || FieldHasNull(ref reader, fieldRootPage);
     }
 
-    public static bool CheckFieldTermAllInLong(ref EntryTermsReader reader, long fieldRootPage, long[] values, bool includeNull)
+    public static bool CheckFieldTermAllInLong(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<long> values, bool includeNull)
     {
         for (int k = 0; k < values.Length; k++)
         {
@@ -186,7 +186,7 @@ public static class CompiledQueryHelper
         return includeNull == false || FieldHasNull(ref reader, fieldRootPage);
     }
 
-    public static bool CheckFieldTermAllInDouble(ref EntryTermsReader reader, long fieldRootPage, double[] values, bool includeNull)
+    public static bool CheckFieldTermAllInDouble(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<double> values, bool includeNull)
     {
         for (int k = 0; k < values.Length; k++)
         {
