@@ -77,8 +77,6 @@ internal static partial class QueryPlanBuilder
 
         if (walkerCtx.Clauses.Count == 0 && (walkerCtx.SpatialClauses ?? walkerCtx.VectorClauses) is not null)
         {
-            FreezeAll(walkerCtx.SpatialClauses);
-            FreezeAll(walkerCtx.VectorClauses);
             return new PlanTemplate
             {
                 Clauses = [],
@@ -86,10 +84,6 @@ internal static partial class QueryPlanBuilder
                 VectorClauses = walkerCtx.VectorClauses,
             };
         }
-
-        FreezeAll(walkerCtx.Clauses);
-        FreezeAll(walkerCtx.SpatialClauses);
-        FreezeAll(walkerCtx.VectorClauses);
 
         // The override path compiles an unsorted filter, so the parent ORDER BY must not influence
         // sort-driven optimizations (and must not leak into the shared sub-expression cache entry).
@@ -105,6 +99,11 @@ internal static partial class QueryPlanBuilder
         CollectParameterNames(walkerCtx.Clauses, seen);
         CollectParameterNames(walkerCtx.SpatialClauses, seen);
         CollectParameterNames(walkerCtx.VectorClauses, seen);
+
+        string[] parameterSlots = seen.ToArray();
+        AssignParameterSlots(walkerCtx.Clauses, parameterSlots);
+        AssignParameterSlots(walkerCtx.SpatialClauses, parameterSlots);
+        AssignParameterSlots(walkerCtx.VectorClauses, parameterSlots);
 
         return new PlanTemplate
         {
@@ -124,7 +123,7 @@ internal static partial class QueryPlanBuilder
             CompoundFieldName = walkerCtx.CompoundFieldName,
             CompoundFieldIsMultiSort = walkerCtx.CompoundFieldIsMultiSort,
             CompoundFieldField2Range = walkerCtx.CompoundFieldField2Range,
-            ParameterSlots = seen.ToArray(),
+            ParameterSlots = parameterSlots,
             SortSeekHintTemplateIdx = sortSeekHintIdx,
             SortSeekUseParam2 = sortSeekUseParam2,
         };
@@ -143,6 +142,22 @@ internal static partial class QueryPlanBuilder
             }
 
             CollectParameterNames(clause.SubClauses, seen); // recurse into groups
+        }
+    }
+
+    private static void AssignParameterSlots(List<ClauseInfo> clauses, string[] parameterSlots)
+    {
+        foreach (ClauseInfo clause in clauses ?? [])
+        {
+            foreach (ParameterBinding binding in clause.Bindings ?? [])
+            {
+                if (binding is { Source: BindingSource.QueryParameter, ParameterName: not null })
+                {
+                    binding.ParameterSlot = Array.IndexOf(parameterSlots, binding.ParameterName);
+                }
+            }
+
+            AssignParameterSlots(clause.SubClauses, parameterSlots); // recurse into groups
         }
     }
 
@@ -333,23 +348,6 @@ internal static partial class QueryPlanBuilder
                     }
                 }
             }
-        }
-    }
-
-    private static void FreezeAll(List<ClauseInfo> clauses)
-    {
-        RuntimeHelpers.EnsureSufficientExecutionStack();
-
-        if (clauses is not { Count: > 0 })
-            return;
-
-        foreach (ClauseInfo c in clauses)
-        {
-            if (c == null || c.IsFrozen)
-                continue;
-
-            FreezeAll(c.SubClauses);
-            c.Freeze();
         }
     }
 

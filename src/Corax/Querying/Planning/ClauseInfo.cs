@@ -21,9 +21,10 @@ namespace Corax.Querying.Planning;
 /// - Planning annotations (Cardinality, IsExact, BoostFactor, IsNegated) are attached per
 ///   clause for operand reordering, dispatch classification, and entry-scan eligibility.
 ///
-/// <para><b>Freeze contract:</b> ClauseInfo is frozen at the end of template construction.
-/// After freezing, property writes throw <see cref="InvalidOperationException"/>.
-/// Per-execution mutable state lives on <see cref="ClauseExecution"/>.</para>
+/// <para>ClauseInfo is the param-independent template, shared by reference across all
+/// executions of a cached plan. Per-execution mutable state lives on
+/// <see cref="ClauseExecution"/>; rewrites that vary by parameter values must clone the
+/// ClauseInfo rather than mutating it in place.</para>
 /// </summary>
 public sealed class ClauseInfo
 {
@@ -34,31 +35,15 @@ public sealed class ClauseInfo
     /// Null for static indexes and non-exact/non-search clauses. When set, execution-time
     /// field metadata lookups use this instead of <see cref="FieldName"/> — saving one string
     /// allocation per clause per query execution.</summary>
-    public string ResolvedFieldName
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
+    public string ResolvedFieldName { get; set; }
 
-    public ClauseType ClauseType
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
+    public ClauseType ClauseType { get; set; }
 
     public int OriginalIndex { get; init; }
 
-    public bool IsNegated
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
+    public bool IsNegated { get; set; }
 
-    public bool IsExact
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
+    public bool IsExact { get; set; }
 
     /// <summary>for Search (AND=1/OR=0)</summary>
     public int SearchOperator { get; init; }
@@ -75,62 +60,24 @@ public sealed class ClauseInfo
     /// at execution time via FillAllEntries + AndNot(positive form), so OrWithMatch correctly
     /// ORs in the set of entries NOT matching the positive predicate. Boost is intentionally
     /// ignored on such clauses (matches Lucene — there is no match to score).</summary>
-    public bool IsOrChainNotEquals
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
+    public bool IsOrChainNotEquals { get; set; }
 
     /// <summary>Sub-clauses for OrGroup / AndGroup nodes. Mutually exclusive with other
     /// group-type usage — a clause is either OrGroup or AndGroup (never both), determined
     /// by <see cref="ClauseType"/>.</summary>
-    public List<ClauseInfo> SubClauses
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
+    public List<ClauseInfo> SubClauses { get; set; }
 
     /// <summary>Parameter bindings indexed by <see cref="BindingIndex"/> constants.
     /// If <see cref="HasBoost"/> is true, the last entry is the boost factor binding.</summary>
-    public ParameterBinding[] Bindings
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
+    public ParameterBinding[] Bindings { get; set; }
 
     /// <summary>True if this clause is wrapped in boost(). When set, Bindings[^1] is the
     /// boost factor binding and exec.BoostFactor is resolved from it per-execution.</summary>
-    public bool HasBoost
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
+    public bool HasBoost { get; set; }
 
     /// <summary>Optional WHEN condition delegate. Null when no WHEN wraps this clause.
     /// Created at ParseTemplate time as a closure over the parsed condition expression.
     /// Evaluated per-execution in BuildAndCompile: called with the query's BlittableJsonReaderObject
     /// parameters; returns true to keep the clause, false to eliminate it.</summary>
-    public Func<BlittableJsonReaderObject, bool> WhenCondition
-    {
-        get;
-        set { ThrowIfFrozen(); field = value; }
-    }
-
-    /// <summary>True once <see cref="Freeze"/> has been called. Frozen instances reject
-    /// all property mutations with <see cref="InvalidOperationException"/>.</summary>
-    public bool IsFrozen { get; private set; }
-
-    /// <summary>Mark this ClauseInfo as part of an immutable plan-cache template. After
-    /// freezing, any property write throws. Idempotent — calling Freeze() on an already
-    /// frozen instance is a no-op. Sub-clauses (<see cref="SubClauses"/>) are NOT
-    /// auto-frozen; callers must freeze each sub-clause individually.</summary>
-    public void Freeze() => IsFrozen = true;
-
-    private void ThrowIfFrozen()
-    {
-        if (IsFrozen)
-            throw new InvalidOperationException(
-                "ClauseInfo is frozen (plan-cache template). " +
-                "Per-execution mutable state belongs on ClauseExecution.");
-    }
+    public Func<BlittableJsonReaderObject, bool> WhenCondition { get; set; }
 }
