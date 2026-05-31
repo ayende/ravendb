@@ -1578,34 +1578,25 @@ internal static partial class QueryPlanBuilder
                 throw new InvalidOperationException("Spatial clause has no pre-resolved shape parameters.");
             }
 
-            return builderParams.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), (SpatialRelation)spatialMethod, token: builderParams.Token);
+            return builderParams.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), (global::Corax.Utils.Spatial.SpatialRelation)spatialMethod, token: builderParams.Token);
         }
         
         IQueryMatch HandleSearch()
         {
-            FieldMetadata searchMeta;
-            // Dynamic field name variants (search(FieldName) for auto-indexes) are
-            // pre-resolved by the DynamicFieldNameResolve walker step at template time.
             string searchFieldName = clause.ResolvedFieldName ?? clause.FieldName;
-            {
-                // Search clause is unreachable from the direct-test path (tests that use
-                // the test-only QueryBuilderParameters ctor never construct Search clauses),
-                // so Index is always non-null here.
-                bool forceSearch = builderParams.HasDynamics
-                                   && builderParams.Index.Configuration.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery;
-                searchMeta = QueryBuilderHelper.GetFieldMetadata(
-                    builderParams.Allocator, searchFieldName, builderParams.Index,
-                    builderParams.IndexFieldsMapping,
-                    builderParams.HasDynamics, builderParams.DynamicFields,
-                    handleSearch: true, hasBoost: builderParams.HasBoost,
-                    forceDefaultSearchAnalyzer: forceSearch);
-            }
+            bool forceSearch = builderParams.HasDynamics
+                               && builderParams.Index.Configuration.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery;
+            FieldMetadata searchMeta = QueryBuilderHelper.GetFieldMetadata(
+                builderParams.Allocator, searchFieldName, builderParams.Index,
+                builderParams.IndexFieldsMapping,
+                builderParams.HasDynamics, builderParams.DynamicFields,
+                handleSearch: true, hasBoost: builderParams.HasBoost,
+                forceDefaultSearchAnalyzer: forceSearch);
 
-            var indexDef = builderParams.Index.Definition;
             IndexSearcher.SearchQueryOptions searchQueryOptions;
-            if (IndexDefinitionBaseServerSide.IndexVersion.IsCoraxSearchWildcardAdjustmentSupported(indexDef.Version))
+            if (IndexDefinitionBaseServerSide.IndexVersion.IsCoraxSearchWildcardAdjustmentSupported(builderParams.Index.Definition.Version))
                 searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments;
-            else if (indexDef.Version >= IndexDefinitionBaseServerSide.IndexVersion.PhraseQuerySupportInCoraxIndexes)
+            else if (builderParams.Index.Definition.Version >= IndexDefinitionBaseServerSide.IndexVersion.PhraseQuerySupportInCoraxIndexes)
                 searchQueryOptions = IndexSearcher.SearchQueryOptions.PhraseQuery;
             else
                 searchQueryOptions = IndexSearcher.SearchQueryOptions.Legacy;
