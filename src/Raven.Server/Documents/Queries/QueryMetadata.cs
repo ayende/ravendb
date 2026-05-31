@@ -1195,7 +1195,7 @@ function execute(doc, args){
                     null,
                     new[]
                     {
-                        new OrderByField.Argument(token.Token.Value, ValueTokenType.String)
+                        new OrderByField.Argument(token.Token.Value, token.Value)
                     },
                     nullsOrdering);
             }
