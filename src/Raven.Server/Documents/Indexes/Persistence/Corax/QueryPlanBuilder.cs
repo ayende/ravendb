@@ -55,12 +55,12 @@ internal static partial class QueryPlanBuilder
 
     private static PlanTemplate ParseTemplate(PlanParameters p)
     {
-        Query query = p.Metadata.Query;
-        if (query.Where == null)
+        QueryExpression where = p.WhereOverride ?? p.Metadata.Query.Where;
+        if (where == null)
             return new PlanTemplate { Clauses = [],  };
 
         ResolutionContext walkerCtx = new(p) { Clauses = [] };
-        BooleanOp rootOp = ParseExpression(query.Where, walkerCtx);
+        BooleanOp rootOp = ParseExpression(where, walkerCtx);
         PlanWalker.ThrowIfErrors(walkerCtx);
 
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
@@ -91,10 +91,13 @@ internal static partial class QueryPlanBuilder
         FreezeAll(walkerCtx.SpatialClauses);
         FreezeAll(walkerCtx.VectorClauses);
 
-        string orderByPrimaryField = p.Metadata.OrderBy is { Length: > 0 }
-            ? p.Metadata.OrderBy[0].Name?.Value
+        // The override path compiles an unsorted filter, so the parent ORDER BY must not influence
+        // sort-driven optimizations (and must not leak into the shared sub-expression cache entry).
+        OrderByField[] orderBy = p.WhereOverride != null ? null : p.Metadata.OrderBy;
+        string orderByPrimaryField = orderBy is { Length: > 0 }
+            ? orderBy[0].Name?.Value
             : null;
-        bool orderByPrimaryAscending = p.Metadata.OrderBy is { Length: > 0 } && p.Metadata.OrderBy[0].Ascending;
+        bool orderByPrimaryAscending = orderBy is { Length: > 0 } && orderBy[0].Ascending;
 
         PlanOptimizationFlags optFlags = ComputeTemplateOptimizations(walkerCtx, p, orderByPrimaryField, orderByPrimaryAscending,
             out int sortDrivingIdx, out int sortSeekHintIdx, out bool sortSeekUseParam2);
@@ -1006,6 +1009,23 @@ internal static partial class QueryPlanBuilder
         public IndexSearcher IndexSearcher;
         public QueryMetadata Metadata;
         public BlittableJsonReaderObject QueryParameters;
+
+        /// <summary>
+        /// When set, the planner parses this expression instead of <c>Metadata.Query.Where</c>.
+        /// Used to compile a sub-expression (e.g. the more-like-this base-document query) as a
+        /// standalone filter while sharing the rest of the query context. The parent ORDER BY is
+        /// ignored on this path (the override produces an unsorted filter).
+        /// </summary>
+        public QueryExpression WhereOverride;
+
+        /// <summary>
+        /// Plan-cache key to use instead of <c>Metadata.Query.QueryText</c>. Required whenever
+        /// <see cref="WhereOverride"/> is set, since the full query text does not describe the
+        /// sub-expression being compiled.
+        /// </summary>
+        public string CacheKeyOverride;
+
+        public string CacheKey => CacheKeyOverride ?? Metadata.Query.QueryText;
     }
 
     private enum BooleanOp { And, Or, True, False, Leaf }

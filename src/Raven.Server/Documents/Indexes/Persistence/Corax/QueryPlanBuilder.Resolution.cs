@@ -72,7 +72,7 @@ internal static partial class QueryPlanBuilder
 
     public static PlanTemplate BuildTemplate(PlanParameters planParams)
     {
-        var queryText = planParams.Metadata.Query.QueryText;
+        var queryText = planParams.CacheKey;
         var planCache = planParams.IndexSearcher.PlanCache;
         if (planCache.TryGetTemplate(queryText) is { } template)
             return template;
@@ -146,7 +146,7 @@ internal static partial class QueryPlanBuilder
 
         int operandOrdering = ComputeOperandOrdering();
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature();
-        if (indexSearcher.PlanCache.Get(planParams.Metadata.Query.QueryText, operandOrdering, typeSignature, fullKinds, whenFlags) is { } compiledPlan)
+        if (indexSearcher.PlanCache.Get(planParams.CacheKey, operandOrdering, typeSignature, fullKinds, whenFlags) is { } compiledPlan)
             return FinalizePlan(); // use cached plan
         
         return BuildOnCacheMiss(); // Cache miss — full exec emission
@@ -179,7 +179,7 @@ internal static partial class QueryPlanBuilder
             compiledPlan.CompoundFieldResiduals = BuildResidualSet(perClause, compiledPlan.CompoundFieldDrivingClause, compiledPlan.CompoundFieldField2RangeIdx);
             compiledPlan.DirectScanResiduals = BuildResidualSet(perClause, compiledPlan.SortDrivingClauseIndex, skip2: -1);
 
-            indexSearcher.PlanCache.Add(planParams.Metadata.Query.QueryText, compiledPlan, template);
+            indexSearcher.PlanCache.Add(planParams.CacheKey, compiledPlan, template);
 
             return FinalizePlan();
         }
@@ -916,97 +916,34 @@ internal static partial class QueryPlanBuilder
     }
 
 
+    /// <summary>
+    /// Compiles the more-like-this base-document sub-expression as a standalone, unsorted filter,
+    /// routed through the normal cached/compiled query pipeline (BuildTemplate → Build →
+    /// <see cref="CompiledQueryMatch"/>). The sub-expression has no query text of its own, so the
+    /// plan cache is keyed on its rendered text under a dedicated prefix that can never collide with
+    /// a real query. The parent ORDER BY is ignored (the override path produces an unsorted filter).
+    /// </summary>
     public static IQueryMatch BuildQueryForMoreLikeThis(QueryBuilderParameters builderParams, QueryExpression expression)
     {
-        // Sub-expression entry point: run the same phases as ParseTemplate.
-        // Validation is inline in the Parse methods; errors accumulate in walkerCtx.Errors.
-        // The whole build is measured so query introspection can report per-MLT-base build
-        // cost (parse + resolve + AND chain) instead of folding it into the outer query's
-        // opaque "everything else" budget.
-        long buildStart = Stopwatch.GetTimestamp();
-        var walkerCtx = new ResolutionContext(builderParams);
-        var indexSearcher = walkerCtx.IndexSearcher;
-        walkerCtx.Clauses = [];
-        ParseExpression(expression, walkerCtx);
-        PlanWalker.ThrowIfErrors(walkerCtx);
-        PlanWalker.RewriteClauses(walkerCtx);
-
-        if (walkerCtx.Clauses.Count == 0)
-            return indexSearcher.AllEntries();
-
-        // Populate parameters for the sub-expression clauses
-        var writer = new ValueWriter();
-        var subExecs = new List<ClauseExecution>(walkerCtx.Clauses.Count);
-        foreach (var it in walkerCtx.Clauses)
+        var planParams = new PlanParameters
         {
-            var item = CreateExecution(it);
-            subExecs.Add(item);
-            PopulateClauseValues(item, builderParams.QueryParameters, writer, builderParams);
-        }
-
-        var subPlan = new QueryExecution
-        {
-            Executions = subExecs
+            IndexSearcher = builderParams.IndexSearcher,
+            Metadata = builderParams.Query.Metadata,
+            QueryParameters = builderParams.QueryParameters,
+            Index = builderParams.Index,
+            IndexFieldsMapping = builderParams.IndexFieldsMapping,
+            Allocator = builderParams.Allocator,
+            HasDynamics = builderParams.HasDynamics,
+            DynamicFields = builderParams.DynamicFields,
+            HasBoost = builderParams.HasBoost,
+            WhereOverride = expression,
+            CacheKeyOverride = MoreLikeThisCacheKeyPrefix + expression.GetText(builderParams.Query),
         };
-        writer.SetValues(subPlan);
 
-        int clauseCount = walkerCtx.Clauses.Count;
-        var clauseTicks = new long[clauseCount];
-        var clauseCardinality = new long[clauseCount];
-        var childInspections = new QueryInspectionNode[clauseCount];
-
-        if (clauseCount == 1)
-        {
-            long t0 = Stopwatch.GetTimestamp();
-            var single = ResolveClause(subExecs[0], subPlan, walkerCtx);
-            clauseTicks[0] = Stopwatch.GetTimestamp() - t0;
-            clauseCardinality[0] = single.Count;
-            childInspections[0] = single.Inspect();
-            long buildTicks = Stopwatch.GetTimestamp() - buildStart;
-            return new MoreLikeThisBaseMatch(single, buildTicks, clauseTicks, clauseCardinality,
-                bitmapAfterAnd: null, capturedChildInspections: childInspections);
-        }
-
-        // Multiple clauses (AND chain) — resolve each and AND them via bitmap.
-        // Capture each sub-match's Count + Inspect() before it's consumed by Or/AndWith
-        // (the matches go out of scope immediately after consumption with no further hook
-        // for introspection — see #4856).
-        var bitmap = new BitmapMatch(indexSearcher.Allocator);
-        var bitmapAfterStep = new long[clauseCount];
-
-        {
-            long t0 = Stopwatch.GetTimestamp();
-            var first = ResolveClause(subExecs[0], subPlan, walkerCtx);
-            clauseTicks[0] = Stopwatch.GetTimestamp() - t0;
-            clauseCardinality[0] = first.Count;
-            childInspections[0] = first.Inspect();
-            QueryPrimitives.OrWithMatch(first, ref bitmap.BitmapState);
-            bitmapAfterStep[0] = bitmap.BitmapState.Count;
-        }
-
-        var temp = new RoaringBitmap(indexSearcher.Allocator);
-        try
-        {
-            for (int i = 1; i < clauseCount; i++)
-            {
-                long t0 = Stopwatch.GetTimestamp();
-                var sub = ResolveClause(subExecs[i], subPlan, walkerCtx);
-                clauseTicks[i] = Stopwatch.GetTimestamp() - t0;
-                clauseCardinality[i] = sub.Count;
-                childInspections[i] = sub.Inspect();
-                QueryPrimitives.AndWithMatch(sub, ref bitmap.BitmapState, ref temp);
-                bitmapAfterStep[i] = bitmap.BitmapState.Count;
-            }
-        }
-        finally
-        {
-            temp.Dispose();
-        }
-
-        long totalBuildTicks = Stopwatch.GetTimestamp() - buildStart;
-        return new MoreLikeThisBaseMatch(bitmap, totalBuildTicks, clauseTicks, clauseCardinality,
-            bitmapAfterStep, childInspections);
+        return BuildFilterMatch(planParams, builderParams, out _, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
     }
+
+    private const string MoreLikeThisCacheKeyPrefix = "$mlt$:";
 
     private static bool TryCreateCompoundExactMatch(
         ref InstCtx ctx, out string rejectReason)
