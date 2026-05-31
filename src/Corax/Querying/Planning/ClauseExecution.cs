@@ -25,9 +25,6 @@ public sealed class ClauseExecution : IComparable<ClauseExecution>
 
     public ClauseType? SentinelRewriteType;
 
-    /// <summary>True when this clause — or a clause in its subtree — is a BETWEEN whose sentinel bound ("*"/"NULL") was delivered by a query parameter. This changes the relevant cached query plan</summary>
-    public bool HasParameterSentinel;
-
     /// <summary>Clause type for this execution. Initialized from
     /// <see cref="ClauseInfo.ClauseType"/> at creation; mutable for per-execution rewrites
     /// (e.g. contradictory BETWEEN → empty-IN).</summary>

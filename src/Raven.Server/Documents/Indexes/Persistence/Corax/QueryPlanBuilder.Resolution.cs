@@ -140,6 +140,9 @@ internal static partial class QueryPlanBuilder
         var (executions, whenFlags) = EvaluateWhenAndFilterClauses(); // evaluating WHEN clauses against bound parameters as we go.
 
         var writer = new ValueWriter();
+        // Lazily allocated by the PopulateClauseValues walk only if a parameter-bound BETWEEN sentinel is found;
+        // reused as the FullKinds carrier in ComputeTypeSignature (see there). Null when no sentinel is present.
+        byte[] sentinelFull = null;
         QueryExecution exec = CreateQueryExecution();
 
         if (exec.QueryWillReturnNoResults) // there are no results here..., return immediately
@@ -200,15 +203,13 @@ internal static partial class QueryPlanBuilder
         QueryExecution CreateQueryExecution()
         {
             bool hasEmptyIn = false;
-            bool hasParameterSentinel = false;
             int sortDrivingIdx = template.SortDrivingClauseIndex;
             long drivingClauseCardinality = -1;
             foreach (var it in executions)
             {
-                PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters);
+                PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters, template.ParameterSlots.Length, ref sentinelFull);
                 PropagateBetweenContradiction(it, writer); // a contradictory BETWEEN is rewritten into an empty-IN
                 hasEmptyIn |= IsEmptyIn(it);
-                hasParameterSentinel |= it.HasParameterSentinel;
 
                 if (it.Cardinality < 0)
                     it.Cardinality = CardinalityEstimator.Estimate(it, indexSearcher, writer, walkerCtx);
@@ -224,7 +225,6 @@ internal static partial class QueryPlanBuilder
                 QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false, // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
                 IsAllEntries = executions.Count is 0,
                 DrivingClauseCardinality = drivingClauseCardinality,
-                HasParameterSentinel = hasParameterSentinel,
             };
         }
 
@@ -467,19 +467,17 @@ internal static partial class QueryPlanBuilder
             int types = 0; // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong), literals are handled via the query text (separate)
 
             // A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to QueryMatch-dispatched, while a non-sentinel BETWEEN of the same query text can be TreeScan-dispatched.
-            // We reuse the FullKinds escape array as the carrier and mark the bound parameter slots, forcing a distinct compiled plan.
-
-            var full = template.ParameterSlots.Length > 16 || exec.HasParameterSentinel ? new byte[template.ParameterSlots.Length] : null;
+            // The PopulateClauseValues walk already allocated `sentinelFull` and marked the bound parameter slots if any sentinel was present, forcing a distinct compiled plan.
+            // Reuse it as the FullKinds carrier here (kind occupies bits 0-1, the sentinel marker bit 2 — so OR the kinds in to preserve it); otherwise allocate only for the >16-param escape.
+            var full = sentinelFull ?? (template.ParameterSlots.Length > 16 ? new byte[template.ParameterSlots.Length] : null);
             for (int i = 0; i < template.ParameterSlots.Length; i++)
             {
                 int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0x3;
-                full?[i] = (byte)kind;
+                if (full != null)
+                    full[i] |= (byte)kind;
                 if (i > 15) continue;
                 types |= kind << (i * 2);
             }
-
-            if (exec.HasParameterSentinel)
-                MarkSentinelSlots(exec.Executions, full);
 
             return (types, full);
         }
@@ -506,43 +504,29 @@ internal static partial class QueryPlanBuilder
     /// Forces a distinct plan-cache entry for parameter-bound BETWEEN sentinels — see ComputeTypeSignature.</summary>
     private const byte SentinelParamMark = 1 << 2;
 
-    private static void MarkSentinelSlots(List<ClauseExecution> executions, byte[] full)
+    /// <summary>Mark a parameter-bound BETWEEN sentinel's slot in the FullKinds carrier, lazily allocating it on first use.
+    /// No-op for literal/deferred bounds (ParameterSlot == -1 — the sentinel is encoded in the query text, no marker needed).</summary>
+    private static void MarkSentinel(ref byte[] full, int parameterSlotCount, ParameterBinding binding)
     {
-        RuntimeHelpers.EnsureSufficientExecutionStack();
-        foreach (var e in executions)
-        {
-            if (e.HasParameterSentinel == false)
-                continue; // this subtree contains no parameter sentinel — skip it entirely
-
-            var bindings = e.Clause.Bindings;
-            var index = e.SentinelRewriteType switch
-            {
-                ClauseType.LessThanOrEqual or ClauseType.Exists => BindingIndex.BetweenLow,
-                ClauseType.GreaterThanOrEqual => BindingIndex.BetweenHigh,
-                _ => -1
-            };
-            if (index >= 0 && bindings[index].ParameterSlot >= 0) 
-                full[bindings[index].ParameterSlot] |= SentinelParamMark;
-
-            if (e.SubExecutions is { Count: > 0 })
-                MarkSentinelSlots(e.SubExecutions, full);
-        }
+        if (binding.ParameterSlot < 0)
+            return;
+        full ??= new byte[parameterSlotCount];
+        full[binding.ParameterSlot] |= SentinelParamMark;
     }
-
-    private static void MarkParameterSlot(ParameterBinding binding, byte[] full)
-    {
-        if (binding.ParameterSlot >= 0) // -1 for literal/deferred bounds (sentinel encoded in query text, no marker needed)
-            full[binding.ParameterSlot] |= SentinelParamMark;
-    }
-
 
     private static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters)
+    {   // Spatial/vector clauses never carry a BETWEEN sentinel, so they route through here with no FullKinds carrier.
+        byte[] noSentinel = null;
+        PopulateClauseValues(exec, queryParameters, writer, builderParameters, parameterSlotCount: 0, ref noSentinel);
+    }
+
+    private static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters,
+        int parameterSlotCount, ref byte[] full)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         foreach (var it in exec.SubExecutions ?? [])
         {   // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
-            PopulateClauseValues(it, queryParameters, writer, builderParameters);
-            exec.HasParameterSentinel |= it.HasParameterSentinel; // bubble sentinel presence up to the group
+            PopulateClauseValues(it, queryParameters, writer, builderParameters, parameterSlotCount, ref full);
         }
 
         if (exec.Clause is { HasBoost: true, Bindings.Length: > 0 })
@@ -578,17 +562,18 @@ internal static partial class QueryPlanBuilder
                 {
                     case (true, true):
                         exec.SentinelRewriteType = ClauseType.Exists;
-                        exec.HasParameterSentinel = lowIsParam || highIsParam;
+                        if (lowIsParam) MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenLow]);
+                        if (highIsParam) MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenHigh]);
                         return;
                     case (true, false):
                         exec.SentinelRewriteType = ClauseType.LessThanOrEqual;
-                        exec.HasParameterSentinel = lowIsParam;
+                        if (lowIsParam) MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenLow]);
                         exec.TermValueType = highType;
                         exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType));
                         return;
                     case (false, true):
                         exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual;
-                        exec.HasParameterSentinel = highIsParam;
+                        if (highIsParam) MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenHigh]);
                         exec.TermValueType = lowType;
                         exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType));
                         return;
