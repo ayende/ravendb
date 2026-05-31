@@ -178,11 +178,11 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
     public void LoadSliceSpan(int idx)
     {
         Il.Emit(OpCodes.Ldarg_0);
-        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualSlices);
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.AnalyzedSlices);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelema, typeof(Slice));
         Il.Emit(OpCodes.Call, IlEmitterShared.SliceAsReadOnlySpan);
-        CsStack.Push($"exec.ResidualSlices[{idx}].AsReadOnlySpan()");
+        CsStack.Push($"exec.AnalyzedSlices[{idx}].AsReadOnlySpan()");
     }
 
     public void LoadFieldRootPage(int rootIdx)
