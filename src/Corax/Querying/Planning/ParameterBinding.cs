@@ -36,8 +36,7 @@ public sealed class ParameterBinding
     public string ParameterName;
 
     /// <summary>Index of this binding's parameter in <see cref="PlanTemplate.ParameterSlots"/>, assigned
-    /// once at template-build time. -1 for literal/deferred bindings (no slot). Lets the FullKinds sentinel
-    /// marker write directly into the slot byte without an Array.IndexOf lookup at query time.</summary>
+    /// once at template-build time. -1 for literal/deferred bindings (no slot).</summary>
     public int ParameterSlot = -1;
 
     /// <summary>For deferred method expressions (e.g. cmpxchg(), now(), today()) that must

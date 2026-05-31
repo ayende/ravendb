@@ -25,12 +25,7 @@ public sealed class ClauseExecution : IComparable<ClauseExecution>
 
     public ClauseType? SentinelRewriteType;
 
-    /// <summary>True when this clause — or, for a group, any clause in its subtree — is a BETWEEN whose
-    /// sentinel bound ("*"/"NULL") was delivered by a query parameter (not a literal in the query text).
-    /// Set precisely on the leaf by PopulateClauseValues when the sentinel side is identified, then bubbled
-    /// up to enclosing groups. Drives the FullKinds cache-key marker (so a parameter-bound sentinel BETWEEN
-    /// and a non-sentinel BETWEEN of the same query text get distinct compiled plans) and lets
-    /// MarkSentinelSlots prune subtrees that contain no parameter sentinel.</summary>
+    /// <summary>True when this clause — or a clause in its subtree — is a BETWEEN whose sentinel bound ("*"/"NULL") was delivered by a query parameter. This changes the relevant cached query plan</summary>
     public bool HasParameterSentinel;
 
     /// <summary>Clause type for this execution. Initialized from
