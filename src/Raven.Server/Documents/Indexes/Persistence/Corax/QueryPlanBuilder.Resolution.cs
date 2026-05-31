@@ -1128,7 +1128,9 @@ internal static partial class QueryPlanBuilder
         if (field2Packed.IsNone)
             return false;
 
-        // Resolve low (and high for Between) encodings. String slots reject early on >255 bytes.
+        // Resolve the field2 bound encoding(s). Param1 is the bound for GT/GTE/LT/LTE and the
+        // lower bound for Between; Param2 is Between's upper bound. TryGetCompoundFieldEncoding
+        // rejects string encodings >255 bytes (the compound-key format's length byte is one byte).
         if (TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param1, ref ctx, out var encLow) == false)
             return false;
         
@@ -1137,47 +1139,67 @@ internal static partial class QueryPlanBuilder
             TryGetCompoundFieldEncoding(sortFieldName, field2Packed, field2Packed.Param2, ref ctx, out encHigh) == false)
             return false;
 
-        int lowSuffixSize = encLow.Size;
-        int highSuffixSize = field2Exec.Clause.ClauseType == ClauseType.Between ? encHigh.Size : encLow.Size;
-        int lowLen = analyzedPrefix.Size + lowSuffixSize + 1;
-        int highLen = analyzedPrefix.Size + highSuffixSize + 1;
-
-        if (lowLen > Constants.Terms.MaxLength || highLen > Constants.Terms.MaxLength)
-            return false;
-
-        var prefixSpan = analyzedPrefix.AsReadOnlySpan();
-
-        // Low key. GT/GTE → low suffix = field2 bound; LT/LTE → low suffix = 0x00; Between → low = low bound.
-        ctx.PlanParams.Allocator.Allocate(lowLen, out ByteString lowBuf);
-        Span<byte> lowSpan = lowBuf.ToSpan();
-        prefixSpan.CopyTo(lowSpan);
-        if (field2Exec.Clause.ClauseType is ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual or ClauseType.Between)
-            WriteCompoundFieldEncoding(lowSpan.Slice(analyzedPrefix.Size, lowSuffixSize), encLow, ctx.Exec);
-        else
-            lowSpan.Slice(analyzedPrefix.Size, lowSuffixSize).Clear();
-        lowSpan[lowLen - 1] = (byte)analyzedPrefix.Size;
-
-        // High key. LT/LTE → high suffix = field2 bound; GT/GTE → high suffix = 0xFF; Between → high = high bound.
-        ctx.PlanParams.Allocator.Allocate(highLen, out ByteString highBuf);
-        Span<byte> highSpan = highBuf.ToSpan();
-        prefixSpan.CopyTo(highSpan);
+        // Pick each key's field2 suffix. A null encoding marks an open bound, filled in by
+        // WriteCompositeRangeKey: 0x00 sorts below every real value (open lower), 0xFF above
+        // every real value (open upper). The compound prefix (field1) is always pinned by an
+        // equality clause; only field2 carries the range, so these keys bracket the field2 span
+        // within the field1 prefix in the compound(field1, field2) tree.
+        CompoundFieldEncoding? lowEnc, highEnc;
+        int lowSuffixSize, highSuffixSize;
         switch (field2Exec.Clause.ClauseType)
         {
-            case ClauseType.LessThan or ClauseType.LessThanOrEqual:
-                WriteCompoundFieldEncoding(highSpan.Slice(analyzedPrefix.Size, highSuffixSize), encLow, ctx.Exec);
+            // e.g. WHERE field1 = X AND field2 > Y (or >=) ORDER BY field1, field2
+            // low = Y, high = open above (every entry with field2 >= Y under prefix X).
+            case ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual:
+                lowEnc = encLow; highEnc = null;
+                lowSuffixSize = highSuffixSize = encLow.Size;
                 break;
+            // e.g. WHERE field1 = X AND field2 < Y (or <=) ORDER BY field1, field2
+            // low = open below, high = Y (every entry with field2 <= Y under prefix X).
+            case ClauseType.LessThan or ClauseType.LessThanOrEqual:
+                lowEnc = null; highEnc = encLow;
+                lowSuffixSize = highSuffixSize = encLow.Size;
+                break;
+            // e.g. WHERE field1 = X AND field2 BETWEEN Y AND Z ORDER BY field1, field2
+            // low = Y, high = Z (every entry with Y <= field2 <= Z under prefix X).
             case ClauseType.Between:
-                WriteCompoundFieldEncoding(highSpan.Slice(analyzedPrefix.Size, highSuffixSize), encHigh, ctx.Exec);
+                lowEnc = encLow; highEnc = encHigh;
+                lowSuffixSize = encLow.Size; highSuffixSize = encHigh.Size;
                 break;
             default:
-                highSpan.Slice(analyzedPrefix.Size, highSuffixSize).Fill(0xFF);
-                break;
+                return false; // not a range clause — fall back to a prefix-only scan
         }
-        highSpan[highLen - 1] = (byte)analyzedPrefix.Size;
 
-        lowSlice = new Slice(lowBuf);
-        highSlice = new Slice(highBuf);
+        if (analyzedPrefix.Size + lowSuffixSize + 1 > Constants.Terms.MaxLength ||
+            analyzedPrefix.Size + highSuffixSize + 1 > Constants.Terms.MaxLength)
+            return false;
+
+        lowSlice = WriteCompositeRangeKey(ref ctx, analyzedPrefix, lowSuffixSize, lowEnc, openFill: 0x00);
+        highSlice = WriteCompositeRangeKey(ref ctx, analyzedPrefix, highSuffixSize, highEnc, openFill: 0xFF);
         return true;
+    }
+
+    /// <summary>Writes one composite range key into a freshly allocated buffer in the
+    /// <c>[field1 prefix][field2 suffix][1 trailing byte = prefix length]</c> layout. When
+    /// <paramref name="suffixEncoding"/> is non-null its bytes fill the field2 suffix; otherwise
+    /// the suffix is filled with <paramref name="openFill"/> (0x00 for an open lower bound, 0xFF
+    /// for an open upper bound).</summary>
+    private static Slice WriteCompositeRangeKey(ref InstCtx ctx, Slice analyzedPrefix, int suffixSize,
+        CompoundFieldEncoding? suffixEncoding, byte openFill)
+    {
+        int len = analyzedPrefix.Size + suffixSize + 1;
+        ctx.PlanParams.Allocator.Allocate(len, out ByteString buf);
+        Span<byte> span = buf.ToSpan();
+        analyzedPrefix.AsReadOnlySpan().CopyTo(span);
+
+        Span<byte> suffix = span.Slice(analyzedPrefix.Size, suffixSize);
+        if (suffixEncoding is { } enc)
+            WriteCompoundFieldEncoding(suffix, enc, ctx.Exec);
+        else
+            suffix.Fill(openFill);
+
+        span[len - 1] = (byte)analyzedPrefix.Size;
+        return new Slice(buf);
     }
 
     /// <summary>Structural eligibility for serving an ORDER BY via a direct tree scan
