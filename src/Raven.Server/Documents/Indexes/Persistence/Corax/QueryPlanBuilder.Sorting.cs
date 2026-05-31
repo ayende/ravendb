@@ -87,8 +87,21 @@ internal static partial class QueryPlanBuilder
                 case OrderByFieldType.Random:
                     if (field.Arguments is { Length: > 0 }) // we have a seed to use
                     {
-                        var seed = (int)Hashing.XXHash32.CalculateRaw(field.Arguments[0].NameOrValue);
-                        prebuilt[i] = new OrderMetadata(seed);
+                        var seedArg = field.Arguments[0];
+                        if (seedArg.Type == ValueTokenType.Parameter)
+                        {
+                            // The seed comes from a query parameter value, which is not known at template time
+                            // and differs per execution, so it cannot be baked. Resolve it in MaterializeSortMetadata.
+                            prebuilt[i] = new OrderMetadata(0);
+                            patches[i].Kind = SortSlotPatchKind.RandomSeededByParam;
+                            patches[i].FieldName = seedArg.NameOrValue; // the parameter name
+                            anyPatch = true;
+                        }
+                        else
+                        {
+                            var seed = (int)Hashing.XXHash32.CalculateRaw(seedArg.NameOrValue);
+                            prebuilt[i] = new OrderMetadata(seed);
+                        }
                     }
                     else
                     {
@@ -208,6 +221,16 @@ internal static partial class QueryPlanBuilder
                 case SortSlotPatchKind.RandomFreshSeed:
                     result[outIdx++] = new OrderMetadata(Random.Shared.Next());
                     break;
+
+                case SortSlotPatchKind.RandomSeededByParam:
+                {
+                    // patch.FieldName holds the parameter name; resolve its value and derive the seed from it
+                    // (mirrors OrderByField.Argument.GetString for ValueTokenType.Parameter).
+                    builderParameters.Query.QueryParameters.TryGet(patch.FieldName, out string seedValue);
+                    var seed = (int)Hashing.XXHash32.CalculateRaw(seedValue ?? string.Empty);
+                    result[outIdx++] = new OrderMetadata(seed);
+                    break;
+                }
 
                 case SortSlotPatchKind.FieldEmptyCheck:
                 {

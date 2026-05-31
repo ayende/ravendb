@@ -44,6 +44,10 @@ public enum SortSlotPatchKind : byte
     /// <summary>Random ordering with no Arguments — need a new seed each query.</summary>
     RandomFreshSeed,
 
+    /// <summary>Random ordering seeded by a query parameter (<c>random($p)</c>) — the seed depends on the
+    /// per-query parameter value, so it cannot be baked. <see cref="SortSlotPatch.FieldName"/> holds the parameter name.</summary>
+    RandomSeededByParam,
+
     /// <summary>Distance ordering whose lat/lng/wkt arguments are parameter-bound. If the values are fixed to the query, the sort kind is None.</summary>
     DistanceRuntime,
 }
