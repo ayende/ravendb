@@ -289,7 +289,13 @@ public static class ResidualScanIlEmitter
             d.LoadInValueArray(inSetIdx, pred.ValueType);
             d.LoadInHasNull(inSetIdx);
             d.CallReturning(helper, arity: 4, csTemplate: helperName + "({0}, {1}, {2}, {3})");
-            EmitBranchFalse(ref d, failIl, failName);
+            // Positive IN/ALL IN: fail when membership is false. Negated (NOT IN / NOT ALL IN):
+            // fail when membership is true — a missing/null field has membership false, so it
+            // passes, matching the bitmap AndNot complement.
+            if (pred.Negated)
+                EmitBranchTrue(ref d, failIl, failName);
+            else
+                EmitBranchFalse(ref d, failIl, failName);
             inSetIdx++;
             return;
         }

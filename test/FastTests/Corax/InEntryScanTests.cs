@@ -235,6 +235,125 @@ public class InEntryScanTests : RavenTestBase
         Assert.Equal("Bravo", results[0].Name);
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task NotInString_EntryScan_ReturnsComplementIncludingNull()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        using var store = GetDocumentStore(options);
+        await SeedAsync(store);
+        Indexes.WaitForIndexing(store);
+
+        // rare docs Colors: i0=null,i1=green,i2=null,i3=red,i4=null,i5=blue,i6=null,i7=green,i8=null,i9=red
+        // NOT IN ('green','blue') over rare docs -> exclude i1,i7 (green) and i5 (blue) =>
+        // i0,i2,i4,i6,i8 (null) + i3,i9 (red) = 7. The null-field docs MUST appear (a doc lacking
+        // the value satisfies NOT IN, matching the bitmap AndNot complement).
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced.AsyncRawQuery<Item>(
+                "from Items where Seed = 'rare' and not (Color in ('green', 'blue'))")
+            .ToListAsync();
+
+        Assert.Equal(7, results.Count);
+        Assert.All(results, r =>
+        {
+            Assert.Equal("rare", r.Seed);
+            Assert.True(r.Color is null or "red");
+        });
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task NotInLong_EntryScan_ReturnsComplement()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        using var store = GetDocumentStore(options);
+        await SeedAsync(store);
+        Indexes.WaitForIndexing(store);
+
+        // rare docs Code = i (0..9). NOT IN [2,5,7,500] -> 0,1,3,4,6,8,9 => 7.
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced.AsyncRawQuery<Item>(
+                "from Items where Seed = 'rare' and not (Code in (2, 5, 7, 500))")
+            .ToListAsync();
+
+        Assert.Equal(7, results.Count);
+        Assert.All(results, r =>
+        {
+            Assert.Equal("rare", r.Seed);
+            Assert.DoesNotContain(r.Code, new long[] { 2, 5, 7 });
+        });
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task NotInDouble_EntryScan_ReturnsComplement()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        using var store = GetDocumentStore(options);
+        await SeedAsync(store);
+        Indexes.WaitForIndexing(store);
+
+        // rare docs Score = i*1.5. NOT IN [3.0,7.5,12.0,999.5] -> exclude i2(3.0),i5(7.5),i8(12.0) => 7.
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced.AsyncRawQuery<Item>(
+                "from Items where Seed = 'rare' and not (Score in (3.0, 7.5, 12.0, 999.5))")
+            .ToListAsync();
+
+        Assert.Equal(7, results.Count);
+        Assert.All(results, r =>
+        {
+            Assert.Equal("rare", r.Seed);
+            Assert.DoesNotContain(r.Score, new[] { 3.0, 7.5, 12.0 });
+        });
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task NotAllIn_MultiValue_EntryScan_ReturnsComplement()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        using var store = GetDocumentStore(options);
+        await SeedAsync(store);
+        Indexes.WaitForIndexing(store);
+
+        // rare docs: even i -> Tags=[x,y,z] (contains {x,y} -> ALL IN true -> excluded);
+        // odd i -> Tags=[x,z] (missing y -> ALL IN false -> included). odd i = 1,3,5,7,9 => 5.
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced.AsyncRawQuery<Item>(
+                "from Items where Seed = 'rare' and not (Tags all in ('x', 'y'))")
+            .ToListAsync();
+
+        Assert.Equal(5, results.Count);
+        Assert.All(results, r =>
+        {
+            Assert.Equal("rare", r.Seed);
+            Assert.DoesNotContain("y", r.Tags);
+        });
+    }
+
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task NotIn_EntryScan_IsExactComplementOfIn_Parity()
+    {
+        var options = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
+        using var store = GetDocumentStore(options);
+        await SeedAsync(store);
+        Indexes.WaitForIndexing(store);
+
+        using var session = store.OpenAsyncSession();
+
+        var allRare = (await session.Advanced.AsyncRawQuery<Item>(
+                "from Items where Seed = 'rare'").ToListAsync())
+            .Select(r => r.Id).OrderBy(x => x).ToList();
+
+        var inIds = (await session.Advanced.AsyncRawQuery<Item>(
+                "from Items where Seed = 'rare' and Color in ('green', 'blue')").ToListAsync())
+            .Select(r => r.Id).ToHashSet();
+
+        var notInIds = (await session.Advanced.AsyncRawQuery<Item>(
+                "from Items where Seed = 'rare' and not (Color in ('green', 'blue'))").ToListAsync())
+            .Select(r => r.Id).OrderBy(x => x).ToList();
+
+        // Within the seed, NOT IN must be exactly the complement of IN: (all rare) \ (rare ∩ IN).
+        var expected = allRare.Where(id => inIds.Contains(id) == false).OrderBy(x => x).ToList();
+        Assert.Equal(expected, notInIds);
+    }
+
     private class Item
     {
         public string Id { get; set; }
