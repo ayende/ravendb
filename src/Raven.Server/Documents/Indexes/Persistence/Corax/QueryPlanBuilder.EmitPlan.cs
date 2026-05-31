@@ -130,7 +130,7 @@ internal static partial class QueryPlanBuilder
                 default:
                     _ops.Add(new PlanOp
                     {
-                        Kind = ToPlanOpKind(merge, GetDispatch(exec.Clause)),
+                        Kind = ToPlanOpKind(merge, GetDispatch(exec)),
                         ParamIndex = _matchIndex++,
                         BitmapLocal = 0,
                         EstimatedCardinality = cardinality,
@@ -298,7 +298,7 @@ internal static partial class QueryPlanBuilder
                 default:
                     _ops.Add(new PlanOp
                     {
-                        Kind = ToPlanOpKind(MergeKind.AndNotInto, GetDispatch(exec.Clause)),
+                        Kind = ToPlanOpKind(MergeKind.AndNotInto, GetDispatch(exec)),
                         ParamIndex = _matchIndex++,
                         BitmapLocal = 0,
                         EstimatedCardinality = cardinality
