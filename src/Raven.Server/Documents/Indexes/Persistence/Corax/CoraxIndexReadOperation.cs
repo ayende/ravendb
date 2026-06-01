@@ -626,7 +626,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             bool runQuery = true;
             while (runQuery)
             {
-                QueryPlanBuilder.QueryPlanBuilder.CompiledQuery compileResult;
+                QueryPlanBuilder.CompiledQuery compileResult;
                 var coraxScope = queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false);
                 using (coraxScope?.Start())
                 {
@@ -638,7 +638,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take, 
                         deduplicationDisabled: false, indexReadOperation: this, token: token, queryTime: queryTime);
 
-                    var planParams = new QueryPlanBuilder.QueryPlanBuilder.PlanParameters
+                    var planParams = new QueryPlanBuilder.PlanParameters
                     {
                         IndexSearcher = IndexSearcher,
                         Metadata = query.Metadata,
@@ -1319,7 +1319,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             // Route through the sorted pipeline so the raw-entries view honors ORDER BY, matching Lucene.
             using var compileResult = QueryPlanBuilder.QueryPlanBuilder.BuildSortedQuery(
-                new QueryPlanBuilder.QueryPlanBuilder.PlanParameters
+                new QueryPlanBuilder.PlanParameters
                 {
                     IndexSearcher = IndexSearcher,
                     Metadata = query.Metadata,
@@ -1510,7 +1510,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
         private static IQueryMatch BuildCompiledQueryMatch(QueryBuilderParameters builderParameters)
         {
-            var planParams = new QueryPlanBuilder.QueryPlanBuilder.PlanParameters
+            var planParams = new QueryPlanBuilder.PlanParameters
             {
                 IndexSearcher = builderParameters.IndexSearcher,
                 Metadata = builderParameters.Query.Metadata,
