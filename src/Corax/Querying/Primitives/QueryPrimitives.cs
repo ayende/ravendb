@@ -28,6 +28,13 @@ public static class QueryPrimitives
     // Buffer size for stackalloc Fill operations (posting-list batch reads).
     internal const int FillBufferSize = 4096;
 
+    // Bitmap slot reserved as scratch for the AND/ANDNOT primitives: materializing a posting source
+    // or tree scan into a temporary before intersecting/subtracting needs a working bitmap. The plan
+    // emitter never targets this slot as an AND destination (the destination is passed explicitly),
+    // so it is always free to be clobbered. Keeping it a named constant — rather than a literal 1
+    // sprinkled through the primitives — makes the dest≠scratch invariant explicit and assertable.
+    internal const int AndScratchBitmapSlot = 1;
+
     // ── IL entry points ──────────────────────────────────────────────
     // Called from DynamicMethod IL. Take CompiledQueryMatch by value (ref type)
     // so the emitter just pushes ldarg.0 + int constants — no per-field ldfld chains.
@@ -98,34 +105,48 @@ public static class QueryPrimitives
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxAndFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
+    public static void CtxAndFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
+        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
         var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        AndWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1], ctx.Limit);
+        AndWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Limit);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxAndFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxAndFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxAndNotFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex)
+    public static void CtxAndFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        AndNotWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
+        AndBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot]);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxAndNotFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndNotBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    public static void CtxAndFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    {
+        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
+        AndWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot]);
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxAndNotFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => AndNotWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);
+    public static void CtxAndNotFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    {
+        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
+        var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
+        AndNotWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot]);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void CtxAndNotFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    {
+        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
+        AndNotBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot]);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public static void CtxAndNotFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
+    {
+        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
+        AndNotWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot]);
+    }
 
     // ── Lazy leaf resolution ─────────────────────────────────────────
     // The compiled pipeline hands over value-independent metadata (field + packed
