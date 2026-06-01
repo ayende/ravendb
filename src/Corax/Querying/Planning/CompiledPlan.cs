@@ -35,7 +35,7 @@ public sealed class CompiledPlan
     public QueryIlEmitter.CompiledExecuteDelegate CompiledTimedDelegate { get; init; }
 
     /// <summary>
-    /// Packed operand ordering used as part of the cache key.
+    /// SHA-256 digest of this plan's canonical cache-key serialization — the full plan identity.
     ///
     ///  A single query may be represented by different compiled plans because the shape
     ///  of the data is different. Consider `WHERE Tag = $tag and Published = $published`.
@@ -47,36 +47,12 @@ public sealed class CompiledPlan
     ///      that Published=false is a small amount, then start from that, then we find that we have
     ///      low enough results that we are going to just scan through them, instead of going through
     ///      the posting list.
-    ///  In other words, the parameters we use for the query impact the query plan.
-    ///  The `Ordering` field is the order of steps in the query plan, and we use that as a cache key for disambiguation.  
+    ///  In other words, the parameters we use for the query impact the query plan. The digest folds
+    ///  every disambiguating dimension (operand ordering, per-parameter runtime type, BETWEEN
+    ///  sentinel marks, WHEN-clause survival, boost/cardinality-cliff flags) into one 256-bit value
+    ///  used as the cache key — see <see cref="PlanCacheKeyBuilder"/> for the serialization.
     /// </summary>
-    public int Ordering { get; init; }
-    
-    /// <summary>
-    /// Packed parameter type signature (2 bits per param for first 16).
-    /// The same query may be called with parameters of different types:
-    /// Age = "25" vs. Age = 25 vs. Age = 25.0
-    /// Each one of them has a different posting list that they use, and that matters, so we
-    /// need a different compiled plan for each set of ordering.
-    /// </summary>
-    public int TypeSignature { get; init; }
-    
-    /// <summary>
-    /// Full per-predicate kind vector for >16 typed scan predicates.
-    ///
-    /// The `TypeSignature` here is able to hold up to 16 parameter types, with 2 bits per parameter.
-    /// Users may want to use queries with > 16 parameters, and we need to respect the same problem that
-    /// `TypeSignature` is solving. In those cases, we use `FullKinds` to store the full kind vector for
-    /// the full check.                                                                                 
-    /// </summary>
-    public byte[] FullKinds { get; init; }
-
-    /// <summary>Per-execution WHEN-clause survival bitmask. Joins
-    /// (<see cref="Ordering"/>, <see cref="TypeSignature"/>, <see cref="FullKinds"/>)
-    /// as part of the cache key. Zero for queries with no WHEN clauses (the common
-    /// case). Bit <c>i</c> = "the <c>i</c>-th WHEN clause in template traversal order
-    /// evaluated true under the bound parameters."</summary>
-    public int WhenFlags { get; init; }
+    public PlanCacheKeyHash CacheKeyHash { get; init; }
 
     /// <summary>Execution strategy chosen for this compiled plan. Set once at cache-miss
     /// time after Try* discovery (volatile store), then read-only — safe for concurrent readers.
@@ -84,13 +60,6 @@ public sealed class CompiledPlan
     public volatile ExecutionStrategy Strategy;
 
     public PlanDecisionTrail DecisionTrail;
-
-    /// <summary>Chain pointer for hash-collision disambiguation in PlanCache.</summary>
-    public CompiledPlan Next;
-
-    /// <summary>Depth of this entry in the chain (0 for head). Used by TryChainPrepend
-    /// to limit chain growth — when depth exceeds MaxChainDepth, the chain is replaced.</summary>
-    public int ChainDepth;
 
     /// <summary>C# source string mirroring emitted IL.</summary>
     public string Source { get; init; }

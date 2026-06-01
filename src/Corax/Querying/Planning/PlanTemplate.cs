@@ -29,8 +29,8 @@ public enum PlanOptimizationFlags : byte
 /// per-execution fields overwritten by PopulateParameters.</summary>
 public sealed class PlanTemplate
 {
-    /// <summary>Hard cap on WHEN-bearing clauses per template. Bit <c>i</c> of
-    /// <see cref="CompiledPlan.WhenFlags"/> tracks the <c>i</c>-th WHEN clause's
+    /// <summary>Hard cap on WHEN-bearing clauses per template. Bit <c>i</c> of the
+    /// WHEN-survival mask folded into the plan-cache key tracks the <c>i</c>-th WHEN clause's
     /// survival under bound params; with <c>int</c> as the carrier, the maximum
     /// safe count is 32. Realistic workloads have far fewer (~10 in the worst
     /// optional-filter LINQ shapes).</summary>
@@ -90,12 +90,12 @@ public sealed class PlanTemplate
     /// in template traversal order. Computed once at template construction. If this
     /// exceeds <see cref="MaxWhenClauses"/>, template construction throws
     /// <see cref="System.NotSupportedException"/> — the bit position used in
-    /// <see cref="CompiledPlan.WhenFlags"/> would otherwise wrap silently.</summary>
+    /// the WHEN-survival mask folded into the plan-cache key would otherwise wrap silently.</summary>
     public int WhenCount;
 
     /// <summary>Count of top-level <c>exists()</c> / <c>NOT exists()</c> leaves eligible for the
     /// static collapse against the live NonExisting posting list (RavenDB-25281 #4875). Each such
-    /// clause consumes a bit in <see cref="CompiledPlan.WhenFlags"/> alongside the WHEN clauses (set
+    /// clause consumes a bit in the WHEN-survival mask folded into the plan-cache key alongside the WHEN clauses (set
     /// when the clause is kept = the field has missing entries; clear when it collapses), so the
     /// "field present on all docs" and "field missing on some docs" states resolve to distinct cached
     /// plans. Computed once at template construction. The collapse is only enabled when

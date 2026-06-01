@@ -7,15 +7,6 @@ namespace Corax.Querying.Planning;
 
 public class QueryExecution
 {
-    /// <summary>Bit 30 of <see cref="CompiledPlan.Ordering" />. Set when any clause carries a boost factor.</summary>
-    public const int HasBoostBit = 1 << 30;
-
-    /// <summary>
-    ///     Bit 31 of <see cref="CompiledPlan.Ordering" />. Set when the sort-driving clause's
-    ///     cardinality is greater than (16K). Check whether we can use tie-break sorted scan; queries over it cannot.
-    /// </summary>
-    public const int CardinalityCliffBit = 1 << 31;
-
     public long[] Cardinalities;
     
     public double[] DoubleValues;
