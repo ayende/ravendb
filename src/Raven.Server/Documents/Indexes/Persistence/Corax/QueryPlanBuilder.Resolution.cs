@@ -178,8 +178,23 @@ internal static partial class QueryPlanBuilder
             };
             RemapOptimizationIndices();
 
-            compiledPlan.CompoundFieldResiduals = BuildResidualSet(perClause, compiledPlan.CompoundFieldDrivingClause, compiledPlan.CompoundFieldField2RangeIdx);
-            compiledPlan.DirectScanResiduals = BuildResidualSet(perClause, compiledPlan.SortDrivingClauseIndex, skip2: -1);
+            var (compoundResiduals, compoundResidualIndices) = BuildResidualSet(perClause, compiledPlan.CompoundFieldDrivingClause, compiledPlan.CompoundFieldField2RangeIdx);
+            compiledPlan.CompoundFieldResiduals = compoundResiduals;
+            compiledPlan.CompoundFieldResidualClauseIndices = compoundResidualIndices;
+
+            var (directResiduals, directResidualIndices) = BuildResidualSet(perClause, compiledPlan.SortDrivingClauseIndex, skip2: -1);
+            compiledPlan.DirectScanResiduals = directResiduals;
+            compiledPlan.DirectScanResidualClauseIndices = directResidualIndices;
+
+            // DirectScan / CompoundField walk the driving clause via the tree and filter every OTHER
+            // clause per-entry. Their residual set excludes the DRIVING clause, whereas the entry-scan
+            // set (CompiledEntryPredicate) excludes clause[0] (the bitmap seed). Those differ whenever
+            // the driving clause is not the smallest-cardinality clause (always, for a range-driven
+            // scan), so each path needs its own delegate baked from its own residual set.
+            if (directResiduals is { Length: > 0 })
+                compiledPlan.CompiledDirectScanPredicate = ResidualScanIlEmitter.EmitDelegate(directResiduals, out _);
+            if (compoundResiduals is { Length: > 0 })
+                compiledPlan.CompiledCompoundFieldPredicate = ResidualScanIlEmitter.EmitDelegate(compoundResiduals, out _);
 
             indexSearcher.PlanCache.Add(planParams.CacheKey, compiledPlan, template);
 
@@ -427,19 +442,21 @@ internal static partial class QueryPlanBuilder
             }
         }
            
-        static ScanPredicateInfo[] BuildResidualSet(ScanPredicateInfo?[] perClause, int skip1, int skip2)
+        static (ScanPredicateInfo[] Residuals, int[] ClauseIndices) BuildResidualSet(ScanPredicateInfo?[] perClause, int skip1, int skip2)
         {
             var residuals = new List<ScanPredicateInfo>();
+            var indices = new List<int>();
             for (int i = 0; i < perClause.Length; i++)
             {
                 if (i == skip1 || i == skip2)
                     continue;
                 if (perClause[i] is not { } pred)
-                    return null;
+                    return (null, null);
                 residuals.Add(pred);
+                indices.Add(i);
             }
 
-            return residuals.ToArray();
+            return (residuals.ToArray(), indices.ToArray());
         }
 
         bool CheckAllNegated() => executions is [{ IsNegated: true }, ..]; // negated clauses are always sorted first, so we can just check the first
@@ -772,6 +789,7 @@ internal static partial class QueryPlanBuilder
             case ExecutionStrategy.CompoundExact:
                 innerMatch = ConstructCompoundExact(ref ctx);
                 if (innerMatch is null) goto default;
+                exec.ActualStrategy = ExecutionStrategy.CompoundExact;
                 return innerMatch;
             // orderByFields can be null when page size is 0, in which case, we need to get the actual total count
             // no advantage of using compound field here, since we can't stop midway (like we do with paging)
@@ -780,6 +798,7 @@ internal static partial class QueryPlanBuilder
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
                 innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.Plan.CompoundFieldField2RangeIdx, cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
+                exec.ActualStrategy = ExecutionStrategy.CompoundField;
                 return OrderBy(builderParameters, innerMatch, orderByFields, hasEmptySorts);
             case ExecutionStrategy.DirectScan when orderByFields != null:
                 var execs = exec.Executions;
@@ -789,12 +808,16 @@ internal static partial class QueryPlanBuilder
                     bool hasTieBreak = orderByFields.Length == 2;
                     int drivingIdx = exec.Plan.SortDrivingClauseIndex;
                     innerMatch = ConstructDirectScan(ref ctx, walkerCtx, drivingIdx, isFullScan, hasTieBreak, directScanReason);
-                    if (innerMatch is not null) 
+                    if (innerMatch is not null)
+                    {
+                        exec.ActualStrategy = ExecutionStrategy.DirectScan;
                         return innerMatch;
+                    }
                 }
                 goto default;
             case ExecutionStrategy.BitmapSort:
             default: // may either be the selected strategy or a one-off (because of bad parameters preventing a faster strategy)
+                exec.ActualStrategy = ExecutionStrategy.BitmapSort;
                 innerMatch = InstantiateBitmapPipeline(ctx.Plan, ctx.Exec, ctx.PlanParams, ctx.BuilderParams, walkerCtx, highlightingTerms, wantTimings, token);
                 if (ctx.OrderByFields == null) return innerMatch;
                 if (innerMatch is CompiledQueryMatch seekMatch)
@@ -1176,12 +1199,19 @@ internal static partial class QueryPlanBuilder
         if (analyzedPrefix.HasValue == false || analyzedPrefix.Size > byte.MaxValue) // if too long, cannot be used for compound
             return null; // fall back to bitmap
 
-        ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx);
-
         IQueryMatch drivingMatch = CreateDrivingMatch(ref ctx);
-        DirectScanMatchBase directScan = (ctx.Exec.Plan.CompoundFieldResiduals is null or { Length: 0 }
-            ? new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: -1)
-            : new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: -1, precompiledDelegate: ctx.Plan.CompiledEntryPredicate));
+        DirectScanMatchBase directScan;
+        if (ctx.Exec.Plan.CompoundFieldResiduals is null or { Length: 0 })
+        {
+            directScan = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: -1);
+        }
+        else
+        {
+            // Filter every clause EXCEPT {driving, field2Range} (both enforced by the compound key).
+            // Use the CompoundField-specific residual set + delegate, not the entry-scan one.
+            ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx, ctx.Exec.Plan.CompoundFieldResiduals, ctx.Exec.Plan.CompoundFieldResidualClauseIndices);
+            directScan = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: -1, precompiledDelegate: ctx.Plan.CompiledCompoundFieldPredicate);
+        }
 
         if (ctx.WantTimings) // only used when we use include timings()
             SetDirectScanPropertiesForIntrospection(ref ctx);
@@ -1392,10 +1422,19 @@ internal static partial class QueryPlanBuilder
             ? BuildSortedDrivingWithTieBreakMatch(ctx, tpm.Provider, tpm.Llt, ctx.BuilderParams.Index.Configuration.NullsSortMode, indexSearcher, nullFirst)
             : new SortedDrivingMatch(tpm.Provider, tpm.Llt, ctx.PlanParams.Allocator, indexSearcher, ctx.OrderByFields[0].Field, nullFirst);
 
-        ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx);
-        DirectScanMatchBase ds = ctx.Exec.Plan.DirectScanResiduals is null or { Length: 0 }
-            ? new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: Constants.IndexSearcher.TakeAll)
-            : new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: Constants.IndexSearcher.TakeAll, precompiledDelegate: ctx.Plan.CompiledEntryPredicate);
+        DirectScanMatchBase ds;
+        if (ctx.Exec.Plan.DirectScanResiduals is null or { Length: 0 })
+        {
+            ds = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: Constants.IndexSearcher.TakeAll);
+        }
+        else
+        {
+            // Filter every clause EXCEPT the sort-driving clause (walked by the tree). Use the
+            // DirectScan-specific residual set + delegate, not the entry-scan one (which skips the
+            // wrong clause when the driving clause isn't the smallest-cardinality clause).
+            ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx, ctx.Exec.Plan.DirectScanResiduals, ctx.Exec.Plan.DirectScanResidualClauseIndices);
+            ds = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: Constants.IndexSearcher.TakeAll, precompiledDelegate: ctx.Plan.CompiledDirectScanPredicate);
+        }
 
         if (ctx.WantTimings)
         {

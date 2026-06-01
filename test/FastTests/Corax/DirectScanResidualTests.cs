@@ -45,12 +45,15 @@ public class DirectScanResidualTests : RavenTestBase
         }
     }
 
-    // Deterministic seed sized to make the direct-scan path cost-effective: a selective range on the
-    // sort field (Seq) drives the scan while a ~50%-selective residual makes a bitmap plan look
-    // expensive. Name is capitalised on purpose so the residual must lower-case it to match.
+    // Deterministic seed sized to make the direct-scan path cost-effective. DirectScan is a top-N
+    // streaming optimization, so it only wins with a small page AND a NON-selective residual (a high
+    // pass-rate keeps the scanned-entry estimate small). Name is heavily skewed to "Bob" (3 of 4) so a
+    // Name='BOB' residual is non-selective; Category cycles 3-way so an (red or blue) group residual is
+    // ~2/3 non-selective. Both keep the per-execution cost gate on the DirectScan side. Name is
+    // capitalised on purpose so the residual must lower-case it to match the stored term.
     private static List<Item> BuildSeed(int count)
     {
-        string[] names = { "Bob", "Alice", "Carol", "Dave" };
+        string[] names = { "Bob", "Bob", "Bob", "Alice" };
         string[] cats = { "red", "green", "blue" };
         var items = new List<Item>(count);
         for (int i = 0; i < count; i++)
@@ -74,8 +77,11 @@ public class DirectScanResidualTests : RavenTestBase
             await bulk.StoreAsync(it, it.Id);
     }
 
-    private static List<string> Expected(IEnumerable<Item> items, Func<Item, bool> predicate) =>
-        items.Where(predicate).Select(i => i.Id).OrderBy(x => x, StringComparer.Ordinal).ToList();
+    // Top-N expectation: the lowest-Seq matches, in Seq order, capped at limit (matches "order by Seq
+    // as long limit N"). The residual code path under test is only exercised when DirectScan is chosen,
+    // which requires the small page bound — so the correctness checks must use the same top-N shape.
+    private static List<string> ExpectedTopN(IEnumerable<Item> items, Func<Item, bool> predicate, int limit) =>
+        items.Where(predicate).OrderBy(i => i.Seq).Take(limit).Select(i => i.Id).ToList();
 
     // Bug 1: a direct-scan residual string-equality with a mixed-case value. Stored term is lower-cased
     // by the default analyzer ("Bob" -> "bob"); the residual must analyzer-encode 'BOB' the same way.
@@ -92,12 +98,12 @@ public class DirectScanResidualTests : RavenTestBase
 
         using var session = store.OpenAsyncSession();
         var results = await session.Advanced
-            .AsyncRawQuery<Item>($"from index '{index.IndexName}' where Seq between 0 and 39 and Name = 'BOB' order by Seq as long")
+            .AsyncRawQuery<Item>($"from index '{index.IndexName}' where Seq between 0 and 3999 and Name = 'BOB' order by Seq as long limit 25")
             .ToListAsync();
 
-        var actual = results.Select(r => r.Id).OrderBy(x => x, StringComparer.Ordinal).ToList();
-        var expected = Expected(items,
-            i => i.Seq >= 0 && i.Seq <= 39 && string.Equals(i.Name, "BOB", StringComparison.OrdinalIgnoreCase));
+        var actual = results.Select(r => r.Id).ToList();
+        var expected = ExpectedTopN(items,
+            i => i.Seq >= 0 && i.Seq <= 3999 && string.Equals(i.Name, "BOB", StringComparison.OrdinalIgnoreCase), 25);
 
         Assert.NotEmpty(expected);
         Assert.Equal(expected, actual);
@@ -118,12 +124,12 @@ public class DirectScanResidualTests : RavenTestBase
 
         using var session = store.OpenAsyncSession();
         var results = await session.Advanced
-            .AsyncRawQuery<Item>($"from index '{index.IndexName}' where Seq between 0 and 59 and (Category = 'red' or Category = 'blue') order by Seq as long")
+            .AsyncRawQuery<Item>($"from index '{index.IndexName}' where Seq between 0 and 3999 and (Category = 'red' or Category = 'blue') order by Seq as long limit 25")
             .ToListAsync();
 
-        var actual = results.Select(r => r.Id).OrderBy(x => x, StringComparer.Ordinal).ToList();
-        var expected = Expected(items,
-            i => i.Seq >= 0 && i.Seq <= 59 && (i.Category == "red" || i.Category == "blue"));
+        var actual = results.Select(r => r.Id).ToList();
+        var expected = ExpectedTopN(items,
+            i => i.Seq >= 0 && i.Seq <= 3999 && (i.Category == "red" || i.Category == "blue"), 25);
 
         Assert.NotEmpty(expected);
         Assert.Equal(expected, actual);
@@ -144,7 +150,7 @@ public class DirectScanResidualTests : RavenTestBase
 
         using var session = store.OpenAsyncSession();
         var results = await session.Advanced
-            .AsyncRawQuery<Item>($"from index '{index.IndexName}' where Seq between 0 and 39 and Name = 'BOB' order by Seq as long include timings()")
+            .AsyncRawQuery<Item>($"from index '{index.IndexName}' where Seq between 0 and 3999 and Name = 'BOB' order by Seq as long limit 25 include timings()")
             .Timings(out var timings)
             .ToListAsync();
 
