@@ -1208,7 +1208,6 @@ internal static partial class QueryPlanBuilder
         else
         {
             // Filter every clause EXCEPT {driving, field2Range} (both enforced by the compound key).
-            // Use the CompoundField-specific residual set + delegate, not the entry-scan one.
             ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx, ctx.Exec.Plan.CompoundFieldResiduals, ctx.Exec.Plan.CompoundFieldResidualClauseIndices);
             directScan = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: -1, precompiledDelegate: ctx.Plan.CompiledCompoundFieldPredicate);
         }
@@ -1429,9 +1428,7 @@ internal static partial class QueryPlanBuilder
         }
         else
         {
-            // Filter every clause EXCEPT the sort-driving clause (walked by the tree). Use the
-            // DirectScan-specific residual set + delegate, not the entry-scan one (which skips the
-            // wrong clause when the driving clause isn't the smallest-cardinality clause).
+            // Filter every clause EXCEPT the sort-driving clause (walked by the tree).
             ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx, ctx.Exec.Plan.DirectScanResiduals, ctx.Exec.Plan.DirectScanResidualClauseIndices);
             ds = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: Constants.IndexSearcher.TakeAll, precompiledDelegate: ctx.Plan.CompiledDirectScanPredicate);
         }
