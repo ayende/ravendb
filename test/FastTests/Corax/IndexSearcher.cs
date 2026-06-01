@@ -1299,7 +1299,7 @@ namespace FastTests.Corax
             {
                 var emptyParams = ctx.ReadObject(new global::Sparrow.Json.Parsing.DynamicJsonValue { ["p0"] = new global::Sparrow.Json.Parsing.DynamicJsonArray() }, "params");
                 var queryMetadata = new QueryMetadata(rql, emptyParams, 0);
-                var planParams = new QueryPlanBuilder.PlanParameters
+                var planParams = new PlanParameters
                 {
                     IndexSearcher = searcher, Metadata = queryMetadata,
                     QueryParameters = emptyParams, Allocator = Allocator
@@ -1313,7 +1313,7 @@ namespace FastTests.Corax
             {
                 var realParams = ctx.ReadObject(new global::Sparrow.Json.Parsing.DynamicJsonValue { ["p0"] = new global::Sparrow.Json.Parsing.DynamicJsonArray { "Alpha" } }, "params");
                 var queryMetadata = new QueryMetadata(rql, realParams, 0);
-                var planParams = new QueryPlanBuilder.PlanParameters
+                var planParams = new PlanParameters
                 {
                     IndexSearcher = searcher, Metadata = queryMetadata,
                     QueryParameters = realParams, Allocator = Allocator
@@ -1352,7 +1352,7 @@ namespace FastTests.Corax
             {
                 var emptyParams = ctx.ReadObject(new global::Sparrow.Json.Parsing.DynamicJsonValue { ["p0"] = new global::Sparrow.Json.Parsing.DynamicJsonArray() }, "params");
                 var queryMetadata = new QueryMetadata(rql, emptyParams, 0);
-                var planParams = new QueryPlanBuilder.PlanParameters
+                var planParams = new PlanParameters
                 {
                     IndexSearcher = searcher, Metadata = queryMetadata,
                     QueryParameters = emptyParams, Allocator = Allocator
@@ -1367,7 +1367,7 @@ namespace FastTests.Corax
             {
                 var realParams = ctx.ReadObject(new global::Sparrow.Json.Parsing.DynamicJsonValue { ["p0"] = new global::Sparrow.Json.Parsing.DynamicJsonArray { "Beta" } }, "params");
                 var queryMetadata = new QueryMetadata(rql, realParams, 0);
-                var planParams = new QueryPlanBuilder.PlanParameters
+                var planParams = new PlanParameters
                 {
                     IndexSearcher = searcher, Metadata = queryMetadata,
                     QueryParameters = realParams, Allocator = Allocator
@@ -1595,7 +1595,7 @@ namespace FastTests.Corax
             using var ctx = global::Sparrow.Json.JsonOperationContext.ShortTermSingleUse();
             var paramsJson = ctx.ReadObject(new global::Sparrow.Json.Parsing.DynamicJsonValue { ["p"] = false }, "params");
 
-            var planParams = new QueryPlanBuilder.PlanParameters
+            var planParams = new PlanParameters
             {
                 IndexSearcher = searcher,
                 Metadata = queryMetadata,
@@ -1622,7 +1622,7 @@ namespace FastTests.Corax
             var queryMetadata = new QueryMetadata(rqlQuery, null, 0);
 
             // Build and compile the query plan through QueryPlanBuilder
-            var planParams = new QueryPlanBuilder.PlanParameters
+            var planParams = new PlanParameters
             {
                 IndexSearcher = searcher,
                 Metadata = queryMetadata,

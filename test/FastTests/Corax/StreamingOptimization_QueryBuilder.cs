@@ -595,7 +595,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
             {
                 var indexQueryServerSide = new IndexQueryServerSide(indexQuery.Query, blittableParameters);
                 using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
-                var planParams = new QueryPlanBuilder.PlanParameters
+                var planParams = new PlanParameters
                 {
                     IndexSearcher = indexSearcher,
                     Metadata = indexQueryServerSide.Metadata,
