@@ -26,8 +26,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         _exec = CreateQueryExecution();
         _cacheKeyHash = ComputeCacheKeyHash();
 
-        if (_exec.QueryWillReturnNoResults) // there are no results here..., return immediately
-            return default;
+        // A query that collapses to no results is no longer special-cased: its clauses survive as
+        // MatchNothing sentinels and the emitted plan produces an empty bitmap. That plan caches and
+        // executes like any other, so the per-clause sentinel code in the key keeps it distinct.
 
         if (_indexSearcher.PlanCache.Get(planParams.CacheKey, _cacheKeyHash) is { } cachedPlan)
         {
@@ -93,53 +94,57 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
     private QueryExecution CreateQueryExecution()
     {
-        // A clause is "gated" when its presence in the execution can vary per query: a WHEN(...) guard,
-        // or a top-level exists()/NOT exists() leaf that may statically collapse against the live
-        // NonExisting posting list. When any clause is gated we length-prefix the key and emit one
-        // per-clause survival bit so the kept/removed shape resolves to a distinct cached plan.
-        // exists() eligibility (dynamic fields write no NonExisting markers; pre-feature index versions
-        // have no list; OR roots make the collapse a no-op) is structural, so it is stable per query text
-        // and the gated/ungated key shape never diverges between executions of the same query.
+        // A clause is "gated" when its effective shape can vary per query: a WHEN(...) guard, or a
+        // top-level exists()/NOT exists() leaf that may statically collapse against the live NonExisting
+        // posting list. exists() eligibility (dynamic fields write no NonExisting markers; pre-feature
+        // index versions have no list; OR roots make the collapse a no-op) is structural, so it is stable
+        // per query text.
         bool existsEligible = template.ExistsCollapseEligible;
         bool gated = template.WhenCount != 0 || existsEligible;
 
+        // The execution list mirrors the template clause list one-for-one — clauses are never removed.
+        // A clause that collapses (WHEN(false), a statically-true exists()/NOT exists(), an empty IN, a
+        // contradictory BETWEEN) is replaced IN PLACE by a MatchAll / MatchNothing sentinel. The plan
+        // emitter's merge algebra performs the boolean simplification (∨/∧ against the universe/∅), which
+        // also makes nesting fall out for free, so there is no list-shape reconciliation to do.
         var execList = new List<ClauseExecution>(template.Clauses.Count);
-        if (gated)
-            _builder.Append(template.Clauses.Count, 16);
 
-        bool collapseToNoResults = false;
         int sortDrivingIdx = template.SortDrivingClauseIndex;
         long drivingClauseCardinality = -1;
+        long numberOfEntries = _indexSearcher.NumberOfEntries;
 
         foreach (var cached in template.Clauses)
         {
-            if (gated)
+            var it = QueryPlanBuilder.CreateExecution(cached);
+
+            ClauseFate fate = gated ? GateClause(cached, existsEligible) : ClauseFate.Keep;
+            if (fate == ClauseFate.Drop)
             {
-                ClauseFate fate = GateClause(cached, existsEligible);
-                // Kept = survival bit 1. Both Drop (match-all) and CollapseToNoResults (match-nothing)
-                // remove the clause from execution and emit bit 0; the two zero-bit fates never share a
-                // cached plan because CollapseToNoResults sets QueryWillReturnNoResults and the caller
-                // returns before touching the cache.
-                _builder.Append((fate == ClauseFate.Keep).ToInt32(), 1);
-                switch (fate)
-                {
-                    case ClauseFate.Drop:
-                        continue;
-                    case ClauseFate.CollapseToNoResults:
-                        collapseToNoResults = true;
-                        continue;
-                }
+                it.MarkAsSentinel(ClauseType.MatchAll, numberOfEntries); // WHEN(false) / statically-true exists()
+            }
+            else if (fate == ClauseFate.CollapseToNoResults)
+            {
+                it.MarkAsSentinel(ClauseType.MatchNothing, 0); // statically-true NOT exists()
+            }
+            else
+            {
+                QueryPlanBuilder.PopulateClauseValues(it, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
+                QueryPlanBuilder.PropagateBetweenContradiction(it, _writer); // a contradictory BETWEEN collapses to MatchNothing
+                if (IsEmptyIn(it))
+                    it.MarkAsSentinel(ClauseType.MatchNothing, 0); // an empty IN matches nothing
+
+                if (it.Cardinality < 0)
+                    it.Cardinality = CardinalityEstimator.Estimate(it, _indexSearcher, _writer, walkerCtx);
+                if (sortDrivingIdx >= 0 && it.Clause.OriginalIndex == sortDrivingIdx)
+                    drivingClauseCardinality = it.Cardinality;
             }
 
-            var it = QueryPlanBuilder.CreateExecution(cached);
-            QueryPlanBuilder.PopulateClauseValues(it, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
-            QueryPlanBuilder.PropagateBetweenContradiction(it, _writer); // a contradictory BETWEEN is rewritten into an empty-IN
-            collapseToNoResults |= IsEmptyIn(it);
-
-            if (it.Cardinality < 0)
-                it.Cardinality = CardinalityEstimator.Estimate(it, _indexSearcher, _writer, walkerCtx);
-            if (sortDrivingIdx >= 0 && it.Clause.OriginalIndex == sortDrivingIdx)
-                drivingClauseCardinality = it.Cardinality;
+            // Every clause contributes a 2-bit sentinel outcome (Keep / MatchAll / MatchNothing) in template
+            // order. With the list shape frozen, the OriginalIndex enumeration in ComputeCacheKeyHash no longer
+            // encodes collapse, so this code is the sole disambiguator: WHEN+exists on one clause can yield
+            // MatchAll OR MatchNothing (one bit is not enough), and the now-cached empty-IN / contradictory-BETWEEN
+            // no-result variants must resolve to distinct plans from their populated counterparts.
+            _builder.Append(SentinelCode(it), 2);
 
             execList.Add(it);
         }
@@ -149,13 +154,21 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         return new QueryExecution
         {
             Executions = execList,
-            // Empty-IN and a collapsed NOT exists() (no missing entries -> match-nothing) only short-circuit an
-            // AND chain; in an OR chain they're no-op clauses. collapseToNoResults is only ever set in an AND root.
-            QueryWillReturnNoResults = collapseToNoResults && template.IsOr is false,
+            // Only a genuinely clause-less query (no WHERE) is match-all here; an all-collapsed query keeps its
+            // MatchAll/MatchNothing sentinels and lets the emitter produce the right bitmap.
             IsAllEntries = execList.Count is 0,
             DrivingClauseCardinality = drivingClauseCardinality,
         };
     }
+
+    /// <summary>2-bit plan-cache code for a clause's collapse outcome: 0 = kept (real leaf), 1 = MatchAll,
+    /// 2 = MatchNothing.</summary>
+    private static int SentinelCode(ClauseExecution exec) => exec.ClauseType switch
+    {
+        ClauseType.MatchAll => 1,
+        ClauseType.MatchNothing => 2,
+        _ => 0
+    };
 
     // Decide the fate of a single clause during the resolution pass. WHEN(false) and a statically-true
     // exists() are match-all (Drop); a statically-true NOT exists() is match-nothing (CollapseToNoResults).
@@ -188,6 +201,10 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         for (int i = 0; i < _exec.Executions.Count; i++)
         {
             ClauseExecution it = _exec.Executions[i];
+            // A collapsed clause keeps its slot but drives no optimization: leave the index disabled (-1),
+            // matching the pre-frozen-shape behavior where the clause was removed and never matched by OriginalIndex.
+            if (it.IsSentinel)
+                continue;
             if (it.Clause.OriginalIndex == template.SortDrivingClauseIndex)
                 _compiledPlan.SortDrivingClauseIndex = i;
             if (it.Clause.OriginalIndex == template.CompoundExact.First)
@@ -238,8 +255,16 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     private static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType)
     {
         var clause = exec.Clause;
-        switch (clause.ClauseType)
+        // Switch on the EFFECTIVE per-execution type, not the frozen template type: PropagateBetweenContradiction
+        // and the collapse stamps rewrite exec.ClauseType, and a sentinel has no scan predicate.
+        switch (exec.ClauseType)
         {
+            // A collapse sentinel is not a scannable residual; null forces the bitmap pipeline (it also clears
+            // allScanEligible, so a query with any sentinel never takes the entry-scan tail).
+            case ClauseType.MatchAll:
+            case ClauseType.MatchNothing:
+                return null;
+
             // These clause types cannot be expressed as entry-scan predicates.
             case ClauseType.Search:
             case ClauseType.Regex:
@@ -264,7 +289,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                         PackedParam.TypeDouble => ScanValueType.Double,
                         _ => ScanValueType.Slice
                     },
-                    CompareOp = clause.ClauseType == ClauseType.In ? ScanCompareOp.In : ScanCompareOp.AllIn,
+                    CompareOp = exec.ClauseType == ClauseType.In ? ScanCompareOp.In : ScanCompareOp.AllIn,
                     ParamIndex = 0,
                     Negated = exec.IsNegated
                 };
@@ -328,7 +353,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                 ParamValueType.Double => ScanValueType.Double,
                 _ => ScanValueType.Slice // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
             },
-            CompareOp = clause.ClauseType switch
+            CompareOp = exec.ClauseType switch
             {
                 ClauseType.Equals => ScanCompareOp.Equal,
                 ClauseType.NotEquals => ScanCompareOp.NotEqual,

@@ -35,8 +35,6 @@ public class QueryExecution
 
     public Action PopulateScanParams;
 
-    public bool QueryWillReturnNoResults;
-
     /// <summary>Holds the analyzed slices for each field, indexed by the field's slot.</summary>
     public Slice[] AnalyzedSlices;
 

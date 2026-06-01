@@ -194,6 +194,8 @@ internal static partial class QueryPlanBuilder
         static void BuildFlatClauseExecutionsInternal(List<ClauseExecution> list, ClauseExecution clauseExec)
         {
             RuntimeHelpers.EnsureSufficientExecutionStack();
+            if (clauseExec.IsSentinel)
+                return; // a collapse sentinel emits no op → no flat entry, keeping FlatClauseIndex aligned with op.ParamIndex
             switch (clauseExec.Clause.ClauseType)
             {
                 case ClauseType.OrGroup or ClauseType.AndGroup:
@@ -307,6 +309,8 @@ internal static partial class QueryPlanBuilder
         void ExtractFlatClausesInternal(ClauseExecution clauseExec)
         {
             RuntimeHelpers.EnsureSufficientExecutionStack();
+            if (clauseExec.IsSentinel)
+                return; // a collapse sentinel emits no op → no flat clause, keeping the inspection op cursor aligned
             switch (clauseExec.Clause.ClauseType)
             {
                 case ClauseType.OrGroup or ClauseType.AndGroup:
