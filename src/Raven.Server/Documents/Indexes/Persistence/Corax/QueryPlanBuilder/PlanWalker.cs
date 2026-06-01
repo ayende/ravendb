@@ -39,11 +39,26 @@ internal static class PlanWalker
         ctx.ExistsCollapseCandidateCount = 0;
         foreach (var t in clauses)
         {
-            if (t.WhenCondition != null)
+            if (t.WhenCondition != null) // WHEN(...) guards only attach to top-level clauses
                 ctx.WhenCount++;
-            else if (t.ClauseType == ClauseType.Exists) // top-level exists()/NOT exists() leaf — collapse candidate (#4875)
-                ctx.ExistsCollapseCandidateCount++;
+            // exists()/NOT exists() leaves are collapse candidates (#4875) at any nesting depth: a nested
+            // exists() inside an Or/AndGroup collapses to a sentinel just like a top-level one.
+            ctx.ExistsCollapseCandidateCount += CountExistsLeaves(t);
         }
+    }
+
+    private static int CountExistsLeaves(ClauseInfo clause)
+    {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
+        if (clause.SubClauses is { Count: > 0 } subClauses)
+        {
+            int sum = 0;
+            foreach (var sub in subClauses)
+                sum += CountExistsLeaves(sub);
+            return sum;
+        }
+
+        return clause.ClauseType == ClauseType.Exists ? 1 : 0;
     }
 
     /// <summary>Mark every negated clause whose immediate enclosing context is OR with

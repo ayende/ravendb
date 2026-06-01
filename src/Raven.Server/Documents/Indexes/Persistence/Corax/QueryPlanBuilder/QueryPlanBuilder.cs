@@ -115,9 +115,10 @@ internal static partial class QueryPlanBuilder
             ExistsCollapseCandidateCount = walkerCtx.ExistsCollapseCandidateCount,
             // The ExistsCollapseCandidateCount > 0 guard must come first: it short-circuits the
             // index-definition access so templates with no exists() leaves (e.g. direct-planner
-            // tests that supply no Index) never dereference p.Index.
+            // tests that supply no Index) never dereference p.Index. The root operator is NOT a factor:
+            // a collapsed exists() becomes a MatchAll/MatchNothing sentinel, and the emitter's merge
+            // algebra simplifies it correctly under OR (x∨ALL=ALL, x∨∅=x) and inside nested groups.
             ExistsCollapseEligible = walkerCtx.ExistsCollapseCandidateCount > 0
-                                     && walkerCtx.IsOr == false
                                      && p.Index.Definition.HasDynamicFields == false
                                      && IndexDefinitionBaseServerSide.IndexVersion.IsNonExistingPostingListSupported(p.Index.Definition.Version),
             OptimizationFlags = optFlags,
