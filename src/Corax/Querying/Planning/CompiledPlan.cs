@@ -112,61 +112,30 @@ public sealed class CompiledPlan
     /// re-running EmitPlan.</summary>
     public int RequiredBitmaps { get; init; }
 
-    /// <summary>Residual entry-scan predicate set for the bitmap entry-scan path (excludes clause 0,
-    /// the bitmap seed). Its <see cref="ResidualScanSet.Compiled"/> evaluator and clause indices are
-    /// cached from the first compilation and reused on every execution; the per-query extractor walks
-    /// the predicates to populate analyzed slices / field-root pages. Never null (the entry-scan
-    /// delegate is always emitted); <see cref="ResidualScanSet.Predicates"/> is null when the plan has
-    /// no entry-scan predicates (single-clause, OR, etc.).</summary>
+    /// <summary>Predicate set for the bitmap entry-scan path (excludes clause 0, the bitmap seed).
+    /// This is used when we have small enough set of results that we can scan them, rather then search.</summary>
     public ResidualScanSet EntryScanSet { get; init; }
 
-    /// <summary>Residual entry-scan predicate set for the CompoundField strategy, filtered once at
-    /// cache-miss time (after <c>RemapOptimizationIndices</c>) against the plan-stable exclusion set
-    /// {<see cref="CompoundFieldDrivingClause"/>, <see cref="CompoundFieldField2RangeIdx"/>}. Null when
-    /// a non-scannable clause makes the path ineligible.</summary>
+    /// <summary>Predicate set for the CompoundField strategy, null when a non-scannable clause makes the path ineligible.</summary>
     public ResidualScanSet CompoundFieldResidualSet { get; set; }
 
-    /// <summary>Residual entry-scan predicate set for the DirectScan dispatch path, filtered once at
-    /// cache-miss time against the plan-stable exclusion of {<see cref="SortDrivingClauseIndex"/>}.
-    /// Distinct from <see cref="EntryScanSet"/> (which excludes clause 0) whenever the driving clause
-    /// is not the smallest-cardinality clause — always, for a range-driven scan — so each path needs
-    /// its own delegate baked from its own set. Null when a non-scannable clause makes it ineligible.</summary>
+    /// <summary>Predicate set for the DirectScan dispatch path, null when a non-scannable clause makes it ineligible.</summary>
     public ResidualScanSet DirectScanResidualSet { get; set; }
 
-    // ── Structural fields moved from QueryExecution ─────────────────────
-    // Set once at cache-miss time (by Build + RemapOptimizationIndices) then
-    // read-only on every subsequent cache hit. Not duplicated on QueryExecution.
-
     /// <summary>True when every clause in the execution is negated (NOT pattern).
-    /// Determines whether a trailing AllEntries slot is appended during resolution.
-    /// This is per-CompiledPlan (not per-template) because WHEN elimination can remove
-    /// all non-negated clauses, leaving only negated ones. Different WHEN outcomes produce
-    /// different WhenFlags → different CompiledPlan entries, so AllNegated is stable
-    /// within a single cached plan.</summary>
+    /// This is per-CompiledPlan (not per-template) because WHEN elimination can remove all non-negated clauses, leaving only negated ones.</summary>
     public bool AllNegated { get; init; }
 
-    /// <summary>Post-sort runtime index of the clause identified at plan time as the
-    /// sort-driving candidate (range/eq on ORDER BY field). -1 when none.
-    /// Remapped from template position by RemapOptimizationIndices.</summary>
+    /// <summary>Post-sort runtime index of the driving clause identified at template time. Remapped via  RemapOptimizationIndices.</summary>
     public int SortDrivingClauseIndex { get; set; } = -1;
 
-    /// <summary>Pre-identified compound-exact-match clause pair (runtime indices, remapped
-    /// from template via OriginalIndex). -1/-1 when no qualifying pair exists.</summary>
-    public int CompoundExactClauseA { get; set; } = -1;
-    /// <inheritdoc cref="CompoundExactClauseA"/>
-    public int CompoundExactClauseB { get; set; } = -1;
-    /// <summary>Pre-identified compound-field-match (WHERE Equals + ORDER BY) driving clause
-    /// index (runtime, remapped from template). -1 when none.</summary>
-    public int CompoundFieldDrivingClause { get; set; } = -1;
+    /// <summary>Pre-identified compound-exact-match clause pair (runtime indices, remapped from template via OriginalIndex).</summary>
+    public (int First, int Second) CompoundExact { get; set; } = (-1, -1);
 
-    /// <summary>Optional field2 range narrowing clause (runtime exec-position index, remapped from
-    /// <see cref="PlanTemplate.CompoundFieldField2Range"/>). -1 when none. A GT/GTE/LT/LTE/Between
-    /// on the compound sort field that narrows the prefix scan.</summary>
-    public int CompoundFieldField2RangeIdx { get; set; } = -1;
+    /// <summary>Pre-identified compound-field-match driving field (WHERE Equals + ORDER BY) driving and Optional field2 range narrowing
+    /// clause (A GT/GTE/LT/LTE/Between on the 2nd field on the compound). Indexes (runtime, remapped from template). </summary>
+    public (int DrivingClause, int Field2Range) CompoundField { get; set; } = (-1, -1);
 
-    /// <summary>Runtime exec-position index of the sort-seek-hint clause (remapped from
-    /// <see cref="PlanTemplate.SortSeekHintTemplateIdx"/>). -1 when no hint applies for
-    /// this template, or when WHEN elimination dropped the candidate clause for this
-    /// specific execution.</summary>
+    /// <summary>Runtime exec-position index of the sort-seek-hint clause (remapped from <see cref="PlanTemplate.SortSeekHintTemplateIdx"/>).</summary>
     public int SortSeekClauseExecIdx { get; set; } = -1;
 }

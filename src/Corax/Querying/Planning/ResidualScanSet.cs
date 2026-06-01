@@ -1,12 +1,5 @@
 namespace Corax.Querying.Planning;
 
-/// <summary>One dispatch path's residual entry-scan predicate set: the structural predicates, the
-/// parallel post-sort exec-position indices (entry <c>i</c> maps <c>Predicates[i]</c> to its
-/// <see cref="QueryExecution.Executions"/> slot in the same order the matching delegate reads them),
-/// and the IL-compiled per-entry evaluator baked from those predicates. One instance per path on the
-/// <see cref="CompiledPlan"/>: the entry-scan set excludes clause 0 (the bitmap seed), the CompoundField
-/// set excludes {driving, field2Range}, and the DirectScan set excludes the sort-driving clause — so the
-/// three sets differ whenever the driving clause is not the smallest-cardinality clause.</summary>
 public sealed class ResidualScanSet
 {
     /// <summary>Structural scan predicates filtered against this path's exclusion set. Null when there

@@ -183,7 +183,7 @@ internal static partial class QueryPlanBuilder
             // set excludes clause[0] (the bitmap seed). Those differ whenever the driving clause is not
             // the smallest-cardinality clause (always, for a range-driven scan), so each path bakes its
             // own delegate from its own residual set.
-            compiledPlan.CompoundFieldResidualSet = BuildResidualSet(perClause, compiledPlan.CompoundFieldDrivingClause, compiledPlan.CompoundFieldField2RangeIdx);
+            compiledPlan.CompoundFieldResidualSet = BuildResidualSet(perClause, compiledPlan.CompoundField.DrivingClause, compiledPlan.CompoundField.Field2Range);
             compiledPlan.DirectScanResidualSet = BuildResidualSet(perClause, compiledPlan.SortDrivingClauseIndex, skip2: -1);
 
             if (compiledPlan.DirectScanResidualSet is { HasPredicates: true } directSet)
@@ -250,14 +250,14 @@ internal static partial class QueryPlanBuilder
                 ClauseExecution it = executions[i];
                 if (it.Clause.OriginalIndex == template.SortDrivingClauseIndex)
                     compiledPlan.SortDrivingClauseIndex = i;
-                if (it.Clause.OriginalIndex == template.CompoundExactClauseA)
-                    compiledPlan.CompoundExactClauseA = i;
-                if (it.Clause.OriginalIndex == template.CompoundExactClauseB)
-                    compiledPlan.CompoundExactClauseB = i;
+                if (it.Clause.OriginalIndex == template.CompoundExact.First)
+                    compiledPlan.CompoundExact = (i, compiledPlan.CompoundExact.Second);
+                if (it.Clause.OriginalIndex == template.CompoundExact.Second)
+                    compiledPlan.CompoundExact = (compiledPlan.CompoundExact.First, i);
                 if (it.Clause.OriginalIndex == template.CompoundFieldDrivingClause)
-                    compiledPlan.CompoundFieldDrivingClause = i;
+                    compiledPlan.CompoundField = (i, compiledPlan.CompoundField.Field2Range);
                 if (it.Clause.OriginalIndex == template.CompoundFieldField2Range)
-                    compiledPlan.CompoundFieldField2RangeIdx = i;
+                    compiledPlan.CompoundField = (compiledPlan.CompoundField.DrivingClause, i);
                 if (it.Clause.OriginalIndex == template.SortSeekHintTemplateIdx)
                     compiledPlan.SortSeekClauseExecIdx = i;
             }
@@ -849,7 +849,7 @@ internal static partial class QueryPlanBuilder
             case ExecutionStrategy.CompoundField when orderByFields != null:
                 if (CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost) == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
-                innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.Plan.CompoundFieldField2RangeIdx, cfEntriesToScan, cfBitmapCost);
+                innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.Plan.CompoundField.Field2Range, cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
                 exec.ActualStrategy = ExecutionStrategy.CompoundField;
                 return OrderBy(builderParameters, innerMatch, orderByFields);
@@ -940,14 +940,14 @@ internal static partial class QueryPlanBuilder
             entriesToScan = 0;
             bitmapCost = 0;
             var execs  = ctx.Exec.Executions;
-            int drivingIdx = ctx.Exec.Plan.CompoundFieldDrivingClause;
+            int drivingIdx = ctx.Exec.Plan.CompoundField.DrivingClause;
 
             var drivingExec = execs[drivingIdx];
             if (drivingExec.PackedParamValue.IsNone)
                 return false;
 
             var indexSearcher = ctx.PlanParams.IndexSearcher;
-            int field2RangeIdx = ctx.Exec.Plan.CompoundFieldField2RangeIdx;
+            int field2RangeIdx = ctx.Exec.Plan.CompoundField.Field2Range;
             int residualCount = 0;
             for (int i = 0; i < execs.Count; i++)
             {
@@ -1153,8 +1153,7 @@ internal static partial class QueryPlanBuilder
                 Plan:
                 {
                     AllNegated: false,
-                    CompoundExactClauseA: var a and >= 0,
-                    CompoundExactClauseB: var b and >= 0
+                    CompoundExact: (> 0, > 0) and var (a, b)
                 }
             } || a >= executions.Count || b >= executions.Count)
         {
@@ -1177,8 +1176,8 @@ internal static partial class QueryPlanBuilder
     {
         var execs = ctx.Exec.Executions;
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        var eA = execs[ctx.Exec.Plan.CompoundExactClauseA];
-        var eB = execs[ctx.Exec.Plan.CompoundExactClauseB];
+        var eA = execs[ctx.Exec.Plan.CompoundExact.First];
+        var eB = execs[ctx.Exec.Plan.CompoundExact.Second];
 
         var (firstField, secondField, firstExec, secondExec) = ctx.Exec.Plan.Template.CompoundExactAFirst
             ? (eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName, eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName, eA, eB)
@@ -1205,7 +1204,7 @@ internal static partial class QueryPlanBuilder
 
     private static bool TryCreateCompoundFieldMatch(ref InstCtx ctx, out string rejectReason)
     {
-        if (ctx.Exec.Plan.CompoundFieldDrivingClause < 0 || ctx.Exec.Plan.Template.CompoundFieldSortName is null)
+        if (ctx.Exec.Plan.CompoundField.DrivingClause < 0 || ctx.Exec.Plan.Template.CompoundFieldSortName is null)
         {
             rejectReason = "no compound-field candidate identified at template time";
             return false;
@@ -1220,7 +1219,7 @@ internal static partial class QueryPlanBuilder
         var execs = ctx.Exec.Executions;
         for (int i = 0; i < execs.Count; i++)
         {
-            if (i == ctx.Exec.Plan.CompoundFieldDrivingClause || i == ctx.Exec.Plan.CompoundFieldField2RangeIdx)
+            if (i == ctx.Exec.Plan.CompoundField.DrivingClause || i == ctx.Exec.Plan.CompoundField.Field2Range)
                 continue;
             if (IsClauseBoosted(execs[i]))
             {
@@ -1243,7 +1242,7 @@ internal static partial class QueryPlanBuilder
     {
         var execs = ctx.Exec.Executions;
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        int drivingClauseIdx = ctx.Exec.Plan.CompoundFieldDrivingClause;
+        int drivingClauseIdx = ctx.Exec.Plan.CompoundField.DrivingClause;
 
         var packed = execs[drivingClauseIdx].PackedParamValue;
 
@@ -1261,15 +1260,15 @@ internal static partial class QueryPlanBuilder
 
         IQueryMatch drivingMatch = CreateDrivingMatch(ref ctx);
         DirectScanMatchBase directScan;
-        if (ctx.Exec.Plan.CompoundFieldResidualSet is not { HasPredicates: true })
-        {
-            directScan = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: -1);
-        }
-        else
+        if (ctx.Exec.Plan.CompoundFieldResidualSet is { HasPredicates: true })
         {
             // Filter every clause EXCEPT {driving, field2Range} (both enforced by the compound key).
             ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx, ctx.Exec.Plan.CompoundFieldResidualSet);
             directScan = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: -1, precompiledDelegate: ctx.Plan.CompoundFieldResidualSet.Compiled);
+        }
+        else
+        {   // nothing to filter, just scan...
+            directScan = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: -1);
         }
 
         if (ctx.WantTimings) // only used when we use include timings()
@@ -1482,15 +1481,15 @@ internal static partial class QueryPlanBuilder
             : new SortedDrivingMatch(tpm.Provider, tpm.Llt, ctx.PlanParams.Allocator, indexSearcher, ctx.OrderByFields[0].Field, nullFirst);
 
         DirectScanMatchBase ds;
-        if (ctx.Exec.Plan.DirectScanResidualSet is not { HasPredicates: true })
-        {
-            ds = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: Constants.IndexSearcher.TakeAll);
-        }
-        else
+        if (ctx.Exec.Plan.DirectScanResidualSet is { HasPredicates: true })
         {
             // Filter every clause EXCEPT the sort-driving clause (walked by the tree).
             ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx, ctx.Exec.Plan.DirectScanResidualSet);
             ds = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: Constants.IndexSearcher.TakeAll, precompiledDelegate: ctx.Plan.DirectScanResidualSet.Compiled);
+        }
+        else
+        {   // Nothing to filter, just match...
+            ds = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: Constants.IndexSearcher.TakeAll);
         }
 
         if (ctx.WantTimings)
