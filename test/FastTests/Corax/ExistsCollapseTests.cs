@@ -174,6 +174,68 @@ public class ExistsCollapseTests : RavenTestBase
 
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task Exists_Collapses_UnderOrRoot(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Items_Index();
+        index.Execute(store);
+
+        using (var s = store.OpenSession())
+        {
+            for (int i = 0; i < 50; i++)
+                s.Store(new Item { Id = $"items/{i}", Name = $"n{i}", City = i % 2 == 0 ? "red" : "blue" });
+            s.SaveChanges();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // exists(Name) under an OR root collapses to match-all (MatchAll sentinel), and x ∨ ALL = ALL,
+        // so the whole disjunction matches every doc — no surviving exists() term-walk.
+        var (orExistsHasLeaf, orExistsIds) = await RunAsync(store, index.IndexName, "where exists(Name) or City = 'red'");
+        Assert.False(orExistsHasLeaf);
+        Assert.Equal(50, orExistsIds.Count);
+
+        // NOT exists(Name) under an OR root collapses to match-nothing (MatchNothing sentinel), and x ∨ ∅ = x,
+        // so the disjunction reduces to just City = 'red' (the 25 red docs). NOT exists() cannot lead an
+        // expression in RQL, so the positive term comes first (OR is commutative — same result).
+        var (orNotExistsHasLeaf, orNotExistsIds) = await RunAsync(store, index.IndexName, "where City = 'red' or not exists(Name)");
+        Assert.False(orNotExistsHasLeaf);
+        Assert.Equal(25, orNotExistsIds.Count);
+    }
+
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task Exists_Collapses_NestedInGroup(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Items_Index();
+        index.Execute(store);
+
+        using (var s = store.OpenSession())
+        {
+            for (int i = 0; i < 50; i++)
+                s.Store(new Item { Id = $"items/{i}", Name = $"n{i}", City = i % 2 == 0 ? "red" : "blue" });
+            s.SaveChanges();
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        // The exists(Name) is nested inside an OR group: City = 'red' AND (exists(Name) OR City = 'blue').
+        // exists(Name) collapses to MatchAll, the inner group becomes match-all, and the query reduces to
+        // City = 'red' (25 docs). The nested exists() leaf must be gone from the plan.
+        var (nestedHasLeaf, nestedIds) = await RunAsync(store, index.IndexName, "where City = 'red' and (exists(Name) or City = 'blue')");
+        Assert.False(nestedHasLeaf);
+        Assert.Equal(25, nestedIds.Count);
+
+        // NOT exists(Name) nested in the OR group collapses to MatchNothing, so the inner group reduces to
+        // City = 'blue'; intersecting with the outer City = 'red' yields nothing (a doc has a single City).
+        var (nestedNotHasLeaf, nestedNotIds) = await RunAsync(store, index.IndexName, "where City = 'red' and (City = 'blue' or not exists(Name))");
+        Assert.False(nestedNotHasLeaf);
+        Assert.Empty(nestedNotIds);
+    }
+
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public async Task Exists_DoesNotCollapse_OnDynamicField(Options options)
     {
         using var store = GetDocumentStore(options);

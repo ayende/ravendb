@@ -86,20 +86,20 @@ public sealed class PlanTemplate
     /// the WHEN-survival mask folded into the plan-cache key would otherwise wrap silently.</summary>
     public int WhenCount;
 
-    /// <summary>Count of top-level <c>exists()</c> / <c>NOT exists()</c> leaves eligible for the
-    /// static collapse against the live NonExisting posting list (RavenDB-25281 #4875). Each such
-    /// clause consumes a bit in the WHEN-survival mask folded into the plan-cache key alongside the WHEN clauses (set
-    /// when the clause is kept = the field has missing entries; clear when it collapses), so the
-    /// "field present on all docs" and "field missing on some docs" states resolve to distinct cached
-    /// plans. Computed once at template construction. The collapse is only enabled when
-    /// <c>WhenCount + ExistsCollapseCandidateCount &lt;= MaxWhenClauses</c>, so the shared bit budget
-    /// never overflows; past that the exists() leaves keep their term-walk and consume no bit.</summary>
+    /// <summary>Count of <c>exists()</c> / <c>NOT exists()</c> leaves, at any nesting depth, eligible for the
+    /// static collapse against the live NonExisting posting list (RavenDB-25281 #4875). A non-zero count is what
+    /// makes a template a collapse candidate. The per-execution collapse outcome (kept = the field has missing
+    /// entries; collapsed = it does not) is folded into the plan-cache key as a 2-bit per-clause sentinel code
+    /// (see BuildResolver.AppendSentinelCodes), so the "field present on all docs" and "field missing on some
+    /// docs" states resolve to distinct cached plans. The key is a SHA-256 digest with no per-clause ceiling,
+    /// so there is no bit budget to overflow. Computed once at template construction.</summary>
     public int ExistsCollapseCandidateCount;
 
     /// <summary>True when the static exists()/NOT exists() collapse may apply to this template:
-    /// there is at least one candidate leaf, the root is an AND (collapse is a no-op under OR),
-    /// the index has no dynamic fields (which write no NonExisting markers), and the index version
-    /// supports the NonExisting posting list. Every input is template-shape or index-definition
+    /// there is at least one candidate leaf, the index has no dynamic fields (which write no NonExisting
+    /// markers), and the index version supports the NonExisting posting list. The root operator is NOT a
+    /// factor — a collapsed leaf becomes a MatchAll/MatchNothing sentinel that the emitter's merge algebra
+    /// simplifies correctly under OR and inside nested groups. Every input is template-shape or index-definition
     /// state — none depend on query parameters or live data — so it is stable for the life of the
     /// per-index plan cache and is computed once at template construction. The remaining
     /// (data-dependent) decision, whether the field actually has missing entries, is made per
