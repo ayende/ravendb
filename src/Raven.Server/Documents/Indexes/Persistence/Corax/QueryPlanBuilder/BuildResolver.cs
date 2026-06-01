@@ -6,7 +6,6 @@ using Corax.Querying.Planning;
 using Corax.Querying.Primitives;
 using Sparrow;
 using IndexSearcher = Corax.Querying.IndexSearcher;
-using static Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder.QueryPlanBuilder;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
@@ -56,7 +55,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             CacheKeyHash = _cacheKeyHash,
             OpCount = ops.Length,
             RequiredBitmaps = requiredBitmaps,
-            InspectionTemplate = BuildInspectionTemplate(ops, _exec.Executions),
+            InspectionTemplate = QueryPlanBuilder.BuildInspectionTemplate(ops, _exec.Executions),
             EntryScanSet = scanSet,
             AllNegated = CheckAllNegated(),
         };
@@ -87,7 +86,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         _exec.InRangeCounts = inRange;
         _exec.Cardinalities = cards;
 
-        AttachSpatialAndVectorClauses(_exec, template, planParams, builderParameters, _writer);
+        QueryPlanBuilder.AttachSpatialAndVectorClauses(_exec, template, planParams, builderParameters, _writer);
         _writer.SetValues(_exec);
         return (_compiledPlan, _exec);
     }
@@ -135,9 +134,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                 }
             }
 
-            var it = CreateExecution(cached);
-            PopulateClauseValues(it, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
-            PropagateBetweenContradiction(it, _writer); // a contradictory BETWEEN is rewritten into an empty-IN
+            var it = QueryPlanBuilder.CreateExecution(cached);
+            QueryPlanBuilder.PopulateClauseValues(it, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
+            QueryPlanBuilder.PropagateBetweenContradiction(it, _writer); // a contradictory BETWEEN is rewritten into an empty-IN
             collapseToNoResults |= IsEmptyIn(it);
 
             if (it.Cardinality < 0)
@@ -175,7 +174,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         if (existsEligible is false || cached.ClauseType != ClauseType.Exists)
             return ClauseFate.Keep;
 
-        FieldMetadata fieldMeta = ResolveFieldMetadata(cached, walkerCtx);
+        FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(cached, walkerCtx);
         if (_indexSearcher.HasAnyNonExistingEntries(in fieldMeta) == false)
             return ClauseFate.Keep;
 
@@ -397,7 +396,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         _builder.Append((ushort)template.ParameterSlots.Length, 16);
         for (int i = 0; i < template.ParameterSlots.Length; i++)
         {
-            int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0b11;
+            int kind = (int)QueryPlanBuilder.ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0b11;
             if (_sentinelFull != null)
                 kind |= _sentinelFull[i] << 2;
             _builder.Append(kind, 3);

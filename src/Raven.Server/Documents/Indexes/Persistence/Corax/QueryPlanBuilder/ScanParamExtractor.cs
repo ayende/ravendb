@@ -3,7 +3,6 @@ using System.Runtime.CompilerServices;
 using Corax.Mappings;
 using Corax.Querying.Planning;
 using IndexSearcher = Corax.Querying.IndexSearcher;
-using static Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder.QueryPlanBuilder;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
@@ -45,7 +44,7 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
 
         if (pred.ValueType is ScanValueType.Slice or ScanValueType.SliceLong)
         {   // we need to analyze the strings
-            FieldMetadata fieldMeta = ResolveFieldMetadata(exec1.Clause, walkerCtx);
+            FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(exec1.Clause, walkerCtx);
             for (int k = 0; k < count; k++)
             {   // running this for the side effect of setting the AnalyzedSlices value
                 _ = exec.GetAnalyzedSlice(indexSearcher, fieldMeta, baseIdx + k);
@@ -79,7 +78,7 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
             return;
 
         // ensure that the relevant slices are analyzed
-        FieldMetadata fieldMeta = ResolveFieldMetadata(cur.Clause, walkerCtx);
+        FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(cur.Clause, walkerCtx);
         exec.GetAnalyzedSlice(indexSearcher, fieldMeta, cur.PackedParamValue.Param1);
         if (cur.PackedParamValue.Param2 != PackedParam.NoParamValue)
             exec.GetAnalyzedSlice(indexSearcher, fieldMeta, cur.PackedParamValue.Param2);
