@@ -16,7 +16,9 @@ internal static partial class QueryPlanBuilder
         // Slot 0 is the live accumulator; EphemeralBitmap stages "build a set then merge into slot 0"
         // (IN/AllIn). Its value never outlives one leaf emission, so a single fixed slot is reusable at
         // any nesting depth and never counts against the scratch high-water mark; save-stack starts above it.
-        private const int EphemeralBitmap = 1;
+        // Bound to the Corax primitive's AND scratch slot so the two layers share one constant: the AND
+        // primitives clobber this slot, so it must never be a durable accumulator on either side.
+        private const int EphemeralBitmap = global::Corax.Querying.Primitives.QueryPrimitives.AndScratchBitmapSlot;
         private int _nextScratch = EphemeralBitmap + 1;
         private int _maxScratchUsed = EphemeralBitmap;
 
@@ -302,10 +304,6 @@ internal static partial class QueryPlanBuilder
 
             using var _ = AllocateScratchSlot(out int saveSlot);
 
-            // Build (term0 ∩ term1 ∩ …) in its own scratch slot, then merge it into the slot-0
-            // accumulator. AndRange honors its destination slot (using slot 1 as scratch), so the
-            // intersection lands in saveSlot directly — no slot-0 staging dance needed.
-            // suppressEarlyExit so AndRange doesn't jump to doneLabel mid-intersection and skip that merge.
             EmitCommonInOps(exec.InTermCount, cardinality, saveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true);
 
             switch (merge)
@@ -352,11 +350,6 @@ internal static partial class QueryPlanBuilder
                     return;
                 case ClauseType.AllIn:
                 {
-                    // Build the positive set (term0 ∩ term1 ∩ …) in a dedicated scratch slot, then subtract
-                    // it from the AllEntries seed already in slot 0: slot0 = AllEntries \ (term0 ∩ term1 ∩ …).
-                    // AndRange honors its destination slot (using slot 1 as scratch), so the intersection
-                    // stages cleanly outside slot 0 — the scratch must not be the AND scratch (slot 1), which
-                    // AllocateScratchSlot guarantees (it never hands out slot 0 or 1).
                     using var _ = AllocateScratchSlot(out int positiveSlot);
                     EmitCommonInOps(exec.InTermCount, cardinality, positiveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true);
                     _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = positiveSlot });
