@@ -292,10 +292,7 @@ public static class ResidualScanIlEmitter
             // Positive IN/ALL IN: fail when membership is false. Negated (NOT IN / NOT ALL IN):
             // fail when membership is true — a missing/null field has membership false, so it
             // passes, matching the bitmap AndNot complement.
-            if (pred.Negated)
-                EmitBranchTrue(ref d, failIl, failName);
-            else
-                EmitBranchFalse(ref d, failIl, failName);
+            EmitBranch(ref d, failOnTrue: pred.Negated, failIl, failName);
             inSetIdx++;
             return;
         }
@@ -541,17 +538,17 @@ public static class ResidualScanIlEmitter
     /// <paramref name="csName"/>) when the value is false. The C# label name may be
     /// the literal "rejected" or a DualEmit-generated branch name, so we accept the
     /// raw string rather than a LabelPair.</summary>
-    private static void EmitBranchFalse(ref DualEmit d, Label ilLabel, string csName)
-    {
-        d.Il.Emit(OpCodes.Brfalse, ilLabel);
-        var a = d.CsStack.Pop();
-        d.CsLine($"if (!{a}) goto {csName};");
-    }
+    private static void EmitBranchFalse(ref DualEmit d, Label ilLabel, string csName) => EmitBranch(ref d, failOnTrue: false, ilLabel, csName);
 
-    private static void EmitBranchTrue(ref DualEmit d, Label ilLabel, string csName)
+    private static void EmitBranchTrue(ref DualEmit d, Label ilLabel, string csName) => EmitBranch(ref d, failOnTrue: true, ilLabel, csName);
+
+    /// <summary>Pop the top of both stacks and branch to the fail target. When
+    /// <paramref name="failOnTrue"/> is set the branch fires on a true value (negated leaf:
+    /// fail when membership holds); otherwise it fires on false (the positive default).</summary>
+    private static void EmitBranch(ref DualEmit d, bool failOnTrue, Label ilLabel, string csName)
     {
-        d.Il.Emit(OpCodes.Brtrue, ilLabel);
+        d.Il.Emit(failOnTrue ? OpCodes.Brtrue : OpCodes.Brfalse, ilLabel);
         var a = d.CsStack.Pop();
-        d.CsLine($"if ({a}) goto {csName};");
+        d.CsLine(failOnTrue ? $"if ({a}) goto {csName};" : $"if (!{a}) goto {csName};");
     }
 }

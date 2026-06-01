@@ -206,6 +206,18 @@ internal static partial class QueryPlanBuilder
                 return;
             }
 
+            // De Morgan in an AND context: an all-negated OR sub-group is ¬(A ∧ B ∧ …). When it is
+            // combined with an existing accumulator via AND / ANDNOT the universe complement collapses
+            // out — acc AND ¬X = acc \ X, acc ANDNOT ¬X = acc ∩ X — so we only build the (typically
+            // selective) positive intersection X and never touch FillAllEntries. Without this the nested
+            // group would emit one FillAllEntries + complement per member (the #4867 N-fill problem) and
+            // then AND the near-universe result into the accumulator.
+            if (exec.ClauseType == ClauseType.OrGroup && merge is MergeKind.AndInto or MergeKind.AndNotInto && CanFoldNegatedOr(subExecs))
+            {
+                EmitFoldedNegatedOrGroupIntoAccumulator(subExecs, merge);
+                return;
+            }
+
             using var _ = AllocateScratchSlot(out int saveSlot);
 
             _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
@@ -226,6 +238,33 @@ internal static partial class QueryPlanBuilder
                     _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
                     break;
             }
+        }
+
+        /// <summary>Fold an all-negated OR sub-group (<c>¬A ∨ ¬B ∨ … = ¬(A ∧ B ∧ …)</c>) directly into the
+        /// slot-0 accumulator without materializing the universe. The accumulator parks in a scratch slot
+        /// while the positive intersection X = A ∧ B ∧ … is built in slot 0 (Fill + AndInto, early-exit
+        /// suppressed so a partial/empty intersection can't short-circuit), then the accumulator returns to
+        /// slot 0 and X is combined: <see cref="MergeKind.AndInto"/> ⇒ <c>acc \ X</c> (AndNot),
+        /// <see cref="MergeKind.AndNotInto"/> ⇒ <c>acc ∩ X</c> (And). Null/missing-field semantics are
+        /// identical to the per-member FillAllEntries + AndNot path: a doc missing any field is absent from
+        /// X, so AndNot keeps it and And drops it — same as taking the complement against the universe.</summary>
+        private void EmitFoldedNegatedOrGroupIntoAccumulator(List<ClauseExecution> subExecs, MergeKind merge)
+        {
+            using var _ = AllocateScratchSlot(out int saveSlot);
+
+            _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot }); // park accumulator, free slot 0 to build X
+
+            EmitPositiveForm(subExecs[0], MergeKind.Fill, subExecs[0].Cardinality, suppressEarlyExit: true);
+            for (int i = 1; i < subExecs.Count; i++)
+                EmitPositiveForm(subExecs[i], MergeKind.AndInto, subExecs[i].Cardinality, suppressEarlyExit: true);
+
+            _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot }); // slot 0 = accumulator, saveSlot = X
+            _ops.Add(new PlanOp
+            {
+                Kind = merge == MergeKind.AndInto ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
+                BitmapLocal = 0,
+                ParamIndex2 = saveSlot
+            });
         }
 
         private void EmitGroupContentsInSlot0(ClauseExecution exec, List<ClauseExecution> subExecs, bool suppressEarlyExit)
