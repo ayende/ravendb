@@ -115,8 +115,7 @@ internal static partial class QueryPlanBuilder
             ExistsCollapseCandidateCount = walkerCtx.ExistsCollapseCandidateCount,
             OptimizationFlags = optFlags,
             SortDrivingClauseIndex = sortDrivingIdx,
-            CompoundExactClauseA = walkerCtx.CompoundExactClauseA,
-            CompoundExactClauseB = walkerCtx.CompoundExactClauseB,
+            CompoundExact =  walkerCtx.CompoundExact,
             CompoundExactAFirst = walkerCtx.CompoundExactAFirst,
             CompoundExactName = walkerCtx.CompoundExactName,
             CompoundFieldDrivingClause = walkerCtx.CompoundFieldDrivingClause,
@@ -331,8 +330,7 @@ internal static partial class QueryPlanBuilder
                     {
                         if (p.Index.HasCompoundField(s1, s2))
                         {
-                            walkerCtx.CompoundExactClauseA = eqBuf[a];
-                            walkerCtx.CompoundExactClauseB = eqBuf[b];
+                            walkerCtx.CompoundExact = (eqBuf[a], eqBuf[b]);
                             walkerCtx.CompoundExactAFirst = true;
                             walkerCtx.CompoundExactName = $"compound({f1},{f2})";
                             return;
@@ -340,8 +338,7 @@ internal static partial class QueryPlanBuilder
 
                         if (p.Index.HasCompoundField(s2, s1))
                         {
-                            walkerCtx.CompoundExactClauseA = eqBuf[a];
-                            walkerCtx.CompoundExactClauseB = eqBuf[b];
+                            walkerCtx.CompoundExact = (eqBuf[a], eqBuf[b]);
                             walkerCtx.CompoundExactAFirst = false;
                             walkerCtx.CompoundExactName = $"compound({f2},{f1})";
                             return;

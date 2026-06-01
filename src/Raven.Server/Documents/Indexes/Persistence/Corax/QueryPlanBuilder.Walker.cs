@@ -26,8 +26,7 @@ internal static partial class QueryPlanBuilder
         public List<ClauseInfo> Clauses;
         public List<PendingBoost> PendingBoosts;
 
-        public int CompoundExactClauseA = -1;
-        public int CompoundExactClauseB = -1;
+        public (int First, int Second) CompoundExact = (-1, -1);
         public bool CompoundExactAFirst;
         public string CompoundExactName;
         public int CompoundFieldDrivingClause = -1;
