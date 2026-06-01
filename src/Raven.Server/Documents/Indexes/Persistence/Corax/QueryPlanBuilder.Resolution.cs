@@ -150,7 +150,7 @@ internal static partial class QueryPlanBuilder
         (int typeSignature, byte[] fullKinds) = ComputeTypeSignature();
         if (indexSearcher.PlanCache.Get(planParams.CacheKey, operandOrdering, typeSignature, fullKinds, whenFlags) is { } compiledPlan)
             return FinalizePlan(); // use cached plan
-        
+
         return BuildOnCacheMiss(); // Cache miss — full exec emission
 
         (CompiledPlan, QueryExecution) BuildOnCacheMiss()
@@ -1080,7 +1080,14 @@ internal static partial class QueryPlanBuilder
             DynamicFields = builderParams.DynamicFields,
             HasBoost = builderParams.HasBoost,
             WhereOverride = expression,
-            CacheKeyOverride = moreLikeThisCacheKeyPrefix + expression.GetText(builderParams.Query),
+            // The cache key must capture the expression STRUCTURE (parameter names like $p0), not the
+            // bound values: the compiled plan reads its operands from QueryParameters by name at
+            // instantiation, so two MLT queries whose base-document expression differs only in the bound
+            // value (e.g. id() = 'users/1' vs id() = 'users/2') legitimately share a plan, while two
+            // queries that resolve to the same value but reference different parameter names (e.g.
+            // id() = $p1 with options vs id() = $p0 without) must NOT share — otherwise the cached plan
+            // reads the wrong parameter slot. GetTextWithAlias(parent: null) renders parameters as $pN.
+            CacheKeyOverride = moreLikeThisCacheKeyPrefix + expression.GetTextWithAlias(parent: null),
         }, builderParams, out _, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
     }
 

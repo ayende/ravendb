@@ -72,17 +72,7 @@ internal ref partial struct DualEmit
         CsLine($"if ((long)ctx.Bitmaps[0].Count >= ctx.Limit) goto {doneCsName};");
     }
 
-    public void EmitCancelledCursorCall(LocalBuilder cursorVar, MethodInfo ilMethod, string csMethodName)
-    {
-        IlCancellationCheck();
-        Il.Emit(OpCodes.Ldarg_0);
-        Il.Emit(OpCodes.Ldloc, cursorVar);
-        Il.Emit(OpCodes.Call, ilMethod);
-        CsLine($"{csMethodName}(ctx, cursor);");
-        IlAdvanceCursor(cursorVar);
-    }
-
-    public void EmitCancelledCursorOrCall(LocalBuilder cursorVar, MethodInfo ilMethod, string csMethodName, int bitmapSlot)
+    public void EmitCancelledCursorSlotCall(LocalBuilder cursorVar, MethodInfo ilMethod, string csMethodName, int bitmapSlot)
     {
         IlCancellationCheck();
         Il.Emit(OpCodes.Ldarg_0);

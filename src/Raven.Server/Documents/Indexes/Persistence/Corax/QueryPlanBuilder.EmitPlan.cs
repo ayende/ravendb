@@ -302,6 +302,9 @@ internal static partial class QueryPlanBuilder
 
             using var _ = AllocateScratchSlot(out int saveSlot);
 
+            // Build (term0 ∩ term1 ∩ …) in its own scratch slot, then merge it into the slot-0
+            // accumulator. AndRange honors its destination slot (using slot 1 as scratch), so the
+            // intersection lands in saveSlot directly — no slot-0 staging dance needed.
             // suppressEarlyExit so AndRange doesn't jump to doneLabel mid-intersection and skip that merge.
             EmitCommonInOps(exec.InTermCount, cardinality, saveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true);
 
@@ -348,9 +351,17 @@ internal static partial class QueryPlanBuilder
                     _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = EphemeralBitmap });
                     return;
                 case ClauseType.AllIn:
-                    EmitCommonInOps(exec.InTermCount, cardinality, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true);
-                    _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = EphemeralBitmap });
+                {
+                    // Build the positive set (term0 ∩ term1 ∩ …) in a dedicated scratch slot, then subtract
+                    // it from the AllEntries seed already in slot 0: slot0 = AllEntries \ (term0 ∩ term1 ∩ …).
+                    // AndRange honors its destination slot (using slot 1 as scratch), so the intersection
+                    // stages cleanly outside slot 0 — the scratch must not be the AND scratch (slot 1), which
+                    // AllocateScratchSlot guarantees (it never hands out slot 0 or 1).
+                    using var _ = AllocateScratchSlot(out int positiveSlot);
+                    EmitCommonInOps(exec.InTermCount, cardinality, positiveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true);
+                    _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = positiveSlot });
                     return;
+                }
                 default:
                     _ops.Add(new PlanOp
                     {
