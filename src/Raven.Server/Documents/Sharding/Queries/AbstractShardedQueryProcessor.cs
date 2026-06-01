@@ -361,7 +361,10 @@ public abstract class AbstractShardedQueryProcessor<TCommand, TResult, TCombined
             clone.Limit = new ValueExpression(LimitToken, ValueTokenType.Parameter);
 
             DynamicJsonValue modifiedArgs;
-            if (queryTemplate.TryGet(nameof(IndexQuery.QueryParameters), out BlittableJsonReaderObject args))
+            // The property can be present but JSON-null (e.g. a paged query sent with no parameters serializes
+            // QueryParameters as null), in which case TryGet succeeds with a null payload. Treat that the same
+            // as a missing property and attach a fresh parameters object rather than dereferencing null.
+            if (queryTemplate.TryGet(nameof(IndexQuery.QueryParameters), out BlittableJsonReaderObject args) && args != null)
             {
                 modifiedArgs = new DynamicJsonValue(args);
                 args.Modifications = modifiedArgs;

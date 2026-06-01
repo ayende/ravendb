@@ -550,6 +550,33 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             return fieldsToFetch.IsDistinct || query.SkipDuplicateChecking || indexType.IsMapReduce();
         }
 
+        // Builds the per-query SortingDataTransfer (renting score/distance buffers as needed) and wires it into
+        // the match when boost or distance ordering is in play. Returns the transfer plus whether the query
+        // orders by distance. Shared by the main read path and the IndexEntries raw-entries path.
+        private SortingDataTransfer SetupSortingData(IndexQueryServerSide query, QueryBuilderParameters builderParams, IQueryMatch queryMatch, int bufferSize, out bool hasOrderByDistance)
+        {
+            hasOrderByDistance = query.Metadata.OrderBy is [{ OrderingType: OrderByFieldType.Distance }, ..] && _index.Configuration.CoraxIncludeSpatialDistance;
+
+            SortingDataTransfer sortingData = default;
+            if (builderParams.HasBoost || hasOrderByDistance)
+            {
+                sortingData = new SortingDataTransfer
+                {
+                    ScoresBuffer = builderParams.NeedsScoresBuffer()
+                        ? ScorePool.Rent(bufferSize)
+                        : null,
+                    DistancesBuffer = _index.Configuration.CoraxIncludeSpatialDistance && hasOrderByDistance
+                        ? DistancePool.Rent(bufferSize)
+                        : null
+                };
+
+                if (queryMatch is IRequireSortingDataTransfer s)
+                    s.SetSortingDataTransfer(sortingData);
+            }
+
+            return sortingData;
+        }
+
         private IEnumerable<QueryResult> QueryInternal<THighlighting, TQueryFilter, THasProjection, TDistinct>(
                     IndexQueryServerSide query, QueryTimingsScope queryTimings, FieldsToFetch fieldsToFetch,
                     Reference<long> totalResults, Reference<long> skippedResults, Reference<long> scannedDocuments,
@@ -647,28 +674,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                 int bufferSize = CoraxBufferSize(IndexSearcher, take, query);
                 var ids = QueryPool.Rent(bufferSize);
-                SortingDataTransfer sortingData = default;
                 using var queryFilter = GetQueryFilterInternal();
                 Page page = default;
                 bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
                 totalResults.Value = 0;
 
-                var hasOrderByDistance = query.Metadata.OrderBy is [{OrderingType: OrderByFieldType.Distance}, ..] && _index.Configuration.CoraxIncludeSpatialDistance;
-                if (compileResult.QueryBuilderParams.HasBoost || hasOrderByDistance)
-                {
-                    sortingData = new()
-                    {
-                        ScoresBuffer = compileResult.QueryBuilderParams.NeedsScoresBuffer()
-                            ? ScorePool.Rent(bufferSize)
-                            : null,
-                        DistancesBuffer = _index.Configuration.CoraxIncludeSpatialDistance && hasOrderByDistance
-                            ? DistancePool.Rent(bufferSize)
-                            : null
-                    };
-                    
-                    if(compileResult.QueryMatch is IRequireSortingDataTransfer s)
-                        s.SetSortingDataTransfer(sortingData);
-                }
+                var sortingData = SetupSortingData(query, compileResult.QueryBuilderParams, compileResult.QueryMatch, bufferSize, out var hasOrderByDistance);
 
                 // We don't need to do any processing for the query beyond counting if we are getting a count.
                 long totalResultsBefore = totalResults.Value;
@@ -1317,23 +1328,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             var ids = QueryPool.Rent(CoraxBufferSize(IndexSearcher, take, query));
 
-            SortingDataTransfer sortingData = default;
-            var hasOrderByDistance = query.Metadata.OrderBy is [{ OrderingType: OrderByFieldType.Distance }, ..] && _index.Configuration.CoraxIncludeSpatialDistance;
-            if (compileResult.QueryBuilderParams.HasBoost || hasOrderByDistance)
-            {
-                sortingData = new SortingDataTransfer
-                {
-                    ScoresBuffer = compileResult.QueryBuilderParams.NeedsScoresBuffer()
-                        ? ScorePool.Rent(ids.Length)
-                        : null,
-                    DistancesBuffer = _index.Configuration.CoraxIncludeSpatialDistance && hasOrderByDistance
-                        ? DistancePool.Rent(ids.Length)
-                        : null
-                };
-
-                if (queryMatch is IRequireSortingDataTransfer s)
-                    s.SetSortingDataTransfer(sortingData);
-            }
+            var sortingData = SetupSortingData(query, compileResult.QueryBuilderParams, queryMatch, ids.Length, out _);
 
             int docsToLoad = CoraxBufferSize(IndexSearcher, pageSize, query);
             using var coraxEntryReader = new CoraxIndexedEntriesReader(documentsContext, IndexSearcher);
