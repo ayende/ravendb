@@ -135,4 +135,53 @@ public class OrOfNegationsTests : RavenTestBase
         // The green doc whose Score==6? none (green => i%4==0 => Score multiple of 4) so all green excluded.
         Assert.DoesNotContain("items/8", actual);
     }
+
+    // AND context: selective accumulator AND an all-negated OR sub-group.
+    // Color = 'red' AND (Score != 6 OR Code != 6)  ==  Color='red' AND ¬(Score=6 ∧ Code=6)  ==  red \ {item6}.
+    // The sub-group folds into the accumulator as acc \ (Score=6 ∧ Code=6) with no FillAllEntries.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+    public async Task AndAccumulator_NegatedOrGroup_FoldsToAndNot(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var items = BuildSeed(40);
+        await SeedAsync(store, items);
+        Indexes.WaitForIndexing(store);
+
+        var actual = await RunIds(store,
+            "from Items where Color = 'red' and (Score != 6 or Code != 6)");
+
+        var expected = Expected(items,
+            i => i.Color == "red" && !(i.Score == 6 && i.Code == 6));
+
+        Assert.Equal(expected, actual);
+        // items/6 is red (6%4==2) with Score==Code==6 -> the lone intersection member -> excluded.
+        Assert.DoesNotContain("items/6", actual);
+        // items/2 is red and not in the intersection -> present.
+        Assert.Contains("items/2", actual);
+    }
+
+    // Three-member all-negated OR sub-group AND'd into an accumulator (N-member fold in AND context).
+    // Color = 'red' AND (Score != 6 OR Code != 10 OR Color != 'red'): the intersection
+    // (Score=6 ∧ Code=10 ∧ Color=red) is empty (Score==Code so 6≠10), so result == all red docs.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+    public async Task AndAccumulator_ThreeNegatedOrGroup_Folds(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var items = BuildSeed(40);
+        await SeedAsync(store, items);
+        Indexes.WaitForIndexing(store);
+
+        var actual = await RunIds(store,
+            "from Items where Color = 'red' and (Score != 6 or Code != 10 or Color != 'red')");
+
+        var expected = Expected(items,
+            i => i.Color == "red" && !(i.Score == 6 && i.Code == 10 && i.Color == "red"));
+
+        Assert.Equal(expected, actual);
+        // Every red doc survives (empty intersection): red docs are i%4==2.
+        Assert.Contains("items/6", actual);
+        Assert.Contains("items/2", actual);
+    }
 }
