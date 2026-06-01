@@ -20,7 +20,7 @@ public sealed class SortMetadataTemplate
     public SortSlotPatch[] Patches { get; init; }
 }
 
-public delegate OrderMetadata SortDistanceMetadataBuilder(object runtimeContext, FieldMetadata fieldMeta, bool fieldIsEmpty);
+public delegate OrderMetadata SortDistanceMetadataBuilder(object runtimeContext, FieldMetadata fieldMeta);
 
 public struct SortSlotPatch
 {
@@ -38,8 +38,11 @@ public enum SortSlotPatchKind : byte
     /// <summary>Slot is fully baked — runtime returns the prefab entry verbatim.</summary>
     None = 0,
 
-    /// <summary>Field slot may have zero distinct terms in the index. We need to check this at runtime.</summary>
-    FieldEmptyCheck,
+    /// <summary>Field-backed sort slot. <see cref="FieldMetadata"/> holds transaction-bound slices, so it must be
+    /// re-resolved every query. If the field has zero distinct terms, the slot is flagged
+    /// <see cref="OrderMetadata.MayHaveMissingEntries"/> so SortingMatch routes through ExtractAndSort (every doc
+    /// is treated as missing) instead of walking a non-existent term tree.</summary>
+    FieldRuntimeResolve,
 
     /// <summary>Random ordering with no Arguments — need a new seed each query.</summary>
     RandomFreshSeed,

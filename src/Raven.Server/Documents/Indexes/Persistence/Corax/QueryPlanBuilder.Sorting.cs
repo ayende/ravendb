@@ -130,8 +130,8 @@ internal static partial class QueryPlanBuilder
             bool mayHaveMissingEntries = fieldMetadata.FieldId == Constants.IndexWriter.DynamicField;
 
             prebuilt[i] = new OrderMetadata(fieldMetadata, field.Ascending, GetMatchCompareFieldType(orderingType),
-                fieldHasNoTerms: false, GetNullsSortMode(field), mayHaveMissingEntries);
-            patches[i].Kind = SortSlotPatchKind.FieldEmptyCheck;
+                GetNullsSortMode(field), mayHaveMissingEntries);
+            patches[i].Kind = SortSlotPatchKind.FieldRuntimeResolve;
             patches[i].FieldName = field.Name;
             anyPatch = true;
         }
@@ -143,7 +143,7 @@ internal static partial class QueryPlanBuilder
         };
         
         SortDistanceMetadataBuilder GetDistanceBuilder(OrderByField field) => // side effect for this method, we aren't accidently capturing the wrong instance in a loop
-            (ctx, fieldMeta, isEmpty) => BuildDistanceOrderMetadata((QueryBuilderParameters)ctx, field, fieldMeta, isEmpty);
+            (ctx, fieldMeta) => BuildDistanceOrderMetadata((QueryBuilderParameters)ctx, field, fieldMeta);
 
         MatchCompareFieldType GetMatchCompareFieldType(OrderByFieldType orderingType)
         {
@@ -173,22 +173,19 @@ internal static partial class QueryPlanBuilder
     }
 
 
-    private static OrderMetadata[] GetSortMetadata(QueryBuilderParameters builderParameters, PlanTemplate planTemplate, out bool hasEmpty)
+    private static OrderMetadata[] GetSortMetadata(QueryBuilderParameters builderParameters, PlanTemplate planTemplate)
     {
-        hasEmpty = false;
         // PageSize == 0 (count-only) is per-query and short-circuits all the sort work.
         if (builderParameters.Query.PageSize == 0)
             return null;
-        
-        return MaterializeSortMetadata(planTemplate.SortMetadataTemplate, builderParameters, out hasEmpty);
+
+        return MaterializeSortMetadata(planTemplate.SortMetadataTemplate, builderParameters);
     }
 
     /// <summary>Runtime materializer: apply per-query patches to the template's prebuilt array.</summary>
     private static OrderMetadata[] MaterializeSortMetadata(SortMetadataTemplate template,
-        QueryBuilderParameters builderParameters, out bool hasEmpty)
+        QueryBuilderParameters builderParameters)
     {
-        hasEmpty = false;
-
         if (template.NoSort)
             return null;
 
@@ -203,11 +200,10 @@ internal static partial class QueryPlanBuilder
             return template.Prebuilt;
 
         var indexSearcher = builderParameters.IndexSearcher;
-        bool isSharded = builderParameters.IndexReadOperation?.IsSharded ?? false;
 
-        // Result is up to prebuilt.Length, but may be shorter when non-sharded empty-field-skip drops slots.
+        // Every slot is preserved: an empty sort field is kept and flagged MayHaveMissingEntries so the sort
+        // routes through ExtractAndSort (treats every doc as missing) rather than walking a non-existent tree.
         var result = new OrderMetadata[template.Prebuilt.Length];
-        int outIdx = 0;
 
         for (int i = 0; i < template.Prebuilt.Length; i++)
         {
@@ -215,11 +211,11 @@ internal static partial class QueryPlanBuilder
             switch (patch.Kind)
             {
                 case SortSlotPatchKind.None:
-                    result[outIdx++] = template.Prebuilt[i];
+                    result[i] = template.Prebuilt[i];
                     break;
 
                 case SortSlotPatchKind.RandomFreshSeed:
-                    result[outIdx++] = new OrderMetadata(Random.Shared.Next());
+                    result[i] = new OrderMetadata(Random.Shared.Next());
                     break;
 
                 case SortSlotPatchKind.RandomSeededByParam:
@@ -228,51 +224,34 @@ internal static partial class QueryPlanBuilder
                     // (mirrors OrderByField.Argument.GetString for ValueTokenType.Parameter).
                     builderParameters.Query.QueryParameters.TryGet(patch.FieldName, out string seedValue);
                     var seed = (int)Hashing.XXHash32.CalculateRaw(seedValue ?? string.Empty);
-                    result[outIdx++] = new OrderMetadata(seed);
+                    result[i] = new OrderMetadata(seed);
                     break;
                 }
 
-                case SortSlotPatchKind.FieldEmptyCheck:
+                case SortSlotPatchKind.FieldRuntimeResolve:
                 {
+                    // FieldMetadata holds transaction-bound slices, so re-resolve it per query. A field with zero
+                    // distinct terms is flagged missing-capable so the sort drains the bitmap (every doc missing).
                     var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
                     bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
                     var p = template.Prebuilt[i];
-
-                    if (fieldIsEmpty == false)
-                    {
-                        result[outIdx++] = new OrderMetadata(fieldMeta, p.Ascending, p.FieldType,
-                            fieldHasNoTerms: false, p.NullsSortMode, p.MayHaveMissingEntries);
-                        break;
-                    }
-
-                    if (isSharded == false)
-                        continue; // non-sharded empty-field-skip: drop this slot entirely
-
-                    hasEmpty = true;
-                    // Rebuild slot with FieldHasNoTerms = true; preserve all other prebuilt fields.
-                    result[outIdx++] = new OrderMetadata(fieldMeta, p.Ascending, p.FieldType,
-                        fieldHasNoTerms: true, p.NullsSortMode, p.MayHaveMissingEntries);
+                    result[i] = new OrderMetadata(fieldMeta, p.Ascending, p.FieldType,
+                        p.NullsSortMode, p.MayHaveMissingEntries || fieldIsEmpty);
                     break;
                 }
 
                 case SortSlotPatchKind.DistanceRuntime:
                 {
+                    // Spatial sort has no term tree to iterate, so it always materializes the whole bitmap and
+                    // tolerates docs (or an empty field) that carry no spatial value — no emptiness check needed.
                     var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
-                    bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
-                    if (fieldIsEmpty)
-                    {
-                        if (isSharded == false)
-                            continue;
-                        hasEmpty = true;
-                    }
-
-                    result[outIdx++] = patch.DistanceBuilder(builderParameters, fieldMeta, fieldIsEmpty);
+                    result[i] = patch.DistanceBuilder(builderParameters, fieldMeta);
                     break;
                 }
             }
         }
 
-        return outIdx == template.Prebuilt.Length ? result : result[..outIdx];
+        return result;
     }
 
     private static FieldMetadata ResolveSortFieldMeta(QueryBuilderParameters builderParameters, string fieldName)
@@ -283,7 +262,7 @@ internal static partial class QueryPlanBuilder
     }
 
     private static OrderMetadata BuildDistanceOrderMetadata(QueryBuilderParameters builderParameters,
-        OrderByField field, FieldMetadata fieldMetadata, bool fieldIsEmpty)
+        OrderByField field, FieldMetadata fieldMetadata)
     {
         var query = builderParameters.Query;
         var getSpatialField = builderParameters.Factories.GetSpatialFieldFactory;
@@ -327,31 +306,14 @@ internal static partial class QueryPlanBuilder
         return new OrderMetadata(fieldMetadata, field.Ascending, MatchCompareFieldType.Spatial, point, roundTo,
             spatialField.Units is SpatialUnits.Kilometers
                 ? global::Corax.Utils.Spatial.SpatialUnits.Kilometers
-                : global::Corax.Utils.Spatial.SpatialUnits.Miles, fieldIsEmpty, GetNullsSortMode(field));
+                : global::Corax.Utils.Spatial.SpatialUnits.Miles, GetNullsSortMode(field));
     }
 
-    private static IQueryMatch OrderBy(QueryBuilderParameters builderParameters, IQueryMatch match, in OrderMetadata[] orderMetadataSource, bool hasEmptySortingMatches)
+    private static IQueryMatch OrderBy(QueryBuilderParameters builderParameters, IQueryMatch match, in OrderMetadata[] orderMetadata)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         var indexSearcher = builderParameters.IndexSearcher;
         var take = builderParameters.Take;
-        OrderMetadata[] orderMetadata = null;
-        if (hasEmptySortingMatches == false)
-            orderMetadata = orderMetadataSource;
-        else
-        {
-            var currentIdx = 0;
-            foreach (var orderMetadataItem in orderMetadataSource)
-            {
-                if (orderMetadataItem.FieldHasNoTerms)
-                    continue;
-
-                orderMetadata ??= new OrderMetadata[orderMetadataSource.Length];
-                orderMetadata[currentIdx++] = orderMetadataItem;
-            }
-
-            orderMetadata = currentIdx == 0 ? [] : orderMetadata![..currentIdx];
-        }
 
         switch (orderMetadata.Length)
         {

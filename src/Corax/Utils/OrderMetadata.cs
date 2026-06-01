@@ -16,7 +16,6 @@ public readonly struct OrderMetadata
     public readonly double Round;
     public readonly SpatialUnits Units;
     public readonly int RandomSeed;
-    public readonly bool FieldHasNoTerms;
     public readonly NullsSortMode? NullsSortMode;
 
     /// <summary>True when the sort field may be missing on some docs in the input bitmap —
@@ -68,7 +67,7 @@ public readonly struct OrderMetadata
 
     }
 
-    public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, bool fieldHasNoTerms, NullsSortMode? nullsSortMode = null, bool mayHaveMissingEntries = false)
+    public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, NullsSortMode? nullsSortMode = null, bool mayHaveMissingEntries = false)
     {
         Unsafe.SkipInit(out HasBoost);
         Unsafe.SkipInit(out Point);
@@ -79,12 +78,11 @@ public readonly struct OrderMetadata
         Field = field;
         Ascending = ascending;
         FieldType = fieldType;
-        FieldHasNoTerms = fieldHasNoTerms;
         NullsSortMode = nullsSortMode;
         MayHaveMissingEntries = mayHaveMissingEntries;
     }
 
-    public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, IPoint point, double round, SpatialUnits units, bool fieldHasNoTerms, NullsSortMode? nullsSortMode = null)
+    public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, IPoint point, double round, SpatialUnits units, NullsSortMode? nullsSortMode = null)
     {
         Unsafe.SkipInit(out HasBoost);
         Unsafe.SkipInit(out RandomSeed);
@@ -95,7 +93,6 @@ public readonly struct OrderMetadata
         Round = round;
         Point = point;
         Units = units;
-        FieldHasNoTerms = fieldHasNoTerms;
         NullsSortMode = nullsSortMode;
     }
 }

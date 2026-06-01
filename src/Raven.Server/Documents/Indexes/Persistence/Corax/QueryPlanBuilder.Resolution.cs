@@ -126,8 +126,8 @@ internal static partial class QueryPlanBuilder
             return new(emptyMatch, emptyMatch, null, null, null, builderParameters, null);
         }
 
-        var orderByFields = GetSortMetadata(builderParameters, plan.Template, out var hasEmptySorts);
-        var queryMatch = Instantiate(plan, exec, orderByFields, hasEmptySorts,
+        var orderByFields = GetSortMetadata(builderParameters, plan.Template);
+        var queryMatch = Instantiate(plan, exec, orderByFields,
             planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
         return new(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, exec, builderParameters, orderByFields);
     }
@@ -827,7 +827,6 @@ internal static partial class QueryPlanBuilder
         CompiledPlan compiledPlan,
         QueryExecution exec,
         OrderMetadata[] orderByFields,
-        bool hasEmptySorts,
         PlanParameters planParams,
         QueryBuilderParameters builderParameters,
         ResolutionContext walkerCtx,
@@ -855,7 +854,7 @@ internal static partial class QueryPlanBuilder
                 innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.Plan.CompoundFieldField2RangeIdx, cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
                 exec.ActualStrategy = ExecutionStrategy.CompoundField;
-                return OrderBy(builderParameters, innerMatch, orderByFields, hasEmptySorts);
+                return OrderBy(builderParameters, innerMatch, orderByFields);
             case ExecutionStrategy.DirectScan when orderByFields != null:
                 var execs = exec.Executions;
                 bool isFullScan = execs is not { Count: > 0 };
@@ -878,7 +877,7 @@ internal static partial class QueryPlanBuilder
                 if (ctx.OrderByFields == null) return innerMatch;
                 if (innerMatch is CompiledQueryMatch seekMatch)
                     TrySetSortSeekHint(ctx.Plan, ctx.Exec, seekMatch);
-                return OrderBy(ctx.BuilderParams, innerMatch, ctx.OrderByFields, hasEmptySorts);
+                return OrderBy(ctx.BuilderParams, innerMatch, ctx.OrderByFields);
         }
 
         static void SelectExecutionStrategy(ref InstCtx ctx)

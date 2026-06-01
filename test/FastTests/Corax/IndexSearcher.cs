@@ -737,7 +737,7 @@ namespace FastTests.Corax
 
             using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
             var contentMetadata = searcher.FieldMetadataBuilder("Content", ContentIndex);
-            OrderMetadata orderMetadata = new OrderMetadata(contentMetadata, true, MatchCompareFieldType.Sequence, fieldHasNoTerms: false);
+            OrderMetadata orderMetadata = new OrderMetadata(contentMetadata, true, MatchCompareFieldType.Sequence);
             {
                 var match1 = searcher.StartWithQuery("Id", "e");
                 var match = searcher.OrderBy(match1, orderMetadata, take: 16, defaultNullsSortMode: NullsSortMode.NullsSmallest);
@@ -762,7 +762,7 @@ namespace FastTests.Corax
 
             using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
             var contentMetadata = searcher.FieldMetadataBuilder("Content", ContentIndex);
-            OrderMetadata orderMetadata = new OrderMetadata(contentMetadata, true, MatchCompareFieldType.Sequence, fieldHasNoTerms: false);
+            OrderMetadata orderMetadata = new OrderMetadata(contentMetadata, true, MatchCompareFieldType.Sequence);
             {
                 var match1 = searcher.StartWithQuery("Id", "e");
                 var match = searcher.OrderBy(match1, orderMetadata, defaultNullsSortMode: NullsSortMode.NullsSmallest);
@@ -827,7 +827,7 @@ namespace FastTests.Corax
 
             using var searcher = new IndexSearcher(Env, CreateKnownFields(bsc));
             var contentMetadata = searcher.FieldMetadataBuilder("Content", ContentIndex);
-            OrderMetadata orderMetadata = new OrderMetadata(contentMetadata, true, MatchCompareFieldType.Sequence, fieldHasNoTerms: false);
+            OrderMetadata orderMetadata = new OrderMetadata(contentMetadata, true, MatchCompareFieldType.Sequence);
             {
                 var match1 = searcher.StartWithQuery("Id", "e");
                 var match = searcher.OrderBy(match1, orderMetadata, defaultNullsSortMode: NullsSortMode.NullsSmallest);

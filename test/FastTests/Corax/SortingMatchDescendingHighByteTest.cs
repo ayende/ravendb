@@ -64,7 +64,7 @@ public class SortingMatchDescendingHighByteTest : StorageTest
         var nameMetadata = searcher.FieldMetadataBuilder("Name", NameField);
 
         // Descending sort — the three high-byte entries should come first: 255-255-255, 255-255-254, 255-255-253
-        var orderMetadata = new OrderMetadata(nameMetadata, ascending: false, MatchCompareFieldType.Sequence, fieldHasNoTerms: false);
+        var orderMetadata = new OrderMetadata(nameMetadata, ascending: false, MatchCompareFieldType.Sequence);
         var allEntries = searcher.ExistsQuery(nameMetadata);
         var sortedMatch = searcher.OrderBy(allEntries, orderMetadata, defaultNullsSortMode: NullsSortMode.NullsLargest);
 
@@ -114,7 +114,7 @@ public class SortingMatchDescendingHighByteTest : StorageTest
         var nameMetadata = searcher.FieldMetadataBuilder("Name", NameField);
 
         // Ascending sort — high-byte entries should come last
-        var orderMetadata = new OrderMetadata(nameMetadata, ascending: true, MatchCompareFieldType.Sequence, fieldHasNoTerms: false);
+        var orderMetadata = new OrderMetadata(nameMetadata, ascending: true, MatchCompareFieldType.Sequence);
         var allEntries = searcher.ExistsQuery(nameMetadata);
         var sortedMatch = searcher.OrderBy(allEntries, orderMetadata, defaultNullsSortMode: NullsSortMode.NullsLargest);
 
