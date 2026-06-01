@@ -145,9 +145,8 @@ internal static partial class QueryPlanBuilder
         if (exec.QueryWillReturnNoResults) // there are no results here..., return immediately
             return default;
 
-        int operandOrdering = ComputeOperandOrdering();
-        (int typeSignature, byte[] fullKinds) = ComputeTypeSignature();
-        if (indexSearcher.PlanCache.Get(planParams.CacheKey, operandOrdering, typeSignature, fullKinds, whenFlags) is { } compiledPlan)
+        PlanCacheKeyHash cacheKeyHash = ComputeCacheKeyHash();
+        if (indexSearcher.PlanCache.Get(planParams.CacheKey, cacheKeyHash) is { } compiledPlan)
             return FinalizePlan(); // use cached plan
 
         return BuildOnCacheMiss(); // Cache miss — full exec emission
@@ -166,10 +165,7 @@ internal static partial class QueryPlanBuilder
 
                 Template = template,
                 Source = csharpText + Environment.NewLine + scanCsharp,
-                Ordering = operandOrdering,
-                TypeSignature = typeSignature,
-                FullKinds = fullKinds,
-                WhenFlags = whenFlags,
+                CacheKeyHash = cacheKeyHash,
                 OpCount = ops.Length,
                 RequiredBitmaps = requiredBitmaps,
                 InspectionTemplate = BuildInspectionTemplate(ops, executions),
@@ -515,39 +511,50 @@ internal static partial class QueryPlanBuilder
 
         bool CheckAllNegated() => executions is [{ IsNegated: true }, ..]; // negated clauses are always sorted first, so we can just check the first
 
-        int ComputeOperandOrdering()
+        // Single canonical serialization of every plan-disambiguating dimension, digested to a
+        // 256-bit cache key. Used for BOTH the cache probe and the on-miss store, so the Append
+        // sequence here is the one source of truth — adding a new dimension is one more Append.
+        // Unlike the former packed-int fields, nothing is truncated: all clauses and all
+        // parameters contribute, so the old 10-clause / 16-param ceilings are gone.
+        PlanCacheKeyHash ComputeCacheKeyHash()
         {
+            Span<byte> scratch = stackalloc byte[128];
+            var builder = new PlanCacheKeyBuilder(scratch);
+
             var execs = exec.Executions;
-            int ordering = 0;
 
-            for (int i = 0; i < Math.Min(execs.Count, 10); i++)
-                ordering |= (execs[i].Clause.OriginalIndex & 0x7) << (i * 3);
+            // Operand ordering: the post-sort OriginalIndex of every clause (full width, no cap).
+            builder.Append((ushort)execs.Count);
+            for (int i = 0; i < execs.Count; i++)
+                builder.Append((ushort)execs[i].Clause.OriginalIndex);
 
+            // Boost + cardinality-cliff flags: queries on either side of the cliff get distinct plans.
+            byte flags = 0;
             if (planParams.HasBoost)
-                ordering |= QueryExecution.HasBoostBit;
-
-            // Cardinality cliff bit: queries under vs. over the cliff get different compiled plans, so the bit is part of the cache key and we give them different plans
+                flags |= 1;
             long drivingCard = exec.DrivingClauseCardinality;
             if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
-                ordering |= QueryExecution.CardinalityCliffBit;
-            return ordering;
-        }
+                flags |= 1 << 1;
+            builder.Append(flags);
 
-        (int TypeSignature, byte[] FullKinds) ComputeTypeSignature()
-        {
-            int types = 0; // Each unique query parameter contributes 2 bits (its runtime type: long/double/slice/sliceLong), literals are handled via the query text (separate)
-
-            // A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to QueryMatch-dispatched, while a non-sentinel BETWEEN of the same query text can be TreeScan-dispatched.
-            var full = sentinelFull ?? (template.ParameterSlots.Length > 16 ? new byte[template.ParameterSlots.Length] : null);
+            // Per-parameter runtime type (bits 0-1) OR-ed with the BETWEEN-sentinel mark (bit 2 of
+            // sentinelFull). A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to a
+            // QueryMatch-dispatched plan while a non-sentinel BETWEEN of the same query text can be
+            // TreeScan-dispatched, so the mark forces a distinct key.
+            builder.Append((ushort)template.ParameterSlots.Length);
             for (int i = 0; i < template.ParameterSlots.Length; i++)
             {
                 int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0x3;
-                full?[i] |= (byte)kind;
-                if (i > 15) continue;
-                types |= kind << (i * 2);
+                byte b = (byte)kind;
+                if (sentinelFull != null)
+                    b |= sentinelFull[i];
+                builder.Append(b);
             }
 
-            return (types, full);
+            // WHEN-clause survival mask (plus exists()-collapse bits).
+            builder.Append(whenFlags);
+
+            return builder.ToHash();
         }
     }
 

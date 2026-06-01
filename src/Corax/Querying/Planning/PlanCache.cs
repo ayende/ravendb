@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Concurrent;
-using System.Diagnostics;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
@@ -17,10 +16,11 @@ namespace Corax.Querying.Planning;
 /// entire generation atomically — no intermediate state where current and previous
 /// point to the same dict.
 ///
-/// Per-query: fixed-capacity SoA (struct-of-arrays, default 32 slots) — parallel int[]
-/// for orderings and type signatures plus a CompiledPlan[] for the payloads. SIMD compares
-/// scan all slots in Vector256/Vector128 iterations. Capacity is configurable via the
-/// <see cref="PlanCache(int, int)"/> constructor; must be a multiple of 8 for alignment.
+/// Per-query: fixed-capacity SoA (struct-of-arrays, default 32 slots) — a long[] holding
+/// the low 64 bits of each plan's <see cref="PlanCacheKeyHash"/> plus a CompiledPlan[] for
+/// the payloads. SIMD compares scan all slots in Vector256/Vector128 iterations on the low
+/// 64 bits; a lane hit is confirmed with a full 256-bit digest compare. Capacity is
+/// configurable via the constructor; must be a multiple of 8 for alignment.
 /// </summary>
 public class PlanCache
 {
@@ -43,19 +43,13 @@ public class PlanCache
         _generation = new CacheGeneration([], []);
     }
 
-    public CompiledPlan Get(string queryText, int ordering, int typeSignature = 0)
-        => Get(queryText, ordering, typeSignature, default, 0);
-
-    public CompiledPlan Get(string queryText, int ordering, int typeSignature, ReadOnlySpan<byte> kinds)
-        => Get(queryText, ordering, typeSignature, kinds, 0);
-
-    public CompiledPlan Get(string queryText, int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
+    public CompiledPlan Get(string queryText, in PlanCacheKeyHash hash)
     {
         var gen = _generation;
         if (gen.Current.TryGetValue(queryText, out var per) is false)
             gen.Previous.TryGetValue(queryText, out per);
 
-        return per?.TryLookup(ordering, typeSignature, kinds, whenFlags);
+        return per?.TryLookup(hash);
     }
 
     /// <summary>Try to retrieve the cached plan template for a query text.
@@ -95,22 +89,22 @@ public class PlanCache
     }
 
     /// <summary>
-    /// Fixed-slot per-query plan cache. Three parallel arrays (_orderings, _typeSignatures,
-    /// _plans) of maxSlots entries (default 32, must be a multiple of 8).
+    /// Fixed-slot per-query plan cache. Two parallel arrays (_hashLo, _plans) of maxSlots
+    /// entries (default 32, must be a multiple of 8).
     ///
-    /// Lookup: broadcast the target ordering/typeSignature into a Vector256&lt;int&gt; (8 lanes)
-    /// and compare 8 slots per iteration. ExtractMostSignificantBits yields a bitmask of hits;
-    /// TrailingZeroCount walks set bits. Vec128 fallback does 4 lanes per iteration.
-    /// Matched candidates are revalidated against the plan's own embedded keys to
-    /// guard against torn-write races (parallel arrays are written non-atomically).
+    /// Lookup: broadcast the target hash's low 64 bits into a Vector256&lt;long&gt; (4 lanes)
+    /// and compare 4 slots per iteration. ExtractMostSignificantBits yields a bitmask of hits;
+    /// TrailingZeroCount walks set bits. Vec128 fallback does 2 lanes per iteration. A lane hit
+    /// is the low-64-bit pre-filter only — it is confirmed by comparing the plan's full 256-bit
+    /// <see cref="PlanCacheKeyHash"/>. The digest is the complete plan identity, so distinct keys
+    /// occupy distinct slots and there is no collision chain.
     ///
     /// maxSlots alignment: must be a multiple of 8 so the Vec256 loop never reads past the
-    /// array end. The constructor rounds up if needed.
+    /// array end (4 longs per iteration divides 8). The constructor rounds up if needed.
     /// </summary>
     private sealed class PerQueryPlans(int maxSlots, PlanTemplate template)
     {
-        private readonly int[] _orderings = new int[maxSlots];
-        private readonly int[] _typeSignatures = new int[maxSlots];
+        private readonly long[] _hashLo = new long[maxSlots];
         private readonly CompiledPlan[] _plans = new CompiledPlan[maxSlots];
 
         /// <summary>
@@ -130,57 +124,38 @@ public class PlanCache
         /// <summary>Cached plan template. Set in constructor, immutable thereafter.</summary>
         public readonly PlanTemplate Template = template;
 
-        public CompiledPlan TryLookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
+        public CompiledPlan TryLookup(in PlanCacheKeyHash hash)
         {
-            // SIMD pre-filter scans (Ordering, TypeSignature) — WhenFlags is zero
-            // for ~99% of queries (no WHEN clauses), so adding it to the SIMD compare
-            // would only slow the hot path. The chain walk below picks up
-            // WhenFlags + FullKinds as refinement.
             if (Vector256.IsHardwareAccelerated)
-                return Vec256Lookup(ordering, typeSignature, kinds, whenFlags);
+                return Vec256Lookup(hash);
             if (Vector128.IsHardwareAccelerated)
-                return Vec128Lookup(ordering, typeSignature, kinds, whenFlags);
-            return ScalarLookup(ordering, typeSignature, kinds, whenFlags);
+                return Vec128Lookup(hash);
+            return ScalarLookup(hash);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static CompiledPlan ResolveCandidate(CompiledPlan head, int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
+        private CompiledPlan Confirm(int slot, in PlanCacheKeyHash hash)
         {
-            for (var p = head; p != null; p = p.Next)
-            {
-                if (p.Ordering != ordering || p.TypeSignature != typeSignature || p.WhenFlags != whenFlags)
-                    continue;
-                if (kinds.IsEmpty)
-                {
-                    if (p.FullKinds is not null)
-                        continue;
-
-                    return p;
-                }
-                if (kinds.SequenceEqual(p.FullKinds))
-                    return p;
-            }
-
-            return null;
+            // SIMD matched the low 64 bits; confirm the full 256-bit digest against the
+            // plan's own embedded key. Volatile read guards against torn writes — the
+            // _hashLo entry could be published before _plans[slot] in a concurrent Publish.
+            var plan = Volatile.Read(ref _plans[slot]);
+            return plan != null && plan.CacheKeyHash.Equals(hash) ? plan : null;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec256Lookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
+        private CompiledPlan Vec256Lookup(in PlanCacheKeyHash hash)
         {
-            var ordVec = Vector256.Create(ordering);
-            var typVec = Vector256.Create(typeSignature);
-            for (int i = 0; i < _orderings.Length && i < _typeSignatures.Length; i += 8)
+            var key = Vector256.Create(hash.Lo);
+            for (int i = 0; i < _hashLo.Length; i += 4)
             {
-                var ords = Vector256.LoadUnsafe(ref _orderings[i]);
-                var typs = Vector256.LoadUnsafe(ref _typeSignatures[i]);
-                var match = Vector256.Equals(ords, ordVec) & Vector256.Equals(typs, typVec);
-                uint mask = match.ExtractMostSignificantBits();
+                var slots = Vector256.LoadUnsafe(ref _hashLo[i]);
+                uint mask = Vector256.Equals(slots, key).ExtractMostSignificantBits();
                 while (mask != 0)
                 {
                     int lane = BitOperations.TrailingZeroCount(mask);
                     mask &= mask - 1;
-                    var head = Volatile.Read(ref _plans[i + lane]);
-                    var resolved = ResolveCandidate(head, ordering, typeSignature, kinds, whenFlags);
+                    var resolved = Confirm(i + lane, hash);
                     if (resolved != null)
                         return resolved;
                 }
@@ -190,22 +165,18 @@ public class PlanCache
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec128Lookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
+        private CompiledPlan Vec128Lookup(in PlanCacheKeyHash hash)
         {
-            var ordVec = Vector128.Create(ordering);
-            var typVec = Vector128.Create(typeSignature);
-            for (int i = 0; i < _orderings.Length && i < _typeSignatures.Length; i += 4)
+            var key = Vector128.Create(hash.Lo);
+            for (int i = 0; i < _hashLo.Length; i += 2)
             {
-                var ords = Vector128.LoadUnsafe(ref _orderings[i]);
-                var typs = Vector128.LoadUnsafe(ref _typeSignatures[i]);
-                var match = Vector128.Equals(ords, ordVec) & Vector128.Equals(typs, typVec);
-                uint mask = match.ExtractMostSignificantBits();
+                var slots = Vector128.LoadUnsafe(ref _hashLo[i]);
+                uint mask = Vector128.Equals(slots, key).ExtractMostSignificantBits();
                 while (mask != 0)
                 {
                     int lane = BitOperations.TrailingZeroCount(mask);
                     mask &= mask - 1;
-                    var head = Volatile.Read(ref _plans[i + lane]);
-                    var resolved = ResolveCandidate(head, ordering, typeSignature, kinds, whenFlags);
+                    var resolved = Confirm(i + lane, hash);
                     if (resolved != null)
                         return resolved;
                 }
@@ -214,14 +185,14 @@ public class PlanCache
             return null;
         }
 
-        private CompiledPlan ScalarLookup(int ordering, int typeSignature, ReadOnlySpan<byte> kinds, int whenFlags)
+        private CompiledPlan ScalarLookup(in PlanCacheKeyHash hash)
         {
-            for (int i = 0; i < _orderings.Length && i < _typeSignatures.Length; i++)
+            long lo = hash.Lo;
+            for (int i = 0; i < _hashLo.Length; i++)
             {
-                if (_orderings[i] != ordering || _typeSignatures[i] != typeSignature)
+                if (_hashLo[i] != lo)
                     continue;
-                var head = Volatile.Read(ref _plans[i]);
-                var resolved = ResolveCandidate(head, ordering, typeSignature, kinds, whenFlags);
+                var resolved = Confirm(i, hash);
                 if (resolved != null)
                     return resolved;
             }
@@ -229,18 +200,8 @@ public class PlanCache
             return null;
         }
 
-        private const int MaxChainDepth = 8;
-
         public void Publish(CompiledPlan plan)
         {
-            // Try chain prepend for plans that need refinement beyond the SIMD pre-filter on
-            // (Ordering, TypeSignature). Two cases: >16-kind plans (FullKinds carries the kind
-            // vector) and plans with WHEN-clause survival masks (WhenFlags != 0). Without
-            // chaining, a second plan that hashes to the same slot would evict the first even
-            // though both are still reachable by distinct cache keys.
-            if ((plan.FullKinds != null || plan.WhenFlags != 0) && TryChainPrepend(plan))
-                return;
-
             int slot;
             while (true)
             {
@@ -260,50 +221,12 @@ public class PlanCache
                 }
             }
 
+            // Publish the payload before the pre-filter key: a reader that observes the
+            // matching _hashLo entry must be able to see the corresponding plan. The Confirm
+            // step re-reads _plans[slot] volatile and re-checks the full digest, so a stale
+            // key with a not-yet-written (or already-replaced) plan resolves to a miss.
             Volatile.Write(ref _plans[slot], plan);
-            Volatile.Write(ref _orderings[slot], plan.Ordering);
-            Volatile.Write(ref _typeSignatures[slot], plan.TypeSignature);
-        }
-
-        private bool TryChainPrepend(CompiledPlan plan)
-        {
-            Debug.Assert(plan.FullKinds is not null || plan.WhenFlags != 0);
-            for (int i = 0; i < _orderings.Length && i < _typeSignatures.Length && i < _plans.Length; i++)
-            {
-                if (_orderings[i] != plan.Ordering || _typeSignatures[i] != plan.TypeSignature)
-                    continue; // quick check
-                while (true)
-                {
-                    var head = Volatile.Read(ref _plans[i]);
-                    if (head == null)
-                        return false; // Slot was emptied — fall back to slot insert
-
-                    // Validate the head plan itself, not just the parallel arrays.
-                    // The SIMD scan is a fast filter; the head's own fields are the source of truth.
-                    // A concurrent eviction could have overwritten the parallel arrays.
-                    if (head.Ordering != plan.Ordering || 
-                        head.TypeSignature != plan.TypeSignature)
-                        break; // Slot was reused for a different plan — skip
-
-                    // Limit chain depth to prevent unbounded growth.
-                    // When depth exceeds the limit, replace the entire chain.
-                    if (head.ChainDepth >= MaxChainDepth)
-                    {
-                        plan.Next = null;
-                        plan.ChainDepth = 0;
-                        if (Interlocked.CompareExchange(ref _plans[i], plan, head) == head)
-                            return true;
-                        continue; // CAS failed, retry
-                    }
-
-                    plan.Next = head;
-                    plan.ChainDepth = head.ChainDepth + 1;
-                    if (Interlocked.CompareExchange(ref _plans[i], plan, head) == head)
-                        return true;
-                }
-            }
-
-            return false;
+            Volatile.Write(ref _hashLo[slot], plan.CacheKeyHash.Lo);
         }
     }
 }
