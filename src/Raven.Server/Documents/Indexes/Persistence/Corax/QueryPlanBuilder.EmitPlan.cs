@@ -64,12 +64,59 @@ internal static partial class QueryPlanBuilder
         private (PlanOp[] Ops, int RequiredBitmaps) EmitOrPlan(List<ClauseExecution> executions)
         {
             Debug.Assert(executions.Count > 0);
-            
+
+            if (CanFoldNegatedOr(executions))
+                return EmitFoldedNegatedOr(executions);
+
             EmitClauseInto(executions[0],MergeKind.Fill, executions[0].Cardinality, suppressEarlyExit: true);
             for (int i = 1; i < executions.Count; i++)
             {
                 EmitClauseInto(executions[i], MergeKind.OrInto, executions[i].Cardinality, suppressEarlyExit: true);
             }
+            return Complete();
+        }
+
+        /// <summary>An OR chain whose members are ALL negations folds by De Morgan into a single
+        /// complement: <c>¬A ∨ ¬B ∨ … = ¬(A ∧ B ∧ …)</c>. Without the fold each negated member emits its
+        /// own <see cref="PlanOpKind.FillAllEntries"/> + AndNot (N full-universe scans); folded, we
+        /// intersect the (typically selective) positive forms once and take a single complement.
+        /// Requires ≥2 members (a lone negated leaf already emits exactly one Fill+AndNot) and only
+        /// leaf members — a group would not round-trip through <see cref="EmitPositiveForm"/>'s single-match
+        /// default. A mixed chain (e.g. <c>¬A ∨ B</c>) cannot fold because B's positive matches must still OR in.</summary>
+        private static bool CanFoldNegatedOr(List<ClauseExecution> executions)
+        {
+            if (executions.Count < 2)
+                return false;
+
+            foreach (var e in executions)
+            {
+                if (e.Clause.IsOrChainNotEquals == false)
+                    return false;
+                if (e.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private (PlanOp[] Ops, int RequiredBitmaps) EmitFoldedNegatedOr(List<ClauseExecution> executions)
+        {
+            // Build the positive intersection A ∧ B ∧ … in slot 0. Only Fill (first) and AndInto (rest, with
+            // early-exit suppressed) are used here — neither emits a premature jump to the done label on slot 0,
+            // so a partially-built or empty intersection cannot short-circuit before the complement is taken.
+            EmitPositiveForm(executions[0], MergeKind.Fill, executions[0].Cardinality, suppressEarlyExit: true);
+            for (int i = 1; i < executions.Count; i++)
+            {
+                EmitPositiveForm(executions[i], MergeKind.AndInto, executions[i].Cardinality, suppressEarlyExit: true);
+            }
+
+            // slot 0 = (A ∧ B ∧ …). Park it in a scratch slot, fill the universe, take ONE complement:
+            // slot 0 = ALL \ (A ∧ B ∧ …). A doc missing any field is absent from the intersection and so lands
+            // in the result — identical null/non-existing semantics to the per-member FillAllEntries + AndNot.
+            using var _ = AllocateScratchSlot(out int saveSlot);
+            _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+            _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
+            _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
             return Complete();
         }
 
@@ -116,6 +163,15 @@ internal static partial class QueryPlanBuilder
                 return;
             }
 
+            EmitPositiveForm(exec, merge, cardinality, suppressEarlyExit);
+        }
+
+        /// <summary>Emit a clause's POSITIVE form (no negation rewrite) merged into slot 0 with the given
+        /// <paramref name="merge"/>. This is the body of <see cref="EmitClauseInto"/> minus the
+        /// <see cref="ClauseInfo.IsOrChainNotEquals"/> routing, so the De Morgan fold can build the positive
+        /// intersection of negated members without re-triggering complement emission.</summary>
+        private void EmitPositiveForm(ClauseExecution exec, MergeKind merge, long cardinality, bool suppressEarlyExit)
+        {
             switch (exec.ClauseType)
             {
                 case ClauseType.OrGroup or ClauseType.AndGroup when exec.Clause.SubClauses is { Count: > 0 }:
