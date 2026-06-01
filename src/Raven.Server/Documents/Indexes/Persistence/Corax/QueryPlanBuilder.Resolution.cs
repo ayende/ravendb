@@ -134,6 +134,17 @@ internal static partial class QueryPlanBuilder
     }
 
 
+    /// <summary>Outcome of gating a single clause during the resolution pass. <see cref="Keep"/> keeps the
+    /// clause in the execution; <see cref="Drop"/> removes it because it is statically match-all (WHEN(false),
+    /// or exists() on a field with no missing entries); <see cref="CollapseToNoResults"/> removes it AND
+    /// short-circuits an AND root to no-results (NOT exists() on a field with no missing entries).</summary>
+    private enum ClauseFate
+    {
+        Keep,
+        Drop,
+        CollapseToNoResults,
+    }
+
     private static (CompiledPlan, QueryExecution) Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
     {
         var indexSearcher = planParams.IndexSearcher;
@@ -143,11 +154,16 @@ internal static partial class QueryPlanBuilder
         
         var writer = new ValueWriter();
         byte[] sentinelFull = null;
-        // evaluating WHEN clauses (and exists() collapse) against the live state as we go.
-        var executions = EvaluateWhenAndFilterClauses(ref builder); 
-        QueryExecution exec = CreateQueryExecution();
+
+        // Single resolution pass over the clauses (CreateQueryExecution): per clause it gates WHEN/exists
+        // status, resolves the bound values, rewrites a contradictory BETWEEN into an empty-IN, detects
+        // empty-IN, and estimates cardinality. Each of these can shape both the query plan (drop a clause,
+        // collapse an AND to no-results) and the plan-cache key (per-clause survival bit). It assigns the
+        // captured `executions` list that the rest of Build reads.
+        List<ClauseExecution> executions = null;
+        QueryExecution exec = CreateQueryExecution(ref builder);
         Vector256<long> cacheKeyHash = ComputeCacheKeyHash(ref builder);
-        
+
         if (exec.QueryWillReturnNoResults) // there are no results here..., return immediately
             return default;
 
@@ -209,34 +225,96 @@ internal static partial class QueryPlanBuilder
             return (compiledPlan, exec);
         } 
 
-        QueryExecution CreateQueryExecution()
+        QueryExecution CreateQueryExecution(ref PlanCacheKeyBuilder cacheKeyBuilder)
         {
-            bool hasEmptyIn = false;
+            // A clause is "gated" when its presence in the execution can vary per query: a WHEN(...) guard,
+            // or a top-level exists()/NOT exists() leaf that may statically collapse against the live
+            // NonExisting posting list. When any clause is gated we length-prefix the key and emit one
+            // per-clause survival bit so the kept/removed shape resolves to a distinct cached plan.
+            // exists() eligibility (dynamic fields write no NonExisting markers; pre-feature index versions
+            // have no list; OR roots make the collapse a no-op) is structural, so it is stable per query text
+            // and the gated/ungated key shape never diverges between executions of the same query.
+            bool existsEligible = template.ExistsCollapseCandidateCount > 0
+                                  && template.IsOr == false
+                                  && builderParameters.HasDynamics == false
+                                  && IndexDefinitionBaseServerSide.IndexVersion.IsNonExistingPostingListSupported(planParams.Index.Definition.Version);
+            bool gated = template.WhenCount != 0 || existsEligible;
+
+            var execList = new List<ClauseExecution>(template.Clauses.Count);
+            if (gated)
+                cacheKeyBuilder.Append(template.Clauses.Count, 16);
+
+            bool collapseToNoResults = false;
             int sortDrivingIdx = template.SortDrivingClauseIndex;
             long drivingClauseCardinality = -1;
-            foreach (var it in executions)
+
+            foreach (var cached in template.Clauses)
             {
+                if (gated)
+                {
+                    ClauseFate fate = GateClause(cached, existsEligible);
+                    // Kept = survival bit 1. Both Drop (match-all) and CollapseToNoResults (match-nothing)
+                    // remove the clause from execution and emit bit 0; the two zero-bit fates never share a
+                    // cached plan because CollapseToNoResults sets QueryWillReturnNoResults and the caller
+                    // returns before touching the cache.
+                    cacheKeyBuilder.Append((fate == ClauseFate.Keep).ToInt32(), 1);
+                    switch (fate)
+                    {
+                        case ClauseFate.Drop:
+                            continue;
+                        case ClauseFate.CollapseToNoResults:
+                            collapseToNoResults = true;
+                            continue;
+                    }
+                }
+
+                var it = CreateExecution(cached);
                 PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters, template.ParameterSlots.Length, ref sentinelFull);
                 PropagateBetweenContradiction(it, writer); // a contradictory BETWEEN is rewritten into an empty-IN
-                hasEmptyIn |= IsEmptyIn(it);
+                collapseToNoResults |= IsEmptyIn(it);
 
                 if (it.Cardinality < 0)
                     it.Cardinality = CardinalityEstimator.Estimate(it, indexSearcher, writer, walkerCtx);
                 if (sortDrivingIdx >= 0 && it.Clause.OriginalIndex == sortDrivingIdx)
                     drivingClauseCardinality = it.Cardinality;
+
+                execList.Add(it);
             }
 
-            executions.Sort(); // sort executions by cardinality (smaller clauses first)
+            execList.Sort(); // sort executions by cardinality (smaller clauses first)
+            executions = execList;
 
             return new QueryExecution
             {
-                Executions = executions,
+                Executions = execList,
                 // Empty-IN and a collapsed NOT exists() (no missing entries -> match-nothing) only short-circuit an
                 // AND chain; in an OR chain they're no-op clauses. collapseToNoResults is only ever set in an AND root.
-                QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false,
-                IsAllEntries = executions.Count is 0,
+                QueryWillReturnNoResults = collapseToNoResults && template.IsOr is false,
+                IsAllEntries = execList.Count is 0,
                 DrivingClauseCardinality = drivingClauseCardinality,
             };
+        }
+
+        // Decide the fate of a single clause during the resolution pass. WHEN(false) and a statically-true
+        // exists() are match-all (Drop); a statically-true NOT exists() is match-nothing (CollapseToNoResults).
+        ClauseFate GateClause(ClauseInfo cached, bool existsEligible)
+        {
+            if (cached.WhenCondition is { } predicate && predicate(planParams.QueryParameters) == false)
+                return ClauseFate.Drop;
+
+            // exists() collapses only when the field has NO missing entries: every doc has it, so exists()
+            // is statically true. Then exists() -> Drop (match-all) and NOT exists() -> match-nothing.
+            // When some docs miss the field, the result is data-dependent and stays a runtime term-walk.
+            if (existsEligible && cached.ClauseType == ClauseType.Exists && FieldHasNoMissingEntries(cached))
+                return cached.IsNegated ? ClauseFate.CollapseToNoResults : ClauseFate.Drop;
+
+            return ClauseFate.Keep;
+        }
+
+        bool FieldHasNoMissingEntries(ClauseInfo clause)
+        {
+            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
+            return indexSearcher.HasAnyNonExistingEntries(in fieldMeta) == false;
         }
 
         static bool IsEmptyIn(ClauseExecution e) =>
@@ -262,53 +340,6 @@ internal static partial class QueryPlanBuilder
                 if (it.Clause.OriginalIndex == template.SortSeekHintTemplateIdx)
                     compiledPlan.SortSeekClauseExecIdx = i;
             }
-        }
-
-        List<ClauseExecution> EvaluateWhenAndFilterClauses(ref PlanCacheKeyBuilder cacheKeyBuilder)
-        {
-            var execList = new List<ClauseExecution>(template.Clauses.Count);
-
-            if (template.WhenCount == 0 && template.ExistsCollapseCandidateCount is not 0) // Fast path: no WHEN clauses and no eligible exists() collapse.
-            {
-                foreach (var clause in template.Clauses)
-                {
-                    execList.Add(CreateExecution(clause));
-                }
-                return execList;
-            }
-
-            cacheKeyBuilder.Append(template.Clauses.Count, 16);
-            foreach (var cached in template.Clauses)
-            {
-                bool passed = true;
-                if (cached.WhenCondition is { } predicate)
-                    passed &= predicate(planParams.QueryParameters);
-
-                if (template.ExistsCollapseCandidateCount > 0 && cached.ClauseType == ClauseType.Exists)
-                    passed &= CanSkipExists(cached);
-
-                cacheKeyBuilder.Append(passed.ToInt32(), 1);
-                if(passed is false)
-                    continue;
-
-                execList.Add(CreateExecution(cached));
-            }
-
-            return execList;
-        }
-
-        bool CanSkipExists(ClauseInfo clause)
-        {
-            // Dynamic CreateField fields write no NonExisting markers, so an empty list there does NOT imply
-            // "nothing missing" — the collapse would be unsound. Mirror the indexer's RegisterMissingFieldFor gate.
-            if (builderParameters.HasDynamics)
-                return false;
-            if (IndexDefinitionBaseServerSide.IndexVersion.IsNonExistingPostingListSupported(planParams.Index.Definition.Version) == false)
-                return false;
-
-            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
-            // TODO
-            return indexSearcher.HasAnyNonExistingEntries(in fieldMeta) != clause.IsNegated;
         }
 
         // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
