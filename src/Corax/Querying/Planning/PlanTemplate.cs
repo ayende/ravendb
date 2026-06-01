@@ -96,6 +96,17 @@ public sealed class PlanTemplate
     /// never overflows; past that the exists() leaves keep their term-walk and consume no bit.</summary>
     public int ExistsCollapseCandidateCount;
 
+    /// <summary>True when the static exists()/NOT exists() collapse may apply to this template:
+    /// there is at least one candidate leaf, the root is an AND (collapse is a no-op under OR),
+    /// the index has no dynamic fields (which write no NonExisting markers), and the index version
+    /// supports the NonExisting posting list. Every input is template-shape or index-definition
+    /// state — none depend on query parameters or live data — so it is stable for the life of the
+    /// per-index plan cache and is computed once at template construction. The remaining
+    /// (data-dependent) decision, whether the field actually has missing entries, is made per
+    /// execution against the live transaction. Computed in Raven.Server's QueryPlanBuilder because
+    /// the index-version/dynamic-field facts are Raven.Server types; only the result is stored here.</summary>
+    public bool ExistsCollapseEligible;
+
     /// <summary>Deduplicated, ordered list of query parameter names referenced by this
     /// template's clause bindings (<see cref="BindingSource.QueryParameter"/> only).
     /// Literals are excluded since their types are fixed at template time.

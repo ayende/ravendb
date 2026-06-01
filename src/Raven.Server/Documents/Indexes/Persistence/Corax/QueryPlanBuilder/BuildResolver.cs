@@ -100,10 +100,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         // exists() eligibility (dynamic fields write no NonExisting markers; pre-feature index versions
         // have no list; OR roots make the collapse a no-op) is structural, so it is stable per query text
         // and the gated/ungated key shape never diverges between executions of the same query.
-        bool existsEligible = template.ExistsCollapseCandidateCount > 0
-                              && template.IsOr == false
-                              && builderParameters.HasDynamics == false
-                              && IndexDefinitionBaseServerSide.IndexVersion.IsNonExistingPostingListSupported(planParams.Index.Definition.Version);
+        bool existsEligible = template.ExistsCollapseEligible;
         bool gated = template.WhenCount != 0 || existsEligible;
 
         var execList = new List<ClauseExecution>(template.Clauses.Count);
@@ -175,7 +172,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             return ClauseFate.Keep;
 
         FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(cached, walkerCtx);
-        if (_indexSearcher.HasAnyNonExistingEntries(in fieldMeta) == false)
+        if (_indexSearcher.HasAnyNonExistingEntries(in fieldMeta))
             return ClauseFate.Keep;
 
         return cached.IsNegated ? ClauseFate.CollapseToNoResults : ClauseFate.Drop;

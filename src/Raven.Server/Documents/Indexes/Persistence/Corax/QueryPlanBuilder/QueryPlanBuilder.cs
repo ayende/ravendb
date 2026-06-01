@@ -113,6 +113,13 @@ internal static partial class QueryPlanBuilder
             VectorClauses = walkerCtx.VectorClauses,
             WhenCount = walkerCtx.WhenCount,
             ExistsCollapseCandidateCount = walkerCtx.ExistsCollapseCandidateCount,
+            // The ExistsCollapseCandidateCount > 0 guard must come first: it short-circuits the
+            // index-definition access so templates with no exists() leaves (e.g. direct-planner
+            // tests that supply no Index) never dereference p.Index.
+            ExistsCollapseEligible = walkerCtx.ExistsCollapseCandidateCount > 0
+                                     && walkerCtx.IsOr == false
+                                     && p.Index.Definition.HasDynamicFields == false
+                                     && IndexDefinitionBaseServerSide.IndexVersion.IsNonExistingPostingListSupported(p.Index.Definition.Version),
             OptimizationFlags = optFlags,
             SortDrivingClauseIndex = sortDrivingIdx,
             CompoundExact =  walkerCtx.CompoundExact,
