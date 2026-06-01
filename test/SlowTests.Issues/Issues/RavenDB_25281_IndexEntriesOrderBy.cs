@@ -76,11 +76,11 @@ namespace SlowTests.Issues
             Assert.Equal(Enumerable.Range(0, 10).Reverse().Select(x => (long)x).ToList(), desc);
         }
 
-        // Single-node only: the sharded index-entries coordinator has a separate, pre-existing paging-rewrite
-        // defect (NRE in AbstractShardedQueryProcessor.RewriteQueryIfNeeded) that affects both Corax and Lucene
-        // and is unrelated to this per-node ORDER BY fix.
+        // Covers sharded too: a paged index-entries query used to NRE in the sharded coordinator's
+        // RewriteQueryIfNeeded when QueryParameters serialized as JSON-null; the paging rewrite now treats a
+        // null parameters payload as absent. Engine- and topology-agnostic.
         [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
-        [RavenData(SearchEngineMode = RavenSearchEngineMode.All, DatabaseMode = RavenDatabaseMode.Single)]
+        [RavenData(SearchEngineMode = RavenSearchEngineMode.All, DatabaseMode = RavenDatabaseMode.All)]
         public void IndexEntries_OrderBy_Paged(Options options)
         {
             using var store = GetDocumentStore(options);
