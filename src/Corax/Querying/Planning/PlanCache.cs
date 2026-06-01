@@ -43,7 +43,7 @@ public class PlanCache
         _generation = new CacheGeneration([], []);
     }
 
-    public CompiledPlan Get(string queryText, in PlanCacheKeyHash hash)
+    public CompiledPlan Get(string queryText, in Vector256<long> hash)
     {
         var gen = _generation;
         if (gen.Current.TryGetValue(queryText, out var per) is false)
@@ -76,7 +76,7 @@ public class PlanCache
             // the race and newGen is now installed. If another thread beat us, the
             // returned value is the generation they installed — use that instead.
             var prev = Interlocked.CompareExchange(ref _generation, newGen, gen);
-            gen = prev == gen ? newGen : prev;
+            gen = prev == gen ? newGen : prev!;
         }
 
         var current = gen.Current;
@@ -124,7 +124,7 @@ public class PlanCache
         /// <summary>Cached plan template. Set in constructor, immutable thereafter.</summary>
         public readonly PlanTemplate Template = template;
 
-        public CompiledPlan TryLookup(in PlanCacheKeyHash hash)
+        public CompiledPlan TryLookup(in Vector256<long> hash)
         {
             if (Vector256.IsHardwareAccelerated)
                 return Vec256Lookup(hash);
@@ -134,9 +134,9 @@ public class PlanCache
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Confirm(int slot, in PlanCacheKeyHash hash)
+        private CompiledPlan Confirm(int slot, in Vector256<long> hash)
         {
-            // SIMD matched the low 64 bits; confirm the full 256-bit digest against the
+            // Already matched the low 64 bits; confirm the full 256-bit digest against the
             // plan's own embedded key. Volatile read guards against torn writes — the
             // _hashLo entry could be published before _plans[slot] in a concurrent Publish.
             var plan = Volatile.Read(ref _plans[slot]);
@@ -144,10 +144,10 @@ public class PlanCache
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec256Lookup(in PlanCacheKeyHash hash)
+        private CompiledPlan Vec256Lookup(in Vector256<long> hash)
         {
-            var key = Vector256.Create(hash.Lo);
-            for (int i = 0; i < _hashLo.Length; i += 4)
+            var key = Vector256.Create(hash[0]); // compare the first lane
+            for (int i = 0; i < _hashLo.Length; i += Vector256<long>.Count)
             {
                 var slots = Vector256.LoadUnsafe(ref _hashLo[i]);
                 uint mask = Vector256.Equals(slots, key).ExtractMostSignificantBits();
@@ -165,10 +165,10 @@ public class PlanCache
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec128Lookup(in PlanCacheKeyHash hash)
+        private CompiledPlan Vec128Lookup(in Vector256<long> hash)
         {
-            var key = Vector128.Create(hash.Lo);
-            for (int i = 0; i < _hashLo.Length; i += 2)
+            var key = Vector128.Create(hash[0]);
+            for (int i = 0; i < _hashLo.Length; i += Vector128<long>.Count)
             {
                 var slots = Vector128.LoadUnsafe(ref _hashLo[i]);
                 uint mask = Vector128.Equals(slots, key).ExtractMostSignificantBits();
@@ -185,9 +185,9 @@ public class PlanCache
             return null;
         }
 
-        private CompiledPlan ScalarLookup(in PlanCacheKeyHash hash)
+        private CompiledPlan ScalarLookup(in Vector256<long> hash)
         {
-            long lo = hash.Lo;
+            long lo = hash[0];
             for (int i = 0; i < _hashLo.Length; i++)
             {
                 if (_hashLo[i] != lo)
@@ -226,7 +226,7 @@ public class PlanCache
             // step re-reads _plans[slot] volatile and re-checks the full digest, so a stale
             // key with a not-yet-written (or already-replaced) plan resolves to a miss.
             Volatile.Write(ref _plans[slot], plan);
-            Volatile.Write(ref _hashLo[slot], plan.CacheKeyHash.Lo);
+            Volatile.Write(ref _hashLo[slot], plan.CacheKeyHash[0]);
         }
     }
 }

@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -18,6 +19,7 @@ using Raven.Client.Documents.Indexes.Spatial;
 using Raven.Client.Exceptions;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
+using Sparrow;
 using Sparrow.Binary;
 using Sparrow.Json;
 using Sparrow.Server;
@@ -136,16 +138,19 @@ internal static partial class QueryPlanBuilder
     {
         var indexSearcher = planParams.IndexSearcher;
         
-        var (executions, whenFlags, collapseToNoResults) = EvaluateWhenAndFilterClauses(); // evaluating WHEN clauses (and exists() collapse) against the live state as we go.
-
+        Span<byte> scratch = stackalloc byte[128];
+        var builder = new PlanCacheKeyBuilder(scratch);
+        
         var writer = new ValueWriter();
         byte[] sentinelFull = null;
+        // evaluating WHEN clauses (and exists() collapse) against the live state as we go.
+        var executions = EvaluateWhenAndFilterClauses(ref builder); 
         QueryExecution exec = CreateQueryExecution();
-
+        Vector256<long> cacheKeyHash = ComputeCacheKeyHash(ref builder);
+        
         if (exec.QueryWillReturnNoResults) // there are no results here..., return immediately
             return default;
 
-        PlanCacheKeyHash cacheKeyHash = ComputeCacheKeyHash();
         if (indexSearcher.PlanCache.Get(planParams.CacheKey, cacheKeyHash) is { } compiledPlan)
             return FinalizePlan(); // use cached plan
 
@@ -228,7 +233,7 @@ internal static partial class QueryPlanBuilder
                 Executions = executions,
                 // Empty-IN and a collapsed NOT exists() (no missing entries -> match-nothing) only short-circuit an
                 // AND chain; in an OR chain they're no-op clauses. collapseToNoResults is only ever set in an AND root.
-                QueryWillReturnNoResults = (hasEmptyIn && template.IsOr is false) || collapseToNoResults,
+                QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false,
                 IsAllEntries = executions.Count is 0,
                 DrivingClauseCardinality = drivingClauseCardinality,
             };
@@ -236,7 +241,7 @@ internal static partial class QueryPlanBuilder
 
         static bool IsEmptyIn(ClauseExecution e) =>
             e.ClauseType is ClauseType.In or ClauseType.AllIn &&
-            (e.InTermCount == 0) &&
+            e.InTermCount == 0 &&
             e.HasNullTerm is false;
 
         void RemapOptimizationIndices()
@@ -259,77 +264,41 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        (List<ClauseExecution> Executions, int WhenFlags, bool CollapseToNoResults) EvaluateWhenAndFilterClauses()
+        List<ClauseExecution> EvaluateWhenAndFilterClauses(ref PlanCacheKeyBuilder cacheKeyBuilder)
         {
             var execList = new List<ClauseExecution>(template.Clauses.Count);
 
-            // exists()/NOT exists() collapse shares the WhenFlags bit budget, so only enable it when the combined
-            // WHEN + exists-candidate count fits — otherwise the exists() leaves keep their term-walk (consume no bit).
-            bool existsCollapseEnabled = template.ExistsCollapseCandidateCount > 0
-                                         && template.WhenCount + template.ExistsCollapseCandidateCount <= PlanTemplate.MaxWhenClauses;
-
-            if (template.WhenCount == 0 && existsCollapseEnabled == false) // Fast path: no WHEN clauses and no eligible exists() collapse.
+            if (template.WhenCount == 0 && template.ExistsCollapseCandidateCount is not 0) // Fast path: no WHEN clauses and no eligible exists() collapse.
             {
                 foreach (var clause in template.Clauses)
                 {
                     execList.Add(CreateExecution(clause));
                 }
-
-                return (execList, 0, false);
+                return execList;
             }
 
-            int flags = 0;
-            int whenBit = 0;
-            bool collapseToNoResults = false;
+            cacheKeyBuilder.Append(template.Clauses.Count, 16);
             foreach (var cached in template.Clauses)
             {
+                bool passed = true;
                 if (cached.WhenCondition is { } predicate)
-                {
-                    if (predicate(planParams.QueryParameters) == false)
-                    {
-                        whenBit++;
-                        continue;
-                    }
+                    passed &= predicate(planParams.QueryParameters);
 
-                    flags |= 1 << whenBit;
-                    whenBit++;
-                    execList.Add(CreateExecution(cached));
+                if (template.ExistsCollapseCandidateCount > 0 && cached.ClauseType == ClauseType.Exists)
+                    passed &= CanSkipExists(cached);
+
+                cacheKeyBuilder.Append(passed.ToInt32(), 1);
+                if(passed is false)
                     continue;
-                }
-
-                if (existsCollapseEnabled && cached.ClauseType == ClauseType.Exists)
-                {
-                    int bit = whenBit;
-                    whenBit++;
-                    if (TryCollapseExists(cached, out bool toNoResults))
-                    {
-                        // NonExisting list is empty: exists() -> match-all (drop the clause), NOT exists() ->
-                        // match-nothing. The bit stays clear, so this resolves to a different cached plan than
-                        // the kept (term-walk) variant — the choice is re-decided against the live txn each run.
-                        collapseToNoResults |= toNoResults;
-                        continue;
-                    }
-
-                    flags |= 1 << bit; // kept (the field has missing entries, or the leaf is ineligible) -> bit set
-                    execList.Add(CreateExecution(cached));
-                    continue;
-                }
 
                 execList.Add(CreateExecution(cached));
             }
 
-            return (execList, flags, collapseToNoResults);
+            return execList;
         }
 
-        // Returns true when an eligible exists()/NOT exists() leaf collapses because its field has NO missing
-        // entries (the per-field NonExisting posting list is empty). toNoResults distinguishes the two outcomes:
-        // exists() -> match-all (drop), NOT exists() -> match-nothing (empties the AND). Only ever called in an
-        // AND root: in an OR root match-all/match-nothing swap roles, so we keep the term-walk and never collapse.
-        bool TryCollapseExists(ClauseInfo clause, out bool toNoResults)
+        bool CanSkipExists(ClauseInfo clause)
         {
-            toNoResults = false;
-            if (template.IsOr)
-                return false;
             // Dynamic CreateField fields write no NonExisting markers, so an empty list there does NOT imply
             // "nothing missing" — the collapse would be unsound. Mirror the indexer's RegisterMissingFieldFor gate.
             if (builderParameters.HasDynamics)
@@ -338,14 +307,8 @@ internal static partial class QueryPlanBuilder
                 return false;
 
             FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
-            // Count the live entries rather than the tree node: the per-field NonExisting node persists (empty)
-            // after the last missing-field document is deleted, so a presence-only check would never re-collapse.
-            if (indexSearcher.HasAnyNonExistingEntries(in fieldMeta)) // something is missing -> fall back to the term-walk
-                return false;
-
-            // No entry is missing this field: exists() == match-all, NOT exists() == match-nothing.
-            toNoResults = clause.IsNegated;
-            return true;
+            // TODO
+            return indexSearcher.HasAnyNonExistingEntries(in fieldMeta) != clause.IsNegated;
         }
 
         // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
@@ -516,44 +479,34 @@ internal static partial class QueryPlanBuilder
         // sequence here is the one source of truth — adding a new dimension is one more Append.
         // Unlike the former packed-int fields, nothing is truncated: all clauses and all
         // parameters contribute, so the old 10-clause / 16-param ceilings are gone.
-        PlanCacheKeyHash ComputeCacheKeyHash()
+        Vector256<long> ComputeCacheKeyHash(ref PlanCacheKeyBuilder builder)
         {
-            Span<byte> scratch = stackalloc byte[128];
-            var builder = new PlanCacheKeyBuilder(scratch);
-
             var execs = exec.Executions;
 
-            // Operand ordering: the post-sort OriginalIndex of every clause (full width, no cap).
-            builder.Append((ushort)execs.Count);
-            for (int i = 0; i < execs.Count; i++)
-                builder.Append((ushort)execs[i].Clause.OriginalIndex);
+            builder.Append(execs.Count, 16); // length prefixed to ensure consistency
+            foreach(var e in execs)
+            {
+                builder.Append(e.Clause.OriginalIndex, 16);
+            }
 
             // Boost + cardinality-cliff flags: queries on either side of the cliff get distinct plans.
-            byte flags = 0;
-            if (planParams.HasBoost)
-                flags |= 1;
-            long drivingCard = exec.DrivingClauseCardinality;
-            if (drivingCard is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity)
-                flags |= 1 << 1;
-            builder.Append(flags);
+            int flags = planParams.HasBoost.ToInt32() << 1 |
+                        (exec.DrivingClauseCardinality is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity).ToInt32(); 
+            builder.Append(flags, 2);
 
             // Per-parameter runtime type (bits 0-1) OR-ed with the BETWEEN-sentinel mark (bit 2 of
             // sentinelFull). A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to a
             // QueryMatch-dispatched plan while a non-sentinel BETWEEN of the same query text can be
             // TreeScan-dispatched, so the mark forces a distinct key.
-            builder.Append((ushort)template.ParameterSlots.Length);
+            builder.Append((ushort)template.ParameterSlots.Length, 16);
             for (int i = 0; i < template.ParameterSlots.Length; i++)
             {
-                int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0x3;
-                byte b = (byte)kind;
+                int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0b11;
                 if (sentinelFull != null)
-                    b |= sentinelFull[i];
-                builder.Append(b);
+                    kind |= sentinelFull[i] << 2;
+                builder.Append(kind, 3);
             }
-
-            // WHEN-clause survival mask (plus exists()-collapse bits).
-            builder.Append(whenFlags);
-
+            
             return builder.ToHash();
         }
     }

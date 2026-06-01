@@ -103,13 +103,6 @@ internal static partial class QueryPlanBuilder
                 else if (t.ClauseType == ClauseType.Exists) // top-level exists()/NOT exists() leaf — collapse candidate (#4875)
                     ctx.ExistsCollapseCandidateCount++;
             }
-
-            if (ctx.WhenCount <= PlanTemplate.MaxWhenClauses) 
-                return;
-            
-            throw new NotSupportedException(
-                $"Query has {ctx.WhenCount} WHEN-guarded clauses; the plan template supports at most " +
-                $"{PlanTemplate.MaxWhenClauses}. Split the query into multiple smaller queries.");
         }
 
         /// <summary>Mark every negated clause whose immediate enclosing context is OR with

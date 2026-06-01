@@ -1,3 +1,5 @@
+using System.Runtime.Intrinsics;
+
 namespace Corax.Querying.Planning;
 
 /// <summary>Execution strategy chosen for a CompiledPlan. Determined once at cache-miss time
@@ -35,8 +37,6 @@ public sealed class CompiledPlan
     public QueryIlEmitter.CompiledExecuteDelegate CompiledTimedDelegate { get; init; }
 
     /// <summary>
-    /// SHA-256 digest of this plan's canonical cache-key serialization — the full plan identity.
-    ///
     ///  A single query may be represented by different compiled plans because the shape
     ///  of the data is different. Consider `WHERE Tag = $tag and Published = $published`.
     ///  If $tag is a popular term, and $published is true, that usually means that we
@@ -47,12 +47,13 @@ public sealed class CompiledPlan
     ///      that Published=false is a small amount, then start from that, then we find that we have
     ///      low enough results that we are going to just scan through them, instead of going through
     ///      the posting list.
+    /// 
     ///  In other words, the parameters we use for the query impact the query plan. The digest folds
     ///  every disambiguating dimension (operand ordering, per-parameter runtime type, BETWEEN
     ///  sentinel marks, WHEN-clause survival, boost/cardinality-cliff flags) into one 256-bit value
     ///  used as the cache key — see <see cref="PlanCacheKeyBuilder"/> for the serialization.
     /// </summary>
-    public PlanCacheKeyHash CacheKeyHash { get; init; }
+    public Vector256<long> CacheKeyHash { get; init; }
 
     /// <summary>Execution strategy chosen for this compiled plan. Set once at cache-miss
     /// time after Try* discovery (volatile store), then read-only — safe for concurrent readers.
