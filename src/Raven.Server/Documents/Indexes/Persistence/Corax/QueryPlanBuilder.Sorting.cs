@@ -127,10 +127,9 @@ internal static partial class QueryPlanBuilder
             var fieldMetadata = QueryBuilderHelper.GetFieldIdForOrderBy(p.Allocator, field.Name, p.Index,
                 p.HasDynamics, p.DynamicFields, p.IndexFieldsMapping, false);
 
-            bool mayHaveMissingEntries = fieldMetadata.FieldId == Constants.IndexWriter.DynamicField;
-
-            prebuilt[i] = new OrderMetadata(fieldMetadata, field.Ascending, GetMatchCompareFieldType(orderingType),
-                GetNullsSortMode(field), mayHaveMissingEntries);
+            prebuilt[i] = new OrderMetadata(fieldMetadata, field.Ascending, 
+                GetMatchCompareFieldType(orderingType), GetNullsSortMode(field), 
+                mayHaveMissingEntries: fieldMetadata.FieldId == Constants.IndexWriter.DynamicField);
             patches[i].Kind = SortSlotPatchKind.FieldRuntimeResolve;
             patches[i].FieldName = field.Name;
             anyPatch = true;
@@ -201,8 +200,6 @@ internal static partial class QueryPlanBuilder
 
         var indexSearcher = builderParameters.IndexSearcher;
 
-        // Every slot is preserved: an empty sort field is kept and flagged MayHaveMissingEntries so the sort
-        // routes through ExtractAndSort (treats every doc as missing) rather than walking a non-existent tree.
         var result = new OrderMetadata[template.Prebuilt.Length];
 
         for (int i = 0; i < template.Prebuilt.Length; i++)
@@ -220,8 +217,6 @@ internal static partial class QueryPlanBuilder
 
                 case SortSlotPatchKind.RandomSeededByParam:
                 {
-                    // patch.FieldName holds the parameter name; resolve its value and derive the seed from it
-                    // (mirrors OrderByField.Argument.GetString for ValueTokenType.Parameter).
                     builderParameters.Query.QueryParameters.TryGet(patch.FieldName, out string seedValue);
                     var seed = (int)Hashing.XXHash32.CalculateRaw(seedValue ?? string.Empty);
                     result[i] = new OrderMetadata(seed);
@@ -230,13 +225,11 @@ internal static partial class QueryPlanBuilder
 
                 case SortSlotPatchKind.FieldRuntimeResolve:
                 {
-                    // FieldMetadata holds transaction-bound slices, so re-resolve it per query. A field with zero
-                    // distinct terms is flagged missing-capable so the sort drains the bitmap (every doc missing).
+                    // FieldMetadata holds transaction-bound slices, so re-resolve it per query
                     var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
-                    bool fieldIsEmpty = indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
                     var p = template.Prebuilt[i];
-                    result[i] = new OrderMetadata(fieldMeta, p.Ascending, p.FieldType,
-                        p.NullsSortMode, p.MayHaveMissingEntries || fieldIsEmpty);
+                    bool mayHaveMissingEntries = p.MayHaveMissingEntries || indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
+                    result[i] = new OrderMetadata(fieldMeta, p.Ascending, p.FieldType, p.NullsSortMode, mayHaveMissingEntries);
                     break;
                 }
 

@@ -550,12 +550,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             return fieldsToFetch.IsDistinct || query.SkipDuplicateChecking || indexType.IsMapReduce();
         }
 
-        // Builds the per-query SortingDataTransfer (renting score/distance buffers as needed) and wires it into
-        // the match when boost or distance ordering is in play. Returns the transfer plus whether the query
-        // orders by distance. Shared by the main read path and the IndexEntries raw-entries path.
-        private SortingDataTransfer SetupSortingData(IndexQueryServerSide query, QueryBuilderParameters builderParams, IQueryMatch queryMatch, int bufferSize, out bool hasOrderByDistance)
+        private (SortingDataTransfer SortingData, bool HasSortByDistance) SetupSortingData(IndexQueryServerSide query, QueryBuilderParameters builderParams, IQueryMatch queryMatch, int bufferSize)
         {
-            hasOrderByDistance = query.Metadata.OrderBy is [{ OrderingType: OrderByFieldType.Distance }, ..] && _index.Configuration.CoraxIncludeSpatialDistance;
+            var hasOrderByDistance = query.Metadata.OrderBy is [{ OrderingType: OrderByFieldType.Distance }, ..] && _index.Configuration.CoraxIncludeSpatialDistance;
 
             SortingDataTransfer sortingData = default;
             if (builderParams.HasBoost || hasOrderByDistance)
@@ -574,7 +571,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     s.SetSortingDataTransfer(sortingData);
             }
 
-            return sortingData;
+            return (sortingData, hasOrderByDistance);
         }
 
         private IEnumerable<QueryResult> QueryInternal<THighlighting, TQueryFilter, THasProjection, TDistinct>(
@@ -685,7 +682,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
                 totalResults.Value = 0;
 
-                var sortingData = SetupSortingData(query, compileResult.QueryBuilderParams, compileResult.QueryMatch, bufferSize, out var hasOrderByDistance);
+                var (sortingData, hasOrderByDistance) = SetupSortingData(query, compileResult.QueryBuilderParams, compileResult.QueryMatch, bufferSize);
 
                 // We don't need to do any processing for the query beyond counting if we are getting a count.
                 long totalResultsBefore = totalResults.Value;
@@ -816,13 +813,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                 compileResult.Dispose();
 
-                QueryPool.Return(ids);
-                if (sortingData.IncludeScores)
-                    ScorePool.Return(sortingData.ScoresBuffer);
-                if (sortingData.IncludeDistances)
-                    DistancePool.Return(sortingData.DistancesBuffer);
-                
-                
+                ReturnQueryResources(ids, sortingData);
+
+
                 long sortingMatchTotalResults = compileResult.QueryMatch switch
                 {
                     SortingMatch match => match.TotalResults,
@@ -868,6 +861,15 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 
                 throw new NotSupportedException($"The type {typeof(TQueryFilter)} is not supported.");
             }
+        }
+
+        private static void ReturnQueryResources(long[] ids, SortingDataTransfer sortingData)
+        {
+            QueryPool.Return(ids);
+            if (sortingData.IncludeScores)
+                ScorePool.Return(sortingData.ScoresBuffer);
+            if (sortingData.IncludeDistances)
+                DistancePool.Return(sortingData.DistancesBuffer);
         }
 
         protected virtual QueryResult CreateQueryResult<TDistinct, THasProjection, THighlighting>(ref IdentityTracker<TDistinct> tracker, Document document,
@@ -1334,7 +1336,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             var ids = QueryPool.Rent(CoraxBufferSize(IndexSearcher, take, query));
 
-            var sortingData = SetupSortingData(query, compileResult.QueryBuilderParams, queryMatch, ids.Length, out _);
+            var (sortingData, _) = SetupSortingData(query, compileResult.QueryBuilderParams, queryMatch, ids.Length);
 
             int docsToLoad = CoraxBufferSize(IndexSearcher, pageSize, query);
             using var coraxEntryReader = new CoraxIndexedEntriesReader(documentsContext, IndexSearcher);
@@ -1363,11 +1365,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 totalResults.Value += read;
             }
 
-            QueryPool.Return(ids);
-            if (sortingData.IncludeScores)
-                ScorePool.Return(sortingData.ScoresBuffer);
-            if (sortingData.IncludeDistances)
-                DistancePool.Return(sortingData.DistancesBuffer);
+            ReturnQueryResources(ids, sortingData);
             long Skip()
             {
                 while (true)
