@@ -19,6 +19,7 @@ using Raven.Client.Documents.Queries;
 using Raven.Client.Documents.Session;
 using Raven.Client.Json.Serialization.NewtonsoftJson.Internal;
 using Raven.Server.Documents.Indexes.Persistence.Corax;
+using Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 using Raven.Server.Documents.Queries;
 using Sparrow.Json;
 using Sparrow.Server;

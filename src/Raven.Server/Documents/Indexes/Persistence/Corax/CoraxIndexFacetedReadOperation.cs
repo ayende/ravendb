@@ -90,8 +90,8 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                 query.QueryParameters, _queryBuilderFactories, _fieldMappings, null, null, global::Corax.Constants.IndexSearcher.TakeAll,
                 deduplicationDisabled: true, token: token);
 
-            IQueryMatch baseQuery = QueryPlanBuilder.BuildFilterMatch(
-                new QueryPlanBuilder.PlanParameters
+            IQueryMatch baseQuery = QueryPlanBuilder.QueryPlanBuilder.BuildFilterMatch(
+                new QueryPlanBuilder.QueryPlanBuilder.PlanParameters
                 {
                     IndexSearcher = _indexSearcher,
                     Metadata = query.Metadata,
@@ -273,8 +273,8 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
 
         IQueryMatch baseQuery = query.Metadata.Query.Where == null
             ? _indexSearcher.AllEntries()
-            : QueryPlanBuilder.BuildFilterMatch(
-                new QueryPlanBuilder.PlanParameters
+            : QueryPlanBuilder.QueryPlanBuilder.BuildFilterMatch(
+                new QueryPlanBuilder.QueryPlanBuilder.PlanParameters
                 {
                     IndexSearcher = _indexSearcher,
                     Metadata = query.Metadata,

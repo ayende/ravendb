@@ -15,7 +15,7 @@ using Constants = Corax.Constants;
 using ClientConstants = Raven.Client.Constants;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
-namespace Raven.Server.Documents.Indexes.Persistence.Corax;
+namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {

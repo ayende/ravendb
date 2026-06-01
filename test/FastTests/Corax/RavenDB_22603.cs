@@ -8,6 +8,7 @@ using Corax.Mappings;
 using FastTests.Voron;
 using Raven.Client.Documents.Indexes;
 using Raven.Server.Documents.Indexes.Persistence.Corax;
+using Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 using Raven.Server.Documents.Queries;
 using ClientQueryInspectionNode = Raven.Client.Documents.Queries.Timings.QueryInspectionNode;
 using Sparrow.Server;

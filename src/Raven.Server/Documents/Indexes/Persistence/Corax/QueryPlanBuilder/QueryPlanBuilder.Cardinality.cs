@@ -5,7 +5,7 @@ using Corax.Mappings;
 using Corax.Querying.Planning;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
-namespace Raven.Server.Documents.Indexes.Persistence.Corax;
+namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {

@@ -1,37 +1,10 @@
 using System;
-using System.Buffers.Binary;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Globalization;
-using System.Runtime.CompilerServices;
-using System.Runtime.Intrinsics;
-using System.Text;
-using System.Text.RegularExpressions;
-using System.Threading;
-using Corax.Mappings;
-using Corax.Querying.Matches;
-using Corax.Querying.Matches.Meta;
-using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Querying.Planning;
-using Corax.Querying.Primitives;
-using Corax.Utils;
-using Raven.Client.Documents.Indexes.Spatial;
-using Raven.Client.Exceptions;
-using Raven.Server.Documents.Queries;
-using Raven.Server.Documents.Queries.AST;
-using Sparrow;
-using Sparrow.Binary;
-using Sparrow.Json;
 using Sparrow.Server;
-using Spatial4n.Shapes;
 using Voron;
-using Voron.Impl;
 using Constants = Corax.Constants;
-using RavenConstants = Raven.Client.Constants;
-using IndexSearcher = Corax.Querying.IndexSearcher;
-using Range = Corax.Querying.Matches.Meta.Range;
 
-namespace Raven.Server.Documents.Indexes.Persistence.Corax;
+namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {

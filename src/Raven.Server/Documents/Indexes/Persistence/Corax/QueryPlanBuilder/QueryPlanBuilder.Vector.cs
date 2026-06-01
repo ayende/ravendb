@@ -8,7 +8,6 @@ using Corax.Querying.Planning;
 using Corax.Utils;
 using Raven.Client.Documents.Indexes.Vector;
 using Raven.Client.Exceptions;
-using VectorOptions = Raven.Client.Documents.Indexes.Vector.VectorOptions;
 using Raven.Server.Documents.ETL.Providers.AI.Embeddings;
 using Raven.Server.Documents.Indexes.Persistence.Corax.QueryOptimizer;
 using Raven.Server.Documents.Indexes.VectorSearch;
@@ -16,8 +15,9 @@ using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow;
 using Sparrow.Json;
+using VectorOptions = Raven.Client.Documents.Indexes.Vector.VectorOptions;
 
-namespace Raven.Server.Documents.Indexes.Persistence.Corax;
+namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {

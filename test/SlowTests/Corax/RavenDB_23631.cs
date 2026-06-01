@@ -6,6 +6,7 @@ using Corax.Indexing;
 using Corax.Mappings;
 using FastTests.Voron;
 using Raven.Server.Documents.Indexes.Persistence.Corax;
+using Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 using Raven.Server.Documents.Queries;
 using Sparrow;
 using Tests.Infrastructure;
