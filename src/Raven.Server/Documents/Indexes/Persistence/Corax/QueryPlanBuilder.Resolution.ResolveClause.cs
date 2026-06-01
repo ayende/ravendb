@@ -1,0 +1,170 @@
+using System;
+using System.Buffers.Binary;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.Globalization;
+using System.Runtime.CompilerServices;
+using System.Runtime.Intrinsics;
+using System.Text;
+using System.Text.RegularExpressions;
+using System.Threading;
+using Corax.Mappings;
+using Corax.Querying.Matches;
+using Corax.Querying.Matches.Meta;
+using Corax.Querying.Matches.SortingMatches.Meta;
+using Corax.Querying.Planning;
+using Corax.Querying.Primitives;
+using Corax.Utils;
+using Raven.Client.Documents.Indexes.Spatial;
+using Raven.Client.Exceptions;
+using Raven.Server.Documents.Queries;
+using Raven.Server.Documents.Queries.AST;
+using Sparrow;
+using Sparrow.Binary;
+using Sparrow.Json;
+using Sparrow.Server;
+using Spatial4n.Shapes;
+using Voron;
+using Voron.Impl;
+using Constants = Corax.Constants;
+using RavenConstants = Raven.Client.Constants;
+using IndexSearcher = Corax.Querying.IndexSearcher;
+using Range = Corax.Querying.Matches.Meta.Range;
+
+namespace Raven.Server.Documents.Indexes.Persistence.Corax;
+
+internal static partial class QueryPlanBuilder
+{
+    private static IQueryMatch ResolveClause(ClauseExecution cur, QueryExecution root, ResolutionContext walkerCtx)
+    {
+        var clause = cur.Clause;
+        var indexSearcher = walkerCtx.IndexSearcher;
+        var builderParams = walkerCtx.BuilderParams;
+      
+      
+        FieldMetadata fieldMeta = default;
+        // Spatial/Vector/Search have their own field resolution paths.
+        if (clause.ClauseType is not ClauseType.Spatial and not ClauseType.Vector and not ClauseType.Search)
+        {
+            fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
+        }
+
+        var packed = cur.PackedParamValue;
+
+        switch (clause.ClauseType)
+        {
+            case ClauseType.Equals:
+            case ClauseType.NotEquals:
+                return packed.TermQuery(fieldMeta, indexSearcher, root);
+
+            case ClauseType.GreaterThan:
+            case ClauseType.GreaterThanOrEqual:
+            case ClauseType.LessThan:
+            case ClauseType.LessThanOrEqual:
+                return packed.RangeQuery(clause.ClauseType, fieldMeta, indexSearcher, root);
+
+            case ClauseType.Between:
+                if (cur.SentinelRewriteType != null)
+                    return ResolveSentinelRewrittenBetween(cur, fieldMeta, indexSearcher, root);
+                return packed.BetweenQuery(fieldMeta, indexSearcher, root);
+
+            case ClauseType.In:
+            case ClauseType.AllIn:
+                throw new InvalidOperationException(
+                    "In/AllIn should be expanded by ResolveMatches (per-term slot loop), not resolved as a single clause.");
+
+            case ClauseType.Exists:
+                return indexSearcher.ExistsQuery(fieldMeta);
+
+            case ClauseType.StartsWith:
+                return indexSearcher.StartWithQuery(fieldMeta, root.StringValues[packed.Param1]);
+
+            case ClauseType.EndsWith:
+                return indexSearcher.EndsWithQuery(fieldMeta, root.StringValues[packed.Param1]);
+
+            case ClauseType.Search:
+                return HandleSearch();
+
+            case ClauseType.Regex:
+                return indexSearcher.RegexQuery(fieldMeta, new Regex(root.StringValues[packed.Param1]));
+
+            case ClauseType.Spatial:
+                return HandleSpatial(clause.SpatialMethodType);
+
+            case ClauseType.Vector:
+                return HandleVector(builderParams, cur).Materialize(null);
+            case ClauseType.OrGroup:
+                throw new InvalidOperationException(
+                    "OrGroup should be expanded by ResolveMatches, not resolved as a single clause.");
+
+            case ClauseType.AndGroup:
+                throw new InvalidOperationException(
+                    "AndGroup should be expanded by ResolveMatches, not resolved as a single clause.");
+
+            default:
+                throw new InvalidOperationException($"Unexpected ClauseType {clause.ClauseType} in ResolveClause.");
+        }
+
+        IQueryMatch HandleSpatial(SpatialOperationType spatialMethod)
+        {
+            var index = builderParams.Index;
+            var allocator = builderParams.Allocator;
+        
+            string fieldName = cur.Clause.FieldName 
+                               ?? throw new InvalidOperationException("Spatial clause has no pre-resolved field name.");
+
+            var fieldMetadata = QueryBuilderHelper.GetFieldMetadata(allocator, fieldName, index, builderParams.IndexFieldsMapping,
+                builderParams.HasDynamics, builderParams.DynamicFields, hasBoost: builderParams.HasBoost);
+
+            var sp = cur.Spatial;
+            var distanceErrorPct = sp.DistanceErrorPct >= 0
+                ? sp.DistanceErrorPct
+                : RavenConstants.Documents.Indexing.Spatial.DefaultDistanceErrorPct;
+
+            var spatialField = builderParams.Factories.GetSpatialFieldFactory(fieldName);
+
+            IShape shape;
+            SpatialUnits? units = sp.Units.HasValue ? (SpatialUnits)sp.Units.Value : null;
+            if (sp.ShapeType == SpatialShapeType.Circle)
+            {
+                shape = spatialField.ReadCircle(sp.CircleRadius, sp.CircleLatitude, sp.CircleLongitude, units);
+            }
+            else if (sp.Wkt != null)
+            {
+                shape = spatialField.ReadShape(sp.Wkt, units);
+            }
+            else
+            {
+                throw new InvalidOperationException("Spatial clause has no pre-resolved shape parameters.");
+            }
+
+            return builderParams.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), (global::Corax.Utils.Spatial.SpatialRelation)spatialMethod, token: builderParams.Token);
+        }
+        
+        IQueryMatch HandleSearch()
+        {
+            string searchFieldName = clause.ResolvedFieldName ?? clause.FieldName;
+            bool forceSearch = builderParams.HasDynamics
+                               && builderParams.Index.Configuration.UseSearchAnalyzerForDynamicFieldsIfNotSetExplicitlyInSearchQuery;
+            FieldMetadata searchMeta = QueryBuilderHelper.GetFieldMetadata(
+                builderParams.Allocator, searchFieldName, builderParams.Index,
+                builderParams.IndexFieldsMapping,
+                builderParams.HasDynamics, builderParams.DynamicFields,
+                handleSearch: true, hasBoost: builderParams.HasBoost,
+                forceDefaultSearchAnalyzer: forceSearch);
+
+            var searchTerm = root.StringValues[packed.Param1];
+            if (builderParams.Index.CoraxSearchQueryOptions == IndexSearcher.SearchQueryOptions.PhraseQueryWithWildcardAdjustments
+                && searchTerm is { Length: >= 1 }
+                && (searchTerm[0] == '*' || (searchTerm.Length >= 2 && searchTerm[^1] == '*')))
+            {
+                searchMeta = ReplaceAnalyzerForWildcardQueries(searchMeta, walkerCtx);
+            }
+
+            return indexSearcher.SearchQuery(searchMeta,
+                QueryBuilderHelper.SplitSearchValue(searchTerm),
+                (Constants.Search.Operator)clause.SearchOperator,
+                builderParams.Index.CoraxSearchQueryOptions);
+        }
+    }
+}
