@@ -33,7 +33,18 @@ internal static partial class QueryPlanBuilder
         var rootParams = new Dictionary<string, string>();
         if (scannedEntries >= 0)
             rootParams["ScannedEntries"] = scannedEntries.ToString();
-        rootParams["OptimizationHint"] = result.CompiledPlan.Strategy.ToString();
+
+        // OptimizationHint reflects the strategy that ACTUALLY ran for this execution, not the cached
+        // structural candidacy. The candidacy (CompiledPlan.Strategy) is decided once at cache-miss time;
+        // the bitmap-vs-scan cost gate then re-runs on every execution against the current bound parameters
+        // and may fall back to the bitmap pipeline. When that fallback happens, the cached candidacy is
+        // surfaced separately as StrategyCandidate so the per-execution flip is observable.
+        var actualStrategy = exec.ActualStrategy != ExecutionStrategy.NotEvaluated
+            ? exec.ActualStrategy
+            : result.CompiledPlan.Strategy;
+        rootParams["OptimizationHint"] = actualStrategy.ToString();
+        if (actualStrategy != result.CompiledPlan.Strategy && result.CompiledPlan.Strategy != ExecutionStrategy.NotEvaluated)
+            rootParams["StrategyCandidate"] = result.CompiledPlan.Strategy.ToString();
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
         QueryInspectionNode orGroupNode = null;
