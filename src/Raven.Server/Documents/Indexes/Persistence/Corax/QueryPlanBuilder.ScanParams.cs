@@ -10,44 +10,21 @@ internal static partial class QueryPlanBuilder
 {
      private sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher indexSearcher, ResolutionContext walkerCtx)
      {
-        public static void Extract(QueryExecution exec, IndexSearcher indexSearcher, ResolutionContext walkerCtx)
-        {
-            var predicates = exec.Plan.ScanPredicateInfos;
-            if (predicates == null || predicates.Count == 0)
-                return;
-
-            new ScanParamExtractor(exec, indexSearcher, walkerCtx).ExtractAll(predicates);
-        }
-
-        /// <summary>Extract field-root pages and analyzed slices for an arbitrary residual set
-        /// (DirectScan / CompoundField), populating <see cref="QueryExecution.FieldRootPages"/> and
-        /// the analyzed-slice cache in the SAME predicate order the matching delegate was emitted in.
-        /// <paramref name="clauseIndices"/> maps each predicate to its post-sort
+        /// <summary>Extract field-root pages and analyzed slices for a residual scan set (entry-scan,
+        /// DirectScan, or CompoundField), populating <see cref="QueryExecution.FieldRootPages"/> and the
+        /// analyzed-slice cache in the SAME predicate order the matching delegate was emitted in.
+        /// <see cref="ResidualScanSet.ClauseIndices"/> maps each predicate to its post-sort
         /// <see cref="QueryExecution.Executions"/> entry.</summary>
-        public static void Extract(QueryExecution exec, IndexSearcher indexSearcher, ResolutionContext walkerCtx,
-            ScanPredicateInfo[] predicates, int[] clauseIndices)
+        public static void Extract(QueryExecution exec, IndexSearcher indexSearcher, ResolutionContext walkerCtx, ResidualScanSet set)
         {
-            if (predicates == null || predicates.Length == 0)
+            if (set is not { HasPredicates: true })
                 return;
 
-            new ScanParamExtractor(exec, indexSearcher, walkerCtx).ExtractAll(predicates, clauseIndices);
+            new ScanParamExtractor(exec, indexSearcher, walkerCtx).ExtractAll(set.Predicates, set.ClauseIndices);
         }
 
         private readonly List<long> _roots = [];
         private readonly List<ResidualInValues> _inSets = [];
-
-        private void ExtractAll(List<ScanPredicateInfo> predicates)
-        {
-            var execs = exec.Executions;
-            int[] clauseIndices = exec.Plan.ScanPredicateClauseIndices;
-            for (int p = 0; p < predicates.Count; p++)
-            {
-                ExtractFromPredicate(predicates[p], execs[clauseIndices[p]]);
-            }
-
-            exec.FieldRootPages = _roots.Count > 0 ? _roots.ToArray() : null;
-            exec.ResidualInSets = _inSets.Count > 0 ? _inSets.ToArray() : null;
-        }
 
         private void ExtractAll(ScanPredicateInfo[] predicates, int[] clauseIndices)
         {

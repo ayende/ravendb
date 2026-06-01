@@ -1,5 +1,3 @@
-using System.Collections.Generic;
-
 namespace Corax.Querying.Planning;
 
 /// <summary>Execution strategy chosen for a CompiledPlan. Determined once at cache-miss time
@@ -36,25 +34,6 @@ public sealed class CompiledPlan
     /// <summary>IL-emitted delegate with per-op timing instrumentation: `include timings()`.</summary>
     public QueryIlEmitter.CompiledExecuteDelegate CompiledTimedDelegate { get; init; }
 
-    /// <summary>IL-emitted per-entry predicate evaluator for the entry-scan path.
-    /// Bakes in the plan's full ScanPredicateInfo[] structure. Null when the plan
-    /// has no entry-scan predicates.</summary>
-    public ResidualScanIlEmitter.ResidualScanPredicate CompiledEntryPredicate { get; init; }
-
-    /// <summary>IL-emitted per-entry predicate evaluator for the DirectScan path, baked from
-    /// <see cref="DirectScanResiduals"/> (all clauses except the sort-driving clause). Distinct
-    /// from <see cref="CompiledEntryPredicate"/>, whose entry-scan set excludes clause[0] (the
-    /// bitmap seed) — for a range-driven DirectScan the driving clause is the largest cardinality
-    /// and sorts last, so it is never clause[0] and the two sets differ. Must be paired with a
-    /// <c>ScanParamExtractor</c> run over the same set. Null when there are no DirectScan residuals.</summary>
-    public ResidualScanIlEmitter.ResidualScanPredicate CompiledDirectScanPredicate { get; set; }
-
-    /// <summary>IL-emitted per-entry predicate evaluator for the CompoundField path, baked from
-    /// <see cref="CompoundFieldResiduals"/> (all clauses except {driving, field2Range}). Distinct
-    /// from <see cref="CompiledEntryPredicate"/> for the same reason as
-    /// <see cref="CompiledDirectScanPredicate"/>. Null when there are no CompoundField residuals.</summary>
-    public ResidualScanIlEmitter.ResidualScanPredicate CompiledCompoundFieldPredicate { get; set; }
-    
     /// <summary>
     /// Packed operand ordering used as part of the cache key.
     ///
@@ -133,43 +112,26 @@ public sealed class CompiledPlan
     /// re-running EmitPlan.</summary>
     public int RequiredBitmaps { get; init; }
 
-    /// <summary>Structural scan predicate metadata cached from the first compilation.
-    /// Field names, param indices, compare ops do not change across executions.
-    /// Used by <c>ExtractScanParameters</c> on every execution (both cache hit and miss)
-    /// to avoid rebuilding the <see cref="ScanPredicateInfo"/> array per query.
-    /// Null when the plan has no entry-scan predicates (single-clause, OR, etc.).</summary>
-    public List<ScanPredicateInfo> ScanPredicateInfos { get; init; }
+    /// <summary>Residual entry-scan predicate set for the bitmap entry-scan path (excludes clause 0,
+    /// the bitmap seed). Its <see cref="ResidualScanSet.Compiled"/> evaluator and clause indices are
+    /// cached from the first compilation and reused on every execution; the per-query extractor walks
+    /// the predicates to populate analyzed slices / field-root pages. Never null (the entry-scan
+    /// delegate is always emitted); <see cref="ResidualScanSet.Predicates"/> is null when the plan has
+    /// no entry-scan predicates (single-clause, OR, etc.).</summary>
+    public ResidualScanSet EntryScanSet { get; init; }
 
-    /// <summary>Post-sort exec position of each predicate in <see cref="ScanPredicateInfos"/>,
-    /// parallel by index (entry <c>i</c> is the clause that produced <c>ScanPredicateInfos[i]</c>).
-    /// Recorded once at cache-miss while building the entry-scan list, so the per-query extractor
-    /// maps a predicate to its <see cref="QueryExecution.Executions"/> entry directly instead of
-    /// re-running scan-eligibility over the clauses. Null when <see cref="ScanPredicateInfos"/> is null.</summary>
-    public int[] ScanPredicateClauseIndices { get; init; }
+    /// <summary>Residual entry-scan predicate set for the CompoundField strategy, filtered once at
+    /// cache-miss time (after <c>RemapOptimizationIndices</c>) against the plan-stable exclusion set
+    /// {<see cref="CompoundFieldDrivingClause"/>, <see cref="CompoundFieldField2RangeIdx"/>}. Null when
+    /// a non-scannable clause makes the path ineligible.</summary>
+    public ResidualScanSet CompoundFieldResidualSet { get; set; }
 
-    /// <summary>Residual entry-scan predicates for the CompoundField strategy, filtered once at
-    /// cache-miss time (after <c>RemapOptimizationIndices</c>) from the per-clause predicate array
-    /// against the plan-stable exclusion set {<see cref="CompoundFieldDrivingClause"/>,
-    /// <see cref="CompoundFieldField2RangeIdx"/>}. The filter result is itself plan-stable, so it is
-    /// computed once instead of per query.</summary>
-    public ScanPredicateInfo[] CompoundFieldResiduals { get; set; }
-
-    /// <summary>Post-sort exec positions parallel to <see cref="CompoundFieldResiduals"/>: entry
-    /// <c>i</c> is the clause that produced <c>CompoundFieldResiduals[i]</c>. Used by the per-query
-    /// param extractor to populate <see cref="QueryExecution.FieldRootPages"/> / analyzed slices in
-    /// the same order the CompoundField delegate reads them. Null when residuals are null.</summary>
-    public int[] CompoundFieldResidualClauseIndices { get; set; }
-
-    /// <summary>Residual entry-scan predicates for the DirectScan dispatch path, filtered once at
-    /// cache-miss time from the per-clause predicate array against the plan-stable exclusion of
-    /// {<see cref="SortDrivingClauseIndex"/>}. Plan-stable, so computed once instead of per query.</summary>
-    public ScanPredicateInfo[] DirectScanResiduals { get; set; }
-
-    /// <summary>Post-sort exec positions parallel to <see cref="DirectScanResiduals"/>: entry
-    /// <c>i</c> is the clause that produced <c>DirectScanResiduals[i]</c>. Used by the per-query
-    /// param extractor to populate <see cref="QueryExecution.FieldRootPages"/> / analyzed slices in
-    /// the same order the DirectScan delegate reads them. Null when residuals are null.</summary>
-    public int[] DirectScanResidualClauseIndices { get; set; }
+    /// <summary>Residual entry-scan predicate set for the DirectScan dispatch path, filtered once at
+    /// cache-miss time against the plan-stable exclusion of {<see cref="SortDrivingClauseIndex"/>}.
+    /// Distinct from <see cref="EntryScanSet"/> (which excludes clause 0) whenever the driving clause
+    /// is not the smallest-cardinality clause — always, for a range-driven scan — so each path needs
+    /// its own delegate baked from its own set. Null when a non-scannable clause makes it ineligible.</summary>
+    public ResidualScanSet DirectScanResidualSet { get; set; }
 
     // ── Structural fields moved from QueryExecution ─────────────────────
     // Set once at cache-miss time (by Build + RemapOptimizationIndices) then
