@@ -29,13 +29,6 @@ public enum PlanOptimizationFlags : byte
 /// per-execution fields overwritten by PopulateParameters.</summary>
 public sealed class PlanTemplate
 {
-    /// <summary>Hard cap on WHEN-bearing clauses per template. Bit <c>i</c> of the
-    /// WHEN-survival mask folded into the plan-cache key tracks the <c>i</c>-th WHEN clause's
-    /// survival under bound params; with <c>int</c> as the carrier, the maximum
-    /// safe count is 32. Realistic workloads have far fewer (~10 in the worst
-    /// optional-filter LINQ shapes).</summary>
-    public const int MaxWhenClauses = 32;
-
     public List<ClauseInfo> Clauses;
     public bool IsOr;              // root boolean operator
 
