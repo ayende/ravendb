@@ -22,8 +22,8 @@ internal sealed class PlanEmitter
 
     public static (PlanOp[] Ops, int RequiredBitmaps) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams, ScanPredicateInfo?[] perClause)
     {
-        if (executions.Count is 0) // exec.QueryWillReturnNoResults was checked by caller, so that means all results, not none at all
-            return (BuildAllEntriesPlan(), 2);
+        if (executions.Count is 0) // a genuinely clause-less query (no WHERE) — match every doc. A query that
+            return (BuildAllEntriesPlan(), 2); // collapses to no results keeps its clauses as MatchNothing sentinels, never an empty list.
 
         var emitter = new PlanEmitter();
         var (ops, bitmaps) = template.IsOr ? emitter.EmitOrPlan(executions) : emitter.EmitAndPlan(executions, perClause);
@@ -90,6 +90,8 @@ internal sealed class PlanEmitter
 
         foreach (var e in executions)
         {
+            if (e.IsSentinel) // a collapse sentinel has no positive form to intersect; never fold it
+                return false;
             if (e.Clause.IsOrChainNotEquals == false)
                 return false;
             if (e.ClauseType is ClauseType.OrGroup or ClauseType.AndGroup)
@@ -157,6 +159,15 @@ internal sealed class PlanEmitter
 
     private void EmitClauseInto(ClauseExecution exec, MergeKind merge, long cardinality, bool suppressEarlyExit)
     {
+        // A collapse sentinel consumes no leaf and bakes straight into bitmap algebra; it must be
+        // intercepted before the IsOrChainNotEquals routing (the underlying clause may have been a
+        // negated leaf before it was stamped) and before _matchIndex is ever touched.
+        if (exec.IsSentinel)
+        {
+            EmitSentinelInto(exec, merge);
+            return;
+        }
+
         if (exec.Clause.IsOrChainNotEquals)
         {
             EmitNegatedLeafInto(exec, merge, cardinality);
@@ -164,6 +175,43 @@ internal sealed class PlanEmitter
         }
 
         EmitPositiveForm(exec, merge, cardinality, suppressEarlyExit);
+    }
+
+    /// <summary>Bake a <see cref="ClauseType.MatchAll"/> / <see cref="ClauseType.MatchNothing"/> sentinel
+    /// directly into the slot-0 bitmap. No match leaf is consumed, so <c>_matchIndex</c> is NOT advanced —
+    /// keeping the emitter's leaf cursor aligned with leaf resolution and the cardinality array. The merge
+    /// algebra IS the boolean simplification: MatchAll is the universe (x∨ALL=ALL, x∧ALL=x), MatchNothing is
+    /// the empty set (x∨∅=x, x∧∅=∅).</summary>
+    private void EmitSentinelInto(ClauseExecution exec, MergeKind merge)
+    {
+        if (exec.ClauseType == ClauseType.MatchAll)
+        {
+            switch (merge)
+            {
+                case MergeKind.Fill:
+                case MergeKind.OrInto: // x ∨ ALL = ALL
+                    _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
+                    break;
+                case MergeKind.AndInto: // x ∧ ALL = x
+                    break;
+                case MergeKind.AndNotInto: // x \ ALL = ∅ — defensive; MatchAll is never negated.
+                    _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 0 });
+                    break;
+            }
+            return;
+        }
+
+        // MatchNothing
+        switch (merge)
+        {
+            case MergeKind.Fill: // empty seed
+            case MergeKind.AndInto: // x ∧ ∅ = ∅
+                _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 0 });
+                break;
+            case MergeKind.OrInto: // x ∨ ∅ = x
+            case MergeKind.AndNotInto: // x \ ∅ = x
+                break;
+        }
     }
 
     /// <summary>Emit a clause's POSITIVE form (no negation rewrite) merged into slot 0 with the given

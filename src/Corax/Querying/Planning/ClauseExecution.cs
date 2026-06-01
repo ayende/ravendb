@@ -54,6 +54,24 @@ public sealed class ClauseExecution : IComparable<ClauseExecution>
         ClauseType = clause.ClauseType;
     }
 
+    /// <summary>True when this execution has been collapsed to a <see cref="ClauseType.MatchAll"/> or
+    /// <see cref="ClauseType.MatchNothing"/> sentinel. Sentinels emit no match leaf, consume no
+    /// cardinality slot, and resolve to a bitmap fill/clear in the plan emitter — so every leaf-counting
+    /// pass (emitter match cursor, leaf resolution, cardinality array, inspection flattening) must skip them.</summary>
+    public bool IsSentinel => ClauseType is ClauseType.MatchAll or ClauseType.MatchNothing;
+
+    /// <summary>Collapse this execution to a sentinel: a clause that statically resolves to match-all or
+    /// match-nothing. Clears <see cref="IsNegated"/> because the sentinel already subsumes the clause's
+    /// polarity (a dropped clause's negation is resolved into the MatchAll/MatchNothing choice), and presets
+    /// <see cref="Cardinality"/> so the cardinality estimator is skipped (MatchNothing sorts first → AND
+    /// short-circuits; MatchAll sorts last → AND no-op / OR absorb).</summary>
+    public void MarkAsSentinel(ClauseType sentinel, long cardinality)
+    {
+        ClauseType = sentinel;
+        IsNegated = false;
+        Cardinality = cardinality;
+    }
+
     /// <summary>Negated clauses sort last; ties broken by ascending cardinality.</summary>
     public int CompareTo(ClauseExecution other)
     {

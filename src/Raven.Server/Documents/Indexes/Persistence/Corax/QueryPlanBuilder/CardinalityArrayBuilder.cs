@@ -29,6 +29,10 @@ internal static class CardinalityArrayBuilder
             RuntimeHelpers.EnsureSufficientExecutionStack();
             switch (exec.ClauseType)
             {
+                case ClauseType.MatchAll:
+                case ClauseType.MatchNothing:
+                    break; // a collapse sentinel emits no match leaf → it consumes no cardinality slot
+
                 case ClauseType.OrGroup:
                 case ClauseType.AndGroup:
                     foreach (ClauseExecution sub in exec.SubExecutions)

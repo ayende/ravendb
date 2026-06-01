@@ -16,8 +16,14 @@ internal static class CardinalityEstimator
         {
             RuntimeHelpers.EnsureSufficientExecutionStack();
             ClauseInfo clause = e.Clause;
-            switch (clause.ClauseType)
+            // Switch on the EFFECTIVE per-execution type: a clause rewritten by PropagateBetweenContradiction or
+            // collapsed to a sentinel must be estimated as its current shape, not the frozen template shape.
+            switch (e.ClauseType)
             {
+                case ClauseType.MatchAll:
+                case ClauseType.MatchNothing:
+                    return e.Cardinality; // sentinels carry a preset cardinality (NumberOfEntries / 0); never re-estimated
+
                 case ClauseType.Equals:
                 {
                     FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx); // find the relevant analyzer here

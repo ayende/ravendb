@@ -275,7 +275,8 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
-    /// Foo BETWEEN $x AND $y - where $y > $x - returns nothing, this re-writes the clause so we can optimize this 
+    /// Foo BETWEEN $x AND $y - where $x > $y - returns nothing, this collapses the clause to a
+    /// MatchNothing sentinel so the plan emitter bakes an empty bitmap for it.
     /// </summary>
     internal static void PropagateBetweenContradiction(ClauseExecution exec, ValueWriter writer)
     {
@@ -292,10 +293,7 @@ internal static partial class QueryPlanBuilder
         if (!contradictory)
             return;
 
-        exec.Cardinality = 0;
-        exec.InTermCount = 0;
-        exec.HasNullTerm = false;
-        exec.ClauseType = ClauseType.In; // Reuse empty-IN elimination in EmitPlan
+        exec.MarkAsSentinel(ClauseType.MatchNothing, 0);
     }
 
     private static IQueryMatch InstantiateBitmapPipeline(

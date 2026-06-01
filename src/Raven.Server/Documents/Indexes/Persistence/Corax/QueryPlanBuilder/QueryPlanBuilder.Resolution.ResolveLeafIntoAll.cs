@@ -17,6 +17,8 @@ internal static partial class QueryPlanBuilder
         RuntimeHelpers.EnsureSufficientExecutionStack();
         switch (clauseExec.ClauseType)
         {
+            case ClauseType.MatchAll or ClauseType.MatchNothing:
+                break; // a collapse sentinel bakes to FillAllEntries/ClearBitmap in IL — no leaf slot to resolve
             case ClauseType.OrGroup or ClauseType.AndGroup:
                 foreach (var it in clauseExec.SubExecutions)
                 {
