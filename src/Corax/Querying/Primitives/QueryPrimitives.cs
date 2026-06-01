@@ -33,7 +33,9 @@ public static class QueryPrimitives
     // emitter never targets this slot as an AND destination (the destination is passed explicitly),
     // so it is always free to be clobbered. Keeping it a named constant — rather than a literal 1
     // sprinkled through the primitives — makes the dest≠scratch invariant explicit and assertable.
-    internal const int AndScratchBitmapSlot = 1;
+    // Public so the plan emitter (Raven.Server) binds its own ephemeral-slot constant to this single
+    // source of truth instead of duplicating the literal.
+    public const int AndScratchBitmapSlot = 1;
 
     // ── IL entry points ──────────────────────────────────────────────
     // Called from DynamicMethod IL. Take CompiledQueryMatch by value (ref type)
