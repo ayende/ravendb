@@ -551,16 +551,6 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return exists;
     }
     
-    /// <summary>Returns true if any document was indexed without a value for <paramref name="field"/>
-    /// (i.e., the document's field path was null or missing).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool HasNonExistingEntries(in FieldMetadata field) => TryGetPostingListForNonExisting(field.FieldName, out _, out _);
-
-    /// <summary>Returns true only if at least one document is currently indexed without a value for
-    /// <paramref name="field"/>. Unlike <see cref="HasNonExistingEntries"/>, this counts the live entries
-    /// rather than the mere presence of the per-field NonExisting tree node, which persists (empty) after the
-    /// last missing-field document is deleted. Used by the exists()/NOT exists() static collapse so the collapse
-    /// re-applies once the field is again present on every document.</summary>
     public bool HasAnyNonExistingEntries(in FieldMetadata field)
     {
         if (TryGetPostingListForNonExisting(field.FieldName, out long postingListId, out _) == false)
