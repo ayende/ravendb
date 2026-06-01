@@ -17,8 +17,8 @@ namespace FastTests.Corax;
 /// re-decided on every execution by the per-execution cost gate (<c>DirectScanCostEffective</c> /
 /// <c>CompoundFieldCostEffective</c>) against the current bound parameters, falling back to the bitmap
 /// pipeline when a scan would not pay off. The instance-time choice is surfaced as <c>OptimizationHint</c>
-/// (and the cached candidacy as <c>StrategyCandidate</c> when the two differ), so a cost-gate flip is
-/// observable. Correctness is checked against brute force and across engines (Lucene never direct-scans,
+/// and the cached structural candidacy is always surfaced alongside it as <c>StrategyCandidate</c>, so a
+/// cost-gate flip (the two diverging) is observable. Correctness is checked against brute force and across engines (Lucene never direct-scans,
 /// so a match proves the rewrite is semantics-preserving).
 /// </summary>
 public class PlanCacheStrategyTests : RavenTestBase
@@ -135,7 +135,7 @@ public class PlanCacheStrategyTests : RavenTestBase
             .ToListAsync();
         var (directHint, directCandidate) = StrategyOf(directScanTimings);
         Assert.Equal("DirectScan", directHint);
-        Assert.Null(directCandidate); // actual == candidate, so no separate StrategyCandidate
+        Assert.Equal("DirectScan", directCandidate); // both planned & actual strategies are always surfaced
 
         // Selective residual (Name='Alice' matches ~25%, ~1000 of 4000 — below the ~1225 cost-gate
         // boundary) over the same wide range and page: a bitmap is cheaper, so the per-execution gate
