@@ -27,43 +27,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    internal readonly record struct CompiledQuery(
-        IQueryMatch QueryMatch,
-        IQueryMatch ExecutedMatch,
-        IQueryMatch SortingWrapper,
-        CompiledPlan CompiledPlan,
-        QueryExecution Execution,
-        QueryBuilderParameters QueryBuilderParams,
-        OrderMetadata[] OrderByFields) : IDisposable
-    {
-        public void Dispose()
-        {
-            (QueryMatch as IDisposable)?.Dispose();
-            (SortingWrapper as IDisposable)?.Dispose();
-        }
-    }
-
-    private ref struct InstCtx(CompiledPlan plan, QueryExecution exec, OrderMetadata[] orderByFields, PlanParameters planParams, QueryBuilderParameters builderParams, bool wantTimings)
-    {
-        public readonly CompiledPlan Plan = plan;
-        public readonly QueryExecution Exec = exec;
-        public readonly OrderMetadata[] OrderByFields = orderByFields; // may be null when PageSize == 0
-        public readonly PlanParameters PlanParams = planParams;
-        public readonly QueryBuilderParameters BuilderParams = builderParams;
-
-        public readonly bool WantTimings = wantTimings;
-
-        public string RejectReason;
-    }
-
-    private enum MergeKind
-    {
-        Fill, // slot 0 ← clause result. First op of an OR chain or first non-negated element of an AND chain
-        OrInto, // slot 0 ← slot 0 ∪ clause. Subsequent OR-chain elements
-        AndInto, // slot 0 ← slot 0 ∩ clause. Subsequent positive AND-chain elements
-        AndNotInto // slot 0 ← slot 0 \ clause. Negated AND-chain elements
-    }
-
     public static PlanTemplate BuildTemplate(PlanParameters planParams)
     {
         var queryText = planParams.CacheKey;
@@ -125,17 +88,6 @@ internal static partial class QueryPlanBuilder
         return new(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, exec, builderParameters, orderByFields);
     }
 
-
-    /// <summary>Outcome of gating a single clause during the resolution pass. <see cref="Keep"/> keeps the
-    /// clause in the execution; <see cref="Drop"/> removes it because it is statically match-all (WHEN(false),
-    /// or exists() on a field with no missing entries); <see cref="CollapseToNoResults"/> removes it AND
-    /// short-circuits an AND root to no-results (NOT exists() on a field with no missing entries).</summary>
-    internal enum ClauseFate
-    {
-        Keep,
-        Drop,
-        CollapseToNoResults,
-    }
 
     private static (CompiledPlan, QueryExecution) Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
     {
@@ -803,7 +755,7 @@ internal static partial class QueryPlanBuilder
     /// All other clause types → <c>QueryMatch</c>. A sentinel-rewritten BETWEEN ("*"/"NULL" bounds)
     /// always takes the QueryMatch path: ResolveSentinelRewrittenBetween reads SentinelRewriteType at
     /// resolve time and may fold in the null posting list, so it cannot be expressed as a plain TreeScan.</summary>
-    private static MatchDispatch GetDispatch(ClauseExecution exec)
+    internal static MatchDispatch GetDispatch(ClauseExecution exec)
     {
         var clause = exec.Clause;
         if (clause is { HasBoost: false, ClauseType: ClauseType.Equals or ClauseType.NotEquals })
