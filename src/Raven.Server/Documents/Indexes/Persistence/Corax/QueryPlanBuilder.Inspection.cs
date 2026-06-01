@@ -10,38 +10,55 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 internal static partial class QueryPlanBuilder
 {
+    /// <summary>
+    /// Builds the structural query plan AND overlays the per-op execution timing onto it. This is the
+    /// composition used by the live query path (timings requested): <see cref="BuildPlan"/> authors the
+    /// timing-independent structure, <see cref="OverlayTimings"/> annotates it with the wall-clock / count
+    /// telemetry of the run that just executed.
+    /// </summary>
     public static QueryInspectionNode BuildInspectionGraph(CompiledQuery result)
     {
-        long[] timings = null;
-        long[] resultCounts = null;
-        int entryScanAt = -1;
-        long scannedEntries = -1;
+        var plan = BuildPlan(result, out var compiledRoot, out var opNodes);
+        if (plan == null)
+            return result.ExecutedMatch.Inspect();
 
-        if (result.ExecutedMatch is CompiledQueryMatch compiled)
-        {
-            compiled.GetTelemetry(out timings, out resultCounts, out entryScanAt);
-            scannedEntries = compiled.Count;
-        }
+        OverlayTimings(result, compiledRoot, opNodes);
+        return plan;
+    }
 
-        double tickFreq = Stopwatch.Frequency / 1000.0;
+    /// <summary>
+    /// Authors the structural query plan from the cached <see cref="CompiledPlan.InspectionTemplate"/>, the
+    /// decision trail, the live clause values, and the post-filter / sort wrappers. Carries NO timing
+    /// (no Ms / Count / EntryScan / ScannedEntries) — those are overlaid separately by <see cref="OverlayTimings"/>,
+    /// so the plan is fully formed even when no timing telemetry exists (e.g. the spatial/vector-only path whose
+    /// executed match is not a <see cref="CompiledQueryMatch"/>). Returns the outer root (the sort wrapper when
+    /// sorting, otherwise the CompiledQuery node), the CompiledQuery node itself via <paramref name="compiledRoot"/>,
+    /// and the per-template-op nodes in template order via <paramref name="opNodes"/> so timings can be joined by
+    /// op index. Returns null only when there is genuinely no structural template to render.
+    /// </summary>
+    private static QueryInspectionNode BuildPlan(CompiledQuery result, out QueryInspectionNode compiledRoot, out List<QueryInspectionNode> opNodes)
+    {
+        compiledRoot = null;
+        opNodes = null;
+
         var template = result.CompiledPlan.InspectionTemplate;
         if (template == null || template.Length == 0)
-            return result.ExecutedMatch.Inspect();
+            return null;
 
         var exec = result.Execution;
         var flatExecs = BuildFlatClauseExecutions(exec);
         var rootParams = new Dictionary<string, string>();
-        if (scannedEntries >= 0)
-            rootParams["ScannedEntries"] = scannedEntries.ToString();
 
         // OptimizationHint reflects the strategy that ACTUALLY ran for this execution, not the cached  structural candidacy. The candidacy (CompiledPlan.Strategy) is decided once at cache-miss time;
-        // the bitmap-vs-scan cost gate then re-runs on every execution against the current bound parameters  and may fall back to the bitmap pipeline. 
+        // the bitmap-vs-scan cost gate then re-runs on every execution against the current bound parameters  and may fall back to the bitmap pipeline.
         rootParams["OptimizationHint"] = (exec.ActualStrategy != ExecutionStrategy.NotEvaluated
             ? exec.ActualStrategy
             : result.CompiledPlan.Strategy).ToString();
         rootParams["StrategyCandidate"] = result.CompiledPlan.Strategy.ToString();
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
+        compiledRoot = root;
+        opNodes = new List<QueryInspectionNode>(template.Length);
         QueryInspectionNode orGroupNode = null;
 
         for (int i = 0; i < template.Length; i++)
@@ -94,18 +111,12 @@ internal static partial class QueryPlanBuilder
             if (t.EstimatedCardinality is > 0 and < long.MaxValue)
                 parameters["EstimatedRows"] = t.EstimatedCardinality.ToString("N0");
 
-            if (resultCounts != null && i < resultCounts.Length && resultCounts[i] > 0)
-                parameters["Count"] = resultCounts[i].ToString();
-            if (timings != null && i < timings.Length && timings[i] > 0)
-                parameters["Ms"] = (timings[i] / tickFreq).ToString("F3");
-            if (i == entryScanAt)
-                parameters["EntryScan"] = "triggered";
-
             var node = new QueryInspectionNode(t.Name, parameters: parameters);
+            opNodes.Add(node);
             (orGroupNode ?? root).Children.Add(node);
         }
 
-        if (orGroupNode != null) 
+        if (orGroupNode != null)
             root.Children.Add(orGroupNode);
 
         if (result.CompiledPlan.DecisionTrail is { Entries.Count: > 0 } trail)
@@ -130,14 +141,43 @@ internal static partial class QueryPlanBuilder
             AppendPostFilterNodes(matchInspection, root);
         }
 
-        if (result.SortingWrapper == null) 
+        if (result.SortingWrapper == null)
             return root;
-        
+
         var sortNode = result.SortingWrapper.Inspect();
         sortNode.Children.Clear();
         sortNode.Children.Add(root);
         return sortNode;
+    }
 
+    /// <summary>
+    /// Overlays the just-executed run's timing telemetry onto a structural plan produced by <see cref="BuildPlan"/>:
+    /// the total scanned-entry count onto the CompiledQuery node, and the per-op wall-clock (Ms), result count, and
+    /// entry-scan trigger onto each template-op node by op index. A no-op when the executed match exposed no
+    /// telemetry (e.g. spatial/vector-only path), leaving a clean structure-only plan.
+    /// </summary>
+    private static void OverlayTimings(CompiledQuery result, QueryInspectionNode compiledRoot, List<QueryInspectionNode> opNodes)
+    {
+        if (result.ExecutedMatch is not CompiledQueryMatch compiled)
+            return;
+
+        compiled.GetTelemetry(out var timings, out var resultCounts, out var entryScanAt);
+
+        long scannedEntries = compiled.Count;
+        if (scannedEntries >= 0)
+            compiledRoot.Parameters["ScannedEntries"] = scannedEntries.ToString();
+
+        double tickFreq = Stopwatch.Frequency / 1000.0;
+        for (int i = 0; i < opNodes.Count; i++)
+        {
+            var parameters = opNodes[i].Parameters;
+            if (resultCounts != null && i < resultCounts.Length && resultCounts[i] > 0)
+                parameters["Count"] = resultCounts[i].ToString();
+            if (timings != null && i < timings.Length && timings[i] > 0)
+                parameters["Ms"] = (timings[i] / tickFreq).ToString("F3");
+            if (i == entryScanAt)
+                parameters["EntryScan"] = "triggered";
+        }
     }
 
     private static List<ClauseExecution> BuildFlatClauseExecutions(QueryExecution exec)

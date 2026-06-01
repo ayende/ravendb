@@ -619,7 +619,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             while (runQuery)
             {
                 QueryPlanBuilder.CompiledQuery compileResult;
-                using (queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false)?.Start())
+                var coraxScope = queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false);
+                using (coraxScope?.Start())
                 {
                     TransactionOperationContext serverContext = null;
                     using var _ = query.Metadata.HasCmpXchg ? documentsContext.DocumentDatabase.ServerStore.ContextPool.AllocateOperationContext(out serverContext) : null;
@@ -641,9 +642,14 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         DynamicFields = builderParameters.DynamicFields,
                         HasBoost = builderParameters.HasBoost
                     };
-                    compileResult = QueryPlanBuilder.BuildSortedQuery(
-                        planParams, builderParameters, highlightings.Terms, wantTimings: queryTimings != null,
-                        token: token);
+                    // Plan build + IL compile (template build, delegate emit, first-call JIT) is otherwise
+                    // invisible — fold into the Corax scope as its own span so introspection can attribute it.
+                    using (coraxScope?.For(nameof(QueryTimingsScope.Names.Optimizer))?.Start())
+                    {
+                        compileResult = QueryPlanBuilder.BuildSortedQuery(
+                            planParams, builderParameters, highlightings.Terms, wantTimings: queryTimings != null,
+                            token: token);
+                    }
 
                     if (compileResult.OrderByFields == null && take > 0 && query.Metadata.IsDistinct == false
                         && query.SkipStatistics
