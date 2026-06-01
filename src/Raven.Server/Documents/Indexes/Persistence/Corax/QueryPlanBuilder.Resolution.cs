@@ -147,49 +147,57 @@ internal static partial class QueryPlanBuilder
 
     private static (CompiledPlan, QueryExecution) Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
     {
-        var indexSearcher = planParams.IndexSearcher;
-        
         Span<byte> scratch = stackalloc byte[128];
-        var builder = new PlanCacheKeyBuilder(scratch);
-        
-        var writer = new ValueWriter();
-        byte[] sentinelFull = null;
+        return new BuildResolver(template, planParams, builderParameters, walkerCtx, scratch).Resolve();
+    }
 
-        // Single resolution pass over the clauses (CreateQueryExecution): per clause it gates WHEN/exists
-        // status, resolves the bound values, rewrites a contradictory BETWEEN into an empty-IN, detects
-        // empty-IN, and estimates cardinality. Each of these can shape both the query plan (drop a clause,
-        // collapse an AND to no-results) and the plan-cache key (per-clause survival bit). It assigns the
-        // captured `executions` list that the rest of Build reads.
-        List<ClauseExecution> executions = null;
-        QueryExecution exec = CreateQueryExecution(ref builder);
-        Vector256<long> cacheKeyHash = ComputeCacheKeyHash(ref builder);
+    private ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx, Span<byte> scratch)
+    {
+        private readonly IndexSearcher _indexSearcher = planParams.IndexSearcher;
 
-        if (exec.QueryWillReturnNoResults) // there are no results here..., return immediately
-            return default;
+        private PlanCacheKeyBuilder _builder = new(scratch);
+        private readonly ValueWriter _writer = new();
+        private byte[] _sentinelFull = null;
 
-        if (indexSearcher.PlanCache.Get(planParams.CacheKey, cacheKeyHash) is { } compiledPlan)
-            return FinalizePlan(); // use cached plan
+        private QueryExecution _exec;
+        private Vector256<long> _cacheKeyHash;
+        private CompiledPlan _compiledPlan;
 
-        return BuildOnCacheMiss(); // Cache miss — full exec emission
+        public (CompiledPlan, QueryExecution) Resolve()
+        {
+            _exec = CreateQueryExecution();
+            _cacheKeyHash = ComputeCacheKeyHash();
 
-        (CompiledPlan, QueryExecution) BuildOnCacheMiss()
+            if (_exec.QueryWillReturnNoResults) // there are no results here..., return immediately
+                return default;
+
+            if (_indexSearcher.PlanCache.Get(planParams.CacheKey, _cacheKeyHash) is { } cachedPlan)
+            {
+                _compiledPlan = cachedPlan; // use cached plan
+                return FinalizePlan();
+            }
+
+            return BuildOnCacheMiss(); // Cache miss — full exec emission
+        }
+
+        private (CompiledPlan, QueryExecution) BuildOnCacheMiss()
         {
             var (scanSet, perClause) = BuildScanPredicates();
-            var (ops, requiredBitmaps) = PlanEmitter.Emit(template, executions, planParams, perClause);
+            var (ops, requiredBitmaps) = PlanEmitter.Emit(template, _exec.Executions, planParams, perClause);
             // The entry-scan delegate is always emitted (an empty predicate set when there is no
             // entry-scan path); its C# mirror joins the plan Source.
             scanSet.Compiled = ResidualScanIlEmitter.EmitDelegate(scanSet.Predicates, out var scanCsharp);
-            compiledPlan = new CompiledPlan
+            _compiledPlan = new CompiledPlan
             {
                 CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
                 CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
 
                 Template = template,
                 Source = csharpText + Environment.NewLine + scanCsharp,
-                CacheKeyHash = cacheKeyHash,
+                CacheKeyHash = _cacheKeyHash,
                 OpCount = ops.Length,
                 RequiredBitmaps = requiredBitmaps,
-                InspectionTemplate = BuildInspectionTemplate(ops, executions),
+                InspectionTemplate = BuildInspectionTemplate(ops, _exec.Executions),
                 EntryScanSet = scanSet,
                 AllNegated = CheckAllNegated(),
             };
@@ -200,32 +208,32 @@ internal static partial class QueryPlanBuilder
             // set excludes clause[0] (the bitmap seed). Those differ whenever the driving clause is not
             // the smallest-cardinality clause (always, for a range-driven scan), so each path bakes its
             // own delegate from its own residual set.
-            compiledPlan.CompoundFieldResidualSet = BuildResidualSet(perClause, compiledPlan.CompoundField.DrivingClause, compiledPlan.CompoundField.Field2Range);
-            compiledPlan.DirectScanResidualSet = BuildResidualSet(perClause, compiledPlan.SortDrivingClauseIndex, skip2: -1);
+            _compiledPlan.CompoundFieldResidualSet = BuildResidualSet(perClause, _compiledPlan.CompoundField.DrivingClause, _compiledPlan.CompoundField.Field2Range);
+            _compiledPlan.DirectScanResidualSet = BuildResidualSet(perClause, _compiledPlan.SortDrivingClauseIndex, skip2: -1);
 
-            if (compiledPlan.DirectScanResidualSet is { HasPredicates: true } directSet)
+            if (_compiledPlan.DirectScanResidualSet is { HasPredicates: true } directSet)
                 directSet.Compiled = ResidualScanIlEmitter.EmitDelegate(directSet.Predicates, out _);
-            if (compiledPlan.CompoundFieldResidualSet is { HasPredicates: true } compoundSet)
+            if (_compiledPlan.CompoundFieldResidualSet is { HasPredicates: true } compoundSet)
                 compoundSet.Compiled = ResidualScanIlEmitter.EmitDelegate(compoundSet.Predicates, out _);
 
-            indexSearcher.PlanCache.Add(planParams.CacheKey, compiledPlan, template);
+            _indexSearcher.PlanCache.Add(planParams.CacheKey, _compiledPlan, template);
 
             return FinalizePlan();
         }
 
-        (CompiledPlan, QueryExecution ) FinalizePlan()
+        private (CompiledPlan, QueryExecution) FinalizePlan()
         {
-            exec.Plan = compiledPlan;
-            CardinalityArrayBuilder.Build(executions, exec.IsAllEntries, out var inRange, out var cards);
-            exec.InRangeCounts = inRange;
-            exec.Cardinalities = cards;
+            _exec.Plan = _compiledPlan;
+            CardinalityArrayBuilder.Build(_exec.Executions, _exec.IsAllEntries, out var inRange, out var cards);
+            _exec.InRangeCounts = inRange;
+            _exec.Cardinalities = cards;
 
-            AttachSpatialAndVectorClauses(exec, template, planParams, builderParameters, writer);
-            writer.SetValues(exec);
-            return (compiledPlan, exec);
-        } 
+            AttachSpatialAndVectorClauses(_exec, template, planParams, builderParameters, _writer);
+            _writer.SetValues(_exec);
+            return (_compiledPlan, _exec);
+        }
 
-        QueryExecution CreateQueryExecution(ref PlanCacheKeyBuilder cacheKeyBuilder)
+        private QueryExecution CreateQueryExecution()
         {
             // A clause is "gated" when its presence in the execution can vary per query: a WHEN(...) guard,
             // or a top-level exists()/NOT exists() leaf that may statically collapse against the live
@@ -242,7 +250,7 @@ internal static partial class QueryPlanBuilder
 
             var execList = new List<ClauseExecution>(template.Clauses.Count);
             if (gated)
-                cacheKeyBuilder.Append(template.Clauses.Count, 16);
+                _builder.Append(template.Clauses.Count, 16);
 
             bool collapseToNoResults = false;
             int sortDrivingIdx = template.SortDrivingClauseIndex;
@@ -257,7 +265,7 @@ internal static partial class QueryPlanBuilder
                     // remove the clause from execution and emit bit 0; the two zero-bit fates never share a
                     // cached plan because CollapseToNoResults sets QueryWillReturnNoResults and the caller
                     // returns before touching the cache.
-                    cacheKeyBuilder.Append((fate == ClauseFate.Keep).ToInt32(), 1);
+                    _builder.Append((fate == ClauseFate.Keep).ToInt32(), 1);
                     switch (fate)
                     {
                         case ClauseFate.Drop:
@@ -269,12 +277,12 @@ internal static partial class QueryPlanBuilder
                 }
 
                 var it = CreateExecution(cached);
-                PopulateClauseValues(it, planParams.QueryParameters, writer, builderParameters, template.ParameterSlots.Length, ref sentinelFull);
-                PropagateBetweenContradiction(it, writer); // a contradictory BETWEEN is rewritten into an empty-IN
+                PopulateClauseValues(it, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
+                PropagateBetweenContradiction(it, _writer); // a contradictory BETWEEN is rewritten into an empty-IN
                 collapseToNoResults |= IsEmptyIn(it);
 
                 if (it.Cardinality < 0)
-                    it.Cardinality = CardinalityEstimator.Estimate(it, indexSearcher, writer, walkerCtx);
+                    it.Cardinality = CardinalityEstimator.Estimate(it, _indexSearcher, _writer, walkerCtx);
                 if (sortDrivingIdx >= 0 && it.Clause.OriginalIndex == sortDrivingIdx)
                     drivingClauseCardinality = it.Cardinality;
 
@@ -282,7 +290,6 @@ internal static partial class QueryPlanBuilder
             }
 
             execList.Sort(); // sort executions by cardinality (smaller clauses first)
-            executions = execList;
 
             return new QueryExecution
             {
@@ -297,7 +304,7 @@ internal static partial class QueryPlanBuilder
 
         // Decide the fate of a single clause during the resolution pass. WHEN(false) and a statically-true
         // exists() are match-all (Drop); a statically-true NOT exists() is match-nothing (CollapseToNoResults).
-        ClauseFate GateClause(ClauseInfo cached, bool existsEligible)
+        private ClauseFate GateClause(ClauseInfo cached, bool existsEligible)
         {
             if (cached.WhenCondition is { } predicate && predicate(planParams.QueryParameters) == false)
                 return ClauseFate.Drop;
@@ -305,62 +312,61 @@ internal static partial class QueryPlanBuilder
             // exists() collapses only when the field has NO missing entries: every doc has it, so exists()
             // is statically true. Then exists() -> Drop (match-all) and NOT exists() -> match-nothing.
             // When some docs miss the field, the result is data-dependent and stays a runtime term-walk.
-            if (existsEligible && cached.ClauseType == ClauseType.Exists && FieldHasNoMissingEntries(cached))
-                return cached.IsNegated ? ClauseFate.CollapseToNoResults : ClauseFate.Drop;
 
-            return ClauseFate.Keep;
+            if (existsEligible is false || cached.ClauseType != ClauseType.Exists) 
+                return ClauseFate.Keep;
+            
+            FieldMetadata fieldMeta = ResolveFieldMetadata(cached, walkerCtx);
+            if(_indexSearcher.HasAnyNonExistingEntries(in fieldMeta) == false)
+                return ClauseFate.Keep;
+            
+            return cached.IsNegated ? ClauseFate.CollapseToNoResults : ClauseFate.Drop;
         }
 
-        bool FieldHasNoMissingEntries(ClauseInfo clause)
-        {
-            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
-            return indexSearcher.HasAnyNonExistingEntries(in fieldMeta) == false;
-        }
-
-        static bool IsEmptyIn(ClauseExecution e) =>
+        private static bool IsEmptyIn(ClauseExecution e) =>
             e.ClauseType is ClauseType.In or ClauseType.AllIn &&
             e.InTermCount == 0 &&
             e.HasNullTerm is false;
 
-        void RemapOptimizationIndices()
+        private void RemapOptimizationIndices()
         {
-            for (int i = 0; i < executions.Count; i++)
+            for (int i = 0; i < _exec.Executions.Count; i++)
             {
-                ClauseExecution it = executions[i];
+                ClauseExecution it = _exec.Executions[i];
                 if (it.Clause.OriginalIndex == template.SortDrivingClauseIndex)
-                    compiledPlan.SortDrivingClauseIndex = i;
+                    _compiledPlan.SortDrivingClauseIndex = i;
                 if (it.Clause.OriginalIndex == template.CompoundExact.First)
-                    compiledPlan.CompoundExact = (i, compiledPlan.CompoundExact.Second);
+                    _compiledPlan.CompoundExact = (i, _compiledPlan.CompoundExact.Second);
                 if (it.Clause.OriginalIndex == template.CompoundExact.Second)
-                    compiledPlan.CompoundExact = (compiledPlan.CompoundExact.First, i);
+                    _compiledPlan.CompoundExact = (_compiledPlan.CompoundExact.First, i);
                 if (it.Clause.OriginalIndex == template.CompoundFieldDrivingClause)
-                    compiledPlan.CompoundField = (i, compiledPlan.CompoundField.Field2Range);
+                    _compiledPlan.CompoundField = (i, _compiledPlan.CompoundField.Field2Range);
                 if (it.Clause.OriginalIndex == template.CompoundFieldField2Range)
-                    compiledPlan.CompoundField = (compiledPlan.CompoundField.DrivingClause, i);
+                    _compiledPlan.CompoundField = (_compiledPlan.CompoundField.DrivingClause, i);
                 if (it.Clause.OriginalIndex == template.SortSeekHintTemplateIdx)
-                    compiledPlan.SortSeekClauseExecIdx = i;
+                    _compiledPlan.SortSeekClauseExecIdx = i;
             }
         }
 
         // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
         // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly.
-        (ResidualScanSet ScanSet, ScanPredicateInfo?[] PerClause) BuildScanPredicates()
+        private (ResidualScanSet ScanSet, ScanPredicateInfo?[] PerClause) BuildScanPredicates()
         {
-            var perClause = new ScanPredicateInfo?[executions.Count];
+            var perClause = new ScanPredicateInfo?[_exec.Executions.Count];
 
             // Scan predicates only apply to multi-clause AND chains (clause 0 is the seed, 1..N are evaluated per-entry).
-            bool hasScanList = template.IsOr == false && executions.Count > 1;
+            bool hasScanList = template.IsOr == false && _exec.Executions.Count > 1;
             // Skip clause 0 (the seed) unless all clauses are negated (then we start from AllEntries, so every clause would be a scan predicate).
             int scanStart = CheckAllNegated() ? 0 : 1;
 
             List<ScanPredicateInfo> scanList = hasScanList ? [] : null;
             List<int> clauseIndices = hasScanList ? [] : null;
 
-            for (int i = 0; i < executions.Count; i++)
+            for (int i = 0; i < _exec.Executions.Count; i++)
             {
                 bool isScanCandidate = hasScanList && i >= scanStart;
 
-                ClauseExecution clauseExec = executions[i];
+                ClauseExecution clauseExec = _exec.Executions[i];
                 ScanPredicateInfo? pred = BuildScanPredicateInfoCore(clauseExec, clauseExec.TermValueType);
                 perClause[i] = pred;
 
@@ -372,121 +378,121 @@ internal static partial class QueryPlanBuilder
             }
 
             return (new ResidualScanSet { Predicates = scanList?.ToArray(), ClauseIndices = clauseIndices?.ToArray() }, perClause);
+        }
 
-            static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType)
+        private static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType)
+        {
+            var clause = exec.Clause;
+            switch (clause.ClauseType)
             {
-                var clause = exec.Clause;
-                switch (clause.ClauseType)
+                // These clause types cannot be expressed as entry-scan predicates.
+                case ClauseType.Search:
+                case ClauseType.Regex:
+                case ClauseType.Spatial:
+                case ClauseType.Vector:
+                    return null;
+
+                case ClauseType.In:
+                case ClauseType.AllIn:
                 {
-                    // These clause types cannot be expressed as entry-scan predicates.
-                    case ClauseType.Search:
-                    case ClauseType.Regex:
-                    case ClauseType.Spatial:
-                    case ClauseType.Vector:
+                    // Boosted IN stays on the scoring bitmap path (a complement has no match to score).
+                    // Negation is fine: the per-entry helper returns a membership boolean we simply invert.
+                    if (clause.HasBoost)
                         return null;
 
-                    case ClauseType.In:
-                    case ClauseType.AllIn:
+                    return new ScanPredicateInfo
                     {
-                        // Boosted IN stays on the scoring bitmap path (a complement has no match to score).
-                        // Negation is fine: the per-entry helper returns a membership boolean we simply invert.
-                        if (clause.HasBoost)
-                            return null;
-
-                        return new ScanPredicateInfo
+                        FieldName = clause.FieldName,
+                        ValueType = exec.PackedParamValue.ValueType switch
                         {
-                            FieldName = clause.FieldName,
-                            ValueType = exec.PackedParamValue.ValueType switch
-                            {
-                                PackedParam.TypeLong => ScanValueType.Long,
-                                PackedParam.TypeDouble => ScanValueType.Double,
-                                _ => ScanValueType.Slice
-                            },
-                            CompareOp = clause.ClauseType == ClauseType.In ? ScanCompareOp.In : ScanCompareOp.AllIn,
-                            ParamIndex = 0,
-                            Negated = exec.IsNegated
-                        };
-                    }
-
-                    case ClauseType.StartsWith:
-                        if (termType != ParamValueType.String)
-                            return null;
-                        return new ScanPredicateInfo
-                        {
-                            FieldName = clause.FieldName,
-                            ValueType = ScanValueType.Slice,
-                            CompareOp = ScanCompareOp.StartsWith,
-                            ParamIndex = exec.PackedParamValue.Param1
-                        };
-                    case ClauseType.EndsWith:
-                        if (termType != ParamValueType.String)
-                            return null;
-                        return new ScanPredicateInfo
-                        {
-                            FieldName = clause.FieldName,
-                            ValueType = ScanValueType.Slice,
-                            CompareOp = ScanCompareOp.EndsWith,
-                            ParamIndex = exec.PackedParamValue.Param1
-                        };
-                    case ClauseType.Exists:
-                        return new ScanPredicateInfo
-                        {
-                            FieldName = clause.FieldName,
-                            CompareOp = ScanCompareOp.Exists,
-                        };
-
-                    case ClauseType.AndGroup:
-                    case ClauseType.OrGroup:
-                    {
-                        var branches = new List<ScanPredicateInfo>();
-                        foreach (var it in exec.SubExecutions)
-                        {
-                            var subTermType = it.TermValueType;
-                            var subPred = BuildScanPredicateInfoCore(it, subTermType);
-                            if (subPred == null)
-                                return null;
-                            branches.Add(subPred.Value);
-                        }
-
-                        return new ScanPredicateInfo
-                        {
-                            FieldName = clause.FieldName ?? exec.SubExecutions[0].Clause.FieldName,
-                            SubPredicates = branches.ToArray(),
-                            Group = clause.ClauseType == ClauseType.AndGroup ? GroupKind.And : GroupKind.Or
-                        };
-                    }
+                            PackedParam.TypeLong => ScanValueType.Long,
+                            PackedParam.TypeDouble => ScanValueType.Double,
+                            _ => ScanValueType.Slice
+                        },
+                        CompareOp = clause.ClauseType == ClauseType.In ? ScanCompareOp.In : ScanCompareOp.AllIn,
+                        ParamIndex = 0,
+                        Negated = exec.IsNegated
+                    };
                 }
 
-                return new ScanPredicateInfo
+                case ClauseType.StartsWith:
+                    if (termType != ParamValueType.String)
+                        return null;
+                    return new ScanPredicateInfo
+                    {
+                        FieldName = clause.FieldName,
+                        ValueType = ScanValueType.Slice,
+                        CompareOp = ScanCompareOp.StartsWith,
+                        ParamIndex = exec.PackedParamValue.Param1
+                    };
+                case ClauseType.EndsWith:
+                    if (termType != ParamValueType.String)
+                        return null;
+                    return new ScanPredicateInfo
+                    {
+                        FieldName = clause.FieldName,
+                        ValueType = ScanValueType.Slice,
+                        CompareOp = ScanCompareOp.EndsWith,
+                        ParamIndex = exec.PackedParamValue.Param1
+                    };
+                case ClauseType.Exists:
+                    return new ScanPredicateInfo
+                    {
+                        FieldName = clause.FieldName,
+                        CompareOp = ScanCompareOp.Exists,
+                    };
+
+                case ClauseType.AndGroup:
+                case ClauseType.OrGroup:
                 {
-                    FieldName = clause.FieldName,
-                    ValueType = termType switch
+                    var branches = new List<ScanPredicateInfo>();
+                    foreach (var it in exec.SubExecutions)
                     {
-                        ParamValueType.Long => ScanValueType.Long,
-                        ParamValueType.Double => ScanValueType.Double,
-                        _ => ScanValueType.Slice // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
-                    },
-                    CompareOp = clause.ClauseType switch
+                        var subTermType = it.TermValueType;
+                        var subPred = BuildScanPredicateInfoCore(it, subTermType);
+                        if (subPred == null)
+                            return null;
+                        branches.Add(subPred.Value);
+                    }
+
+                    return new ScanPredicateInfo
                     {
-                        ClauseType.Equals => ScanCompareOp.Equal,
-                        ClauseType.NotEquals => ScanCompareOp.NotEqual,
-                        ClauseType.GreaterThan => ScanCompareOp.GreaterThan,
-                        ClauseType.GreaterThanOrEqual => ScanCompareOp.GreaterThanOrEqual,
-                        ClauseType.LessThan => ScanCompareOp.LessThan,
-                        ClauseType.LessThanOrEqual => ScanCompareOp.LessThanOrEqual,
-                        ClauseType.Between => ScanCompareOp.Between,
-                        _ => ScanCompareOp.Equal
-                    },
-                    ParamIndex = exec.PackedParamValue.Param1,
-                    ParamIndex2 = exec.PackedParamValue.Param2 != PackedParam.NoParamValue ? exec.PackedParamValue.Param2 : -1
-                };
+                        FieldName = clause.FieldName ?? exec.SubExecutions[0].Clause.FieldName,
+                        SubPredicates = branches.ToArray(),
+                        Group = clause.ClauseType == ClauseType.AndGroup ? GroupKind.And : GroupKind.Or
+                    };
+                }
             }
+
+            return new ScanPredicateInfo
+            {
+                FieldName = clause.FieldName,
+                ValueType = termType switch
+                {
+                    ParamValueType.Long => ScanValueType.Long,
+                    ParamValueType.Double => ScanValueType.Double,
+                    _ => ScanValueType.Slice // String/True/False/Null/Parameter (when unresolvable) → opaque slice comparison.
+                },
+                CompareOp = clause.ClauseType switch
+                {
+                    ClauseType.Equals => ScanCompareOp.Equal,
+                    ClauseType.NotEquals => ScanCompareOp.NotEqual,
+                    ClauseType.GreaterThan => ScanCompareOp.GreaterThan,
+                    ClauseType.GreaterThanOrEqual => ScanCompareOp.GreaterThanOrEqual,
+                    ClauseType.LessThan => ScanCompareOp.LessThan,
+                    ClauseType.LessThanOrEqual => ScanCompareOp.LessThanOrEqual,
+                    ClauseType.Between => ScanCompareOp.Between,
+                    _ => ScanCompareOp.Equal
+                },
+                ParamIndex = exec.PackedParamValue.Param1,
+                ParamIndex2 = exec.PackedParamValue.Param2 != PackedParam.NoParamValue ? exec.PackedParamValue.Param2 : -1
+            };
         }
            
         // Returns null when a non-scannable residual clause makes the path ineligible (caller falls back
         // to the bitmap pipeline); otherwise a set whose Predicates may be empty (driving clause is the
         // only clause → no per-entry filter needed). The Compiled delegate is baked by the caller.
-        static ResidualScanSet BuildResidualSet(ScanPredicateInfo?[] perClause, int skip1, int skip2)
+        private static ResidualScanSet BuildResidualSet(ScanPredicateInfo?[] perClause, int skip1, int skip2)
         {
             var residuals = new List<ScanPredicateInfo>();
             var indices = new List<int>();
@@ -503,42 +509,42 @@ internal static partial class QueryPlanBuilder
             return new ResidualScanSet { Predicates = residuals.ToArray(), ClauseIndices = indices.ToArray() };
         }
 
-        bool CheckAllNegated() => executions is [{ IsNegated: true }, ..]; // negated clauses are always sorted first, so we can just check the first
+        private readonly bool CheckAllNegated() => _exec.Executions is [{ IsNegated: true }, ..]; // negated clauses are always sorted first, so we can just check the first
 
         // Single canonical serialization of every plan-disambiguating dimension, digested to a
         // 256-bit cache key. Used for BOTH the cache probe and the on-miss store, so the Append
         // sequence here is the one source of truth — adding a new dimension is one more Append.
         // Unlike the former packed-int fields, nothing is truncated: all clauses and all
         // parameters contribute, so the old 10-clause / 16-param ceilings are gone.
-        Vector256<long> ComputeCacheKeyHash(ref PlanCacheKeyBuilder builder)
+        private Vector256<long> ComputeCacheKeyHash()
         {
-            var execs = exec.Executions;
+            var execs = _exec.Executions;
 
-            builder.Append(execs.Count, 16); // length prefixed to ensure consistency
+            _builder.Append(execs.Count, 16); // length prefixed to ensure consistency
             foreach(var e in execs)
             {
-                builder.Append(e.Clause.OriginalIndex, 16);
+                _builder.Append(e.Clause.OriginalIndex, 16);
             }
 
             // Boost + cardinality-cliff flags: queries on either side of the cliff get distinct plans.
             int flags = planParams.HasBoost.ToInt32() << 1 |
-                        (exec.DrivingClauseCardinality is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity).ToInt32(); 
-            builder.Append(flags, 2);
+                        (_exec.DrivingClauseCardinality is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity).ToInt32();
+            _builder.Append(flags, 2);
 
             // Per-parameter runtime type (bits 0-1) OR-ed with the BETWEEN-sentinel mark (bit 2 of
             // sentinelFull). A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to a
             // QueryMatch-dispatched plan while a non-sentinel BETWEEN of the same query text can be
             // TreeScan-dispatched, so the mark forces a distinct key.
-            builder.Append((ushort)template.ParameterSlots.Length, 16);
+            _builder.Append((ushort)template.ParameterSlots.Length, 16);
             for (int i = 0; i < template.ParameterSlots.Length; i++)
             {
                 int kind = (int)ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0b11;
-                if (sentinelFull != null)
-                    kind |= sentinelFull[i] << 2;
-                builder.Append(kind, 3);
+                if (_sentinelFull != null)
+                    kind |= _sentinelFull[i] << 2;
+                _builder.Append(kind, 3);
             }
-            
-            return builder.ToHash();
+
+            return _builder.ToHash();
         }
     }
 
