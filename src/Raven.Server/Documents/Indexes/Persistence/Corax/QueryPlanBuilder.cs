@@ -112,6 +112,7 @@ internal static partial class QueryPlanBuilder
             SpatialClauses = walkerCtx.SpatialClauses,
             VectorClauses = walkerCtx.VectorClauses,
             WhenCount = walkerCtx.WhenCount,
+            ExistsCollapseCandidateCount = walkerCtx.ExistsCollapseCandidateCount,
             OptimizationFlags = optFlags,
             SortDrivingClauseIndex = sortDrivingIdx,
             CompoundExactClauseA = walkerCtx.CompoundExactClauseA,

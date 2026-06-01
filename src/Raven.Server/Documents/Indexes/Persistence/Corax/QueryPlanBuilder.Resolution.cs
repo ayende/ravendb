@@ -137,7 +137,7 @@ internal static partial class QueryPlanBuilder
     {
         var indexSearcher = planParams.IndexSearcher;
         
-        var (executions, whenFlags) = EvaluateWhenAndFilterClauses(); // evaluating WHEN clauses against bound parameters as we go.
+        var (executions, whenFlags, collapseToNoResults) = EvaluateWhenAndFilterClauses(); // evaluating WHEN clauses (and exists() collapse) against the live state as we go.
 
         var writer = new ValueWriter();
         byte[] sentinelFull = null;
@@ -235,7 +235,9 @@ internal static partial class QueryPlanBuilder
             return new QueryExecution
             {
                 Executions = executions,
-                QueryWillReturnNoResults = hasEmptyIn && template.IsOr is false, // Empty-IN only short-circuits an AND chain; in an OR chain it's a no-op clause.
+                // Empty-IN and a collapsed NOT exists() (no missing entries -> match-nothing) only short-circuit an
+                // AND chain; in an OR chain they're no-op clauses. collapseToNoResults is only ever set in an AND root.
+                QueryWillReturnNoResults = (hasEmptyIn && template.IsOr is false) || collapseToNoResults,
                 IsAllEntries = executions.Count is 0,
                 DrivingClauseCardinality = drivingClauseCardinality,
             };
@@ -266,21 +268,28 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        (List<ClauseExecution> Executions, int WhenFlags)  EvaluateWhenAndFilterClauses()
+        (List<ClauseExecution> Executions, int WhenFlags, bool CollapseToNoResults) EvaluateWhenAndFilterClauses()
         {
             var execList = new List<ClauseExecution>(template.Clauses.Count);
-            if (template.WhenCount == 0) // Fast path: no WHEN clauses anywhere in the template — skip the per-clause
+
+            // exists()/NOT exists() collapse shares the WhenFlags bit budget, so only enable it when the combined
+            // WHEN + exists-candidate count fits — otherwise the exists() leaves keep their term-walk (consume no bit).
+            bool existsCollapseEnabled = template.ExistsCollapseCandidateCount > 0
+                                         && template.WhenCount + template.ExistsCollapseCandidateCount <= PlanTemplate.MaxWhenClauses;
+
+            if (template.WhenCount == 0 && existsCollapseEnabled == false) // Fast path: no WHEN clauses and no eligible exists() collapse.
             {
                 foreach (var clause in template.Clauses)
                 {
                     execList.Add(CreateExecution(clause));
                 }
 
-                return (execList, 0);
+                return (execList, 0, false);
             }
 
             int flags = 0;
             int whenBit = 0;
+            bool collapseToNoResults = false;
             foreach (var cached in template.Clauses)
             {
                 if (cached.WhenCondition is { } predicate)
@@ -293,12 +302,59 @@ internal static partial class QueryPlanBuilder
 
                     flags |= 1 << whenBit;
                     whenBit++;
+                    execList.Add(CreateExecution(cached));
+                    continue;
+                }
+
+                if (existsCollapseEnabled && cached.ClauseType == ClauseType.Exists)
+                {
+                    int bit = whenBit;
+                    whenBit++;
+                    if (TryCollapseExists(cached, out bool toNoResults))
+                    {
+                        // NonExisting list is empty: exists() -> match-all (drop the clause), NOT exists() ->
+                        // match-nothing. The bit stays clear, so this resolves to a different cached plan than
+                        // the kept (term-walk) variant — the choice is re-decided against the live txn each run.
+                        collapseToNoResults |= toNoResults;
+                        continue;
+                    }
+
+                    flags |= 1 << bit; // kept (the field has missing entries, or the leaf is ineligible) -> bit set
+                    execList.Add(CreateExecution(cached));
+                    continue;
                 }
 
                 execList.Add(CreateExecution(cached));
             }
 
-            return (execList, flags);
+            return (execList, flags, collapseToNoResults);
+        }
+
+        // Returns true when an eligible exists()/NOT exists() leaf collapses because its field has NO missing
+        // entries (the per-field NonExisting posting list is empty). toNoResults distinguishes the two outcomes:
+        // exists() -> match-all (drop), NOT exists() -> match-nothing (empties the AND). Only ever called in an
+        // AND root: in an OR root match-all/match-nothing swap roles, so we keep the term-walk and never collapse.
+        bool TryCollapseExists(ClauseInfo clause, out bool toNoResults)
+        {
+            toNoResults = false;
+            if (template.IsOr)
+                return false;
+            // Dynamic CreateField fields write no NonExisting markers, so an empty list there does NOT imply
+            // "nothing missing" — the collapse would be unsound. Mirror the indexer's RegisterMissingFieldFor gate.
+            if (builderParameters.HasDynamics)
+                return false;
+            if (IndexDefinitionBaseServerSide.IndexVersion.IsNonExistingPostingListSupported(planParams.Index.Definition.Version) == false)
+                return false;
+
+            FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx);
+            // Count the live entries rather than the tree node: the per-field NonExisting node persists (empty)
+            // after the last missing-field document is deleted, so a presence-only check would never re-collapse.
+            if (indexSearcher.HasAnyNonExistingEntries(in fieldMeta)) // something is missing -> fall back to the term-walk
+                return false;
+
+            // No entry is missing this field: exists() == match-all, NOT exists() == match-nothing.
+            toNoResults = clause.IsNegated;
+            return true;
         }
 
         // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)

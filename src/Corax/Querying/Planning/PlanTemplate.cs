@@ -97,6 +97,16 @@ public sealed class PlanTemplate
     /// <see cref="CompiledPlan.WhenFlags"/> would otherwise wrap silently.</summary>
     public int WhenCount;
 
+    /// <summary>Count of top-level <c>exists()</c> / <c>NOT exists()</c> leaves eligible for the
+    /// static collapse against the live NonExisting posting list (RavenDB-25281 #4875). Each such
+    /// clause consumes a bit in <see cref="CompiledPlan.WhenFlags"/> alongside the WHEN clauses (set
+    /// when the clause is kept = the field has missing entries; clear when it collapses), so the
+    /// "field present on all docs" and "field missing on some docs" states resolve to distinct cached
+    /// plans. Computed once at template construction. The collapse is only enabled when
+    /// <c>WhenCount + ExistsCollapseCandidateCount &lt;= MaxWhenClauses</c>, so the shared bit budget
+    /// never overflows; past that the exists() leaves keep their term-walk and consume no bit.</summary>
+    public int ExistsCollapseCandidateCount;
+
     /// <summary>Deduplicated, ordered list of query parameter names referenced by this
     /// template's clause bindings (<see cref="BindingSource.QueryParameter"/> only).
     /// Literals are excluded since their types are fixed at template time.
