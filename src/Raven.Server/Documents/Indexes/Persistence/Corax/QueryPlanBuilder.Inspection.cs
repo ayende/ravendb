@@ -47,14 +47,16 @@ internal static partial class QueryPlanBuilder
 
         var exec = result.Execution;
         var flatExecs = BuildFlatClauseExecutions(exec);
-        var rootParams = new Dictionary<string, string>();
-
-        // OptimizationHint reflects the strategy that ACTUALLY ran for this execution, not the cached  structural candidacy. The candidacy (CompiledPlan.Strategy) is decided once at cache-miss time;
-        // the bitmap-vs-scan cost gate then re-runs on every execution against the current bound parameters  and may fall back to the bitmap pipeline.
-        rootParams["OptimizationHint"] = (exec.ActualStrategy != ExecutionStrategy.NotEvaluated
-            ? exec.ActualStrategy
-            : result.CompiledPlan.Strategy).ToString();
-        rootParams["StrategyCandidate"] = result.CompiledPlan.Strategy.ToString();
+        Dictionary<string, string> rootParams = new() 
+            {
+                // OptimizationHint reflects the strategy that ACTUALLY ran for this execution, not the cached  structural candidacy. 
+                // The candidacy (CompiledPlan.Strategy) is decided once at cache-miss time; the bitmap-vs-scan cost gate then re-runs
+                // on every execution against the current bound parameters and may fall back to the bitmap pipeline.
+                ["OptimizationHint"] = (exec.ActualStrategy != ExecutionStrategy.NotEvaluated
+                    ? exec.ActualStrategy
+                    : result.CompiledPlan.Strategy).ToString(),
+                ["StrategyCandidate"] = result.CompiledPlan.Strategy.ToString()
+            };
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
         compiledRoot = root;
