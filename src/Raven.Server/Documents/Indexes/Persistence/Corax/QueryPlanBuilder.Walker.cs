@@ -19,6 +19,7 @@ internal static partial class QueryPlanBuilder
         public readonly IndexSearcher IndexSearcher;
         public readonly QueryBuilderParameters BuilderParams;
         public int WhenCount;
+        public int ExistsCollapseCandidateCount;
         public bool IsOr;
         public List<ClauseInfo> SpatialClauses;
         public List<ClauseInfo> VectorClauses;
@@ -95,10 +96,13 @@ internal static partial class QueryPlanBuilder
         private static void WhenRegister(List<ClauseInfo> clauses, ResolutionContext ctx)
         {
             ctx.WhenCount = 0;
+            ctx.ExistsCollapseCandidateCount = 0;
             foreach (var t in clauses)
             {
-                if (t.WhenCondition != null) 
+                if (t.WhenCondition != null)
                     ctx.WhenCount++;
+                else if (t.ClauseType == ClauseType.Exists) // top-level exists()/NOT exists() leaf — collapse candidate (#4875)
+                    ctx.ExistsCollapseCandidateCount++;
             }
 
             if (ctx.WhenCount <= PlanTemplate.MaxWhenClauses) 
