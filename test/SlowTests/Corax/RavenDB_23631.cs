@@ -134,7 +134,7 @@ public class RavenDB_23631(ITestOutputHelper output) : StorageTest(output)
     {
         using var searcher = new IndexSearcher(Env, mapping);
         var queryMetadata = new QueryMetadata(rqlQuery, null, 0);
-        var planParams = new QueryPlanBuilder.PlanParameters
+        var planParams = new PlanParameters
         {
             IndexSearcher = searcher,
             Metadata = queryMetadata,

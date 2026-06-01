@@ -288,7 +288,7 @@ namespace FastTests.Corax
             using var knownFields = CreateKnownFields(Allocator);
             using var searcher = new IndexSearcher(Env, knownFields);
             var queryMetadata = new QueryMetadata(rqlQuery, null, 0);
-            var planParams = new QueryPlanBuilder.PlanParameters
+            var planParams = new PlanParameters
             {
                 IndexSearcher = searcher,
                 Metadata = queryMetadata,
@@ -311,7 +311,7 @@ namespace FastTests.Corax
             using var knownFields = CreateKnownFields(Allocator);
             using var searcher = new IndexSearcher(Env, knownFields);
             var queryMetadata = new QueryMetadata(rqlQuery, null, 0);
-            var planParams = new QueryPlanBuilder.PlanParameters
+            var planParams = new PlanParameters
             {
                 IndexSearcher = searcher,
                 Metadata = queryMetadata,
