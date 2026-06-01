@@ -2,12 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Planning;
-using IndexSearcher = Corax.Querying.IndexSearcher;
 using Raven.Client.Exceptions;
 using Raven.Server.Documents.Queries;
 using Sparrow.Json;
+using IndexSearcher = Corax.Querying.IndexSearcher;
 
-namespace Raven.Server.Documents.Indexes.Persistence.Corax;
+namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {

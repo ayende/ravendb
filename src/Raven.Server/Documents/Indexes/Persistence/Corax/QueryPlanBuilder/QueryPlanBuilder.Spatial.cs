@@ -1,14 +1,9 @@
 using System;
-using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
-using Raven.Server.Documents.Queries;
-using Spatial4n.Shapes;
 using Sparrow.Json;
-using RavenConstants = Raven.Client.Constants;
 using SpatialUnits = Raven.Client.Documents.Indexes.Spatial.SpatialUnits;
-using SpatialRelation = Corax.Utils.Spatial.SpatialRelation;
 
-namespace Raven.Server.Documents.Indexes.Persistence.Corax;
+namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {

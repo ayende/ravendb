@@ -18,6 +18,7 @@ using Corax.Querying.Matches.SortingMatches.Meta;
 using Corax.Utils;
 using FastTests.Voron;
 using Raven.Server.Documents.Indexes.Persistence.Corax;
+using Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 using Raven.Server.Documents.Queries;
 using Sparrow;
 using Sparrow.Json;

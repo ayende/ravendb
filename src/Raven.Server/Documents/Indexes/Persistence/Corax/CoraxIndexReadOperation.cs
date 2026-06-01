@@ -626,7 +626,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             bool runQuery = true;
             while (runQuery)
             {
-                QueryPlanBuilder.CompiledQuery compileResult;
+                QueryPlanBuilder.QueryPlanBuilder.CompiledQuery compileResult;
                 var coraxScope = queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false);
                 using (coraxScope?.Start())
                 {
@@ -638,7 +638,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take, 
                         deduplicationDisabled: false, indexReadOperation: this, token: token, queryTime: queryTime);
 
-                    var planParams = new QueryPlanBuilder.PlanParameters
+                    var planParams = new QueryPlanBuilder.QueryPlanBuilder.PlanParameters
                     {
                         IndexSearcher = IndexSearcher,
                         Metadata = query.Metadata,
@@ -654,7 +654,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     // invisible — fold into the Corax scope as its own span so introspection can attribute it.
                     using (coraxScope?.For(nameof(QueryTimingsScope.Names.Optimizer))?.Start())
                     {
-                        compileResult = QueryPlanBuilder.BuildSortedQuery(
+                        compileResult = QueryPlanBuilder.QueryPlanBuilder.BuildSortedQuery(
                             planParams, builderParameters, highlightings.Terms, wantTimings: queryTimings != null,
                             token: token);
                     }
@@ -806,7 +806,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 if (queryTimings != null)
                 {
                     var inspectionNode = compileResult.CompiledPlan != null
-                        ? QueryPlanBuilder.BuildInspectionGraph(compileResult)
+                        ? QueryPlanBuilder.QueryPlanBuilder.BuildInspectionGraph(compileResult)
                         : compileResult.QueryMatch.Inspect();
                     queryTimings.SetQueryPlan(inspectionNode);
                 }
@@ -1318,8 +1318,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 indexReadOperation: this, token: token);
 
             // Route through the sorted pipeline so the raw-entries view honors ORDER BY, matching Lucene.
-            using var compileResult = QueryPlanBuilder.BuildSortedQuery(
-                new QueryPlanBuilder.PlanParameters
+            using var compileResult = QueryPlanBuilder.QueryPlanBuilder.BuildSortedQuery(
+                new QueryPlanBuilder.QueryPlanBuilder.PlanParameters
                 {
                     IndexSearcher = IndexSearcher,
                     Metadata = query.Metadata,
@@ -1474,7 +1474,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 {
                     // moreLikeThis(id() = 'datas/4-A', ...) — build a query from just the
                     // inner binary expression (not the full WHERE which wraps it in moreLikeThis).
-                    baseDocumentQuery = QueryPlanBuilder.BuildQueryForMoreLikeThis(builderParameters, be);
+                    baseDocumentQuery = QueryPlanBuilder.QueryPlanBuilder.BuildQueryForMoreLikeThis(builderParameters, be);
                 }
                 else
                 {
@@ -1510,7 +1510,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
         private static IQueryMatch BuildCompiledQueryMatch(QueryBuilderParameters builderParameters)
         {
-            var planParams = new QueryPlanBuilder.PlanParameters
+            var planParams = new QueryPlanBuilder.QueryPlanBuilder.PlanParameters
             {
                 IndexSearcher = builderParameters.IndexSearcher,
                 Metadata = builderParameters.Query.Metadata,
@@ -1522,7 +1522,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 DynamicFields = builderParameters.DynamicFields,
                 HasBoost = builderParameters.HasBoost
             };
-            return QueryPlanBuilder.BuildFilterMatch(
+            return QueryPlanBuilder.QueryPlanBuilder.BuildFilterMatch(
                 planParams, builderParameters, out _, out _, highlightingTerms: null, wantTimings: false, builderParameters.Token);
         }
     }

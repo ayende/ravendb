@@ -6,7 +6,7 @@ using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
 
-namespace Raven.Server.Documents.Indexes.Persistence.Corax;
+namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {

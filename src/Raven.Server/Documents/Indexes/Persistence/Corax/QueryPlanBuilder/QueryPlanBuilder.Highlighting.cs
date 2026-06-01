@@ -3,7 +3,7 @@ using System.Runtime.CompilerServices;
 using Corax.Querying.Planning;
 using Raven.Server.Documents.Queries;
 
-namespace Raven.Server.Documents.Indexes.Persistence.Corax;
+namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {

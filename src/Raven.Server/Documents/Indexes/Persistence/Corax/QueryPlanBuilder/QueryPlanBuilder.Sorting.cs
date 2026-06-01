@@ -9,12 +9,12 @@ using Corax.Utils;
 using Raven.Client.Exceptions.Corax;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
-using Spatial4n.Shapes;
 using Sparrow;
+using Spatial4n.Shapes;
 using Constants = Corax.Constants;
 using SpatialUnits = Raven.Client.Documents.Indexes.Spatial.SpatialUnits;
 
-namespace Raven.Server.Documents.Indexes.Persistence.Corax;
+namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
