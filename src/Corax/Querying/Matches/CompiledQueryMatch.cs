@@ -29,7 +29,7 @@ public class CompiledQueryMatch(
     private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
         wantTimings ? compiledPlan.CompiledTimedDelegate : compiledPlan.CompiledDelegate;
 
-    public readonly ResidualScanIlEmitter.ResidualScanPredicate CompiledEntryPredicate = compiledPlan.CompiledEntryPredicate;
+    public readonly ResidualScanIlEmitter.ResidualScanPredicate CompiledEntryPredicate = compiledPlan.EntryScanSet.Compiled;
 
     /// <summary>Per-execution state — entry-scan IL reads this for analyzer-encoded slices,
     /// field-root pages, and direct long/double values via baked field indices.</summary>
