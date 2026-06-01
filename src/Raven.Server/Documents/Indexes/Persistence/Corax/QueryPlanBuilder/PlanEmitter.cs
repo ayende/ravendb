@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using Corax.Querying.Planning;
-using static Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder.QueryPlanBuilder;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
@@ -187,7 +186,7 @@ internal sealed class PlanEmitter
             default:
                 _ops.Add(new PlanOp
                 {
-                    Kind = ToPlanOpKind(merge, GetDispatch(exec)),
+                    Kind = ToPlanOpKind(merge, QueryPlanBuilder.GetDispatch(exec)),
                     ParamIndex = _matchIndex++,
                     BitmapLocal = 0,
                     EstimatedCardinality = cardinality,
@@ -396,7 +395,7 @@ internal sealed class PlanEmitter
             default:
                 _ops.Add(new PlanOp
                 {
-                    Kind = ToPlanOpKind(MergeKind.AndNotInto, GetDispatch(exec)),
+                    Kind = ToPlanOpKind(MergeKind.AndNotInto, QueryPlanBuilder.GetDispatch(exec)),
                     ParamIndex = _matchIndex++,
                     BitmapLocal = 0,
                     EstimatedCardinality = cardinality

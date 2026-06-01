@@ -3,7 +3,6 @@ using System.Runtime.CompilerServices;
 using Corax.Mappings;
 using Corax.Querying.Planning;
 using IndexSearcher = Corax.Querying.IndexSearcher;
-using static Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder.QueryPlanBuilder;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
@@ -21,7 +20,7 @@ internal static class CardinalityEstimator
             {
                 case ClauseType.Equals:
                 {
-                    FieldMetadata fieldMeta = ResolveFieldMetadata(clause, walkerCtx); // find the relevant analyzer here
+                    FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx); // find the relevant analyzer here
                     PackedParam p = e.PackedParamValue;
                     return p.ValueType switch
                     {
@@ -51,7 +50,7 @@ internal static class CardinalityEstimator
                     if (ip.IsNone)
                         return indexSearcher.NumberOfEntries;
 
-                    FieldMetadata meta = ResolveFieldMetadata(clause, walkerCtx);
+                    FieldMetadata meta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx);
                     int start = ip.Param1;
                     int count = e.InTermCount;
                     for (int t = 0; t < count; t++)
