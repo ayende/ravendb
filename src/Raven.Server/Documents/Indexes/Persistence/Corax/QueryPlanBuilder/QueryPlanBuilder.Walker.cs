@@ -11,7 +11,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private sealed class ResolutionContext
+    internal sealed class ResolutionContext
     {
         public readonly List<string> Errors = [];
         public readonly BlittableJsonReaderObject QueryParameters;
@@ -63,7 +63,7 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private readonly record struct PendingBoost(ClauseInfo[] InnerClauses, ParameterBinding Factor);
+    internal readonly record struct PendingBoost(ClauseInfo[] InnerClauses, ParameterBinding Factor);
 
     private static class PlanWalker
     {

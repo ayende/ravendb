@@ -130,7 +130,7 @@ internal static partial class QueryPlanBuilder
     /// clause in the execution; <see cref="Drop"/> removes it because it is statically match-all (WHEN(false),
     /// or exists() on a field with no missing entries); <see cref="CollapseToNoResults"/> removes it AND
     /// short-circuits an AND root to no-results (NOT exists() on a field with no missing entries).</summary>
-    private enum ClauseFate
+    internal enum ClauseFate
     {
         Keep,
         Drop,
@@ -143,7 +143,7 @@ internal static partial class QueryPlanBuilder
         return new BuildResolver(template, planParams, builderParameters, walkerCtx, scratch).Resolve();
     }
 
-    private static ClauseExecution CreateExecution(ClauseInfo clause)
+    internal static ClauseExecution CreateExecution(ClauseInfo clause)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         var exec = new ClauseExecution(clause);
@@ -174,7 +174,7 @@ internal static partial class QueryPlanBuilder
         full[binding.ParameterSlot] |= SentinelParamMark;
     }
 
-    private static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters,
+    internal static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters,
         int parameterSlotCount, ref byte[] full)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
@@ -325,7 +325,7 @@ internal static partial class QueryPlanBuilder
     /// <summary>
     /// Foo BETWEEN $x AND $y - where $y > $x - returns nothing, this re-writes the clause so we can optimize this 
     /// </summary>
-    private static void PropagateBetweenContradiction(ClauseExecution exec, ValueWriter writer)
+    internal static void PropagateBetweenContradiction(ClauseExecution exec, ValueWriter writer)
     {
         var p = exec.PackedParamValue;
         if (exec.Clause.ClauseType != ClauseType.Between || p.Param2 is PackedParam.NoParamValue)
@@ -717,7 +717,7 @@ internal static partial class QueryPlanBuilder
         return termPacked.TermQuery(fieldMeta, walkerCtx.IndexSearcher, queryExec);
     }
 
-    private static FieldMetadata ResolveFieldMetadata(ClauseInfo clause, ResolutionContext walkerCtx)
+    internal static FieldMetadata ResolveFieldMetadata(ClauseInfo clause, ResolutionContext walkerCtx)
     {
         var builderParams = walkerCtx.BuilderParams;
         string resolvedFieldName = clause.ResolvedFieldName ?? clause.FieldName;

@@ -7,7 +7,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private static ScanValueType ClassifyParamType(BlittableJsonReaderObject queryParams, string name)
+    internal static ScanValueType ClassifyParamType(BlittableJsonReaderObject queryParams, string name)
     {
         if (queryParams.TryGet(name, out object raw) == false || raw == null)
             return ScanValueType.Slice;

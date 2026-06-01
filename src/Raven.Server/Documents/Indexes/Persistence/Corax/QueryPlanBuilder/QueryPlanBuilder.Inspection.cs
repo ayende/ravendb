@@ -233,7 +233,7 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static InspectionOp[] BuildInspectionTemplate(PlanOp[] ops, List<ClauseExecution> executions)
+    internal static InspectionOp[] BuildInspectionTemplate(PlanOp[] ops, List<ClauseExecution> executions)
     {
         if (ops == null || ops.Length == 0) return [];
 

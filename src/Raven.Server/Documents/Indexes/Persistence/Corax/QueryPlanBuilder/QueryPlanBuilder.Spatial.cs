@@ -66,7 +66,7 @@ internal static partial class QueryPlanBuilder
                 : global::Corax.Utils.Spatial.SpatialUnits.Miles;
     }
 
-    private static void AttachSpatialAndVectorClauses(QueryExecution exec, PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ValueWriter writer)
+    internal static void AttachSpatialAndVectorClauses(QueryExecution exec, PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ValueWriter writer)
     {
         if (template.SpatialClauses == null && template.VectorClauses == null)
             return;

@@ -8,7 +8,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private sealed class ValueWriter
+    internal sealed class ValueWriter
     {
         private readonly List<long> _longs = [];
         private readonly List<double> _doubles = [];

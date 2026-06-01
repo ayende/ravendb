@@ -7,7 +7,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private sealed class PlanEmitter
+    internal sealed class PlanEmitter
     {
         private readonly List<PlanOp> _ops = [];
         private int _nextRangeIdx; // index for ctx.InRangeCounts[that idx] at runtime.
