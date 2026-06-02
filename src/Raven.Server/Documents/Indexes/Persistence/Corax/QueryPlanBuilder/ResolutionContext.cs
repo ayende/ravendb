@@ -14,7 +14,6 @@ internal sealed class ResolutionContext
     public readonly IndexSearcher IndexSearcher;
     public readonly QueryBuilderParameters BuilderParams;
     public int WhenCount;
-    public int ExistsCollapseCandidateCount;
     public bool IsOr;
     public List<ClauseInfo> SpatialClauses;
     public List<ClauseInfo> VectorClauses;

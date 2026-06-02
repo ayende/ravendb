@@ -95,14 +95,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
     private QueryExecution CreateQueryExecution()
     {
-        // A clause is "gated" when its effective shape can vary per query: a WHEN(...) guard, or an
-        // exists()/NOT exists() leaf (at any nesting depth) that may statically collapse against the live
-        // NonExisting posting list. exists() eligibility (dynamic fields write no NonExisting markers;
-        // pre-feature index versions have no list) is structural, so it is stable per query text. The root
-        // operator is irrelevant: a collapsed leaf becomes a sentinel that the emitter's merge algebra
-        // simplifies correctly under OR/AND and inside nested groups.
-        bool existsEligible = template.ExistsCollapseEligible;
-        bool gated = template.WhenCount != 0 || existsEligible;
+        // A clause is "gated" when its effective shape can vary per query: today that is only a WHEN(...)
+        // guard whose predicate decides, per query parameters, whether the clause filters at all.
+        bool gated = template.WhenCount != 0;
 
         // The execution list mirrors the template clause list one-for-one — clauses are never removed.
         // A clause that collapses (WHEN(false), a statically-true exists()/NOT exists(), an empty IN, a
@@ -119,15 +114,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         {
             var it = QueryPlanBuilder.CreateExecution(cached);
 
-            ApplyFate(it, gated ? GateClause(cached, existsEligible) : ClauseFate.Keep);
+            ApplyFate(it, gated ? GateClause(cached) : ClauseFate.Keep);
             if (it.IsSentinel == false)
             {
-                // A kept top-level clause may still wrap a group with nested exists() leaves that
-                // collapse independently against the live NonExisting list — gate them before
-                // populating values so each becomes its own MatchAll/MatchNothing sentinel.
-                if (existsEligible)
-                    GateNestedExists(it);
-
                 QueryPlanBuilder.PopulateClauseValues(it, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
                 QueryPlanBuilder.PropagateBetweenContradiction(it, _writer); // a contradictory BETWEEN collapses to MatchNothing
                 if (IsEmptyIn(it))
@@ -164,8 +153,8 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
     /// <summary>Append the 2-bit collapse code for <paramref name="exec"/> and every nested sub-execution, in
     /// template traversal order: 0 = kept (real leaf), 1 = MatchAll, 2 = MatchNothing. The recursion mirrors the
-    /// frozen tree shape so a nested exists() collapse outcome (which varies with the live NonExisting list) lands
-    /// in the plan-cache key and never collides with a populated counterpart.</summary>
+    /// frozen tree shape so a per-query collapse outcome (WHEN(false), an empty IN, or a contradictory BETWEEN)
+    /// lands in the plan-cache key and never collides with a populated counterpart.</summary>
     private void AppendSentinelCodes(ClauseExecution exec)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
@@ -186,55 +175,19 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         switch (fate)
         {
             case ClauseFate.Drop:
-                exec.MarkAsSentinel(ClauseType.MatchAll, _indexSearcher.NumberOfEntries); // WHEN(false) / statically-true exists()
-                break;
-            case ClauseFate.CollapseToNoResults:
-                exec.MarkAsSentinel(ClauseType.MatchNothing, 0); // statically-true NOT exists()
+                exec.MarkAsSentinel(ClauseType.MatchAll, _indexSearcher.NumberOfEntries); // WHEN(false) -> the guard is off, so the clause does not filter
                 break;
         }
     }
 
-    // Decide the fate of a single clause during the resolution pass. WHEN(false) and a statically-true
-    // exists() are match-all (Drop); a statically-true NOT exists() is match-nothing (CollapseToNoResults).
-    private ClauseFate GateClause(ClauseInfo cached, bool existsEligible)
+    // Decide the fate of a single clause during the resolution pass. A WHEN(...) guard whose predicate is
+    // false makes the clause match-all (Drop) — it stops filtering for this query's parameters.
+    private ClauseFate GateClause(ClauseInfo cached)
     {
         if (cached.WhenCondition is { } predicate && predicate(planParams.QueryParameters) == false)
             return ClauseFate.Drop;
 
-        return GateExists(cached, existsEligible);
-    }
-
-    // exists() collapses only when the field has NO missing entries: every doc has it, so exists()
-    // is statically true. Then exists() -> Drop (match-all) and NOT exists() -> match-nothing.
-    // When some docs miss the field, the result is data-dependent and stays a runtime term-walk.
-    private ClauseFate GateExists(ClauseInfo cached, bool existsEligible)
-    {
-        if (existsEligible is false || cached.ClauseType != ClauseType.Exists)
-            return ClauseFate.Keep;
-
-        FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(cached, walkerCtx);
-        if (_indexSearcher.HasAnyNonExistingEntries(in fieldMeta))
-            return ClauseFate.Keep;
-
-        return cached.IsNegated ? ClauseFate.CollapseToNoResults : ClauseFate.Drop;
-    }
-
-    // Recurse through a kept clause's groups and collapse any nested exists()/NOT exists() leaf whose field
-    // has no missing entries. A group node itself is never gated — only its leaves — and the emitter's merge
-    // algebra folds the resulting sentinels into the surrounding Or/AndGroup correctly.
-    private void GateNestedExists(ClauseExecution exec)
-    {
-        RuntimeHelpers.EnsureSufficientExecutionStack();
-        foreach (var sub in exec.SubExecutions ?? [])
-        {
-            if (sub.SubExecutions is { Count: > 0 })
-            {
-                GateNestedExists(sub);
-                continue;
-            }
-
-            ApplyFate(sub, GateExists(sub.Clause, existsEligible: true));
-        }
+        return ClauseFate.Keep;
     }
 
     private static bool IsEmptyIn(ClauseExecution e) =>
