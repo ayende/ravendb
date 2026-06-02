@@ -136,6 +136,38 @@ public class OrOfNegationsTests : RavenTestBase
         Assert.DoesNotContain("items/8", actual);
     }
 
+    // Mixed chain with a positive PREFIX and a foldable negated SUFFIX of ≥2 members:
+    // Score = 10 OR ¬(Color ∈ {red}) OR ¬(Code ∈ {6}). After the cardinality sort the positive sorts
+    // first and the two negations form a contiguous suffix, which folds to ¬(Color=red ∧ Code=6) and
+    // ORs back over the positive. Result == everything except the lone intersection member (item6),
+    // which the positive Score=10 does not rescue.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+    public async Task PositivePrefix_TwoNegationSuffix_FoldsSuffix(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var items = BuildSeed(40);
+        await SeedAsync(store, items);
+        Indexes.WaitForIndexing(store);
+
+        var actual = await RunIds(store,
+            "from Items where Score = 10 or not (Color in ('red')) or not (Code in (6))");
+
+        var expected = Expected(items,
+            i => i.Score == 10 || i.Color != "red" || i.Code != 6);
+
+        Assert.Equal(expected, actual);
+        // items/6 is red (6%4==2) with Code==6 -> the lone intersection member; Score 6 != 10 so the
+        // positive does not rescue it -> excluded.
+        Assert.DoesNotContain("items/6", actual);
+        Assert.Equal(items.Count - 1, actual.Count);
+        // items/10 is in the complement anyway (Color "red"? 10%4==2 -> red, Code 10 != 6 -> not in
+        // intersection) and is additionally the positive match.
+        Assert.Contains("items/10", actual);
+        // Missing-Color docs (i%4==3) land in the complement.
+        Assert.Contains("items/3", actual);
+    }
+
     // AND context: selective accumulator AND an all-negated OR sub-group.
     // Color = 'red' AND (Score != 6 OR Code != 6)  ==  Color='red' AND ¬(Score=6 ∧ Code=6)  ==  red \ {item6}.
     // The sub-group folds into the accumulator as acc \ (Score=6 ∧ Code=6) with no FillAllEntries.

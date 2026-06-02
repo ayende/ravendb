@@ -44,6 +44,11 @@ public static class QueryIlEmitter
         d.CsLine("[SkipLocalsInit]");
         d.CsLine("static void CompiledQuery(CompiledQueryMatch ctx)");
         d.CsLine("{");
+        // Calling convention for the QueryPrimitives.Ctx*From*(ctx, cursor, slot) helpers below:
+        //   'cursor' is the leaf cursor — it picks WHICH match we read from (the posting source / tree
+        //   scan / query match resolved for ctx.Leaves[cursor] / ctx.ResolvedMatches[cursor], i.e. the
+        //   field+term of that clause). 'slot' is only the DESTINATION bitmap (ctx.Bitmaps[slot]); slot 0
+        //   is the live result accumulator. The cursor auto-advances by one after each such call.
 
         // Locals
         var bufferLocal = d.DeclareLocal(typeof(Span<long>), "buffer");
@@ -366,10 +371,10 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.RunEntryScanMethod);
         d.CsLine("CompiledQueryHelper.RunEntryScan(ctx, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
 
-        // bitmaps[0].SwapContents(ref bitmaps[1])
+        // bitmaps[0].SwapContents(ref bitmaps[1]) — slot 0 now holds the scanned survivors; slot 1 holds
+        // the old driving set, which is disposed in CompiledQueryMatch.Execute's finally block. We return
+        // straight after, so there is no need to Clear() slot 1 — disposal reclaims it either way.
         d.EmitBitmapBinaryOp(0, 1, IlEmitterShared.SwapContents, "SwapContents");
-        // bitmaps[1].Clear()
-        d.EmitBitmapUnaryCall(1, IlEmitterShared.Clear, "Clear");
 
         d.EmitRetVoid();
     }
