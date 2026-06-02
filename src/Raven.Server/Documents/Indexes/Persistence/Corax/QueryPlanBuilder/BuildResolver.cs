@@ -27,10 +27,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         _exec = CreateQueryExecution();
         _cacheKeyHash = ComputeCacheKeyHash();
 
-        // A query that collapses to no results is no longer special-cased: its clauses survive as
-        // MatchNothing sentinels and the emitted plan produces an empty bitmap. That plan caches and
-        // executes like any other, so the per-clause sentinel code in the key keeps it distinct.
-
         if (_indexSearcher.PlanCache.Get(planParams.CacheKey, _cacheKeyHash) is { } cachedPlan)
         {
             _compiledPlan = cachedPlan; // use cached plan
@@ -95,10 +91,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
     private QueryExecution CreateQueryExecution()
     {
-        // A clause is "gated" when its effective shape can vary per query: today that is only a WHEN(...)
-        // guard whose predicate decides, per query parameters, whether the clause filters at all.
-        bool gated = template.WhenCount != 0;
-
         // The execution list mirrors the template clause list one-for-one — clauses are never removed.
         // A clause that collapses (WHEN(false), a statically-true exists()/NOT exists(), an empty IN, a
         // contradictory BETWEEN) is replaced IN PLACE by a MatchAll / MatchNothing sentinel. The plan
@@ -108,35 +100,27 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
         int sortDrivingIdx = template.SortDrivingClauseIndex;
         long drivingClauseCardinality = -1;
-        long numberOfEntries = _indexSearcher.NumberOfEntries;
 
         foreach (var cached in template.Clauses)
         {
-            var it = QueryPlanBuilder.CreateExecution(cached);
-
-            ApplyFate(it, gated ? GateClause(cached) : ClauseFate.Keep);
-            if (it.IsSentinel == false)
+            var exec = QueryPlanBuilder.CreateExecution(cached);
+            ApplyFate(exec, cached);
+            if (exec.IsSentinel == false)
             {
-                QueryPlanBuilder.PopulateClauseValues(it, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
-                QueryPlanBuilder.PropagateBetweenContradiction(it, _writer); // a contradictory BETWEEN collapses to MatchNothing
-                if (IsEmptyIn(it))
-                    it.MarkAsSentinel(ClauseType.MatchNothing, 0); // an empty IN matches nothing
+                QueryPlanBuilder.PopulateClauseValues(exec, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
+                QueryPlanBuilder.PropagateBetweenContradiction(exec, _writer); // a contradictory BETWEEN collapses to MatchNothing
+                if (IsEmptyIn(exec))
+                    exec.MarkAsSentinel(ClauseType.MatchNothing, 0); // an empty IN matches nothing
 
-                if (it.Cardinality < 0)
-                    it.Cardinality = CardinalityEstimator.Estimate(it, _indexSearcher, _writer, walkerCtx);
-                if (sortDrivingIdx >= 0 && it.Clause.OriginalIndex == sortDrivingIdx)
-                    drivingClauseCardinality = it.Cardinality;
+                if (exec.Cardinality < 0)
+                    exec.Cardinality = CardinalityEstimator.Estimate(exec, _indexSearcher, _writer, walkerCtx);
+                if (sortDrivingIdx >= 0 && exec.Clause.OriginalIndex == sortDrivingIdx)
+                    drivingClauseCardinality = exec.Cardinality;
             }
 
-            // Every clause contributes a 2-bit sentinel outcome (Keep / MatchAll / MatchNothing) in template
-            // order, recursing into groups so a nested exists() collapse is captured too. With the list shape
-            // frozen, the OriginalIndex enumeration in ComputeCacheKeyHash no longer encodes collapse, so this
-            // code is the sole disambiguator: WHEN+exists on one clause can yield MatchAll OR MatchNothing (one
-            // bit is not enough), and the now-cached empty-IN / contradictory-BETWEEN no-result variants must
-            // resolve to distinct plans from their populated counterparts.
-            AppendSentinelCodes(it);
+            AppendSentinelCodes(exec);
 
-            execList.Add(it);
+            execList.Add(exec);
         }
 
         execList.Sort(); // sort executions by cardinality (smaller clauses first)
@@ -144,50 +128,40 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         return new QueryExecution
         {
             Executions = execList,
-            // Only a genuinely clause-less query (no WHERE) is match-all here; an all-collapsed query keeps its
-            // MatchAll/MatchNothing sentinels and lets the emitter produce the right bitmap.
             IsAllEntries = execList.Count is 0,
             DrivingClauseCardinality = drivingClauseCardinality,
         };
     }
 
-    /// <summary>Append the 2-bit collapse code for <paramref name="exec"/> and every nested sub-execution, in
-    /// template traversal order: 0 = kept (real leaf), 1 = MatchAll, 2 = MatchNothing. The recursion mirrors the
-    /// frozen tree shape so a per-query collapse outcome (WHEN(false), an empty IN, or a contradictory BETWEEN)
-    /// lands in the plan-cache key and never collides with a populated counterpart.</summary>
     private void AppendSentinelCodes(ClauseExecution exec)
     {
+        // Every clause contributes a 2-bit sentinel outcome (Keep / MatchAll / MatchNothing) in template order.
+        // This is important so we can generate a different query plan for each final query output
         RuntimeHelpers.EnsureSufficientExecutionStack();
-        _builder.Append(SentinelCode(exec), 2);
-        foreach (var sub in exec.SubExecutions ?? [])
-            AppendSentinelCodes(sub);
-    }
-
-    private static int SentinelCode(ClauseExecution exec) => exec.ClauseType switch
-    {
-        ClauseType.MatchAll => 1,
-        ClauseType.MatchNothing => 2,
-        _ => 0
-    };
-
-    private void ApplyFate(ClauseExecution exec, ClauseFate fate)
-    {
-        switch (fate)
+        var val = exec.ClauseType switch
         {
-            case ClauseFate.Drop:
-                exec.MarkAsSentinel(ClauseType.MatchAll, _indexSearcher.NumberOfEntries); // WHEN(false) -> the guard is off, so the clause does not filter
-                break;
+            ClauseType.MatchAll => 1,
+            ClauseType.MatchNothing => 2,
+            _ => 0 // Keep
+        };
+        _builder.Append(val, 2);
+        foreach (var sub in exec.SubExecutions ?? [])
+        {
+            AppendSentinelCodes(sub);
         }
     }
 
-    // Decide the fate of a single clause during the resolution pass. A WHEN(...) guard whose predicate is
-    // false makes the clause match-all (Drop) — it stops filtering for this query's parameters.
-    private ClauseFate GateClause(ClauseInfo cached)
+    private void ApplyFate(ClauseExecution exec, ClauseInfo clause)
     {
-        if (cached.WhenCondition is { } predicate && predicate(planParams.QueryParameters) == false)
-            return ClauseFate.Drop;
+        if (template.WhenCount is 0)
+            return;
 
-        return ClauseFate.Keep;
+        if (clause.WhenCondition is not { } predicate ||
+            predicate(planParams.QueryParameters))
+            return;
+
+        // WHEN(false) -> the guard is off, so the clause does not filter
+        exec.MarkAsSentinel(ClauseType.MatchAll, _indexSearcher.NumberOfEntries); 
     }
 
     private static bool IsEmptyIn(ClauseExecution e) =>
@@ -254,8 +228,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     private static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType)
     {
         var clause = exec.Clause;
-        // Switch on the EFFECTIVE per-execution type, not the frozen template type: PropagateBetweenContradiction
-        // and the collapse stamps rewrite exec.ClauseType, and a sentinel has no scan predicate.
         switch (exec.ClauseType)
         {
             // A collapse sentinel is not a scannable residual; null forces the bitmap pipeline (it also clears

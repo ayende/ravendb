@@ -16,8 +16,6 @@ internal static class CardinalityEstimator
         {
             RuntimeHelpers.EnsureSufficientExecutionStack();
             ClauseInfo clause = e.Clause;
-            // Switch on the EFFECTIVE per-execution type: a clause rewritten by PropagateBetweenContradiction or
-            // collapsed to a sentinel must be estimated as its current shape, not the frozen template shape.
             switch (e.ClauseType)
             {
                 case ClauseType.MatchAll:
