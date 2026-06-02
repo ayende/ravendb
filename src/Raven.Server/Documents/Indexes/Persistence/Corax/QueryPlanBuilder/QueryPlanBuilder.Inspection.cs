@@ -292,7 +292,11 @@ internal static partial class QueryPlanBuilder
                 InsideAndGroup = insideAndGroup
             };
 
-            if (op.ParamIndex >= 0 && op.ParamIndex < flatClauses.Count)
+            // MaybeEntryScan is a control-flow decision (switch to entry-scan vs. stay on the bitmap
+            // pipeline based on the running candidate count), not a predicate. Its ParamIndex only marks
+            // the leaf cursor position it guards, so attaching FieldName/Term/ClauseType/Negated would
+            // misrepresent it as filtering on the clause that happens to sit at that index.
+            if (op.Kind != PlanOpKind.MaybeEntryScan && op.ParamIndex >= 0 && op.ParamIndex < flatClauses.Count)
             {
                 inspOp.FlatClauseIndex = op.ParamIndex;
                 var clause = flatClauses[op.ParamIndex];

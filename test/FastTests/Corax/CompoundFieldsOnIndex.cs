@@ -144,6 +144,35 @@ public class CompoundFieldsOnIndex : RavenTestBase
     }
 
     [RavenFact(RavenTestCategory.Querying)]
+    public void CompoundExactMustApplyResidualClause()
+    {
+        // (Location, Name) is a compound field. A query with THREE equals clauses
+        // (Location, Name, Birthday) is a CompoundExact candidate: the (Location, Name) pair
+        // forms the compound. The third clause (Birthday) is a residual that the compound
+        // TermQuery does not encode, so it must still be applied — otherwise rows that match
+        // the compound but not the residual leak into the result.
+        using var store = GetDocumentStore(Options.ForSearchEngine(RavenSearchEngineMode.Corax));
+        new Users_Idx().Execute(store);
+        using (var s = store.OpenSession())
+        {
+            s.Store(new User("A", "IL", new DateTime(2014, 4, 1)));
+            s.Store(new User("A", "IL", new DateTime(2009, 4, 1)));
+            s.SaveChanges();
+        }
+
+        Indexes.WaitForIndexing(store);
+        using (var s = store.OpenSession())
+        {
+            var users = s.Query<User, Users_Idx>()
+                .Where(x => x.Location == "IL" && x.Name == "A" && x.Birthday == new DateTime(2014, 4, 1))
+                .ToList();
+
+            Assert.Equal(1, users.Count);
+            Assert.Equal(2014, users[0].Birthday.Year);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Querying)]
     public async Task Will_NOT_OptimizeQueryIfThereIsNoMatchingCompoundIndex() => await Will_NOT_OptimizeQueryIfThereIsNoMatchingCompoundIndex<Users_Idx>();
     
     [RavenFact(RavenTestCategory.Querying)]

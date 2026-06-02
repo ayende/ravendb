@@ -63,13 +63,12 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
         var plan = timings.QueryPlan as Raven.Client.Documents.Queries.Timings.QueryInspectionNode;
         Assert.NotNull(plan);
         Assert.NotNull(plan.Parameters);
+        // A plain equals query with no ORDER BY makes no cost-gated strategy decision: the absence of
+        // ORDER BY is a precondition, not a decision, so the DecisionTrail records nothing and no
+        // DecisionTrail node is emitted. The chosen strategy is still surfaced via OptimizationHint.
         Assert.True(plan.Parameters.ContainsKey("OptimizationHint"));
         var trailNode = plan.Children?.FirstOrDefault(c => c.Operation == "DecisionTrail");
-        Assert.NotNull(trailNode);
-        Assert.True(trailNode.Children.Count > 0);
-        var noOrderBy = trailNode.Children.FirstOrDefault(c => c.Operation == "NoOrderBy");
-        Assert.NotNull(noOrderBy);
-        Assert.Equal("True", noOrderBy.Parameters["Accepted"]);
+        Assert.Null(trailNode);
     }
 
     [RavenTheory(RavenTestCategory.Corax)]

@@ -415,12 +415,18 @@ internal static partial class QueryPlanBuilder
     
     private static bool TryCreateCompoundExactMatch(ref InstCtx ctx, out string rejectReason)
     {
+        // CompoundExact collapses the two compound clauses into a single composite-key TermQuery.
+        // That key encodes ONLY the two compound fields, so any further clause is a residual the
+        // TermQuery cannot represent. We therefore only take this path when the compound pair IS the
+        // entire query (exactly two executions); with a residual present we fall back to the bitmap
+        // pipeline, which AND-intersects every clause correctly (and the compound pair is just two
+        // cheap term lookups there) — avoiding both the correctness leak and a full scan-and-refilter.
         if (ctx.PlanParams.Index is null ||
-            ctx.Exec is not { Executions.Count: >= 2, Plan.AllNegated: false } ||
+            ctx.Exec is not { Executions.Count: 2, Plan.AllNegated: false } ||
             ctx.Exec.CompoundExactFirst is not { } a ||
             ctx.Exec.CompoundExactSecond is not { } b)
         {
-            rejectReason = "no compound-exact clause pair identified at template time";
+            rejectReason = "no compound-exact clause pair identified at template time, or residual clauses present";
             return false;
         }
 

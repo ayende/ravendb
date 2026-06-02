@@ -36,12 +36,15 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
     /// Compiled IL delegates and plan templates are reused across transactions,
     /// amortizing JIT costs. Thread-safe (ConcurrentDictionary + SIMD SoA lookup).
     /// GC'd when the index instance is replaced (e.g., on index reset/rebuild).</summary>
-    internal readonly global::Corax.Querying.Planning.PlanCache SharedPlanCache = new();
+    internal readonly global::Corax.Querying.Planning.PlanCache SharedPlanCache;
 
     public CoraxIndexPersistence(Index index, IIndexReadOperationFactory indexReadOperationFactory) : base(index, indexReadOperationFactory)
     {
         _logger = RavenLogManager.Instance.GetLoggerForIndex<CoraxIndexPersistence>(index);
         _converter = CreateConverter(index);
+        SharedPlanCache = new global::Corax.Querying.Planning.PlanCache(
+            index.Configuration.CoraxMaxPlansPerQuery,
+            index.Configuration.CoraxMaxDistinctQueryPlans);
     }
 
     private int GetMaxNodesForVectorCache()

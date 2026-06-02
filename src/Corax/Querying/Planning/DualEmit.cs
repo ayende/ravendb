@@ -40,7 +40,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
     {
         Il.MarkLabel(l.Il);
         cs.Append(l.Name);
-        cs.AppendLine(":;");
+        cs.AppendLine(":");
         Debug.Assert(CsStack.Count == 0,
             $"DualEmit: C# operand stack not empty at label {l.Name}: [{string.Join(", ", CsStack)}]");
     }
