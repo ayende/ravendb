@@ -90,21 +90,10 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
     private QueryExecution CreateQueryExecution()
     {
-        // The execution list mirrors the template clause list one-for-one — clauses are never removed.
         // A clause that collapses (WHEN(false), a statically-true exists()/NOT exists(), an empty IN, a
-        // contradictory BETWEEN) is replaced IN PLACE by a MatchAll / MatchNothing sentinel. The plan
-        // emitter's merge algebra performs the boolean simplification (∨/∧ against the universe/∅), which
-        // also makes nesting fall out for free, so there is no list-shape reconciliation to do.
+        // contradictory BETWEEN, etc) is replaced IN PLACE by a MatchAll / MatchNothing sentinel. 
         var execList = new List<ClauseExecution>(template.Clauses.Count);
-
-        int sortDrivingIdx = template.SortDrivingClauseIndex;
-        long drivingClauseCardinality = -1;
-
-        // Capture the clause instance playing each plan-optimization role as soon as we create it (we know its
-        // template-space OriginalIndex here), so the role survives the cardinality sort below without a remap pass.
-        ClauseExecution sortDriving = null, compoundExactFirst = null, compoundExactSecond = null,
-            compoundFieldDriving = null, compoundFieldField2Range = null, sortSeek = null;
-
+        QueryExecution queryExecution = new();
         foreach (var cached in template.Clauses)
         {
             var exec = QueryPlanBuilder.CreateExecution(cached);
@@ -118,50 +107,20 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
                 if (exec.Cardinality < 0)
                     exec.Cardinality = CardinalityEstimator.Estimate(exec, _indexSearcher, _writer, walkerCtx);
-
-                // A clause that has collapsed to a sentinel drives no optimization (it kept its slot but matches
-                // all/nothing), so role capture happens only for live clauses — mirroring the old remap, which
-                // skipped sentinels and left their role index disabled.
-                if (exec.IsSentinel == false)
-                {
-                    int originalIndex = exec.Clause.OriginalIndex;
-                    if (originalIndex == sortDrivingIdx)
-                        drivingClauseCardinality = exec.Cardinality;
-                    if (originalIndex == template.SortDrivingClauseIndex)
-                        sortDriving = exec;
-                    if (originalIndex == template.CompoundExact.First)
-                        compoundExactFirst = exec;
-                    if (originalIndex == template.CompoundExact.Second)
-                        compoundExactSecond = exec;
-                    if (originalIndex == template.CompoundFieldDrivingClause)
-                        compoundFieldDriving = exec;
-                    if (originalIndex == template.CompoundFieldField2Range)
-                        compoundFieldField2Range = exec;
-                    if (originalIndex == template.SortSeekHintTemplateIdx)
-                        sortSeek = exec;
-                }
             }
-
             AppendSentinelCodes(exec);
-
+            queryExecution.SetKnownClause(exec, template);
             execList.Add(exec);
         }
 
         execList.Sort(); // sort executions by cardinality (smaller clauses first)
 
-        return new QueryExecution
-        {
-            Executions = execList,
-            IsAllEntries = execList.Count is 0,
-            DrivingClauseCardinality = drivingClauseCardinality,
-            SortDrivingClause = sortDriving,
-            CompoundExactFirst = compoundExactFirst,
-            CompoundExactSecond = compoundExactSecond,
-            CompoundFieldDrivingClause = compoundFieldDriving,
-            CompoundFieldField2Range = compoundFieldField2Range,
-            SortSeekClause = sortSeek,
-        };
+        queryExecution.Executions = execList;
+        queryExecution.IsAllEntries = execList.Count is 0;
+        return queryExecution;
     }
+
+    
 
     private void AppendSentinelCodes(ClauseExecution exec)
     {
