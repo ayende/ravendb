@@ -213,9 +213,17 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
             ClauseExecution clauseExec = _exec.Executions[i];
             ScanPredicateInfo? pred = BuildScanPredicateInfoCore(clauseExec, clauseExec.TermValueType);
+
+            // A TOP-LEVEL MatchNothing (AlwaysFalse) empties the whole AND; disqualify the entry-scan so
+            // the bitmap pipeline empties it via ClearBitmap + GotoDoneIfEmpty. (Nested AlwaysFalse stays
+            // inside its group predicate, where the IL bakes the boolean identity.)
+            if (pred is { CompareOp: ScanCompareOp.AlwaysFalse })
+                pred = null;
             perClause[i] = pred;
 
-            if (isScanCandidate is false || pred is not { } p)
+            // AlwaysTrue (MatchAll sentinel) stays in perClause so it counts as scan-eligible, but it
+            // carries no predicate to evaluate, so it is never added to the residual list.
+            if (isScanCandidate is false || pred is not { } p || p.CompareOp == ScanCompareOp.AlwaysTrue)
                 continue;
 
             scanList.Add(p);
@@ -230,11 +238,19 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         var clause = exec.Clause;
         switch (exec.ClauseType)
         {
-            // A collapse sentinel is not a scannable residual; null forces the bitmap pipeline (it also clears
-            // allScanEligible, so a query with any sentinel never takes the entry-scan tail).
+            // x ∧ ALL = x: a MatchAll sentinel is always true, so it filters nothing. Emit an
+            // AlwaysTrue placeholder (non-null → keeps the clause scan-eligible) that the residual-set
+            // builders drop before IL emission. This lets a query keep the entry-scan tail even when a
+            // top-level clause has collapsed to match-all (e.g. WHEN(false)).
             case ClauseType.MatchAll:
+                return new ScanPredicateInfo { CompareOp = ScanCompareOp.AlwaysTrue };
+
+            // x ∧ ∅ = ∅: a MatchNothing sentinel is always false. As an AlwaysFalse placeholder it lets
+            // the group recursion below apply boolean algebra (x∨∅=x, x∧∅=∅). At the TOP level
+            // BuildScanPredicates collapses AlwaysFalse back to a disqualifier so the bitmap pipeline
+            // empties the whole AND via ClearBitmap + GotoDoneIfEmpty (faster than any scan).
             case ClauseType.MatchNothing:
-                return null;
+                return new ScanPredicateInfo { CompareOp = ScanCompareOp.AlwaysFalse };
 
             // These clause types cannot be expressed as entry-scan predicates.
             case ClauseType.Search:
@@ -301,9 +317,14 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                 {
                     var subTermType = it.TermValueType;
                     var subPred = BuildScanPredicateInfoCore(it, subTermType);
-                    if (subPred == null)
+                    // Only a genuinely unsupported sub-clause (Search/Regex/Spatial/Vector/boosted-IN)
+                    // disqualifies the whole scan. A sentinel sub-clause is kept as an AlwaysTrue /
+                    // AlwaysFalse marker: the predicate tree stays 1:1 with the SubExecutions tree (so
+                    // ScanParamExtractor and the IL emitter walk it in lockstep) and the IL bakes the
+                    // group-local boolean identity (x∧ALL=x, x∨ALL=ALL, x∧∅=∅, x∨∅=x).
+                    if (subPred is not { } sp)
                         return null;
-                    branches.Add(subPred.Value);
+                    branches.Add(sp);
                 }
 
                 return new ScanPredicateInfo
@@ -353,6 +374,10 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                 continue;
             if (perClause[i] is not { } pred)
                 return null;
+            // AlwaysTrue (MatchAll sentinel) is scan-eligible but has no predicate to evaluate — skip it
+            // without disqualifying the set.
+            if (pred.CompareOp == ScanCompareOp.AlwaysTrue)
+                continue;
             residuals.Add(pred);
             indices.Add(i);
         }
