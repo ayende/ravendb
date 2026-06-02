@@ -225,7 +225,8 @@ public static class ResidualScanIlEmitter
                     // Branch succeeded — skip remaining alternatives.
                     d.GotoAlways(groupPassed);
                     d.MarkLabel(nextSub);
-                    rootIdx++;
+                    if (ConsumesFieldRootPage(in pred.SubPredicates[b]))
+                        rootIdx++;
                 }
                 // All branches fell through → group fails.
                 d.Il.Emit(OpCodes.Br, failLabel);
@@ -237,15 +238,23 @@ public static class ResidualScanIlEmitter
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
                     EmitLeafPredicate(ref d, in pred.SubPredicates[b], failLabel, "rejected", rootIdx, ref inSetIdx, readerRefLocal);
-                    rootIdx++;
+                    if (ConsumesFieldRootPage(in pred.SubPredicates[b]))
+                        rootIdx++;
                 }
             }
             return;
         }
 
         EmitLeafPredicate(ref d, in pred, failLabel, "rejected", rootIdx, ref inSetIdx, readerRefLocal);
-        rootIdx++;
+        if (ConsumesFieldRootPage(in pred))
+            rootIdx++;
     }
+
+    /// <summary>A sentinel leaf (AlwaysTrue / AlwaysFalse) carries no field, so it consumes no
+    /// fieldRootPage slot. <see cref="ScanParamExtractor"/> skips it identically, keeping the IL's
+    /// rootIdx aligned with the extracted root-page list.</summary>
+    private static bool ConsumesFieldRootPage(in ScanPredicateInfo pred) =>
+        pred.CompareOp is not (ScanCompareOp.AlwaysTrue or ScanCompareOp.AlwaysFalse);
 
     /// <summary>Emit FindNext + per-op comparison for one leaf predicate. A failure routes
     /// to (<paramref name="failIl"/>, <paramref name="failName"/>) — either the global "rejected"
@@ -259,6 +268,23 @@ public static class ResidualScanIlEmitter
         ref int inSetIdx,
         LocalBuilder readerRefLocal)
     {
+        // Sentinel leaves (collapsed MatchAll / MatchNothing inside a group) carry no field and consume
+        // no fieldRootPage slot — the caller skips advancing rootIdx for them. AlwaysTrue is a no-op
+        // (the entry passes this leaf); AlwaysFalse fails unconditionally (the entry fails this leaf,
+        // or, in an OR group, falls through to the next branch).
+        if (pred.CompareOp == ScanCompareOp.AlwaysTrue)
+        {
+            d.CsLine("// always-true (MatchAll sentinel) — no-op");
+            return;
+        }
+
+        if (pred.CompareOp == ScanCompareOp.AlwaysFalse)
+        {
+            d.Il.Emit(OpCodes.Br, failIl);
+            d.CsLine($"goto {failName};");
+            return;
+        }
+
         // reader.Reset();
         d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
         d.Il.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);

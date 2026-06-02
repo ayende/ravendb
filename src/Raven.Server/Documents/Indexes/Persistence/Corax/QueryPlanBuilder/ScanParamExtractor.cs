@@ -65,6 +65,11 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
             return;
         }
 
+        // A sentinel leaf (collapsed MatchAll / MatchNothing) has no field — it adds no root page,
+        // matching the IL emitter's rootIdx skip (ResidualScanIlEmitter.ConsumesFieldRootPage).
+        if (pred.CompareOp is ScanCompareOp.AlwaysTrue or ScanCompareOp.AlwaysFalse)
+            return;
+
         _roots.Add(indexSearcher.FieldCache.GetLookupRootPage(pred.FieldName));
 
         if (pred.CompareOp is ScanCompareOp.In or ScanCompareOp.AllIn)
