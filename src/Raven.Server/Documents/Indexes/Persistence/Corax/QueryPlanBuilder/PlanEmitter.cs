@@ -22,8 +22,8 @@ internal sealed class PlanEmitter
 
     public static (PlanOp[] Ops, int RequiredBitmaps) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams, ScanPredicateInfo?[] perClause)
     {
-        if (executions.Count is 0) // a genuinely clause-less query (no WHERE) — match every doc. A query that
-            return (BuildAllEntriesPlan(), 2); // collapses to no results keeps its clauses as MatchNothing sentinels, never an empty list.
+        if (executions.Count is 0) // a genuinely clause-less query (no WHERE) — match every doc.
+            return (BuildAllEntriesPlan(), 2); 
 
         var emitter = new PlanEmitter();
         var (ops, bitmaps) = template.IsOr ? emitter.EmitOrPlan(executions) : emitter.EmitAndPlan(executions, perClause);
@@ -184,36 +184,26 @@ internal sealed class PlanEmitter
     /// the empty set (x∨∅=x, x∧∅=∅).</summary>
     private void EmitSentinelInto(ClauseExecution exec, MergeKind merge)
     {
-        if (exec.ClauseType == ClauseType.MatchAll)
+        switch (exec.ClauseType, merge)
         {
-            switch (merge)
-            {
-                case MergeKind.Fill:
-                case MergeKind.OrInto: // x ∨ ALL = ALL
-                    _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
-                    break;
-                case MergeKind.AndInto: // x ∧ ALL = x
-                    break;
-                case MergeKind.AndNotInto: // x \ ALL = ∅ — defensive; MatchAll is never negated.
-                    _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 0 });
-                    break;
-            }
-            return;
-        }
+            case (ClauseType.MatchAll, MergeKind.Fill):
+            case (ClauseType.MatchAll, MergeKind.OrInto):           // x ∨ ALL = ALL
+                _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
+                break;
 
-        // MatchNothing
-        switch (merge)
-        {
-            case MergeKind.Fill: // empty seed
-            case MergeKind.AndInto: // x ∧ ∅ = ∅
+            case (ClauseType.MatchAll, MergeKind.AndNotInto):       // x \ ALL = ∅ — defensive; MatchAll is never negated.
+            case (ClauseType.MatchNothing, MergeKind.Fill):         // empty seed
+            case (ClauseType.MatchNothing, MergeKind.AndInto):      // x ∧ ∅ = ∅
                 _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 0 });
                 break;
-            case MergeKind.OrInto: // x ∨ ∅ = x
-            case MergeKind.AndNotInto: // x \ ∅ = x
+            
+            case (ClauseType.MatchAll, MergeKind.AndInto):          // x ∧ ALL = x
+            case (ClauseType.MatchNothing, MergeKind.OrInto):       // x ∨ ∅ = x
+            case (ClauseType.MatchNothing, MergeKind.AndNotInto):   // x \ ∅ = x
                 break;
         }
     }
-
+    
     /// <summary>Emit a clause's POSITIVE form (no negation rewrite) merged into slot 0 with the given
     /// <paramref name="merge"/>. This is the body of <see cref="EmitClauseInto"/> minus the
     /// <see cref="ClauseInfo.IsOrChainNotEquals"/> routing, so the De Morgan fold can build the positive
