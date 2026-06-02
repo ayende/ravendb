@@ -156,7 +156,7 @@ internal static partial class QueryPlanBuilder
         var bindings = exec.Clause.Bindings;
         switch (exec.Clause.ClauseType)
         {
-            case ClauseType.Between: // BETWEEN: Literal sentinel bounds are rewritten at template time. Parameter-bound sentinels are detected here at execution time. 
+            case ClauseType.Between: // BETWEEN: open-range "*"/"NULL" sentinel bounds (literal or parameter-bound) are detected here and rewritten to the equivalent half-open range / match-all leaf.
             {
                 var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters, builderParameters);
                 var (high, highType) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
