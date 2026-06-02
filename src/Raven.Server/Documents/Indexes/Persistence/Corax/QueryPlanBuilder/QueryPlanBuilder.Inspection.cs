@@ -136,9 +136,19 @@ internal static partial class QueryPlanBuilder
             root.Children.Add(trailNode);
         }
 
-        // Vector/spatial nodes from executed match
-        if (result.ExecutedMatch != null)
+        // When a tree-scan strategy (DirectScan / CompoundField) actually executed, the op template rendered
+        // above describes only the candidate predicates that fed cost estimation — the bitmap pipeline never
+        // ran. Surface the executed scan's OWN structure (driving tree, seek bound, residual predicates, scan
+        // counts) so the plan reflects what truly happened instead of hiding it behind the unused bitmap
+        // fallback. DirectScanMatchBase.Inspect() carries no vector/spatial children, so AppendPostFilterNodes
+        // would drop it — it must be attached explicitly.
+        if (result.ExecutedMatch is DirectScanMatchBase directScan)
         {
+            root.Children.Add(directScan.Inspect());
+        }
+        else if (result.ExecutedMatch != null)
+        {
+            // Vector/spatial post-filter nodes hang off the executed bitmap match.
             var matchInspection = result.ExecutedMatch.Inspect();
             AppendPostFilterNodes(matchInspection, root);
         }
