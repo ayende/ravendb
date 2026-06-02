@@ -13,7 +13,6 @@ internal static class PlanWalker
         var clauses = ctx.Clauses;
         BoostPropagate(ctx);
         NotCanonicalize(clauses, ctx);
-        BetweenRewriteSentinels(clauses, ctx.IsOr);
         if (ctx.Metadata.IsDynamic)
             DynamicFieldNameResolve(clauses);
         GroupCollapse(clauses, ctx);
@@ -105,61 +104,6 @@ internal static class PlanWalker
             }
         }
     }
-    private static void BetweenRewriteSentinels(List<ClauseInfo> clauses, bool isOr)
-    {
-        RuntimeHelpers.EnsureSufficientExecutionStack();
-        if (clauses is null) return;
-        for (int i = clauses.Count - 1; i >= 0; i--)
-        {
-            ClauseInfo it = clauses[i];
-            BetweenRewriteSentinels(it.SubClauses, isOr: it.ClauseType == ClauseType.OrGroup);
-
-            // After recursion, remove groups that became empty (tautological OR cleared by a child both-sentinel).
-            if (it is { ClauseType: ClauseType.OrGroup, SubClauses.Count: 0 })
-            {
-                if (isOr is false)
-                {
-                    clauses.RemoveAt(i); // tautological in AND = remove
-                    continue;
-                }
-                // tautological propagates up
-                clauses.Clear();
-                return;
-            }
-
-            if (ClauseMatchesAllEntries(it) == false)
-                continue;
-            if (isOr is false)
-            {
-                clauses.RemoveAt(i); // "everything" in AND = tautological, remove
-                continue;
-            }
-
-            clauses.Clear(); // "everything" dominates OR → whole OR is tautological
-            return;
-        }
-
-        bool ClauseMatchesAllEntries(ClauseInfo clause)
-        {
-            if (clause.ClauseType != ClauseType.Between)
-                return false;
-
-            bool lowIsSentinel = clause.Bindings[BindingIndex.BetweenLow] is
-            {
-                LiteralType: ParamValueType.String,
-                LiteralValue: Client.Constants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery
-            };
-
-            bool highIsSentinel = clause.Bindings[BindingIndex.BetweenHigh] is
-            {
-                LiteralType: ParamValueType.String,
-                LiteralValue: Client.Constants.Documents.Querying.Terms.RightNullValueOfBetweenQuery
-            };
-
-            return lowIsSentinel &&  highIsSentinel;
-        }
-    }
-
     private static void BoostPropagate(ResolutionContext ctx)
     {
         foreach (var pending in ctx.PendingBoosts ?? [])
