@@ -68,6 +68,28 @@ public class QueryExecution
             analyzed = indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, StringValues[slot]);
         return analyzed;
     }
+    
+    public void SetKnownClause(ClauseExecution exec, PlanTemplate t)
+    {
+        if (exec.IsSentinel)
+            return; // sentinel clause is effectively removed, cannot be a known clause
+        
+        int originalIndex = exec.Clause.OriginalIndex;
+        if (originalIndex == t.SortDrivingClauseIndex)
+            DrivingClauseCardinality = exec.Cardinality;
+        if (originalIndex == t.SortDrivingClauseIndex)
+            SortDrivingClause = exec;
+        if (originalIndex == t.CompoundExact.First)
+            CompoundExactFirst = exec;
+        if (originalIndex == t.CompoundExact.Second)
+            CompoundExactSecond = exec;
+        if (originalIndex == t.CompoundFieldDrivingClause)
+            CompoundFieldDrivingClause = exec;       
+        if (originalIndex == t.CompoundFieldField2Range)
+            CompoundFieldField2Range = exec;
+        if (originalIndex == t.SortSeekHintTemplateIdx)
+            SortSeekClause = exec;
+    }
 }
 
 public struct ResidualInValues
