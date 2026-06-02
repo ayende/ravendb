@@ -112,17 +112,6 @@ internal static partial class QueryPlanBuilder
             SpatialClauses = walkerCtx.SpatialClauses,
             VectorClauses = walkerCtx.VectorClauses,
             WhenCount = walkerCtx.WhenCount,
-            ExistsCollapseCandidateCount = walkerCtx.ExistsCollapseCandidateCount,
-            // The collapse needs the index definition (dynamic-field flag + index version) to decide
-            // eligibility, so a null p.Index — direct-planner callers build a filter match without an
-            // Index, even for an exists()-bearing query — disqualifies it: the exists() term-walk is kept.
-            // The root operator is NOT a factor: a collapsed exists() becomes a MatchAll/MatchNothing
-            // sentinel, and the emitter's merge algebra simplifies it correctly under OR (x∨ALL=ALL,
-            // x∨∅=x) and inside nested groups.
-            ExistsCollapseEligible = walkerCtx.ExistsCollapseCandidateCount > 0
-                                     && p.Index != null
-                                     && p.Index.Definition.HasDynamicFields == false
-                                     && IndexDefinitionBaseServerSide.IndexVersion.IsNonExistingPostingListSupported(p.Index.Definition.Version),
             OptimizationFlags = optFlags,
             SortDrivingClauseIndex = sortDrivingIdx,
             CompoundExact =  walkerCtx.CompoundExact,
