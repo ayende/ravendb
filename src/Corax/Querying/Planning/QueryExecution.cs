@@ -76,9 +76,10 @@ public class QueryExecution
         
         int originalIndex = exec.Clause.OriginalIndex;
         if (originalIndex == t.SortDrivingClauseIndex)
+        {
             DrivingClauseCardinality = exec.Cardinality;
-        if (originalIndex == t.SortDrivingClauseIndex)
             SortDrivingClause = exec;
+        }
         if (originalIndex == t.CompoundExact.First)
             CompoundExactFirst = exec;
         if (originalIndex == t.CompoundExact.Second)
