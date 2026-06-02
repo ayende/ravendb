@@ -68,7 +68,9 @@ public class CompiledQueryMatch(
 
     public LowLevelTransaction Llt;
 
-    public long Limit = long.MaxValue;
+    // Count is an int (RoaringBitmap.Count), so the limit can only meaningfully range over int — a
+    // larger ceiling is unreachable. Keep it int to avoid widening Count on every limit check.
+    public int Limit = int.MaxValue;
 
     public long[] Timings;  
     public long[] ResultCounts;

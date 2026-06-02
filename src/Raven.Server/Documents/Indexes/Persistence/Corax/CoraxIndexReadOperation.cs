@@ -656,7 +656,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         // No ORDER BY, no DISTINCT, and the client doesn't need exact total —
                         // enable limit-aware bitmap accumulation. The bitmap may be truncated,
                         // so Count is a lower bound (Confidence = Low).
-                        compiledMatch.Limit = take;
+                        compiledMatch.Limit = (int)Math.Min(take, int.MaxValue);
                     }
                 }
 

@@ -147,8 +147,12 @@ internal sealed class PlanEmitter
             var cur = executions[i];
             MergeKind merge = cur.IsNegated ? MergeKind.AndNotInto : MergeKind.AndInto;
 
-            EmitClauseInto(cur, merge, cur.Cardinality, suppressEarlyExit: false);
-            if (cur.IsNegated is false) // when we have 0 results, early exit 
+            // Suppress the leaf's built-in empty-check: a plain AndFrom* leaf would otherwise emit its own
+            // "if (bitmap[0].IsEmpty) goto Done" AND we'd add the explicit GotoDoneIfEmpty below — two
+            // identical checks back-to-back. Merge leaves (In/AllIn/group → AndBitmaps) don't self-guard,
+            // so the explicit op is the single uniform empty-check for every clause shape.
+            EmitClauseInto(cur, merge, cur.Cardinality, suppressEarlyExit: true);
+            if (cur.IsNegated is false) // when we have 0 results, early exit
             {
                 _ops.Add(new PlanOp { Kind = PlanOpKind.GotoDoneIfEmpty, BitmapLocal = 0 });
             }

@@ -64,12 +64,11 @@ internal ref partial struct DualEmit
     public void EmitLimitReachedGoto(Label doneIlLabel, string doneCsName)
     {
         IlLoadBitmapRef(0);
-        Il.Emit(OpCodes.Call, IlEmitterShared.CountGetter);
-        Il.Emit(OpCodes.Conv_I8);
+        Il.Emit(OpCodes.Call, IlEmitterShared.CountGetter); // int
         Il.Emit(OpCodes.Ldarg_0);
-        Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxLimit);
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxLimit); // int — both operands int, no Conv needed
         Il.Emit(OpCodes.Bge, doneIlLabel);
-        CsLine($"if ((long)ctx.Bitmaps[0].Count >= ctx.Limit) goto {doneCsName};");
+        CsLine($"if (ctx.Bitmaps[0].Count >= ctx.Limit) goto {doneCsName};");
     }
 
     public void EmitCancelledCursorSlotCall(LocalBuilder cursorVar, MethodInfo ilMethod, string csMethodName, int bitmapSlot)

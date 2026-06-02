@@ -39,7 +39,9 @@ public static class QueryIlEmitter
         // Register arguments.
         var ctxIdx = d.RegisterArg("ctx");
 
-        // C# function header.
+        // C# function header. [SkipLocalsInit] mirrors the DynamicMethod's InitLocals = false above:
+        // the emitted locals (the stackalloc buffer in particular) are never read before being written.
+        d.CsLine("[SkipLocalsInit]");
         d.CsLine("static void CompiledQuery(CompiledQueryMatch ctx)");
         d.CsLine("{");
 
@@ -61,9 +63,6 @@ public static class QueryIlEmitter
 
         // cursor = 0
         d.StoreLocalConst(cursorVar, 0);
-
-        // Bounds-check elimination preamble
-        EmitBoundsCheckPreamble(ref d, ops);
 
         for (int i = 0; i < ops.Length; i++)
         {
@@ -240,36 +239,6 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Newobj, SpanCtor);
         d.Il.Emit(OpCodes.Stloc, bufferLocal);
         d.CsLine($"Span<long> {d.GetLocalName(bufferLocal)} = stackalloc long[{QueryPrimitives.FillBufferSize}];");
-    }
-
-    /// <summary>Emit bounds-check preamble: touch max bitmap slot so JIT hoists length checks.</summary>
-    private static void EmitBoundsCheckPreamble(ref DualEmit d, PlanOp[] ops)
-    {
-        int maxBitmapSlot = ComputeMaxBitmapSlot(ops);
-
-        if (maxBitmapSlot >= 0)
-        {
-            d.IlLoadBitmapRef(maxBitmapSlot);
-            d.Il.Emit(OpCodes.Pop);
-            d.CsLine($"_ = ref ctx.Bitmaps[{maxBitmapSlot}];");
-        }
-        d.CsLine("");
-    }
-
-    private static int ComputeMaxBitmapSlot(PlanOp[] ops)
-    {
-        int max = -1;
-        for (int i = 0; i < ops.Length; i++)
-        {
-            ref PlanOp op = ref ops[i];
-            if (op.BitmapLocal > max) max = op.BitmapLocal;
-            if (op.Kind is PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.LazyOrBitmaps or PlanOpKind.SwapBitmaps
-                && op.ParamIndex2 > max) max = op.ParamIndex2;
-            if (op.Kind is PlanOpKind.FillFromPostingSource or PlanOpKind.FillFromTreeScan or PlanOpKind.FillFromMatch or PlanOpKind.FillAllEntries && 0 > max) max = 0;
-            if (op.Kind is PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan or PlanOpKind.AndFromMatch
-                    or PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch && 1 > max) max = 1;
-        }
-        return max;
     }
 
     /// <summary>startTick = Stopwatch.GetTimestamp()</summary>

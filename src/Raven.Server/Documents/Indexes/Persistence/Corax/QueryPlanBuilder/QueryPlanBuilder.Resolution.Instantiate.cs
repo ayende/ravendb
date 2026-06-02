@@ -78,19 +78,20 @@ internal static partial class QueryPlanBuilder
             {
                 if (TryCreateCompoundExactMatch(ref ctx, out ctx.RejectReason))
                 {
+                    // No trail entry on success: CompoundExact has no per-execution cost gate, so there is
+                    // no decision to record — the chosen strategy is already surfaced via StrategyCandidate.
+                    // A rejection IS recorded below: it explains why a structurally-available optimization
+                    // did not apply (encoding failed / boosted clause).
                     ctx.Plan.Strategy = ExecutionStrategy.CompoundExact;
-                    ctx.Plan.DecisionTrail.Record("CompoundExact", true, "compound exact-term lookup");
                     return;
                 }
 
                 ctx.Plan.DecisionTrail.Record("CompoundExact", false, ctx.RejectReason ?? "rejected");
             }
 
+            // No ORDER BY: nothing to decide about a sort strategy, so no trail entry — just stop here.
             if (ctx.OrderByFields is null)
-            {
-                ctx.Plan.DecisionTrail.Record("NoOrderBy", true, "no ORDER BY");
                 return;
-            }
 
             if (ctx.Plan.Template.OptimizationFlags.HasFlag(PlanOptimizationFlags.DirectScanCandidate))
             {

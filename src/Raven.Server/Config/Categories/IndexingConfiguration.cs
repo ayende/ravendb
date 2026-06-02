@@ -323,6 +323,18 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Indexing.Corax.UnmanagedAllocationsBatchSizeLimitInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
         public Size? UnmanagedAllocationsBatchLimit { get; protected set; }
 
+        [Description("EXPERT: The maximum number of distinct compiled query plans cached per query shape in the Corax query plan cache. Rounded up to a multiple of 8 for SIMD alignment.")]
+        [DefaultValue(32)]
+        [IndexUpdateType(IndexUpdateType.Refresh)]
+        [ConfigurationEntry("Indexing.Corax.QueryPlanCache.MaxPlansPerQuery", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public int CoraxMaxPlansPerQuery { get; protected set; }
+
+        [Description("EXPERT: The maximum number of distinct query shapes tracked in the Corax query plan cache before a generation rotation evicts the oldest entries.")]
+        [DefaultValue(2048)]
+        [IndexUpdateType(IndexUpdateType.Refresh)]
+        [ConfigurationEntry("Indexing.Corax.QueryPlanCache.MaxDistinctQueries", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public int CoraxMaxDistinctQueryPlans { get; protected set; }
+
         [Description("EXPERT: The maximum size in MB that we'll consider for segments merging")]
         [DefaultValue(DefaultValueSetInConstructor)]
         [SizeUnit(SizeUnit.Megabytes)]
