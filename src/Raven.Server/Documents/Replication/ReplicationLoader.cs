@@ -1036,16 +1036,14 @@ namespace Raven.Server.Documents.Replication
         public long GetConfirmedMinimalClusterWideReplicatedEtag()
         {
             long min = long.MaxValue;
-            bool hasHandlers = false;
+            int count = 0;
             foreach (var handler in OutgoingHandlers)
             {
-                if (handler is OutgoingInternalReplicationHandler)
-                {
-                    hasHandlers = true;
-                    min = Math.Min(min, handler.LastSentDocumentEtag);
-                }
+                if (handler is not OutgoingInternalReplicationHandler) continue;
+                count++;
+                min = Math.Min(min, handler.LastSentDocumentEtag);
             }
-            return hasHandlers ? min : long.MaxValue;
+            return count == _numberOfSiblings ? min : long.MaxValue;
         }
 
         public static ExternalReplicationState GetExternalReplicationState(ServerStore server, string database, long taskId)

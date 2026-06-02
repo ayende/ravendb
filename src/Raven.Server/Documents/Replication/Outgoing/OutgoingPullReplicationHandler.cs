@@ -116,7 +116,6 @@ namespace Raven.Server.Documents.Replication.Outgoing
     public sealed class OutgoingPullReplicationHandlerAsSink : OutgoingPullReplicationHandler
     {
         private readonly PullReplicationAsSink _node;
-        private string _lastPersistedSinkCv;
 
         public OutgoingPullReplicationHandlerAsSink(ReplicationLoader parent, DocumentDatabase database, PullReplicationAsSink node, TcpConnectionInfo connectionInfo) :
             base(parent, database, node, connectionInfo)
@@ -139,9 +138,7 @@ namespace Raven.Server.Documents.Replication.Outgoing
 
             if (_node.Mode == PullReplicationMode.HubToSink && _node.TaskId != 0)
             {
-                var hubCursor = ReadHubCursorFromCluster();
-                if (hubCursor != null)
-                    request[nameof(ReplicationInitialRequest.SinkCanStartFromChangeVector)] = hubCursor;
+                request[nameof(ReplicationInitialRequest.SinkCanStartFromChangeVector)] = ReadHubCursorFromCluster();
             }
 
             return request;
@@ -169,13 +166,12 @@ namespace Raven.Server.Documents.Replication.Outgoing
         protected override void UpdateDestinationChangeVectorHeartbeat(ReplicationMessageReply replicationBatchReply)
         {
             base.UpdateDestinationChangeVectorHeartbeat(replicationBatchReply);
-            if (_node.TaskId != 0 && string.IsNullOrEmpty(replicationBatchReply.ConfirmedSinkCv) == false)
-                PersistSinkCursor(replicationBatchReply.ConfirmedSinkCv);
+            PersistSinkCursor(replicationBatchReply.ConfirmedSinkCv);
         }
 
         private void PersistSinkCursor(string confirmedSinkCv)
         {
-            if (confirmedSinkCv == _lastPersistedSinkCv)
+            if (confirmedSinkCv is null)
                 return;
 
             var command = new UpdateExternalReplicationStateCommand(_database.Name, RaftIdGenerator.NewId())
@@ -188,11 +184,7 @@ namespace Raven.Server.Documents.Replication.Outgoing
                     Type = ExternalReplicationState.ReplicationStateType.SinkCursor
                 }
             };
-            _parent._server.SendToLeaderAsync(command).ContinueWith(x =>
-            {
-                if (x.IsCompletedSuccessfully)
-                    _lastPersistedSinkCv = confirmedSinkCv;
-            }).IgnoreUnobservedExceptions();
+            _parent._server.SendToLeaderAsync(command).IgnoreUnobservedExceptions();
         }
 
         private string ReadSinkCursorFromCluster()
