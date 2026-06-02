@@ -1,6 +1,7 @@
 using System;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Planning;
 using Corax.Querying.Primitives;
 using Voron;
 using Range = Corax.Querying.Matches.Meta.Range;
@@ -9,18 +10,17 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private static IQueryMatch ConstructCompoundField(ref InstCtx ctx, ResolutionContext walkerCtx, int field2RangeIdx, long entriesToScan, long bitmapCost)
+    private static IQueryMatch ConstructCompoundField(ref InstCtx ctx, ResolutionContext walkerCtx, ClauseExecution field2Range, long entriesToScan, long bitmapCost)
     {
-        var execs = ctx.Exec.Executions;
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        int drivingClauseIdx = ctx.Exec.Plan.CompoundField.DrivingClause;
+        var drivingClause = ctx.Exec.CompoundFieldDrivingClause;
 
-        var packed = execs[drivingClauseIdx].PackedParamValue;
+        var packed = drivingClause.PackedParamValue;
 
         if (ctx.Exec.Plan.CompoundFieldResidualSet is null)
             return null;
 
-        string field1Name = execs[drivingClauseIdx].Clause.FieldName;
+        string field1Name = drivingClause.Clause.FieldName;
         string compoundFieldName = ctx.Exec.Plan.Template.CompoundFieldName;
         var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(compoundFieldName, hasBoost: false);
 
@@ -50,8 +50,8 @@ internal static partial class QueryPlanBuilder
         IQueryMatch CreateDrivingMatch(ref InstCtx context)
         {
             string fieldName = context.Exec.Plan.Template.CompoundFieldSortName;
-            if (field2RangeIdx >= 0 && 
-                TryBuildCompositeRangeKeys(ref context, analyzedPrefix, fieldName, execs[field2RangeIdx], out var lowSlice, out var highSlice))
+            if (field2Range is not null &&
+                TryBuildCompositeRangeKeys(ref context, analyzedPrefix, fieldName, field2Range, out var lowSlice, out var highSlice))
             {
                 return indexSearcher.RangeBuilder<Range.Inclusive, Range.Inclusive>(
                     compoundFieldMeta, lowSlice, highSlice,

@@ -95,17 +95,4 @@ public sealed class CompiledPlan
     /// <summary>True when every clause in the execution is negated (NOT pattern).
     /// This is per-CompiledPlan (not per-template) because WHEN elimination can remove all non-negated clauses, leaving only negated ones.</summary>
     public bool AllNegated { get; init; }
-
-    /// <summary>Post-sort runtime index of the driving clause identified at template time. Remapped via  RemapOptimizationIndices.</summary>
-    public int SortDrivingClauseIndex { get; set; } = -1;
-
-    /// <summary>Pre-identified compound-exact-match clause pair (runtime indices, remapped from template via OriginalIndex).</summary>
-    public (int First, int Second) CompoundExact { get; set; } = (-1, -1);
-
-    /// <summary>Pre-identified compound-field-match driving field (WHERE Equals + ORDER BY) driving and Optional field2 range narrowing
-    /// clause (A GT/GTE/LT/LTE/Between on the 2nd field on the compound). Indexes (runtime, remapped from template). </summary>
-    public (int DrivingClause, int Field2Range) CompoundField { get; set; } = (-1, -1);
-
-    /// <summary>Runtime exec-position index of the sort-seek-hint clause (remapped from <see cref="PlanTemplate.SortSeekHintTemplateIdx"/>).</summary>
-    public int SortSeekClauseExecIdx { get; set; } = -1;
 }

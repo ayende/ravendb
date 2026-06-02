@@ -11,7 +11,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 internal static partial class QueryPlanBuilder
 {
     private static IQueryMatch ConstructDirectScan(ref InstCtx ctx, ResolutionContext walkerCtx,
-        int drivingIdx, bool isFullScan, bool hasTieBreak, string reasonForInspection)
+        ClauseExecution drivingClause, bool isFullScan, bool hasTieBreak, string reasonForInspection)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         string sortFieldName = ctx.WantTimings ? ctx.OrderByFields[0].Field.FieldName.ToString() : null;
@@ -21,8 +21,8 @@ internal static partial class QueryPlanBuilder
             return null;
 
         var (drivingMatchProvider, drivingClauseDescription) = isFullScan ?
-            ResolveFullScanDrivingProvider(ref ctx, forward) : 
-            ResolveDrivingProvider(ref ctx, walkerCtx, drivingIdx, forward);
+            ResolveFullScanDrivingProvider(ref ctx, forward) :
+            ResolveDrivingProvider(ref ctx, walkerCtx, drivingClause, forward);
         
         if (drivingMatchProvider is not TermsProviderMatch tpm)
             return null; // can happen if we have no entries for this field
@@ -51,9 +51,8 @@ internal static partial class QueryPlanBuilder
         }
         return ds;
         
-        static (IQueryMatch, string) ResolveDrivingProvider(ref InstCtx ctx, ResolutionContext walkerCtx, int drivingIdx, bool forward)
+        static (IQueryMatch, string) ResolveDrivingProvider(ref InstCtx ctx, ResolutionContext walkerCtx, ClauseExecution drivingExec, bool forward)
         {
-            var drivingExec = ctx.Exec.Executions[drivingIdx];
             var match = drivingExec.ClauseType == ClauseType.Equals
                 ? ResolveEqualsClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx)
                 : ResolveRangeClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx);

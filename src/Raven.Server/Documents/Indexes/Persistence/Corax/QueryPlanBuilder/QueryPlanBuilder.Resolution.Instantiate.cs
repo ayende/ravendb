@@ -40,7 +40,7 @@ internal static partial class QueryPlanBuilder
             case ExecutionStrategy.CompoundField when orderByFields != null:
                 if (CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost) == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
-                innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.Plan.CompoundField.Field2Range, cfEntriesToScan, cfBitmapCost);
+                innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
                 exec.ActualStrategy = ExecutionStrategy.CompoundField;
                 return OrderBy(builderParameters, innerMatch, orderByFields);
@@ -50,8 +50,7 @@ internal static partial class QueryPlanBuilder
                 if (DirectScanCostEffective(ref ctx, isFullScan, out var directScanReason))
                 {
                     bool hasTieBreak = orderByFields.Length == 2;
-                    int drivingIdx = exec.Plan.SortDrivingClauseIndex;
-                    innerMatch = ConstructDirectScan(ref ctx, walkerCtx, drivingIdx, isFullScan, hasTieBreak, directScanReason);
+                    innerMatch = ConstructDirectScan(ref ctx, walkerCtx, exec.SortDrivingClause, isFullScan, hasTieBreak, directScanReason);
                     if (innerMatch is not null)
                     {
                         exec.ActualStrategy = ExecutionStrategy.DirectScan;
@@ -131,26 +130,25 @@ internal static partial class QueryPlanBuilder
             entriesToScan = 0;
             bitmapCost = 0;
             var execs  = ctx.Exec.Executions;
-            int drivingIdx = ctx.Exec.Plan.CompoundField.DrivingClause;
+            var drivingExec = ctx.Exec.CompoundFieldDrivingClause;
 
-            var drivingExec = execs[drivingIdx];
             if (drivingExec.PackedParamValue.IsNone)
                 return false;
 
             var indexSearcher = ctx.PlanParams.IndexSearcher;
-            int field2RangeIdx = ctx.Exec.Plan.CompoundField.Field2Range;
+            var field2Range = ctx.Exec.CompoundFieldField2Range;
             int residualCount = 0;
             for (int i = 0; i < execs.Count; i++)
             {
                 bitmapCost += execs[i].GetEffectiveCardinality(indexSearcher);
-                if (i == drivingIdx || i == field2RangeIdx)
+                if (ReferenceEquals(execs[i], drivingExec) || ReferenceEquals(execs[i], field2Range))
                     continue;
                 residualCount++;
             }
 
             long drivingCardinality = drivingExec.GetEffectiveCardinality(indexSearcher);
             entriesToScan = residualCount > 0
-                ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCardinality, ctx.BuilderParams.Query.PageSize, indexSearcher)
+                ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ctx.BuilderParams.Query.PageSize, indexSearcher)
                 : drivingCardinality;
 
             return IsDirectScanCostEffective(entriesToScan, bitmapCost);
@@ -167,10 +165,10 @@ internal static partial class QueryPlanBuilder
             directScanReason = null;
         
             var execs = ctx.Exec.Executions;
-            int drivingIdx = ctx.Exec.Plan.SortDrivingClauseIndex;
-            if (drivingIdx < 0 || drivingIdx >= execs.Count)
+            var drivingExec = ctx.Exec.SortDrivingClause;
+            if (drivingExec is null)
                 return false;
-            if (execs[drivingIdx].PackedParamValue.IsNone)
+            if (drivingExec.PackedParamValue.IsNone)
                 return false;
 
             long bitmapCost = 0;
@@ -180,9 +178,9 @@ internal static partial class QueryPlanBuilder
                 bitmapCost += it.GetEffectiveCardinality(indexSearcher);
             }
 
-            long drivingCard = execs[drivingIdx].GetEffectiveCardinality(indexSearcher);
+            long drivingCard = drivingExec.GetEffectiveCardinality(indexSearcher);
             var entriesToScan = execs.Count > 1
-                ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingIdx, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher)
+                ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher)
                 : drivingCard;
 
             if (ctx.WantTimings)
@@ -191,14 +189,14 @@ internal static partial class QueryPlanBuilder
         }
 
         static long ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
-            int drivingIdx, long drivingCard, long pageSize, IndexSearcher indexSearcher)
+            ClauseExecution drivingClause, long drivingCard, long pageSize, IndexSearcher indexSearcher)
         {
             long resultsWanted = Math.Min(drivingCard, pageSize);
 
             long minResidual = long.MaxValue;
             for (int i = 0; i < execs.Count; i++)
             {
-                if (i == drivingIdx) continue;
+                if (ReferenceEquals(execs[i], drivingClause)) continue;
                 long c = execs[i].GetEffectiveCardinality(indexSearcher);
                 minResidual = Math.Min(c, minResidual);
             }

@@ -415,22 +415,17 @@ internal static partial class QueryPlanBuilder
     
     private static bool TryCreateCompoundExactMatch(ref InstCtx ctx, out string rejectReason)
     {
-        if (ctx.PlanParams.Index is null || ctx.Exec is not
-            {
-                Executions: { Count: >= 2 } executions,
-                Plan:
-                {
-                    AllNegated: false,
-                    CompoundExact: (> 0, > 0) and var (a, b)
-                }
-            } || a >= executions.Count || b >= executions.Count)
+        if (ctx.PlanParams.Index is null ||
+            ctx.Exec is not { Executions.Count: >= 2, Plan.AllNegated: false } ||
+            ctx.Exec.CompoundExactFirst is not { } a ||
+            ctx.Exec.CompoundExactSecond is not { } b)
         {
             rejectReason = "no compound-exact clause pair identified at template time";
             return false;
         }
 
-        if (IsClauseBoosted(executions[a]) || executions[a].PackedParamValue.IsNone ||
-            IsClauseBoosted(executions[b]) || executions[b].PackedParamValue.IsNone)
+        if (IsClauseBoosted(a) || a.PackedParamValue.IsNone ||
+            IsClauseBoosted(b) || b.PackedParamValue.IsNone)
         {
             rejectReason = "composite key encoding failed or exceeded max term length, or clause is boosted";
             return false;
@@ -442,10 +437,9 @@ internal static partial class QueryPlanBuilder
 
     private static IQueryMatch ConstructCompoundExact(ref InstCtx ctx)
     {
-        var execs = ctx.Exec.Executions;
         var indexSearcher = ctx.PlanParams.IndexSearcher;
-        var eA = execs[ctx.Exec.Plan.CompoundExact.First];
-        var eB = execs[ctx.Exec.Plan.CompoundExact.Second];
+        var eA = ctx.Exec.CompoundExactFirst;
+        var eB = ctx.Exec.CompoundExactSecond;
 
         var (firstField, secondField, firstExec, secondExec) = ctx.Exec.Plan.Template.CompoundExactAFirst
             ? (eA.Clause.ResolvedFieldName ?? eA.Clause.FieldName, eB.Clause.ResolvedFieldName ?? eB.Clause.FieldName, eA, eB)
@@ -472,7 +466,7 @@ internal static partial class QueryPlanBuilder
 
     private static bool TryCreateCompoundFieldMatch(ref InstCtx ctx, out string rejectReason)
     {
-        if (ctx.Exec.Plan.CompoundField.DrivingClause < 0 || ctx.Exec.Plan.Template.CompoundFieldSortName is null)
+        if (ctx.Exec.CompoundFieldDrivingClause is null || ctx.Exec.Plan.Template.CompoundFieldSortName is null)
         {
             rejectReason = "no compound-field candidate identified at template time";
             return false;
@@ -484,10 +478,12 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
+        var driving = ctx.Exec.CompoundFieldDrivingClause;
+        var field2Range = ctx.Exec.CompoundFieldField2Range;
         var execs = ctx.Exec.Executions;
         for (int i = 0; i < execs.Count; i++)
         {
-            if (i == ctx.Exec.Plan.CompoundField.DrivingClause || i == ctx.Exec.Plan.CompoundField.Field2Range)
+            if (ReferenceEquals(execs[i], driving) || ReferenceEquals(execs[i], field2Range))
                 continue;
             if (IsClauseBoosted(execs[i]))
             {
@@ -587,8 +583,7 @@ internal static partial class QueryPlanBuilder
             return true;
         }
 
-        int drivingIdx = ctx.Exec.Plan.SortDrivingClauseIndex;
-        if (drivingIdx < 0)
+        if (ctx.Exec.SortDrivingClause is null)
         {
             rejectReason = "no range/equals clause on sort field (or WHEN eliminated the candidate)";
             return false;

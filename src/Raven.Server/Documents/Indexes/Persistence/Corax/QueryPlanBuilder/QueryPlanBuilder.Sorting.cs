@@ -24,10 +24,9 @@ internal static partial class QueryPlanBuilder
     /// <summary>At template time, we detect that we can optimize using sort hint. At query time, we just need to read the runtime value.</summary>
     private static void TrySetSortSeekHint(CompiledPlan plan, QueryExecution exec, CompiledQueryMatch match)
     {
-        if (plan.SortSeekClauseExecIdx < 0)
+        var sortExec = exec.SortSeekClause;
+        if (sortExec is null)
             return;
-
-        var sortExec = exec.Executions[plan.SortSeekClauseExecIdx];
 
         if (sortExec.PackedParamValue.IsNone)
             return;
