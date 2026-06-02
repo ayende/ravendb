@@ -15,6 +15,17 @@ public class QueryExecution
 
     public List<ClauseExecution> Executions;
 
+    // Clause playing each plan-optimization role, captured at execution-creation time by matching the
+    // template-space OriginalIndex. Holding the instance (not a post-sort index) makes these
+    // sort-order-invariant, so there is no remap step and nothing to recompute on a cache hit. A role is
+    // null when it has no template candidate, or when its clause collapsed to a sentinel.
+    public ClauseExecution SortDrivingClause;
+    public ClauseExecution CompoundExactFirst;
+    public ClauseExecution CompoundExactSecond;
+    public ClauseExecution CompoundFieldDrivingClause;
+    public ClauseExecution CompoundFieldField2Range;
+    public ClauseExecution SortSeekClause;
+
     public long[] FieldRootPages;
 
     public int[] InRangeCounts;

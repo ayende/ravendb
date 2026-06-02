@@ -57,15 +57,14 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             EntryScanSet = scanSet,
             AllNegated = CheckAllNegated(),
         };
-        RemapOptimizationIndices();
 
         // DirectScan / CompoundField walk the driving clause via the tree and filter every OTHER
         // clause per-entry. Their residual set excludes the DRIVING clause, whereas the entry-scan
         // set excludes clause[0] (the bitmap seed). Those differ whenever the driving clause is not
         // the smallest-cardinality clause (always, for a range-driven scan), so each path bakes its
         // own delegate from its own residual set.
-        _compiledPlan.CompoundFieldResidualSet = BuildResidualSet(perClause, _compiledPlan.CompoundField.DrivingClause, _compiledPlan.CompoundField.Field2Range);
-        _compiledPlan.DirectScanResidualSet = BuildResidualSet(perClause, _compiledPlan.SortDrivingClauseIndex, skip2: -1);
+        _compiledPlan.CompoundFieldResidualSet = BuildResidualSet(_exec.Executions, perClause, _exec.CompoundFieldDrivingClause, _exec.CompoundFieldField2Range);
+        _compiledPlan.DirectScanResidualSet = BuildResidualSet(_exec.Executions, perClause, _exec.SortDrivingClause, skip2: null);
 
         if (_compiledPlan.DirectScanResidualSet is { HasPredicates: true } directSet)
             directSet.Compiled = ResidualScanIlEmitter.EmitDelegate(directSet.Predicates, out _);
@@ -101,6 +100,11 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         int sortDrivingIdx = template.SortDrivingClauseIndex;
         long drivingClauseCardinality = -1;
 
+        // Capture the clause instance playing each plan-optimization role as soon as we create it (we know its
+        // template-space OriginalIndex here), so the role survives the cardinality sort below without a remap pass.
+        ClauseExecution sortDriving = null, compoundExactFirst = null, compoundExactSecond = null,
+            compoundFieldDriving = null, compoundFieldField2Range = null, sortSeek = null;
+
         foreach (var cached in template.Clauses)
         {
             var exec = QueryPlanBuilder.CreateExecution(cached);
@@ -114,8 +118,28 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
                 if (exec.Cardinality < 0)
                     exec.Cardinality = CardinalityEstimator.Estimate(exec, _indexSearcher, _writer, walkerCtx);
-                if (sortDrivingIdx >= 0 && exec.Clause.OriginalIndex == sortDrivingIdx)
-                    drivingClauseCardinality = exec.Cardinality;
+
+                // A clause that has collapsed to a sentinel drives no optimization (it kept its slot but matches
+                // all/nothing), so role capture happens only for live clauses — mirroring the old remap, which
+                // skipped sentinels and left their role index disabled.
+                if (exec.IsSentinel == false)
+                {
+                    int originalIndex = exec.Clause.OriginalIndex;
+                    if (originalIndex == sortDrivingIdx)
+                        drivingClauseCardinality = exec.Cardinality;
+                    if (originalIndex == template.SortDrivingClauseIndex)
+                        sortDriving = exec;
+                    if (originalIndex == template.CompoundExact.First)
+                        compoundExactFirst = exec;
+                    if (originalIndex == template.CompoundExact.Second)
+                        compoundExactSecond = exec;
+                    if (originalIndex == template.CompoundFieldDrivingClause)
+                        compoundFieldDriving = exec;
+                    if (originalIndex == template.CompoundFieldField2Range)
+                        compoundFieldField2Range = exec;
+                    if (originalIndex == template.SortSeekHintTemplateIdx)
+                        sortSeek = exec;
+                }
             }
 
             AppendSentinelCodes(exec);
@@ -130,6 +154,12 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             Executions = execList,
             IsAllEntries = execList.Count is 0,
             DrivingClauseCardinality = drivingClauseCardinality,
+            SortDrivingClause = sortDriving,
+            CompoundExactFirst = compoundExactFirst,
+            CompoundExactSecond = compoundExactSecond,
+            CompoundFieldDrivingClause = compoundFieldDriving,
+            CompoundFieldField2Range = compoundFieldField2Range,
+            SortSeekClause = sortSeek,
         };
     }
 
@@ -168,30 +198,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         e.ClauseType is ClauseType.In or ClauseType.AllIn &&
         e.InTermCount == 0 &&
         e.HasNullTerm is false;
-
-    private void RemapOptimizationIndices()
-    {
-        for (int i = 0; i < _exec.Executions.Count; i++)
-        {
-            ClauseExecution it = _exec.Executions[i];
-            // A collapsed clause keeps its slot but drives no optimization: leave the index disabled (-1),
-            // matching the pre-frozen-shape behavior where the clause was removed and never matched by OriginalIndex.
-            if (it.IsSentinel)
-                continue;
-            if (it.Clause.OriginalIndex == template.SortDrivingClauseIndex)
-                _compiledPlan.SortDrivingClauseIndex = i;
-            if (it.Clause.OriginalIndex == template.CompoundExact.First)
-                _compiledPlan.CompoundExact = (i, _compiledPlan.CompoundExact.Second);
-            if (it.Clause.OriginalIndex == template.CompoundExact.Second)
-                _compiledPlan.CompoundExact = (_compiledPlan.CompoundExact.First, i);
-            if (it.Clause.OriginalIndex == template.CompoundFieldDrivingClause)
-                _compiledPlan.CompoundField = (i, _compiledPlan.CompoundField.Field2Range);
-            if (it.Clause.OriginalIndex == template.CompoundFieldField2Range)
-                _compiledPlan.CompoundField = (_compiledPlan.CompoundField.DrivingClause, i);
-            if (it.Clause.OriginalIndex == template.SortSeekHintTemplateIdx)
-                _compiledPlan.SortSeekClauseExecIdx = i;
-        }
-    }
 
     // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
     // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly.
@@ -364,13 +370,15 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     // Returns null when a non-scannable residual clause makes the path ineligible (caller falls back
     // to the bitmap pipeline); otherwise a set whose Predicates may be empty (driving clause is the
     // only clause → no per-entry filter needed). The Compiled delegate is baked by the caller.
-    private static ResidualScanSet BuildResidualSet(ScanPredicateInfo?[] perClause, int skip1, int skip2)
+    private static ResidualScanSet BuildResidualSet(List<ClauseExecution> execs, ScanPredicateInfo?[] perClause, ClauseExecution skip1, ClauseExecution skip2)
     {
         var residuals = new List<ScanPredicateInfo>();
         var indices = new List<int>();
         for (int i = 0; i < perClause.Length; i++)
         {
-            if (i == skip1 || i == skip2)
+            // skip1/skip2 may be null (role has no candidate) — ReferenceEquals against null skips nothing,
+            // matching the old skip == -1 sentinel.
+            if (ReferenceEquals(execs[i], skip1) || ReferenceEquals(execs[i], skip2))
                 continue;
             if (perClause[i] is not { } pred)
                 return null;
