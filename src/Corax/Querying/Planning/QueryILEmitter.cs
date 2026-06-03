@@ -370,8 +370,7 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.RunEntryScanMethod);
         d.CsLine("CompiledQueryHelper.RunEntryScan(ctx, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
 
-        // No swap: survivors stay in slot 1. Execute() reads the result from slot 1 because
-        // EntryScanTakenAtOp is now set, and disposes slot 0 (the stale driving set) instead.
+        // Execute() reads the result from slot 1 because EntryScanTakenAtOp is now set, and disposes slot 0.
         d.EmitRetVoid();
     }
 
