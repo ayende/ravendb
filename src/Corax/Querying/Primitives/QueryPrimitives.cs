@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
+using System.Threading;
 using Corax.Indexing;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
@@ -47,7 +48,7 @@ public static class QueryPrimitives
     {
         ctx.Bitmaps[bitmapSlot].Clear();
         var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Limit);
+        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.Limit);
     }
 
     /// <summary>Seed bitmap[0] with AllEntries — used by AllNegated AND chains
@@ -63,12 +64,12 @@ public static class QueryPrimitives
     public static void CtxFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         ctx.Bitmaps[bitmapSlot].Clear();
-        FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Limit);
+        FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.Limit);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrWithMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ctx.Limit);
+        => OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ctx.Limit, ctx.Token);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
@@ -76,7 +77,7 @@ public static class QueryPrimitives
         long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
         if (remaining <= 0) return;
         var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
+        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, remaining);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -84,7 +85,7 @@ public static class QueryPrimitives
     {
         long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
         if (remaining <= 0) return;
-        FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], remaining);
+        FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, remaining);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -92,7 +93,7 @@ public static class QueryPrimitives
     {
         long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
         if (remaining <= 0) return;
-        OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], remaining);
+        OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], remaining, ctx.Token);
     }
 
     // Boost-rewrite target of CtxFillFromPostingSource/CtxFillFromTreeScan (see ToMatchVariant).
@@ -101,7 +102,7 @@ public static class QueryPrimitives
     public static void CtxFillFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         ctx.Bitmaps[bitmapSlot].Clear();
-        OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ctx.Limit);
+        OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ctx.Limit, ctx.Token);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -109,21 +110,21 @@ public static class QueryPrimitives
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
         var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        AndWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Limit);
+        AndWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token, ctx.Limit);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
-        AndBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot]);
+        AndBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
-        AndWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot]);
+        AndWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -131,21 +132,21 @@ public static class QueryPrimitives
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
         var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        AndNotWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot]);
+        AndNotWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
-        AndNotBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot]);
+        AndNotBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
-        AndNotWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot]);
+        AndNotWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
     }
 
     // ── Lazy leaf resolution ─────────────────────────────────────────
@@ -221,13 +222,14 @@ public static class QueryPrimitives
     /// is truncated so the bitmap never overshoots the requested limit.
     /// </summary>
     [SkipLocalsInit]
-    private static void FillFromPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, long limit = long.MaxValue)
+    private static void FillFromPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, CancellationToken token, long limit = long.MaxValue)
     {
         Span<long> buffer = stackalloc long[FillBufferSize];
 
         long total = 0;
         while (iterator.Fill(buffer, out int read) && read > 0)
         {
+            token.ThrowIfCancellationRequested();
             long remaining = limit - total;
             read = (int)Math.Min(read, remaining);
             if (read <= 0)
@@ -249,7 +251,7 @@ public static class QueryPrimitives
     /// the 50K range instead of all 10M entries.
     /// </summary>
     [SkipLocalsInit]
-    private static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
+    private static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token)
     {
         if (bitmap.IsEmpty)
             return;
@@ -279,6 +281,7 @@ public static class QueryPrimitives
         Span<long> buffer = stackalloc long[FillBufferSize];
         while (iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
         {
+            token.ThrowIfCancellationRequested();
             EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
             tempBitmap.AddRange(buffer[..read]);
         }
@@ -295,7 +298,7 @@ public static class QueryPrimitives
     /// For unsorted queries any N valid results are sufficient.
     /// </summary>
     [SkipLocalsInit]
-    private static void AndWithPostingsLimited(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, long limit)
+    private static void AndWithPostingsLimited(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, long limit, CancellationToken token)
     {
         if (bitmap.IsEmpty)
             return;
@@ -319,6 +322,7 @@ public static class QueryPrimitives
         long matchCount = 0;
         while (matchCount < limit && iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
         {
+            token.ThrowIfCancellationRequested();
             EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
 
             // Filter the batch in-place against bitmap. The posting list is sorted by
@@ -344,7 +348,7 @@ public static class QueryPrimitives
     /// only reads posting list pages that overlap with the bitmap's container range.
     /// </summary>
     [SkipLocalsInit]
-    private static void AndNotWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
+    private static void AndNotWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token)
     {
         if (bitmap.IsEmpty)
             return;
@@ -364,6 +368,7 @@ public static class QueryPrimitives
         Span<long> buffer = stackalloc long[FillBufferSize];
         while (iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
         {
+            token.ThrowIfCancellationRequested();
             EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
             tempBitmap.AddRange(buffer[..read]);
         }
@@ -391,7 +396,7 @@ public static class QueryPrimitives
     ///     skipping the per-batch IQueryMatch + function-pointer indirection.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
-    public static void OrWithMatch(IQueryMatch match, ref RoaringBitmap bitmap, long limit = long.MaxValue)
+    public static void OrWithMatch(IQueryMatch match, ref RoaringBitmap bitmap, long limit = long.MaxValue, CancellationToken token = default)
     {
         if (match is IBitmapQueryMatch bm)
         {
@@ -406,7 +411,7 @@ public static class QueryPrimitives
         }
         if (match is Matches.TermMatch tm && tm.TryGetPostingListIterator(out var iter))
         {
-            FillFromPostings(ref iter, ref bitmap, limit);
+            FillFromPostings(ref iter, ref bitmap, token, limit);
             return;
         }
         Span<long> buffer = stackalloc long[FillBufferSize];
@@ -414,6 +419,7 @@ public static class QueryPrimitives
         long total = 0;
         while ((read = match.Fill(buffer)) > 0)
         {
+            token.ThrowIfCancellationRequested();
             long remaining = limit - total;
             read = (int)Math.Min(read, remaining);
             if (read <= 0) break;
@@ -431,7 +437,7 @@ public static class QueryPrimitives
     ///     the full posting list into a temp bitmap.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
-    public static void AndWithMatch(IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
+    public static void AndWithMatch(IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token = default)
     {
         if (match is IBitmapQueryMatch bm)
         {
@@ -441,11 +447,11 @@ public static class QueryPrimitives
         }
         if (match is Matches.TermMatch tm && tm.TryGetPostingListIterator(out var iter))
         {
-            AndWithPostings(ref iter, ref bitmap, ref tempBitmap);
+            AndWithPostings(ref iter, ref bitmap, ref tempBitmap, token);
             return;
         }
         tempBitmap.Clear();
-        OrWithMatch(match, ref tempBitmap);
+        OrWithMatch(match, ref tempBitmap, token: token);
         bitmap.AndWith(ref tempBitmap);
     }
 
@@ -454,7 +460,7 @@ public static class QueryPrimitives
     /// bounded range scan <see cref="AndNotWithPostings"/> for TermMatch with a large posting list.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     [SkipLocalsInit]
-    public static void AndNotWithMatch(IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap)
+    public static void AndNotWithMatch(IQueryMatch match, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token = default)
     {
         if (match is IBitmapQueryMatch bm)
         {
@@ -464,11 +470,11 @@ public static class QueryPrimitives
         }
         if (match is Matches.TermMatch tm && tm.TryGetPostingListIterator(out var iter))
         {
-            AndNotWithPostings(ref iter, ref bitmap, ref tempBitmap);
+            AndNotWithPostings(ref iter, ref bitmap, ref tempBitmap, token);
             return;
         }
         tempBitmap.Clear();
-        OrWithMatch(match, ref tempBitmap);
+        OrWithMatch(match, ref tempBitmap, token: token);
         bitmap.AndNotWith(ref tempBitmap);
     }
 
@@ -480,6 +486,7 @@ public static class QueryPrimitives
         ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
+        CancellationToken token,
         long limit = long.MaxValue)
     {
         switch (source.Kind)
@@ -493,11 +500,11 @@ public static class QueryPrimitives
                 return;
 
             case Planning.PostingSourceKind.SmallPostingList:
-                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref bitmap, limit);
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref bitmap, token, limit);
                 return;
 
             case Planning.PostingSourceKind.PostingList:
-                FillFromPostings(ref source.LargeIterator, ref bitmap, limit);
+                FillFromPostings(ref source.LargeIterator, ref bitmap, token, limit);
                 return;
 
             default:
@@ -515,6 +522,7 @@ public static class QueryPrimitives
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
         ref RoaringBitmap tempBitmap,
+        CancellationToken token,
         long limit = long.MaxValue)
     {
         if (bitmap.IsEmpty)
@@ -540,15 +548,15 @@ public static class QueryPrimitives
                 }
 
             case Planning.PostingSourceKind.SmallPostingList:
-                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap, limit);
+                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap, token, limit);
                 bitmap.AndWith(ref tempBitmap);
                 return;
 
             case Planning.PostingSourceKind.PostingList:
                 if (limit < long.MaxValue)
-                    AndWithPostingsLimited(ref source.LargeIterator, ref bitmap, ref tempBitmap, limit);
+                    AndWithPostingsLimited(ref source.LargeIterator, ref bitmap, ref tempBitmap, limit, token);
                 else
-                    AndWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap);
+                    AndWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap, token);
                 return;
 
             default:
@@ -563,7 +571,8 @@ public static class QueryPrimitives
         ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
-        ref RoaringBitmap tempBitmap)
+        ref RoaringBitmap tempBitmap,
+        CancellationToken token)
     {
         if (bitmap.IsEmpty)
             return;
@@ -575,12 +584,12 @@ public static class QueryPrimitives
 
             case Planning.PostingSourceKind.Single:
             case Planning.PostingSourceKind.SmallPostingList:
-                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap);
+                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap, token);
                 bitmap.AndNotWith(ref tempBitmap);
                 return;
 
             case Planning.PostingSourceKind.PostingList:
-                AndNotWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap);
+                AndNotWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap, token);
                 return;
 
             default:
@@ -595,6 +604,7 @@ public static class QueryPrimitives
         ref Planning.PostingSource source,
         LowLevelTransaction llt,
         ref RoaringBitmap tempBitmap,
+        CancellationToken token,
         long limit = long.MaxValue)
     {
         tempBitmap.Clear();
@@ -604,7 +614,7 @@ public static class QueryPrimitives
                 tempBitmap.Add(source.SingleEntryId);
                 return;
             case Planning.PostingSourceKind.SmallPostingList:
-                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap, limit);
+                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap, token, limit);
                 return;
             default:
                 Debug.Fail($"MaterializeTermSourceIntoBitmap called with unexpected kind: {source.Kind}");
@@ -620,6 +630,7 @@ public static class QueryPrimitives
         LowLevelTransaction llt,
         long smallPostingListId,
         ref RoaringBitmap bitmap,
+        CancellationToken token,
         long limit = long.MaxValue)
     {
         Container.Get(llt, (ContainerEntryId)smallPostingListId, out var item);
@@ -633,6 +644,7 @@ public static class QueryPrimitives
             long total = 0;
             while (total < limit && (read = reader.Fill(buffer, FillBufferSize)) > 0)
             {
+                token.ThrowIfCancellationRequested();
                 long remaining = limit - total;
                 read = (int)Math.Min(read, remaining);
                 if (read <= 0) break;
@@ -658,6 +670,7 @@ public static class QueryPrimitives
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
+        CancellationToken token = default,
         long limit = long.MaxValue)
     {
         Span<long> plIds = stackalloc long[FillBufferSize];
@@ -683,6 +696,7 @@ public static class QueryPrimitives
             int read;
             while (bitmap.Count < limit && (read = provider.FillPostingListIds(plIds)) > 0)
             {
+                token.ThrowIfCancellationRequested();
                 for (int b = 0; b < buckets.Length; b++)
                     buckets[b].Clear();
 
@@ -737,6 +751,7 @@ public static class QueryPrimitives
                             int smallRead;
                             while (bitmap.Count < limit && (smallRead = smallListReader.Fill(pEntryBuffer, entryBuffer.Length)) > 0)
                             {
+                                token.ThrowIfCancellationRequested();
                                 EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer, smallRead);
                                 int clipped = (int)Math.Min(smallRead, limit - bitmap.Count);
                                 bitmap.AddRange(entryBuffer[..clipped]);
@@ -758,7 +773,7 @@ public static class QueryPrimitives
                         ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
                         using var postingList = new PostingList(llt, Slices.Empty, in setState);
                         var iterator = postingList.Iterate();
-                        FillFromPostings(ref iterator, ref bitmap);
+                        FillFromPostings(ref iterator, ref bitmap, token);
                     }
                 }
             }
@@ -780,12 +795,13 @@ public static class QueryPrimitives
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
-        ref RoaringBitmap tempBitmap)
+        ref RoaringBitmap tempBitmap,
+        CancellationToken token)
     {
         if (bitmap.IsEmpty)
             return;
         tempBitmap.Clear();
-        FillBitmapFromTreeScan(provider, llt, ref tempBitmap);
+        FillBitmapFromTreeScan(provider, llt, ref tempBitmap, token);
         if (tempBitmap.IsEmpty)
         {
             bitmap.Clear();
@@ -800,12 +816,13 @@ public static class QueryPrimitives
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
-        ref RoaringBitmap tempBitmap)
+        ref RoaringBitmap tempBitmap,
+        CancellationToken token)
     {
         if (bitmap.IsEmpty)
             return;
         tempBitmap.Clear();
-        FillBitmapFromTreeScan(provider, llt, ref tempBitmap);
+        FillBitmapFromTreeScan(provider, llt, ref tempBitmap, token);
         if (tempBitmap.IsEmpty)
             return; // subtracting nothing is a no-op
         bitmap.AndNotWith(ref tempBitmap);

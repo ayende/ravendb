@@ -49,21 +49,22 @@ public partial class IndexSearcher
         IQueryMatch match,
         ref BitmapMatch searchBitmap,
         ref Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData,
-        Constants.Search.Operator @operator)
+        Constants.Search.Operator @operator,
+        CancellationToken cancellationToken)
     {
         if (searchBitmap.IsAllocated == false)
         {
             searchBitmap = new BitmapMatch(Allocator);
             tempBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
-            Primitives.QueryPrimitives.OrWithMatch(match, ref searchBitmap.BitmapState);
+            Primitives.QueryPrimitives.OrWithMatch(match, ref searchBitmap.BitmapState, token: cancellationToken);
         }
         else if (@operator == Constants.Search.Operator.Or)
         {
-            Primitives.QueryPrimitives.OrWithMatch(match, ref searchBitmap.BitmapState);
+            Primitives.QueryPrimitives.OrWithMatch(match, ref searchBitmap.BitmapState, token: cancellationToken);
         }
         else
         {
-            Primitives.QueryPrimitives.AndWithMatch(match, ref searchBitmap.BitmapState, ref tempBitmapData);
+            Primitives.QueryPrimitives.AndWithMatch(match, ref searchBitmap.BitmapState, ref tempBitmapData, cancellationToken);
         }
     }
 
@@ -71,7 +72,7 @@ public partial class IndexSearcher
     /// Shared by all three SearchQuery variants.</summary>
     private void MergeTermMatches(List<Slice> termMatches, FieldMetadata field,
         ref BitmapMatch searchBitmap, ref Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData,
-        Constants.Search.Operator @operator)
+        Constants.Search.Operator @operator, CancellationToken cancellationToken)
     {
         if (termMatches is not { Count: > 0 })
             return;
@@ -87,22 +88,22 @@ public partial class IndexSearcher
                 var termQuery = TermQuery(field, term);
                 if (first)
                 {
-                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState);
+                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState, token: cancellationToken);
                     first = false;
                 }
                 else
                 {
-                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData);
+                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData, cancellationToken);
                 }
             }
         }
         else
         {
             foreach (var term in termMatches)
-                Primitives.QueryPrimitives.OrWithMatch(TermQuery(field, term), ref termBitmap.BitmapState);
+                Primitives.QueryPrimitives.OrWithMatch(TermQuery(field, term), ref termBitmap.BitmapState, token: cancellationToken);
         }
 
-        AccumulateIntoSearchBitmap(termBitmap, ref searchBitmap, ref tempBitmapData, @operator);
+        AccumulateIntoSearchBitmap(termBitmap, ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
         tempTermBitmapData.Dispose();
         termBitmap.Dispose();
     }
@@ -111,7 +112,7 @@ public partial class IndexSearcher
     /// then accumulate. Shared by PhraseQuery and WildcardAdjustments variants.</summary>
     private void AccumulatePhraseQuery(FieldMetadata field, ContextBoundNativeList<Slice> terms,
         ref BitmapMatch searchBitmap, ref Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData,
-        Constants.Search.Operator @operator)
+        Constants.Search.Operator @operator, CancellationToken cancellationToken)
     {
         var phraseBitmap = new BitmapMatch(Allocator);
         var tempPhraseBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
@@ -121,19 +122,19 @@ public partial class IndexSearcher
             var termQuery = TermQuery(field, term);
             if (first)
             {
-                Primitives.QueryPrimitives.OrWithMatch(termQuery, ref phraseBitmap.BitmapState);
+                Primitives.QueryPrimitives.OrWithMatch(termQuery, ref phraseBitmap.BitmapState, token: cancellationToken);
                 first = false;
             }
             else
             {
-                Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData);
+                Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData, cancellationToken);
             }
         }
 
         var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
         phraseBitmap.Dispose();
         tempPhraseBitmapData.Dispose();
-        AccumulateIntoSearchBitmap(phraseMatch, ref searchBitmap, ref tempBitmapData, @operator);
+        AccumulateIntoSearchBitmap(phraseMatch, ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
     }
 
     /// <summary>Create a wildcard/exists query from the resolved term type and analyzed term.</summary>
@@ -221,11 +222,11 @@ public partial class IndexSearcher
 
                 AccumulateIntoSearchBitmap(
                     CreateWildcardOrExistsQuery(field, termType, analyzedTerm, cancellationToken),
-                    ref searchBitmap, ref tempBitmapData, @operator);
+                    ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
             }
         }
 
-        MergeTermMatches(termMatches, field, ref searchBitmap, ref tempBitmapData, @operator);
+        MergeTermMatches(termMatches, field, ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
         wildcardAnalyzer?.Dispose();
         return FinalizeSearchResult(ref searchBitmap, ref tempBitmapData);
 
@@ -322,7 +323,7 @@ public partial class IndexSearcher
 
                 AccumulateIntoSearchBitmap(
                     CreateWildcardOrExistsQuery(field, termType, analyzedTerm, cancellationToken),
-                    ref searchBitmap, ref tempBitmapData, @operator);
+                    ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
                 continue;
             }
 
@@ -333,10 +334,10 @@ public partial class IndexSearcher
             if (terms.Count == 0)
                 continue; // sentence contained only stop-words
             PhraseQuery:
-            AccumulatePhraseQuery(field, terms, ref searchBitmap, ref tempBitmapData, @operator);
+            AccumulatePhraseQuery(field, terms, ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
         }
 
-        MergeTermMatches(termMatches, field, ref searchBitmap, ref tempBitmapData, @operator);
+        MergeTermMatches(termMatches, field, ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
         wildcardAnalyzer?.Dispose();
         return FinalizeSearchResult(ref searchBitmap, ref tempBitmapData);
 
@@ -421,15 +422,15 @@ public partial class IndexSearcher
 
                 AccumulateIntoSearchBitmap(
                     CreateWildcardOrExistsQuery(field, termType, value, cancellationToken),
-                    ref searchBitmap, ref tempBitmapData, @operator);
+                    ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
                 continue;
             }
 
             // Phrase query (wildcards are not supported in phrase queries)
-            AccumulatePhraseQuery(field, terms, ref searchBitmap, ref tempBitmapData, @operator);
+            AccumulatePhraseQuery(field, terms, ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
         }
 
-        MergeTermMatches(termMatches, field, ref searchBitmap, ref tempBitmapData, @operator);
+        MergeTermMatches(termMatches, field, ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
         return FinalizeSearchResult(ref searchBitmap, ref tempBitmapData);
     }
 

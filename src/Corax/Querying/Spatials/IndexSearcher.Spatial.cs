@@ -28,10 +28,10 @@ public partial class IndexSearcher
             // Build bitmap from all entries, then AND NOT the spatial match
             var allEntriesBitmap = new Matches.BitmapMatch(Allocator);
             var allEntries = AllEntries();
-            Primitives.QueryPrimitives.OrWithMatch(allEntries, ref allEntriesBitmap.BitmapState);
+            Primitives.QueryPrimitives.OrWithMatch(allEntries, ref allEntriesBitmap.BitmapState, token: token);
 
             var tempBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
-            Primitives.QueryPrimitives.AndNotWithMatch(match, ref allEntriesBitmap.BitmapState, ref tempBitmapData);
+            Primitives.QueryPrimitives.AndNotWithMatch(match, ref allEntriesBitmap.BitmapState, ref tempBitmapData, token);
             tempBitmapData.Dispose();
 
             return allEntriesBitmap;

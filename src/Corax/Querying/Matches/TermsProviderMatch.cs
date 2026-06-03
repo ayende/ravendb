@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Primitives;
 using Sparrow.Server;
@@ -11,7 +12,7 @@ namespace Corax.Querying.Matches;
 /// Lazily fills a RoaringBitmap from the ITermsProvider on first Fill() call, then iterates the bitmap for subsequent fills.
 /// Created by IndexSearcher factory methods (StartsWithQuery, EndsWithQuery, InQuery, ExistsQuery, RegexQuery, range queries, etc.) for use outside the CompiledQueryMatch pipeline.
 /// </summary>
-public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator) : IBitmapQueryMatch, IDisposable
+public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator, CancellationToken token = default) : IBitmapQueryMatch, IDisposable
 {
     public ITermsProvider Provider => provider;
 
@@ -105,7 +106,7 @@ public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransact
         if (_initialized)
             return;
         _bitmap.Clear();
-        QueryPrimitives.FillBitmapFromTreeScan(provider, llt, ref _bitmap);
+        QueryPrimitives.FillBitmapFromTreeScan(provider, llt, ref _bitmap, token);
         _bitmap.PrepareForReading();
         _iterator = _bitmap.GetIterator();
         _initialized = true;
