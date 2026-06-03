@@ -137,23 +137,31 @@ internal sealed class PlanEmitter
     private void EmitFoldedNegatedRun(List<ClauseExecution> executions, int from, int to, bool isFirst)
     {
         using var _ = AllocateScratchSlot(out int saveSlot);
-        
-        EmitPositiveIntersection();
+
         if (isFirst is true)
+        {
+            // slot 0 is empty: build the complement straight into it.
+            EmitComplementIntoSlot0();
             return;
+        }
 
-        using var __ = AllocateScratchSlot(out int interSlot);
-        _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = interSlot }); // park A ∧ B ∧ …
-        _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
-        _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = interSlot });
+        // slot 0 holds the running OR accumulator. Park it before EmitComplementIntoSlot0's leading Fill
+        // clobbers slot 0, build the complement, then OR the accumulator back over it.
+        using var __ = AllocateScratchSlot(out int accSlot);
+        _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = accSlot }); // park accumulator
+        EmitComplementIntoSlot0();
+        _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = accSlot }); // OR it back in
 
-        void EmitPositiveIntersection()
+        // Intersect the (typically selective) positive forms in slot 0 — Fill then AndInto, early-exit
+        // suppressed so a partial intersection cannot short-circuit — then park it and take ONE complement:
+        // slot 0 = ALL \ (A ∧ B ∧ …) = ¬A ∨ ¬B ∨ … (the De Morgan fold).
+        void EmitComplementIntoSlot0()
         {
             EmitPositiveForm(executions[from], MergeKind.Fill, executions[from].Cardinality, suppressEarlyExit: true);
             for (int i = from + 1; i < to; i++)
                 EmitPositiveForm(executions[i], MergeKind.AndInto, executions[i].Cardinality, suppressEarlyExit: true);
 
-            _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+            _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot }); // park A ∧ B ∧ …
             _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
             _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
         }
