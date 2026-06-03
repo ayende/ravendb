@@ -10,6 +10,4 @@ public sealed class InspectionOp
     public long EstimatedCardinality;
 
     public int FlatClauseIndex = -1;
-
-    public bool InsideAndGroup;
 }

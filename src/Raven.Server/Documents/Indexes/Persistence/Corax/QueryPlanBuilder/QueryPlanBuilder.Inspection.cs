@@ -61,22 +61,10 @@ internal static partial class QueryPlanBuilder
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
         compiledRoot = root;
         opNodes = new List<QueryInspectionNode>(template.Length);
-        QueryInspectionNode orGroupNode = null;
 
         for (int i = 0; i < template.Length; i++)
         {
             var t = template[i];
-            switch (t.InsideAndGroup, orGroupNode)
-            {
-                case (true ,null):
-                    orGroupNode = new QueryInspectionNode("AND-Group");
-                    break;
-                case (false, not null):
-                    root.Children.Add(orGroupNode);
-                    orGroupNode = null;
-                    break;
-            }
-
             var parameters = new Dictionary<string, string>();
             if (t.Dispatch != null) parameters["Dispatch"] = t.Dispatch;
             if (t.FieldName != null) parameters["FieldName"] = t.FieldName;
@@ -115,11 +103,8 @@ internal static partial class QueryPlanBuilder
 
             var node = new QueryInspectionNode(t.Name, parameters: parameters);
             opNodes.Add(node);
-            (orGroupNode ?? root).Children.Add(node);
+            root.Children.Add(node);
         }
-
-        if (orGroupNode != null)
-            root.Children.Add(orGroupNode);
 
         if (result.CompiledPlan.DecisionTrail is { Entries.Count: > 0 } trail)
         {
@@ -256,22 +241,12 @@ internal static partial class QueryPlanBuilder
         }
 
         var result = new List<InspectionOp>();
-        bool insideAndGroup = false;
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
 
-            if (op.Kind == PlanOpKind.SwapBitmaps)
-            {
-                insideAndGroup = true; 
-                continue;
-            }
-
             if (op.Kind == PlanOpKind.LazyOrBitmaps)
-            {
-                insideAndGroup = false;
                 continue;
-            }
             if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.GotoDoneIfEmpty or PlanOpKind.GotoDone)
                 continue;
 
@@ -298,8 +273,7 @@ internal static partial class QueryPlanBuilder
                         or PlanOpKind.AndNotFromTreeScan => "MultiTerm",
                     _ => "Match"
                 },
-                EstimatedCardinality = op.EstimatedCardinality,
-                InsideAndGroup = insideAndGroup
+                EstimatedCardinality = op.EstimatedCardinality
             };
 
             // MaybeEntryScan is a control-flow decision (switch to entry-scan vs. stay on the bitmap
