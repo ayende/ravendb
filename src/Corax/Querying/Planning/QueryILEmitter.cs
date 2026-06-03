@@ -354,7 +354,9 @@ public static class QueryIlEmitter
         d.CsLine($"{d.GetLocalName(cursorVar)} = {d.GetLocalName(endVar)};");
     }
 
-    /// <summary>EntryScan tail: set ctx.EntryScanTakenAtOp, run entry scan, swap bitmaps, return.</summary>
+    /// <summary>EntryScan tail: set ctx.EntryScanTakenAtOp, run entry scan, return. Survivors are left in
+    /// slot 1 (RunEntryScan source 0 -> target 1); the harness reads the result from slot 1 when
+    /// EntryScanTakenAtOp is set, so no swap into slot 0 is needed.</summary>
     private static void EmitEntryScanTail(ref DualEmit d, LabelPair entryScanLabel, int entryScanOpIndex)
     {
         d.MarkLabel(entryScanLabel);
@@ -372,8 +374,8 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.RunEntryScanMethod);
         d.CsLine("CompiledQueryHelper.RunEntryScan(ctx, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
 
-        d.EmitBitmapBinaryOp(0, 1, IlEmitterShared.SwapContents, "SwapContents");
-
+        // No swap: survivors stay in slot 1. Execute() reads the result from slot 1 because
+        // EntryScanTakenAtOp is now set, and disposes slot 0 (the stale driving set) instead.
         d.EmitRetVoid();
     }
 
