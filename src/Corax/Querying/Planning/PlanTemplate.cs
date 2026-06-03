@@ -12,9 +12,11 @@ public enum PlanOptimizationFlags : byte
 {
     None = 0,
 
-    /// <summary>Template has ≥2 non-negated, non-boosted Equals clauses — structural
-    /// prerequisite for <c>TryCreateCompoundExactMatch</c>. When clear, the O(n²)
-    /// compound-exact scan is skipped entirely.</summary>
+    /// <summary>The whole query is exactly a WHEN-free pair of non-negated, non-boosted Equals
+    /// clauses whose fields form a compound field — the complete structural precondition for
+    /// <c>TryCreateCompoundExactMatch</c>, which then only has to check the value-dependent
+    /// composite-key encoding. Because the pair is WHEN-free and Equals-only it cannot collapse to
+    /// a sentinel at bind time, so no instantiate-time re-validation of the shape is needed.</summary>
     CompoundExactCandidate = 1,
 
     /// <summary>Template has at least one non-negated, non-boosted range or Equals clause

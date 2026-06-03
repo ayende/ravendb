@@ -415,29 +415,17 @@ internal static partial class QueryPlanBuilder
     
     private static bool TryCreateCompoundExactMatch(ref InstCtx ctx, out string rejectReason)
     {
-        // CompoundExact collapses the two compound clauses into a single composite-key TermQuery.
-        // That key encodes ONLY the two compound fields, so any further clause is a residual the
-        // TermQuery cannot represent. We therefore only take this path when the compound pair IS the
-        // entire query (exactly two executions); with a residual present we fall back to the bitmap
-        // pipeline, which AND-intersects every clause correctly (and the compound pair is just two
-        // cheap term lookups there) — avoiding both the correctness leak and a full scan-and-refilter.
-        if (ctx.PlanParams.Index is null ||
-            ctx.Exec is not { Executions.Count: 2, Plan.AllNegated: false } ||
-            ctx.Exec.CompoundExactFirst is not { } a ||
-            ctx.Exec.CompoundExactSecond is not { } b)
+        // CompoundExact collapses the two compound clauses into a single composite-key TermQuery whose key
+        // encodes ONLY the two compound fields. The template sets CompoundExactCandidate only when the pair
+        // IS the entire, WHEN-free, non-boosted query (QueryPlanBuilder.ComputeTemplateOptimizations), so the
+        // structure is already guaranteed here: exactly two non-negated Equals clauses, both roles populated,
+        // no residual to drop, and the compound index present. The only thing still unknown is value-dependent
+        // — a bound parameter can resolve to "none" (null/missing), which has no composite-key encoding.
+        ClauseExecution a = ctx.Exec.CompoundExactFirst;
+        ClauseExecution b = ctx.Exec.CompoundExactSecond;
+        if (a.PackedParamValue.IsNone || b.PackedParamValue.IsNone)
         {
-            // The template already identified the pair (this method only runs under the CompoundExactCandidate
-            // flag), so these are all instantiate-time outs: a residual clause is present (Executions.Count != 2),
-            // every clause is negated, or a pair member collapsed to a sentinel during instantiation (its role is
-            // then left null by SetKnownClause), or there is no index.
-            rejectReason = "compound-exact pair unusable at instantiate time: residual clause present, all-negated, or a pair member collapsed to a sentinel";
-            return false;
-        }
-
-        if (IsClauseBoosted(a) || a.PackedParamValue.IsNone ||
-            IsClauseBoosted(b) || b.PackedParamValue.IsNone)
-        {
-            rejectReason = "composite key encoding failed or exceeded max term length, or clause is boosted";
+            rejectReason = "a compound-pair value resolved to none and has no composite-key encoding";
             return false;
         }
 
