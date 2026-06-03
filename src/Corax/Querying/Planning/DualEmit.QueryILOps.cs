@@ -78,7 +78,7 @@ internal ref partial struct DualEmit
         Il.Emit(OpCodes.Ldloc, cursorVar);
         Il.Emit(OpCodes.Ldc_I4, bitmapSlot);
         Il.Emit(OpCodes.Call, ilMethod);
-        CsLine($"{csMethodName}(ctx, cursor, {bitmapSlot});");
+        CsLine($"{csMethodName}(ctx, cursor, bitmapSlot: {bitmapSlot});");
         IlAdvanceCursor(cursorVar);
     }
 

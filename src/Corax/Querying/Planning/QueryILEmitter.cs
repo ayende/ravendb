@@ -39,6 +39,8 @@ public static class QueryIlEmitter
         // Register arguments.
         var ctxIdx = d.RegisterArg("ctx");
 
+        int bitmapCount = CountBitmaps(ops);
+        d.CsLine($"// Uses {bitmapCount} result bitmap(s): ctx.Bitmaps[0..{bitmapCount - 1}]. Slot 0 is the live accumulator.");
         d.CsLine("""
                  [SkipLocalsInit]
                  static void CompiledQuery(CompiledQueryMatch ctx)
@@ -215,7 +217,7 @@ public static class QueryIlEmitter
 
         // EntryScan tail
         if (hasEntryScan)
-            EmitEntryScanTail(ref d, entryScanLabel, entryScanOpIndex);
+            EmitEntryScanTail(ref d, entryScanLabel, cursorVar);
         else
         {
             // Dead label — must be marked even if unreachable (IL verifier requires it).
@@ -352,16 +354,17 @@ public static class QueryIlEmitter
 
     /// <summary>EntryScan tail: set ctx.EntryScanTakenAtOp, run entry scan, return. Survivors are left in
     /// slot 1 (RunEntryScan source 0 -> target 1); the harness reads the result from slot 1 when
-    /// EntryScanTakenAtOp is set, so no swap into slot 0 is needed.</summary>
-    private static void EmitEntryScanTail(ref DualEmit d, LabelPair entryScanLabel, int entryScanOpIndex)
+    /// EntryScanTakenAtOp is set, so no swap into slot 0 is needed. The recorded value is the runtime
+    /// 'cursor' (the leaf index of the clause that triggered the switch), not a baked op index.</summary>
+    private static void EmitEntryScanTail(ref DualEmit d, LabelPair entryScanLabel, LocalBuilder cursorVar)
     {
         d.MarkLabel(entryScanLabel);
 
-        // ctx.EntryScanTakenAtOp = entryScanOpIndex
+        // ctx.EntryScanTakenAtOp = cursor
         d.Il.Emit(OpCodes.Ldarg_0);
-        d.Il.Emit(OpCodes.Ldc_I4, entryScanOpIndex);
+        d.Il.Emit(OpCodes.Ldloc, cursorVar);
         d.Il.Emit(OpCodes.Stfld, IlEmitterShared.CtxEntryScanTakenAtOp);
-        d.CsLine($"ctx.EntryScanTakenAtOp = {entryScanOpIndex};");
+        d.CsLine($"ctx.EntryScanTakenAtOp = {d.GetLocalName(cursorVar)};");
 
         // CompiledQueryHelper.RunEntryScan(ctx, ref bitmaps[0], ref bitmaps[1])
         d.Il.Emit(OpCodes.Ldarg_0);
@@ -413,6 +416,37 @@ public static class QueryIlEmitter
         il.Emit(OpCodes.Pop);
 
         il.MarkLabel(skipTouch);
+    }
+
+    /// <summary>Highest destination/source bitmap slot referenced by any op, +1. For the
+    /// bitmap-to-bitmap ops (AndBitmaps / AndNotBitmaps / LazyOrBitmaps) ParamIndex2 is a
+    /// source SLOT and counts; for the range ops it is an InRangeCounts index and does not.
+    /// MaybeEntryScan stages survivors into slot 1, so any plan with an entry-scan needs ≥2.</summary>
+    private static int CountBitmaps(PlanOp[] ops)
+    {
+        int maxSlot = 0;
+        for (int i = 0; i < ops.Length; i++)
+        {
+            ref PlanOp op = ref ops[i];
+            if (op.BitmapLocal > maxSlot)
+                maxSlot = op.BitmapLocal;
+
+            switch (op.Kind)
+            {
+                case PlanOpKind.AndBitmaps:
+                case PlanOpKind.AndNotBitmaps:
+                case PlanOpKind.LazyOrBitmaps:
+                    if (op.ParamIndex2 > maxSlot)
+                        maxSlot = op.ParamIndex2;
+                    break;
+                case PlanOpKind.MaybeEntryScan:
+                    if (maxSlot < 1)
+                        maxSlot = 1;
+                    break;
+            }
+        }
+
+        return maxSlot + 1;
     }
 
     private static void EmptyExecute(CompiledQueryMatch ctx) { }

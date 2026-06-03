@@ -49,7 +49,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
 
             Template = template,
-            Source = csharpText + Environment.NewLine + scanCsharp,
+            Source = string.IsNullOrEmpty(scanCsharp) ? csharpText : csharpText + Environment.NewLine + scanCsharp,
             CacheKeyHash = _cacheKeyHash,
             OpCount = ops.Length,
             RequiredBitmaps = requiredBitmaps,

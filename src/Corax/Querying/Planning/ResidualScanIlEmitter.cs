@@ -44,7 +44,9 @@ public static class ResidualScanIlEmitter
     {
         if (predicates.IsEmpty)
         {
-            csharpSource = "// No residual predicates.\n";
+            // No residual scan delegate is emitted. Return an empty source so the plan's
+            // combined C# does not get a dangling comment glued after CompiledQuery's brace.
+            csharpSource = string.Empty;
             return null;
         }
 
