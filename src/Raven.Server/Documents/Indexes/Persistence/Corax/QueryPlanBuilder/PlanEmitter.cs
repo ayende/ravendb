@@ -139,31 +139,28 @@ internal sealed class PlanEmitter
         if (isFirst is true)
         {
             // slot 0 is empty: build the complement straight into it.
-            EmitComplementOfIntersection(executions, from, to, destSlot: 0);
+            EmitComplementOfIntersection( destSlot: 0);
             return;
         }
 
         // slot 0 holds the running OR accumulator. Build the complement in a fresh scratch slot
         // (so the complement's leading FillAllEntries can't clobber the accumulator), then OR it in.
         using var _ = AllocateScratchSlot(out int compSlot);
-        EmitComplementOfIntersection(executions, from, to, compSlot);
+        EmitComplementOfIntersection(compSlot);
         _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = compSlot });
+        
+        void EmitComplementOfIntersection(int destSlot)
+        {
+            using var _ = AllocateScratchSlot(out int xSlot);
+            EmitPositiveForm(executions[from], MergeKind.Fill, executions[from].Cardinality, suppressEarlyExit: true, xSlot);
+            for (int i = from + 1; i < to; i++)
+                EmitPositiveForm(executions[i], MergeKind.AndInto, executions[i].Cardinality, suppressEarlyExit: true, xSlot);
+
+            _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, BitmapLocal = destSlot, EstimatedCardinality = long.MaxValue });
+            _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = xSlot });
+        }
     }
 
-    /// <summary>Build <c>¬(A ∧ B ∧ …)</c> for the run <c>[from, to)</c> of foldable negated leaves into
-    /// <paramref name="destSlot"/>. The positive forms are intersected into a scratch slot (Fill then AndInto,
-    /// early-exit suppressed so a partial/empty intersection can't short-circuit), then <paramref name="destSlot"/>
-    /// is filled with the universe and the intersection is subtracted: <c>destSlot = ALL \ (A ∧ B ∧ …)</c>.</summary>
-    private void EmitComplementOfIntersection(List<ClauseExecution> executions, int from, int to, int destSlot)
-    {
-        using var _ = AllocateScratchSlot(out int xSlot);
-        EmitPositiveForm(executions[from], MergeKind.Fill, executions[from].Cardinality, suppressEarlyExit: true, xSlot);
-        for (int i = from + 1; i < to; i++)
-            EmitPositiveForm(executions[i], MergeKind.AndInto, executions[i].Cardinality, suppressEarlyExit: true, xSlot);
-
-        _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, BitmapLocal = destSlot, EstimatedCardinality = long.MaxValue });
-        _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = xSlot });
-    }
 
     private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions, ScanPredicateInfo?[] perClause)
     {

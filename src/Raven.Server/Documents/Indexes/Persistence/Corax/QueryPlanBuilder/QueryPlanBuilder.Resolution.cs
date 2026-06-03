@@ -415,15 +415,9 @@ internal static partial class QueryPlanBuilder
     
     private static bool TryCreateCompoundExactMatch(ref InstCtx ctx, out string rejectReason)
     {
-        // CompoundExact collapses the two compound clauses into a single composite-key TermQuery whose key
-        // encodes ONLY the two compound fields. The template sets CompoundExactCandidate only when the pair
-        // IS the entire, WHEN-free, non-boosted query (QueryPlanBuilder.ComputeTemplateOptimizations), so the
-        // structure is already guaranteed here: exactly two non-negated Equals clauses, both roles populated,
-        // no residual to drop, and the compound index present. The only thing still unknown is value-dependent
-        // — a bound parameter can resolve to "none" (null/missing), which has no composite-key encoding.
-        ClauseExecution a = ctx.Exec.CompoundExactFirst;
-        ClauseExecution b = ctx.Exec.CompoundExactSecond;
-        if (a.PackedParamValue.IsNone || b.PackedParamValue.IsNone)
+        // The only thing still unknown is value-dependent — a bound parameter can resolve to "none" (null/missing), which has no composite-key encoding.
+        if (ctx.Exec.CompoundExactFirst.PackedParamValue.IsNone || 
+            ctx.Exec.CompoundExactSecond.PackedParamValue.IsNone)
         {
             rejectReason = "a compound-pair value resolved to none and has no composite-key encoding";
             return false;
