@@ -229,12 +229,7 @@ internal static partial class QueryPlanBuilder
             }
         }
 
-        if (eqCount >= 2)
-        {
-            flags |= PlanOptimizationFlags.CompoundExactCandidate;
-        }
-
-        if (walkerCtx.IsOr || // cannot optimize: `where a OR b`  
+        if (walkerCtx.IsOr || // cannot optimize: `where a OR b`
             p.Index is not { HasCompoundFields: true } ||
             eqCount is 0)
         {
@@ -243,6 +238,19 @@ internal static partial class QueryPlanBuilder
 
         // Compound-exact pair: two Equals clauses whose fields form a compound field.
         if (eqCount >= 2) TryFindCompoundFieldEqualMatches(eqBuf);
+
+        // CompoundExact collapses the pair into a single composite-key TermQuery whose key encodes ONLY the
+        // two compound fields. That is sound only when the pair IS the entire query (no other clause to drop
+        // as a residual) and neither member is WHEN-guarded — a guard can drop a member at bind time, leaving
+        // a single-clause query this strategy cannot represent. Both are structural facts, so decide candidacy
+        // here once; the instantiate-time path is then left with only the value-dependent key encoding to check.
+        if (walkerCtx.CompoundExact.First >= 0 &&
+            clauses.Count == 2 &&
+            clauses[walkerCtx.CompoundExact.First].WhenCondition is null &&
+            clauses[walkerCtx.CompoundExact.Second].WhenCondition is null)
+        {
+            flags |= PlanOptimizationFlags.CompoundExactCandidate;
+        }
 
         // Compound-field candidate: Equals clause + ORDER BY field forming a compound field.
         switch (p.Metadata.OrderBy)
