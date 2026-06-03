@@ -56,8 +56,8 @@ public static class QueryPrimitives
     /// so the IL stays parameter-independent even when an IN clause's runtime
     /// term count differs from its template Bindings.Length.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxFillAllEntries(Matches.CompiledQueryMatch ctx)
-        => OrWithMatch(ctx.Searcher.AllEntries(), ref ctx.Bitmaps[0], ctx.Limit);
+    public static void CtxFillAllEntries(Matches.CompiledQueryMatch ctx, int bitmapSlot)
+        => OrWithMatch(ctx.Searcher.AllEntries(), ref ctx.Bitmaps[bitmapSlot], ctx.Limit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)

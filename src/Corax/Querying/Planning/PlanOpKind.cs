@@ -21,10 +21,10 @@ public enum PlanOpKind : byte
     /// <code>QueryPrimitives.CtxOrWithMatch(ctx, cursor); cursor++;</code></summary>
     FillFromMatch,
 
-    /// <summary>Seed bitmap[0] with every entry via <c>Searcher.AllEntries()</c> — used for
-    /// all-negated AND chains and match-all. No slot lookup (sidesteps IN's structural-vs-runtime
-    /// slot-index mismatch).
-    /// <code>QueryPrimitives.CtxFillAllEntries(ctx);</code></summary>
+    /// <summary>Seed <c>bitmap[BitmapLocal]</c> with every entry via <c>Searcher.AllEntries()</c> — used for
+    /// all-negated AND chains, match-all, and complement builds (universe seeded into a scratch slot, then the
+    /// positive form is subtracted). No term-slot lookup (sidesteps IN's structural-vs-runtime slot-index mismatch).
+    /// <code>QueryPrimitives.CtxFillAllEntries(ctx, BitmapLocal);</code></summary>
     FillAllEntries,
 
     // ── Intersect bitmap[0] with one leaf ───────────────────────────

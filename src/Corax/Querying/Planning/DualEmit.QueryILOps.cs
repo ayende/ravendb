@@ -82,12 +82,13 @@ internal ref partial struct DualEmit
         IlAdvanceCursor(cursorVar);
     }
 
-    public void EmitFillAllEntries()
+    public void EmitFillAllEntries(int bitmapSlot)
     {
         IlCancellationCheck();
         Il.Emit(OpCodes.Ldarg_0);
+        IlEmitterShared.EmitLdcI4(Il, bitmapSlot);
         Il.Emit(OpCodes.Call, IlEmitterShared.CtxFillAllEntries);
-        CsLine("QueryPrimitives.CtxFillAllEntries(ctx);");
+        CsLine($"QueryPrimitives.CtxFillAllEntries(ctx, {bitmapSlot});");
     }
 
     public void EmitGotoDone(Label doneIlLabel, string doneCsName)
