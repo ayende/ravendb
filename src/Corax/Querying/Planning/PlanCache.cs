@@ -25,7 +25,7 @@ namespace Corax.Querying.Planning;
 public class PlanCache
 {
     private int MaxPlansPerQuery { get; }
-    private int MaxDistinctQueries { get; }
+    private int HalfOfMaxDistinctQueries { get; }
 
     private sealed record CacheGeneration(
         ConcurrentDictionary<string, PerQueryPlans> Current,
@@ -33,13 +33,13 @@ public class PlanCache
 
     private CacheGeneration _generation;
 
-    public PlanCache(int maxPlansPerQuery = 32, int maxDistinctQueries = 2048)
+    public PlanCache(int maxPlansPerQuery = 32, int halfOfMaxDistinctQueries = 2048)
     {
         // MaxPlansPerQuery must be a multiple of 8 for SIMD Vector256 alignment
         if (maxPlansPerQuery % 8 != 0)
             maxPlansPerQuery = ((maxPlansPerQuery / 8) + 1) * 8;
         MaxPlansPerQuery = maxPlansPerQuery;
-        MaxDistinctQueries = maxDistinctQueries;
+        HalfOfMaxDistinctQueries = Math.Max(16, halfOfMaxDistinctQueries / 2);
         _generation = new CacheGeneration([], []);
     }
 
@@ -69,7 +69,7 @@ public class PlanCache
         var gen = _generation;
 
         // When the current generation exceeds half the max, rotate.
-        if (gen.Current.Count > MaxDistinctQueries / 2)
+        if (gen.Current.Count > HalfOfMaxDistinctQueries)
         {
             var newGen = new CacheGeneration([], gen.Current);
             // CompareExchange returns the previous value. If it equals gen, we won
