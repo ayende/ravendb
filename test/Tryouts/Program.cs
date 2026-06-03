@@ -305,9 +305,9 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                     new ParamSet("age-broad", "$a=18, $c=\"London\"", q => { q.AddParameter("a", 18); q.AddParameter("c", "London"); }),
                 ]),
 
-            new CatalogQuery("order-by", "DirectScan candidacy vs fallback",
+            new CatalogQuery("order-by", "FieldSortedScan candidacy vs fallback",
                 "from index 'Items/Index' where Age > $a order by Age as long",
-                "A range predicate sorted on the same field is a DirectScan candidate: walk the field's term tree in order and stop at the page. When the predicate is non-selective the per-execution cost gate may fall back to bitmap-sort. Selective vs broad bounds show both decisions.",
+                "A range predicate sorted on the same field is a FieldSortedScan candidate: walk the field's term tree in order and stop at the page. When the predicate is non-selective the per-execution cost gate may fall back to the bitmap pipeline. Selective vs broad bounds show both decisions.",
                 [
                     new ParamSet("selective", "$a=78", q => q.AddParameter("a", 78)),
                     new ParamSet("broad", "$a=18", q => q.AddParameter("a", 18)),
@@ -347,7 +347,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
             new CatalogQuery("compound-sort", "exact + tie-break order",
                 "from index 'Items/Index' where City = $c order by City, Age as long",
-                "An equality leaf sorted by a two-field key. `City = $c` fills the accumulator (a DirectScan candidate), then a `SortingMultiMatch` applies the (City, Age) comparer on top. Note the compound-exact / compound-field optimizations are *not* triggered here (`CompoundField` rejected) — ordering is done by the multi-field sort heap, even though the first sort field is constant within the result.",
+                "An equality leaf sorted by a two-field key. `City = $c` fills the accumulator (a FieldSortedScan candidate), then a `SortingMultiMatch` applies the (City, Age) comparer on top. Note the CompoundKeyLookup / CompoundSortedScan optimizations are *not* triggered here (`CompoundSortedScan` rejected) — ordering is done by the multi-field sort heap, even though the first sort field is constant within the result.",
                 [
                     new ParamSet("london", "$c=\"London\"", q => q.AddParameter("c", "London")),
                     new ParamSet("rome", "$c=\"Rome\"", q => q.AddParameter("c", "Rome")),
