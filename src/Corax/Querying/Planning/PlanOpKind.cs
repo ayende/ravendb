@@ -95,13 +95,6 @@ public enum PlanOpKind : byte
     /// <code>ctx.Bitmaps[target].LazyOrWith(ref ctx.Bitmaps[source]);</code></summary>
     LazyOrBitmaps,
 
-    /// <summary>Swap the contents of two bitmap slots. BitmapLocal = slot A, ParamIndex2 = slot B.
-    /// No longer emitted by the planner — the build tree now dest-addresses scratch slots instead of
-    /// parking slot 0 around a nested build — so the inspection renderer's AND-Group detection (which
-    /// keys off this op) no longer triggers. Op handler and enum value are kept for now.
-    /// <code>ctx.Bitmaps[a].SwapContents(ref ctx.Bitmaps[b]);</code></summary>
-    SwapBitmaps,
-
     /// <summary>Short-circuit the plan when a bitmap slot is empty.
     /// <code>if (ctx.Bitmaps[slot].IsEmpty) goto done;</code></summary>
     GotoDoneIfEmpty,

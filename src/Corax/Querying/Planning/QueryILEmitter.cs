@@ -161,10 +161,6 @@ public static class QueryIlEmitter
                     needsLazyRepair = true;
                     break;
 
-                case PlanOpKind.SwapBitmaps:
-                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.SwapContents, "SwapContents");
-                    break;
-
                 case PlanOpKind.GotoDoneIfEmpty:
                     d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
                     break;
