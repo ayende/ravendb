@@ -287,6 +287,10 @@ public static class ResidualScanIlEmitter
             return;
         }
 
+        // Build-time clause label for the residual C# mirror; no IL effect.
+        if (pred.FieldName != null)
+            d.CsLine($"// {pred.FieldName} [{pred.CompareOp}{(pred.Negated ? ", negated" : string.Empty)}]");
+
         // reader.Reset();
         d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
         d.Il.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);

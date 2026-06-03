@@ -76,6 +76,10 @@ public static class QueryIlEmitter
         {
             ref PlanOp op = ref ops[i];
 
+            // Build-time clause label (e.g. "Name [Equals]") for the C# mirror; no IL effect.
+            if (op.DebugLabel != null)
+                d.CsLine($"// {op.DebugLabel}");
+
             // Timing: record start tick before each op
             if (emitTimings)
                 EmitTimingStart(ref d, startTickLocal, i);
