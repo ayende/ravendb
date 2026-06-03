@@ -112,9 +112,9 @@ public class PlanCacheStrategyTests : RavenTestBase
     // The cost gate must run PER EXECUTION: two queries with the identical direct-scan-candidate shape
     // (range on the sort field + a residual + ORDER BY sort field + a small page) resolve to different
     // ACTUAL strategies based purely on the residual's selectivity. The non-selective one streams via
-    // DirectScan; the selective one is demoted to a (cheaper) bitmap sort. The demotion is observable:
-    // the cached structural candidacy (DirectScan) is surfaced as StrategyCandidate while the executed
-    // strategy is BitmapSort. Corax-only: Lucene has no DirectScan and never emits these hints.
+    // FieldSortedScan; the selective one is demoted to a (cheaper) bitmap sort. The demotion is observable:
+    // the cached structural candidacy (FieldSortedScan) is surfaced as StrategyCandidate while the executed
+    // strategy is BitmapPipeline. Corax-only: Lucene has no FieldSortedScan and never emits these hints.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public async Task PerExecutionCostGate_FlipsStrategy_AndIsObservable(Options options)
@@ -128,25 +128,25 @@ public class PlanCacheStrategyTests : RavenTestBase
 
         using var session = store.OpenAsyncSession();
 
-        // Non-selective residual (Name='BOB' matches ~75%) over a wide range, top-25 -> DirectScan wins.
+        // Non-selective residual (Name='BOB' matches ~75%) over a wide range, top-25 -> FieldSortedScan wins.
         await session.Advanced
             .AsyncRawQuery<Item>($"from index '{index.IndexName}' where Seq between 0 and 3999 and Name = 'BOB' order by Seq as long limit 25 include timings()")
             .Timings(out var directScanTimings)
             .ToListAsync();
         var (directHint, directCandidate) = StrategyOf(directScanTimings);
-        Assert.Equal("DirectScan", directHint);
-        Assert.Equal("DirectScan", directCandidate); // both planned & actual strategies are always surfaced
+        Assert.Equal("FieldSortedScan", directHint);
+        Assert.Equal("FieldSortedScan", directCandidate); // both planned & actual strategies are always surfaced
 
         // Selective residual (Name='Alice' matches ~25%, ~1000 of 4000 — below the ~1225 cost-gate
         // boundary) over the same wide range and page: a bitmap is cheaper, so the per-execution gate
-        // demotes the DirectScan candidate to BitmapSort.
+        // demotes the FieldSortedScan candidate to BitmapPipeline.
         await session.Advanced
             .AsyncRawQuery<Item>($"from index '{index.IndexName}' where Seq between 0 and 3999 and Name = 'Alice' order by Seq as long limit 25 include timings()")
             .Timings(out var bitmapTimings)
             .ToListAsync();
         var (bitmapHint, bitmapCandidate) = StrategyOf(bitmapTimings);
-        Assert.Equal("BitmapSort", bitmapHint);
-        Assert.Equal("DirectScan", bitmapCandidate); // candidacy preserved, but not chosen for these params
+        Assert.Equal("BitmapPipeline", bitmapHint);
+        Assert.Equal("FieldSortedScan", bitmapCandidate); // candidacy preserved, but not chosen for these params
     }
 
     // The SAME query, run with no page bound (huge page) instead of a small limit, must also demote: a
@@ -167,21 +167,21 @@ public class PlanCacheStrategyTests : RavenTestBase
 
         const string body = "where Seq between 0 and 3999 and Name = 'BOB' order by Seq as long";
 
-        // Small page -> DirectScan.
+        // Small page -> FieldSortedScan.
         await session.Advanced
             .AsyncRawQuery<Item>($"from index '{index.IndexName}' {body} limit 25 include timings()")
             .Timings(out var paged)
             .ToListAsync();
-        Assert.Equal("DirectScan", StrategyOf(paged).hint);
+        Assert.Equal("FieldSortedScan", StrategyOf(paged).hint);
 
-        // No page bound -> demoted to BitmapSort, candidacy preserved.
+        // No page bound -> demoted to BitmapPipeline, candidacy preserved.
         await session.Advanced
             .AsyncRawQuery<Item>($"from index '{index.IndexName}' {body} include timings()")
             .Timings(out var unpaged)
             .ToListAsync();
         var (hint, candidate) = StrategyOf(unpaged);
-        Assert.Equal("BitmapSort", hint);
-        Assert.Equal("DirectScan", candidate);
+        Assert.Equal("BitmapPipeline", hint);
+        Assert.Equal("FieldSortedScan", candidate);
     }
 
     // Correctness across both strategies and both engines. Whatever the per-execution gate picks, the

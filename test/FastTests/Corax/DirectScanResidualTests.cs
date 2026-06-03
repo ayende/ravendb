@@ -160,15 +160,16 @@ public class DirectScanResidualTests : RavenTestBase
         Assert.NotNull(plan);
         var compiled = FindOperation(plan, "CompiledQuery");
         Assert.True(compiled != null, "Expected a CompiledQuery node in the plan. Plan: " + Describe(plan));
-        Assert.True(compiled.Parameters.TryGetValue("OptimizationHint", out var hint) && hint == "DirectScan",
-            "Expected the plan to use the DirectScan strategy, but OptimizationHint was '" + (hint ?? "<missing>") + "'. Plan: " + Describe(plan));
+        Assert.True(compiled.Parameters.TryGetValue("OptimizationHint", out var hint) && hint == "FieldSortedScan",
+            "Expected the plan to use the FieldSortedScan strategy, but OptimizationHint was '" + (hint ?? "<missing>") + "'. Plan: " + Describe(plan));
 
-        // The executed DirectScan match's OWN structure must be surfaced under the plan. The bitmap op
+        // The executed scan match's OWN structure must be surfaced under the plan. The bitmap op
         // template never ran for this query, so the introspection previously dropped the scan node entirely
         // (RavenDB-25281 review #15). The node carries the driving tree, the residual predicates, and the
-        // per-run scan counts. It is attached as a DIRECT child of the CompiledQuery node — distinct from the
-        // same-named "DirectScan" entry nested under DecisionTrail, which only records the candidacy verdict
-        // (Accepted/Reason). Target the structural node by its direct-child position so the two don't collide.
+        // per-run scan counts. It is attached as a DIRECT child of the CompiledQuery node and keeps the
+        // match's own name "DirectScan" — distinct from the DecisionTrail's "FieldSortedScan" candidacy entry
+        // (Accepted/Reason), which the FieldSortedScan strategy records. Target the structural node by its
+        // direct-child position.
         var directScan = compiled.Children?.FirstOrDefault(c => c.Operation == "DirectScan");
         Assert.True(directScan != null, "Expected a DirectScan node as a direct child of CompiledQuery. Plan: " + Describe(plan));
         Assert.True(directScan.Parameters.ContainsKey("DrivingTree"),

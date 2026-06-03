@@ -180,7 +180,7 @@ internal static partial class QueryPlanBuilder
         {
             ClauseInfo c = clauses[i];
 
-            if (HasBoostRecursive(c)) // Any boost anywhere rules out DirectScan and CompoundField (no scoring stage).
+            if (HasBoostRecursive(c)) // Any boost anywhere rules out FieldSortedScan and CompoundSortedScan (no scoring stage).
                 return PlanOptimizationFlags.None;
 
             if (c.IsNegated)
@@ -239,7 +239,7 @@ internal static partial class QueryPlanBuilder
         // Compound-exact pair: two Equals clauses whose fields form a compound field.
         if (eqCount >= 2) TryFindCompoundFieldEqualMatches(eqBuf);
 
-        // CompoundExact collapses the pair into a single composite-key TermQuery whose key encodes ONLY the
+        // CompoundKeyLookup collapses the pair into a single composite-key TermQuery whose key encodes ONLY the
         // two compound fields. That is sound only when the pair IS the entire query (no other clause to drop
         // as a residual) and neither member is WHEN-guarded — a guard can drop a member at bind time, leaving
         // a single-clause query this strategy cannot represent. Both are structural facts, so decide candidacy
