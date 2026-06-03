@@ -351,47 +351,81 @@ public static class ResidualScanIlEmitter
             return;
         }
 
-        // FindNext(ctx.ResidualFieldRootPages[rootIdx]) leaves a bool on both stacks.
+        // Exists only needs the first term. The value comparisons walk EVERY term of the field, so
+        // multi-valued fields are handled exactly like the bitmap pipeline (an entry matches when ANY
+        // of its terms qualifies). Null terms carry a stale CurrentLong/CurrentDouble, so the value
+        // loops skip them — matching the IN helpers and the bitmap null-term semantics.
+        if (pred.CompareOp == ScanCompareOp.Exists)
+        {
+            // reader.FindNext(rootPage); predicate succeeds iff a term exists.
+            EmitFindNext(ref d, readerRefLocal, rootIdx);
+            EmitBranchFalse(ref d, failIl, failName);
+            return;
+        }
+
+        if (pred.CompareOp == ScanCompareOp.NotEqual)
+        {
+            // NotEqual: the entry FAILS if ANY term equals the target; it PASSES when no term equals
+            // (including an absent field).
+            //   while (reader.FindNext(rootPage)) { if (reader.IsNull) continue; if (term == target) goto fail; }
+            var loopHead = d.DefineLabelPair("notEqualNext");
+            var pass = d.DefineLabelPair("notEqualPass");
+
+            d.Il.MarkLabel(loopHead.Il);
+            d.CsLine($"{loopHead.Name}:");
+            EmitFindNext(ref d, readerRefLocal, rootIdx);
+            EmitBranchFalse(ref d, pass.Il, pass.Name);   // out of terms → none equal → pass
+            EmitSkipIfNull(ref d, readerRefLocal, loopHead);
+            EmitTypedComparison(ref d, in pred, readerRefLocal);
+            EmitBranchTrue(ref d, failIl, failName);      // term equals → fail
+            d.Il.Emit(OpCodes.Br, loopHead.Il);           // not equal → next term
+            d.CsLine($"goto {loopHead.Name};");
+
+            d.Il.MarkLabel(pass.Il);
+            d.CsLine($"{pass.Name}:");
+            return;
+        }
+
+        // Positive equality / relational / BETWEEN: the entry PASSES if ANY term satisfies the
+        // comparison; it FAILS if none do (including an absent field).
+        //   while (reader.FindNext(rootPage)) { if (reader.IsNull) continue; if (<cmp>) goto pass; }  goto fail;
+        {
+            var loopHead = d.DefineLabelPair("matchNext");
+            var pass = d.DefineLabelPair("matchPass");
+
+            d.Il.MarkLabel(loopHead.Il);
+            d.CsLine($"{loopHead.Name}:");
+            EmitFindNext(ref d, readerRefLocal, rootIdx);
+            EmitBranchFalse(ref d, failIl, failName);     // out of terms → none matched → fail
+            EmitSkipIfNull(ref d, readerRefLocal, loopHead);
+            EmitTypedComparison(ref d, in pred, readerRefLocal);
+            EmitBranchTrue(ref d, pass.Il, pass.Name);    // term satisfies → pass
+            d.Il.Emit(OpCodes.Br, loopHead.Il);           // not satisfied → next term
+            d.CsLine($"goto {loopHead.Name};");
+
+            d.Il.MarkLabel(pass.Il);
+            d.CsLine($"{pass.Name}:");
+        }
+    }
+
+    /// <summary>Emit <c>reader.FindNext(exec.FieldRootPages[rootIdx])</c>, leaving the bool result
+    /// on both the IL evaluation stack and the C# operand stack.</summary>
+    private static void EmitFindNext(ref DualEmit d, LocalBuilder readerRefLocal, int rootIdx)
+    {
         d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
         d.CsStack.Push("reader");
         d.LoadFieldRootPage(rootIdx);
         d.CallReturning(IlEmitterShared.ReaderFindNext, arity: 2, csTemplate: "{0}.FindNext({1})");
+    }
 
-        switch (pred.CompareOp)
-        {
-            case ScanCompareOp.Exists:
-                // Predicate succeeds iff FindNext returned true.
-                EmitBranchFalse(ref d, failIl, failName);
-                break;
-
-            case ScanCompareOp.NotEqual:
-            {
-                // NotEqual semantics: if the field is absent (FindNext == false), the
-                // predicate PASSES (nothing to be unequal to ≠ violation). If found, then
-                // it fails iff the value compares equal.
-                var notFoundIl = d.Il.DefineLabel();
-                var foundFragment = d.CsStack.Pop();
-                d.Il.Emit(OpCodes.Brfalse, notFoundIl);
-                d.CsLine($"if ({foundFragment})");
-                d.CsLine("{");
-                EmitTypedComparison(ref d, in pred, readerRefLocal);
-                // FAIL if comparison is true (value equals).
-                EmitBranchTrue(ref d, failIl, failName);
-                d.CsLine("}");
-                d.Il.MarkLabel(notFoundIl);
-                break;
-            }
-
-            default:
-            {
-                // FindNext must return true.
-                EmitBranchFalse(ref d, failIl, failName);
-                // And the typed comparison must hold.
-                EmitTypedComparison(ref d, in pred, readerRefLocal);
-                EmitBranchFalse(ref d, failIl, failName);
-                break;
-            }
-        }
+    /// <summary>Emit <c>if (reader.IsNull) goto loopHead;</c> — skip null terms in a value loop.
+    /// A null term's CurrentLong/CurrentDouble is stale, so it must never feed a comparison.</summary>
+    private static void EmitSkipIfNull(ref DualEmit d, LocalBuilder readerRefLocal, LabelPair loopHead)
+    {
+        d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+        d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
+        d.Il.Emit(OpCodes.Brtrue, loopHead.Il);
+        d.CsLine($"if (reader.IsNull) goto {loopHead.Name};");
     }
 
     /// <summary>Emit the comparison portion of a leaf predicate. On entry both stacks are
