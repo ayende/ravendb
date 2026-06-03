@@ -39,11 +39,12 @@ public static class QueryIlEmitter
         // Register arguments.
         var ctxIdx = d.RegisterArg("ctx");
 
-        // C# function header. [SkipLocalsInit] mirrors the DynamicMethod's InitLocals = false above:
-        // the emitted locals (the stackalloc buffer in particular) are never read before being written.
-        d.CsLine("[SkipLocalsInit]");
-        d.CsLine("static void CompiledQuery(CompiledQueryMatch ctx)");
-        d.CsLine("{");
+        d.CsLine("""
+                 [SkipLocalsInit]
+                 static void CompiledQuery(CompiledQueryMatch ctx)
+                 {
+                 """);
+
         // Calling convention for the QueryPrimitives.Ctx*From*(ctx, cursor, slot) helpers below:
         //   'cursor' is the leaf cursor — it picks WHICH match we read from (the posting source / tree
         //   scan / query match resolved for ctx.Leaves[cursor] / ctx.ResolvedMatches[cursor], i.e. the
@@ -371,9 +372,6 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.RunEntryScanMethod);
         d.CsLine("CompiledQueryHelper.RunEntryScan(ctx, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
 
-        // bitmaps[0].SwapContents(ref bitmaps[1]) — slot 0 now holds the scanned survivors; slot 1 holds
-        // the old driving set, which is disposed in CompiledQueryMatch.Execute's finally block. We return
-        // straight after, so there is no need to Clear() slot 1 — disposal reclaims it either way.
         d.EmitBitmapBinaryOp(0, 1, IlEmitterShared.SwapContents, "SwapContents");
 
         d.EmitRetVoid();
