@@ -224,11 +224,17 @@ public class CompiledQueryMatch(
         ResultCounts = wantTimings ? new long[opCount] : null;
         EntryScanTakenAtOp = -1;
 
+        // The two runtime exits leave the result in different slots: the bitmap pipeline lands in slot 0,
+        // the entry-scan tail writes survivors to slot 1 (RunEntryScan source 0 -> target 1) without
+        // swapping back. Read the result from whichever slot the taken exit used. Stays 0 on exception so
+        // the disposal below matches the original "keep slot 0, dispose the rest" behavior.
+        int resultSlot = 0;
         try
         {
             _compiledDelegate(this);
 
-            _bitmapData = Bitmaps[0];
+            resultSlot = EntryScanTakenAtOp >= 0 ? 1 : 0;
+            _bitmapData = Bitmaps[resultSlot];
             _bitmapData.PrepareForReading();
             _count = _bitmapData.Count;
             _iterator = _bitmapData.GetIterator();
@@ -236,8 +242,14 @@ public class CompiledQueryMatch(
         }
         finally
         {
-            for (int i = 1; i < bitmapCount; i++)
-                Bitmaps[i].Dispose();
+            // Dispose every slot except the result. Slot 0 normally holds the owned _bitmapData and is kept,
+            // but when entry-scan ran the result moved to slot 1, so slot 0 now holds the stale driving set
+            // and is disposed here instead.
+            for (int i = 0; i < bitmapCount; i++)
+            {
+                if (i != resultSlot)
+                    Bitmaps[i].Dispose();
+            }
             ArrayPool<RoaringBitmap>.Shared.Return(Bitmaps, clearArray: true);
             Bitmaps = null;
         }
