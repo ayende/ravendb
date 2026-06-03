@@ -65,21 +65,15 @@ internal sealed class PlanEmitter
     {
         Debug.Assert(executions.Count > 0);
 
-        // Single left-to-right pass. Each leaf-consuming op bakes ParamIndex = _matchIndex++, and the
-        // resolver + cardinality builder walk this same list in the same order — so emission MUST proceed
-        // in list order to keep _matchIndex in lockstep. The bitmap algebra wrapped around the leaves is
-        // free to change; the leaf consumption order is not.
-        //
         // ClauseExecution.CompareTo sorts negated clauses last, so foldable negated leaves arrive as a
-        // contiguous suffix (a non-foldable negated group, if present, breaks the run and is emitted on
-        // its own). We fold any contiguous run of ≥2 foldable negated leaves by De Morgan into a single
+        // contiguous suffix. We fold any contiguous run of ≥2 foldable negated leaves by De Morgan into a single
         // complement; positives and lone negations emit normally. This handles mixed chains such as
         // (C = 4 OR A NOT IN (…) OR B NOT IN (…)) — the positive ORs in, the two negations fold together.
         bool first = true;
         int i = 0;
         while (i < executions.Count)
         {
-            int runEnd = FoldableNegatedRunEnd(executions, i);
+            int runEnd = FoldableNegatedRunEnd(i);
             if (runEnd - i >= 2) // ≥2 foldable negations: collapse N FillAllEntries into one complement
             {
                 EmitFoldedNegatedRun(executions, i, runEnd, first);
@@ -94,16 +88,13 @@ internal sealed class PlanEmitter
         }
 
         return Complete();
-    }
-
-    /// <summary>Length of the maximal run of <see cref="IsFoldableNegatedLeaf"/> members starting at
-    /// <paramref name="from"/>, returned as the exclusive end index.</summary>
-    private static int FoldableNegatedRunEnd(List<ClauseExecution> executions, int from)
-    {
-        int i = from;
-        while (i < executions.Count && IsFoldableNegatedLeaf(executions[i]))
-            i++;
-        return i;
+            
+        int FoldableNegatedRunEnd(int j)
+        {
+            while (j < executions.Count && IsFoldableNegatedLeaf(executions[j]))
+                j++;
+            return j;
+        }
     }
 
     /// <summary>A negated OR-chain member that can take part in a De Morgan fold: a real leaf (not a
@@ -145,36 +136,27 @@ internal sealed class PlanEmitter
     /// existing accumulator.</summary>
     private void EmitFoldedNegatedRun(List<ClauseExecution> executions, int from, int to, bool isFirst)
     {
-        if (isFirst)
+        using var _ = AllocateScratchSlot(out int saveSlot);
+        
+        EmitPositiveIntersection();
+        if (isFirst is true)
+            return;
+
+        using var __ = AllocateScratchSlot(out int interSlot);
+        _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = interSlot }); // park A ∧ B ∧ …
+        _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
+        _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = interSlot });
+
+        void EmitPositiveIntersection()
         {
-            // slot 0 is empty: build the positive intersection A ∧ B ∧ … in it (Fill then AndInto, early-exit
-            // suppressed so a partial/empty intersection cannot short-circuit), park it, fill the universe,
-            // take ONE complement. slot 0 = ALL \ (A ∧ B ∧ …) — a doc missing any field is absent from the
-            // intersection and so lands in the result, identical to the per-member FillAllEntries + AndNot.
             EmitPositiveForm(executions[from], MergeKind.Fill, executions[from].Cardinality, suppressEarlyExit: true);
             for (int i = from + 1; i < to; i++)
                 EmitPositiveForm(executions[i], MergeKind.AndInto, executions[i].Cardinality, suppressEarlyExit: true);
 
-            using var _ = AllocateScratchSlot(out int saveSlot);
             _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
             _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
             _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-            return;
         }
-
-        // OrInto: park the running accumulator, build the run's complement in slot 0, then OR it back.
-        using var _pos = AllocateScratchSlot(out int posSlot);
-        _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = posSlot }); // park accumulator, free slot 0
-
-        EmitPositiveForm(executions[from], MergeKind.Fill, executions[from].Cardinality, suppressEarlyExit: true);
-        for (int i = from + 1; i < to; i++)
-            EmitPositiveForm(executions[i], MergeKind.AndInto, executions[i].Cardinality, suppressEarlyExit: true);
-
-        using var _inter = AllocateScratchSlot(out int interSlot);
-        _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = interSlot }); // park A ∧ B ∧ …
-        _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
-        _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = interSlot }); // slot 0 = ¬(A ∧ B ∧ …)
-        _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = posSlot });   // OR the accumulator back in
     }
 
     private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions, ScanPredicateInfo?[] perClause)
