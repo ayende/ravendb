@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Numerics;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
@@ -86,6 +87,40 @@ public class PlanCache
             (MaxPlansPerQuery, template));
 
         per.Publish(plan);
+    }
+
+    /// <summary>
+    /// A single cached query text, its parse template, and every compiled plan variant
+    /// currently held for it. Returned by <see cref="Snapshot"/>. Intended for diagnostics,
+    /// introspection, and tooling — not on any hot path.
+    /// </summary>
+    public readonly record struct PlanCacheEntry(string QueryText, PlanTemplate Template, CompiledPlan[] Plans);
+
+    /// <summary>
+    /// Point-in-time snapshot of every cached query and its compiled plan variants across both
+    /// generations. The current generation wins on duplicate query texts. Reads are lock-free and
+    /// may observe concurrent publishes, so the result is best-effort — adequate for diagnostics
+    /// and tooling, not for correctness-sensitive logic.
+    /// </summary>
+    public IReadOnlyList<PlanCacheEntry> Snapshot()
+    {
+        var gen = _generation;
+        var result = new List<PlanCacheEntry>();
+        var seen = new HashSet<string>();
+
+        foreach (var (text, per) in gen.Current)
+        {
+            if (seen.Add(text))
+                result.Add(new PlanCacheEntry(text, per.Template, per.SnapshotPlans()));
+        }
+
+        foreach (var (text, per) in gen.Previous)
+        {
+            if (seen.Add(text))
+                result.Add(new PlanCacheEntry(text, per.Template, per.SnapshotPlans()));
+        }
+
+        return result;
     }
 
     /// <summary>
@@ -227,6 +262,20 @@ public class PlanCache
             // key with a not-yet-written (or already-replaced) plan resolves to a miss.
             Volatile.Write(ref _plans[slot], plan);
             Volatile.Write(ref _hashLo[slot], plan.CacheKeyHash[0]);
+        }
+
+        /// <summary>Lock-free snapshot of all non-null plan slots. Best-effort; see <see cref="Snapshot"/>.</summary>
+        public CompiledPlan[] SnapshotPlans()
+        {
+            var list = new List<CompiledPlan>();
+            for (int i = 0; i < _plans.Length; i++)
+            {
+                var plan = Volatile.Read(ref _plans[i]);
+                if (plan != null)
+                    list.Add(plan);
+            }
+
+            return list.ToArray();
         }
     }
 }
