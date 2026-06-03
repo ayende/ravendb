@@ -82,7 +82,7 @@ internal sealed class PlanEmitter
                 continue;
             }
 
-            EmitClauseInto(executions[i], first ? MergeKind.Fill : MergeKind.OrInto, executions[i].Cardinality, suppressEarlyExit: true);
+            EmitClauseInto(executions[i], first ? MergeKind.Fill : MergeKind.OrInto, executions[i].Cardinality, suppressEarlyExit: true, destSlot: 0);
             first = false;
             i++;
         }
@@ -136,35 +136,33 @@ internal sealed class PlanEmitter
     /// existing accumulator.</summary>
     private void EmitFoldedNegatedRun(List<ClauseExecution> executions, int from, int to, bool isFirst)
     {
-        using var _ = AllocateScratchSlot(out int saveSlot);
-
         if (isFirst is true)
         {
             // slot 0 is empty: build the complement straight into it.
-            EmitComplementIntoSlot0();
+            EmitComplementOfIntersection(executions, from, to, destSlot: 0);
             return;
         }
 
-        // slot 0 holds the running OR accumulator. Park it before EmitComplementIntoSlot0's leading Fill
-        // clobbers slot 0, build the complement, then OR the accumulator back over it.
-        using var __ = AllocateScratchSlot(out int accSlot);
-        _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = accSlot }); // park accumulator
-        EmitComplementIntoSlot0();
-        _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = accSlot }); // OR it back in
+        // slot 0 holds the running OR accumulator. Build the complement in a fresh scratch slot
+        // (so the complement's leading FillAllEntries can't clobber the accumulator), then OR it in.
+        using var _ = AllocateScratchSlot(out int compSlot);
+        EmitComplementOfIntersection(executions, from, to, compSlot);
+        _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = compSlot });
+    }
 
-        // Intersect the (typically selective) positive forms in slot 0 — Fill then AndInto, early-exit
-        // suppressed so a partial intersection cannot short-circuit — then park it and take ONE complement:
-        // slot 0 = ALL \ (A ∧ B ∧ …) = ¬A ∨ ¬B ∨ … (the De Morgan fold).
-        void EmitComplementIntoSlot0()
-        {
-            EmitPositiveForm(executions[from], MergeKind.Fill, executions[from].Cardinality, suppressEarlyExit: true);
-            for (int i = from + 1; i < to; i++)
-                EmitPositiveForm(executions[i], MergeKind.AndInto, executions[i].Cardinality, suppressEarlyExit: true);
+    /// <summary>Build <c>¬(A ∧ B ∧ …)</c> for the run <c>[from, to)</c> of foldable negated leaves into
+    /// <paramref name="destSlot"/>. The positive forms are intersected into a scratch slot (Fill then AndInto,
+    /// early-exit suppressed so a partial/empty intersection can't short-circuit), then <paramref name="destSlot"/>
+    /// is filled with the universe and the intersection is subtracted: <c>destSlot = ALL \ (A ∧ B ∧ …)</c>.</summary>
+    private void EmitComplementOfIntersection(List<ClauseExecution> executions, int from, int to, int destSlot)
+    {
+        using var _ = AllocateScratchSlot(out int xSlot);
+        EmitPositiveForm(executions[from], MergeKind.Fill, executions[from].Cardinality, suppressEarlyExit: true, xSlot);
+        for (int i = from + 1; i < to; i++)
+            EmitPositiveForm(executions[i], MergeKind.AndInto, executions[i].Cardinality, suppressEarlyExit: true, xSlot);
 
-            _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot }); // park A ∧ B ∧ …
-            _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
-            _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-        }
+        _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, BitmapLocal = destSlot, EstimatedCardinality = long.MaxValue });
+        _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = xSlot });
     }
 
     private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions, ScanPredicateInfo?[] perClause)
@@ -173,7 +171,7 @@ internal sealed class PlanEmitter
         if (e0.IsNegated)
             _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
 
-        EmitClauseInto(e0, e0.IsNegated ? MergeKind.AndNotInto : MergeKind.Fill, e0.Cardinality, suppressEarlyExit: false);
+        EmitClauseInto(e0, e0.IsNegated ? MergeKind.AndNotInto : MergeKind.Fill, e0.Cardinality, suppressEarlyExit: false, destSlot: 0);
 
         // check if we have any clause after the first that we cannot scan on, we don't bother with the first since we always run it normally
         bool allScanEligible = perClause.AsSpan()[1..].Contains(null) is false;
@@ -196,7 +194,7 @@ internal sealed class PlanEmitter
             // "if (bitmap[0].IsEmpty) goto Done" AND we'd add the explicit GotoDoneIfEmpty below — two
             // identical checks back-to-back. Merge leaves (In/AllIn/group → AndBitmaps) don't self-guard,
             // so the explicit op is the single uniform empty-check for every clause shape.
-            EmitClauseInto(cur, merge, cur.Cardinality, suppressEarlyExit: true);
+            EmitClauseInto(cur, merge, cur.Cardinality, suppressEarlyExit: true, destSlot: 0);
             if (cur.IsNegated is false) // when we have 0 results, early exit
             {
                 _ops.Add(new PlanOp { Kind = PlanOpKind.GotoDoneIfEmpty, BitmapLocal = 0 });
@@ -206,24 +204,24 @@ internal sealed class PlanEmitter
         return Complete();
     }
 
-    private void EmitClauseInto(ClauseExecution exec, MergeKind merge, long cardinality, bool suppressEarlyExit)
+    private void EmitClauseInto(ClauseExecution exec, MergeKind merge, long cardinality, bool suppressEarlyExit, int destSlot)
     {
         // A collapse sentinel consumes no leaf and bakes straight into bitmap algebra; it must be
         // intercepted before the IsOrChainNotEquals routing (the underlying clause may have been a
         // negated leaf before it was stamped) and before _matchIndex is ever touched.
         if (exec.IsSentinel)
         {
-            EmitSentinelInto(exec, merge);
+            EmitSentinelInto(exec, merge, destSlot);
             return;
         }
 
         if (exec.Clause.IsOrChainNotEquals)
         {
-            EmitNegatedLeafInto(exec, merge, cardinality);
+            EmitNegatedLeafInto(exec, merge, cardinality, destSlot);
             return;
         }
 
-        EmitPositiveForm(exec, merge, cardinality, suppressEarlyExit);
+        EmitPositiveForm(exec, merge, cardinality, suppressEarlyExit, destSlot);
     }
 
     /// <summary>Bake a <see cref="ClauseType.MatchAll"/> / <see cref="ClauseType.MatchNothing"/> sentinel
@@ -231,19 +229,19 @@ internal sealed class PlanEmitter
     /// keeping the emitter's leaf cursor aligned with leaf resolution and the cardinality array. The merge
     /// algebra IS the boolean simplification: MatchAll is the universe (x∨ALL=ALL, x∧ALL=x), MatchNothing is
     /// the empty set (x∨∅=x, x∧∅=∅).</summary>
-    private void EmitSentinelInto(ClauseExecution exec, MergeKind merge)
+    private void EmitSentinelInto(ClauseExecution exec, MergeKind merge, int destSlot)
     {
         switch (exec.ClauseType, merge)
         {
             case (ClauseType.MatchAll, MergeKind.Fill):
             case (ClauseType.MatchAll, MergeKind.OrInto):           // x ∨ ALL = ALL
-                _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
+                _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, BitmapLocal = destSlot, EstimatedCardinality = long.MaxValue });
                 break;
 
             case (ClauseType.MatchAll, MergeKind.AndNotInto):       // x \ ALL = ∅ — defensive; MatchAll is never negated.
             case (ClauseType.MatchNothing, MergeKind.Fill):         // empty seed
             case (ClauseType.MatchNothing, MergeKind.AndInto):      // x ∧ ∅ = ∅
-                _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 0 });
+                _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = destSlot });
                 break;
             
             case (ClauseType.MatchAll, MergeKind.AndInto):          // x ∧ ALL = x
@@ -257,25 +255,25 @@ internal sealed class PlanEmitter
     /// <paramref name="merge"/>. This is the body of <see cref="EmitClauseInto"/> minus the
     /// <see cref="ClauseInfo.IsOrChainNotEquals"/> routing, so the De Morgan fold can build the positive
     /// intersection of negated members without re-triggering complement emission.</summary>
-    private void EmitPositiveForm(ClauseExecution exec, MergeKind merge, long cardinality, bool suppressEarlyExit)
+    private void EmitPositiveForm(ClauseExecution exec, MergeKind merge, long cardinality, bool suppressEarlyExit, int destSlot)
     {
         switch (exec.ClauseType)
         {
             case ClauseType.OrGroup or ClauseType.AndGroup when exec.Clause.SubClauses is { Count: > 0 }:
-                EmitGroupInto(exec, exec.SubExecutions, merge, suppressEarlyExit);
+                EmitGroupInto(exec, exec.SubExecutions, merge, suppressEarlyExit, destSlot);
                 break;
             case ClauseType.In:
-                EmitInLeaf(exec, cardinality, merge);
+                EmitInLeaf(exec, cardinality, merge, destSlot);
                 break;
             case ClauseType.AllIn:
-                EmitAllInLeaf(exec, cardinality, merge, suppressEarlyExit);
+                EmitAllInLeaf(exec, cardinality, merge, suppressEarlyExit, destSlot);
                 break;
             default:
                 _ops.Add(new PlanOp
                 {
                     Kind = ToPlanOpKind(merge, QueryPlanBuilder.GetDispatch(exec)),
                     ParamIndex = _matchIndex++,
-                    BitmapLocal = 0,
+                    BitmapLocal = destSlot,
                     EstimatedCardinality = cardinality,
                     SkipEarlyExit = merge == MergeKind.AndInto && suppressEarlyExit
                 });
@@ -283,11 +281,11 @@ internal sealed class PlanEmitter
         }
     }
 
-    private void EmitGroupInto(ClauseExecution exec, List<ClauseExecution> subExecs, MergeKind merge, bool suppressEarlyExit)
+    private void EmitGroupInto(ClauseExecution exec, List<ClauseExecution> subExecs, MergeKind merge, bool suppressEarlyExit, int destSlot)
     {
         if (merge == MergeKind.Fill)
         {
-            EmitGroupContentsInSlot0(exec, subExecs, suppressEarlyExit);
+            EmitGroupContents(exec, subExecs, suppressEarlyExit, destSlot);
             return;
         }
 
@@ -299,28 +297,27 @@ internal sealed class PlanEmitter
         // then AND the near-universe result into the accumulator.
         if (exec.ClauseType == ClauseType.OrGroup && merge is MergeKind.AndInto or MergeKind.AndNotInto && CanFoldNegatedOr(subExecs))
         {
-            EmitFoldedNegatedOrGroupIntoAccumulator(subExecs, merge);
+            EmitFoldedNegatedOrGroupIntoAccumulator(subExecs, merge, destSlot);
             return;
         }
 
-        using var _ = AllocateScratchSlot(out int saveSlot);
-
-        _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-
-        EmitGroupContentsInSlot0(exec, subExecs, suppressEarlyExit: true); // AndFrom*/AndRangeFrom* MUST NOT early-exit to doneLabel.
+        // Build the group into a fresh scratch slot, then merge it into destSlot directly — no parking
+        // swap is needed because destSlot already holds the accumulator. AndFrom*/AndRangeFrom* inside the
+        // group MUST NOT early-exit to doneLabel, hence suppressEarlyExit: true.
+        using var _ = AllocateScratchSlot(out int groupSlot);
+        EmitGroupContents(exec, subExecs, suppressEarlyExit: true, groupSlot);
 
         switch (merge)
         {
             case MergeKind.OrInto:
-                _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = destSlot, ParamIndex2 = groupSlot });
                 break;
             case MergeKind.AndInto:
-                _ops.Add(new PlanOp { Kind = PlanOpKind.AndBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                _ops.Add(new PlanOp { Kind = PlanOpKind.AndBitmaps, BitmapLocal = destSlot, ParamIndex2 = groupSlot });
                 break;
             case MergeKind.AndNotInto:
-                // AndNotBitmaps[0, saveSlot] = slot 0 \ saveSlot. After build, slot 0 = group result, saveSlot = original accumulator, swap them first.
-                _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                // destSlot \ groupSlot — accumulator stays put, group is the subtrahend, so no operand swap.
+                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = groupSlot });
                 break;
         }
     }
@@ -333,37 +330,37 @@ internal sealed class PlanEmitter
     /// <see cref="MergeKind.AndNotInto"/> ⇒ <c>acc ∩ X</c> (And). Null/missing-field semantics are
     /// identical to the per-member FillAllEntries + AndNot path: a doc missing any field is absent from
     /// X, so AndNot keeps it and And drops it — same as taking the complement against the universe.</summary>
-    private void EmitFoldedNegatedOrGroupIntoAccumulator(List<ClauseExecution> subExecs, MergeKind merge)
+    private void EmitFoldedNegatedOrGroupIntoAccumulator(List<ClauseExecution> subExecs, MergeKind merge, int destSlot)
     {
-        using var _ = AllocateScratchSlot(out int saveSlot);
+        // Build the positive intersection X = A ∧ B ∧ … in a scratch slot (Fill + AndInto, early-exit
+        // suppressed so a partial/empty intersection can't short-circuit), then combine it into destSlot:
+        // the accumulator never leaves destSlot, so no parking swap is needed.
+        using var _ = AllocateScratchSlot(out int xSlot);
 
-        _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot }); // park accumulator, free slot 0 to build X
-
-        EmitPositiveForm(subExecs[0], MergeKind.Fill, subExecs[0].Cardinality, suppressEarlyExit: true);
+        EmitPositiveForm(subExecs[0], MergeKind.Fill, subExecs[0].Cardinality, suppressEarlyExit: true, xSlot);
         for (int i = 1; i < subExecs.Count; i++)
-            EmitPositiveForm(subExecs[i], MergeKind.AndInto, subExecs[i].Cardinality, suppressEarlyExit: true);
+            EmitPositiveForm(subExecs[i], MergeKind.AndInto, subExecs[i].Cardinality, suppressEarlyExit: true, xSlot);
 
-        _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot }); // slot 0 = accumulator, saveSlot = X
         _ops.Add(new PlanOp
         {
             Kind = merge == MergeKind.AndInto ? PlanOpKind.AndNotBitmaps : PlanOpKind.AndBitmaps,
-            BitmapLocal = 0,
-            ParamIndex2 = saveSlot
+            BitmapLocal = destSlot,
+            ParamIndex2 = xSlot
         });
     }
 
-    private void EmitGroupContentsInSlot0(ClauseExecution exec, List<ClauseExecution> subExecs, bool suppressEarlyExit)
+    private void EmitGroupContents(ClauseExecution exec, List<ClauseExecution> subExecs, bool suppressEarlyExit, int destSlot)
     {
         bool isOr = exec.ClauseType != ClauseType.OrGroup;
         bool firstNegated = isOr && subExecs[0].IsNegated;
         if (firstNegated)
-            _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
+            _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, BitmapLocal = destSlot, EstimatedCardinality = long.MaxValue });
         var followupAction = isOr ? MergeKind.AndInto : MergeKind.OrInto;
-        EmitClauseInto(subExecs[0], firstNegated ? MergeKind.AndNotInto : MergeKind.Fill, subExecs[0].Cardinality, suppressEarlyExit);
+        EmitClauseInto(subExecs[0], firstNegated ? MergeKind.AndNotInto : MergeKind.Fill, subExecs[0].Cardinality, suppressEarlyExit, destSlot);
         for (int i = 1; i < subExecs.Count; i++)
         {
             MergeKind kind = isOr && subExecs[i].IsNegated ? MergeKind.AndNotInto : followupAction;
-            EmitClauseInto(subExecs[i], kind, subExecs[i].Cardinality, suppressEarlyExit);
+            EmitClauseInto(subExecs[i], kind, subExecs[i].Cardinality, suppressEarlyExit, destSlot);
         }
     }
 
@@ -400,29 +397,29 @@ internal sealed class PlanEmitter
     };
 
     /// <summary>IN clause leaf — logically (term0 ∪ term1 ∪ … ∪ termN).</summary>
-    private void EmitInLeaf(ClauseExecution exec, long cardinality, MergeKind merge)
+    private void EmitInLeaf(ClauseExecution exec, long cardinality, MergeKind merge, int destSlot)
     {
         if (merge is MergeKind.Fill or MergeKind.OrInto)
         {
             var firstKind = merge == MergeKind.Fill ? PlanOpKind.FillFromPostingSource : PlanOpKind.OrFromPostingSource;
-            EmitCommonInOps(exec.InTermCount, cardinality, bitmapLocal: 0, firstKind, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false);
+            EmitCommonInOps(exec.InTermCount, cardinality, bitmapLocal: destSlot, firstKind, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false);
             return;
         }
         EmitCommonInOps(exec.InTermCount, cardinality, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false);
         _ops.Add(new PlanOp
         {
             Kind = merge == MergeKind.AndInto ? PlanOpKind.AndBitmaps : PlanOpKind.AndNotBitmaps,
-            BitmapLocal = 0,
+            BitmapLocal = destSlot,
             ParamIndex2 = EphemeralBitmap
         });
     }
 
     /// <summary>AllIn clause leaf — logically (term0 ∩ term1 ∩ … ∩ termN).</summary>
-    private void EmitAllInLeaf(ClauseExecution exec, long cardinality, MergeKind merge, bool suppressEarlyExit)
+    private void EmitAllInLeaf(ClauseExecution exec, long cardinality, MergeKind merge, bool suppressEarlyExit, int destSlot)
     {
         if (merge == MergeKind.Fill)
         {
-            EmitCommonInOps(exec.InTermCount, cardinality, 0, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit);
+            EmitCommonInOps(exec.InTermCount, cardinality, destSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit);
             return;
         }
 
@@ -433,50 +430,53 @@ internal sealed class PlanEmitter
         switch (merge)
         {
             case MergeKind.OrInto:
-                _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = destSlot, ParamIndex2 = saveSlot });
                 break;
             case MergeKind.AndInto:
-                _ops.Add(new PlanOp { Kind = PlanOpKind.AndBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                _ops.Add(new PlanOp { Kind = PlanOpKind.AndBitmaps, BitmapLocal = destSlot, ParamIndex2 = saveSlot });
                 break;
             case MergeKind.AndNotInto:
-                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = saveSlot });
                 break;
         }
     }
 
-    private void EmitNegatedLeafInto(ClauseExecution exec, MergeKind merge, long cardinality)
+    private void EmitNegatedLeafInto(ClauseExecution exec, MergeKind merge, long cardinality, int destSlot)
     {
         Debug.Assert(merge is MergeKind.Fill or MergeKind.OrInto,
             $"IsOrChainNotEquals only appears in OR chains; got merge={merge}");
 
         if (merge == MergeKind.Fill)
         {
-            _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
-            EmitComplementBody(exec, cardinality);
+            _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, BitmapLocal = destSlot, EstimatedCardinality = long.MaxValue });
+            EmitComplementBody(exec, cardinality, destSlot);
             return;
         }
 
-        using var _ = AllocateScratchSlot(out int saveSlot);
+        // OR into an existing accumulator: build the complement (ALL \ positive) in a fresh scratch slot
+        // so its leading FillAllEntries can't clobber the accumulator, then OR it into destSlot.
+        using var _ = AllocateScratchSlot(out int compSlot);
 
-        _ops.Add(new PlanOp { Kind = PlanOpKind.SwapBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
-        _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, EstimatedCardinality = long.MaxValue });
-        EmitComplementBody(exec, cardinality);
-        _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = 0, ParamIndex2 = saveSlot });
+        _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, BitmapLocal = compSlot, EstimatedCardinality = long.MaxValue });
+        EmitComplementBody(exec, cardinality, compSlot);
+        _ops.Add(new PlanOp { Kind = PlanOpKind.LazyOrBitmaps, BitmapLocal = destSlot, ParamIndex2 = compSlot });
     }
 
-    private void EmitComplementBody(ClauseExecution exec, long cardinality)
+    /// <summary>Subtract the clause's positive form from <paramref name="destSlot"/> (which must already hold
+    /// the universe): <c>destSlot = destSlot \ positive</c>.</summary>
+    private void EmitComplementBody(ClauseExecution exec, long cardinality, int destSlot)
     {
         switch (exec.ClauseType)
         {
             case ClauseType.In:
                 EmitCommonInOps(exec.InTermCount, cardinality, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false);
-                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = EphemeralBitmap });
+                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = EphemeralBitmap });
                 return;
             case ClauseType.AllIn:
             {
                 using var _ = AllocateScratchSlot(out int positiveSlot);
                 EmitCommonInOps(exec.InTermCount, cardinality, positiveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true);
-                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = 0, ParamIndex2 = positiveSlot });
+                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = positiveSlot });
                 return;
             }
             default:
@@ -484,7 +484,7 @@ internal sealed class PlanEmitter
                 {
                     Kind = ToPlanOpKind(MergeKind.AndNotInto, QueryPlanBuilder.GetDispatch(exec)),
                     ParamIndex = _matchIndex++,
-                    BitmapLocal = 0,
+                    BitmapLocal = destSlot,
                     EstimatedCardinality = cardinality
                 });
                 break;

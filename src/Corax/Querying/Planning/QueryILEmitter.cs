@@ -93,7 +93,7 @@ public static class QueryIlEmitter
                     break;
 
                 case PlanOpKind.FillAllEntries:
-                    d.EmitFillAllEntries();
+                    d.EmitFillAllEntries(op.BitmapLocal);
                     break;
 
                 case PlanOpKind.AndFromPostingSource:
