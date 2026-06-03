@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Primitives;
 using Sparrow.Server;
@@ -7,7 +8,7 @@ using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Matches;
 
-public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, IQueryMatch right) : IBitmapQueryMatch, IDisposable
+public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, IQueryMatch right, CancellationToken token = default) : IBitmapQueryMatch, IDisposable
 {
     private RoaringBitmap _bitmap = new(allocator);
     private RoaringBitmapIterator _iterator;
@@ -104,8 +105,8 @@ public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, I
         if (_initialized)
             return;
         _bitmap.Clear();
-        QueryPrimitives.OrWithMatch(left, ref _bitmap);
-        QueryPrimitives.OrWithMatch(right, ref _bitmap);
+        QueryPrimitives.OrWithMatch(left, ref _bitmap, token: token);
+        QueryPrimitives.OrWithMatch(right, ref _bitmap, token: token);
         _bitmap.PrepareForReading();
         _iterator = _bitmap.GetIterator();
         _initialized = true;

@@ -34,7 +34,7 @@ public partial class IndexSearcher
         }
 
         ITermsProvider provider = GetMultiTermMatchProvider<TTermsProvider>(field, terms, termKey, seekTerm: null, validatePostfixLen, token);
-        return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
+        return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator, token);
     }
 
     private IQueryMatch TermsProviderMatchBuilder<TTermsProvider>(in FieldMetadata field, string term, CancellationToken token)
@@ -49,7 +49,7 @@ public partial class IndexSearcher
         termKey.Set(slicedTerm.AsReadOnlySpan());
 
         ITermsProvider provider = GetMultiTermMatchProvider<TTermsProvider>(field, terms, termKey, seekTerm: null, validatePostfixLen: false, token: token);
-        return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
+        return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator, token);
     }
 
     private TTermsProvider GetMultiTermMatchProvider<TTermsProvider>(in FieldMetadata field, CompactTree termTree, CompactKey term, CompactKey seekTerm, bool validatePostfixLen, CancellationToken token)
