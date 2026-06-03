@@ -121,6 +121,13 @@ internal static partial class QueryPlanBuilder
             root.Children.Add(trailNode);
         }
 
+        // Surface clauses the resolution pass statically collapsed for this run. A sentinel emits no match
+        // leaf — it resolves to a bitmap fill/clear and is algebraically simplified out of the op stream — so
+        // these clauses are otherwise invisible in the executed tree above. Listing them closes the gap between
+        // what the query TEXT asked for and what actually ran: the reader sees that e.g. a WHEN(false) clause or
+        // a contradictory BETWEEN was answered without scanning, rather than wondering why a clause vanished.
+        AppendResolvedClauses(exec, root);
+
         // When a tree-scan strategy (FieldSortedScan / CompoundSortedScan) actually executed, the op template rendered
         // above describes only the candidate predicates that fed cost estimation — the bitmap pipeline never
         // ran. Surface the executed scan's OWN structure (driving tree, seek bound, residual predicates, scan
@@ -174,6 +181,48 @@ internal static partial class QueryPlanBuilder
                 parameters["Ms"] = (timings[i] / tickFreq).ToString("F3");
             if (i == entryScanAt)
                 parameters["EntryScan"] = "triggered";
+        }
+    }
+
+    /// <summary>
+    /// Walks the runtime clause-execution tree (groups included) and, for every clause the resolution pass
+    /// collapsed to a MatchAll / MatchNothing sentinel, appends an informational node under a single
+    /// "ResolvedClauses" parent. Each node reports the clause's field, its ORIGINAL clause type (read from the
+    /// template <see cref="ClauseInfo"/>, which is never mutated), and the static answer the resolver reached —
+    /// MatchAll == "always true" (the clause was dropped, e.g. a WHEN(false) guard), MatchNothing == "always
+    /// false" (a contradiction, e.g. a self-excluding BETWEEN). Adds nothing when no clause was collapsed.
+    /// </summary>
+    private static void AppendResolvedClauses(QueryExecution exec, QueryInspectionNode root)
+    {
+        QueryInspectionNode resolvedNode = null;
+        foreach (var clauseExec in exec.Executions)
+            CollectSentinels(clauseExec, ref resolvedNode);
+
+        if (resolvedNode != null)
+            root.Children.Add(resolvedNode);
+
+        static void CollectSentinels(ClauseExecution clauseExec, ref QueryInspectionNode resolvedNode)
+        {
+            RuntimeHelpers.EnsureSufficientExecutionStack();
+            if (clauseExec.SubExecutions != null)
+            {
+                foreach (var sub in clauseExec.SubExecutions)
+                    CollectSentinels(sub, ref resolvedNode);
+            }
+
+            if (clauseExec.IsSentinel == false)
+                return;
+
+            bool matchAll = clauseExec.ClauseType == ClauseType.MatchAll;
+            var clauseParams = new Dictionary<string, string>
+            {
+                ["FieldName"] = clauseExec.Clause.FieldName,
+                ["ClauseType"] = clauseExec.Clause.ClauseType.ToString(),
+                ["ResolvedTo"] = matchAll ? "MatchAll" : "MatchNothing",
+                ["Answer"] = matchAll ? "always true (clause dropped, not scanned)" : "always false (contradiction, not scanned)"
+            };
+            resolvedNode ??= new QueryInspectionNode("ResolvedClauses");
+            resolvedNode.Children.Add(new QueryInspectionNode("StaticallyResolved", parameters: clauseParams));
         }
     }
 
