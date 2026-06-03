@@ -362,6 +362,32 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                     new ParamSet("wide-age", "$c=\"Berlin\", $n=\"bob\", $lo=18, $hi=79",
                         q => { q.AddParameter("c", "Berlin"); q.AddParameter("n", "bob"); q.AddParameter("lo", 18); q.AddParameter("hi", 79); }),
                 ]),
+
+            new CatalogQuery("many-residuals", "four predicates collapse to one entry scan",
+                "from index 'Items/Index' where Created between $from and $to and City = $c and Age > $a and Score < $s and Name != $n",
+                "The selectivity-driven entry-scan path with *multiple* residuals. `City = $c` fills the accumulator (~10K entries), then the highly selective `Created` range — `Created` has ~5-6 docs per day across a 9000-day span — is AND-ed in and collapses the accumulator to a few dozen entries. At that point the `ShouldSwitchToEntryScan` gate fires (`bitmapCount * 64 < nextClauseCardinality`) and the engine jumps to the entry-scan tail rather than decoding more posting lists. The generated `ResidualScan` method holds **four** residual predicates applied per surviving entry — `Created between`, `Age > $a`, `Score < $s`, and `Name != $n` (the negation is a residual reject, not an AndNot posting list) — even though at runtime the switch happens after the `Created` AND, so only three of them (`Age`, `Score`, `Name`) are actually evaluated as residuals for these parameters. This is the example to inspect when you want to see several residual predicates side by side in one generated scan body.",
+                [
+                    new ParamSet("jan-2000", "$from=2000-01-01, $to=2000-01-12, $c=\"London\", $a=30, $s=500, $n=\"erin\"",
+                        q =>
+                        {
+                            q.AddParameter("from", new DateTime(2000, 1, 1));
+                            q.AddParameter("to", new DateTime(2000, 1, 12));
+                            q.AddParameter("c", "London");
+                            q.AddParameter("a", 30);
+                            q.AddParameter("s", 500.0);
+                            q.AddParameter("n", "erin");
+                        }),
+                    new ParamSet("jun-2005", "$from=2005-06-01, $to=2005-06-12, $c=\"Paris\", $a=50, $s=750, $n=\"bob\"",
+                        q =>
+                        {
+                            q.AddParameter("from", new DateTime(2005, 6, 1));
+                            q.AddParameter("to", new DateTime(2005, 6, 12));
+                            q.AddParameter("c", "Paris");
+                            q.AddParameter("a", 50);
+                            q.AddParameter("s", 750.0);
+                            q.AddParameter("n", "bob");
+                        }),
+                ]),
         ];
     }
 
