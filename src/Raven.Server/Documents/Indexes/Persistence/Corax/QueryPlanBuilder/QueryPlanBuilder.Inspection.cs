@@ -230,6 +230,15 @@ internal static partial class QueryPlanBuilder
         }
     }
 
+    /// <summary>
+    /// Projects the flat <see cref="PlanOp"/> stream into the inspection-op template. The op stream is linear by
+    /// design — the bitmap pipeline combines clauses by applying operations in sequence — so boolean grouping is
+    /// rendered as that execution order rather than as synthetic OrGroup/AndGroup wrapper nodes (which would
+    /// misrepresent how the engine actually evaluated the query). Each op's name carries its combinator
+    /// (Fill / AND / OR / ANDNOT), and the AND-Bitmaps / ANDNOT-Bitmaps nodes mark the points where two bitmap
+    /// sub-results merge — i.e. a parenthesised sub-group boundary. A reader reconstructs the grouping from the
+    /// sequence: Fill(A), OR(B), AND(C) == (A OR B) AND C.
+    /// </summary>
     internal static InspectionOp[] BuildInspectionTemplate(PlanOp[] ops, List<ClauseExecution> executions)
     {
         if (ops == null || ops.Length == 0) return [];
@@ -271,6 +280,9 @@ internal static partial class QueryPlanBuilder
                         or PlanOpKind.AndNotFromPostingSource or PlanOpKind.OrRangeFromPostingSource or PlanOpKind.AndRangeFromPostingSource => "Term",
                     PlanOpKind.FillFromTreeScan or PlanOpKind.AndFromTreeScan or PlanOpKind.OrFromTreeScan
                         or PlanOpKind.AndNotFromTreeScan => "MultiTerm",
+                    // MaybeEntryScan is a control-flow branch, not a match dispatch — leave Dispatch unset so the
+                    // EntryScanCheck node is not mislabelled "Match" (which would read as "matched via in-memory match").
+                    PlanOpKind.MaybeEntryScan => null,
                     _ => "Match"
                 },
                 EstimatedCardinality = op.EstimatedCardinality
