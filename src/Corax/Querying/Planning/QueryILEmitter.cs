@@ -36,9 +36,6 @@ public static class QueryIlEmitter
         var cs = new StringBuilder();
         var d = new DualEmit(il, cs);
 
-        // Register arguments.
-        var ctxIdx = d.RegisterArg("ctx");
-
         int bitmapCount = CountBitmaps(ops);
         d.CsLine($"// Uses {bitmapCount} result bitmap(s): ctx.Bitmaps[0..{bitmapCount - 1}]. Slot 0 is the live accumulator.");
         d.CsLine("""
@@ -55,7 +52,6 @@ public static class QueryIlEmitter
 
         // Locals
         var bufferLocal = d.DeclareLocal(typeof(Span<long>), "buffer");
-        var readLocal = d.DeclareLocal(typeof(int), "read");
         var startTickLocal = d.DeclareLocal(typeof(long), "startTick");
         var cursorVar = d.DeclareLocal(typeof(int), "cursor");
 
@@ -64,7 +60,6 @@ public static class QueryIlEmitter
         var entryScanLabel = d.DefineNamedLabel("EntryScan");
         bool hasEntryScan = false;
         bool needsLazyRepair = false;
-        int entryScanOpIndex = -1;
 
         // stackalloc long[FillBufferSize]
         EmitStackAlloc(ref d, bufferLocal);
@@ -181,7 +176,6 @@ public static class QueryIlEmitter
                 case PlanOpKind.MaybeEntryScan:
                 {
                     hasEntryScan = true;
-                    entryScanOpIndex = i;
                     EmitEntryScanCheck(ref d, cursorVar, entryScanLabel);
                     break;
                 }
