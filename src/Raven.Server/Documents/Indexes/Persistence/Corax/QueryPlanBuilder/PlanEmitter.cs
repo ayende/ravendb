@@ -272,7 +272,8 @@ internal sealed class PlanEmitter
                     ParamIndex = _matchIndex++,
                     BitmapLocal = destSlot,
                     EstimatedCardinality = cardinality,
-                    SkipEarlyExit = merge == MergeKind.AndInto && suppressEarlyExit
+                    SkipEarlyExit = merge == MergeKind.AndInto && suppressEarlyExit,
+                    DebugLabel = Label(exec)
                 });
                 break;
         }
@@ -399,10 +400,10 @@ internal sealed class PlanEmitter
         if (merge is MergeKind.Fill or MergeKind.OrInto)
         {
             var firstKind = merge == MergeKind.Fill ? PlanOpKind.FillFromPostingSource : PlanOpKind.OrFromPostingSource;
-            EmitCommonInOps(exec.InTermCount, cardinality, bitmapLocal: destSlot, firstKind, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false);
+            EmitCommonInOps(exec.InTermCount, cardinality, bitmapLocal: destSlot, firstKind, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false, Label(exec));
             return;
         }
-        EmitCommonInOps(exec.InTermCount, cardinality, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false);
+        EmitCommonInOps(exec.InTermCount, cardinality, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false, Label(exec));
         _ops.Add(new PlanOp
         {
             Kind = merge == MergeKind.AndInto ? PlanOpKind.AndBitmaps : PlanOpKind.AndNotBitmaps,
@@ -416,13 +417,13 @@ internal sealed class PlanEmitter
     {
         if (merge == MergeKind.Fill)
         {
-            EmitCommonInOps(exec.InTermCount, cardinality, destSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit);
+            EmitCommonInOps(exec.InTermCount, cardinality, destSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit, Label(exec));
             return;
         }
 
         using var _ = AllocateScratchSlot(out int saveSlot);
 
-        EmitCommonInOps(exec.InTermCount, cardinality, saveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true);
+        EmitCommonInOps(exec.InTermCount, cardinality, saveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true, Label(exec));
 
         switch (merge)
         {
@@ -466,13 +467,13 @@ internal sealed class PlanEmitter
         switch (exec.ClauseType)
         {
             case ClauseType.In:
-                EmitCommonInOps(exec.InTermCount, cardinality, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false);
+                EmitCommonInOps(exec.InTermCount, cardinality, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false, Label(exec));
                 _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = EphemeralBitmap });
                 return;
             case ClauseType.AllIn:
             {
                 using var _ = AllocateScratchSlot(out int positiveSlot);
-                EmitCommonInOps(exec.InTermCount, cardinality, positiveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true);
+                EmitCommonInOps(exec.InTermCount, cardinality, positiveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true, Label(exec));
                 _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = positiveSlot });
                 return;
             }
@@ -482,13 +483,14 @@ internal sealed class PlanEmitter
                     Kind = ToPlanOpKind(MergeKind.AndNotInto, QueryPlanBuilder.GetDispatch(exec)),
                     ParamIndex = _matchIndex++,
                     BitmapLocal = destSlot,
-                    EstimatedCardinality = cardinality
+                    EstimatedCardinality = cardinality,
+                    DebugLabel = Label(exec)
                 });
                 break;
         }
     }
 
-    private void EmitCommonInOps(int inTermCount, long cardinality, int bitmapLocal, PlanOpKind firstKind, PlanOpKind secondKind, bool suppressEarlyExit)
+    private void EmitCommonInOps(int inTermCount, long cardinality, int bitmapLocal, PlanOpKind firstKind, PlanOpKind secondKind, bool suppressEarlyExit, string label)
     {
         int totalSlots = inTermCount + 1;
         _ops.Add(new PlanOp
@@ -496,7 +498,8 @@ internal sealed class PlanEmitter
             Kind = firstKind,
             ParamIndex = _matchIndex,
             BitmapLocal = bitmapLocal,
-            EstimatedCardinality = Math.Max(1, cardinality / totalSlots)
+            EstimatedCardinality = Math.Max(1, cardinality / totalSlots),
+            DebugLabel = label
         });
 
         _ops.Add(new PlanOp
@@ -506,10 +509,19 @@ internal sealed class PlanEmitter
             ParamIndex2 = _nextRangeIdx++,
             BitmapLocal = bitmapLocal,
             EstimatedCardinality = cardinality,
-            SkipEarlyExit = suppressEarlyExit // Defaults to false for EmitInOps
+            SkipEarlyExit = suppressEarlyExit, // Defaults to false for EmitInOps
+            DebugLabel = label
         });
 
         _matchIndex += totalSlots;
+    }
+
+    /// <summary>Human label for the clause an op reads, surfaced as a comment in the generated C#
+    /// mirror (e.g. "Name [Equals]"). Build-time only; never read at execution time.</summary>
+    private static string Label(ClauseExecution exec)
+    {
+        string field = exec.Clause?.FieldName;
+        return field is null ? exec.ClauseType.ToString() : $"{field} [{exec.ClauseType}]";
     }
 
     private static PlanOp[] BuildAllEntriesPlan()
