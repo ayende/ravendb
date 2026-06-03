@@ -121,7 +121,7 @@ internal static partial class QueryPlanBuilder
             root.Children.Add(trailNode);
         }
 
-        // When a tree-scan strategy (DirectScan / CompoundField) actually executed, the op template rendered
+        // When a tree-scan strategy (FieldSortedScan / CompoundSortedScan) actually executed, the op template rendered
         // above describes only the candidate predicates that fed cost estimation — the bitmap pipeline never
         // ran. Surface the executed scan's OWN structure (driving tree, seek bound, residual predicates, scan
         // counts) so the plan reflects what truly happened instead of hiding it behind the unused bitmap

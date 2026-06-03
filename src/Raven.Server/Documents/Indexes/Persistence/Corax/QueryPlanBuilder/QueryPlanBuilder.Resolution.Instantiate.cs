@@ -30,21 +30,21 @@ internal static partial class QueryPlanBuilder
 
         switch (compiledPlan.Strategy)
         {
-            case ExecutionStrategy.CompoundExact:
+            case ExecutionStrategy.CompoundKeyLookup:
                 innerMatch = ConstructCompoundExact(ref ctx);
                 if (innerMatch is null) goto default;
-                exec.ActualStrategy = ExecutionStrategy.CompoundExact;
+                exec.ActualStrategy = ExecutionStrategy.CompoundKeyLookup;
                 return innerMatch;
             // orderByFields can be null when page size is 0, in which case, we need to get the actual total count
             // no advantage of using compound field here, since we can't stop midway (like we do with paging)
-            case ExecutionStrategy.CompoundField when orderByFields != null:
+            case ExecutionStrategy.CompoundSortedScan when orderByFields != null:
                 if (CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost) == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
                 innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
-                exec.ActualStrategy = ExecutionStrategy.CompoundField;
+                exec.ActualStrategy = ExecutionStrategy.CompoundSortedScan;
                 return OrderBy(builderParameters, innerMatch, orderByFields);
-            case ExecutionStrategy.DirectScan when orderByFields != null:
+            case ExecutionStrategy.FieldSortedScan when orderByFields != null:
                 var execs = exec.Executions;
                 bool isFullScan = execs is not { Count: > 0 };
                 if (DirectScanCostEffective(ref ctx, isFullScan, out var directScanReason))
@@ -53,14 +53,14 @@ internal static partial class QueryPlanBuilder
                     innerMatch = ConstructDirectScan(ref ctx, walkerCtx, exec.SortDrivingClause, isFullScan, hasTieBreak, directScanReason);
                     if (innerMatch is not null)
                     {
-                        exec.ActualStrategy = ExecutionStrategy.DirectScan;
+                        exec.ActualStrategy = ExecutionStrategy.FieldSortedScan;
                         return innerMatch;
                     }
                 }
                 goto default;
-            case ExecutionStrategy.BitmapSort:
+            case ExecutionStrategy.BitmapPipeline:
             default: // may either be the selected strategy or a one-off (because of bad parameters preventing a faster strategy)
-                exec.ActualStrategy = ExecutionStrategy.BitmapSort;
+                exec.ActualStrategy = ExecutionStrategy.BitmapPipeline;
                 innerMatch = InstantiateBitmapPipeline(ctx.Plan, ctx.Exec, ctx.PlanParams, ctx.BuilderParams, walkerCtx, highlightingTerms, wantTimings, token);
                 if (ctx.OrderByFields == null) return innerMatch;
                 if (innerMatch is CompiledQueryMatch seekMatch)
@@ -72,21 +72,21 @@ internal static partial class QueryPlanBuilder
         {
             // ── Slow path: cache-miss, run Try* discovery chain ──
             ctx.Plan.DecisionTrail = new();
-            ctx.Plan.Strategy = ExecutionStrategy.BitmapSort; // if nothing else overrides it
+            ctx.Plan.Strategy = ExecutionStrategy.BitmapPipeline; // if nothing else overrides it
 
             if (ctx.Plan.Template.OptimizationFlags.HasFlag(PlanOptimizationFlags.CompoundExactCandidate))
             {
                 if (TryCreateCompoundExactMatch(ref ctx, out ctx.RejectReason))
                 {
-                    // No trail entry on success: CompoundExact has no per-execution cost gate, so there is
+                    // No trail entry on success: CompoundKeyLookup has no per-execution cost gate, so there is
                     // no decision to record — the chosen strategy is already surfaced via StrategyCandidate.
                     // A rejection IS recorded below: it explains why a structurally-available optimization
                     // did not apply (encoding failed / boosted clause).
-                    ctx.Plan.Strategy = ExecutionStrategy.CompoundExact;
+                    ctx.Plan.Strategy = ExecutionStrategy.CompoundKeyLookup;
                     return;
                 }
 
-                ctx.Plan.DecisionTrail.Record("CompoundExact", false, ctx.RejectReason ?? "rejected");
+                ctx.Plan.DecisionTrail.Record("CompoundKeyLookup", false, ctx.RejectReason ?? "rejected");
             }
 
             // No ORDER BY: nothing to decide about a sort strategy, so no trail entry — just stop here.
@@ -97,24 +97,24 @@ internal static partial class QueryPlanBuilder
             {
                 if (TryCreateCompoundFieldMatch(ref ctx, out ctx.RejectReason))
                 {
-                    ctx.Plan.Strategy = ExecutionStrategy.CompoundField;
-                    ctx.Plan.DecisionTrail.Record("CompoundField", true, "compound tree scan candidate (cost gated per-execution)");
+                    ctx.Plan.Strategy = ExecutionStrategy.CompoundSortedScan;
+                    ctx.Plan.DecisionTrail.Record("CompoundSortedScan", true, "compound tree scan candidate (cost gated per-execution)");
                     return;
                 }
 
-                ctx.Plan.DecisionTrail.Record("CompoundField", false, ctx.RejectReason ?? "rejected");
+                ctx.Plan.DecisionTrail.Record("CompoundSortedScan", false, ctx.RejectReason ?? "rejected");
 
                 if (TryCreateSimpleFieldDirectScan(ref ctx, out ctx.RejectReason))
                 {
-                    ctx.Plan.Strategy = ExecutionStrategy.DirectScan;
-                    ctx.Plan.DecisionTrail.Record("DirectScan", true, "direct tree scan candidate on sort field (cost gated per-execution)");
+                    ctx.Plan.Strategy = ExecutionStrategy.FieldSortedScan;
+                    ctx.Plan.DecisionTrail.Record("FieldSortedScan", true, "direct tree scan candidate on sort field (cost gated per-execution)");
                     return;
                 }
 
-                ctx.Plan.DecisionTrail.Record("DirectScan", false, ctx.RejectReason ?? "rejected");
+                ctx.Plan.DecisionTrail.Record("FieldSortedScan", false, ctx.RejectReason ?? "rejected");
             }
 
-            ctx.Plan.DecisionTrail.Record("BitmapSort", true, "bitmap pipeline with SortingMatch fallback");
+            ctx.Plan.DecisionTrail.Record("BitmapPipeline", true, "bitmap pipeline with SortingMatch fallback");
         }
         
         static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)

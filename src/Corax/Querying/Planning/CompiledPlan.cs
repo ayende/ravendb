@@ -10,18 +10,20 @@ public enum ExecutionStrategy : byte
     /// <summary>The first execution hasn't completed yet — discovery has not run.
     /// Treated as "run discovery" by the dispatch path.</summary>
     NotEvaluated = 0,
-    /// <summary>No ORDER BY optimization applies. Use the bitmap pipeline (CompiledQueryMatch)
-    /// and wrap with SortingMatch when an ORDER BY is present.</summary>
-    BitmapSort,
-    /// <summary>Single compound-tree exact-term lookup. No ORDER BY — replaces an AND of two
-    /// Equals on the compound field's component clauses with one TermQuery on the composite key.</summary>
-    CompoundExact,
-    /// <summary>Compound-tree range scan that emits docs in ORDER BY order. Driving clause is
-    /// an Equals on the prefix field of a compound (Equals + ORDER BY sort field).</summary>
-    CompoundField,
-    /// <summary>SortedDrivingMatch on the sort field. Streams entries in sort order from a
-    /// single-field tree without materializing a bitmap.</summary>
-    DirectScan,
+    /// <summary>The general default: build the result by intersecting/unioning posting-list bitmaps
+    /// (CompiledQueryMatch), then wrap with SortingMatch only when an ORDER BY is present. No scan
+    /// optimization applies. The "Pipeline" name signals that sorting is a separate wrapper, not part
+    /// of this strategy — for a no-ORDER-BY query nothing sorts.</summary>
+    BitmapPipeline,
+    /// <summary>Single compound-tree exact-term lookup (a point lookup). No ORDER BY — replaces an AND
+    /// of two Equals on the compound field's component clauses with one TermQuery on the composite key.</summary>
+    CompoundKeyLookup,
+    /// <summary>Compound-tree range scan that emits docs already in ORDER BY order (streamed sorted).
+    /// Driving clause is an Equals on the prefix field of a compound (Equals + ORDER BY sort field).</summary>
+    CompoundSortedScan,
+    /// <summary>SortedDrivingMatch on the sort field — streams entries in sort order from a
+    /// single-field tree without materializing a bitmap (streamed sorted, single-field flavor).</summary>
+    FieldSortedScan,
 }
 
 public sealed class CompiledPlan
@@ -86,7 +88,7 @@ public sealed class CompiledPlan
     /// This is used when we have small enough set of results that we can scan them, rather then search.</summary>
     public ResidualScanSet EntryScanSet { get; init; }
 
-    /// <summary>Predicate set for the CompoundField strategy, null when a non-scannable clause makes the path ineligible.</summary>
+    /// <summary>Predicate set for the CompoundSortedScan strategy, null when a non-scannable clause makes the path ineligible.</summary>
     public ResidualScanSet CompoundFieldResidualSet { get; set; }
 
     /// <summary>Predicate set for the DirectScan dispatch path, null when a non-scannable clause makes it ineligible.</summary>

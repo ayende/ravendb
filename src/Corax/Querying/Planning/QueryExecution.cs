@@ -39,7 +39,7 @@ public class QueryExecution
     /// <summary>The strategy actually selected at instance-time for THIS execution, after the
     /// per-execution cost gate. May differ from <see cref="CompiledPlan.Strategy"/> (the cached
     /// structural candidacy) when the cost gate falls back to the bitmap pipeline for the current
-    /// parameter values — e.g. a plan cached as <see cref="ExecutionStrategy.DirectScan"/> from a
+    /// parameter values — e.g. a plan cached as <see cref="ExecutionStrategy.FieldSortedScan"/> from a
     /// selective parameter, re-run with a non-selective one. <see cref="ExecutionStrategy.NotEvaluated"/>
     /// until Instantiate runs.</summary>
     public ExecutionStrategy ActualStrategy = ExecutionStrategy.NotEvaluated;
