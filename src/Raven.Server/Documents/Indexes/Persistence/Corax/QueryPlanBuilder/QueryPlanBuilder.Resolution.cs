@@ -426,7 +426,11 @@ internal static partial class QueryPlanBuilder
             ctx.Exec.CompoundExactFirst is not { } a ||
             ctx.Exec.CompoundExactSecond is not { } b)
         {
-            rejectReason = "no compound-exact clause pair identified at template time, or residual clauses present";
+            // The template already identified the pair (this method only runs under the CompoundExactCandidate
+            // flag), so these are all instantiate-time outs: a residual clause is present (Executions.Count != 2),
+            // every clause is negated, or a pair member collapsed to a sentinel during instantiation (its role is
+            // then left null by SetKnownClause), or there is no index.
+            rejectReason = "compound-exact pair unusable at instantiate time: residual clause present, all-negated, or a pair member collapsed to a sentinel";
             return false;
         }
 
