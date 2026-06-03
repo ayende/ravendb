@@ -76,6 +76,13 @@ public static class QueryIlEmitter
         {
             ref PlanOp op = ref ops[i];
 
+            // The PlanEmitter always appends a terminal GotoDone. An early-exit guard (AND empty-check
+            // or OR limit-check) or that GotoDone itself is dead when it is the last effective op,
+            // because control falls straight through to the Done label that immediately follows. We
+            // suppress those tail branches so the generated IL/C# don't carry `goto Done; Done:`.
+            bool isLastEffectiveOp = i == ops.Length - 1 ||
+                                     (i == ops.Length - 2 && ops[ops.Length - 1].Kind == PlanOpKind.GotoDone);
+
             // Build-time clause label (e.g. "Name [Equals]") for the C# mirror; no IL effect.
             if (op.DebugLabel != null)
                 d.CsLine($"// {op.DebugLabel}");
@@ -104,37 +111,37 @@ public static class QueryIlEmitter
 
                 case PlanOpKind.AndFromPostingSource:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndFromPostingSource, "QueryPrimitives.CtxAndFromPostingSource", op.BitmapLocal);
-                    if (!op.SkipEarlyExit)
+                    if (!op.SkipEarlyExit && !isLastEffectiveOp)
                         d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.AndFromTreeScan:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndFromTreeScan, "QueryPrimitives.CtxAndFromTreeScan", op.BitmapLocal);
-                    if (!op.SkipEarlyExit)
+                    if (!op.SkipEarlyExit && !isLastEffectiveOp)
                         d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.AndFromMatch:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndFromMatch, "QueryPrimitives.CtxAndFromMatch", op.BitmapLocal);
-                    if (!op.SkipEarlyExit)
+                    if (!op.SkipEarlyExit && !isLastEffectiveOp)
                         d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.OrFromPostingSource:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxOrFillFromPostingSource, "QueryPrimitives.CtxOrFillFromPostingSource", op.BitmapLocal);
-                    if (op.BitmapLocal == 0)
+                    if (op.BitmapLocal == 0 && !isLastEffectiveOp)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.OrFromTreeScan:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxOrFillFromTreeScan, "QueryPrimitives.CtxOrFillFromTreeScan", op.BitmapLocal);
-                    if (op.BitmapLocal == 0)
+                    if (op.BitmapLocal == 0 && !isLastEffectiveOp)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.OrFromMatch:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxOrWithMatchSlot, "QueryPrimitives.CtxOrWithMatchSlot", op.BitmapLocal);
-                    if (op.BitmapLocal == 0)
+                    if (op.BitmapLocal == 0 && !isLastEffectiveOp)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
@@ -204,7 +211,10 @@ public static class QueryIlEmitter
                     break;
 
                 case PlanOpKind.GotoDone:
-                    d.EmitGotoDone(doneLabel.Il, doneLabel.Name);
+                    // Falls straight through to the Done label when terminal — emitting the branch
+                    // would be dead IL. Only emit when something real follows.
+                    if (!isLastEffectiveOp)
+                        d.EmitGotoDone(doneLabel.Il, doneLabel.Name);
                     break;
             }
 
@@ -294,7 +304,12 @@ public static class QueryIlEmitter
         d.CsLine($"    goto {entryScanLabel.Name};");
     }
 
-    /// <summary>Emit the OR/AND range loop over IN-expanded term slots.</summary>
+    /// <summary>Emit the OR/AND range loop over IN-expanded term slots. The IL is a canonical
+    /// check-first loop (init; goto check; body; check: cond → body); the C# mirror is rendered
+    /// as an equivalent <c>for</c> loop. The two streams are emitted independently here — loop
+    /// scaffolding is IL-only (no operand-stack effect) and the <c>for</c> header/braces are
+    /// C#-only — while the body statements stay dual, so the mirror reads naturally without the
+    /// IL drifting from the goto-form it actually runs.</summary>
     private static void EmitRangeLoop(ref DualEmit d, LocalBuilder cursorVar, int rangeIdx, int bitmapLocal,
         MatchDispatch dispatch, MethodInfo method, string methodName, int opIndex,
         bool earlyExit, bool skipEarlyExit, LabelPair doneLabel)
@@ -304,7 +319,7 @@ public static class QueryIlEmitter
         var loopCheck = d.DefineLabelPair($"rangeCheck_{opIndex}");
         var loopBody = d.DefineLabelPair($"rangeBody_{opIndex}");
 
-        // endVar = cursor + ctx.InRangeCounts[rangeIdx]
+        // endVar = cursor + ctx.InRangeCounts[rangeIdx]   (dual: drives the for-loop bound below)
         d.Il.Emit(OpCodes.Ldloc, cursorVar);
         d.Il.Emit(OpCodes.Ldarg_0);
         d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxInRangeCounts);
@@ -314,18 +329,20 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Stloc, endVar);
         d.CsLine($"{d.GetLocalName(endVar)} = {d.GetLocalName(cursorVar)} + ctx.InRangeCounts[{rangeIdx}];");
 
-        // Bounds-check hint: touch source[endVar-1]
+        // Bounds-check hint: touch source[endVar-1]   (IL only)
         EmitRangeEndIndexTouch(d.Il, dispatch, cursorVar, endVar);
 
-        // loopVar = cursor
+        // IL loop init: loopVar = cursor; goto check.   (IL only — the for-header carries this in C#)
         d.Il.Emit(OpCodes.Ldloc, cursorVar);
         d.Il.Emit(OpCodes.Stloc, loopVar);
-        d.CsLine($"{d.GetLocalName(loopVar)} = {d.GetLocalName(cursorVar)};");
+        d.Il.Emit(OpCodes.Br, loopCheck.Il);
 
-        d.GotoAlways(loopCheck);
+        // C# for-header + open brace (C# only).
+        d.CsLine($"for ({d.GetLocalName(loopVar)} = {d.GetLocalName(cursorVar)}; {d.GetLocalName(loopVar)} < {d.GetLocalName(endVar)}; {d.GetLocalName(loopVar)}++)");
+        d.CsLine("{");
 
-        // Loop body
-        d.MarkLabel(loopBody);
+        // Loop body (dual statements land inside the braces).
+        d.Il.MarkLabel(loopBody.Il);
         d.IlCancellationCheck();
 
         // Both AND and OR primitives take the destination slot explicitly: ctx.Method(ctx, loopVar, bitmapLocal).
@@ -341,16 +358,22 @@ public static class QueryIlEmitter
             d.EmitBitmapEmptyGoto(bitmapLocal, doneLabel.Il, doneLabel.Name);
         }
 
-        // loopVar++
-        d.IncrementLocal(loopVar);
+        // IL loopVar++ (IL only — the for-header carries this in C#).
+        d.Il.Emit(OpCodes.Ldloc, loopVar);
+        d.Il.Emit(OpCodes.Ldc_I4_1);
+        d.Il.Emit(OpCodes.Add);
+        d.Il.Emit(OpCodes.Stloc, loopVar);
 
-        // Loop check: if (loopVar < endVar) goto loopBody
-        d.MarkLabel(loopCheck);
-        d.LoadLocal(loopVar);
-        d.LoadLocal(endVar);
-        d.BranchLT(loopBody);
+        // C# close brace (C# only).
+        d.CsLine("}");
 
-        // cursor = endVar
+        // IL loop check: if (loopVar < endVar) goto loopBody.   (IL only)
+        d.Il.MarkLabel(loopCheck.Il);
+        d.Il.Emit(OpCodes.Ldloc, loopVar);
+        d.Il.Emit(OpCodes.Ldloc, endVar);
+        d.Il.Emit(OpCodes.Blt, loopBody.Il);
+
+        // cursor = endVar   (dual)
         d.Il.Emit(OpCodes.Ldloc, endVar);
         d.Il.Emit(OpCodes.Stloc, cursorVar);
         d.CsLine($"{d.GetLocalName(cursorVar)} = {d.GetLocalName(endVar)};");
