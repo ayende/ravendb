@@ -60,15 +60,8 @@ internal static partial class QueryPlanBuilder
                 ["StrategyCandidate"] = compiledPlan.Strategy.ToString()
             };
 
-        // The generated C# is the single most useful artifact for understanding what physically ran — it is the
-        // exact mirror of the emitted IL. Surface it on the plan root so the timings payload is self-contained
-        // (strategy + decision trail + op stream + the code), instead of only being reachable via the executed
-        // match's own Inspect(). Both the raw and Roslyn-formatted forms are carried; consumers pick one.
-        if (compiledPlan.Source != null)
-        {
-            rootParams["CSharpSource"] = compiledPlan.Source;
-            rootParams["CSharpSourceFormatted"] = compiledPlan.FormattedSource;
-        }
+        rootParams["CSharpSourceFormatted"] = compiledPlan.FormattedSource;
+
         if (compiledPlan.AllNegated)
             rootParams["AllNegated"] = "true";
 
@@ -413,8 +406,6 @@ internal static partial class QueryPlanBuilder
                     PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch => "ANDNOT",
                     PlanOpKind.AndBitmaps => "AND-Bitmaps",
                     PlanOpKind.AndNotBitmaps => "ANDNOT-Bitmaps",
-                    // Lazy-OR is a real merge of two slots — surfacing it (instead of skipping it, as before) is
-                    // what makes a top-level OR / nested-group plan legible: the merge point is no longer invisible.
                     PlanOpKind.LazyOrBitmaps => "OR-Bitmaps",
                     PlanOpKind.ClearBitmap => "Clear",
                     PlanOpKind.MaybeEntryScan => "EntryScanCheck",
