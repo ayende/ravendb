@@ -254,6 +254,12 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
         // Edges by slot dataflow.
         var lastWriter = new Dictionary<int, int>();
+        // Real dataflow edges (srcOp -> destOp), used below to decide where INVISIBLE sequencing edges are
+        // needed. The op stream executes top to bottom, but slot dataflow alone makes independent branches —
+        // e.g. an OR of two AND-groups built in separate slots — look like they run in parallel. An invisible
+        // edge between consecutive ops that have no real edge pins the visual order back to true execution
+        // order without implying a (non-existent) data dependency.
+        var realEdges = new HashSet<(int From, int To)>();
         var gateOpIds = new List<int>();
         int entryScanTailId = -1;
         for (int i = 0; i < ops.Count; i++)
@@ -285,16 +291,22 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
             // A combining op reads the running accumulator already in its destination slot.
             if (isFill == false && lastWriter.TryGetValue(dest, out int destWriter))
+            {
                 sb.Append("  op").Append(destWriter).Append(" -> op").Append(i)
                   .Append(" [label=\"slot ").Append(dest).AppendLine("\"];");
+                realEdges.Add((destWriter, i));
+            }
 
             // A slot-to-slot merge also reads its source slot.
             if (op.Parameters.ContainsKey("SourceSlot"))
             {
                 int src = ParseSlot(op, "SourceSlot");
                 if (lastWriter.TryGetValue(src, out int srcWriter))
+                {
                     sb.Append("  op").Append(srcWriter).Append(" -> op").Append(i)
                       .Append(" [label=\"slot ").Append(src).AppendLine("\"];");
+                    realEdges.Add((srcWriter, i));
+                }
             }
 
             lastWriter[dest] = i;
@@ -317,6 +329,21 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 ? "entry-scan TAKEN"
                 : "if entry-scan taken";
             sb.Append("  op").Append(entryScanTailId).Append(" -> result [style=dashed, label=\"").Append(taken).AppendLine("\"];");
+        }
+
+        // Invisible sequencing edges: pin parallel-looking branches to true execution order (see realEdges
+        // above). For each consecutive op pair with no real dataflow edge, an invisible edge forces the
+        // second to rank below the first. Entry-scan nodes are skipped — their dashed branch edges already
+        // express the (conditional) ordering, and chaining through them would imply a false data dependency.
+        for (int i = 0; i + 1 < ops.Count; i++)
+        {
+            if (ops[i].Operation is "EntryScan" or "EntryScanCheck")
+                continue;
+            if (ops[i + 1].Operation is "EntryScan" or "EntryScanCheck")
+                continue;
+            if (realEdges.Contains((i, i + 1)))
+                continue;
+            sb.Append("  op").Append(i).Append(" -> op").Append(i + 1).AppendLine(" [style=invis];");
         }
 
         sb.AppendLine("}");
@@ -394,22 +421,19 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
             string key = plan.CacheKeyHash[0].ToString("x16");
             sb.Append("#### variant ").Append(i + 1).Append(" — strategy `").Append(plan.Strategy).Append("` (key `").Append(key).AppendLine("`)");
             sb.AppendLine();
-            sb.AppendLine("Decision trail:");
-            sb.AppendLine();
             if (plan.DecisionTrail is { Entries.Count: > 0 })
             {
+                sb.AppendLine("Decision trail:");
+                sb.AppendLine();
                 foreach (PlanDecisionEntry d in plan.DecisionTrail.Entries)
                 {
                     string verdict = d.Accepted ? "**accepted**" : "**rejected**";
                     sb.Append("- `").Append(d.Optimization).Append("` → ").Append(verdict).Append(": ").AppendLine(d.Reason);
                 }
-            }
-            else
-            {
-                sb.AppendLine("- _(none recorded)_");
+
+                sb.AppendLine();
             }
 
-            sb.AppendLine();
             sb.AppendLine("Generated C#:");
             sb.AppendLine();
             sb.AppendLine("```csharp");

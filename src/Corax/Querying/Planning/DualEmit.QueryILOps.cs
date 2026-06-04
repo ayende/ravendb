@@ -71,7 +71,7 @@ internal ref partial struct DualEmit
         CsLine($"if (ctx.Bitmaps[0].Count >= ctx.Limit) goto {doneCsName};");
     }
 
-    public void EmitCancelledCursorSlotCall(LocalBuilder cursorVar, MethodInfo ilMethod, string csMethodName, int bitmapSlot)
+    public void EmitCancelledCursorSlotCall(LocalBuilder cursorVar, MethodInfo ilMethod, string csMethodName, int bitmapSlot, bool advanceCursor = true)
     {
         IlCancellationCheck();
         Il.Emit(OpCodes.Ldarg_0);
@@ -79,7 +79,9 @@ internal ref partial struct DualEmit
         Il.Emit(OpCodes.Ldc_I4, bitmapSlot);
         Il.Emit(OpCodes.Call, ilMethod);
         CsCall($"{csMethodName}(ctx, cursor, bitmapSlot: {bitmapSlot});");
-        IlAdvanceCursor(cursorVar);
+        // The advance after the last cursor-consuming op is a dead store; the caller suppresses it there.
+        if (advanceCursor)
+            IlAdvanceCursor(cursorVar);
     }
 
     public void EmitFillAllEntries(int bitmapSlot)
