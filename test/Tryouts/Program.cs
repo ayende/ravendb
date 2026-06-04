@@ -13,6 +13,8 @@ using Raven.Client.Documents.Queries.Timings;
 using Raven.Client.Documents.Session;
 using Raven.Server.Documents.Indexes;
 using FastTests;
+using Sparrow.Json;
+using Sparrow.Json.Sync;
 using Tests.Infrastructure;
 
 namespace Tryouts;
@@ -84,10 +86,34 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         var queries = BuildCatalog();
 
         var sb = new StringBuilder();
-        WriteHeader(sb);
+        sb.AppendLine(
+               $"""
+               # Corax query catalog — RQL, query plan, and generated code""
+
+               Generated against `{IndexName}` over **{DocCount:N0}** documents (seed 12345).
+
+               For each query we show:
+
+               * the **RQL** (one query text, run with several parameter sets),
+               * the **query plan** per parameter set — the structural shape surfaced by `include timings()` (`QueryTimings.QueryPlan`),
+               * the **compiled plan variants** for that query text — strategy, decision trail, and the generated C# (`CompiledPlan.FormattedSource`) for each distinct parameter shape the plan cache produced.
+
+               Varying parameters for the same text is what produces multiple compiled variants: the plan cache keys on a digest of parameter *types*, operand cardinality ordering, sentinel state, and the WHEN-survival mask — not on the raw values.
+
+               The `key` shown next to each variant is the low 64 bits of that shape digest. It captures the *plan shape*, not the query text or field names, so structurally identical queries (e.g. a single string-param leaf with no ORDER BY) share the same low-64 value across different query texts — they do not collide in the cache because lookup is keyed by query text first, then by the full 256-bit digest.
+
+               **Selectivity**: a single compiled plan often adapts to selectivity **at runtime** rather than producing distinct cached variants. The `ShouldSwitchToEntryScan` gate in the generated code chooses between a tree-scan intersection and a per-entry residual scan based on the live accumulator cardinality, so the *same* plan serves both a selective and a non-selective parameter set.
+
+               **Cancellation**: a bitmap fill can pull millions of entries into the accumulator (`CtxFillFromPostingSource`, the tree-scan fill, the lazy-OR materialiser). The query's `CancellationToken` is threaded into those helpers and checked once per ~4096-entry batch, so a cancelled query unwinds within one batch regardless of dataset size instead of only after the op completes. The `Ctx*` IL entry-point signatures are unchanged — the token rides on the `CompiledQueryMatch`, not on every emitted call — so the generated C# below looks identical whether or not a token is in play.
+
+               **Corax 1.0*** engine composed a query as a tree of generic match structs — `BinaryMatch<TInner, TOuter, TOp>` nodes for And/Or/AndNot wrapping `MultiTermMatch`, `TermMatch`, sort matches, and so on. Nesting generic structs this way exploded the JIT'd type count combinatorially, so the gnarliest code in that design existed only to *hide* the explosion: `BinaryMatch` carried a hand-rolled function-pointer vtable (`FunctionTable` of `delegate*<ref BinaryMatch, …>` for Fill/AndWith/Score/Count) populated from a `StaticFunctionCache<TInner, TOuter, TBinaryOperationMarker>` so the concrete generic instantiation could be type-erased back to a single non-generic struct. Control flow lived in those function pointers, threaded through `ref this`, and a query's shape was an opaque runtime object graph — impossible to inspect, cache, or read. The IL pipeline documented here retires that iterator-tree composition entirely: the shape is decided once, cached as a `CompiledPlan`, and emitted as the flat, readable op stream + generated C# shown per query.
+
+               ---
+               """);
 
         foreach (CatalogQuery q in queries)
         {
+            using var ctx = JsonOperationContext.ShortTermSingleUse();
             sb.Append("## ").Append(q.Label).Append(" — ").AppendLine(q.Title);
             sb.AppendLine();
             sb.AppendLine("```rql");
@@ -128,7 +154,13 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 sb.AppendLine("Raw `include timings()` breakdown (wall-clock, illustrative):");
                 sb.AppendLine();
                 sb.AppendLine("```");
-                RenderTimings("Query", timings, 0, sb);
+                using(var ms = new MemoryStream())
+                using(var writer = new BlittableJsonTextWriter(ctx, ms))
+                {
+                    ctx.Write(writer, timings?.ToJson());
+                    writer.Flush();
+                    sb.Append(Encoding.UTF8.GetString(ms.ToArray()));
+                }
                 sb.AppendLine("```");
                 sb.AppendLine();
             }
@@ -141,32 +173,6 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         }
 
         File.WriteAllText(outPath, sb.ToString());
-    }
-
-    private static void WriteHeader(StringBuilder sb)
-    {
-        sb.AppendLine("# Corax query catalog — RQL, query plan, and generated code");
-        sb.AppendLine();
-        sb.AppendLine($"Generated against `{IndexName}` over **{DocCount:N0}** documents (seed 12345).");
-        sb.AppendLine();
-        sb.AppendLine("For each query we show:");
-        sb.AppendLine();
-        sb.AppendLine("- the **RQL** (one query text, run with several parameter sets),");
-        sb.AppendLine("- the **query plan** per parameter set — the structural shape surfaced by `include timings()` (`QueryTimings.QueryPlan`),");
-        sb.AppendLine("- the **compiled plan variants** for that query text — strategy, decision trail, and the generated C# (`CompiledPlan.FormattedSource`) for each distinct parameter shape the plan cache produced.");
-        sb.AppendLine();
-        sb.AppendLine("Varying parameters for the same text is what produces multiple compiled variants: the plan cache keys on a digest of parameter *types*, operand cardinality ordering, sentinel state, and the WHEN-survival mask — not on the raw values.");
-        sb.AppendLine();
-        sb.AppendLine("The `key` shown next to each variant is the low 64 bits of that shape digest. It captures the *plan shape*, not the query text or field names, so structurally identical queries (e.g. a single string-param leaf with no ORDER BY) share the same low-64 value across different query texts — they do not collide in the cache because lookup is keyed by query text first, then by the full 256-bit digest.");
-        sb.AppendLine();
-        sb.AppendLine("> Note on selectivity: a single compiled plan often adapts to selectivity **at runtime** rather than producing distinct cached variants. The `ShouldSwitchToEntryScan` gate in the generated code chooses between a tree-scan intersection and a per-entry residual scan based on the live accumulator cardinality, so the *same* plan serves both a selective and a non-selective parameter set.");
-        sb.AppendLine();
-        sb.AppendLine("> Note on cancellation: a bitmap fill can pull millions of entries into the accumulator (`CtxFillFromPostingSource`, the tree-scan fill, the lazy-OR materialiser). The query's `CancellationToken` is threaded into those helpers and checked once per ~4096-entry batch, so a cancelled query unwinds within one batch regardless of dataset size instead of only after the op completes. The `Ctx*` IL entry-point signatures are unchanged — the token rides on the `CompiledQueryMatch`, not on every emitted call — so the generated C# below looks identical whether or not a token is in play.");
-        sb.AppendLine();
-        sb.AppendLine("> Note on what this replaced: the pre-25281 engine composed a query as a tree of generic match structs — `BinaryMatch<TInner, TOuter, TOp>` nodes for And/Or/AndNot wrapping `MultiTermMatch`, `TermMatch`, sort matches, and so on. Nesting generic structs this way exploded the JIT'd type count combinatorially, so the gnarliest code in that design existed only to *hide* the explosion: `BinaryMatch` carried a hand-rolled function-pointer vtable (`FunctionTable` of `delegate*<ref BinaryMatch, …>` for Fill/AndWith/Score/Count) populated from a `StaticFunctionCache<TInner, TOuter, TBinaryOperationMarker>` so the concrete generic instantiation could be type-erased back to a single non-generic struct. Control flow lived in those function pointers, threaded through `ref this`, and a query's shape was an opaque runtime object graph — impossible to inspect, cache, or read. The IL pipeline documented here retires that iterator-tree composition entirely: the shape is decided once, cached as a `CompiledPlan`, and emitted as the flat, readable op stream + generated C# shown per query.");
-        sb.AppendLine();
-        sb.AppendLine("---");
-        sb.AppendLine();
     }
 
     private static void RenderPlan(QueryInspectionNode node, int depth, StringBuilder sb)
@@ -268,23 +274,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
         return null;
     }
-
-    private static void RenderTimings(string name, QueryTimings timings, int depth, StringBuilder sb)
-    {
-        if (timings == null)
-        {
-            sb.AppendLine("(no timings)");
-            return;
-        }
-
-        sb.Append(' ', depth * 2).Append(name).Append(" — ").Append(timings.DurationInMs).AppendLine(" ms");
-        if (timings.Timings != null)
-        {
-            foreach (KeyValuePair<string, QueryTimings> kv in timings.Timings)
-                RenderTimings(kv.Key, kv.Value, depth + 1, sb);
-        }
-    }
-
+    
     private async Task<PlanCache> GetPlanCache(IDocumentStore store)
     {
         Raven.Server.Documents.DocumentDatabase db = await GetDocumentDatabaseInstanceFor(store);
