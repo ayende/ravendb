@@ -46,26 +46,47 @@ internal static partial class QueryPlanBuilder
             return null;
 
         var exec = result.Execution;
+        var compiledPlan = result.CompiledPlan;
         var flatExecs = BuildFlatClauseExecutions(exec);
-        Dictionary<string, string> rootParams = new() 
+        Dictionary<string, string> rootParams = new()
             {
-                // OptimizationHint reflects the strategy that ACTUALLY ran for this execution, not the cached  structural candidacy. 
+                // OptimizationHint reflects the strategy that ACTUALLY ran for this execution, not the cached  structural candidacy.
                 // The candidacy (CompiledPlan.Strategy) is decided once at cache-miss time; the bitmap-vs-scan cost gate then re-runs
                 // on every execution against the current bound parameters and may fall back to the bitmap pipeline.
                 ["OptimizationHint"] = (exec.ActualStrategy != ExecutionStrategy.NotEvaluated
                     ? exec.ActualStrategy
-                    : result.CompiledPlan.Strategy).ToString(),
-                ["StrategyCandidate"] = result.CompiledPlan.Strategy.ToString()
+                    : compiledPlan.Strategy).ToString(),
+                ["StrategyCandidate"] = compiledPlan.Strategy.ToString()
             };
+
+        // The generated C# is the single most useful artifact for understanding what physically ran — it is the
+        // exact mirror of the emitted IL. Surface it on the plan root so the timings payload is self-contained
+        // (strategy + decision trail + op stream + the code), instead of only being reachable via the executed
+        // match's own Inspect(). Both the raw and Roslyn-formatted forms are carried; consumers pick one.
+        if (compiledPlan.Source != null)
+        {
+            rootParams["CSharpSource"] = compiledPlan.Source;
+            rootParams["CSharpSourceFormatted"] = compiledPlan.FormattedSource;
+        }
+        if (compiledPlan.AllNegated)
+            rootParams["AllNegated"] = "true";
 
         var root = new QueryInspectionNode("CompiledQuery", parameters: rootParams);
         compiledRoot = root;
         opNodes = new List<QueryInspectionNode>(template.Length);
+        bool hasEntryScanGate = false;
 
         for (int i = 0; i < template.Length; i++)
         {
             var t = template[i];
             var parameters = new Dictionary<string, string>();
+
+            // Physical destination/source slots: the dataflow backbone. A consumer reads Slot/FromSlot to
+            // reconstruct which bitmap each op writes (and, for the slot-to-slot merges, which it reads),
+            // and can build a flow graph from it. Always emitted for a real op (DestSlot >= 0).
+            if (t.DestSlot >= 0) parameters["Slot"] = t.DestSlot.ToString();
+            if (t.SourceSlot >= 0) parameters["FromSlot"] = t.SourceSlot.ToString();
+
             if (t.Dispatch != null) parameters["Dispatch"] = t.Dispatch;
             if (t.FieldName != null) parameters["FieldName"] = t.FieldName;
 
@@ -104,6 +125,28 @@ internal static partial class QueryPlanBuilder
             var node = new QueryInspectionNode(t.Name, parameters: parameters);
             opNodes.Add(node);
             root.Children.Add(node);
+
+            if (t.Name == "EntryScanCheck")
+                hasEntryScanGate = true;
+        }
+
+        // Entry-scan tail: a SINGLE node modelling the shared scan body that every EntryScanCheck gate branches
+        // to. The gates above are read-only cost checks on the slot-0 accumulator (Slot=0); the actual slot 0 ->
+        // slot 1 move and the per-entry residual evaluation happen HERE, once, regardless of which gate fired.
+        // Modelling it as one tail (rather than hanging the body off a specific check) is the accurate physical
+        // picture and avoids mis-attributing "Taken" to a gate that did not fire (OverlayTimings sets the runtime
+        // Taken flag + scanned/passed counts on this node). The Residual children are what the scan evaluates per
+        // surviving entry. Rendered whenever the plan has an entry-scan path, independent of whether THIS run took it.
+        if (hasEntryScanGate)
+        {
+            var entryScanParams = new Dictionary<string, string> { ["Slot"] = "1", ["FromSlot"] = "0" };
+            var entryScanNode = new QueryInspectionNode("EntryScan", parameters: entryScanParams);
+            if (compiledPlan.EntryScanSet is { HasPredicates: true } entryScan)
+            {
+                foreach (var predicate in entryScan.Predicates)
+                    entryScanNode.Children.Add(BuildScanPredicateNode(predicate));
+            }
+            root.Children.Add(entryScanNode);
         }
 
         if (result.CompiledPlan.DecisionTrail is { Entries.Count: > 0 } trail)
@@ -171,17 +214,76 @@ internal static partial class QueryPlanBuilder
         if (scannedEntries >= 0)
             compiledRoot.Parameters["ScannedEntries"] = scannedEntries.ToString();
 
+        // The template is compacted (control-flow ops dropped), but per-op telemetry is recorded against the FULL
+        // PlanOp[] index — so join each template node to its timing slot via the original OpIndex, not the node's
+        // position in the compacted list (which drifts the moment any op is filtered out).
+        var template = result.CompiledPlan.InspectionTemplate;
         double tickFreq = Stopwatch.Frequency / 1000.0;
         for (int i = 0; i < opNodes.Count; i++)
         {
+            int opIndex = i < template.Length ? template[i].OpIndex : i;
             var parameters = opNodes[i].Parameters;
-            if (resultCounts != null && i < resultCounts.Length && resultCounts[i] > 0)
-                parameters["Count"] = resultCounts[i].ToString();
-            if (timings != null && i < timings.Length && timings[i] > 0)
-                parameters["Ms"] = (timings[i] / tickFreq).ToString("F3");
-            if (i == entryScanAt)
-                parameters["EntryScan"] = "triggered";
+            if (resultCounts != null && opIndex >= 0 && opIndex < resultCounts.Length && resultCounts[opIndex] > 0)
+                parameters["Count"] = resultCounts[opIndex].ToString();
+            if (timings != null && opIndex >= 0 && opIndex < timings.Length && timings[opIndex] > 0)
+                parameters["Ms"] = (timings[opIndex] / tickFreq).ToString("F3");
         }
+
+        // Mark whether the entry-scan branch actually fired this run, on the single EntryScan tail node (the shared
+        // scan body, not a specific gate). EntryScanTakenAtOp >= 0 means the cost gate switched off the bitmap
+        // pipeline at runtime; its value is the leaf-cursor position at the switch, i.e. how many leaf clauses had
+        // been merged into the slot-0 accumulator before the scan took over (SwitchedAfterClauses). Surfacing the
+        // scanned/passed counts here is "where it skipped to the entry scan, and how much it scanned" in one place.
+        QueryInspectionNode entryScanNode = null;
+        foreach (var child in compiledRoot.Children)
+        {
+            if (child.Operation == "EntryScan")
+            {
+                entryScanNode = child;
+                break;
+            }
+        }
+
+        if (entryScanNode != null)
+        {
+            var p = entryScanNode.Parameters;
+            p["Taken"] = (entryScanAt >= 0).ToString();
+            if (entryScanAt >= 0)
+            {
+                p["SwitchedAfterClauses"] = entryScanAt.ToString();
+                if (compiled.EntryScanEntriesScanned > 0)
+                    p["EntriesScanned"] = compiled.EntryScanEntriesScanned.ToString();
+                if (compiled.EntryScanEntriesPassed > 0)
+                    p["EntriesPassed"] = compiled.EntryScanEntriesPassed.ToString();
+            }
+        }
+    }
+
+    /// <summary>Renders one entry-scan residual predicate (and, recursively, its AND/OR sub-group children) as an
+    /// inspection node. These are the per-entry checks the scan applies once the cost gate switches off the bitmap
+    /// pipeline; surfacing field / compare / negation makes the entry-scan body legible without reading the
+    /// generated C#.</summary>
+    private static QueryInspectionNode BuildScanPredicateNode(ScanPredicateInfo predicate)
+    {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
+
+        if (predicate.SubPredicates != null)
+        {
+            var groupNode = new QueryInspectionNode(predicate.Group == GroupKind.Or ? "Residual-OrGroup" : "Residual-AndGroup");
+            foreach (var sub in predicate.SubPredicates)
+                groupNode.Children.Add(BuildScanPredicateNode(sub));
+            return groupNode;
+        }
+
+        var parameters = new Dictionary<string, string>
+        {
+            ["FieldName"] = predicate.FieldName,
+            ["Compare"] = predicate.CompareOp.ToString(),
+            ["ValueType"] = predicate.ValueType.ToString()
+        };
+        if (predicate.Negated)
+            parameters["Negated"] = "true";
+        return new QueryInspectionNode("Residual", parameters: parameters);
     }
 
     /// <summary>
@@ -303,9 +405,9 @@ internal static partial class QueryPlanBuilder
         {
             ref PlanOp op = ref ops[i];
 
-            if (op.Kind == PlanOpKind.LazyOrBitmaps)
-                continue;
-            if (op.Kind is PlanOpKind.ClearBitmap or PlanOpKind.GotoDoneIfEmpty or PlanOpKind.GotoDone)
+            // Pure control-flow ops carry no data destination — they are the early-exit / terminal jumps of
+            // the linear op stream and would only add noise to a physical dataflow view.
+            if (op.Kind is PlanOpKind.GotoDoneIfEmpty or PlanOpKind.GotoDone)
                 continue;
 
             var inspOp = new InspectionOp
@@ -313,11 +415,16 @@ internal static partial class QueryPlanBuilder
                 Name = op.Kind switch
                 {
                     PlanOpKind.FillFromPostingSource or PlanOpKind.FillFromTreeScan or PlanOpKind.FillFromMatch => "Fill",
+                    PlanOpKind.FillAllEntries => "Fill-AllEntries",
                     PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan or PlanOpKind.AndFromMatch => "AND",
                     PlanOpKind.OrFromPostingSource or PlanOpKind.OrFromTreeScan or PlanOpKind.OrFromMatch => "OR",
                     PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch => "ANDNOT",
                     PlanOpKind.AndBitmaps => "AND-Bitmaps",
                     PlanOpKind.AndNotBitmaps => "ANDNOT-Bitmaps",
+                    // Lazy-OR is a real merge of two slots — surfacing it (instead of skipping it, as before) is
+                    // what makes a top-level OR / nested-group plan legible: the merge point is no longer invisible.
+                    PlanOpKind.LazyOrBitmaps => "OR-Bitmaps",
+                    PlanOpKind.ClearBitmap => "Clear",
                     PlanOpKind.MaybeEntryScan => "EntryScanCheck",
                     PlanOpKind.OrRangeFromPostingSource or PlanOpKind.OrRangeFromMatch => $"OR-Range({op.ParamIndex2} terms)",
                     PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch => $"AND-Range({op.ParamIndex2} terms)",
@@ -331,17 +438,33 @@ internal static partial class QueryPlanBuilder
                         or PlanOpKind.AndNotFromTreeScan => "MultiTerm",
                     // MaybeEntryScan is a control-flow branch, not a match dispatch — leave Dispatch unset so the
                     // EntryScanCheck node is not mislabelled "Match" (which would read as "matched via in-memory match").
-                    PlanOpKind.MaybeEntryScan => null,
+                    // The slot-to-slot algebra ops (AND/ANDNOT/OR-Bitmaps), Clear, and Fill-AllEntries have no leaf
+                    // dispatch either; they operate on whole bitmaps.
+                    PlanOpKind.MaybeEntryScan or PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps
+                        or PlanOpKind.LazyOrBitmaps or PlanOpKind.ClearBitmap or PlanOpKind.FillAllEntries => null,
                     _ => "Match"
                 },
-                EstimatedCardinality = op.EstimatedCardinality
+                EstimatedCardinality = op.EstimatedCardinality,
+                OpIndex = i,
+
+                // Physical dataflow annotation: every op writes BitmapLocal; the slot-to-slot merges also read a
+                // source slot (ParamIndex2). A consumer threads these to build the graph — slots are nodes, ops are
+                // edges into DestSlot. MaybeEntryScan is a read-only GATE on the slot-0 accumulator (it diverts to
+                // the entry-scan tail without writing a slot), so it reports slot 0 as its observed destination; the
+                // actual slot 0 -> slot 1 move lives on the separate EntryScan tail node (see BuildPlan).
+                DestSlot = op.BitmapLocal,
+                SourceSlot = op.Kind switch
+                {
+                    PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.LazyOrBitmaps => op.ParamIndex2,
+                    _ => -1
+                }
             };
 
-            // MaybeEntryScan is a control-flow decision (switch to entry-scan vs. stay on the bitmap
-            // pipeline based on the running candidate count), not a predicate. Its ParamIndex only marks
-            // the leaf cursor position it guards, so attaching FieldName/Term/ClauseType/Negated would
-            // misrepresent it as filtering on the clause that happens to sit at that index.
-            if (op.Kind != PlanOpKind.MaybeEntryScan && op.ParamIndex >= 0 && op.ParamIndex < flatClauses.Count)
+            // Attach clause metadata only to the LEAF ops that actually read a query clause from the cursor.
+            // The slot-algebra ops (AND/ANDNOT/OR-Bitmaps, Clear), the universe fill, and the MaybeEntryScan
+            // branch have a default ParamIndex of 0 that does NOT index a clause — attaching flatClauses[0] to
+            // them would mislabel the merge/branch as filtering on the first clause.
+            if (IsLeafOp(op.Kind) && op.ParamIndex >= 0 && op.ParamIndex < flatClauses.Count)
             {
                 inspOp.FlatClauseIndex = op.ParamIndex;
                 var clause = flatClauses[op.ParamIndex];
@@ -354,6 +477,17 @@ internal static partial class QueryPlanBuilder
         }
 
         return result.ToArray();
+
+        static bool IsLeafOp(PlanOpKind kind) => kind switch
+        {
+            PlanOpKind.FillFromPostingSource or PlanOpKind.FillFromTreeScan or PlanOpKind.FillFromMatch
+                or PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan or PlanOpKind.AndFromMatch
+                or PlanOpKind.OrFromPostingSource or PlanOpKind.OrFromTreeScan or PlanOpKind.OrFromMatch
+                or PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch
+                or PlanOpKind.OrRangeFromPostingSource or PlanOpKind.OrRangeFromMatch
+                or PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch => true,
+            _ => false
+        };
 
         void ExtractFlatClausesInternal(ClauseExecution clauseExec)
         {

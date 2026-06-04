@@ -86,7 +86,10 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
         return new QueryInspectionNode(nameof(BitmapMatch),
             parameters: new Dictionary<string, string>
             {
-                { "Count", Count.ToString() }
+                // A bitmap that was consumed as the RHS of a set operation during execution has no
+                // meaningful Count (its containers were moved into the LHS); report that instead of
+                // reading a stale/garbage value (which also asserts under DEBUG).
+                { "Count", _bitmapState.IsConsumed ? "consumed" : Count.ToString() }
             });
     }
 
