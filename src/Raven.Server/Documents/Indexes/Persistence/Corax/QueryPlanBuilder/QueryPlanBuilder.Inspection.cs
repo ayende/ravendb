@@ -18,11 +18,11 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     public static QueryInspectionNode BuildInspectionGraph(CompiledQuery result)
     {
-        var plan = BuildPlan(result, out var compiledRoot, out var opNodes);
+        var plan = BuildPlan(result, out var compiledRoot, out var opNodes, out var entryScanNode);
         if (plan == null)
             return result.ExecutedMatch.Inspect();
 
-        OverlayTimings(result, compiledRoot, opNodes);
+        OverlayTimings(result, compiledRoot, opNodes, entryScanNode);
         return plan;
     }
 
@@ -36,10 +36,11 @@ internal static partial class QueryPlanBuilder
     /// and the per-template-op nodes in template order via <paramref name="opNodes"/> so timings can be joined by
     /// op index. Returns null only when there is genuinely no structural template to render.
     /// </summary>
-    private static QueryInspectionNode BuildPlan(CompiledQuery result, out QueryInspectionNode compiledRoot, out List<QueryInspectionNode> opNodes)
+    private static QueryInspectionNode BuildPlan(CompiledQuery result, out QueryInspectionNode compiledRoot, out List<QueryInspectionNode> opNodes, out QueryInspectionNode entryScanNode)
     {
         compiledRoot = null;
         opNodes = null;
+        entryScanNode = null;
 
         var template = result.CompiledPlan.InspectionTemplate;
         if (template == null || template.Length == 0)
@@ -81,11 +82,11 @@ internal static partial class QueryPlanBuilder
             var t = template[i];
             var parameters = new Dictionary<string, string>();
 
-            // Physical destination/source slots: the dataflow backbone. A consumer reads Slot/FromSlot to
+            // Physical destination/source slots: the dataflow backbone. A consumer reads DestSlot/SourceSlot to
             // reconstruct which bitmap each op writes (and, for the slot-to-slot merges, which it reads),
             // and can build a flow graph from it. Always emitted for a real op (DestSlot >= 0).
-            if (t.DestSlot >= 0) parameters["Slot"] = t.DestSlot.ToString();
-            if (t.SourceSlot >= 0) parameters["FromSlot"] = t.SourceSlot.ToString();
+            if (t.DestSlot >= 0) parameters["DestSlot"] = t.DestSlot.ToString();
+            if (t.SourceSlot >= 0) parameters["SourceSlot"] = t.SourceSlot.ToString();
 
             if (t.Dispatch != null) parameters["Dispatch"] = t.Dispatch;
             if (t.FieldName != null) parameters["FieldName"] = t.FieldName;
@@ -126,7 +127,7 @@ internal static partial class QueryPlanBuilder
             opNodes.Add(node);
             root.Children.Add(node);
 
-            if (t.Name == "EntryScanCheck")
+            if (t.IsEntryScanGate)
                 hasEntryScanGate = true;
         }
 
@@ -139,8 +140,8 @@ internal static partial class QueryPlanBuilder
         // surviving entry. Rendered whenever the plan has an entry-scan path, independent of whether THIS run took it.
         if (hasEntryScanGate)
         {
-            var entryScanParams = new Dictionary<string, string> { ["Slot"] = "1", ["FromSlot"] = "0" };
-            var entryScanNode = new QueryInspectionNode("EntryScan", parameters: entryScanParams);
+            var entryScanParams = new Dictionary<string, string> { ["DestSlot"] = "1", ["SourceSlot"] = "0" };
+            entryScanNode = new QueryInspectionNode("EntryScan", parameters: entryScanParams);
             if (compiledPlan.EntryScanSet is { HasPredicates: true } entryScan)
             {
                 foreach (var predicate in entryScan.Predicates)
@@ -203,7 +204,7 @@ internal static partial class QueryPlanBuilder
     /// entry-scan trigger onto each template-op node by op index. A no-op when the executed match exposed no
     /// telemetry (e.g. spatial/vector-only path), leaving a clean structure-only plan.
     /// </summary>
-    private static void OverlayTimings(CompiledQuery result, QueryInspectionNode compiledRoot, List<QueryInspectionNode> opNodes)
+    private static void OverlayTimings(CompiledQuery result, QueryInspectionNode compiledRoot, List<QueryInspectionNode> opNodes, QueryInspectionNode entryScanNode)
     {
         if (result.ExecutedMatch is not CompiledQueryMatch compiled)
             return;
@@ -230,20 +231,11 @@ internal static partial class QueryPlanBuilder
         }
 
         // Mark whether the entry-scan branch actually fired this run, on the single EntryScan tail node (the shared
-        // scan body, not a specific gate). EntryScanTakenAtOp >= 0 means the cost gate switched off the bitmap
-        // pipeline at runtime; its value is the leaf-cursor position at the switch, i.e. how many leaf clauses had
-        // been merged into the slot-0 accumulator before the scan took over (SwitchedAfterClauses). Surfacing the
-        // scanned/passed counts here is "where it skipped to the entry scan, and how much it scanned" in one place.
-        QueryInspectionNode entryScanNode = null;
-        foreach (var child in compiledRoot.Children)
-        {
-            if (child.Operation == "EntryScan")
-            {
-                entryScanNode = child;
-                break;
-            }
-        }
-
+        // scan body, not a specific gate; BuildPlan hands it back so we need no name lookup). EntryScanTakenAtOp >= 0
+        // means the cost gate switched off the bitmap pipeline at runtime; its value is the leaf-cursor position at
+        // the switch, i.e. how many leaf clauses had been merged into the slot-0 accumulator before the scan took
+        // over (SwitchedAfterClauses). Surfacing the scanned/passed counts here is "where it skipped to the entry
+        // scan, and how much it scanned" in one place.
         if (entryScanNode != null)
         {
             var p = entryScanNode.Parameters;
@@ -457,7 +449,8 @@ internal static partial class QueryPlanBuilder
                 {
                     PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.LazyOrBitmaps => op.ParamIndex2,
                     _ => -1
-                }
+                },
+                IsEntryScanGate = op.Kind == PlanOpKind.MaybeEntryScan
             };
 
             // Attach clause metadata only to the LEAF ops that actually read a query clause from the cursor.

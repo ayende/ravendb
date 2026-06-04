@@ -26,4 +26,9 @@ public sealed class InspectionOp
     /// that is merged into <see cref="DestSlot"/> (<see cref="PlanOp.ParamIndex2"/>). -1 for leaf and
     /// control-flow ops, which take their operand from the leaf cursor rather than another slot.</summary>
     public int SourceSlot = -1;
+
+    /// <summary>True for the <see cref="PlanOp.Kind"/> == MaybeEntryScan op: a read-only cost gate on the
+    /// slot-0 accumulator that may divert execution to the shared entry-scan tail. Carried as a typed flag so
+    /// consumers do not have to match on the display <see cref="Name"/>.</summary>
+    public bool IsEntryScanGate;
 }

@@ -229,13 +229,13 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
             return;
         }
 
-        // Op nodes are exactly the children that carry a destination Slot (Fill/AND/OR/ANDNOT/*-Bitmaps/Clear/
-        // EntryScanCheck/Range). DecisionTrail / ResolvedClauses / Vector / Spatial nodes have no Slot and are
+        // Op nodes are exactly the children that carry a DestSlot (Fill/AND/OR/ANDNOT/*-Bitmaps/Clear/
+        // EntryScanCheck/Range). DecisionTrail / ResolvedClauses / Vector / Spatial nodes have no DestSlot and are
         // skipped — they are not part of the bitmap dataflow.
         var ops = new List<QueryInspectionNode>();
         foreach (QueryInspectionNode child in compiled.Children)
         {
-            if (child.Parameters != null && child.Parameters.ContainsKey("Slot"))
+            if (child.Parameters != null && child.Parameters.ContainsKey("DestSlot"))
                 ops.Add(child);
         }
 
@@ -276,7 +276,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 continue;
             }
 
-            int dest = ParseSlot(op, "Slot");
+            int dest = ParseSlot(op, "DestSlot");
             bool isFill = op.Operation is "Fill" or "Fill-AllEntries";
 
             // A combining op reads the running accumulator already in its destination slot.
@@ -285,9 +285,9 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                   .Append(" [label=\"slot ").Append(dest).AppendLine("\"];");
 
             // A slot-to-slot merge also reads its source slot.
-            if (op.Parameters.ContainsKey("FromSlot"))
+            if (op.Parameters.ContainsKey("SourceSlot"))
             {
-                int src = ParseSlot(op, "FromSlot");
+                int src = ParseSlot(op, "SourceSlot");
                 if (lastWriter.TryGetValue(src, out int srcWriter))
                     sb.Append("  op").Append(srcWriter).Append(" -> op").Append(i)
                       .Append(" [label=\"slot ").Append(src).AppendLine("\"];");
