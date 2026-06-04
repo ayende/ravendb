@@ -85,15 +85,15 @@ public static class QueryIlEmitter
             // its own branch point). Suppress it so the emitted IL/C# don't carry a trailing cursor++.
             bool advanceCursor = !isLastEffectiveOp;
 
-            // A seed Fill that begins an OR pipeline can short-circuit on the limit exactly like the OR
-            // ops themselves: a union only grows slot 0, so once it already holds Limit matches the
-            // remaining leaves cannot change which docs an unordered query returns. Gated on the NEXT op
-            // being an OR-into-slot-0 so AND pipelines (where an intersection shrinks) never get it.
-            bool nextIsOrAccumulate = i + 1 < ops.Length &&
-                                      ops[i + 1].BitmapLocal == 0 &&
-                                      ops[i + 1].Kind is PlanOpKind.OrFromPostingSource
-                                          or PlanOpKind.OrFromTreeScan
-                                          or PlanOpKind.OrFromMatch;
+            // A seed Fill into slot 0 can short-circuit on the limit exactly like the OR ops themselves:
+            // once slot 0 only ever GROWS from here on (a union — whether an incremental OR-into-slot-0
+            // or a LazyOrBitmaps merge of another operand built in its own slot, as in
+            // `City = $c OR not exists(Name)`), slot 0 is a subset of the final result, so when it
+            // already holds Limit matches the remaining leaves cannot change which docs an unordered
+            // query returns. Gated on NO later op narrowing slot 0 (an AND/ANDNOT intersection), so
+            // pipelines that keep intersecting slot 0 — e.g. the seed of `(City and Age) or ...` — never
+            // get it while slot 0 is still being built down.
+            bool seedFillGrowsOnly = op.BitmapLocal == 0 && !isLastEffectiveOp && !LaterOpNarrowsSlot0(ops, i + 1);
 
             // Build-time clause label (e.g. "Name [Equals]") for the C# mirror; no IL effect. Staged so it
             // trails the op's primary call line (see DualEmit.CsCall) instead of floating above the
@@ -109,19 +109,19 @@ public static class QueryIlEmitter
             {
                 case PlanOpKind.FillFromPostingSource:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromPostingSource, "QueryPrimitives.CtxFillFromPostingSource", op.BitmapLocal, advanceCursor);
-                    if (op.BitmapLocal == 0 && !isLastEffectiveOp && nextIsOrAccumulate)
+                    if (seedFillGrowsOnly)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.FillFromTreeScan:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromTreeScan, "QueryPrimitives.CtxFillFromTreeScan", op.BitmapLocal, advanceCursor);
-                    if (op.BitmapLocal == 0 && !isLastEffectiveOp && nextIsOrAccumulate)
+                    if (seedFillGrowsOnly)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.FillFromMatch:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromMatch, "QueryPrimitives.CtxFillFromMatch", op.BitmapLocal, advanceCursor);
-                    if (op.BitmapLocal == 0 && !isLastEffectiveOp && nextIsOrAccumulate)
+                    if (seedFillGrowsOnly)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
@@ -436,5 +436,33 @@ public static class QueryIlEmitter
         return maxSlot + 1;
     }
     
+    /// <summary>True if any op from <paramref name="from"/> onward narrows slot 0 — an AND/ANDNOT
+    /// intersection into slot 0, or an entry scan (which reanchors the result into slot 1). When this
+    /// is false the slot-0 accumulator only ever grows (unions), so it is already a subset of the final
+    /// unordered result and a Limit short-circuit at the current point is safe.</summary>
+    private static bool LaterOpNarrowsSlot0(PlanOp[] ops, int from)
+    {
+        for (int k = from; k < ops.Length; k++)
+        {
+            ref PlanOp op = ref ops[k];
+
+            // Entry scan moves the result from slot 0 into slot 1; stopping early on slot 0's count
+            // would skip the scan that actually produces the answer.
+            if (op.Kind == PlanOpKind.MaybeEntryScan)
+                return true;
+
+            if (op.BitmapLocal != 0)
+                continue;
+
+            if (op.Kind is PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan or PlanOpKind.AndFromMatch
+                or PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch
+                or PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps
+                or PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch)
+                return true;
+        }
+
+        return false;
+    }
+
     private static void EmptyExecute(CompiledQueryMatch ctx) { }
 }
