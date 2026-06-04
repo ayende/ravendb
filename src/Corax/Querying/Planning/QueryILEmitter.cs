@@ -80,9 +80,11 @@ public static class QueryIlEmitter
             bool emitGoToEmpty = !op.SkipEarlyExit && !isLastEffectiveOp;
             bool emitGotoLimitReached = op.BitmapLocal == 0 && !isLastEffectiveOp;
             
-            // Build-time clause label (e.g. "Name [Equals]") for the C# mirror; no IL effect.
+            // Build-time clause label (e.g. "Name [Equals]") for the C# mirror; no IL effect. Staged so it
+            // trails the op's primary call line (see DualEmit.CsCall) instead of floating above the
+            // cancellation check on its own line.
             if (op.DebugLabel != null)
-                d.CsLine($"// {op.DebugLabel}");
+                d.SetPendingComment(op.DebugLabel);
 
             // Timing: record start tick before each op
             if (emitTimings)
@@ -340,7 +342,7 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Ldloc, loopVar);
         d.Il.Emit(OpCodes.Ldc_I4, bitmapLocal);
         d.Il.Emit(OpCodes.Call, method);
-        d.CsLine($"{methodName}(ctx, {d.GetLocalName(loopVar)}, {bitmapLocal});");
+        d.CsCall($"{methodName}(ctx, {d.GetLocalName(loopVar)}, {bitmapLocal});");
 
         // AND short-circuits once the destination is empty (the intersection can only shrink).
         if (earlyExit && !skipEarlyExit)
