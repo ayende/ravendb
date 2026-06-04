@@ -149,8 +149,15 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             predicate(planParams.QueryParameters))
             return;
 
-        // WHEN(false) -> the guard is off, so the clause does not filter
-        exec.MarkAsSentinel(ClauseType.MatchAll, _indexSearcher.NumberOfEntries); 
+        // WHEN(false): the guard is off, so the whole guarded clause (its negation included) does not
+        // filter. It collapses to the identity of its enclosing boolean operator: MatchAll (the universe,
+        // x ∧ ALL = x) under AND, MatchNothing (the empty set, x ∨ ∅ = x) under OR. The polarity is purely
+        // operator-driven — a dropped clause's own negation is subsumed, since a removed filter contributes
+        // its parent's identity regardless of how it was written (e.g. `A and not when(false, X)` => A).
+        if (template.IsOr)
+            exec.MarkAsSentinel(ClauseType.MatchNothing, 0);
+        else
+            exec.MarkAsSentinel(ClauseType.MatchAll, _indexSearcher.NumberOfEntries);
     }
 
     private static bool IsEmptyIn(ClauseExecution e) =>

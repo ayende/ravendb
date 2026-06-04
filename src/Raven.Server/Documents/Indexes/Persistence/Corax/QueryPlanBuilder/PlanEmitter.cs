@@ -175,7 +175,14 @@ internal sealed class PlanEmitter
 
         for (int i = 1; i < executions.Count; i++)
         {
-            if (allScanEligible) // if we can, check if we can move to entry scan after the first check
+            var cur = executions[i];
+
+            // Only switch to entry scan before a clause that actually consumes a leaf. A sentinel
+            // (MatchAll/MatchNothing) consumes no leaf and never advances the runtime cursor, so the cursor
+            // has already moved past it onto the following real leaves; emitting a MaybeEntryScan here would
+            // read Cardinalities[cursor] out of bounds (the cursor points past the leaf-indexed arrays).
+            // The sentinel's bitmap algebra is still baked by EmitClauseInto below.
+            if (allScanEligible && cur.IsSentinel == false) // if we can, check if we can move to entry scan after the first check
             {
                 _ops.Add(new PlanOp
                 {
@@ -184,7 +191,6 @@ internal sealed class PlanEmitter
                 });
             }
 
-            var cur = executions[i];
             MergeKind merge = cur.IsNegated ? MergeKind.AndNotInto : MergeKind.AndInto;
 
             // Suppress the leaf's built-in empty-check: a plain AndFrom* leaf would otherwise emit its own
