@@ -369,18 +369,28 @@ public static class ResidualScanIlEmitter
             var loopHead = d.DefineLabelPair("notEqualNext");
             var pass = d.DefineLabelPair("notEqualPass");
 
+            // while (reader.FindNext(rootPage)) — FindNext is the loop condition; a false result
+            // exits to pass (no term equals → entry passes this leaf).
             d.Il.MarkLabel(loopHead.Il);
-            d.CsLine($"{loopHead.Name}:");
             EmitFindNext(ref d, readerRefLocal, rootIdx);
-            EmitBranchFalse(ref d, pass.Il, pass.Name);   // out of terms → none equal → pass
-            EmitSkipIfNull(ref d, readerRefLocal, loopHead);
+            d.Il.Emit(OpCodes.Brfalse, pass.Il);
+            d.CsLine($"while ({d.CsStack.Pop()})");
+            d.CsLine("{");
+
+            // if (reader.IsNull) continue;
+            d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+            d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
+            d.Il.Emit(OpCodes.Brtrue, loopHead.Il);
+            d.CsLine("if (reader.IsNull) continue;");
+
+            // if (term == target) goto fail;
             EmitTypedComparison(ref d, in pred, readerRefLocal);
             EmitBranchTrue(ref d, failIl, failName);      // term equals → fail
-            d.Il.Emit(OpCodes.Br, loopHead.Il);           // not equal → next term
-            d.CsLine($"goto {loopHead.Name};");
 
-            d.Il.MarkLabel(pass.Il);
-            d.CsLine($"{pass.Name}:");
+            d.Il.Emit(OpCodes.Br, loopHead.Il);           // not equal → next term
+            d.CsLine("}");
+
+            d.Il.MarkLabel(pass.Il);                      // loop exited → no term equalled → pass
             return;
         }
 
@@ -391,16 +401,28 @@ public static class ResidualScanIlEmitter
             var loopHead = d.DefineLabelPair("matchNext");
             var pass = d.DefineLabelPair("matchPass");
 
+            // while (reader.FindNext(rootPage)) — FindNext is the loop condition; a false result
+            // exits to fail (no term matched → entry fails this leaf).
             d.Il.MarkLabel(loopHead.Il);
-            d.CsLine($"{loopHead.Name}:");
             EmitFindNext(ref d, readerRefLocal, rootIdx);
-            EmitBranchFalse(ref d, failIl, failName);     // out of terms → none matched → fail
-            EmitSkipIfNull(ref d, readerRefLocal, loopHead);
+            d.Il.Emit(OpCodes.Brfalse, failIl);
+            d.CsLine($"while ({d.CsStack.Pop()})");
+            d.CsLine("{");
+
+            // if (reader.IsNull) continue;
+            d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+            d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
+            d.Il.Emit(OpCodes.Brtrue, loopHead.Il);
+            d.CsLine("if (reader.IsNull) continue;");
+
+            // if (<cmp>) goto pass;
             EmitTypedComparison(ref d, in pred, readerRefLocal);
             EmitBranchTrue(ref d, pass.Il, pass.Name);    // term satisfies → pass
-            d.Il.Emit(OpCodes.Br, loopHead.Il);           // not satisfied → next term
-            d.CsLine($"goto {loopHead.Name};");
 
+            d.Il.Emit(OpCodes.Br, loopHead.Il);           // not satisfied → next term
+            d.CsLine("}");
+
+            d.CsLine($"goto {failName};");                // loop exhausted → none matched → fail
             d.Il.MarkLabel(pass.Il);
             d.CsLine($"{pass.Name}:");
         }
@@ -414,16 +436,6 @@ public static class ResidualScanIlEmitter
         d.CsStack.Push("reader");
         d.LoadFieldRootPage(rootIdx);
         d.CallReturning(IlEmitterShared.ReaderFindNext, arity: 2, csTemplate: "{0}.FindNext({1})");
-    }
-
-    /// <summary>Emit <c>if (reader.IsNull) goto loopHead;</c> — skip null terms in a value loop.
-    /// A null term's CurrentLong/CurrentDouble is stale, so it must never feed a comparison.</summary>
-    private static void EmitSkipIfNull(ref DualEmit d, LocalBuilder readerRefLocal, LabelPair loopHead)
-    {
-        d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
-        d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
-        d.Il.Emit(OpCodes.Brtrue, loopHead.Il);
-        d.CsLine($"if (reader.IsNull) goto {loopHead.Name};");
     }
 
     /// <summary>Emit the comparison portion of a leaf predicate. On entry both stacks are

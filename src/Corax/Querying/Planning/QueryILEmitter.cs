@@ -183,25 +183,25 @@ public static class QueryIlEmitter
                 }
 
                 case PlanOpKind.OrRangeFromPostingSource:
-                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, MatchDispatch.PostingList,
+                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
                         IlEmitterShared.CtxOrFillFromPostingSource, "QueryPrimitives.CtxOrFillFromPostingSource", i,
                         earlyExit: false, skipEarlyExit: false, doneLabel);
                     break;
 
                 case PlanOpKind.OrRangeFromMatch:
-                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, MatchDispatch.QueryMatch,
+                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
                         IlEmitterShared.CtxOrWithMatchSlot, "QueryPrimitives.CtxOrWithMatchSlot", i,
                         earlyExit: false, skipEarlyExit: false, doneLabel);
                     break;
 
                 case PlanOpKind.AndRangeFromPostingSource:
-                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, MatchDispatch.PostingList,
+                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
                         IlEmitterShared.CtxAndFromPostingSource, "QueryPrimitives.CtxAndFromPostingSource", i,
                         earlyExit: true, skipEarlyExit: op.SkipEarlyExit, doneLabel);
                     break;
 
                 case PlanOpKind.AndRangeFromMatch:
-                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal, MatchDispatch.QueryMatch,
+                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
                         IlEmitterShared.CtxAndFromMatch, "QueryPrimitives.CtxAndFromMatch", i,
                         earlyExit: true, skipEarlyExit: op.SkipEarlyExit, doneLabel);
                     break;
@@ -304,7 +304,7 @@ public static class QueryIlEmitter
     /// check-first loop (init; goto check; body; check: cond → body); the C# mirror is rendered
     /// as an equivalent <c>for</c> loop.</summary>
     private static void EmitRangeLoop(ref DualEmit d, LocalBuilder cursorVar, int rangeIdx, int bitmapLocal,
-        MatchDispatch dispatch, MethodInfo method, string methodName, int opIndex,
+        MethodInfo method, string methodName, int opIndex,
         bool earlyExit, bool skipEarlyExit, LabelPair doneLabel)
     {
         var loopVar = d.DeclareLocal(typeof(int), $"j_{opIndex}");
@@ -321,9 +321,6 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Add);
         d.Il.Emit(OpCodes.Stloc, endVar);
         d.CsLine($"{d.GetLocalName(endVar)} = {d.GetLocalName(cursorVar)} + ctx.InRangeCounts[{rangeIdx}];");
-
-        // Bounds-check hint: touch source[endVar-1] (IL only)
-        EmitRangeEndIndexTouch(d, dispatch, cursorVar, endVar);
 
         // IL loop init: loopVar = cursor; goto check.   (IL only — the for-header carries this in C#)
         d.Il.Emit(OpCodes.Ldloc, cursorVar);
@@ -393,39 +390,6 @@ public static class QueryIlEmitter
 
         // Execute() reads the result from slot 1 because EntryScanTakenAtOp is now set, and disposes slot 0.
         d.EmitRetVoid();
-    }
-
-    /// <summary>Emit a bounds-check hint immediately after computing endVar
-    /// (the exclusive upper bound of an OrRange / AndRange loop). Touches the source array
-    /// at endVar - 1 so the JIT proves the array is at least endVar long.</summary>
-    private static void EmitRangeEndIndexTouch(DualEmit d, MatchDispatch dispatch, LocalBuilder cursorVar, LocalBuilder endVar)
-    {
-        var il = d.Il;
-        
-        var (arrayField, loadOp, elementType, array) = dispatch switch
-        {
-            MatchDispatch.PostingList => (IlEmitterShared.CtxLeaves, OpCodes.Ldelema, typeof(LeafResolveInfo), ""),
-            _ => (IlEmitterShared.CtxResolvedMatches, OpCodes.Ldelem_Ref, null, "")
-        };
-        d.CsLine($"if ({d.GetLocalName(endVar)} != {d.GetLocalName(cursorVar)}), _ = ctx.Leaves{array}[{d.GetLocalName(endVar)} - 1]; // prove to JIT it can eliminate bound checks");
-        
-        var skipTouch = il.DefineLabel();
-        il.Emit(OpCodes.Ldloc, endVar);
-        il.Emit(OpCodes.Ldloc, cursorVar);
-        il.Emit(OpCodes.Beq, skipTouch);
-
-        il.Emit(OpCodes.Ldarg_0);
-        il.Emit(OpCodes.Ldfld, arrayField);
-        il.Emit(OpCodes.Ldloc, endVar);
-        il.Emit(OpCodes.Ldc_I4_1);
-        il.Emit(OpCodes.Sub);
-        if (elementType != null)
-            il.Emit(loadOp, elementType);
-        else
-            il.Emit(loadOp);
-        il.Emit(OpCodes.Pop);
-
-        il.MarkLabel(skipTouch);
     }
 
     /// <summary>Highest destination/source bitmap slot referenced by any op, +1. For the
