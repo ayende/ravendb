@@ -239,6 +239,11 @@ public static class CompiledQueryHelper
         Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
         var readers = new EntryTermsReader[QueryPrimitives.EntryScanBatchSize];
 
+        // The target slot may have been used as AND/AndNot scratch by an earlier op, which
+        // leaves it marked consumed (and possibly holding stale containers). Reset it so the
+        // survivors we Add below start from a clean, writable bitmap.
+        targetBitmap.Clear();
+
         var iterator = sourceBitmap.GetIterator();
         var searcher = ctx.Searcher;
         var predicate = ctx.CompiledEntryPredicate;

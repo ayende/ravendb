@@ -82,6 +82,22 @@ public unsafe partial struct RoaringBitmap : IDisposable
 #endif
     }
 
+    /// <summary>True when this bitmap was consumed as the RHS of a destructive set operation
+    /// (OrWith / AndWith / AndNotWith). The tracking flag only exists under DEBUG, so this is
+    /// always false in Release. Inspection uses it to avoid reading a meaningless Count off a
+    /// consumed bitmap (whose containers may have been moved into the LHS).</summary>
+    public readonly bool IsConsumed
+    {
+        get
+        {
+#if DEBUG
+            return _consumed;
+#else
+            return false;
+#endif
+        }
+    }
+
     /// <summary>
     /// Construct a RoaringBitmap backed by the given allocator.
     /// All operations on this bitmap MUST use the same ByteStringContext instance that was

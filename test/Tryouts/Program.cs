@@ -148,6 +148,16 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 sb.AppendLine("```");
                 sb.AppendLine();
 
+                // The same plan, rendered as a physical dataflow graph. Slots are the wires: each op writes its
+                // `Slot`, the slot-to-slot merges also read a `FromSlot`, and the EntryScanCheck branches slot 0
+                // into the entry-scan tail (slot 1). Paste the block into any Graphviz renderer.
+                sb.AppendLine("Physical dataflow (Graphviz):");
+                sb.AppendLine();
+                sb.AppendLine("```dot");
+                RenderDot(plan, sb);
+                sb.AppendLine("```");
+                sb.AppendLine();
+
                 // Raw `include timings()` durations exactly as the server returned them. Wall-clock numbers are
                 // illustrative (they vary run to run); the value here is seeing WHICH stages the engine timed —
                 // optimizer/plan-build vs. query execution — not the absolute milliseconds.
@@ -200,6 +210,167 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         {
             foreach (QueryInspectionNode child in node.Children)
                 RenderPlan(child, depth + 1, sb);
+        }
+    }
+
+    /// <summary>
+    /// Renders the physical plan as a Graphviz dataflow graph. The op stream is linear, but the bitmap SLOTS turn
+    /// it into a graph: every op writes its <c>Slot</c>; a non-Fill op that targets a slot consumes whatever last
+    /// wrote that slot (the running accumulator); the slot-to-slot merges (AND/ANDNOT/OR-Bitmaps) additionally
+    /// consume their <c>FromSlot</c>; and the EntryScanCheck branches slot 0 into the entry-scan tail (slot 1).
+    /// Walking the ops while tracking the last writer per slot reconstructs the edges.
+    /// </summary>
+    private static void RenderDot(QueryInspectionNode plan, StringBuilder sb)
+    {
+        QueryInspectionNode compiled = FindNode(plan, "CompiledQuery");
+        if (compiled?.Children == null)
+        {
+            sb.AppendLine("digraph QueryPlan { /* no compiled op stream */ }");
+            return;
+        }
+
+        // Op nodes are exactly the children that carry a destination Slot (Fill/AND/OR/ANDNOT/*-Bitmaps/Clear/
+        // EntryScanCheck/Range). DecisionTrail / ResolvedClauses / Vector / Spatial nodes have no Slot and are
+        // skipped — they are not part of the bitmap dataflow.
+        var ops = new List<QueryInspectionNode>();
+        foreach (QueryInspectionNode child in compiled.Children)
+        {
+            if (child.Parameters != null && child.Parameters.ContainsKey("Slot"))
+                ops.Add(child);
+        }
+
+        sb.AppendLine("digraph QueryPlan {");
+        sb.AppendLine("  rankdir=TB;");
+        sb.AppendLine("  node [shape=box, fontname=\"monospace\"];");
+
+        // Node declarations.
+        for (int i = 0; i < ops.Count; i++)
+            sb.Append("  op").Append(i).Append(" [label=\"").Append(DotLabel(ops[i])).AppendLine("\"];");
+        sb.AppendLine("  result [shape=ellipse, label=\"Result\"];");
+
+        // Edges by slot dataflow.
+        var lastWriter = new Dictionary<int, int>();
+        var gateOpIds = new List<int>();
+        int entryScanTailId = -1;
+        for (int i = 0; i < ops.Count; i++)
+        {
+            QueryInspectionNode op = ops[i];
+
+            // The EntryScan tail is the shared branch TARGET, not part of the linear slot dataflow. Wire it after
+            // the loop (dashed edges from every gate, and its slot-1 survivors to the result).
+            if (op.Operation == "EntryScan")
+            {
+                entryScanTailId = i;
+                continue;
+            }
+
+            // EntryScanCheck is a read-only cost GATE on the slot-0 accumulator: it reads slot 0 and may divert to
+            // the entry-scan tail, but writes NO slot. Draw a dashed gate edge from the current slot-0 writer and
+            // record it; crucially do NOT make it a writer — that would chain the next op through a phantom slot.
+            if (op.Operation == "EntryScanCheck")
+            {
+                if (lastWriter.TryGetValue(0, out int gateSrc))
+                    sb.Append("  op").Append(gateSrc).Append(" -> op").Append(i)
+                      .AppendLine(" [style=dashed, label=\"gate slot 0\"];");
+                gateOpIds.Add(i);
+                continue;
+            }
+
+            int dest = ParseSlot(op, "Slot");
+            bool isFill = op.Operation is "Fill" or "Fill-AllEntries";
+
+            // A combining op reads the running accumulator already in its destination slot.
+            if (isFill == false && lastWriter.TryGetValue(dest, out int destWriter))
+                sb.Append("  op").Append(destWriter).Append(" -> op").Append(i)
+                  .Append(" [label=\"slot ").Append(dest).AppendLine("\"];");
+
+            // A slot-to-slot merge also reads its source slot.
+            if (op.Parameters.ContainsKey("FromSlot"))
+            {
+                int src = ParseSlot(op, "FromSlot");
+                if (lastWriter.TryGetValue(src, out int srcWriter))
+                    sb.Append("  op").Append(srcWriter).Append(" -> op").Append(i)
+                      .Append(" [label=\"slot ").Append(src).AppendLine("\"];");
+            }
+
+            lastWriter[dest] = i;
+        }
+
+        // Result edge: the bitmap pipeline leaves its answer in slot 0.
+        if (lastWriter.TryGetValue(0, out int finalWriter))
+            sb.Append("  op").Append(finalWriter).AppendLine(" -> result;");
+
+        // Entry-scan branch: every gate that fires diverts the slot-0 accumulator into the single scan tail, whose
+        // slot-1 survivors become the answer instead. Dashed throughout — this path is conditional on the cost gate.
+        if (entryScanTailId >= 0)
+        {
+            foreach (int gate in gateOpIds)
+                sb.Append("  op").Append(gate).Append(" -> op").Append(entryScanTailId)
+                  .AppendLine(" [style=dashed, label=\"on switch\"];");
+
+            QueryInspectionNode tail = ops[entryScanTailId];
+            string taken = tail.Parameters != null && tail.Parameters.TryGetValue("Taken", out string t) && t == "True"
+                ? "entry-scan TAKEN"
+                : "if entry-scan taken";
+            sb.Append("  op").Append(entryScanTailId).Append(" -> result [style=dashed, label=\"").Append(taken).AppendLine("\"];");
+        }
+
+        sb.AppendLine("}");
+    }
+
+    private static int ParseSlot(QueryInspectionNode op, string key)
+        => op.Parameters != null && op.Parameters.TryGetValue(key, out string v) && int.TryParse(v, out int n) ? n : -1;
+
+    private static QueryInspectionNode FindNode(QueryInspectionNode node, string operation)
+    {
+        if (node == null)
+            return null;
+        if (node.Operation == operation)
+            return node;
+        if (node.Children != null)
+        {
+            foreach (QueryInspectionNode child in node.Children)
+            {
+                QueryInspectionNode found = FindNode(child, operation);
+                if (found != null)
+                    return found;
+            }
+        }
+
+        return null;
+    }
+
+    private static string DotLabel(QueryInspectionNode op)
+    {
+        var parts = new List<string> { op.Operation };
+        if (op.Parameters != null)
+        {
+            // Show the data-bearing attributes; skip the slot wiring (already on the edges) and the bulky source.
+            AddIf(op, parts, "FieldName");
+            AddIf(op, parts, "ClauseType");
+            AddIf(op, parts, "Term");
+            AddIf(op, parts, "Term2");
+            AddIf(op, parts, "Terms");
+            if (op.Parameters.TryGetValue("Negated", out string neg) && neg == "true")
+                parts.Add("NEGATED");
+            AddIf(op, parts, "EstimatedRows", "~");
+            AddIf(op, parts, "Count", "count=");
+            AddIf(op, parts, "Taken", "taken=");
+            AddIf(op, parts, "SwitchedAfterClauses", "after=");
+            AddIf(op, parts, "EntriesScanned", "scanned=");
+            AddIf(op, parts, "EntriesPassed", "passed=");
+        }
+
+        // Escape for a Graphviz double-quoted label, then join lines with the literal \n that DOT renders as a break.
+        for (int i = 0; i < parts.Count; i++)
+            parts[i] = parts[i].Replace("\\", "\\\\").Replace("\"", "\\\"");
+        return string.Join("\\n", parts);
+
+        // prefix == "" => render as "Key=value"; otherwise render as "prefix" + value (e.g. "~1,234", "count=99").
+        static void AddIf(QueryInspectionNode n, List<string> into, string key, string prefix = "")
+        {
+            if (n.Parameters.TryGetValue(key, out string val) && string.IsNullOrEmpty(val) == false)
+                into.Add(prefix.Length == 0 ? key + "=" + val : prefix + val);
         }
     }
 
