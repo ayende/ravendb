@@ -195,6 +195,10 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
             bool first = true;
             foreach (KeyValuePair<string, string> kv in node.Parameters)
             {
+                // The generated C# is multi-line and is shown in full as its own ```csharp block; dumping it
+                // inline here would bury the node header under hundreds of characters of source. Skip it.
+                if (kv.Key is "CSharpSource" or "CSharpSourceFormatted")
+                    continue;
                 if (first == false)
                     sb.Append(", ");
                 first = false;

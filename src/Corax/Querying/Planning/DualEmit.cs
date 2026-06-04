@@ -28,7 +28,36 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
     private int _labelCounter = 0;
     private int _tempCounter = 0;
 
+    /// <summary>Clause label staged by <see cref="SetPendingComment"/> and emitted as a TRAILING comment
+    /// on the next <see cref="CsCall"/> line (the op's primary statement), so the label sits on the call
+    /// it describes rather than floating on its own line above the cancellation check.</summary>
+    private string _pendingComment;
+
     public void CsLine(string line) => cs.AppendLine(line);
+
+    /// <summary>Stage a label to trail the next <see cref="CsCall"/>. Only ops whose primary statement is
+    /// emitted via <see cref="CsCall"/> carry a label, so the staged comment is always consumed before the
+    /// next is set — assert that here to catch a future op kind that labels itself without a CsCall.</summary>
+    public void SetPendingComment(string comment)
+    {
+        Debug.Assert(_pendingComment == null,
+            $"DualEmit: clause label '{_pendingComment}' was staged but never emitted before staging '{comment}'");
+        _pendingComment = comment;
+    }
+
+    /// <summary>Emit an op's primary call statement, attaching any label staged via
+    /// <see cref="SetPendingComment"/> as a trailing C# comment.</summary>
+    public void CsCall(string line)
+    {
+        if (_pendingComment == null)
+        {
+            cs.AppendLine(line);
+            return;
+        }
+
+        cs.Append(line).Append("    // ").AppendLine(_pendingComment);
+        _pendingComment = null;
+    }
 
     public LabelPair DefineLabelPair(string prefix) => new(Il.DefineLabel(), $"{prefix}_{_labelCounter++}");
 
