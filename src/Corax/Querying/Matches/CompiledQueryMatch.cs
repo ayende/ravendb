@@ -199,8 +199,16 @@ public class CompiledQueryMatch(
         {
             foreach (var it in ResolvedMatches)
             {
-                if (it != null)
-                    children.Add(it.Inspect());
+                // A BitmapMatch leaf is a pre-materialized bitmap (e.g. a search() result) that the pipeline
+                // fed into the slot-0 accumulator via Or/And/AndNotWith — a destructive merge that CONSUMES the
+                // leaf's bitmap (its containers are moved into the accumulator). After execution its Count is
+                // meaningless, and reading it is the exact contract the RoaringBitmap consumed-assertion forbids.
+                // The leaf's contribution is already captured in the per-op telemetry (ResultCounts), so skip it
+                // here rather than re-reading a consumed bitmap. Non-bitmap leaves (vector / spatial / term) are
+                // not consumed and remain safe to inspect.
+                if (it is null or BitmapMatch)
+                    continue;
+                children.Add(it.Inspect());
             }
         }
 
