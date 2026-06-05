@@ -1,10 +1,14 @@
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.Formatting;
 
 namespace Corax.Querying.Planning;
 
 public static class CSharpFormatter
 {
+    // Create an ad-hoc workspace to gain access to the formatting engine
+    private static readonly AdhocWorkspace Workspace = new();
+
     public static string Format(string sourceCode)
     {
         if (string.IsNullOrEmpty(sourceCode))
@@ -14,7 +18,10 @@ public static class CSharpFormatter
         {
             var tree = CSharpSyntaxTree.ParseText(sourceCode);
             var root = tree.GetCompilationUnitRoot();
-            return root.NormalizeWhitespace().ToFullString();
+
+            // Use the formatting engine (default smart indent keeps labels indented)
+            var formattedNode = Formatter.Format(root, Workspace);
+            return formattedNode.ToFullString();
         }
         catch
         {
