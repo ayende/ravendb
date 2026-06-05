@@ -62,31 +62,13 @@ internal static class QueryPlanGraph
         sb.AppendLine("  rankdir=TB;");
         sb.AppendLine("  node [shape=box, fontname=\"monospace\"];");
 
-        // Node declarations. Every node carries its inspection parameters twice: folded into the human-readable
-        // `label`, AND as machine-readable `data_<key>` attributes so any downstream tool (anything parsing the DOT,
-        // or a `dot -Tjson` export) can read the structured plan without scraping label text.
-        for (int i = 0; i < ops.Count; i++)
-        {
-            sb.Append("  op").Append(i).Append(" [label=\"").Append(DotLabel(ops[i])).Append('"');
-            AppendDataAttributes(sb, ops[i]);
-            sb.AppendLine("];");
-        }
-
-        if (directScanNode != null)
-        {
-            sb.Append("  directscan [shape=box, style=bold, color=\"#1a7f37\", label=\"").Append(DirectScanLabel(directScanNode)).Append('"');
-            AppendDataAttributes(sb, directScanNode);
-            sb.AppendLine("];");
-        }
-
-        sb.AppendLine("  result [shape=ellipse, label=\"Result\"];");
-
         // --- Runtime taken-path analysis ------------------------------------------------------------------------
-        // Pre-scan the op list to locate the entry-scan tail and the cost gates BEFORE drawing any edge, so every
-        // edge can be coloured by whether THIS run actually traversed it. The runtime facts come from OverlayTimings
-        // (present only when the query asked for include timings()): the tail's Taken flag, and SwitchedAfterClauses
-        // = how many leaf clauses had merged into slot 0 when the scan switched on. The j-th gate (1-indexed in op
-        // order) is the one that fires when SwitchedAfterClauses == j, so the fired gate is gateOpIds[switchedAfter-1].
+        // Pre-scan the op list to locate the entry-scan tail and the cost gates BEFORE declaring any node or drawing
+        // any edge, so every NODE can carry a `data_taken` flag and every EDGE can be coloured by whether THIS run
+        // actually traversed it. The runtime facts come from OverlayTimings (present only when the query asked for
+        // include timings()): the tail's Taken flag, and SwitchedAfterClauses = how many leaf clauses had merged into
+        // slot 0 when the scan switched on. The j-th gate (1-indexed in op order) is the one that fires when
+        // SwitchedAfterClauses == j, so the fired gate is gateOpIds[switchedAfter-1].
         int entryScanTailId = -1;
         var gateOpIds = new List<int>();
         for (int i = 0; i < ops.Count; i++)
@@ -107,9 +89,9 @@ internal static class QueryPlanGraph
             int.TryParse(sac, out switchedAfter);
         int firedGateOp = switchedAfter >= 1 && switchedAfter <= gateOpIds.Count ? gateOpIds[switchedAfter - 1] : -1;
 
-        // Did the runtime overlay run at all? Without it we cannot know the taken path, so edges fall back to a plain
-        // (uncoloured) style rather than falsely claiming a route. With an entry-scan gate the Taken flag is the
-        // signal; otherwise any op carrying a runtime Count proves the overlay ran.
+        // Did the runtime overlay run at all? Without it we cannot know the taken path, so nodes carry no data_taken
+        // and edges fall back to a plain (uncoloured) style rather than falsely claiming a route. With an entry-scan
+        // gate the Taken flag is the signal; otherwise any op carrying a runtime Count proves the overlay ran.
         bool hasRuntime = entryScanTailId >= 0
             ? ops[entryScanTailId].Parameters != null && ops[entryScanTailId].Parameters.ContainsKey("Taken")
             : AnyHasCount(ops);
@@ -131,6 +113,39 @@ internal static class QueryPlanGraph
         // iff gateOp <= firedGateOp (or no switch happened at all). This differs from OpExecuted, which is strict
         // (< firedGateOp): the fired gate's merge inputs were skipped, but the gate itself did read the accumulator.
         bool GateReached(int gateOp) => hasRuntime && (entryScanTaken == false || (firedGateOp >= 0 && gateOp <= firedGateOp));
+
+        // Whether op `i` was on the path the run actually took, mirroring the green/grey edge colouring so a DOT
+        // consumer reads the executed path off `data_taken` without re-deriving it from edge colours: the entry-scan
+        // tail uses its own Taken flag; a cost gate uses GateReached (it counts as taken if the run reached it); any
+        // other op uses OpExecuted.
+        bool NodeTaken(int i)
+            => ops[i].Operation == "EntryScan" ? entryScanTaken
+             : ops[i].Operation == "EntryScanCheck" ? GateReached(i)
+             : OpExecuted(i);
+
+        // Node declarations. Every node carries its inspection parameters twice: folded into the human-readable
+        // `label`, AND as machine-readable `data_<key>` attributes so any downstream tool (anything parsing the DOT,
+        // or a `dot -Tjson` export) can read the structured plan without scraping label text.
+        for (int i = 0; i < ops.Count; i++)
+        {
+            sb.Append("  op").Append(i).Append(" [label=\"").Append(DotLabel(ops[i])).Append('"');
+            AppendDataAttributes(sb, ops[i]);
+            // Per-node taken status, mirroring the green edge colouring. Only the entry-scan tail already carries a
+            // Taken param (emitted by AppendDataAttributes as data_taken); for every other node we synthesise it
+            // here so the whole graph is uniformly annotated. Skipped when no runtime overlay ran (we make no claim).
+            if (hasRuntime && (ops[i].Parameters == null || ops[i].Parameters.ContainsKey("Taken") == false))
+                sb.Append(", data_taken=\"").Append(NodeTaken(i) ? "True" : "False").Append('"');
+            sb.AppendLine("];");
+        }
+
+        if (directScanNode != null)
+        {
+            sb.Append("  directscan [shape=box, style=bold, color=\"#1a7f37\", label=\"").Append(DirectScanLabel(directScanNode)).Append('"');
+            AppendDataAttributes(sb, directScanNode);
+            sb.AppendLine("];");
+        }
+
+        sb.AppendLine("  result [shape=ellipse, label=\"Result\"];");
 
         // Edges by slot dataflow.
         var lastWriter = new Dictionary<int, int>();
