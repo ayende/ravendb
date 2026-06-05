@@ -43,37 +43,65 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         // The entry-scan delegate is always emitted (an empty predicate set when there is no
         // entry-scan path); its C# mirror joins the plan Source.
         scanSet.Compiled = ResidualScanIlEmitter.EmitDelegate(scanSet.Predicates, out var scanCsharp);
+
+        // DirectScan / CompoundField walk the driving clause via the tree and filter every OTHER
+        // clause per-entry. Their residual set excludes the DRIVING clause, whereas the entry-scan
+        // set excludes clause[0] (the bitmap seed). Those differ whenever the driving clause is not
+        // the smallest-cardinality clause (always, for a range-driven scan), so each path bakes its
+        // own delegate from its own residual set. They are built BEFORE the plan so each delegate's
+        // C# mirror can join the plan Source (the per-entry filter each scan path actually runs).
+        var compoundFieldResidualSet = BuildResidualSet(_exec.Executions, perClause, _exec.CompoundFieldDrivingClause, _exec.CompoundFieldField2Range);
+        var directScanResidualSet = BuildResidualSet(_exec.Executions, perClause, _exec.SortDrivingClause, skip2: null);
+
+        string directScanCsharp = null, compoundCsharp = null;
+        if (directScanResidualSet is { HasPredicates: true } directSet)
+            directSet.Compiled = ResidualScanIlEmitter.EmitDelegate(directSet.Predicates, out directScanCsharp);
+        if (compoundFieldResidualSet is { HasPredicates: true } compoundSet)
+            compoundSet.Compiled = ResidualScanIlEmitter.EmitDelegate(compoundSet.Predicates, out compoundCsharp);
+
         _compiledPlan = new CompiledPlan
         {
             CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
             CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
 
             Template = template,
-            Source = string.IsNullOrEmpty(scanCsharp) ? csharpText : csharpText + Environment.NewLine + scanCsharp,
+            Source = ComposePlanSource(csharpText, scanCsharp, directScanCsharp, compoundCsharp),
             CacheKeyHash = _cacheKeyHash,
             OpCount = ops.Length,
             RequiredBitmaps = requiredBitmaps,
             InspectionTemplate = QueryPlanBuilder.BuildInspectionTemplate(ops, _exec.Executions),
             EntryScanSet = scanSet,
+            CompoundFieldResidualSet = compoundFieldResidualSet,
+            DirectScanResidualSet = directScanResidualSet,
             AllNegated = CheckAllNegated(),
         };
-
-        // DirectScan / CompoundField walk the driving clause via the tree and filter every OTHER
-        // clause per-entry. Their residual set excludes the DRIVING clause, whereas the entry-scan
-        // set excludes clause[0] (the bitmap seed). Those differ whenever the driving clause is not
-        // the smallest-cardinality clause (always, for a range-driven scan), so each path bakes its
-        // own delegate from its own residual set.
-        _compiledPlan.CompoundFieldResidualSet = BuildResidualSet(_exec.Executions, perClause, _exec.CompoundFieldDrivingClause, _exec.CompoundFieldField2Range);
-        _compiledPlan.DirectScanResidualSet = BuildResidualSet(_exec.Executions, perClause, _exec.SortDrivingClause, skip2: null);
-
-        if (_compiledPlan.DirectScanResidualSet is { HasPredicates: true } directSet)
-            directSet.Compiled = ResidualScanIlEmitter.EmitDelegate(directSet.Predicates, out _);
-        if (_compiledPlan.CompoundFieldResidualSet is { HasPredicates: true } compoundSet)
-            compoundSet.Compiled = ResidualScanIlEmitter.EmitDelegate(compoundSet.Predicates, out _);
 
         _indexSearcher.PlanCache.Add(planParams.CacheKey, _compiledPlan, template);
 
         return FinalizePlan();
+    }
+
+    /// <summary>Joins the query-pipeline C# with each non-empty residual-filter C# mirror, so the plan Source shows
+    /// every per-entry filter a path may run (entry-scan, direct-scan, compound) — not just the bitmap pipeline's.
+    /// Each residual method is emitted as a "ResidualScan" function preceded by a comment header naming its path.
+    /// Sources identical to one already included are skipped (single-clause shapes share a residual set across
+    /// paths), so the common case stays a single method.</summary>
+    private static string ComposePlanSource(string queryCsharp, string entryScanCsharp, string directScanCsharp, string compoundCsharp)
+    {
+        string result = queryCsharp ?? string.Empty;
+        var seen = new HashSet<string>();
+
+        result = AddResidualSection(result, seen, "Entry-scan per-entry residual filter (bitmap cost-gate path)", entryScanCsharp);
+        result = AddResidualSection(result, seen, "Direct-scan per-entry residual filter (FieldSortedScan path)", directScanCsharp);
+        result = AddResidualSection(result, seen, "Compound-field per-entry residual filter (CompoundSortedScan path)", compoundCsharp);
+        return result;
+
+        static string AddResidualSection(string acc, HashSet<string> seen, string header, string csharp)
+        {
+            if (string.IsNullOrEmpty(csharp) || seen.Add(csharp) == false)
+                return acc;
+            return acc + Environment.NewLine + "// --- " + header + " ---" + Environment.NewLine + csharp;
+        }
     }
 
     private (CompiledPlan, QueryExecution) FinalizePlan()
