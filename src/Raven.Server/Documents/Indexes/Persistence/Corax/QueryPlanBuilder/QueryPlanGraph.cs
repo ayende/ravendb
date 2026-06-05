@@ -31,6 +31,7 @@ internal static class QueryPlanGraph
     private const string ResultOp = "Result";
     private const string ResidualNoteOp = "ResidualNote";
     private const string DirectScanOp = "DirectScan";
+    private const string CompoundLookupOp = "CompoundKeyLookup";
 
     // Edge kinds.
     private const string DataflowKind = "dataflow";
@@ -67,15 +68,17 @@ internal static class QueryPlanGraph
                 ops.Add(child);
         }
 
-        // The DirectScan node (present when a tree-scan strategy actually executed) is a child of CompiledQuery with
-        // no DestSlot, so it is NOT part of `ops`. Find it separately: when it exists it — not the bitmap pipeline —
-        // produced the answer, so we render it as its own node and grey out the unexecuted bitmap exit below.
-        QueryInspectionNode directScanNode = null;
+        // The producer node — present when a scan/lookup strategy actually executed (DirectScan tree scan, or a
+        // CompoundKeyLookup composite-key TermQuery) — is a child of CompiledQuery with no DestSlot, so it is NOT
+        // part of `ops`. Find it separately: when it exists, it (not the bitmap pipeline) produced the answer, and
+        // the unused candidate ops were already dropped at build time, so `ops` is empty and this node is the whole
+        // dataflow.
+        QueryInspectionNode producerNode = null;
         foreach (QueryInspectionNode child in compiled.Children)
         {
-            if (child.Operation == DirectScanOp)
+            if (child.Operation == DirectScanOp || child.Operation == CompoundLookupOp)
             {
-                directScanNode = child;
+                producerNode = child;
                 break;
             }
         }
@@ -152,11 +155,11 @@ internal static class QueryPlanGraph
                 d["Taken"] = NodeTaken(i) ? "True" : "False";
         }
 
-        if (directScanNode != null)
+        if (producerNode != null)
         {
-            Dictionary<string, string> d = g.CreateNode("directscan");
-            d[OperationKey] = DirectScanOp;
-            CopyParameters(directScanNode, d);
+            Dictionary<string, string> d = g.CreateNode("producer");
+            d[OperationKey] = producerNode.Operation;
+            CopyParameters(producerNode, d);
         }
 
         Dictionary<string, string> resultData = g.CreateNode("result");
@@ -221,18 +224,14 @@ internal static class QueryPlanGraph
         }
 
         // Result edge: the bitmap pipeline leaves its answer in slot 0 — UNLESS the entry scan fired this run, in
-        // which case the survivors live in slot 1 and the bitmap pipeline's slot-0 result was thrown away; or a
-        // tree-scan strategy ran, in which case the bitmap pipeline never produced the answer at all.
+        // which case the survivors live in slot 1 and the bitmap pipeline's slot-0 result was thrown away. (When a
+        // scan/lookup strategy ran instead, there are no ops at all — `ops` is empty — so this block does not run
+        // and the producer node below carries the answer.)
         if (lastWriter.TryGetValue(0, out int finalWriter))
         {
             Dictionary<string, string> e = g.CreateEdge("op" + finalWriter, "result");
             e[KindKey] = ResultKind;
-            if (directScanNode != null)
-            {
-                e[VariantKey] = "bitmap-candidate";
-                e[FlowKey] = FlowOff;
-            }
-            else if (entryScanTaken)
+            if (entryScanTaken)
             {
                 e[VariantKey] = "not-taken";
                 e[FlowKey] = FlowOff;
@@ -249,25 +248,26 @@ internal static class QueryPlanGraph
             }
         }
 
-        // When a tree-scan strategy actually ran, the DirectScan node — not the bitmap pipeline — is the real
-        // producer of the answer. Its result edge is on (mirroring the entry-scan TAKEN styling), and its per-entry
-        // residual filter (every OTHER clause) hangs off it as one note node.
-        if (directScanNode != null)
+        // When a scan/lookup strategy actually ran, its producer node — not the bitmap pipeline — is the real
+        // producer of the answer. Its result edge is on (mirroring the entry-scan TAKEN styling). A tree scan also
+        // carries a per-entry residual filter (every OTHER clause), which hangs off it as one note node; a compound
+        // key lookup has none (both clauses are folded into the key), so CombinedResidualFilter returns null.
+        if (producerNode != null)
         {
-            Dictionary<string, string> resultEdge = g.CreateEdge("directscan", "result");
+            Dictionary<string, string> resultEdge = g.CreateEdge("producer", "result");
             resultEdge[KindKey] = ResultKind;
-            resultEdge[VariantKey] = "scan-result";
+            resultEdge[VariantKey] = producerNode.Operation == CompoundLookupOp ? "lookup-result" : "scan-result";
             resultEdge[FlowKey] = FlowOn;
 
-            string scanFilter = CombinedResidualFilter(directScanNode.Children);
+            string scanFilter = CombinedResidualFilter(producerNode.Children);
             if (scanFilter != null)
             {
-                Dictionary<string, string> noteData = g.CreateNode("res_direct");
+                Dictionary<string, string> noteData = g.CreateNode("res_producer");
                 noteData[OperationKey] = ResidualNoteOp;
                 noteData[FilterKey] = scanFilter;
                 noteData[FlowKey] = FlowOn;
 
-                Dictionary<string, string> noteEdge = g.CreateEdge("directscan", "res_direct");
+                Dictionary<string, string> noteEdge = g.CreateEdge("producer", "res_producer");
                 noteEdge[KindKey] = ResidualKind;
                 noteEdge[FlowKey] = FlowOn;
             }
@@ -355,6 +355,12 @@ internal static class QueryPlanGraph
                 node.Attributes["label"] = DirectScanLabel(node.Data);
                 break;
 
+            case CompoundLookupOp:
+                node.Attributes["style"] = "bold";
+                node.Attributes["color"] = TakenGreen;
+                node.Attributes["label"] = CompoundLookupLabel(node.Data);
+                break;
+
             default:
                 node.Attributes["label"] = OpLabel(operation, node.Data);
                 break;
@@ -405,9 +411,9 @@ internal static class QueryPlanGraph
         edge.Data.TryGetValue(VariantKey, out string variant);
         return variant switch
         {
-            "bitmap-candidate" => "(bitmap candidate, not executed)",
             "not-taken" => "(not taken)",
             "scan-result" => "scan result",
+            "lookup-result" => "lookup result",
             "entryscan-taken" => "entry-scan TAKEN",
             "entryscan-iftaken" => "if entry-scan taken",
             _ => null // bitmap-final / bitmap-plain carry no label
@@ -501,6 +507,21 @@ internal static class QueryPlanGraph
         AddIf(p, parts, "StoppedAt", "stopped=");
         AddIf(p, parts, "TreeScan_ms", "tree=", " ms");
         AddIf(p, parts, "EntryScans_ms", "entry=", " ms");
+        for (int i = 0; i < parts.Count; i++)
+            parts[i] = GraphvizGraph.Escape(parts[i]);
+        return string.Join("\\n", parts);
+    }
+
+    /// <summary>Builds the readable label for a CompoundKeyLookup producer node from its facts: the synthetic
+    /// compound field, the two component field=value pairs the composite key encodes, and the result count.</summary>
+    private static string CompoundLookupLabel(Dictionary<string, string> p)
+    {
+        var parts = new List<string> { CompoundLookupOp };
+        if (p.TryGetValue("Dispatch", out string dispatch) && string.IsNullOrEmpty(dispatch) == false)
+            parts.Add("[" + dispatch + "]");
+        AddIf(p, parts, "FieldName");
+        AddIf(p, parts, "Components", "key: ");
+        AddIf(p, parts, "Count", "count=");
         for (int i = 0; i < parts.Count; i++)
             parts[i] = GraphvizGraph.Escape(parts[i]);
         return string.Join("\\n", parts);
