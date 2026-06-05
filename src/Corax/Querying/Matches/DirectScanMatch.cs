@@ -61,6 +61,11 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
     public bool IsBoosting => false;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
+    /// <summary>Whether this scan runs a per-entry residual filter — only the filtered subclass does. When false the
+    /// pass/reject counters are never touched (every scanned entry IS a result), so Inspect() omits them rather than
+    /// reporting a misleading passed=0/rejected=0.</summary>
+    protected virtual bool HasResidualFilter => false;
+
     public abstract int Fill(Span<long> matches);
 
     public int AndWith(Span<long> buffer, int matches) => throw new NotSupportedException("DirectScanMatch produces final sorted results");
@@ -84,8 +89,13 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
         if (EntryScanTicks > 0) parameters["EntryScans_ms"] = (EntryScanTicks / tickFreq).ToString("F3");
 
         parameters["TreeEntriesScanned"] = TreeEntriesScanned.ToString();
-        parameters["EntriesPassedFilter"] = EntriesPassedFilter.ToString();
-        parameters["EntriesRejected"] = EntriesRejected.ToString();
+        // pass/reject are filter-path concepts; the no-residual scan never populates them (every scanned entry is a
+        // result), so reporting 0/0 there would read as "nothing matched" — omit them unless a residual filter ran.
+        if (HasResidualFilter)
+        {
+            parameters["EntriesPassedFilter"] = EntriesPassedFilter.ToString();
+            parameters["EntriesRejected"] = EntriesRejected.ToString();
+        }
 
         if (StoppedReason != null) parameters["StoppedAt"] = StoppedReason;
 
@@ -167,6 +177,8 @@ public sealed class DirectScanFilteredMatch(
     /// <summary>Per-execution state — the emitted IL loads analyzer-encoded slices,
     /// field-root pages, and direct long/double values from this object via baked field indices.</summary>
     private readonly QueryExecution _exec = exec;
+
+    protected override bool HasResidualFilter => true;
 
     [SkipLocalsInit]
     public override unsafe int Fill(Span<long> matches)
