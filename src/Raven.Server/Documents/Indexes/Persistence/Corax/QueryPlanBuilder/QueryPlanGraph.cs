@@ -1,18 +1,21 @@
 using System.Collections.Generic;
 using System.Text;
+using Corax.Querying.Matches.Meta;
 
-namespace Raven.Client.Documents.Queries.Timings;
+namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 /// <summary>
-/// Renders a compiled-query <see cref="QueryInspectionNode"/> plan as a Graphviz (DOT) dataflow graph.
+/// Renders a compiled-query <see cref="QueryInspectionNode"/> plan as a Graphviz (DOT) dataflow graph, server-side.
 /// The op stream is linear, but the bitmap SLOTS turn it into a graph: every op writes its <c>DestSlot</c>;
 /// a non-Fill op that targets a slot consumes whatever last wrote that slot (the running accumulator); the
 /// slot-to-slot merges (AND/ANDNOT/OR-Bitmaps) additionally consume their <c>SourceSlot</c>; and the
 /// EntryScanCheck branches slot 0 into the entry-scan tail (slot 1). Walking the ops while tracking the last
-/// writer per slot reconstructs the edges. This is the same structure the plan serializes to JSON — the DOT
-/// is a second view of the identical <see cref="QueryInspectionNode"/> tree, not a separate data source.
+/// writer per slot reconstructs the edges. This runs on the server where the full inspection data lives, so
+/// the node labels carry everything the server knows (dispatch, dest slot, cardinality, per-stage timing,
+/// entry-scan scan/pass counts, and the residual-predicate set); the resulting DOT is attached to the plan
+/// and shipped to the client, so the catalog and any other consumer share one Graphviz implementation.
 /// </summary>
-public static class QueryPlanGraph
+internal static class QueryPlanGraph
 {
     /// <summary>Render <paramref name="plan"/> (or the CompiledQuery node within it) as Graphviz DOT text.</summary>
     public static string ToGraphviz(QueryInspectionNode plan)
@@ -190,7 +193,12 @@ public static class QueryPlanGraph
         var parts = new List<string> { op.Operation };
         if (op.Parameters != null)
         {
-            // Show the data-bearing attributes; skip the slot wiring (already on the edges) and the bulky source.
+            // Dispatch (Term / MultiTerm / Match) — how this leaf reaches its postings. The slot-algebra and
+            // control-flow ops have no dispatch and so render none.
+            if (op.Parameters.TryGetValue("Dispatch", out string dispatch) && string.IsNullOrEmpty(dispatch) == false)
+                parts.Add("[" + dispatch + "]");
+
+            // Data-bearing attributes.
             AddIf(op, parts, "FieldName");
             AddIf(op, parts, "ClauseType");
             AddIf(op, parts, "Term");
@@ -199,11 +207,24 @@ public static class QueryPlanGraph
             if (op.Parameters.TryGetValue("Negated", out string neg) && neg == "true")
                 parts.Add("NEGATED");
             AddIf(op, parts, "EstimatedRows", "~");
+
+            // Physical destination slot, on the node as well as on the edges — the node owns the slot it writes,
+            // the edges show which slot each input came from.
+            AddIf(op, parts, "DestSlot", "→slot ");
+
             AddIf(op, parts, "Count", "count=");
             AddIf(op, parts, "Taken", "taken=");
             AddIf(op, parts, "SwitchedAfterClauses", "after=");
             AddIf(op, parts, "EntriesScanned", "scanned=");
             AddIf(op, parts, "EntriesPassed", "passed=");
+
+            // Residual-predicate summary for the entry-scan tail: the per-entry checks the scan applies once the
+            // cost gate switches off the bitmap pipeline. These live on the EntryScan node's Residual children
+            // (which carry no DestSlot and so are not rendered as their own graph nodes), so fold them onto the
+            // tail's label — otherwise the most interesting part of an entry-scan plan would be invisible.
+            string residuals = SummarizeResiduals(op);
+            if (residuals != null)
+                parts.Add("residuals: " + residuals);
 
             // Per-stage wall-clock. OverlayTimings records the elapsed time of each op as the "Ms" parameter
             // (only when the query asked for include timings()), so it is present per node exactly when timing
@@ -222,6 +243,53 @@ public static class QueryPlanGraph
         {
             if (n.Parameters.TryGetValue(key, out string val) && string.IsNullOrEmpty(val) == false)
                 into.Add(prefix.Length == 0 ? key + "=" + val : prefix + val);
+        }
+    }
+
+    /// <summary>Flattens the residual-predicate children of an entry-scan tail node into a compact "Field Compare"
+    /// list (a leading "!" marks a negated check, and an AND/OR group is wrapped in parentheses with the matching
+    /// joiner). Returns null when the node carries no residual children.</summary>
+    private static string SummarizeResiduals(QueryInspectionNode op)
+    {
+        if (op.Children == null || op.Children.Count == 0)
+            return null;
+
+        var parts = new List<string>();
+        foreach (QueryInspectionNode child in op.Children)
+        {
+            string token = ResidualToken(child);
+            if (token != null)
+                parts.Add(token);
+        }
+
+        return parts.Count == 0 ? null : string.Join(", ", parts);
+
+        static string ResidualToken(QueryInspectionNode node)
+        {
+            if (node.Operation is "Residual-AndGroup" or "Residual-OrGroup")
+            {
+                string joiner = node.Operation == "Residual-OrGroup" ? " OR " : " AND ";
+                var inner = new List<string>();
+                if (node.Children != null)
+                {
+                    foreach (QueryInspectionNode sub in node.Children)
+                    {
+                        string token = ResidualToken(sub);
+                        if (token != null)
+                            inner.Add(token);
+                    }
+                }
+
+                return inner.Count == 0 ? null : "(" + string.Join(joiner, inner) + ")";
+            }
+
+            if (node.Operation != "Residual" || node.Parameters == null)
+                return null;
+
+            node.Parameters.TryGetValue("FieldName", out string field);
+            node.Parameters.TryGetValue("Compare", out string compare);
+            bool negated = node.Parameters.TryGetValue("Negated", out string n) && n == "true";
+            return (negated ? "!" : "") + field + " " + compare;
         }
     }
 }
