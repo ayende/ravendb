@@ -31,4 +31,11 @@ public sealed class InspectionOp
     /// slot-0 accumulator that may divert execution to the shared entry-scan tail. Carried as a typed flag so
     /// consumers do not have to match on the display <see cref="Name"/>.</summary>
     public bool IsEntryScanGate;
+
+    /// <summary>For the IN/range-expansion ops (OR-Range / AND-Range) the index into
+    /// <see cref="Matches.CompiledQueryMatch.InRangeCounts"/> that holds the number of expanded term slots
+    /// this op unions/intersects. The expansion width is only known at runtime, so the template cannot bake it
+    /// into the display name; the timing overlay reads <c>InRangeCounts[RangeCountIndex]</c> to surface the
+    /// actual term count. -1 for every non-range op.</summary>
+    public int RangeCountIndex = -1;
 }
