@@ -209,7 +209,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 {
                     ctx.Write(writer, timings?.ToJson());
                     writer.Flush();
-                    sb.Append(Encoding.UTF8.GetString(ms.ToArray()));
+                    sb.AppendLine(Encoding.UTF8.GetString(ms.ToArray()));
                 }
                 sb.AppendLine("```");
                 sb.AppendLine();
