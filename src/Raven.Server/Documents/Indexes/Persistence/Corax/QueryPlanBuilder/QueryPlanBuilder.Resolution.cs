@@ -675,7 +675,12 @@ internal static partial class QueryPlanBuilder
         long raw = valueType == PackedParam.TypeDouble
             ? Bits.DoubleToSortableLong(exec.DoubleValues[paramIdx])
             : exec.LongValues[paramIdx];
-        BinaryPrimitives.WriteInt64BigEndian(dest, Bits.SwapBytes(raw));
+        // Must produce byte-for-byte the same key the indexer wrote for this value. The compound-field
+        // indexer (CoraxDocumentConverterBase.AppendLong) stores `BitConverter.TryWriteBytes(buf, SwapBytes(l))`
+        // — a little-endian write of the byte-swapped value, i.e. the big-endian (sortable) byte order of `l`.
+        // Mirror that exactly; a big-endian write here would re-swap the bytes and the seek would never match
+        // the indexed key (numeric compound members would silently return zero rows).
+        BinaryPrimitives.WriteInt64LittleEndian(dest, Bits.SwapBytes(raw));
     }
 
     private struct CompoundFieldEncoding

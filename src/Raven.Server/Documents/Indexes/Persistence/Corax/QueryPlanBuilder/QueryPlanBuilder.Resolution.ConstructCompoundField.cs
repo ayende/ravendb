@@ -53,9 +53,18 @@ internal static partial class QueryPlanBuilder
             if (field2Range is not null &&
                 TryBuildCompositeRangeKeys(ref context, analyzedPrefix, fieldName, field2Range, out var lowSlice, out var highSlice))
             {
-                return indexSearcher.RangeBuilder<Range.Inclusive, Range.Inclusive>(
-                    compoundFieldMeta, lowSlice, highSlice,
-                    forward: context.OrderByFields[0].Ascending);
+                bool forward = context.OrderByFields[0].Ascending;
+                // The composite key's field2 suffix encodes the bound value exactly, so the clause's
+                // strict/inclusive semantics map straight onto the range markers on the compound key:
+                // a strict bound (>, <) must exclude the term equal to the boundary, otherwise the
+                // boundary value's documents leak into the result (e.g. Age > 18 wrongly keeping Age = 18).
+                // The open side (filled 0x00/0xFF) has no matching term, so its marker is irrelevant.
+                return field2Range.Clause.ClauseType switch
+                {
+                    ClauseType.GreaterThan => indexSearcher.RangeBuilder<Range.Exclusive, Range.Inclusive>(compoundFieldMeta, lowSlice, highSlice, forward),
+                    ClauseType.LessThan => indexSearcher.RangeBuilder<Range.Inclusive, Range.Exclusive>(compoundFieldMeta, lowSlice, highSlice, forward),
+                    _ => indexSearcher.RangeBuilder<Range.Inclusive, Range.Inclusive>(compoundFieldMeta, lowSlice, highSlice, forward)
+                };
             }
 
             // No field2 narrowing available: run a prefix scan on field1 only and let entry-scan residuals filter the rest.

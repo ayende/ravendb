@@ -17,7 +17,12 @@ internal static partial class QueryPlanBuilder
         string sortFieldName = ctx.WantTimings ? ctx.OrderByFields[0].Field.FieldName.ToString() : null;
         bool forward = ctx.OrderByFields[0].Ascending;
 
-        if (ctx.Exec.Plan.DirectScanResidualSet is null)
+        // A full scan (bare ORDER BY, no WHERE) legitimately has no residual set: there are no clauses to
+        // filter, so the sorted tree walk emits every entry id directly. TryCreateSimpleFieldDirectScan
+        // already admits this shape as a FieldSortedScan candidate, so bailing here on a null residual set
+        // would advertise FieldSortedScan in the plan yet silently fall back to the bitmap pipeline. Only the
+        // driving-clause path requires a residual set (without it the per-entry filter is non-scannable).
+        if (isFullScan == false && ctx.Exec.Plan.DirectScanResidualSet is null)
             return null;
 
         var (drivingMatchProvider, drivingClauseDescription) = isFullScan ?
