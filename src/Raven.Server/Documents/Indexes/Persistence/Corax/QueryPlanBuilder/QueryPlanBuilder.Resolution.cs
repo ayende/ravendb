@@ -597,11 +597,27 @@ internal static partial class QueryPlanBuilder
         return forward ? nullIsSmallest : nullIsSmallest is false;
     }
 
+    /// <summary>
+    /// Resolves the entry budget for a sorted index-only scan. Normally the driving match yields entries already in
+    /// ORDER BY order, so the first <c>take</c> (= pageSize + start) survivors ARE the answer and the scan can stop
+    /// early. A server-side <c>filter</c> clause breaks that assumption: it is applied AFTER the index produces
+    /// results, so an entry the tree yields is only a *candidate* — the index must keep streaming the whole sorted
+    /// tree until the filter has accepted enough (bounded server-side by FilterLimit). Returning TakeAll disables the
+    /// early-stop so filtered+sorted queries don't truncate before reaching matching documents.
+    /// </summary>
+    private static int ResolveSortedScanTake(QueryBuilderParameters builderParams)
+    {
+        if (builderParams?.Metadata?.Query?.Filter != null)
+            return Constants.IndexSearcher.TakeAll;
+
+        return builderParams?.Take ?? Constants.IndexSearcher.TakeAll;
+    }
+
     private static IQueryMatch BuildSortedDrivingWithTieBreakMatch(InstCtx ctx, ITermsProvider provider, LowLevelTransaction llt, NullsSortMode indexDefaultNullsSortMode,
         IndexSearcher indexSearcher, bool nullFirst)
     {
         bool secondaryNullIsSmallest = (ctx.OrderByFields[1].NullsSortMode ?? indexDefaultNullsSortMode) == NullsSortMode.NullsSmallest;
-        int take = ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll;
+        int take = ResolveSortedScanTake(ctx.BuilderParams);
         return new SortedDrivingWithTieBreakMatch(
             provider, llt, ctx.PlanParams.Allocator, indexSearcher,
             ctx.OrderByFields[0].Field, ctx.OrderByFields[1].Field,
