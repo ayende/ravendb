@@ -6,6 +6,8 @@ using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
 using Corax.Querying.Primitives;
 using Corax.Utils;
+using Raven.Client.Exceptions;
+using Sparrow.Json;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
@@ -28,7 +30,15 @@ internal static partial class QueryPlanBuilder
         if (compiledPlan.Strategy == ExecutionStrategy.NotEvaluated)
             SelectExecutionStrategy(ref ctx);
 
-        switch (compiledPlan.Strategy)
+        // A query may pin a specific execution strategy via the reserved $rvn_corax_strategy parameter.
+        // Forcing bypasses the per-execution cost gate but NOT structural validity: a strategy that is
+        // structurally impossible for this query still falls back to BitmapPipeline when its Construct*
+        // returns null. The cached CompiledPlan.Strategy (the natural choice) is never mutated — forcing
+        // only redirects this one execution. This exists so every strategy can be exercised under test.
+        ExecutionStrategy? forced = TryGetForcedStrategy(ctx.PlanParams.QueryParameters);
+        ExecutionStrategy effective = forced ?? compiledPlan.Strategy;
+
+        switch (effective)
         {
             case ExecutionStrategy.CompoundKeyLookup:
                 innerMatch = ConstructCompoundExact(ref ctx);
@@ -38,7 +48,10 @@ internal static partial class QueryPlanBuilder
             // orderByFields can be null when page size is 0, in which case, we need to get the actual total count
             // no advantage of using compound field here, since we can't stop midway (like we do with paging)
             case ExecutionStrategy.CompoundSortedScan when orderByFields != null:
-                if (CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost) == false)
+                // Always compute the cost estimate: ConstructCompoundField consumes entriesToScan/bitmapCost.
+                // When forced, we ignore the gate's verdict but still need those values.
+                bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost);
+                if (forced is null && cfEffective == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
                 innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
@@ -47,7 +60,8 @@ internal static partial class QueryPlanBuilder
             case ExecutionStrategy.FieldSortedScan when orderByFields != null:
                 var execs = exec.Executions;
                 bool isFullScan = execs is not { Count: > 0 };
-                if (DirectScanCostEffective(ref ctx, isFullScan, out var directScanReason))
+                string directScanReason = forced is not null ? "forced via $rvn_corax_strategy" : null;
+                if (forced is not null || DirectScanCostEffective(ref ctx, isFullScan, out directScanReason))
                 {
                     bool hasTieBreak = orderByFields.Length == 2;
                     innerMatch = ConstructDirectScan(ref ctx, walkerCtx, exec.SortDrivingClause, isFullScan, hasTieBreak, directScanReason);
@@ -148,9 +162,15 @@ internal static partial class QueryPlanBuilder
             }
 
             long drivingCardinality = drivingExec.GetEffectiveCardinality(indexSearcher);
+            // No residual filter: the compound subtree is walked in ORDER BY order and the walk stops once
+            // the page is filled, so we never read more than the page's worth of entries regardless of how
+            // large the driving set is. Page-bound the estimate (a non-paged query keeps the full cardinality
+            // — there is no early stop, so the bitmap+sort path wins as the gate below will then decide).
+            // With a residual present we must over-scan to fill the page; ComputeNumberOfEntriesQueryLikelyToScan
+            // does that page-bounding internally and inflates by the residual's selectivity.
             entriesToScan = residualCount > 0
                 ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ctx.BuilderParams.Query.PageSize, indexSearcher)
-                : drivingCardinality;
+                : Math.Min(drivingCardinality, ctx.BuilderParams.Query.PageSize);
 
             return IsDirectScanCostEffective(entriesToScan, bitmapCost);
         }
@@ -180,9 +200,13 @@ internal static partial class QueryPlanBuilder
             }
 
             long drivingCard = drivingExec.GetEffectiveCardinality(indexSearcher);
+            // No residual filter beyond the driving clause: the sorted single-field tree is streamed in
+            // ORDER BY order and the stream stops once the page is filled, so the scan is page-bounded
+            // regardless of how large the driving set is. Page-bound the estimate (a non-paged query keeps
+            // the full cardinality — no early stop — and the gate below then prefers bitmap+sort).
             var entriesToScan = execs.Count > 1
                 ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher)
-                : drivingCard;
+                : Math.Min(drivingCard, ctx.BuilderParams.Query.PageSize);
 
             if (ctx.WantTimings)
                 directScanReason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
@@ -215,6 +239,52 @@ internal static partial class QueryPlanBuilder
                 }
             }
             return resultsWanted;
+        }
+    }
+
+    /// <summary>
+    /// Reserved query-parameter name used to pin a query to a specific execution strategy. Supplied as
+    /// <c>$rvn_corax_strategy</c> in RQL (stored without the leading <c>$</c> in the parameters object).
+    /// Intended for tests that must exercise a particular strategy regardless of the cost gate's verdict.
+    /// </summary>
+    private const string ForceStrategyParameterName = "rvn_corax_strategy";
+
+    /// <summary>
+    /// Reads the reserved <see cref="ForceStrategyParameterName"/> parameter, if present, and maps it to an
+    /// <see cref="ExecutionStrategy"/>. Accepts the exact enum names (case-insensitive) plus a few friendly
+    /// aliases. Returns <c>null</c> when the parameter is absent. Throws on an unrecognized value so a typo
+    /// in a test fails loudly rather than silently falling back to the natural strategy.
+    /// </summary>
+    private static ExecutionStrategy? TryGetForcedStrategy(BlittableJsonReaderObject queryParameters)
+    {
+        if (queryParameters is null)
+            return null;
+        if (queryParameters.TryGet(ForceStrategyParameterName, out string value) == false || string.IsNullOrEmpty(value))
+            return null;
+
+        switch (value.ToLowerInvariant())
+        {
+            case "bitmap":
+            case "bitmappipeline":
+                return ExecutionStrategy.BitmapPipeline;
+            case "compoundkey":
+            case "compoundexact":
+            case "compoundkeylookup":
+                return ExecutionStrategy.CompoundKeyLookup;
+            case "compoundsort":
+            case "compoundscan":
+            case "compoundsortedscan":
+                return ExecutionStrategy.CompoundSortedScan;
+            case "directsort":
+            case "directscan":
+            case "fieldsort":
+            case "fieldsortedscan":
+                return ExecutionStrategy.FieldSortedScan;
+            default:
+                throw new InvalidQueryException(
+                    $"The reserved query parameter '${ForceStrategyParameterName}' has an unrecognized value '{value}'. " +
+                    "Valid values are: BitmapPipeline, CompoundKeyLookup, CompoundSortedScan, FieldSortedScan " +
+                    "(aliases: Bitmap; CompoundKey/CompoundExact; CompoundSort/CompoundScan; DirectSort/DirectScan/FieldSort).");
         }
     }
 }
