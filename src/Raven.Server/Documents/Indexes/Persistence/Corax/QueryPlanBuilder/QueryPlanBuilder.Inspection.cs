@@ -77,7 +77,19 @@ internal static partial class QueryPlanBuilder
         opNodes = new List<QueryInspectionNode>(template.Length);
         bool hasEntryScanGate = false;
 
-        for (int i = 0; i < template.Length; i++)
+        // When a scan/lookup strategy actually ran, the bitmap op-template below is the UNUSED candidate that only
+        // fed cost estimation — the pipeline never executed it. Skip emitting it (and, via hasEntryScanGate staying
+        // false, the entry-scan tail, which lives only inside the bitmap pipeline); the executed producer node
+        // attached after the loop becomes the plan's sole dataflow. BitmapPipeline — including its vector/spatial
+        // post-filter and its entry-scan fallback — keeps the template, because that IS what ran.
+        ExecutionStrategy actualStrategy = exec.ActualStrategy != ExecutionStrategy.NotEvaluated
+            ? exec.ActualStrategy
+            : compiledPlan.Strategy;
+        bool scanOrLookupRan = actualStrategy is ExecutionStrategy.CompoundKeyLookup
+            or ExecutionStrategy.CompoundSortedScan
+            or ExecutionStrategy.FieldSortedScan;
+
+        for (int i = 0; scanOrLookupRan == false && i < template.Length; i++)
         {
             var t = template[i];
             var parameters = new Dictionary<string, string>();
@@ -198,6 +210,13 @@ internal static partial class QueryPlanBuilder
 
             root.Children.Add(directScanNode);
         }
+        else if (actualStrategy == ExecutionStrategy.CompoundKeyLookup)
+        {
+            // The two Equals clauses were folded into one composite-key TermQuery on the synthetic compound field,
+            // so neither component appears in the op stream. Surface that single lookup as the producer node — the
+            // same role the DirectScan node plays for a tree scan — so the executed strategy is visible.
+            root.Children.Add(BuildCompoundKeyLookupNode(result, exec, compiledPlan));
+        }
         else if (result.ExecutedMatch != null)
         {
             // Vector/spatial post-filter nodes hang off the executed bitmap match.
@@ -299,6 +318,40 @@ internal static partial class QueryPlanBuilder
         if (predicate.Negated)
             parameters["Negated"] = "true";
         return new QueryInspectionNode("Residual", parameters: parameters);
+    }
+
+    /// <summary>
+    /// Builds the producer node for a CompoundKeyLookup. The two Equals clauses were folded into a single
+    /// composite-key TermQuery on the synthetic compound field, so neither component appears in the op stream;
+    /// this node surfaces the compound field name, the two component field=value pairs the key encodes, and the
+    /// executed match's result count — mirroring how the DirectScan node stands in for the unused bitmap pipeline.
+    /// The component ordering follows <see cref="PlanTemplate.CompoundExactAFirst"/>, the same order
+    /// <c>ConstructCompoundExact</c> uses to build the key.
+    /// </summary>
+    private static QueryInspectionNode BuildCompoundKeyLookupNode(CompiledQuery result, QueryExecution exec, CompiledPlan compiledPlan)
+    {
+        ClauseExecution eA = exec.CompoundExactFirst;
+        ClauseExecution eB = exec.CompoundExactSecond;
+        var (first, second) = compiledPlan.Template.CompoundExactAFirst ? (eA, eB) : (eB, eA);
+
+        string firstField = first.Clause.ResolvedFieldName ?? first.Clause.FieldName;
+        string secondField = second.Clause.ResolvedFieldName ?? second.Clause.FieldName;
+        string firstValue = FormatValueFromPlan(first.PackedParamValue, exec, first.PackedParamValue.Param1);
+        string secondValue = FormatValueFromPlan(second.PackedParamValue, exec, second.PackedParamValue.Param1);
+
+        var parameters = new Dictionary<string, string>
+        {
+            ["Dispatch"] = "CompoundTerm",
+            ["FieldName"] = compiledPlan.Template.CompoundExactName,
+            ["Components"] = $"{firstField}={firstValue} AND {secondField}={secondValue}"
+        };
+
+        // The executed lookup is a TermMatch; reuse its inspection's result count so the node carries the run's
+        // cardinality (the only runtime fact here — there is no per-op timing overlay for a non-CompiledQueryMatch).
+        if (result.ExecutedMatch?.Inspect() is { Parameters: { } inspected } && inspected.TryGetValue("Count", out string count))
+            parameters["Count"] = count;
+
+        return new QueryInspectionNode("CompoundKeyLookup", parameters: parameters);
     }
 
     /// <summary>
