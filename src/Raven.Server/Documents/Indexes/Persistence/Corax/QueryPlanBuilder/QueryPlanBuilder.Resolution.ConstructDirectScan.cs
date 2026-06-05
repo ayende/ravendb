@@ -32,16 +32,21 @@ internal static partial class QueryPlanBuilder
             ? BuildSortedDrivingWithTieBreakMatch(ctx, tpm.Provider, tpm.Llt, ctx.BuilderParams.Index.Configuration.NullsSortMode, indexSearcher, nullFirst)
             : new SortedDrivingMatch(tpm.Provider, tpm.Llt, ctx.PlanParams.Allocator, indexSearcher, ctx.OrderByFields[0].Field, nullFirst);
 
+        // The driving match yields entries already in ORDER BY order, so the first `take` survivors ARE the
+        // answer — stop once we have them rather than scanning the whole tree. `Take` already folds in the
+        // page offset (pageSize + query.Start), matching the sorted tie-break path.
+        int take = ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll;
+
         DirectScanMatchBase ds;
         if (ctx.Exec.Plan.DirectScanResidualSet is { HasPredicates: true })
         {
             // Filter every clause EXCEPT the sort-driving clause (walked by the tree).
             ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx, ctx.Exec.Plan.DirectScanResidualSet);
-            ds = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: Constants.IndexSearcher.TakeAll, precompiledDelegate: ctx.Plan.DirectScanResidualSet.Compiled);
+            ds = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: take, precompiledDelegate: ctx.Plan.DirectScanResidualSet.Compiled);
         }
         else
         {   // Nothing to filter, just match...
-            ds = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: Constants.IndexSearcher.TakeAll);
+            ds = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: take);
         }
 
         if (ctx.WantTimings)
