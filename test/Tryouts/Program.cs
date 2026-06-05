@@ -188,13 +188,15 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                     sb.AppendLine();
                 }
 
-                // 6. Structural plan as JSON.
-                sb.AppendLine("Query plan (JSON):");
+                // 6. Structural plan as JSON — collapsed by default (it is verbose; the graph is the at-a-glance view).
+                sb.AppendLine("<details><summary>Query plan (JSON)</summary>");
                 sb.AppendLine();
                 sb.AppendLine("```json");
                 AppendIndentedJson(sb, ctx, PlanToJson(plan));
                 sb.AppendLine();
                 sb.AppendLine("```");
+                sb.AppendLine();
+                sb.AppendLine("</details>");
                 sb.AppendLine();
 
                 // 7. Raw `include timings()` durations. Wall-clock numbers are illustrative (they vary run to
@@ -402,6 +404,14 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 [
                     new ParamSet("selective", "$a=78", q => q.AddParameter("a", 78)),
                     new ParamSet("broad", "$a=18", q => q.AddParameter("a", 18)),
+                ]),
+
+            new CatalogQuery("filtered-sort", "FieldSortedScan actually executes",
+                "from index 'Items/Index' where Age > $a and City = $c order by Age as long limit 16",
+                "A range predicate **on the sort field** plus a second equality filter, with a small page. This is the shape where the direct tree scan WINS: `Age > $a` is the sort-driving clause, so the scan walks the `Age` term tree in ascending order and applies `City = $c` as a per-entry residual, stopping as soon as the 16-row page is full. The cost gate estimates entries_to_scan = page(16) / City_pass_rate(~0.2) ≈ 80; that × the 64 entry-scan multiplier (~5,120) is far below the bitmap cost of decoding the whole `Age` range plus the full `City` posting list (~50K+), so `FieldSortedScan` executes. The graph shows the `DirectScan` node as the real producer (solid-green `scan result` edge), with `City = $c` listed as its residual; the bitmap pipeline's slot-0 exit is greyed `(bitmap candidate, not executed)`. Contrast with `order-by` (`where Age > $a order by Age as long`): there the sort field is the ONLY filter, so entries_to_scan == bitmap_cost and the ×64 multiplier makes the gate reject the scan every time. (A plain `order by Age` with no WHERE never even becomes a candidate — `DirectScanCandidate` requires a comparison clause on the sort field.)",
+                [
+                    new ParamSet("broad-age", "$a=18, $c=\"London\"", q => { q.AddParameter("a", 18); q.AddParameter("c", "London"); }),
+                    new ParamSet("selective-age", "$a=70, $c=\"Rome\"", q => { q.AddParameter("a", 70); q.AddParameter("c", "Rome"); }),
                 ]),
 
             new CatalogQuery("and-negation", "AndNot",
