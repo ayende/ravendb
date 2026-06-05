@@ -162,16 +162,22 @@ internal static partial class QueryPlanBuilder
             }
 
             long drivingCardinality = drivingExec.GetEffectiveCardinality(indexSearcher);
-            // No residual filter: the compound subtree is walked in ORDER BY order and the walk stops once
-            // the page is filled, so we never read more than the page's worth of entries regardless of how
-            // large the driving set is. Page-bound the estimate (a non-paged query keeps the full cardinality
-            // — there is no early stop, so the bitmap+sort path wins as the gate below will then decide).
-            // With a residual present we must over-scan to fill the page; ComputeNumberOfEntriesQueryLikelyToScan
-            // does that page-bounding internally and inflates by the residual's selectivity.
-            entriesToScan = residualCount > 0
-                ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ctx.BuilderParams.Query.PageSize, indexSearcher)
-                : Math.Min(drivingCardinality, ctx.BuilderParams.Query.PageSize);
 
+            if (residualCount == 0)
+            {
+                // No residual filter: the compound (field1, field2) subtree is walked in ORDER BY order and its
+                // entry ids are emitted directly — DirectScanSimpleMatch reads no stored entries at all. That is
+                // exactly the posting-list work the bitmap path does, minus the sort the bitmap path still has to
+                // perform. So the sorted walk is unconditionally cheaper than build-bitmap-then-sort, paged or not.
+                entriesToScan = Math.Min(drivingCardinality, ctx.BuilderParams.Query.PageSize); // for diagnostics only
+                return true;
+            }
+
+            // Residual present: DirectScanFilteredMatch must read each scanned entry's stored fields
+            // (EntryTermsReader, ~64× a posting decode) to test the residual, and it over-scans the sorted
+            // stream to fill the page because only a fraction of scanned entries survive. Estimate that
+            // over-scan and let the gate decide whether it still beats the bitmap pipeline.
+            entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ctx.BuilderParams.Query.PageSize, indexSearcher);
             return IsDirectScanCostEffective(entriesToScan, bitmapCost);
         }
         
@@ -184,7 +190,7 @@ internal static partial class QueryPlanBuilder
             }
 
             directScanReason = null;
-        
+
             var execs = ctx.Exec.Executions;
             var drivingExec = ctx.Exec.SortDrivingClause;
             if (drivingExec is null)
@@ -192,21 +198,30 @@ internal static partial class QueryPlanBuilder
             if (drivingExec.PackedParamValue.IsNone)
                 return false;
 
-            long bitmapCost = 0;
             var indexSearcher = ctx.PlanParams.IndexSearcher;
+
+            if (execs.Count <= 1)
+            {
+                // No residual filter beyond the driving clause: DirectScanSimpleMatch walks the sorted
+                // single-field tree and emits entry ids directly — it reads no stored entries. That is the
+                // same posting-list work the bitmap path does, minus the sort the bitmap path still performs.
+                // So the sorted walk is unconditionally cheaper than build-bitmap-then-sort, paged or not.
+                if (ctx.WantTimings)
+                    directScanReason = "sorted walk, no residual filter (no stored-entry reads, sort is free)";
+                return true;
+            }
+
+            long bitmapCost = 0;
             foreach (var it in execs)
             {
                 bitmapCost += it.GetEffectiveCardinality(indexSearcher);
             }
 
+            // Residual present: the scan reads each scanned entry's stored fields to test the residual and
+            // over-scans the sorted stream to fill the page. Estimate the over-scan and let the gate compare
+            // it to the cost of building and sorting the bitmap instead.
             long drivingCard = drivingExec.GetEffectiveCardinality(indexSearcher);
-            // No residual filter beyond the driving clause: the sorted single-field tree is streamed in
-            // ORDER BY order and the stream stops once the page is filled, so the scan is page-bounded
-            // regardless of how large the driving set is. Page-bound the estimate (a non-paged query keeps
-            // the full cardinality — no early stop — and the gate below then prefers bitmap+sort).
-            var entriesToScan = execs.Count > 1
-                ? ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher)
-                : Math.Min(drivingCard, ctx.BuilderParams.Query.PageSize);
+            var entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher);
 
             if (ctx.WantTimings)
                 directScanReason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
