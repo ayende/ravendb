@@ -600,14 +600,23 @@ internal static partial class QueryPlanBuilder
     /// <summary>
     /// Resolves the entry budget for a sorted index-only scan. Normally the driving match yields entries already in
     /// ORDER BY order, so the first <c>take</c> (= pageSize + start) survivors ARE the answer and the scan can stop
-    /// early. A server-side <c>filter</c> clause breaks that assumption: it is applied AFTER the index produces
-    /// results, so an entry the tree yields is only a *candidate* — the index must keep streaming the whole sorted
-    /// tree until the filter has accepted enough (bounded server-side by FilterLimit). Returning TakeAll disables the
-    /// early-stop so filtered+sorted queries don't truncate before reaching matching documents.
+    /// early. Two situations break that assumption and require streaming the whole sorted tree (TakeAll):
+    /// <list type="bullet">
+    /// <item>A server-side <c>filter</c> clause is applied AFTER the index produces results, so an entry the tree
+    /// yields is only a *candidate* — the index must keep streaming until the filter has accepted enough (bounded
+    /// server-side by FilterLimit), else filtered+sorted queries truncate before reaching matching documents.</item>
+    /// <item>The client requested statistics (<c>SkipStatistics == false</c>) or this is a count query: the read
+    /// operation needs the exact <c>TotalResults</c>, which it derives by draining the match. Early-stopping at
+    /// <c>take</c> would report only the page-sized prefix as the total. For a no-residual full scan this drain
+    /// reads no entries (it just enumerates ids), matching the old SortingMatch behaviour.</item>
+    /// </list>
     /// </summary>
     private static int ResolveSortedScanTake(QueryBuilderParameters builderParams)
     {
         if (builderParams?.Metadata?.Query?.Filter != null)
+            return Constants.IndexSearcher.TakeAll;
+
+        if (builderParams?.Query is { IsCountQuery: true } or { SkipStatistics: false })
             return Constants.IndexSearcher.TakeAll;
 
         return builderParams?.Take ?? Constants.IndexSearcher.TakeAll;
