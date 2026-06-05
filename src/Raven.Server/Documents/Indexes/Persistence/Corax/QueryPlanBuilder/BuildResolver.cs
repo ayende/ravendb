@@ -50,8 +50,15 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         // the smallest-cardinality clause (always, for a range-driven scan), so each path bakes its
         // own delegate from its own residual set. They are built BEFORE the plan so each delegate's
         // C# mirror can join the plan Source (the per-entry filter each scan path actually runs).
-        var compoundFieldResidualSet = BuildResidualSet(_exec.Executions, perClause, _exec.CompoundFieldDrivingClause, _exec.CompoundFieldField2Range);
-        var directScanResidualSet = BuildResidualSet(_exec.Executions, perClause, _exec.SortDrivingClause, skip2: null);
+        // A set is built only when its driving clause exists: without one the path is structurally
+        // ineligible (it can never run), and BuildResidualSet with a null skip would otherwise skip
+        // nothing and fabricate an all-clauses residual that the plan never executes.
+        var compoundFieldResidualSet = _exec.CompoundFieldDrivingClause is not null
+            ? BuildResidualSet(_exec.Executions, perClause, _exec.CompoundFieldDrivingClause, _exec.CompoundFieldField2Range)
+            : null;
+        var directScanResidualSet = _exec.SortDrivingClause is not null
+            ? BuildResidualSet(_exec.Executions, perClause, _exec.SortDrivingClause, skip2: null)
+            : null;
 
         string directScanCsharp = null, compoundCsharp = null;
         if (directScanResidualSet is { HasPredicates: true } directSet)
