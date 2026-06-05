@@ -184,6 +184,75 @@ public class PlanCacheStrategyTests : RavenTestBase
         Assert.Equal("FieldSortedScan", candidate);
     }
 
+    // A bare sort with no WHERE clause is a full index scan, and that is the textbook direct-scan case:
+    // walk the sort field's term tree in order and stop at the page, instead of filling every entry into a
+    // bitmap and sorting it. A full scan has no residual that could be selective and no bitmap that could be
+    // cheaper, so the cost gate is unconditional — UNLIKE a residual scan, which demotes to bitmap when
+    // unpaged (see PageSizeDrivesStrategy_NotFrozen). Both the limited and the unlimited bare sort must
+    // therefore execute FieldSortedScan. Corax-only: Lucene has no FieldSortedScan.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task BareSort_NoWhere_DirectScans_PagedAndUnpaged(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Items_Index();
+        index.Execute(store);
+        var items = BuildSeed(4000);
+        await SeedAsync(store, items);
+        Indexes.WaitForIndexing(store);
+
+        using var session = store.OpenAsyncSession();
+
+        // Limited bare sort -> FieldSortedScan.
+        await session.Advanced
+            .AsyncRawQuery<Item>($"from index '{index.IndexName}' order by Seq as long limit 25 include timings()")
+            .Timings(out var paged)
+            .ToListAsync();
+        var pagedStrategy = StrategyOf(paged);
+        Assert.Equal("FieldSortedScan", pagedStrategy.hint);
+        Assert.Equal("FieldSortedScan", pagedStrategy.candidate);
+
+        // Unlimited bare sort -> STILL FieldSortedScan. The full-scan cost gate is unconditional, so unlike a
+        // residual scan this does not demote when unpaged.
+        await session.Advanced
+            .AsyncRawQuery<Item>($"from index '{index.IndexName}' order by Seq as long include timings()")
+            .Timings(out var unpaged)
+            .ToListAsync();
+        var unpagedStrategy = StrategyOf(unpaged);
+        Assert.Equal("FieldSortedScan", unpagedStrategy.hint);
+        Assert.Equal("FieldSortedScan", unpagedStrategy.candidate);
+    }
+
+    // Correctness for the bare-sort direct scan: the paged top-N and the full unpaged result must each be the
+    // complete set in sort order, matching brute force and Lucene.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+    public async Task BareSort_NoWhere_IsResultPreserving(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Items_Index();
+        index.Execute(store);
+        var items = BuildSeed(4000);
+        await SeedAsync(store, items);
+        Indexes.WaitForIndexing(store);
+
+        using var session = store.OpenAsyncSession();
+
+        var paged = await session.Advanced
+            .AsyncRawQuery<Item>($"from index '{index.IndexName}' order by Seq as long limit 25")
+            .ToListAsync();
+        Assert.Equal(
+            ExpectedTopN(items, _ => true, 25),
+            paged.Select(r => r.Id).ToList());
+
+        var full = await session.Advanced
+            .AsyncRawQuery<Item>($"from index '{index.IndexName}' order by Seq as long")
+            .ToListAsync();
+        Assert.Equal(
+            ExpectedTopN(items, _ => true, int.MaxValue),
+            full.Select(r => r.Id).ToList());
+    }
+
     // Correctness across both strategies and both engines. Whatever the per-execution gate picks, the
     // top-N answer must equal the brute-force expectation, and Corax must match Lucene.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
