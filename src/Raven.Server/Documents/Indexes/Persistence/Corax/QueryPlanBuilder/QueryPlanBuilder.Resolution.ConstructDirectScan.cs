@@ -39,8 +39,9 @@ internal static partial class QueryPlanBuilder
 
         // The driving match yields entries already in ORDER BY order, so the first `take` survivors ARE the
         // answer — stop once we have them rather than scanning the whole tree. `Take` already folds in the
-        // page offset (pageSize + query.Start), matching the sorted tie-break path.
-        int take = ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll;
+        // page offset (pageSize + query.Start), matching the sorted tie-break path. A server-side `filter`
+        // clause breaks that assumption (see ResolveSortedScanTake), so it falls back to a full sorted scan.
+        int take = ResolveSortedScanTake(ctx.BuilderParams);
 
         DirectScanMatchBase ds;
         if (ctx.Exec.Plan.DirectScanResidualSet is { HasPredicates: true })
