@@ -180,7 +180,23 @@ internal static partial class QueryPlanBuilder
         // would drop it — it must be attached explicitly.
         if (result.ExecutedMatch is DirectScanMatchBase directScan)
         {
-            root.Children.Add(directScan.Inspect());
+            var directScanNode = directScan.Inspect();
+
+            // Surface the per-entry residual filter as structured Residual children (mirroring the EntryScan tail),
+            // so the graph can draw each predicate as its own node hanging off the scan and a reader sees the exact
+            // filter the scan runs against every survivor — not just the flat "residuals: …" label. A compound-tree
+            // scan filters via CompoundFieldResidualSet (driving pair excluded); a simple field scan via
+            // DirectScanResidualSet (sort-driving clause excluded). Both walk the same ScanPredicateInfo shape.
+            var residualSet = result.CompiledPlan.Strategy == ExecutionStrategy.CompoundSortedScan
+                ? result.CompiledPlan.CompoundFieldResidualSet
+                : result.CompiledPlan.DirectScanResidualSet;
+            if (residualSet is { HasPredicates: true })
+            {
+                foreach (var predicate in residualSet.Predicates)
+                    directScanNode.Children.Add(BuildScanPredicateNode(predicate));
+            }
+
+            root.Children.Add(directScanNode);
         }
         else if (result.ExecutedMatch != null)
         {

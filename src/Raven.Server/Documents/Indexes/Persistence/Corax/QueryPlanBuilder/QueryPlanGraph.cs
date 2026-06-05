@@ -124,6 +124,14 @@ internal static class QueryPlanGraph
         string DataEdgeStyle(int to)
             => hasRuntime == false ? "" : OpExecuted(to) ? "style=bold, color=\"#1a7f37\", " : "style=dotted, color=grey, ";
 
+        // A cost gate READS the slot-0 accumulator to decide whether to switch to the entry scan. A gate ran this
+        // run iff it was reached before (or AT) the switch: with no switch every gate ran and declined; with a
+        // switch the gates up to and INCLUDING the one that fired read slot 0 (the fired gate is the one that made
+        // the call), while gates after it were never reached. So the slot-0 FEED edge into gate `gateOp` is taken
+        // iff gateOp <= firedGateOp (or no switch happened at all). This differs from OpExecuted, which is strict
+        // (< firedGateOp): the fired gate's merge inputs were skipped, but the gate itself did read the accumulator.
+        bool GateReached(int gateOp) => hasRuntime && (entryScanTaken == false || (firedGateOp >= 0 && gateOp <= firedGateOp));
+
         // Edges by slot dataflow.
         var lastWriter = new Dictionary<int, int>();
         // Real dataflow edges (srcOp -> destOp), used below to decide where INVISIBLE sequencing edges are
@@ -147,8 +155,15 @@ internal static class QueryPlanGraph
             if (op.Operation == "EntryScanCheck")
             {
                 if (lastWriter.TryGetValue(0, out int gateSrc))
+                {
+                    // Bold green when this gate actually read the accumulator this run; dotted grey for a gate the
+                    // run never reached (it switched earlier); plain dashed when there is no runtime overlay.
+                    string feedStyle = hasRuntime == false ? "style=dashed"
+                        : GateReached(i) ? "style=bold, color=\"#1a7f37\""
+                        : "style=dotted, color=grey";
                     sb.Append("  op").Append(gateSrc).Append(" -> op").Append(i)
-                      .AppendLine(" [style=dashed, label=\"gate slot 0\"];");
+                      .Append(" [").Append(feedStyle).AppendLine(", label=\"gate slot 0\"];");
+                }
                 continue;
             }
 
@@ -197,7 +212,19 @@ internal static class QueryPlanGraph
         // When a tree-scan strategy actually ran, the DirectScan node — not the bitmap pipeline — is the real
         // producer of the answer. Draw its result edge solid+bold (mirroring the entry-scan TAKEN styling).
         if (directScanNode != null)
+        {
             sb.AppendLine("  directscan -> result [style=bold, color=\"#1a7f37\", label=\"scan result\"];");
+
+            // The scan walks the sort-driving tree and tests every survivor against the per-entry residual filter
+            // (its Residual children — every OTHER clause). The scan always executed when this node is present, so
+            // the filter is drawn as one bold-green note node carrying the full conjunctive filter.
+            string scanFilter = CombinedResidualFilter(directScanNode.Children);
+            if (scanFilter != null)
+            {
+                sb.Append("  res_direct [shape=note, color=\"#1a7f37\", label=\"").Append(Escape(scanFilter)).AppendLine("\"];");
+                sb.AppendLine("  directscan -> res_direct [style=bold, color=\"#1a7f37\", label=\"per entry\"];");
+            }
+        }
 
         // Entry-scan branch: a gate that fires diverts the slot-0 accumulator into the single scan tail, whose
         // slot-1 survivors become the answer. Only the gate that actually fired this run (firedGateOp) is drawn
@@ -220,25 +247,19 @@ internal static class QueryPlanGraph
               .Append(", label=\"").Append(resultLabel).AppendLine("\"];");
 
             // Residual predicates: the per-entry checks the scan applies to each slot-0 survivor once a gate switched
-            // the pipeline off. They live on the tail's Residual children; draw each as its own node hanging off the
-            // tail so the executed path runs visibly THROUGH them. Bold green when the scan fired this run (every
-            // survivor is tested against the whole set), dotted grey otherwise — the bitmap pipeline ignores them.
-            if (ops[entryScanTailId].Children != null)
+            // the pipeline off. They live on the tail's Residual children. The whole set is one conjunctive filter
+            // (every survivor must pass ALL of them), so it is drawn as a SINGLE note node carrying the full filter
+            // rather than one node per predicate. Bold green when the scan fired this run (every survivor is tested
+            // against the whole set), dotted grey otherwise — the bitmap pipeline ignores them.
+            string entryFilter = CombinedResidualFilter(ops[entryScanTailId].Children);
+            if (entryFilter != null)
             {
                 string resEdgeStyle = entryScanTaken ? "style=bold, color=\"#1a7f37\"" : "style=dotted, color=grey";
                 string resNodeColor = entryScanTaken ? "color=\"#1a7f37\"" : "color=grey";
-                int r = 0;
-                foreach (QueryInspectionNode child in ops[entryScanTailId].Children)
-                {
-                    string token = ResidualToken(child);
-                    if (token == null)
-                        continue;
-                    sb.Append("  res").Append(r).Append(" [shape=note, ").Append(resNodeColor)
-                      .Append(", label=\"").Append(Escape(token)).AppendLine("\"];");
-                    sb.Append("  op").Append(entryScanTailId).Append(" -> res").Append(r)
-                      .Append(" [").Append(resEdgeStyle).AppendLine(", label=\"per entry\"];");
-                    r++;
-                }
+                sb.Append("  res_entry [shape=note, ").Append(resNodeColor)
+                  .Append(", label=\"").Append(Escape(entryFilter)).AppendLine("\"];");
+                sb.Append("  op").Append(entryScanTailId).Append(" -> res_entry [").Append(resEdgeStyle)
+                  .AppendLine(", label=\"per entry\"];");
             }
         }
 
@@ -394,6 +415,24 @@ internal static class QueryPlanGraph
         }
 
         return false;
+    }
+
+    /// <summary>Joins a scan's Residual children into a single conjunctive filter string — "A AND B AND C" — for one
+    /// note node, since every survivor must pass ALL of them. Each child renders via <see cref="ResidualToken"/>
+    /// (AND/OR sub-groups already parenthesise themselves). Returns null when there are no residual children.</summary>
+    private static string CombinedResidualFilter(List<QueryInspectionNode> children)
+    {
+        if (children == null)
+            return null;
+        var tokens = new List<string>();
+        foreach (QueryInspectionNode child in children)
+        {
+            string token = ResidualToken(child);
+            if (token != null)
+                tokens.Add(token);
+        }
+
+        return tokens.Count == 0 ? null : string.Join(" AND ", tokens);
     }
 
     /// <summary>Renders one residual-predicate node into a compact "Field Compare" token (a leading "!" marks a
