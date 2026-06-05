@@ -52,6 +52,20 @@ public sealed class Items_Index : AbstractIndexCreationTask<Item>
     }
 }
 
+/// <summary>Same map as <see cref="Items_Index"/> but with a Corax compound field on (City, Age). The
+/// compound field is what lets <c>CompoundKeyLookup</c> (two-equality collapse) and <c>CompoundSortedScan</c>
+/// (equality + ordered second member) actually fire — on the plain index those optimizations are always
+/// rejected because there is no compound field to drive them.</summary>
+public sealed class Items_Compound : AbstractIndexCreationTask<Item>
+{
+    public Items_Compound()
+    {
+        Map = items => from i in items
+                       select new { i.Name, i.City, i.Age, i.Score, i.Created, i.Tags };
+        CompoundField(i => i.City, i => i.Age);
+    }
+}
+
 /// <summary>
 /// Regenerates <c>corax-query-catalog.md</c> directly against the live engine on this branch.
 /// For each catalog query it runs the RQL with <c>include timings()</c> over several parameter
@@ -80,6 +94,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         using var store = GetDocumentStore(Options.ForSearchEngine(RavenSearchEngineMode.Corax));
         Seed(store);
         new Items_Index().Execute(store);
+        new Items_Compound().Execute(store);
         Indexes.WaitForIndexing(store);
 
         var queries = BuildCatalog();
@@ -149,10 +164,19 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                     sb.AppendLine();
                 }
 
-                // 3. Generated C# for the compiled plan this parameter set actually ran.
+                // 3. Generated C#. The compiler ALWAYS emits the bitmap-pipeline IL from the plan template; it is
+                // only the executed path when the runtime strategy is the bitmap pipeline. When the planner took a
+                // non-bitmap strategy (a compound-key seek, a sorted tree scan), this IL is the FALLBACK shape that
+                // did NOT run — so we say so, otherwise a reader sees "Executed strategy: CompoundKeyLookup" sitting
+                // above a Fill+AND bitmap listing and reasonably concludes that listing is what executed. The graph's
+                // per-op telemetry is the tell: a fallback IL whose ops never ran carries no count=/ms= on its nodes.
+                bool ranBitmap = TryGetParam(compiled, "OptimizationHint", out string executed) == false
+                    || executed == "BitmapPipeline";
                 if (TryGetParam(compiled, "CSharpSourceFormatted", out string csharp))
                 {
-                    sb.AppendLine("Generated C#:");
+                    sb.AppendLine(ranBitmap
+                        ? "Generated C#:"
+                        : $"Generated C# — **bitmap-pipeline fallback, NOT executed**: this run took the `{executed}` strategy, which is built separately and does not go through this IL. The listing below is the path the planner would have used had it fallen back to the bitmap pipeline:");
                     sb.AppendLine();
                     sb.AppendLine("```csharp");
                     sb.Append(csharp.TrimEnd('\n')).AppendLine();
@@ -162,7 +186,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
                 // 4. Strategy that ACTUALLY ran (the runtime cost gate may have fallen back from the cached
                 // candidacy), with the cached candidate alongside when they differ.
-                if (TryGetParam(compiled, "OptimizationHint", out string executed))
+                if (executed != null)
                 {
                     sb.Append("Executed strategy: `").Append(executed).Append('`');
                     if (TryGetParam(compiled, "StrategyCandidate", out string candidate) && candidate != executed)
@@ -400,7 +424,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
             new CatalogQuery("order-by", "FieldSortedScan candidacy vs fallback",
                 "from index 'Items/Index' where Age > $a order by Age as long",
-                "A range predicate sorted on the same field is a FieldSortedScan candidate: walk the field's term tree in order and stop at the page. When the predicate is non-selective the per-execution cost gate may fall back to the bitmap pipeline. Selective vs broad bounds show both decisions.",
+                "A range predicate sorted on the same field is a `FieldSortedScan` candidate — the trail shows it **accepted** for both bounds — yet here it **falls back to `BitmapPipeline` for both**, and the lesson is *why*. This query has **no page limit** and the range is the **only** clause: with no `limit` the direct tree-walk has no early-stop, and with no second filter there is no residual to make the walk pay off, so it must produce every matching entry in order. But a single range clause is decoded just as completely by one posting-list fill (the bitmap path), and the cost gate charges the direct walk `entries_to_scan × 64` against that — so the scan is strictly more expensive no matter how selective the bound is. The selective bound ($a=78, ~820 rows) and the broad bound ($a=18, ~all rows) therefore reach the **same** decision; selectivity changes the result size, not the strategy. Contrast `filtered-sort`, which adds `limit 16` (early-stop) and a `City` residual — that is what lets the scan beat the bitmap.",
                 [
                     new ParamSet("selective", "$a=78", q => q.AddParameter("a", 78)),
                     new ParamSet("broad", "$a=18", q => q.AddParameter("a", 18)),
@@ -408,7 +432,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
             new CatalogQuery("filtered-sort", "FieldSortedScan actually executes",
                 "from index 'Items/Index' where Age > $a and City = $c order by Age as long limit 16",
-                "A range predicate **on the sort field** plus a second equality filter, with a small page. This is the shape where the direct tree scan WINS: `Age > $a` is the sort-driving clause, so the scan walks the `Age` term tree in ascending order and applies `City = $c` as a per-entry residual, stopping as soon as the 16-row page is full. The cost gate estimates entries_to_scan = page(16) / City_pass_rate(~0.2) ≈ 80; that × the 64 entry-scan multiplier (~5,120) is far below the bitmap cost of decoding the whole `Age` range plus the full `City` posting list (~50K+), so `FieldSortedScan` executes. The graph shows the `DirectScan` node as the real producer (solid-green `scan result` edge), with `City = $c` listed as its residual; the bitmap pipeline's slot-0 exit is greyed `(bitmap candidate, not executed)`. Contrast with `order-by` (`where Age > $a order by Age as long`): there the sort field is the ONLY filter, so entries_to_scan == bitmap_cost and the ×64 multiplier makes the gate reject the scan every time. (A plain `order by Age` with no WHERE never even becomes a candidate — `DirectScanCandidate` requires a comparison clause on the sort field.)",
+                "A range predicate **on the sort field** plus a second equality filter, with a small page. This is the shape where the direct tree scan WINS: `Age > $a` is the sort-driving clause, so the scan walks the `Age` term tree in ascending order and applies `City = $c` as a per-entry residual, stopping as soon as the 16-row page is full. The cost gate estimates entries_to_scan = page(16) / City_pass_rate(~0.2) ≈ 80; that × the 64 entry-scan multiplier (~5,120) is far below the bitmap cost of decoding the whole `Age` range plus the full `City` posting list (~50K+), so `FieldSortedScan` executes. The graph shows the `DirectScan` node as the real producer (solid-green `scan result` edge), with `City = $c` listed as its residual; the bitmap pipeline's slot-0 exit is greyed `(bitmap candidate, not executed)`. Note the C# listing below is flagged as the non-executed bitmap fallback — the direct scan is built separately and never runs this IL. Contrast `bare-sort` (`order by Age` with no WHERE): that is ALSO a `FieldSortedScan` candidate (a full-scan direct sort), but with no filter to narrow the set and no productive limit the cost gate makes it scan all 50K entries, so `entries_to_scan × 64` blows past `bitmap_cost` and the 32,768 cap, and the gate falls back to the bitmap pipeline every time. The difference here is the WHERE filter and the small page, which shrink `entries_to_scan` to ~80 so the scan wins.",
                 [
                     new ParamSet("broad-age", "$a=18, $c=\"London\"", q => { q.AddParameter("a", 18); q.AddParameter("c", "London"); }),
                     new ParamSet("selective-age", "$a=70, $c=\"Rome\"", q => { q.AddParameter("a", 70); q.AddParameter("c", "Rome"); }),
@@ -448,7 +472,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
             new CatalogQuery("compound-sort", "exact + tie-break order",
                 "from index 'Items/Index' where City = $c order by City, Age as long",
-                "An equality leaf sorted by a two-field key. `City = $c` fills the accumulator (a FieldSortedScan candidate), then a `SortingMultiMatch` applies the (City, Age) comparer on top. Note the CompoundKeyLookup / CompoundSortedScan optimizations are *not* triggered here (`CompoundSortedScan` rejected) — ordering is done by the multi-field sort heap, even though the first sort field is constant within the result.",
+                "An equality leaf sorted by a two-field key. `City = $c` fills the accumulator (a FieldSortedScan candidate), then a `SortingMultiMatch` applies the (City, Age) comparer on top. Note the CompoundKeyLookup / CompoundSortedScan optimizations are *not* triggered here (`CompoundSortedScan` rejected) — ordering is done by the multi-field sort heap, even though the first sort field is constant within the result. This index has no compound field; see `compound-sorted` for the same query shape on an index that does, where `CompoundSortedScan` is accepted and the sort heap disappears.",
                 [
                     new ParamSet("london", "$c=\"London\"", q => q.AddParameter("c", "London")),
                     new ParamSet("rome", "$c=\"Rome\"", q => q.AddParameter("c", "Rome")),
@@ -466,9 +490,9 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
             new CatalogQuery("many-residuals", "four predicates collapse to one entry scan",
                 "from index 'Items/Index' where Created between $from and $to and City = $c and Age > $a and Score < $s and Name != $n",
-                "The selectivity-driven entry-scan path with *multiple* residuals. `City = $c` fills the accumulator (~10K entries), then the highly selective `Created` range — `Created` has ~5-6 docs per day across a 9000-day span — is AND-ed in and collapses the accumulator to a few dozen entries. At that point the `ShouldSwitchToEntryScan` gate fires (`bitmapCount * 64 < nextClauseCardinality`) and the engine jumps to the entry-scan tail rather than decoding more posting lists. The generated `ResidualScan` method holds **four** residual predicates applied per surviving entry — `Created between`, `Age > $a`, `Score < $s`, and `Name != $n` (the negation is a residual reject, not an AndNot posting list) — even though at runtime the switch happens after the `Created` AND, so only three of them (`Age`, `Score`, `Name`) are actually evaluated as residuals for these parameters. This is the example to inspect when you want to see several residual predicates side by side in one generated scan body.",
+                "The selectivity-driven entry-scan path with *multiple* residuals — and a demonstration that **the same compiled plan switches to the entry scan at different clauses depending on the data**. The plan is fixed: `City = $c` fills the accumulator (~10K entries), then `Created between`, `Age > $a`, `Score < $s` are AND-ed in order, and `Name != $n` is an AndNot tail. Before every AND the `ShouldSwitchToEntryScan` gate asks `bitmapCount * 64 < nextClauseCardinality`; the *first* AND that shrinks the accumulator below that threshold triggers the jump to the per-entry residual tail. **`tight-window`** uses a 12-day `Created` range (`Created` has ~5-6 docs/day across a 9000-day span), so the very first AND collapses the accumulator to ~15 entries and the switch happens right after `Created` (`SwitchedAfterClauses=2`) — `Age`, `Score`, `Name` are the residuals. **`wide-window`** opens `Created` to two full years, so that AND barely dents the ~10K accumulator and the gate stays shut; the selective `Age > 75` is what finally collapses it, so the switch happens one clause later, after `Age` (`SwitchedAfterClauses=3`) — now `Score` and `Name` are the residuals. Same generated `ResidualScan` body (four predicates) in both; only the live cardinality decides where execution leaves the tree-scan pipeline.",
                 [
-                    new ParamSet("jan-2000", "$from=2000-01-01, $to=2000-01-12, $c=\"London\", $a=30, $s=500, $n=\"erin\"",
+                    new ParamSet("tight-window", "$from=2000-01-01, $to=2000-01-12, $c=\"London\", $a=30, $s=500, $n=\"erin\" (Created collapses first → switch after Created)",
                         q =>
                         {
                             q.AddParameter("from", new DateTime(2000, 1, 1));
@@ -478,16 +502,56 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                             q.AddParameter("s", 500.0);
                             q.AddParameter("n", "erin");
                         }),
-                    new ParamSet("jun-2005", "$from=2005-06-01, $to=2005-06-12, $c=\"Paris\", $a=50, $s=750, $n=\"bob\"",
+                    new ParamSet("wide-window", "$from=2000-01-01, $to=2002-01-01, $c=\"Paris\", $a=75, $s=200, $n=\"bob\" (Created stays wide → Age collapses → switch after Age)",
                         q =>
                         {
-                            q.AddParameter("from", new DateTime(2005, 6, 1));
-                            q.AddParameter("to", new DateTime(2005, 6, 12));
+                            q.AddParameter("from", new DateTime(2000, 1, 1));
+                            q.AddParameter("to", new DateTime(2002, 1, 1));
                             q.AddParameter("c", "Paris");
-                            q.AddParameter("a", 50);
-                            q.AddParameter("s", 750.0);
+                            q.AddParameter("a", 75);
+                            q.AddParameter("s", 200.0);
                             q.AddParameter("n", "bob");
                         }),
+                ]),
+
+            new CatalogQuery("exists", "field-presence leaf",
+                "from index 'Items/Index' where exists(Tags)",
+                "A bare `exists(field)` leaf. It does not look at any value — it fills the accumulator with every entry that indexed a `Tags` term at all (`ExistsQuery` / the `Fill … Exists` op). In this dataset every document has tags, so it matches all 50K; on a sparse field it would be the cheap way to find the documents that have the field. There are no parameters — the plan is value-independent — so a single parameter set is shown.",
+                [
+                    new ParamSet("all", "(no parameters)", _ => { }),
+                ]),
+
+            new CatalogQuery("tags-all-in", "array ALL IN — conjunctive membership",
+                "from index 'Items/Index' where Tags all in ($a, $b)",
+                "`all in` over a multi-valued field requires the document's `Tags` array to contain **every** listed value (conjunction), unlike plain `in` which needs only one (disjunction). The first term fills the accumulator (slot 0); the listed values are then folded into that same slot by a single **`AND-Range`** op — a fill-and-AND loop over the expanded term slots (`Terms=2` = the two listed values), each one **intersected** (`AllIn` ∩) so the accumulator shrinks toward the documents that carry all of them, short-circuiting the moment it empties. With two distinct tags the result is documents tagged with both; repeating a tag collapses to the single-term set (`Tags all in (red, red)` ≡ `Tags = red`), which is why the duplicate set returns more documents than the distinct one.",
+                [
+                    new ParamSet("two-distinct", "$a=\"red\", $b=\"green\"",
+                        q => { q.AddParameter("a", "red"); q.AddParameter("b", "green"); }),
+                    new ParamSet("duplicate", "$a=\"red\", $b=\"red\" (collapses to Tags = red)",
+                        q => { q.AddParameter("a", "red"); q.AddParameter("b", "red"); }),
+                ]),
+
+            new CatalogQuery("bare-sort", "ORDER BY with no WHERE",
+                "from index 'Items/Index' order by Age as long",
+                "A pure ordering with no filter. `FieldSortedScan` IS still a structural candidate — the trail shows it **accepted** — because the `Age` tree can be walked in sorted order directly (a full-scan direct sort). But candidacy is not execution: the per-execution cost gate (`scannedEntries × 64 < bitmapCost && scannedEntries ≤ 32,768`) rejects it here. With no WHERE to narrow the set and no `limit` to cap the walk, the direct scan would have to read **all 50,000** entries (`ScannedEntries: 50000`), and `50000 × 64` is both far above `bitmapCost` and over the 32,768 hard cap — so it falls back to `BitmapPipeline`: fill all entries, then a `SortingMatch` heap on `Age`. Hence `Executed strategy: BitmapPipeline (cached candidate: FieldSortedScan)`. Contrast `filtered-sort` (`City = $c and Age > $a order by Age limit N`), where a WHERE narrows the driving set and a `limit` caps the walk, so the same cost gate **accepts** and `FieldSortedScan` actually executes. No parameters.",
+                [
+                    new ParamSet("all", "(no parameters)", _ => { }),
+                ]),
+
+            new CatalogQuery("compound-key", "CompoundKeyLookup actually fires",
+                "from index 'Items/Compound' where City = $c and Age = $a",
+                "Run against `Items/Compound`, which declares a Corax compound field on **(City, Age)**. Two equality clauses whose fields are exactly that compound pair — and which together ARE the whole query — collapse into a **single composite-key term lookup**: the engine builds one `compound(City,Age)` key and does a single term seek, instead of filling `City = $c` (~10K) and intersecting `Age = $a` (~800). `Executed strategy: CompoundKeyLookup` confirms this fired; on the plain `Items/Index` (see `and-two`/`compound-sort`) the same shape is always rejected for lack of a compound field. **Read the generated C# carefully**: the compiler always emits the bitmap-pipeline IL (Fill `Age` + AND `City`) from the plan template, but that is NOT what ran here — the compound-key seek is built separately and never goes through this IL, which is why the block is flagged as a non-executed fallback and the graph nodes carry **no `count=`/`ms=`** (those ops never executed). Contrast the two param sets: identical plan, different key value.",
+                [
+                    new ParamSet("london-40", "$c=\"London\", $a=40", q => { q.AddParameter("c", "London"); q.AddParameter("a", 40); }),
+                    new ParamSet("rome-55", "$c=\"Rome\", $a=55", q => { q.AddParameter("c", "Rome"); q.AddParameter("a", 55); }),
+                ]),
+
+            new CatalogQuery("compound-sorted", "CompoundSortedScan candidate — cost gate falls back",
+                "from index 'Items/Compound' where City = $c and Age > $a order by Age as long limit 16",
+                "The exact shape of `filtered-sort` — `City = $c and Age > $a order by Age limit 16` — run against `Items/Compound`, which declares a compound field on **(City, Age)**. This satisfies BOTH structural requirements for `CompoundSortedScan`: (1) the range `Age > $a` is a comparison on the sort field (the `DirectScanCandidate` flag — without it the planner never even considers a sorted scan, which is why a bare `City = $c order by Age` falls straight to the bitmap pipeline); (2) the equality `City = $c` plus the sort field `Age` form the compound pair. So the decision trail records `CompoundSortedScan` **accepted** — but that is only structural candidacy. **It still does not run.** A per-execution cost gate (`scannedEntries × 64 < bitmapCost && scannedEntries ≤ 32,768`) re-evaluates against the bound parameters every time, and here it falls back: with five cities of ~10K docs each, `City = $c` alone contributes ~10K to `bitmapCost`, while the compound subtree still holds thousands of entries — so `scannedEntries × 64` dwarfs the bitmap intersection cost. Hence `Executed strategy: BitmapPipeline (cached candidate: CompoundSortedScan)`. This is the headline lesson of the introspection output: **`StrategyCandidate` is what the planner is allowed to do; `Executed strategy` is what the cost gate actually chose** — and for a compound scan to win, the seeked key must be far more selective than it is here. (Contrast `compound-key`, where `CompoundKeyLookup` has no cost gate and always fires.)",
+                [
+                    new ParamSet("london-broad", "$c=\"London\", $a=18", q => { q.AddParameter("c", "London"); q.AddParameter("a", 18); }),
+                    new ParamSet("rome-selective", "$c=\"Rome\", $a=70", q => { q.AddParameter("c", "Rome"); q.AddParameter("a", 70); }),
                 ]),
         ];
     }
