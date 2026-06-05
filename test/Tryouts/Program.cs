@@ -1,6 +1,7 @@
 #pragma warning disable CS1998 // Async method lacks 'await' operators and will run synchronously
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
@@ -99,6 +100,15 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
         var queries = BuildCatalog();
 
+        // Rendered plan PNGs live in a sibling `corax-plans` directory next to the output .md; the markdown
+        // embeds reference them by that relative name. Renders are produced inline below by shelling out to
+        // Graphviz `dot`, so a single run yields the fully-stitched catalog (image embeds + collapsed DOT
+        // source) with no separate post-processing step.
+        string plansDir = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(outPath)) ?? ".", "corax-plans");
+        Directory.CreateDirectory(plansDir);
+        string plansDirName = Path.GetFileName(plansDir);
+        int planNumber = 0;
+
         var sb = new StringBuilder();
         sb.AppendLine(
                $"""
@@ -142,9 +152,9 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
             string timedRql = q.Rql + " include timings()";
 
             // One collapsible block per parameter set, in order. Each holds (top to bottom): the rendered
-            // dataflow graph + its collapsed DOT source (the publish transform turns the single ```dot block
-            // into both), the generated C#, the executed strategy, the decision trail (when present), the
-            // structural plan JSON, and the raw timings.
+            // dataflow graph image + its collapsed DOT source (both produced inline below), the generated C#,
+            // the executed strategy, the decision trail (when present), the structural plan JSON, and the raw
+            // timings.
             foreach (ParamSet p in q.Params)
             {
                 QueryInspectionNode plan = RunForPlan(store, timedRql, p, out QueryTimings timings);
@@ -155,12 +165,25 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 sb.AppendLine();
 
                 // 1 + 2. Physical dataflow graph (rendered server-side by QueryPlanGraph and shipped on the plan
-                // node as PlanGraphDot). The transform renders this ```dot block to a PNG and a collapsed source.
+                // node as PlanGraphDot). Render the DOT to a PNG via Graphviz and embed the image, then keep the
+                // original DOT source in a collapsed <details> — done inline so one run produces the final catalog.
                 if (TryGetParam(compiled, "PlanGraphDot", out string dot))
                 {
+                    string dotSrc = dot.TrimEnd('\n');
+                    planNumber++;
+                    string pngName = $"plan-{planNumber:D2}.png";
+                    RenderDotToPng(dotSrc, Path.Combine(plansDir, pngName));
+
+                    sb.Append("![Physical dataflow plan ").Append(planNumber.ToString("D2")).Append("](")
+                        .Append(plansDirName).Append('/').Append(pngName).AppendLine(")");
+                    sb.AppendLine();
+                    sb.AppendLine("<details><summary>DOT source</summary>");
+                    sb.AppendLine();
                     sb.AppendLine("```dot");
-                    sb.Append(dot.TrimEnd('\n')).AppendLine();
+                    sb.AppendLine(dotSrc);
                     sb.AppendLine("```");
+                    sb.AppendLine();
+                    sb.AppendLine("</details>");
                     sb.AppendLine();
                 }
 
@@ -247,6 +270,45 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         }
 
         File.WriteAllText(outPath, sb.ToString());
+        Console.WriteLine($"Rendered {planNumber} plan PNGs -> {plansDir}");
+    }
+
+    /// <summary>Renders a Graphviz DOT document to a PNG by piping it to the <c>dot</c> CLI. Throws with the full
+    /// <c>dot</c> stderr on any failure (missing binary, malformed DOT) rather than producing a silently broken
+    /// catalog — the rendered images are the published artifact, so a render failure must abort the whole run.</summary>
+    private static void RenderDotToPng(string dot, string pngPath)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = "dot",
+            RedirectStandardInput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+        };
+        psi.ArgumentList.Add("-Tpng");
+        psi.ArgumentList.Add("-o");
+        psi.ArgumentList.Add(pngPath);
+
+        Process process;
+        try
+        {
+            process = Process.Start(psi);
+        }
+        catch (Exception e)
+        {
+            throw new InvalidOperationException(
+                $"Failed to start Graphviz 'dot' to render '{pngPath}'. Is graphviz installed and on PATH? {e}", e);
+        }
+
+        process.StandardInput.Write(dot);
+        process.StandardInput.Close();
+        string stderr = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException(
+                $"Graphviz 'dot' exited with code {process.ExitCode} while rendering '{pngPath}'. stderr: {stderr}");
     }
 
     /// <summary>Serializes <paramref name="djv"/> via the blittable writer (compact), then re-emits it indented so
