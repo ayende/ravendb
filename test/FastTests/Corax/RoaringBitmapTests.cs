@@ -104,6 +104,39 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     }
 
     [RavenFact(RavenTestCategory.Corax)]
+    public void CanAddAndContainsValuesLargerThan32Bits()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap bitmap = new(ctx);
+
+        // Corax entry IDs are 54-bit values, so a large or long-lived dataset legitimately
+        // crosses the 32-bit boundary. The bitmap must accept such values. These stay within a
+        // realistic entry-ID range (the container key value >> 16 remains modest) rather than
+        // testing pathological sparsity.
+        var values = new long[]
+        {
+            5,                       // small, low container
+            (1L << 32) + 7,          // just over 32 bits
+            5_000_000_000L,          // ~4.66e9
+            (1L << 33) + 11,         // ~8.6e9
+            17_000_000_000L,         // ~1.7e10
+        };
+
+        foreach (long v in values)
+            bitmap.Add(v);
+
+        bitmap.PrepareForReading();
+
+        foreach (long v in values)
+            Assert.True(bitmap.Contains(v), $"expected bitmap to contain {v}");
+
+        Assert.False(bitmap.Contains(6));
+        Assert.False(bitmap.Contains((1L << 32) + 8));
+        Assert.Equal(values.Length, bitmap.Count);
+        bitmap.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
     public void ArrayToBitmapConversionOnThreshold()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);

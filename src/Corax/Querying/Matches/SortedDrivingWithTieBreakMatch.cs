@@ -83,13 +83,16 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     //   nullFirst=true → non-existing, then nulls, then normal values
     //   nullFirst=false → normal values, then nulls, then non-existing
     private readonly bool _nullFirst;
-    private readonly PostingList _nullPostingList;
-    private readonly PostingList.Iterator _nullIterator;
+    // Only the posting-list IDs are kept from construction. The PostingList and its Iterator
+    // hold a FastPForDecoder whose scratch is allocated from the (bump) transaction allocator;
+    // creating them in the ctor and consuming them lazily in PrepareNullGroup lets intervening
+    // drain operations recycle that scratch region, so the iterator would decode clobbered
+    // memory. Instead we build them fresh at drain time, exactly like the regular-term path.
+    private readonly long _nullPostingListId;
     private readonly bool _hasNullPostingList;
     private bool _nullExhausted;
 
-    private readonly PostingList _nonExistingPostingList;
-    private readonly PostingList.Iterator _nonExistingIterator;
+    private readonly long _nonExistingPostingListId;
     private readonly bool _hasNonExistingPostingList;
     private bool _nonExistingExhausted;
 
@@ -161,15 +164,11 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         }
         _secondaryLookup = searcher.EntriesToTermsReader(secondaryLookupName);
 
-        _hasNullPostingList = searcher.TryGetPostingListForNull(in primaryField, out var nullPostingListId);
+        _hasNullPostingList = searcher.TryGetPostingListForNull(in primaryField, out _nullPostingListId);
         _nullExhausted = !_hasNullPostingList;
-        if (_hasNullPostingList)
-            InitPostingList(out _nullPostingList, out _nullIterator, nullPostingListId);
 
-        _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in primaryField, out var nonExistingPostingListId);
+        _hasNonExistingPostingList = searcher.TryGetPostingListForNonExisting(in primaryField, out _nonExistingPostingListId);
         _nonExistingExhausted = !_hasNonExistingPostingList;
-        if (_hasNonExistingPostingList)
-            InitPostingList(out _nonExistingPostingList, out _nonExistingIterator, nonExistingPostingListId);
 
         // Allocate all persistent buffers up front — avoids 7 IsValid branches per Fill call.
         _plIdsBuffer.Initialize(allocator, QueryPrimitives.EntryScanBatchSize);
@@ -319,6 +318,14 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             newCap = (int)Math.Min((long)newCap * 2, _maxGroupSize);
         int addition = newCap - curCap;
 
+        // This class tracks the live group population in _groupSize and writes entries through
+        // RawItems directly, so NativeList.Count stays 0. Grow copies only Count*sizeof(T) bytes,
+        // so we must publish the live count to _groupEntries before growing or every accumulated
+        // entry is dropped (the new buffer is left uninitialized). The other three lists are
+        // scratch — SortGroupBySecondary fully rewrites them before they are read — so their
+        // contents need not survive the grow.
+        _groupEntries.Count = _groupSize;
+
         _groupEntries.Grow(_allocator, addition);
         _groupSecondary.Grow(_allocator, addition);
         _groupSortedIndexes.Grow(_allocator, addition);
@@ -347,6 +354,55 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             if (iter.Fill(entryBuffer, out int read) == false || read == 0)
                 break;
             AddToGroup(entryBuffer, read);
+        }
+    }
+
+    // Drains a null/non-existing posting list into the group. The stored id may encode a
+    // single entry, a small posting list, or a large posting list — exactly like a regular
+    // term id — so it must be dispatched on TermIdMask. Treating it unconditionally as a
+    // large PostingList reinterprets a small-list/single container blob as a PostingListState,
+    // whose bogus RootPage points at an unrelated (document) page that then decodes as garbage.
+    private void DrainSpecialIntoGroup(long postingListId, Span<long> entryBuffer)
+    {
+        var termType = (TermIdMask)postingListId & TermIdMask.EnsureIsSingleMask;
+        switch (termType)
+        {
+            case TermIdMask.Single:
+            {
+                long entryId = (long)EntryIdEncodings.GetContainerId(postingListId);
+                if (_emittedBitmap.Contains(entryId))
+                    return;
+                _emittedBitmap.Add(entryId);
+                EnsureGroupCapacity(_groupSize + 1);
+                _groupEntries.RawItems[_groupSize++] = entryId;
+                break;
+            }
+            case TermIdMask.SmallPostingList:
+            {
+                Container.Get(_llt, EntryIdEncodings.GetContainerId(postingListId), out var item);
+                _ = VariableSizeEncoding.Read<int>(item.Address, out var offset);
+                var smallReader = new FastPForBufferedReader(_llt.Allocator);
+                try
+                {
+                    smallReader.Init(item.Address + offset, item.Length - offset);
+                    DrainSmallIntoGroup(ref smallReader, entryBuffer);
+                }
+                finally
+                {
+                    if (smallReader.WasInitialized)
+                        smallReader.Dispose();
+                }
+                break;
+            }
+            case TermIdMask.PostingList:
+            {
+                InitPostingList(out var pl, out var iter, postingListId);
+                using (pl)
+                    DrainLargeIntoGroup(ref iter, entryBuffer);
+                break;
+            }
+            default:
+                throw new ArgumentException($"Unexpected TermIdMask value {termType} for special posting list id {postingListId}");
         }
     }
 
@@ -447,14 +503,12 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         // determines their interleaved order within the group.
         if (hasNonExisting)
         {
-            var iter = _nonExistingIterator;
-            DrainLargeIntoGroup(ref iter, entryBuffer);
+            DrainSpecialIntoGroup(_nonExistingPostingListId, entryBuffer);
             _nonExistingExhausted = true;
         }
         if (hasNull)
         {
-            var iter = _nullIterator;
-            DrainLargeIntoGroup(ref iter, entryBuffer);
+            DrainSpecialIntoGroup(_nullPostingListId, entryBuffer);
             _nullExhausted = true;
         }
 
@@ -487,8 +541,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
     public void Dispose()
     {
-        _nullPostingList?.Dispose();
-        _nonExistingPostingList?.Dispose();
         _emittedBitmap.Dispose();
         _plIdsBuffer.Dispose(_allocator);
         _smallContainerItems.Dispose(_allocator);
