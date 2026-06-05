@@ -244,6 +244,13 @@ internal static partial class QueryPlanBuilder
                 parameters["Count"] = resultCounts[opIndex].ToString();
             if (timings != null && opIndex >= 0 && opIndex < timings.Length && timings[opIndex] > 0)
                 parameters["Ms"] = (timings[opIndex] / tickFreq).ToString("F3");
+
+            // For an IN/range-expansion op, surface the ACTUAL number of expanded term slots it unioned/intersected
+            // this run (a runtime value the template could not bake — the name is count-free by design). This is the
+            // "OR-Range over N terms" the user expects, read from the live InRangeCounts the generated code looped on.
+            int rangeIdx = i < template.Length ? template[i].RangeCountIndex : -1;
+            if (rangeIdx >= 0 && compiled.InRangeCounts != null && rangeIdx < compiled.InRangeCounts.Length)
+                parameters["Terms"] = compiled.InRangeCounts[rangeIdx].ToString();
         }
 
         // Mark whether the entry-scan branch actually fired this run, on the single EntryScan tail node (the shared
@@ -432,8 +439,11 @@ internal static partial class QueryPlanBuilder
                     PlanOpKind.LazyOrBitmaps => "OR-Bitmaps",
                     PlanOpKind.ClearBitmap => "Clear",
                     PlanOpKind.MaybeEntryScan => "EntryScanCheck",
-                    PlanOpKind.OrRangeFromPostingSource or PlanOpKind.OrRangeFromMatch => $"OR-Range({op.ParamIndex2} terms)",
-                    PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch => $"AND-Range({op.ParamIndex2} terms)",
+                    // The expansion width (how many terms this IN/range unions or intersects) is a RUNTIME value
+                    // held in ctx.InRangeCounts — it is NOT op.ParamIndex2 (that is the *index* into that array).
+                    // So the template name stays count-free; OverlayTimings surfaces the real term count as "Terms".
+                    PlanOpKind.OrRangeFromPostingSource or PlanOpKind.OrRangeFromMatch => "OR-Range",
+                    PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch => "AND-Range",
                     _ => op.Kind.ToString()
                 },
                 Dispatch = op.Kind switch
@@ -464,7 +474,13 @@ internal static partial class QueryPlanBuilder
                     PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.LazyOrBitmaps => op.ParamIndex2,
                     _ => -1
                 },
-                IsEntryScanGate = op.Kind == PlanOpKind.MaybeEntryScan
+                IsEntryScanGate = op.Kind == PlanOpKind.MaybeEntryScan,
+                RangeCountIndex = op.Kind switch
+                {
+                    PlanOpKind.OrRangeFromPostingSource or PlanOpKind.OrRangeFromMatch
+                        or PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch => op.ParamIndex2,
+                    _ => -1
+                }
             };
 
             // Attach clause metadata only to the LEAF ops that actually read a query clause from the cursor.
