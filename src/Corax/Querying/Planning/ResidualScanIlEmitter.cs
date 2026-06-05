@@ -78,30 +78,37 @@ public static class ResidualScanIlEmitter
         var writeIdxLocal = d.DeclareLocal(typeof(int), "writeIdx");
         var lengthLocal = d.DeclareLocal(typeof(int), "length");
         var readerRefLocal = d.DeclareLocalRef(typeof(EntryTermsReader), "reader");
-        var origIdxLengthLocal = d.DeclareLocal(typeof(int), "origIdxLength");
 
         // length = entryIds.Length
         EmitSpanLengthToLocal(ref d, entryIdsIdx, IlEmitterShared.SpanLongLength, lengthLocal);
-        // origIdxLength = originalIndexes.Length
-        EmitSpanLengthToLocal(ref d, originalIndexesIdx, IlEmitterShared.SpanIntLength, origIdxLengthLocal);
-        // writeIdx = 0; i = 0
+        // writeIdx = 0
         d.StoreLocalConst(writeIdxLocal, 0);
-        d.StoreLocalConst(iLocal, 0);
 
-        // Loop structure
+        // The IL keeps a goto-based loop (br loopCheck; loopBody: …; loopInc: i++; loopCheck: blt loopBody);
+        // the C# mirror renders the same thing as a plain `for` loop. A rejected entry branches to the
+        // `rejected` label in IL, which falls straight into the increment — the C# equivalent is `continue;`,
+        // so for-body-level rejects render as `continue;` while only an in-`while` reject (a `!=` leaf) needs
+        // a real `rejected:` C# label to jump past the survivor bookkeeping (see ContinueTarget / Jump).
         var loopCheck = d.DefineLabelPair("loopCheck");
         var loopBody = d.DefineLabelPair("loopBody");
         var loopIncrement = d.DefineLabelPair("loopInc");
         var rejected = d.DefineNamedLabel("rejected");
+        bool needsRejectLabel = AnyNotEqual(predicates);
 
-        d.GotoAlways(loopCheck);
-
-        d.MarkLabel(loopBody);
+        // IL: i = 0; goto loopCheck; loopBody:
+        d.Il.Emit(OpCodes.Ldc_I4_0);
+        d.Il.Emit(OpCodes.Stloc, iLocal);
+        d.Il.Emit(OpCodes.Br, loopCheck.Il);
+        d.Il.MarkLabel(loopBody.Il);
+        // C#: for (i = 0; i < length; i++) {
+        d.CsLine($"for ({d.GetLocalName(iLocal)} = 0; {d.GetLocalName(iLocal)} < {d.GetLocalName(lengthLocal)}; {d.GetLocalName(iLocal)}++)");
+        d.CsLine("{");
 
         // ref reader = ref readers[i]
         EmitSpanGetItemRef(ref d, readersIdx, IlEmitterShared.SpanEntryTermsReaderGetItem, iLocal, readerRefLocal);
 
-        // Per-predicate emission (already through DualEmit).
+        // Per-predicate emission (already through DualEmit). A reject routes to the `rejected` IL label,
+        // rendered as `continue;` in C# (the ContinueTarget sentinel).
         int rootIdx = 0;
         int inSetIdx = 0;
         for (int p = 0; p < predicates.Length; p++)
@@ -113,31 +120,41 @@ public static class ResidualScanIlEmitter
         // All passed: entryIds[writeIdx] = entryIds[i]
         EmitSpanElementCopy(ref d, entryIdsIdx, IlEmitterShared.SpanLongGetItem, writeIdxLocal, iLocal, OpCodes.Ldind_I8, OpCodes.Stind_I8);
 
-        // if (originalIndexes.Length == 0) skip copy
+        // if (originalIndexes.Length != 0) originalIndexes[writeIdx] = originalIndexes[i];
+        // IL: if (originalIndexes.Length == 0) goto noOrigIdx; <copy>; noOrigIdx:
         var noOrigIdx = d.DefineLabelPair("noOrigIdx");
-        EmitSpanLengthBranchIfZero(ref d, originalIndexesIdx, IlEmitterShared.SpanIntLength, noOrigIdx);
-
-        // originalIndexes[writeIdx] = originalIndexes[i]
+        d.Il.Emit(OpCodes.Ldarga_S, originalIndexesIdx);
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.SpanIntLength);
+        d.Il.Emit(OpCodes.Ldc_I4_0);
+        d.Il.Emit(OpCodes.Ceq);
+        d.Il.Emit(OpCodes.Brtrue, noOrigIdx.Il);
+        d.CsLine($"if ({d.GetArgName(originalIndexesIdx)}.Length != 0)");
         EmitSpanElementCopy(ref d, originalIndexesIdx, IlEmitterShared.SpanIntGetItem, writeIdxLocal, iLocal, OpCodes.Ldind_I4, OpCodes.Stind_I4);
-
-        d.MarkLabel(noOrigIdx);
+        d.Il.MarkLabel(noOrigIdx.Il);
 
         // writeIdx++
         d.IncrementLocal(writeIdxLocal);
-        d.GotoAlways(loopIncrement);
 
-        // rejected:
-        d.MarkLabel(rejected);
+        // IL only: the survivor path skips the reject label and jumps to the increment; in C# it just
+        // falls off the end of the for body.
+        d.Il.Emit(OpCodes.Br, loopIncrement.Il);
 
-        // i++
-        d.MarkLabel(loopIncrement);
-        d.IncrementLocal(iLocal);
+        // rejected: (IL always; the C# label only when a `!=` leaf rejects from inside its term-scan while)
+        d.Il.MarkLabel(rejected.Il);
+        if (needsRejectLabel)
+            d.CsLine($"{RejectedLabel}:;");
 
-        // loop check: if (i < length) goto loopBody
-        d.MarkLabel(loopCheck);
-        d.LoadLocal(iLocal);
-        d.LoadLocal(lengthLocal);
-        d.BranchLT(loopBody);
+        // C#: close the for body. IL: loopInc: i++; loopCheck: if (i < length) goto loopBody
+        d.CsLine("}");
+        d.Il.MarkLabel(loopIncrement.Il);
+        d.Il.Emit(OpCodes.Ldloc, iLocal);
+        d.Il.Emit(OpCodes.Ldc_I4_1);
+        d.Il.Emit(OpCodes.Add);
+        d.Il.Emit(OpCodes.Stloc, iLocal);
+        d.Il.MarkLabel(loopCheck.Il);
+        d.Il.Emit(OpCodes.Ldloc, iLocal);
+        d.Il.Emit(OpCodes.Ldloc, lengthLocal);
+        d.Il.Emit(OpCodes.Blt, loopBody.Il);
 
         // return writeIdx
         d.LoadLocal(writeIdxLocal);
@@ -190,17 +207,6 @@ public static class ResidualScanIlEmitter
         d.CsLine($"{argName}[{d.GetLocalName(destIdx)}] = {argName}[{d.GetLocalName(srcIdx)}];");
     }
 
-    /// <summary>if (arg.Length == 0) goto target</summary>
-    private static void EmitSpanLengthBranchIfZero(ref DualEmit d, byte argIdx, MethodInfo lengthGetter, LabelPair target)
-    {
-        d.Il.Emit(OpCodes.Ldarga_S, argIdx);
-        d.Il.Emit(OpCodes.Call, lengthGetter);
-        d.Il.Emit(OpCodes.Ldc_I4_0);
-        d.Il.Emit(OpCodes.Ceq);
-        d.Il.Emit(OpCodes.Brtrue, target.Il);
-        d.CsLine($"if ({d.GetArgName(argIdx)}.Length == 0) goto {target.Name};");
-    }
-
     /// <summary>Emit one top-level predicate (leaf, AND group, or OR group). The OR group
     /// short-circuits to a per-group "passed" label after any branch succeeds; falling off
     /// the end means every branch failed and routes to <paramref name="failLabel"/>.</summary>
@@ -230,14 +236,14 @@ public static class ResidualScanIlEmitter
                 }
                 // All branches fell through → group fails.
                 d.Il.Emit(OpCodes.Br, failLabel);
-                d.CsLine("goto rejected;");
+                d.CsLine(Jump(ContinueTarget));
                 d.MarkLabel(groupPassed);
             }
             else
             {
                 for (int b = 0; b < pred.SubPredicates.Length; b++)
                 {
-                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], failLabel, "rejected", rootIdx, ref inSetIdx, readerRefLocal);
+                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], failLabel, ContinueTarget, rootIdx, ref inSetIdx, readerRefLocal);
                     if (ConsumesFieldRootPage(in pred.SubPredicates[b]))
                         rootIdx++;
                 }
@@ -245,7 +251,7 @@ public static class ResidualScanIlEmitter
             return;
         }
 
-        EmitLeafPredicate(ref d, in pred, failLabel, "rejected", rootIdx, ref inSetIdx, readerRefLocal);
+        EmitLeafPredicate(ref d, in pred, failLabel, ContinueTarget, rootIdx, ref inSetIdx, readerRefLocal);
         if (ConsumesFieldRootPage(in pred))
             rootIdx++;
     }
@@ -281,7 +287,7 @@ public static class ResidualScanIlEmitter
         if (pred.CompareOp == ScanCompareOp.AlwaysFalse)
         {
             d.Il.Emit(OpCodes.Br, failIl);
-            d.CsLine($"goto {failName};");
+            d.CsLine(Jump(failName));
             return;
         }
 
@@ -383,9 +389,11 @@ public static class ResidualScanIlEmitter
             d.Il.Emit(OpCodes.Brtrue, loopHead.Il);
             d.CsLine("if (reader.IsNull) continue;");
 
-            // if (term == target) goto fail;
+            // if (term == target) goto fail;  — this reject sits INSIDE the term-scan while, so a bare
+            // `continue;` would wrongly advance to the next term rather than reject the entry. When the
+            // for-body fail target is the `continue` sentinel, jump to the real `rejected:` label instead.
             EmitTypedComparison(ref d, in pred, readerRefLocal);
-            EmitBranchTrue(ref d, failIl, failName);      // term equals → fail
+            EmitBranchTrue(ref d, failIl, failName == ContinueTarget ? RejectedLabel : failName);      // term equals → fail
 
             d.Il.Emit(OpCodes.Br, loopHead.Il);           // not equal → next term
             d.CsLine("}");
@@ -422,7 +430,7 @@ public static class ResidualScanIlEmitter
             d.Il.Emit(OpCodes.Br, loopHead.Il);           // not satisfied → next term
             d.CsLine("}");
 
-            d.CsLine($"goto {failName};");                // loop exhausted → none matched → fail
+            d.CsLine(Jump(failName));                     // loop exhausted → none matched → fail
             d.Il.MarkLabel(pass.Il);
             d.CsLine($"{pass.Name}:");
         }
@@ -625,6 +633,48 @@ public static class ResidualScanIlEmitter
     {
         d.Il.Emit(failOnTrue ? OpCodes.Brtrue : OpCodes.Brfalse, ilLabel);
         var a = d.CsStack.Pop();
-        d.CsLine(failOnTrue ? $"if ({a}) goto {csName};" : $"if (!{a}) goto {csName};");
+        d.CsLine(JumpIf(failOnTrue ? a : $"!{a}", csName));
+    }
+
+    /// <summary>C# fail-target sentinel. The residual loop's reject path IS the for-loop's increment,
+    /// so a reject at the for-body level renders as <c>continue;</c> in the C# mirror while the IL still
+    /// branches to the <c>rejected</c> label. Any other name is a real forward label (an OR-branch's
+    /// next alternative, or the <c>rejected</c> label itself when a reject sits INSIDE an inner term-scan
+    /// <c>while</c> and a bare <c>continue</c> would wrongly continue that inner loop), so it renders as
+    /// <c>goto name;</c>. No DualEmit-generated label is ever named "continue", so the sentinel is unambiguous.</summary>
+    private const string ContinueTarget = "continue";
+
+    /// <summary>The exact name of the shared <c>rejected</c> label (see <see cref="DualEmit.DefineNamedLabel"/>),
+    /// used for in-<c>while</c> rejects that cannot be expressed as a bare <c>continue</c>.</summary>
+    private const string RejectedLabel = "rejected";
+
+    /// <summary>Render an unconditional jump to a C# fail target: <c>continue;</c> for the for-body-level
+    /// reject sentinel, otherwise <c>goto name;</c>.</summary>
+    private static string Jump(string csName) => csName == ContinueTarget ? "continue;" : $"goto {csName};";
+
+    /// <summary>Render a conditional jump to a C# fail target.</summary>
+    private static string JumpIf(string cond, string csName) =>
+        csName == ContinueTarget ? $"if ({cond}) continue;" : $"if ({cond}) goto {csName};";
+
+    /// <summary>True if any predicate (recursively, through AND/OR sub-groups) is a <c>!=</c> leaf. Such a
+    /// leaf rejects from inside an inner term-scan <c>while</c>, which needs a real <c>goto rejected;</c> and
+    /// a matching <c>rejected:</c> label in the C# mirror rather than a bare <c>continue;</c>.</summary>
+    private static bool AnyNotEqual(ReadOnlySpan<ScanPredicateInfo> predicates)
+    {
+        for (int i = 0; i < predicates.Length; i++)
+        {
+            ref readonly ScanPredicateInfo p = ref predicates[i];
+            if (p.SubPredicates != null)
+            {
+                if (AnyNotEqual(p.SubPredicates))
+                    return true;
+            }
+            else if (p.CompareOp == ScanCompareOp.NotEqual)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 }
