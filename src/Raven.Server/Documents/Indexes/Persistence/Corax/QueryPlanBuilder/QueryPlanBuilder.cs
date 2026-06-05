@@ -57,7 +57,20 @@ internal static partial class QueryPlanBuilder
     {
         QueryExpression where = p.WhereOverride ?? p.Metadata.Query.Where;
         if (where == null)
-            return new PlanTemplate { Clauses = [],  };
+        {
+            // A bare sort with no WHERE clause is a full index scan, which is itself a direct-scan candidate:
+            // walk the sort field's term tree in order and stop at the page, instead of filling every entry
+            // into a bitmap and sorting it. There is no clause to drive the scan (SortDrivingClauseIndex stays
+            // -1) and no seek hint — the scan starts at the first term. TryCreateSimpleFieldDirectScan still
+            // validates the sort field is sortable and has no missing entries before this candidacy is honoured.
+            // WhereOverride is null here (otherwise `where` would be non-null), so p.Metadata.OrderBy applies.
+            bool hasBareSort = p.Metadata.OrderBy is { Length: > 0 } && p.Metadata.OrderBy[0].Name?.Value is not null;
+            return new PlanTemplate
+            {
+                Clauses = [],
+                OptimizationFlags = hasBareSort ? PlanOptimizationFlags.DirectScanCandidate : PlanOptimizationFlags.None,
+            };
+        }
 
         ResolutionContext walkerCtx = new(p) { Clauses = [] };
         BooleanOp rootOp = ParseExpression(where, walkerCtx);
