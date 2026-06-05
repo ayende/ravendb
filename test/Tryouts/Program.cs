@@ -5,6 +5,7 @@ using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Text;
+using System.Text.Json;
 using System.Threading.Tasks;
 using Corax.Querying.Planning;
 using Raven.Client.Documents;
@@ -150,13 +151,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 sb.AppendLine("Query plan (JSON):");
                 sb.AppendLine();
                 sb.AppendLine("```json");
-                using (var ms = new MemoryStream())
-                using (var writer = new BlittableJsonTextWriter(ctx, ms))
-                {
-                    ctx.Write(writer, PlanToJson(plan));
-                    writer.Flush();
-                    sb.Append(Encoding.UTF8.GetString(ms.ToArray()));
-                }
+                AppendIndentedJson(sb, ctx, PlanToJson(plan));
                 sb.AppendLine();
                 sb.AppendLine("```");
                 sb.AppendLine();
@@ -197,6 +192,24 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         }
 
         File.WriteAllText(outPath, sb.ToString());
+    }
+
+    /// <summary>Serializes <paramref name="djv"/> via the blittable writer (compact), then re-emits it indented so
+    /// the catalog's JSON view is human-readable. The blittable round-trip stays the single source of truth for the
+    /// shape; System.Text.Json only re-flows whitespace.</summary>
+    private static void AppendIndentedJson(StringBuilder sb, JsonOperationContext ctx, DynamicJsonValue djv)
+    {
+        string compact;
+        using (var ms = new MemoryStream())
+        using (var writer = new BlittableJsonTextWriter(ctx, ms))
+        {
+            ctx.Write(writer, djv);
+            writer.Flush();
+            compact = Encoding.UTF8.GetString(ms.ToArray());
+        }
+
+        using JsonDocument doc = JsonDocument.Parse(compact);
+        sb.Append(JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true }));
     }
 
     /// <summary>Projects the query plan node tree into a DynamicJsonValue for the JSON view of the plan. This is
@@ -358,6 +371,26 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                         q => { q.AddParameter("a", "London"); q.AddParameter("b", "Paris"); q.AddParameter("c", "Berlin"); }),
                     new ParamSet("all-same", "$a=\"Rome\", $b=\"Rome\", $c=\"Rome\"",
                         q => { q.AddParameter("a", "Rome"); q.AddParameter("b", "Rome"); q.AddParameter("c", "Rome"); }),
+                ]),
+
+            new CatalogQuery("in-single", "list-valued IN parameter",
+                "from index 'Items/Index' where City in ($a)",
+                "A single list-valued parameter expands to the IN set at runtime. With values it is an ordinary posting-list IN; when `$a` is empty the set is unsatisfiable, so the clause resolves to match-nothing and the query returns no documents. Emptiness is a property of the value set, resolved when the plan is instantiated for these parameters.",
+                [
+                    new ParamSet("with-values", "$a=[\"London\", \"Paris\"]",
+                        q => q.AddParameter("a", new[] { "London", "Paris" })),
+                    new ParamSet("empty", "$a=[] (no values → match-nothing)",
+                        q => q.AddParameter("a", System.Array.Empty<string>())),
+                ]),
+
+            new CatalogQuery("when", "compile-time clause gating",
+                "from index 'Items/Index' where when($flag = true, City = $c)",
+                "`when(cond, expr)` gates a clause on a constant condition evaluated against the query parameters. When the condition holds the leaf is compiled normally (`City = $c`); when it fails the leaf is dropped entirely — and since it is the only clause, the query collapses to match-all (every document). The two cases compile to **different** plans: the WHEN survival mask is part of the plan-cache key, so each parameter set gets its own compiled plan rather than a runtime branch.",
+                [
+                    new ParamSet("enabled", "$flag=true -> keep `City = $c`",
+                        q => { q.AddParameter("flag", true); q.AddParameter("c", "London"); }),
+                    new ParamSet("disabled", "$flag=false -> clause dropped -> match-all",
+                        q => { q.AddParameter("flag", false); q.AddParameter("c", "London"); }),
                 ]),
 
             new CatalogQuery("nested-group", "OR of two ANDs",

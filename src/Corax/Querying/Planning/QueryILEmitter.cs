@@ -67,16 +67,26 @@ public static class QueryIlEmitter
         // cursor = 0
         d.StoreLocalConst(cursorVar, 0);
 
+        // The op stream ends in a run of pure control-flow-to-Done ops: the terminal GotoDone the
+        // PlanEmitter always appends, plus any GotoDoneIfEmpty empty-checks that immediately precede it
+        // (an AND followed only by `if empty goto Done; Done:` jumps to a label control already falls
+        // through to). Everything from this index onward is dead — its branch, and the cursor advance of
+        // the last real op, would just be `goto Done; Done:` / a dead store. lastEffectiveIndex is the
+        // first op of that trailing dead run, so `i >= lastEffectiveIndex` flags both the last real op
+        // (suppress its cursor advance / early exit) and the dead tail ops (suppress them entirely).
+        int lastEffectiveIndex = ops.Length;
+        while (lastEffectiveIndex > 0 &&
+               ops[lastEffectiveIndex - 1].Kind is PlanOpKind.GotoDone or PlanOpKind.GotoDoneIfEmpty)
+        {
+            lastEffectiveIndex--;
+        }
+        lastEffectiveIndex--; // step onto the last real op itself
+
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
 
-            // The PlanEmitter always appends a terminal GotoDone. An early-exit guard (AND empty-check
-            // or OR limit-check) or that GotoDone itself is dead when it is the last effective op,
-            // because control falls straight through to the Done label that immediately follows. We
-            // suppress those tail branches so the generated IL/C# don't carry `goto Done; Done:`.
-            bool isLastEffectiveOp = i == ops.Length - 1 ||
-                                     (i == ops.Length - 2 && ops[^1].Kind == PlanOpKind.GotoDone);
+            bool isLastEffectiveOp = i >= lastEffectiveIndex;
             bool emitGoToEmpty = !op.SkipEarlyExit && !isLastEffectiveOp;
             bool emitGotoLimitReached = op.BitmapLocal == 0 && !isLastEffectiveOp;
 
@@ -195,7 +205,10 @@ public static class QueryIlEmitter
                     break;
 
                 case PlanOpKind.GotoDoneIfEmpty:
-                    d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
+                    // Dead when terminal: `if (empty) goto Done;` falls straight through to the Done label
+                    // that immediately follows, so the branch is a no-op regardless of emptiness.
+                    if (!isLastEffectiveOp)
+                        d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.MaybeEntryScan:
