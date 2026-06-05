@@ -23,6 +23,13 @@ internal static partial class QueryPlanBuilder
             return result.ExecutedMatch.Inspect();
 
         OverlayTimings(result, compiledRoot, opNodes, entryScanNode);
+
+        // Render the physical-dataflow graph once, server-side, from the fully overlaid plan (so node labels carry
+        // the run's timing/scan telemetry) and attach it to the CompiledQuery node. It rides to the client on the
+        // same QueryInspectionNode as CSharpSourceFormatted, so any consumer (Studio, the catalog) gets the graph
+        // without re-deriving it.
+        compiledRoot.Parameters["PlanGraphDot"] = QueryPlanGraph.ToGraphviz(plan);
+
         return plan;
     }
 

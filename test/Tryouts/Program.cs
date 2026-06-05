@@ -3,7 +3,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -83,8 +82,6 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         new Items_Index().Execute(store);
         Indexes.WaitForIndexing(store);
 
-        var planCache = await GetPlanCache(store);
-
         var queries = BuildCatalog();
 
         var sb = new StringBuilder();
@@ -129,25 +126,69 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
             // the plan tree. That same text is the plan-cache key, so we match variants on it.
             string timedRql = q.Rql + " include timings()";
 
+            // One collapsible block per parameter set, in order. Each holds (top to bottom): the rendered
+            // dataflow graph + its collapsed DOT source (the publish transform turns the single ```dot block
+            // into both), the generated C#, the executed strategy, the decision trail (when present), the
+            // structural plan JSON, and the raw timings.
             foreach (ParamSet p in q.Params)
             {
                 QueryInspectionNode plan = RunForPlan(store, timedRql, p, out QueryTimings timings);
-                sb.Append("### Plan — params: ").Append(p.Label).Append(" — ").AppendLine(p.Description);
+                QueryInspectionNode compiled = FindNode(plan, "CompiledQuery");
+
+                sb.AppendLine("<details>");
+                sb.Append("<summary><b>params: ").Append(p.Label).Append("</b> — ").Append(p.Description).AppendLine("</summary>");
                 sb.AppendLine();
 
-                // The strategy that ACTUALLY ran for this parameter set (the runtime cost gate may have fallen
-                // back from the cached candidacy). Surfacing it per param set is what makes the selectivity-flip
-                // examples legible — the same compiled plan shows up with a different executed strategy.
-                string executed = FindExecutedStrategy(plan);
-                if (executed != null)
+                // 1 + 2. Physical dataflow graph (rendered server-side by QueryPlanGraph and shipped on the plan
+                // node as PlanGraphDot). The transform renders this ```dot block to a PNG and a collapsed source.
+                if (TryGetParam(compiled, "PlanGraphDot", out string dot))
                 {
-                    sb.Append("Executed strategy: `").Append(executed).AppendLine("`");
+                    sb.AppendLine("```dot");
+                    sb.Append(dot.TrimEnd('\n')).AppendLine();
+                    sb.AppendLine("```");
                     sb.AppendLine();
                 }
 
-                // The plan as a JSON structure and as a Graphviz graph are two views of the SAME
-                // QueryInspectionNode tree (the server's plan, deserialized client-side). The JSON is the
-                // canonical structure; the DOT is derived from it by the product renderer below.
+                // 3. Generated C# for the compiled plan this parameter set actually ran.
+                if (TryGetParam(compiled, "CSharpSourceFormatted", out string csharp))
+                {
+                    sb.AppendLine("Generated C#:");
+                    sb.AppendLine();
+                    sb.AppendLine("```csharp");
+                    sb.Append(csharp.TrimEnd('\n')).AppendLine();
+                    sb.AppendLine("```");
+                    sb.AppendLine();
+                }
+
+                // 4. Strategy that ACTUALLY ran (the runtime cost gate may have fallen back from the cached
+                // candidacy), with the cached candidate alongside when they differ.
+                if (TryGetParam(compiled, "OptimizationHint", out string executed))
+                {
+                    sb.Append("Executed strategy: `").Append(executed).Append('`');
+                    if (TryGetParam(compiled, "StrategyCandidate", out string candidate) && candidate != executed)
+                        sb.Append(" (cached candidate: `").Append(candidate).Append("`)");
+                    sb.AppendLine();
+                    sb.AppendLine();
+                }
+
+                // 5. Decision trail — the accept/reject record of each optimization the planner considered. Only
+                // emitted when the planner recorded one.
+                QueryInspectionNode trail = FindNode(plan, "DecisionTrail");
+                if (trail?.Children is { Count: > 0 })
+                {
+                    sb.AppendLine("Decision trail:");
+                    sb.AppendLine();
+                    foreach (QueryInspectionNode entry in trail.Children)
+                    {
+                        string verdict = TryGetParam(entry, "Accepted", out string acc) && acc == "True" ? "**accepted**" : "**rejected**";
+                        TryGetParam(entry, "Reason", out string reason);
+                        sb.Append("- `").Append(entry.Operation).Append("` → ").Append(verdict).Append(": ").AppendLine(reason);
+                    }
+
+                    sb.AppendLine();
+                }
+
+                // 6. Structural plan as JSON.
                 sb.AppendLine("Query plan (JSON):");
                 sb.AppendLine();
                 sb.AppendLine("```json");
@@ -156,25 +197,13 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 sb.AppendLine("```");
                 sb.AppendLine();
 
-                // The same plan, rendered as a physical dataflow graph. Slots are the wires: each op writes its
-                // `DestSlot`, the slot-to-slot merges also read a `SourceSlot`, and the EntryScanCheck branches
-                // slot 0 into the entry-scan tail (slot 1). Produced by the product renderer (QueryPlanGraph),
-                // not this tool, so the catalog and any other consumer share one Graphviz implementation.
-                sb.AppendLine("Physical dataflow (Graphviz):");
-                sb.AppendLine();
-                sb.AppendLine("```dot");
-                QueryPlanGraph.ToGraphviz(plan, sb);
-                sb.AppendLine("```");
-                sb.AppendLine();
-
-                // Raw `include timings()` durations exactly as the server returned them. Wall-clock numbers are
-                // illustrative (they vary run to run); the value here is seeing WHICH stages the engine timed —
-                // optimizer/plan-build vs. query execution — not the absolute milliseconds.
-                sb.AppendLine("Raw `include timings()` breakdown (wall-clock, illustrative):");
+                // 7. Raw `include timings()` durations. Wall-clock numbers are illustrative (they vary run to
+                // run); the value is seeing WHICH stages the engine timed. The transform renders this as a tree.
+                sb.AppendLine("Query timings (wall-clock, illustrative):");
                 sb.AppendLine();
                 sb.AppendLine("```");
-                using(var ms = new MemoryStream())
-                using(var writer = new BlittableJsonTextWriter(ctx, ms))
+                using (var ms = new MemoryStream())
+                using (var writer = new BlittableJsonTextWriter(ctx, ms))
                 {
                     ctx.Write(writer, timings?.ToJson());
                     writer.Flush();
@@ -182,11 +211,11 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 }
                 sb.AppendLine("```");
                 sb.AppendLine();
+
+                sb.AppendLine("</details>");
+                sb.AppendLine();
             }
 
-            sb.AppendLine("### Compiled variants");
-            sb.AppendLine();
-            WriteVariants(sb, planCache, timedRql);
             sb.AppendLine("---");
             sb.AppendLine();
         }
@@ -224,7 +253,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
             var parameters = new DynamicJsonValue();
             foreach (KeyValuePair<string, string> kv in node.Parameters)
             {
-                if (kv.Key is "CSharpSource" or "CSharpSourceFormatted")
+                if (kv.Key is "CSharpSource" or "CSharpSourceFormatted" or "PlanGraphDot")
                     continue;
                 parameters[kv.Key] = kv.Value;
             }
@@ -242,47 +271,6 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         return json;
     }
 
-    private static void WriteVariants(StringBuilder sb, PlanCache planCache, string queryText)
-    {
-        PlanCache.PlanCacheEntry entry = planCache.Snapshot().FirstOrDefault(e => e.QueryText == queryText);
-        if (entry.Plans == null || entry.Plans.Length == 0)
-        {
-            sb.AppendLine("_(no compiled plan captured)_");
-            sb.AppendLine();
-            return;
-        }
-
-        for (int i = 0; i < entry.Plans.Length; i++)
-        {
-            CompiledPlan plan = entry.Plans[i];
-            string key = plan.CacheKeyHash[0].ToString("x16");
-            sb.Append("#### variant ").Append(i + 1).Append(" — strategy `").Append(plan.Strategy).Append("` (key `").Append(key).AppendLine("`)");
-            sb.AppendLine();
-            if (plan.DecisionTrail is { Entries.Count: > 0 })
-            {
-                sb.AppendLine("Decision trail:");
-                sb.AppendLine();
-                foreach (PlanDecisionEntry d in plan.DecisionTrail.Entries)
-                {
-                    string verdict = d.Accepted ? "**accepted**" : "**rejected**";
-                    sb.Append("- `").Append(d.Optimization).Append("` → ").Append(verdict).Append(": ").AppendLine(d.Reason);
-                }
-
-                sb.AppendLine();
-            }
-
-            sb.AppendLine("Generated C#:");
-            sb.AppendLine();
-            sb.AppendLine("```csharp");
-            // FormattedSource already ends with the residual section — either the emitted
-            // ResidualScan method or the "// No residual predicates." marker (see ResidualScanIlEmitter).
-            sb.Append(plan.FormattedSource.TrimEnd('\n'));
-            sb.AppendLine();
-            sb.AppendLine("```");
-            sb.AppendLine();
-        }
-    }
-
     private static QueryInspectionNode RunForPlan(IDocumentStore store, string timedRql, ParamSet p, out QueryTimings timings)
     {
         using IDocumentSession session = store.OpenSession();
@@ -292,17 +280,20 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         return (QueryInspectionNode)timings.QueryPlan;
     }
 
-    private static string FindExecutedStrategy(QueryInspectionNode node)
+    /// <summary>Depth-first search for the first node whose <c>Operation</c> matches. Used to reach the
+    /// CompiledQuery node (which carries the generated C#, the DOT graph, and the executed strategy) and the
+    /// DecisionTrail node beneath the outer sort wrapper.</summary>
+    private static QueryInspectionNode FindNode(QueryInspectionNode node, string operation)
     {
         if (node == null)
             return null;
-        if (node.Parameters != null && node.Parameters.TryGetValue("OptimizationHint", out string hint))
-            return hint;
+        if (node.Operation == operation)
+            return node;
         if (node.Children != null)
         {
             foreach (QueryInspectionNode child in node.Children)
             {
-                string found = FindExecutedStrategy(child);
+                QueryInspectionNode found = FindNode(child, operation);
                 if (found != null)
                     return found;
             }
@@ -310,19 +301,13 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
 
         return null;
     }
-    
-    private async Task<PlanCache> GetPlanCache(IDocumentStore store)
+
+    private static bool TryGetParam(QueryInspectionNode node, string key, out string value)
     {
-        Raven.Server.Documents.DocumentDatabase db = await GetDocumentDatabaseInstanceFor(store);
-        Raven.Server.Documents.Indexes.Index index = db.IndexStore.GetIndex(IndexName);
-
-        FieldInfo persistenceField = typeof(Raven.Server.Documents.Indexes.Index).GetField("IndexPersistence",
-            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-        object persistence = persistenceField.GetValue(index);
-
-        FieldInfo cacheField = persistence.GetType().GetField("SharedPlanCache",
-            BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.Public);
-        return (PlanCache)cacheField.GetValue(persistence);
+        if (node?.Parameters != null && node.Parameters.TryGetValue(key, out value) && string.IsNullOrEmpty(value) == false)
+            return true;
+        value = null;
+        return false;
     }
 
     private static CatalogQuery[] BuildCatalog()
