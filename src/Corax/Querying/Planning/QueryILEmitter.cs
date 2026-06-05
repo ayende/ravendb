@@ -67,20 +67,7 @@ public static class QueryIlEmitter
         // cursor = 0
         d.StoreLocalConst(cursorVar, 0);
 
-        // The op stream ends in a run of pure control-flow-to-Done ops: the terminal GotoDone the
-        // PlanEmitter always appends, plus any GotoDoneIfEmpty empty-checks that immediately precede it
-        // (an AND followed only by `if empty goto Done; Done:` jumps to a label control already falls
-        // through to). Everything from this index onward is dead — its branch, and the cursor advance of
-        // the last real op, would just be `goto Done; Done:` / a dead store. lastEffectiveIndex is the
-        // first op of that trailing dead run, so `i >= lastEffectiveIndex` flags both the last real op
-        // (suppress its cursor advance / early exit) and the dead tail ops (suppress them entirely).
-        int lastEffectiveIndex = ops.Length;
-        while (lastEffectiveIndex > 0 &&
-               ops[lastEffectiveIndex - 1].Kind is PlanOpKind.GotoDone or PlanOpKind.GotoDoneIfEmpty)
-        {
-            lastEffectiveIndex--;
-        }
-        lastEffectiveIndex--; // step onto the last real op itself
+        int lastEffectiveIndex = GetLastEffectiveIndex(ops);
 
         for (int i = 0; i < ops.Length; i++)
         {
@@ -90,24 +77,12 @@ public static class QueryIlEmitter
             bool emitGoToEmpty = !op.SkipEarlyExit && !isLastEffectiveOp;
             bool emitGotoLimitReached = op.BitmapLocal == 0 && !isLastEffectiveOp;
 
-            // The cursor advance after the last cursor-consuming op is a dead store — control falls
-            // straight to Done and nothing reads cursor there (the entry-scan tail captures cursor at
-            // its own branch point). Suppress it so the emitted IL/C# don't carry a trailing cursor++.
+            // The cursor advance after the last cursor-consuming op is a dead store 
             bool advanceCursor = !isLastEffectiveOp;
 
-            // A seed Fill into slot 0 can short-circuit on the limit exactly like the OR ops themselves:
-            // once slot 0 only ever GROWS from here on (a union — whether an incremental OR-into-slot-0
-            // or a LazyOrBitmaps merge of another operand built in its own slot, as in
-            // `City = $c OR not exists(Name)`), slot 0 is a subset of the final result, so when it
-            // already holds Limit matches the remaining leaves cannot change which docs an unordered
-            // query returns. Gated on NO later op narrowing slot 0 (an AND/ANDNOT intersection), so
-            // pipelines that keep intersecting slot 0 — e.g. the seed of `(City and Age) or ...` — never
-            // get it while slot 0 is still being built down.
-            bool seedFillGrowsOnly = op.BitmapLocal == 0 && !isLastEffectiveOp && !LaterOpNarrowsSlot0(ops, i + 1);
+            // If we can only ever grow the set of results, we should check if we reached the limit early 
+            bool shouldCheckLimitReached = op.BitmapLocal == 0 && !isLastEffectiveOp && LaterOpNarrowsSlot0(ops, i + 1) is false;
 
-            // Build-time clause label (e.g. "Name [Equals]") for the C# mirror; no IL effect. Staged so it
-            // trails the op's primary call line (see DualEmit.CsCall) instead of floating above the
-            // cancellation check on its own line.
             if (op.DebugLabel != null)
                 d.SetPendingComment(op.DebugLabel);
 
@@ -119,19 +94,19 @@ public static class QueryIlEmitter
             {
                 case PlanOpKind.FillFromPostingSource:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromPostingSource, "QueryPrimitives.CtxFillFromPostingSource", op.BitmapLocal, advanceCursor);
-                    if (seedFillGrowsOnly)
+                    if (shouldCheckLimitReached)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.FillFromTreeScan:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromTreeScan, "QueryPrimitives.CtxFillFromTreeScan", op.BitmapLocal, advanceCursor);
-                    if (seedFillGrowsOnly)
+                    if (shouldCheckLimitReached)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.FillFromMatch:
                     d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromMatch, "QueryPrimitives.CtxFillFromMatch", op.BitmapLocal, advanceCursor);
-                    if (seedFillGrowsOnly)
+                    if (shouldCheckLimitReached)
                         d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
@@ -205,9 +180,8 @@ public static class QueryIlEmitter
                     break;
 
                 case PlanOpKind.GotoDoneIfEmpty:
-                    // Dead when terminal: `if (empty) goto Done;` falls straight through to the Done label
-                    // that immediately follows, so the branch is a no-op regardless of emptiness.
-                    if (!isLastEffectiveOp)
+                    // Dead when terminal: `if (empty) goto Done;` falls straight through to the Done label, let's skip it then
+                    if (isLastEffectiveOp is false)
                         d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
                     break;
 
@@ -275,6 +249,19 @@ public static class QueryIlEmitter
 
         csharpSource = cs.ToString();
         return (CompiledExecuteDelegate)dm.CreateDelegate(typeof(CompiledExecuteDelegate));
+    }
+
+    private static int GetLastEffectiveIndex(PlanOp[] ops)
+    {
+        // We want to avoid emitting "goto Done; Done:", so we check where the _real_ op is
+        int lastEffectiveIndex = ops.Length;
+        while (lastEffectiveIndex > 0 &&
+               ops[lastEffectiveIndex - 1].Kind is PlanOpKind.GotoDone or PlanOpKind.GotoDoneIfEmpty)
+        {
+            lastEffectiveIndex--;
+        }
+        lastEffectiveIndex--; // step onto the last real op itself
+        return lastEffectiveIndex;
     }
 
     /// <summary>stackalloc long[FillBufferSize] → bufferLocal</summary>
@@ -449,20 +436,14 @@ public static class QueryIlEmitter
         return maxSlot + 1;
     }
     
-    /// <summary>True if any op from <paramref name="from"/> onward narrows slot 0 — an AND/ANDNOT
-    /// intersection into slot 0, or an entry scan (which reanchors the result into slot 1). When this
-    /// is false the slot-0 accumulator only ever grows (unions), so it is already a subset of the final
-    /// unordered result and a Limit short-circuit at the current point is safe.</summary>
+    /// <summary>
+    /// Output always goes to slot 0, so we need to check only ops that effect it.
+    /// </summary>
     private static bool LaterOpNarrowsSlot0(PlanOp[] ops, int from)
     {
-        for (int k = from; k < ops.Length; k++)
+        for (int i = from; i < ops.Length; i++)
         {
-            ref PlanOp op = ref ops[k];
-
-            // Entry scan moves the result from slot 0 into slot 1; stopping early on slot 0's count
-            // would skip the scan that actually produces the answer.
-            if (op.Kind == PlanOpKind.MaybeEntryScan)
-                return true;
+            ref PlanOp op = ref ops[i];
 
             if (op.BitmapLocal != 0)
                 continue;
