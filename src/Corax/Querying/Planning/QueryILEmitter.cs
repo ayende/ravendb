@@ -196,12 +196,19 @@ public static class QueryIlEmitter
                     EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
                         IlEmitterShared.CtxOrFillFromPostingSource, "QueryPrimitives.CtxOrFillFromPostingSource", i,
                         earlyExit: false, skipEarlyExit: false, doneLabel);
+                    // The IN-expanded union only grows slot 0, so it shares the scalar OR's limit short-circuit:
+                    // once enough matches are accumulated we can stop (ctx.Limit stays MaxValue unless a pure
+                    // unsorted/limited query opted in, so this is a no-op otherwise).
+                    if (emitGotoLimitReached)
+                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.OrRangeFromMatch:
                     EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
                         IlEmitterShared.CtxOrWithMatchSlot, "QueryPrimitives.CtxOrWithMatchSlot", i,
                         earlyExit: false, skipEarlyExit: false, doneLabel);
+                    if (emitGotoLimitReached)
+                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
                     break;
 
                 case PlanOpKind.AndRangeFromPostingSource:
