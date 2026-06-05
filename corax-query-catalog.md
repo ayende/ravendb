@@ -33,10 +33,10 @@ The simplest leaf. A selective term and a non-matching term still share one comp
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Name\nTerm=alice\n~9,954\n→slot 0\ncount=9954\n9.080 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_estimatedrows="9,954", data_count="9954", data_ms="9.080"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=Name\nTerm=alice\n~9,954\n→slot 0\ncount=9954\n9.214 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_estimatedrows="9,954", data_count="9954", data_ms="9.214", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -78,7 +78,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "alice",
         "EstimatedRows": "9,954",
         "Count": "9954",
-        "Ms": "9.080"
+        "Ms": "9.214"
       }
     }
   ]
@@ -90,7 +90,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":149,"Timings":{"Query":{"DurationInMs":138,"Timings":{"Corax":{"DurationInMs":26,"Timings":{"Optimizer":{"DurationInMs":26,"Timings":null}}},"Retriever":{"DurationInMs":16,"Timings":{"Storage":{"DurationInMs":15,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":165,"Timings":{"Query":{"DurationInMs":155,"Timings":{"Corax":{"DurationInMs":28,"Timings":{"Optimizer":{"DurationInMs":28,"Timings":null}}},"Retriever":{"DurationInMs":22,"Timings":{"Storage":{"DurationInMs":21,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -101,10 +101,10 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Name\nTerm=zzz\n~9,954\n→slot 0\n0.010 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="zzz", data_estimatedrows="9,954", data_ms="0.010"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result;
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=Name\nTerm=zzz\n~9,954\n→slot 0\n0.013 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="zzz", data_estimatedrows="9,954", data_ms="0.013"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [data_kind="result", data_variant="bitmap-plain", data_flow="none"];
 }
 ```
 
@@ -145,7 +145,7 @@ Executed strategy: `BitmapPipeline`
         "FieldName": "Name",
         "Term": "zzz",
         "EstimatedRows": "9,954",
-        "Ms": "0.010"
+        "Ms": "0.013"
       }
     }
   ]
@@ -178,14 +178,14 @@ OR queries always materialise into the bitmap pipeline (no streaming sort drive)
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Age\nTerm=30\n~782\n→slot 0\ncount=782\n2.545 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Age", data_term="30", data_estimatedrows="782", data_count="782", data_ms="2.545"];
-  op1 [label="OR\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=10568\n0.363 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="10568", data_ms="0.363"];
-  op2 [label="OR\n[Term]\nFieldName=Name\nTerm=alice\n~9,954\n→slot 0\ncount=18422\n0.084 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_estimatedrows="9,954", data_count="18422", data_ms="0.084"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> op2 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=Age\nTerm=30\n~782\n→slot 0\ncount=782\n3.560 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="Age", data_term="30", data_estimatedrows="782", data_count="782", data_ms="3.560", data_taken="True"];
+  op1 [label="OR\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=10568\n0.529 ms", data_operation="OR", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="10568", data_ms="0.529", data_taken="True"];
+  op2 [label="OR\n[Term]\nFieldName=Name\nTerm=alice\n~9,954\n→slot 0\ncount=18422\n0.102 ms", data_operation="OR", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_estimatedrows="9,954", data_count="18422", data_ms="0.102", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> op2 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -235,7 +235,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "30",
         "EstimatedRows": "782",
         "Count": "782",
-        "Ms": "2.545"
+        "Ms": "3.560"
       }
     },
     {
@@ -247,7 +247,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "London",
         "EstimatedRows": "9,943",
         "Count": "10568",
-        "Ms": "0.363"
+        "Ms": "0.529"
       }
     },
     {
@@ -259,7 +259,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "alice",
         "EstimatedRows": "9,954",
         "Count": "18422",
-        "Ms": "0.084"
+        "Ms": "0.102"
       }
     }
   ]
@@ -271,7 +271,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":176,"Timings":{"Query":{"DurationInMs":176,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":31,"Timings":{"Storage":{"DurationInMs":30,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":139,"Timings":{"Query":{"DurationInMs":139,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":26,"Timings":{"Storage":{"DurationInMs":25,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -282,14 +282,14 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Age\nTerm=99\n~782\n→slot 0\n0.003 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Age", data_term="99", data_estimatedrows="782", data_ms="0.003"];
-  op1 [label="OR\n[Term]\nFieldName=City\nTerm=Rome\n~9,943\n→slot 0\ncount=9877\n0.150 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_estimatedrows="9,943", data_count="9877", data_ms="0.150"];
-  op2 [label="OR\n[Term]\nFieldName=Name\nTerm=erin\n~9,954\n→slot 0\ncount=17974\n0.068 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="erin", data_estimatedrows="9,954", data_count="17974", data_ms="0.068"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> op2 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=Age\nTerm=99\n~782\n→slot 0\n0.005 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="Age", data_term="99", data_estimatedrows="782", data_ms="0.005", data_taken="True"];
+  op1 [label="OR\n[Term]\nFieldName=City\nTerm=Rome\n~9,943\n→slot 0\ncount=9877\n0.244 ms", data_operation="OR", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_estimatedrows="9,943", data_count="9877", data_ms="0.244", data_taken="True"];
+  op2 [label="OR\n[Term]\nFieldName=Name\nTerm=erin\n~9,954\n→slot 0\ncount=17974\n0.131 ms", data_operation="OR", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="erin", data_estimatedrows="9,954", data_count="17974", data_ms="0.131", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> op2 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -338,7 +338,7 @@ Executed strategy: `BitmapPipeline`
         "FieldName": "Age",
         "Term": "99",
         "EstimatedRows": "782",
-        "Ms": "0.003"
+        "Ms": "0.005"
       }
     },
     {
@@ -350,7 +350,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "Rome",
         "EstimatedRows": "9,943",
         "Count": "9877",
-        "Ms": "0.150"
+        "Ms": "0.244"
       }
     },
     {
@@ -362,7 +362,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "erin",
         "EstimatedRows": "9,954",
         "Count": "17974",
-        "Ms": "0.068"
+        "Ms": "0.131"
       }
     }
   ]
@@ -374,7 +374,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":102,"Timings":{"Query":{"DurationInMs":102,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":27,"Timings":{"Storage":{"DurationInMs":26,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":80,"Timings":{"Query":{"DurationInMs":80,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":24,"Timings":{"Storage":{"DurationInMs":23,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -395,17 +395,17 @@ from index 'Items/Index' where City = $c or not exists(Name)
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.275 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.275"];
-  op1 [label="Fill-AllEntries\n→slot 2\ncount=9943\n2.485 ms", data_destslot="2", data_count="9943", data_ms="2.485"];
-  op2 [label="ANDNOT\n[MultiTerm]\nFieldName=Name\nClauseType=Exists\nNEGATED\n~50,000\n→slot 2\ncount=9943\n10.027 ms", data_destslot="2", data_dispatch="MultiTerm", data_fieldname="Name", data_clausetype="Exists", data_negated="true", data_estimatedrows="50,000", data_count="9943", data_ms="10.027"];
-  op3 [label="OR-Bitmaps\n→slot 0\ncount=9943\n0.650 ms", data_destslot="0", data_sourceslot="2", data_count="9943", data_ms="0.650"];
-  result [shape=ellipse, label="Result"];
-  op1 -> op2 [style=bold, color="#1a7f37", label="slot 2"];
-  op0 -> op3 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> op3 [style=bold, color="#1a7f37", label="slot 2"];
-  op3 -> result [style=bold, color="#1a7f37"];
-  op0 -> op1 [style=invis];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.294 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.294", data_taken="True"];
+  op1 [label="Fill-AllEntries\n→slot 2\ncount=9943\n2.619 ms", data_operation="Fill-AllEntries", data_destslot="2", data_count="9943", data_ms="2.619", data_taken="True"];
+  op2 [label="ANDNOT\n[MultiTerm]\nFieldName=Name\nClauseType=Exists\nNEGATED\n~50,000\n→slot 2\ncount=9943\n9.971 ms", data_operation="ANDNOT", data_destslot="2", data_dispatch="MultiTerm", data_fieldname="Name", data_clausetype="Exists", data_negated="true", data_estimatedrows="50,000", data_count="9943", data_ms="9.971", data_taken="True"];
+  op3 [label="OR-Bitmaps\n→slot 0\ncount=9943\n0.613 ms", data_operation="OR-Bitmaps", data_destslot="0", data_sourceslot="2", data_count="9943", data_ms="0.613", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op1 -> op2 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op0 -> op3 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> op3 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op3 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op0 -> op1 [style="invis", data_kind="sequence", data_flow="invis"];
 }
 ```
 
@@ -456,7 +456,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "London",
         "EstimatedRows": "9,943",
         "Count": "9943",
-        "Ms": "0.275"
+        "Ms": "0.294"
       }
     },
     {
@@ -464,7 +464,7 @@ Executed strategy: `BitmapPipeline`
       "Parameters": {
         "DestSlot": "2",
         "Count": "9943",
-        "Ms": "2.485"
+        "Ms": "2.619"
       }
     },
     {
@@ -477,7 +477,7 @@ Executed strategy: `BitmapPipeline`
         "Negated": "true",
         "EstimatedRows": "50,000",
         "Count": "9943",
-        "Ms": "10.027"
+        "Ms": "9.971"
       }
     },
     {
@@ -486,7 +486,7 @@ Executed strategy: `BitmapPipeline`
         "DestSlot": "0",
         "SourceSlot": "2",
         "Count": "9943",
-        "Ms": "0.650"
+        "Ms": "0.613"
       }
     }
   ]
@@ -498,7 +498,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":86,"Timings":{"Query":{"DurationInMs":86,"Timings":{"Corax":{"DurationInMs":2,"Timings":{"Optimizer":{"DurationInMs":2,"Timings":null}}},"Retriever":{"DurationInMs":33,"Timings":{"Storage":{"DurationInMs":33,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":68,"Timings":{"Query":{"DurationInMs":68,"Timings":{"Corax":{"DurationInMs":3,"Timings":{"Optimizer":{"DurationInMs":3,"Timings":null}}},"Retriever":{"DurationInMs":15,"Timings":{"Storage":{"DurationInMs":14,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -509,17 +509,17 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Rome\n~9,943\n→slot 0\ncount=9877\n0.092 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_estimatedrows="9,943", data_count="9877", data_ms="0.092"];
-  op1 [label="Fill-AllEntries\n→slot 2\ncount=9877\n0.657 ms", data_destslot="2", data_count="9877", data_ms="0.657"];
-  op2 [label="ANDNOT\n[MultiTerm]\nFieldName=Name\nClauseType=Exists\nNEGATED\n~50,000\n→slot 2\ncount=9877\n0.388 ms", data_destslot="2", data_dispatch="MultiTerm", data_fieldname="Name", data_clausetype="Exists", data_negated="true", data_estimatedrows="50,000", data_count="9877", data_ms="0.388"];
-  op3 [label="OR-Bitmaps\n→slot 0\ncount=9877\n0.008 ms", data_destslot="0", data_sourceslot="2", data_count="9877", data_ms="0.008"];
-  result [shape=ellipse, label="Result"];
-  op1 -> op2 [style=bold, color="#1a7f37", label="slot 2"];
-  op0 -> op3 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> op3 [style=bold, color="#1a7f37", label="slot 2"];
-  op3 -> result [style=bold, color="#1a7f37"];
-  op0 -> op1 [style=invis];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Rome\n~9,943\n→slot 0\ncount=9877\n0.126 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_estimatedrows="9,943", data_count="9877", data_ms="0.126", data_taken="True"];
+  op1 [label="Fill-AllEntries\n→slot 2\ncount=9877\n0.678 ms", data_operation="Fill-AllEntries", data_destslot="2", data_count="9877", data_ms="0.678", data_taken="True"];
+  op2 [label="ANDNOT\n[MultiTerm]\nFieldName=Name\nClauseType=Exists\nNEGATED\n~50,000\n→slot 2\ncount=9877\n0.364 ms", data_operation="ANDNOT", data_destslot="2", data_dispatch="MultiTerm", data_fieldname="Name", data_clausetype="Exists", data_negated="true", data_estimatedrows="50,000", data_count="9877", data_ms="0.364", data_taken="True"];
+  op3 [label="OR-Bitmaps\n→slot 0\ncount=9877\n0.007 ms", data_operation="OR-Bitmaps", data_destslot="0", data_sourceslot="2", data_count="9877", data_ms="0.007", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op1 -> op2 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op0 -> op3 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> op3 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op3 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op0 -> op1 [style="invis", data_kind="sequence", data_flow="invis"];
 }
 ```
 
@@ -570,7 +570,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "Rome",
         "EstimatedRows": "9,943",
         "Count": "9877",
-        "Ms": "0.092"
+        "Ms": "0.126"
       }
     },
     {
@@ -578,7 +578,7 @@ Executed strategy: `BitmapPipeline`
       "Parameters": {
         "DestSlot": "2",
         "Count": "9877",
-        "Ms": "0.657"
+        "Ms": "0.678"
       }
     },
     {
@@ -591,7 +591,7 @@ Executed strategy: `BitmapPipeline`
         "Negated": "true",
         "EstimatedRows": "50,000",
         "Count": "9877",
-        "Ms": "0.388"
+        "Ms": "0.364"
       }
     },
     {
@@ -600,7 +600,7 @@ Executed strategy: `BitmapPipeline`
         "DestSlot": "0",
         "SourceSlot": "2",
         "Count": "9877",
-        "Ms": "0.008"
+        "Ms": "0.007"
       }
     }
   ]
@@ -612,7 +612,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":63,"Timings":{"Query":{"DurationInMs":63,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":18,"Timings":{"Storage":{"DurationInMs":17,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":46,"Timings":{"Query":{"DurationInMs":45,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":14,"Timings":{"Storage":{"DurationInMs":13,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -633,10 +633,10 @@ A single range leaf. Narrow vs wide bounds change selectivity but not the compil
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[MultiTerm]\nFieldName=Age\nClauseType=Between\nTerm=40\nTerm2=42\n~50,000\n→slot 0\ncount=2284\n1.819 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="40", data_term2="42", data_clausetype="Between", data_estimatedrows="50,000", data_count="2284", data_ms="1.819"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[MultiTerm]\nFieldName=Age\nClauseType=Between\nTerm=40\nTerm2=42\n~50,000\n→slot 0\ncount=2284\n1.928 ms", data_operation="Fill", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="40", data_term2="42", data_clausetype="Between", data_estimatedrows="50,000", data_count="2284", data_ms="1.928", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -680,7 +680,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "Between",
         "EstimatedRows": "50,000",
         "Count": "2284",
-        "Ms": "1.819"
+        "Ms": "1.928"
       }
     }
   ]
@@ -692,7 +692,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":16,"Timings":{"Query":{"DurationInMs":16,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":3,"Timings":{"Storage":{"DurationInMs":3,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":20,"Timings":{"Query":{"DurationInMs":20,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":4,"Timings":{"Storage":{"DurationInMs":4,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -703,10 +703,10 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[MultiTerm]\nFieldName=Age\nClauseType=Between\nTerm=18\nTerm2=79\n~50,000\n→slot 0\ncount=50000\n1.057 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_term2="79", data_clausetype="Between", data_estimatedrows="50,000", data_count="50000", data_ms="1.057"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[MultiTerm]\nFieldName=Age\nClauseType=Between\nTerm=18\nTerm2=79\n~50,000\n→slot 0\ncount=50000\n1.712 ms", data_operation="Fill", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_term2="79", data_clausetype="Between", data_estimatedrows="50,000", data_count="50000", data_ms="1.712", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -750,7 +750,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "Between",
         "EstimatedRows": "50,000",
         "Count": "50000",
-        "Ms": "1.057"
+        "Ms": "1.712"
       }
     }
   ]
@@ -762,7 +762,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":247,"Timings":{"Query":{"DurationInMs":247,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":92,"Timings":{"Storage":{"DurationInMs":89,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":252,"Timings":{"Query":{"DurationInMs":252,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":86,"Timings":{"Storage":{"DurationInMs":83,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -783,12 +783,12 @@ IN over a posting-list field. Duplicate values collapse to the same posting sour
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nClauseType=In\nTerm=London\n~7,484\n→slot 0\ncount=9943\n0.125 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_clausetype="In", data_estimatedrows="7,484", data_count="9943", data_ms="0.125"];
-  op1 [label="OR-Range\n[Term]\nFieldName=City\nClauseType=In\nTerm=Paris\nTerms=3\n~29,938\n→slot 0\ncount=29938\n0.376 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Paris", data_clausetype="In", data_estimatedrows="29,938", data_count="29938", data_ms="0.376", data_terms="3"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nClauseType=In\nTerm=London\n~7,484\n→slot 0\ncount=9943\n0.132 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_clausetype="In", data_estimatedrows="7,484", data_count="9943", data_ms="0.132", data_taken="True"];
+  op1 [label="OR-Range\n[Term]\nFieldName=City\nClauseType=In\nTerm=Paris\nTerms=3\n~29,938\n→slot 0\ncount=29938\n0.138 ms", data_operation="OR-Range", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Paris", data_clausetype="In", data_estimatedrows="29,938", data_count="29938", data_ms="0.138", data_terms="3", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -840,7 +840,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "In",
         "EstimatedRows": "7,484",
         "Count": "9943",
-        "Ms": "0.125"
+        "Ms": "0.132"
       }
     },
     {
@@ -853,7 +853,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "In",
         "EstimatedRows": "29,938",
         "Count": "29938",
-        "Ms": "0.376",
+        "Ms": "0.138",
         "Terms": "3"
       }
     }
@@ -866,7 +866,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":204,"Timings":{"Query":{"DurationInMs":203,"Timings":{"Corax":{"DurationInMs":2,"Timings":{"Optimizer":{"DurationInMs":2,"Timings":null}}},"Retriever":{"DurationInMs":52,"Timings":{"Storage":{"DurationInMs":49,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":222,"Timings":{"Query":{"DurationInMs":222,"Timings":{"Corax":{"DurationInMs":3,"Timings":{"Optimizer":{"DurationInMs":3,"Timings":null}}},"Retriever":{"DurationInMs":81,"Timings":{"Storage":{"DurationInMs":78,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -877,12 +877,12 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nClauseType=In\nTerm=Rome\n~7,484\n→slot 0\ncount=9877\n0.144 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_clausetype="In", data_estimatedrows="7,484", data_count="9877", data_ms="0.144"];
-  op1 [label="OR-Range\n[Term]\nFieldName=City\nClauseType=In\nTerm=Rome\nTerms=3\n~29,938\n→slot 0\ncount=9877\n0.112 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_clausetype="In", data_estimatedrows="29,938", data_count="9877", data_ms="0.112", data_terms="3"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nClauseType=In\nTerm=Rome\n~7,484\n→slot 0\ncount=9877\n0.201 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_clausetype="In", data_estimatedrows="7,484", data_count="9877", data_ms="0.201", data_taken="True"];
+  op1 [label="OR-Range\n[Term]\nFieldName=City\nClauseType=In\nTerm=Rome\nTerms=3\n~29,938\n→slot 0\ncount=9877\n0.642 ms", data_operation="OR-Range", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_clausetype="In", data_estimatedrows="29,938", data_count="9877", data_ms="0.642", data_terms="3", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -934,7 +934,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "In",
         "EstimatedRows": "7,484",
         "Count": "9877",
-        "Ms": "0.144"
+        "Ms": "0.201"
       }
     },
     {
@@ -947,7 +947,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "In",
         "EstimatedRows": "29,938",
         "Count": "9877",
-        "Ms": "0.112",
+        "Ms": "0.642",
         "Terms": "3"
       }
     }
@@ -960,7 +960,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":48,"Timings":{"Query":{"DurationInMs":47,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":9,"Timings":{"Storage":{"DurationInMs":9,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":32,"Timings":{"Query":{"DurationInMs":31,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":10,"Timings":{"Storage":{"DurationInMs":9,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -981,12 +981,12 @@ A single list-valued parameter expands to the IN set at runtime. With values it 
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nClauseType=In\nTerm=London\n~6,646\n→slot 0\ncount=9943\n0.119 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_clausetype="In", data_estimatedrows="6,646", data_count="9943", data_ms="0.119"];
-  op1 [label="OR-Range\n[Term]\nFieldName=City\nClauseType=In\nTerm=Paris\nTerms=2\n~19,940\n→slot 0\ncount=19940\n0.062 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Paris", data_clausetype="In", data_estimatedrows="19,940", data_count="19940", data_ms="0.062", data_terms="2"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nClauseType=In\nTerm=London\n~6,646\n→slot 0\ncount=9943\n0.097 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_clausetype="In", data_estimatedrows="6,646", data_count="9943", data_ms="0.097", data_taken="True"];
+  op1 [label="OR-Range\n[Term]\nFieldName=City\nClauseType=In\nTerm=Paris\nTerms=2\n~19,940\n→slot 0\ncount=19940\n0.066 ms", data_operation="OR-Range", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Paris", data_clausetype="In", data_estimatedrows="19,940", data_count="19940", data_ms="0.066", data_terms="2", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -1038,7 +1038,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "In",
         "EstimatedRows": "6,646",
         "Count": "9943",
-        "Ms": "0.119"
+        "Ms": "0.097"
       }
     },
     {
@@ -1051,7 +1051,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "In",
         "EstimatedRows": "19,940",
         "Count": "19940",
-        "Ms": "0.062",
+        "Ms": "0.066",
         "Terms": "2"
       }
     }
@@ -1064,7 +1064,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":127,"Timings":{"Query":{"DurationInMs":127,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":18,"Timings":{"Storage":{"DurationInMs":17,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":70,"Timings":{"Query":{"DurationInMs":70,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":15,"Timings":{"Storage":{"DurationInMs":14,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -1075,10 +1075,10 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Clear\n→slot 0\n0.000 ms", data_destslot="0", data_ms="0.000"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result;
+  node [shape="box", fontname="monospace"];
+  op0 [label="Clear\n→slot 0\n0.000 ms", data_operation="Clear", data_destslot="0", data_ms="0.000"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [data_kind="result", data_variant="bitmap-plain", data_flow="none"];
 }
 ```
 
@@ -1161,10 +1161,10 @@ from index 'Items/Index' where when($flag = true, City = $c)
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.096 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.096"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.125 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.125", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -1206,7 +1206,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "London",
         "EstimatedRows": "9,943",
         "Count": "9943",
-        "Ms": "0.096"
+        "Ms": "0.125"
       }
     }
   ]
@@ -1218,7 +1218,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":24,"Timings":{"Query":{"DurationInMs":24,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":8,"Timings":{"Storage":{"DurationInMs":8,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":34,"Timings":{"Query":{"DurationInMs":34,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":9,"Timings":{"Storage":{"DurationInMs":8,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -1229,10 +1229,10 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill-AllEntries\n→slot 0\ncount=50000\n0.783 ms", data_destslot="0", data_count="50000", data_ms="0.783"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill-AllEntries\n→slot 0\ncount=50000\n0.748 ms", data_operation="Fill-AllEntries", data_destslot="0", data_count="50000", data_ms="0.748", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -1270,7 +1270,7 @@ Executed strategy: `BitmapPipeline`
       "Parameters": {
         "DestSlot": "0",
         "Count": "50000",
-        "Ms": "0.783"
+        "Ms": "0.748"
       }
     },
     {
@@ -1296,7 +1296,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":138,"Timings":{"Query":{"DurationInMs":138,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":50,"Timings":{"Storage":{"DurationInMs":48,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":183,"Timings":{"Query":{"DurationInMs":183,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":58,"Timings":{"Storage":{"DurationInMs":55,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -1317,19 +1317,19 @@ Two AND groups OR-ed together. Each group intersects into scratch, then the two 
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.124 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.124"];
-  op1 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=30\n~50,000\n→slot 0\ncount=7827\n18.163 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="30", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="7827", data_ms="18.163"];
-  op2 [label="Fill\n[Term]\nFieldName=Name\nTerm=alice\n~9,954\n→slot 2\ncount=7827\n0.092 ms", data_destslot="2", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_estimatedrows="9,954", data_count="7827", data_ms="0.092"];
-  op3 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=LessThan\nTerm=70\n~50,000\n→slot 2\ncount=7827\n1.466 ms", data_destslot="2", data_dispatch="MultiTerm", data_fieldname="Age", data_term="70", data_clausetype="LessThan", data_estimatedrows="50,000", data_count="7827", data_ms="1.466"];
-  op4 [label="OR-Bitmaps\n→slot 0\ncount=14937\n0.006 ms", data_destslot="0", data_sourceslot="2", data_count="14937", data_ms="0.006"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> op3 [style=bold, color="#1a7f37", label="slot 2"];
-  op1 -> op4 [style=bold, color="#1a7f37", label="slot 0"];
-  op3 -> op4 [style=bold, color="#1a7f37", label="slot 2"];
-  op4 -> result [style=bold, color="#1a7f37"];
-  op1 -> op2 [style=invis];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.087 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.087", data_taken="True"];
+  op1 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=30\n~50,000\n→slot 0\ncount=7827\n18.663 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="30", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="7827", data_ms="18.663", data_taken="True"];
+  op2 [label="Fill\n[Term]\nFieldName=Name\nTerm=alice\n~9,954\n→slot 2\ncount=7827\n0.114 ms", data_operation="Fill", data_destslot="2", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_estimatedrows="9,954", data_count="7827", data_ms="0.114", data_taken="True"];
+  op3 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=LessThan\nTerm=70\n~50,000\n→slot 2\ncount=7827\n1.477 ms", data_operation="AND", data_destslot="2", data_dispatch="MultiTerm", data_fieldname="Age", data_term="70", data_clausetype="LessThan", data_estimatedrows="50,000", data_count="7827", data_ms="1.477", data_taken="True"];
+  op4 [label="OR-Bitmaps\n→slot 0\ncount=14937\n0.009 ms", data_operation="OR-Bitmaps", data_destslot="0", data_sourceslot="2", data_count="14937", data_ms="0.009", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> op3 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op1 -> op4 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op3 -> op4 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op4 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op1 -> op2 [style="invis", data_kind="sequence", data_flow="invis"];
 }
 ```
 
@@ -1383,7 +1383,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "London",
         "EstimatedRows": "9,943",
         "Count": "9943",
-        "Ms": "0.124"
+        "Ms": "0.087"
       }
     },
     {
@@ -1396,7 +1396,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "GreaterThan",
         "EstimatedRows": "50,000",
         "Count": "7827",
-        "Ms": "18.163"
+        "Ms": "18.663"
       }
     },
     {
@@ -1408,7 +1408,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "alice",
         "EstimatedRows": "9,954",
         "Count": "7827",
-        "Ms": "0.092"
+        "Ms": "0.114"
       }
     },
     {
@@ -1421,7 +1421,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "LessThan",
         "EstimatedRows": "50,000",
         "Count": "7827",
-        "Ms": "1.466"
+        "Ms": "1.477"
       }
     },
     {
@@ -1430,7 +1430,7 @@ Executed strategy: `BitmapPipeline`
         "DestSlot": "0",
         "SourceSlot": "2",
         "Count": "14937",
-        "Ms": "0.006"
+        "Ms": "0.009"
       }
     }
   ]
@@ -1442,7 +1442,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":88,"Timings":{"Query":{"DurationInMs":87,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":47,"Timings":{"Storage":{"DurationInMs":46,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":55,"Timings":{"Query":{"DurationInMs":55,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":11,"Timings":{"Storage":{"DurationInMs":11,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -1453,19 +1453,19 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Name\nTerm=bob\n~9,959\n→slot 0\ncount=9959\n0.087 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="bob", data_estimatedrows="9,959", data_count="9959", data_ms="0.087"];
-  op1 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=LessThan\nTerm=25\n~50,000\n→slot 0\ncount=1152\n0.118 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="25", data_clausetype="LessThan", data_estimatedrows="50,000", data_count="1152", data_ms="0.118"];
-  op2 [label="Fill\n[Term]\nFieldName=City\nTerm=Berlin\n~9,998\n→slot 2\ncount=1152\n0.088 ms", data_destslot="2", data_dispatch="Term", data_fieldname="City", data_term="Berlin", data_estimatedrows="9,998", data_count="1152", data_ms="0.088"];
-  op3 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=50\n~50,000\n→slot 2\ncount=1152\n0.211 ms", data_destslot="2", data_dispatch="MultiTerm", data_fieldname="Age", data_term="50", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="1152", data_ms="0.211"];
-  op4 [label="OR-Bitmaps\n→slot 0\ncount=5883\n0.007 ms", data_destslot="0", data_sourceslot="2", data_count="5883", data_ms="0.007"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> op3 [style=bold, color="#1a7f37", label="slot 2"];
-  op1 -> op4 [style=bold, color="#1a7f37", label="slot 0"];
-  op3 -> op4 [style=bold, color="#1a7f37", label="slot 2"];
-  op4 -> result [style=bold, color="#1a7f37"];
-  op1 -> op2 [style=invis];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=Name\nTerm=bob\n~9,959\n→slot 0\ncount=9959\n0.085 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="bob", data_estimatedrows="9,959", data_count="9959", data_ms="0.085", data_taken="True"];
+  op1 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=LessThan\nTerm=25\n~50,000\n→slot 0\ncount=1152\n0.092 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="25", data_clausetype="LessThan", data_estimatedrows="50,000", data_count="1152", data_ms="0.092", data_taken="True"];
+  op2 [label="Fill\n[Term]\nFieldName=City\nTerm=Berlin\n~9,998\n→slot 2\ncount=1152\n0.072 ms", data_operation="Fill", data_destslot="2", data_dispatch="Term", data_fieldname="City", data_term="Berlin", data_estimatedrows="9,998", data_count="1152", data_ms="0.072", data_taken="True"];
+  op3 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=50\n~50,000\n→slot 2\ncount=1152\n0.176 ms", data_operation="AND", data_destslot="2", data_dispatch="MultiTerm", data_fieldname="Age", data_term="50", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="1152", data_ms="0.176", data_taken="True"];
+  op4 [label="OR-Bitmaps\n→slot 0\ncount=5883\n0.005 ms", data_operation="OR-Bitmaps", data_destslot="0", data_sourceslot="2", data_count="5883", data_ms="0.005", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> op3 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op1 -> op4 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op3 -> op4 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op4 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op1 -> op2 [style="invis", data_kind="sequence", data_flow="invis"];
 }
 ```
 
@@ -1519,7 +1519,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "bob",
         "EstimatedRows": "9,959",
         "Count": "9959",
-        "Ms": "0.087"
+        "Ms": "0.085"
       }
     },
     {
@@ -1532,7 +1532,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "LessThan",
         "EstimatedRows": "50,000",
         "Count": "1152",
-        "Ms": "0.118"
+        "Ms": "0.092"
       }
     },
     {
@@ -1544,7 +1544,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "Berlin",
         "EstimatedRows": "9,998",
         "Count": "1152",
-        "Ms": "0.088"
+        "Ms": "0.072"
       }
     },
     {
@@ -1557,7 +1557,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "GreaterThan",
         "EstimatedRows": "50,000",
         "Count": "1152",
-        "Ms": "0.211"
+        "Ms": "0.176"
       }
     },
     {
@@ -1566,7 +1566,7 @@ Executed strategy: `BitmapPipeline`
         "DestSlot": "0",
         "SourceSlot": "2",
         "Count": "5883",
-        "Ms": "0.007"
+        "Ms": "0.005"
       }
     }
   ]
@@ -1578,7 +1578,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":16,"Timings":{"Query":{"DurationInMs":16,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":5,"Timings":{"Storage":{"DurationInMs":4,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":17,"Timings":{"Query":{"DurationInMs":17,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":5,"Timings":{"Storage":{"DurationInMs":4,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -1599,19 +1599,19 @@ One compiled plan serves both parameter sets. `City = $c` fills the accumulator 
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.073 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.073"];
-  op1 [label="EntryScanCheck\n→slot 0\ncount=9943\n0.000 ms", data_destslot="0", data_count="9943", data_ms="0.000"];
-  op2 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=78\n~50,000\n→slot 0\ncount=171\n0.032 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="78", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="171", data_ms="0.032"];
-  op3 [label="EntryScan\n→slot 1\ntaken=False", data_destslot="1", data_sourceslot="0", data_taken="False"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op0 -> op2 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> result [style=bold, color="#1a7f37"];
-  op1 -> op3 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="Age GreaterThan"];
-  op3 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.109 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.109", data_taken="True"];
+  op1 [label="EntryScanCheck\n→slot 0\ncount=9943\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="9943", data_ms="0.000", data_taken="True"];
+  op2 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=78\n~50,000\n→slot 0\ncount=171\n0.044 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="78", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="171", data_ms="0.044", data_taken="True"];
+  op3 [label="EntryScan\n→slot 1", data_operation="EntryScan", data_destslot="1", data_sourceslot="0", data_taken="False"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_entry [shape="note", color="grey", label="Age GreaterThan", data_operation="ResidualNote", data_filter="Age GreaterThan", data_flow="off"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op0 -> op2 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op1 -> op3 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op3 -> result [style="dashed", color="grey", label="if entry-scan taken", data_kind="result", data_variant="entryscan-iftaken", data_flow="candidate"];
+  op3 -> res_entry [style="dotted", color="grey", label="per entry", data_kind="residual", data_flow="off"];
 }
 ```
 
@@ -1688,7 +1688,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "London",
         "EstimatedRows": "9,943",
         "Count": "9943",
-        "Ms": "0.073"
+        "Ms": "0.109"
       }
     },
     {
@@ -1709,7 +1709,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "GreaterThan",
         "EstimatedRows": "50,000",
         "Count": "171",
-        "Ms": "0.032"
+        "Ms": "0.044"
       }
     },
     {
@@ -1750,19 +1750,19 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.104 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.104"];
-  op1 [label="EntryScanCheck\n→slot 0\ncount=9943\n0.000 ms", data_destslot="0", data_count="9943", data_ms="0.000"];
-  op2 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=18\n~50,000\n→slot 0\ncount=9778\n0.317 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="9778", data_ms="0.317"];
-  op3 [label="EntryScan\n→slot 1\ntaken=False", data_destslot="1", data_sourceslot="0", data_taken="False"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op0 -> op2 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> result [style=bold, color="#1a7f37"];
-  op1 -> op3 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="Age GreaterThan"];
-  op3 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.107 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.107", data_taken="True"];
+  op1 [label="EntryScanCheck\n→slot 0\ncount=9943\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="9943", data_ms="0.000", data_taken="True"];
+  op2 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=18\n~50,000\n→slot 0\ncount=9778\n0.424 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="9778", data_ms="0.424", data_taken="True"];
+  op3 [label="EntryScan\n→slot 1", data_operation="EntryScan", data_destslot="1", data_sourceslot="0", data_taken="False"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_entry [shape="note", color="grey", label="Age GreaterThan", data_operation="ResidualNote", data_filter="Age GreaterThan", data_flow="off"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op0 -> op2 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op1 -> op3 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op3 -> result [style="dashed", color="grey", label="if entry-scan taken", data_kind="result", data_variant="entryscan-iftaken", data_flow="candidate"];
+  op3 -> res_entry [style="dotted", color="grey", label="per entry", data_kind="residual", data_flow="off"];
 }
 ```
 
@@ -1839,7 +1839,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "London",
         "EstimatedRows": "9,943",
         "Count": "9943",
-        "Ms": "0.104"
+        "Ms": "0.107"
       }
     },
     {
@@ -1860,7 +1860,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "GreaterThan",
         "EstimatedRows": "50,000",
         "Count": "9778",
-        "Ms": "0.317"
+        "Ms": "0.424"
       }
     },
     {
@@ -1890,7 +1890,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":22,"Timings":{"Query":{"DurationInMs":21,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":7,"Timings":{"Storage":{"DurationInMs":6,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":24,"Timings":{"Query":{"DurationInMs":24,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":8,"Timings":{"Storage":{"DurationInMs":8,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -1911,12 +1911,10 @@ A range predicate sorted on the same field is a `FieldSortedScan` candidate — 
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=78\n~50,000\n→slot 0", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="78", data_clausetype="GreaterThan", data_estimatedrows="50,000"];
-  directscan [shape=box, style=bold, color="#1a7f37", label="DirectScan\ntree=Age\ndrive=Age GreaterThan\ndir=Forward\nscanned=820\npassed=0\nrejected=0\nstopped=TreeExhausted\ntree=6.103 ms", data_drivingtree="Age", data_drivingclause="Age GreaterThan", data_treedirection="Forward", data_reason="sorted walk, no residual filter (no stored-entry reads, sort is free)", data_treescan_ms="6.103", data_treeentriesscanned="820", data_entriespassedfilter="0", data_entriesrejected="0", data_stoppedat="TreeExhausted"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=dotted, color=grey, label="(bitmap candidate, not executed)"];
-  directscan -> result [style=bold, color="#1a7f37", label="scan result"];
+  node [shape="box", fontname="monospace"];
+  producer [style="bold", color="#1a7f37", label="DirectScan\ntree=Age\ndrive=Age GreaterThan\ndir=Forward\nscanned=820\nstopped=TreeExhausted\ntree=7.303 ms", data_operation="DirectScan", data_drivingtree="Age", data_drivingclause="Age GreaterThan", data_treedirection="Forward", data_reason="sorted walk, no residual filter (no stored-entry reads, sort is free)", data_treescan_ms="7.303", data_treeentriesscanned="820", data_stoppedat="TreeExhausted"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  producer -> result [style="bold", color="#1a7f37", label="scan result", data_kind="result", data_variant="scan-result", data_flow="on"];
 }
 ```
 
@@ -1954,17 +1952,6 @@ Decision trail:
   },
   "Children": [
     {
-      "Operation": "Fill",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "MultiTerm",
-        "FieldName": "Age",
-        "Term": "78",
-        "ClauseType": "GreaterThan",
-        "EstimatedRows": "50,000"
-      }
-    },
-    {
       "Operation": "DecisionTrail",
       "Children": [
         {
@@ -1991,10 +1978,8 @@ Decision trail:
         "TreeDirection": "Forward",
         "ResidualPredicates": "",
         "Reason": "sorted walk, no residual filter (no stored-entry reads, sort is free)",
-        "TreeScan_ms": "6.103",
+        "TreeScan_ms": "7.303",
         "TreeEntriesScanned": "820",
-        "EntriesPassedFilter": "0",
-        "EntriesRejected": "0",
         "StoppedAt": "TreeExhausted"
       }
     }
@@ -2007,7 +1992,7 @@ Decision trail:
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":16,"Timings":{"Query":{"DurationInMs":16,"Timings":{"Corax":{"DurationInMs":2,"Timings":{"Optimizer":{"DurationInMs":2,"Timings":null}}},"Retriever":{"DurationInMs":1,"Timings":{"Storage":{"DurationInMs":1,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":18,"Timings":{"Query":{"DurationInMs":18,"Timings":{"Corax":{"DurationInMs":2,"Timings":{"Optimizer":{"DurationInMs":2,"Timings":null}}},"Retriever":{"DurationInMs":1,"Timings":{"Storage":{"DurationInMs":1,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -2018,12 +2003,10 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=18\n~50,000\n→slot 0", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_clausetype="GreaterThan", data_estimatedrows="50,000"];
-  directscan [shape=box, style=bold, color="#1a7f37", label="DirectScan\ntree=Age\ndrive=Age GreaterThan\ndir=Forward\nscanned=49188\npassed=0\nrejected=0\nstopped=TreeExhausted\ntree=21.658 ms", data_drivingtree="Age", data_drivingclause="Age GreaterThan", data_treedirection="Forward", data_reason="sorted walk, no residual filter (no stored-entry reads, sort is free)", data_treescan_ms="21.658", data_treeentriesscanned="49188", data_entriespassedfilter="0", data_entriesrejected="0", data_stoppedat="TreeExhausted"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=dotted, color=grey, label="(bitmap candidate, not executed)"];
-  directscan -> result [style=bold, color="#1a7f37", label="scan result"];
+  node [shape="box", fontname="monospace"];
+  producer [style="bold", color="#1a7f37", label="DirectScan\ntree=Age\ndrive=Age GreaterThan\ndir=Forward\nscanned=49188\nstopped=TreeExhausted\ntree=22.382 ms", data_operation="DirectScan", data_drivingtree="Age", data_drivingclause="Age GreaterThan", data_treedirection="Forward", data_reason="sorted walk, no residual filter (no stored-entry reads, sort is free)", data_treescan_ms="22.382", data_treeentriesscanned="49188", data_stoppedat="TreeExhausted"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  producer -> result [style="bold", color="#1a7f37", label="scan result", data_kind="result", data_variant="scan-result", data_flow="on"];
 }
 ```
 
@@ -2061,17 +2044,6 @@ Decision trail:
   },
   "Children": [
     {
-      "Operation": "Fill",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "MultiTerm",
-        "FieldName": "Age",
-        "Term": "18",
-        "ClauseType": "GreaterThan",
-        "EstimatedRows": "50,000"
-      }
-    },
-    {
       "Operation": "DecisionTrail",
       "Children": [
         {
@@ -2098,10 +2070,8 @@ Decision trail:
         "TreeDirection": "Forward",
         "ResidualPredicates": "",
         "Reason": "sorted walk, no residual filter (no stored-entry reads, sort is free)",
-        "TreeScan_ms": "21.658",
+        "TreeScan_ms": "22.382",
         "TreeEntriesScanned": "49188",
-        "EntriesPassedFilter": "0",
-        "EntriesRejected": "0",
         "StoppedAt": "TreeExhausted"
       }
     }
@@ -2114,7 +2084,7 @@ Decision trail:
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":195,"Timings":{"Query":{"DurationInMs":195,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":56,"Timings":{"Storage":{"DurationInMs":54,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":208,"Timings":{"Query":{"DurationInMs":208,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":92,"Timings":{"Storage":{"DurationInMs":90,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -2127,7 +2097,7 @@ Query timings (wall-clock, illustrative):
 from index 'Items/Index' where Age > $a and City = $c order by Age as long limit 16
 ```
 
-A range predicate **on the sort field** plus a second equality filter, with a small page. This is the shape where the direct tree scan WINS: `Age > $a` is the sort-driving clause, so the scan walks the `Age` term tree in ascending order and applies `City = $c` as a per-entry residual, stopping as soon as the 16-row page is full. The cost gate estimates entries_to_scan = page(16) / City_pass_rate(~0.2) ≈ 80; that × the 64 entry-scan multiplier (~5,120) is far below the bitmap cost of decoding the whole `Age` range plus the full `City` posting list (~50K+), so `FieldSortedScan` executes. The graph shows the `DirectScan` node as the real producer (solid-green `scan result` edge), with `City = $c` listed as its residual; the bitmap pipeline's slot-0 exit is greyed `(bitmap candidate, not executed)`. Note the C# listing below is flagged as the non-executed bitmap fallback — the direct scan is built separately and never runs this IL. Contrast `bare-sort` (`order by Age` with no WHERE): that is ALSO a `FieldSortedScan` candidate (a full-scan direct sort), but with no filter to narrow the set and no productive limit the cost gate makes it scan all 50K entries, so `entries_to_scan × 64` blows past `bitmap_cost` and the 32,768 cap, and the gate falls back to the bitmap pipeline every time. The difference here is the WHERE filter and the small page, which shrink `entries_to_scan` to ~80 so the scan wins.
+A range predicate **on the sort field** plus a second equality filter, with a small page. This is the shape where the direct tree scan WINS: `Age > $a` is the sort-driving clause, so the scan walks the `Age` term tree in ascending order and applies `City = $c` as a per-entry residual, stopping as soon as the 16-row page is full. The cost gate estimates entries_to_scan = page(16) / City_pass_rate(~0.2) ≈ 80; that × the 64 entry-scan multiplier (~5,120) is far below the bitmap cost of decoding the whole `Age` range plus the full `City` posting list (~50K+), so `FieldSortedScan` executes. The graph shows the `DirectScan` node as the real producer (solid-green `scan result` edge), with `City = $c` listed as its residual; the bitmap-pipeline candidate ops are omitted entirely because they never ran. Note the C# listing below is flagged as the non-executed bitmap fallback — the direct scan is built separately and never runs this IL. Contrast `bare-sort` (`order by Age` with no WHERE): that is ALSO a `FieldSortedScan` candidate (a full-scan direct sort), but with no filter to narrow the set and no productive limit the cost gate makes it scan all 50K entries, so `entries_to_scan × 64` blows past `bitmap_cost` and the 32,768 cap, and the gate falls back to the bitmap pipeline every time. The difference here is the WHERE filter and the small page, which shrink `entries_to_scan` to ~80 so the scan wins.
 
 <details>
 <summary><b>params: broad-age</b> — $a=18, $c="London"</summary>
@@ -2135,23 +2105,12 @@ A range predicate **on the sort field** plus a second equality filter, with a sm
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943"];
-  op1 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op2 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=18\n~50,000\n→slot 0", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_clausetype="GreaterThan", data_estimatedrows="50,000"];
-  op3 [label="EntryScan\n→slot 1", data_destslot="1", data_sourceslot="0"];
-  directscan [shape=box, style=bold, color="#1a7f37", label="DirectScan\ntree=Age\ndrive=Age GreaterThan\ndir=Forward\nresiduals: City Equal\nscanned=96\npassed=16\nrejected=77\nstopped=_take(16)\ntree=0.065 ms\nentry=4.939 ms", data_drivingtree="Age", data_drivingclause="Age GreaterThan", data_treedirection="Forward", data_residualpredicates="City Equal", data_reason="entries_to_scan(80) × 64 < bitmap_cost(59943)", data_treescan_ms="0.065", data_entryscans_ms="4.939", data_treeentriesscanned="96", data_entriespassedfilter="16", data_entriesrejected="77", data_stoppedat="_take(16)"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=dashed, label="gate slot 0"];
-  op0 -> op2 [label="slot 0"];
-  op2 -> result [style=dotted, color=grey, label="(bitmap candidate, not executed)"];
-  directscan -> result [style=bold, color="#1a7f37", label="scan result"];
-  res_direct [shape=note, color="#1a7f37", label="City Equal"];
-  directscan -> res_direct [style=bold, color="#1a7f37", label="per entry"];
-  op1 -> op3 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="Age GreaterThan"];
-  op3 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  producer [style="bold", color="#1a7f37", label="DirectScan\ntree=Age\ndrive=Age GreaterThan\ndir=Forward\nresiduals: City Equal\nscanned=96\npassed=16\nrejected=77\nstopped=_take(16)\ntree=0.054 ms\nentry=4.512 ms", data_operation="DirectScan", data_drivingtree="Age", data_drivingclause="Age GreaterThan", data_treedirection="Forward", data_residualpredicates="City Equal", data_reason="entries_to_scan(80) × 64 < bitmap_cost(59943)", data_treescan_ms="0.054", data_entryscans_ms="4.512", data_treeentriesscanned="96", data_entriespassedfilter="16", data_entriesrejected="77", data_stoppedat="_take(16)"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_producer [shape="note", color="#1a7f37", label="City Equal", data_operation="ResidualNote", data_filter="City Equal", data_flow="on"];
+  producer -> result [style="bold", color="#1a7f37", label="scan result", data_kind="result", data_variant="scan-result", data_flow="on"];
+  producer -> res_producer [style="bold", color="#1a7f37", label="per entry", data_kind="residual", data_flow="on"];
 }
 ```
 
@@ -2249,50 +2208,6 @@ Decision trail:
     "StrategyCandidate": "FieldSortedScan"
   },
   "Children": [
-    {
-      "Operation": "Fill",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "Term",
-        "FieldName": "City",
-        "Term": "London",
-        "EstimatedRows": "9,943"
-      }
-    },
-    {
-      "Operation": "EntryScanCheck",
-      "Parameters": {
-        "DestSlot": "0"
-      }
-    },
-    {
-      "Operation": "AND",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "MultiTerm",
-        "FieldName": "Age",
-        "Term": "18",
-        "ClauseType": "GreaterThan",
-        "EstimatedRows": "50,000"
-      }
-    },
-    {
-      "Operation": "EntryScan",
-      "Parameters": {
-        "DestSlot": "1",
-        "SourceSlot": "0"
-      },
-      "Children": [
-        {
-          "Operation": "Residual",
-          "Parameters": {
-            "FieldName": "Age",
-            "Compare": "GreaterThan",
-            "ValueType": "Long"
-          }
-        }
-      ]
-    },
     {
       "Operation": "DecisionTrail",
       "Children": [
@@ -2320,8 +2235,8 @@ Decision trail:
         "TreeDirection": "Forward",
         "ResidualPredicates": "City Equal",
         "Reason": "entries_to_scan(80) \u00D7 64 \u003C bitmap_cost(59943)",
-        "TreeScan_ms": "0.065",
-        "EntryScans_ms": "4.939",
+        "TreeScan_ms": "0.054",
+        "EntryScans_ms": "4.512",
         "TreeEntriesScanned": "96",
         "EntriesPassedFilter": "16",
         "EntriesRejected": "77",
@@ -2347,7 +2262,7 @@ Decision trail:
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":14,"Timings":{"Query":{"DurationInMs":14,"Timings":{"Corax":{"DurationInMs":2,"Timings":{"Optimizer":{"DurationInMs":2,"Timings":null}}},"Retriever":{"DurationInMs":0,"Timings":{"Storage":{"DurationInMs":0,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":12,"Timings":{"Query":{"DurationInMs":12,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":0,"Timings":{"Storage":{"DurationInMs":0,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -2358,23 +2273,12 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Rome\n~9,943\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_estimatedrows="9,943"];
-  op1 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op2 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=70\n~50,000\n→slot 0", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="70", data_clausetype="GreaterThan", data_estimatedrows="50,000"];
-  op3 [label="EntryScan\n→slot 1", data_destslot="1", data_sourceslot="0"];
-  directscan [shape=box, style=bold, color="#1a7f37", label="DirectScan\ntree=Age\ndrive=Age GreaterThan\ndir=Forward\nresiduals: City Equal\nscanned=128\npassed=16\nrejected=110\nstopped=_take(16)\ntree=0.060 ms\nentry=0.337 ms", data_drivingtree="Age", data_drivingclause="Age GreaterThan", data_treedirection="Forward", data_residualpredicates="City Equal", data_reason="entries_to_scan(80) × 64 < bitmap_cost(59877)", data_treescan_ms="0.060", data_entryscans_ms="0.337", data_treeentriesscanned="128", data_entriespassedfilter="16", data_entriesrejected="110", data_stoppedat="_take(16)"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=dashed, label="gate slot 0"];
-  op0 -> op2 [label="slot 0"];
-  op2 -> result [style=dotted, color=grey, label="(bitmap candidate, not executed)"];
-  directscan -> result [style=bold, color="#1a7f37", label="scan result"];
-  res_direct [shape=note, color="#1a7f37", label="City Equal"];
-  directscan -> res_direct [style=bold, color="#1a7f37", label="per entry"];
-  op1 -> op3 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="Age GreaterThan"];
-  op3 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  producer [style="bold", color="#1a7f37", label="DirectScan\ntree=Age\ndrive=Age GreaterThan\ndir=Forward\nresiduals: City Equal\nscanned=128\npassed=16\nrejected=110\nstopped=_take(16)\ntree=0.031 ms\nentry=0.194 ms", data_operation="DirectScan", data_drivingtree="Age", data_drivingclause="Age GreaterThan", data_treedirection="Forward", data_residualpredicates="City Equal", data_reason="entries_to_scan(80) × 64 < bitmap_cost(59877)", data_treescan_ms="0.031", data_entryscans_ms="0.194", data_treeentriesscanned="128", data_entriespassedfilter="16", data_entriesrejected="110", data_stoppedat="_take(16)"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_producer [shape="note", color="#1a7f37", label="City Equal", data_operation="ResidualNote", data_filter="City Equal", data_flow="on"];
+  producer -> result [style="bold", color="#1a7f37", label="scan result", data_kind="result", data_variant="scan-result", data_flow="on"];
+  producer -> res_producer [style="bold", color="#1a7f37", label="per entry", data_kind="residual", data_flow="on"];
 }
 ```
 
@@ -2473,50 +2377,6 @@ Decision trail:
   },
   "Children": [
     {
-      "Operation": "Fill",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "Term",
-        "FieldName": "City",
-        "Term": "Rome",
-        "EstimatedRows": "9,943"
-      }
-    },
-    {
-      "Operation": "EntryScanCheck",
-      "Parameters": {
-        "DestSlot": "0"
-      }
-    },
-    {
-      "Operation": "AND",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "MultiTerm",
-        "FieldName": "Age",
-        "Term": "70",
-        "ClauseType": "GreaterThan",
-        "EstimatedRows": "50,000"
-      }
-    },
-    {
-      "Operation": "EntryScan",
-      "Parameters": {
-        "DestSlot": "1",
-        "SourceSlot": "0"
-      },
-      "Children": [
-        {
-          "Operation": "Residual",
-          "Parameters": {
-            "FieldName": "Age",
-            "Compare": "GreaterThan",
-            "ValueType": "Long"
-          }
-        }
-      ]
-    },
-    {
       "Operation": "DecisionTrail",
       "Children": [
         {
@@ -2543,8 +2403,8 @@ Decision trail:
         "TreeDirection": "Forward",
         "ResidualPredicates": "City Equal",
         "Reason": "entries_to_scan(80) \u00D7 64 \u003C bitmap_cost(59877)",
-        "TreeScan_ms": "0.060",
-        "EntryScans_ms": "0.337",
+        "TreeScan_ms": "0.031",
+        "EntryScans_ms": "0.194",
         "TreeEntriesScanned": "128",
         "EntriesPassedFilter": "16",
         "EntriesRejected": "110",
@@ -2591,19 +2451,19 @@ A positive leaf intersected with a negated leaf. `City = $c` fills the accumulat
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.055 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.055"];
-  op1 [label="EntryScanCheck\n→slot 0\ncount=9943\n0.000 ms", data_destslot="0", data_count="9943", data_ms="0.000"];
-  op2 [label="ANDNOT\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=alice\nNEGATED\n~50,000\n→slot 0\ncount=7971\n1.406 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_count="7971", data_ms="1.406"];
-  op3 [label="EntryScan\n→slot 1\ntaken=False", data_destslot="1", data_sourceslot="0", data_taken="False"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op0 -> op2 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> result [style=bold, color="#1a7f37"];
-  op1 -> op3 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="Name NotEqual"];
-  op3 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.058 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.058", data_taken="True"];
+  op1 [label="EntryScanCheck\n→slot 0\ncount=9943\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="9943", data_ms="0.000", data_taken="True"];
+  op2 [label="ANDNOT\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=alice\nNEGATED\n~50,000\n→slot 0\ncount=7971\n1.359 ms", data_operation="ANDNOT", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_count="7971", data_ms="1.359", data_taken="True"];
+  op3 [label="EntryScan\n→slot 1", data_operation="EntryScan", data_destslot="1", data_sourceslot="0", data_taken="False"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_entry [shape="note", color="grey", label="Name NotEqual", data_operation="ResidualNote", data_filter="Name NotEqual", data_flow="off"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op0 -> op2 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op1 -> op3 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op3 -> result [style="dashed", color="grey", label="if entry-scan taken", data_kind="result", data_variant="entryscan-iftaken", data_flow="candidate"];
+  op3 -> res_entry [style="dotted", color="grey", label="per entry", data_kind="residual", data_flow="off"];
 }
 ```
 
@@ -2679,7 +2539,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "London",
         "EstimatedRows": "9,943",
         "Count": "9943",
-        "Ms": "0.055"
+        "Ms": "0.058"
       }
     },
     {
@@ -2701,7 +2561,7 @@ Executed strategy: `BitmapPipeline`
         "Negated": "true",
         "EstimatedRows": "50,000",
         "Count": "7971",
-        "Ms": "1.406"
+        "Ms": "1.359"
       }
     },
     {
@@ -2731,7 +2591,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":21,"Timings":{"Query":{"DurationInMs":21,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":6,"Timings":{"Storage":{"DurationInMs":5,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":22,"Timings":{"Query":{"DurationInMs":21,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":6,"Timings":{"Storage":{"DurationInMs":6,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -2742,19 +2602,19 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Paris\n~9,943\n→slot 0\ncount=9997\n0.086 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Paris", data_estimatedrows="9,943", data_count="9997", data_ms="0.086"];
-  op1 [label="EntryScanCheck\n→slot 0\ncount=9997\n0.000 ms", data_destslot="0", data_count="9997", data_ms="0.000"];
-  op2 [label="ANDNOT\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=bob\nNEGATED\n~50,000\n→slot 0\ncount=7975\n0.084 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="bob", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_count="7975", data_ms="0.084"];
-  op3 [label="EntryScan\n→slot 1\ntaken=False", data_destslot="1", data_sourceslot="0", data_taken="False"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op0 -> op2 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> result [style=bold, color="#1a7f37"];
-  op1 -> op3 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="Name NotEqual"];
-  op3 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Paris\n~9,943\n→slot 0\ncount=9997\n0.051 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Paris", data_estimatedrows="9,943", data_count="9997", data_ms="0.051", data_taken="True"];
+  op1 [label="EntryScanCheck\n→slot 0\ncount=9997\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="9997", data_ms="0.000", data_taken="True"];
+  op2 [label="ANDNOT\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=bob\nNEGATED\n~50,000\n→slot 0\ncount=7975\n0.040 ms", data_operation="ANDNOT", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="bob", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_count="7975", data_ms="0.040", data_taken="True"];
+  op3 [label="EntryScan\n→slot 1", data_operation="EntryScan", data_destslot="1", data_sourceslot="0", data_taken="False"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_entry [shape="note", color="grey", label="Name NotEqual", data_operation="ResidualNote", data_filter="Name NotEqual", data_flow="off"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op0 -> op2 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op1 -> op3 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op3 -> result [style="dashed", color="grey", label="if entry-scan taken", data_kind="result", data_variant="entryscan-iftaken", data_flow="candidate"];
+  op3 -> res_entry [style="dotted", color="grey", label="per entry", data_kind="residual", data_flow="off"];
 }
 ```
 
@@ -2830,7 +2690,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "Paris",
         "EstimatedRows": "9,943",
         "Count": "9997",
-        "Ms": "0.086"
+        "Ms": "0.051"
       }
     },
     {
@@ -2852,7 +2712,7 @@ Executed strategy: `BitmapPipeline`
         "Negated": "true",
         "EstimatedRows": "50,000",
         "Count": "7975",
-        "Ms": "0.084"
+        "Ms": "0.040"
       }
     },
     {
@@ -2882,7 +2742,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":18,"Timings":{"Query":{"DurationInMs":18,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":6,"Timings":{"Storage":{"DurationInMs":5,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":16,"Timings":{"Query":{"DurationInMs":16,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":6,"Timings":{"Storage":{"DurationInMs":5,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -2903,17 +2763,17 @@ An OR of two negations, folded by De Morgan: `Name != $n or City != $c` ≡ `NOT
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=alice\nNEGATED\n~50,000\n→slot 2\n0.073 ms", data_destslot="2", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_ms="0.073"];
-  op1 [label="AND\n[Term]\nFieldName=City\nClauseType=NotEquals\nTerm=London\nNEGATED\n~50,000\n→slot 2\n1.526 ms", data_destslot="2", data_dispatch="Term", data_fieldname="City", data_term="London", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_ms="1.526"];
-  op2 [label="Fill-AllEntries\n→slot 0\ncount=50000\n0.118 ms", data_destslot="0", data_count="50000", data_ms="0.118"];
-  op3 [label="ANDNOT-Bitmaps\n→slot 0\ncount=48028\n0.128 ms", data_destslot="0", data_sourceslot="2", data_count="48028", data_ms="0.128"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 2"];
-  op2 -> op3 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> op3 [style=bold, color="#1a7f37", label="slot 2"];
-  op3 -> result [style=bold, color="#1a7f37"];
-  op1 -> op2 [style=invis];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=alice\nNEGATED\n~50,000\n→slot 2\n0.081 ms", data_operation="Fill", data_destslot="2", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_ms="0.081", data_taken="True"];
+  op1 [label="AND\n[Term]\nFieldName=City\nClauseType=NotEquals\nTerm=London\nNEGATED\n~50,000\n→slot 2\n1.560 ms", data_operation="AND", data_destslot="2", data_dispatch="Term", data_fieldname="City", data_term="London", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_ms="1.560", data_taken="True"];
+  op2 [label="Fill-AllEntries\n→slot 0\ncount=50000\n0.120 ms", data_operation="Fill-AllEntries", data_destslot="0", data_count="50000", data_ms="0.120", data_taken="True"];
+  op3 [label="ANDNOT-Bitmaps\n→slot 0\ncount=48028\n0.196 ms", data_operation="ANDNOT-Bitmaps", data_destslot="0", data_sourceslot="2", data_count="48028", data_ms="0.196", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op2 -> op3 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> op3 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op3 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op1 -> op2 [style="invis", data_kind="sequence", data_flow="invis"];
 }
 ```
 
@@ -2964,7 +2824,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "NotEquals",
         "Negated": "true",
         "EstimatedRows": "50,000",
-        "Ms": "0.073"
+        "Ms": "0.081"
       }
     },
     {
@@ -2977,7 +2837,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "NotEquals",
         "Negated": "true",
         "EstimatedRows": "50,000",
-        "Ms": "1.526"
+        "Ms": "1.560"
       }
     },
     {
@@ -2985,7 +2845,7 @@ Executed strategy: `BitmapPipeline`
       "Parameters": {
         "DestSlot": "0",
         "Count": "50000",
-        "Ms": "0.118"
+        "Ms": "0.120"
       }
     },
     {
@@ -2994,7 +2854,7 @@ Executed strategy: `BitmapPipeline`
         "DestSlot": "0",
         "SourceSlot": "2",
         "Count": "48028",
-        "Ms": "0.128"
+        "Ms": "0.196"
       }
     }
   ]
@@ -3006,7 +2866,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":124,"Timings":{"Query":{"DurationInMs":124,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":35,"Timings":{"Storage":{"DurationInMs":33,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":106,"Timings":{"Query":{"DurationInMs":106,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":31,"Timings":{"Storage":{"DurationInMs":29,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -3017,17 +2877,17 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=erin\nNEGATED\n~50,000\n→slot 2\n0.124 ms", data_destslot="2", data_dispatch="Term", data_fieldname="Name", data_term="erin", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_ms="0.124"];
-  op1 [label="AND\n[Term]\nFieldName=City\nClauseType=NotEquals\nTerm=Rome\nNEGATED\n~50,000\n→slot 2\n0.516 ms", data_destslot="2", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_ms="0.516"];
-  op2 [label="Fill-AllEntries\n→slot 0\ncount=50000\n0.216 ms", data_destslot="0", data_count="50000", data_ms="0.216"];
-  op3 [label="ANDNOT-Bitmaps\n→slot 0\ncount=48011\n0.045 ms", data_destslot="0", data_sourceslot="2", data_count="48011", data_ms="0.045"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 2"];
-  op2 -> op3 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> op3 [style=bold, color="#1a7f37", label="slot 2"];
-  op3 -> result [style=bold, color="#1a7f37"];
-  op1 -> op2 [style=invis];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=erin\nNEGATED\n~50,000\n→slot 2\n0.064 ms", data_operation="Fill", data_destslot="2", data_dispatch="Term", data_fieldname="Name", data_term="erin", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_ms="0.064", data_taken="True"];
+  op1 [label="AND\n[Term]\nFieldName=City\nClauseType=NotEquals\nTerm=Rome\nNEGATED\n~50,000\n→slot 2\n0.235 ms", data_operation="AND", data_destslot="2", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_ms="0.235", data_taken="True"];
+  op2 [label="Fill-AllEntries\n→slot 0\ncount=50000\n0.103 ms", data_operation="Fill-AllEntries", data_destslot="0", data_count="50000", data_ms="0.103", data_taken="True"];
+  op3 [label="ANDNOT-Bitmaps\n→slot 0\ncount=48011\n0.023 ms", data_operation="ANDNOT-Bitmaps", data_destslot="0", data_sourceslot="2", data_count="48011", data_ms="0.023", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op2 -> op3 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> op3 [style="bold", color="#1a7f37", label="slot 2", data_kind="dataflow", data_slot="2", data_flow="on"];
+  op3 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op1 -> op2 [style="invis", data_kind="sequence", data_flow="invis"];
 }
 ```
 
@@ -3078,7 +2938,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "NotEquals",
         "Negated": "true",
         "EstimatedRows": "50,000",
-        "Ms": "0.124"
+        "Ms": "0.064"
       }
     },
     {
@@ -3091,7 +2951,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "NotEquals",
         "Negated": "true",
         "EstimatedRows": "50,000",
-        "Ms": "0.516"
+        "Ms": "0.235"
       }
     },
     {
@@ -3099,7 +2959,7 @@ Executed strategy: `BitmapPipeline`
       "Parameters": {
         "DestSlot": "0",
         "Count": "50000",
-        "Ms": "0.216"
+        "Ms": "0.103"
       }
     },
     {
@@ -3108,7 +2968,7 @@ Executed strategy: `BitmapPipeline`
         "DestSlot": "0",
         "SourceSlot": "2",
         "Count": "48011",
-        "Ms": "0.045"
+        "Ms": "0.023"
       }
     }
   ]
@@ -3120,7 +2980,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":114,"Timings":{"Query":{"DurationInMs":114,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":49,"Timings":{"Storage":{"DurationInMs":47,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":133,"Timings":{"Query":{"DurationInMs":133,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":30,"Timings":{"Storage":{"DurationInMs":29,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -3141,10 +3001,10 @@ A `search()` leaf tokenises the term through the analyzer pipeline and fills fro
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Match]\nFieldName=Name\nClauseType=Search\nTerm=alice\n~50,000\n→slot 0\ncount=9954\n0.025 ms", data_destslot="0", data_dispatch="Match", data_fieldname="Name", data_term="alice", data_clausetype="Search", data_estimatedrows="50,000", data_count="9954", data_ms="0.025"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Match]\nFieldName=Name\nClauseType=Search\nTerm=alice\n~50,000\n→slot 0\ncount=9954\n0.028 ms", data_operation="Fill", data_destslot="0", data_dispatch="Match", data_fieldname="Name", data_term="alice", data_clausetype="Search", data_estimatedrows="50,000", data_count="9954", data_ms="0.028", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -3187,7 +3047,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "Search",
         "EstimatedRows": "50,000",
         "Count": "9954",
-        "Ms": "0.025"
+        "Ms": "0.028"
       }
     }
   ]
@@ -3210,10 +3070,10 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Match]\nFieldName=Name\nClauseType=Search\nTerm=alice bob\n~50,000\n→slot 0\ncount=19913\n0.001 ms", data_destslot="0", data_dispatch="Match", data_fieldname="Name", data_term="alice bob", data_clausetype="Search", data_estimatedrows="50,000", data_count="19913", data_ms="0.001"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Match]\nFieldName=Name\nClauseType=Search\nTerm=alice bob\n~50,000\n→slot 0\ncount=19913\n0.001 ms", data_operation="Fill", data_destslot="0", data_dispatch="Match", data_fieldname="Name", data_term="alice bob", data_clausetype="Search", data_estimatedrows="50,000", data_count="19913", data_ms="0.001", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -3268,7 +3128,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":35,"Timings":{"Query":{"DurationInMs":35,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":13,"Timings":{"Storage":{"DurationInMs":12,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":43,"Timings":{"Query":{"DurationInMs":43,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":14,"Timings":{"Storage":{"DurationInMs":13,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -3289,10 +3149,10 @@ A prefix predicate scans the term tree from the prefix boundary. A matching pref
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[MultiTerm]\nFieldName=City\nClauseType=StartsWith\nTerm=Lon\n~50,000\n→slot 0\ncount=9943\n1.673 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="City", data_term="Lon", data_clausetype="StartsWith", data_estimatedrows="50,000", data_count="9943", data_ms="1.673"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[MultiTerm]\nFieldName=City\nClauseType=StartsWith\nTerm=Lon\n~50,000\n→slot 0\ncount=9943\n1.684 ms", data_operation="Fill", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="City", data_term="Lon", data_clausetype="StartsWith", data_estimatedrows="50,000", data_count="9943", data_ms="1.684", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -3335,7 +3195,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "StartsWith",
         "EstimatedRows": "50,000",
         "Count": "9943",
-        "Ms": "1.673"
+        "Ms": "1.684"
       }
     }
   ]
@@ -3347,7 +3207,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":57,"Timings":{"Query":{"DurationInMs":57,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":32,"Timings":{"Storage":{"DurationInMs":32,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":24,"Timings":{"Query":{"DurationInMs":24,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":7,"Timings":{"Storage":{"DurationInMs":7,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -3358,10 +3218,10 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[MultiTerm]\nFieldName=City\nClauseType=StartsWith\nTerm=Zzz\n~50,000\n→slot 0\n0.032 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="City", data_term="Zzz", data_clausetype="StartsWith", data_estimatedrows="50,000", data_ms="0.032"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result;
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[MultiTerm]\nFieldName=City\nClauseType=StartsWith\nTerm=Zzz\n~50,000\n→slot 0\n0.035 ms", data_operation="Fill", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="City", data_term="Zzz", data_clausetype="StartsWith", data_estimatedrows="50,000", data_ms="0.035"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [data_kind="result", data_variant="bitmap-plain", data_flow="none"];
 }
 ```
 
@@ -3403,7 +3263,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "Zzz",
         "ClauseType": "StartsWith",
         "EstimatedRows": "50,000",
-        "Ms": "0.032"
+        "Ms": "0.035"
       }
     }
   ]
@@ -3436,12 +3296,10 @@ An equality leaf sorted by a two-field key. `City = $c` fills the accumulator (a
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943"];
-  directscan [shape=box, style=bold, color="#1a7f37", label="DirectScan\ntree=City\ndrive=City Equals\ndir=Forward\nscanned=9943\npassed=0\nrejected=0\nstopped=TreeExhausted\ntree=6.562 ms", data_drivingtree="City", data_drivingclause="City Equals", data_treedirection="Forward", data_reason="sorted walk, no residual filter (no stored-entry reads, sort is free)", data_treescan_ms="6.562", data_treeentriesscanned="9943", data_entriespassedfilter="0", data_entriesrejected="0", data_stoppedat="TreeExhausted"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=dotted, color=grey, label="(bitmap candidate, not executed)"];
-  directscan -> result [style=bold, color="#1a7f37", label="scan result"];
+  node [shape="box", fontname="monospace"];
+  producer [style="bold", color="#1a7f37", label="DirectScan\ntree=City\ndrive=City Equals\ndir=Forward\nscanned=9943\nstopped=TreeExhausted\ntree=6.372 ms", data_operation="DirectScan", data_drivingtree="City", data_drivingclause="City Equals", data_treedirection="Forward", data_reason="sorted walk, no residual filter (no stored-entry reads, sort is free)", data_treescan_ms="6.372", data_treeentriesscanned="9943", data_stoppedat="TreeExhausted"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  producer -> result [style="bold", color="#1a7f37", label="scan result", data_kind="result", data_variant="scan-result", data_flow="on"];
 }
 ```
 
@@ -3479,16 +3337,6 @@ Decision trail:
   },
   "Children": [
     {
-      "Operation": "Fill",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "Term",
-        "FieldName": "City",
-        "Term": "London",
-        "EstimatedRows": "9,943"
-      }
-    },
-    {
       "Operation": "DecisionTrail",
       "Children": [
         {
@@ -3515,10 +3363,8 @@ Decision trail:
         "TreeDirection": "Forward",
         "ResidualPredicates": "",
         "Reason": "sorted walk, no residual filter (no stored-entry reads, sort is free)",
-        "TreeScan_ms": "6.562",
+        "TreeScan_ms": "6.372",
         "TreeEntriesScanned": "9943",
-        "EntriesPassedFilter": "0",
-        "EntriesRejected": "0",
         "StoppedAt": "TreeExhausted"
       }
     }
@@ -3531,7 +3377,7 @@ Decision trail:
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":65,"Timings":{"Query":{"DurationInMs":65,"Timings":{"Corax":{"DurationInMs":3,"Timings":{"Optimizer":{"DurationInMs":3,"Timings":null}}},"Retriever":{"DurationInMs":14,"Timings":{"Storage":{"DurationInMs":13,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":43,"Timings":{"Query":{"DurationInMs":43,"Timings":{"Corax":{"DurationInMs":2,"Timings":{"Optimizer":{"DurationInMs":2,"Timings":null}}},"Retriever":{"DurationInMs":14,"Timings":{"Storage":{"DurationInMs":13,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -3542,12 +3388,10 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Rome\n~9,943\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_estimatedrows="9,943"];
-  directscan [shape=box, style=bold, color="#1a7f37", label="DirectScan\ntree=City\ndrive=City Equals\ndir=Forward\nscanned=9877\npassed=0\nrejected=0\nstopped=TreeExhausted\ntree=4.343 ms", data_drivingtree="City", data_drivingclause="City Equals", data_treedirection="Forward", data_reason="sorted walk, no residual filter (no stored-entry reads, sort is free)", data_treescan_ms="4.343", data_treeentriesscanned="9877", data_entriespassedfilter="0", data_entriesrejected="0", data_stoppedat="TreeExhausted"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=dotted, color=grey, label="(bitmap candidate, not executed)"];
-  directscan -> result [style=bold, color="#1a7f37", label="scan result"];
+  node [shape="box", fontname="monospace"];
+  producer [style="bold", color="#1a7f37", label="DirectScan\ntree=City\ndrive=City Equals\ndir=Forward\nscanned=9877\nstopped=TreeExhausted\ntree=5.077 ms", data_operation="DirectScan", data_drivingtree="City", data_drivingclause="City Equals", data_treedirection="Forward", data_reason="sorted walk, no residual filter (no stored-entry reads, sort is free)", data_treescan_ms="5.077", data_treeentriesscanned="9877", data_stoppedat="TreeExhausted"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  producer -> result [style="bold", color="#1a7f37", label="scan result", data_kind="result", data_variant="scan-result", data_flow="on"];
 }
 ```
 
@@ -3585,16 +3429,6 @@ Decision trail:
   },
   "Children": [
     {
-      "Operation": "Fill",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "Term",
-        "FieldName": "City",
-        "Term": "Rome",
-        "EstimatedRows": "9,943"
-      }
-    },
-    {
       "Operation": "DecisionTrail",
       "Children": [
         {
@@ -3621,10 +3455,8 @@ Decision trail:
         "TreeDirection": "Forward",
         "ResidualPredicates": "",
         "Reason": "sorted walk, no residual filter (no stored-entry reads, sort is free)",
-        "TreeScan_ms": "4.343",
+        "TreeScan_ms": "5.077",
         "TreeEntriesScanned": "9877",
-        "EntriesPassedFilter": "0",
-        "EntriesRejected": "0",
         "StoppedAt": "TreeExhausted"
       }
     }
@@ -3637,7 +3469,7 @@ Decision trail:
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":56,"Timings":{"Query":{"DurationInMs":56,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":14,"Timings":{"Storage":{"DurationInMs":13,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":56,"Timings":{"Query":{"DurationInMs":56,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":12,"Timings":{"Storage":{"DurationInMs":12,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -3658,21 +3490,21 @@ A two-level tree: an OR group intersected with a range. `City = $c` fills the ac
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.060 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.060"];
-  op1 [label="OR\n[Term]\nFieldName=Name\nTerm=alice\n~9,954\n→slot 0\ncount=17925\n0.030 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_estimatedrows="9,954", data_count="17925", data_ms="0.030"];
-  op2 [label="EntryScanCheck\n→slot 0\ncount=17925\n0.000 ms", data_destslot="0", data_count="17925", data_ms="0.000"];
-  op3 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=Between\nTerm=40\nTerm2=42\n~50,000\n→slot 0\ncount=794\n0.041 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="40", data_term2="42", data_clausetype="Between", data_estimatedrows="50,000", data_count="794", data_ms="0.041"];
-  op4 [label="EntryScan\n→slot 1\ntaken=False", data_destslot="1", data_sourceslot="0", data_taken="False"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> op2 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op1 -> op3 [style=bold, color="#1a7f37", label="slot 0"];
-  op3 -> result [style=bold, color="#1a7f37"];
-  op2 -> op4 [style=dashed, color=grey, label="candidate switch"];
-  op4 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="Age Between"];
-  op4 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.060 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.060", data_taken="True"];
+  op1 [label="OR\n[Term]\nFieldName=Name\nTerm=alice\n~9,954\n→slot 0\ncount=17925\n0.025 ms", data_operation="OR", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="alice", data_estimatedrows="9,954", data_count="17925", data_ms="0.025", data_taken="True"];
+  op2 [label="EntryScanCheck\n→slot 0\ncount=17925\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="17925", data_ms="0.000", data_taken="True"];
+  op3 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=Between\nTerm=40\nTerm2=42\n~50,000\n→slot 0\ncount=794\n0.041 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="40", data_term2="42", data_clausetype="Between", data_estimatedrows="50,000", data_count="794", data_ms="0.041", data_taken="True"];
+  op4 [label="EntryScan\n→slot 1", data_operation="EntryScan", data_destslot="1", data_sourceslot="0", data_taken="False"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_entry [shape="note", color="grey", label="Age Between", data_operation="ResidualNote", data_filter="Age Between", data_flow="off"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> op2 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op1 -> op3 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op3 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op2 -> op4 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op4 -> result [style="dashed", color="grey", label="if entry-scan taken", data_kind="result", data_variant="entryscan-iftaken", data_flow="candidate"];
+  op4 -> res_entry [style="dotted", color="grey", label="per entry", data_kind="residual", data_flow="off"];
 }
 ```
 
@@ -3773,7 +3605,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "alice",
         "EstimatedRows": "9,954",
         "Count": "17925",
-        "Ms": "0.030"
+        "Ms": "0.025"
       }
     },
     {
@@ -3825,7 +3657,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":7,"Timings":{"Query":{"DurationInMs":7,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":1,"Timings":{"Storage":{"DurationInMs":1,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":6,"Timings":{"Query":{"DurationInMs":6,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":1,"Timings":{"Storage":{"DurationInMs":1,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -3836,21 +3668,21 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Berlin\n~9,943\n→slot 0\ncount=9998\n0.051 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Berlin", data_estimatedrows="9,943", data_count="9998", data_ms="0.051"];
-  op1 [label="OR\n[Term]\nFieldName=Name\nTerm=bob\n~9,954\n→slot 0\ncount=17934\n0.024 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="bob", data_estimatedrows="9,954", data_count="17934", data_ms="0.024"];
-  op2 [label="EntryScanCheck\n→slot 0\ncount=17934\n0.000 ms", data_destslot="0", data_count="17934", data_ms="0.000"];
-  op3 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=Between\nTerm=18\nTerm2=79\n~50,000\n→slot 0\ncount=17934\n0.281 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_term2="79", data_clausetype="Between", data_estimatedrows="50,000", data_count="17934", data_ms="0.281"];
-  op4 [label="EntryScan\n→slot 1\ntaken=False", data_destslot="1", data_sourceslot="0", data_taken="False"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> op2 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op1 -> op3 [style=bold, color="#1a7f37", label="slot 0"];
-  op3 -> result [style=bold, color="#1a7f37"];
-  op2 -> op4 [style=dashed, color=grey, label="candidate switch"];
-  op4 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="Age Between"];
-  op4 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Berlin\n~9,943\n→slot 0\ncount=9998\n0.076 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Berlin", data_estimatedrows="9,943", data_count="9998", data_ms="0.076", data_taken="True"];
+  op1 [label="OR\n[Term]\nFieldName=Name\nTerm=bob\n~9,954\n→slot 0\ncount=17934\n0.044 ms", data_operation="OR", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="bob", data_estimatedrows="9,954", data_count="17934", data_ms="0.044", data_taken="True"];
+  op2 [label="EntryScanCheck\n→slot 0\ncount=17934\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="17934", data_ms="0.000", data_taken="True"];
+  op3 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=Between\nTerm=18\nTerm2=79\n~50,000\n→slot 0\ncount=17934\n0.434 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_term2="79", data_clausetype="Between", data_estimatedrows="50,000", data_count="17934", data_ms="0.434", data_taken="True"];
+  op4 [label="EntryScan\n→slot 1", data_operation="EntryScan", data_destslot="1", data_sourceslot="0", data_taken="False"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_entry [shape="note", color="grey", label="Age Between", data_operation="ResidualNote", data_filter="Age Between", data_flow="off"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> op2 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op1 -> op3 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op3 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op2 -> op4 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op4 -> result [style="dashed", color="grey", label="if entry-scan taken", data_kind="result", data_variant="entryscan-iftaken", data_flow="candidate"];
+  op4 -> res_entry [style="dotted", color="grey", label="per entry", data_kind="residual", data_flow="off"];
 }
 ```
 
@@ -3939,7 +3771,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "Berlin",
         "EstimatedRows": "9,943",
         "Count": "9998",
-        "Ms": "0.051"
+        "Ms": "0.076"
       }
     },
     {
@@ -3951,7 +3783,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "bob",
         "EstimatedRows": "9,954",
         "Count": "17934",
-        "Ms": "0.024"
+        "Ms": "0.044"
       }
     },
     {
@@ -3973,7 +3805,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "Between",
         "EstimatedRows": "50,000",
         "Count": "17934",
-        "Ms": "0.281"
+        "Ms": "0.434"
       }
     },
     {
@@ -4003,7 +3835,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":65,"Timings":{"Query":{"DurationInMs":65,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":12,"Timings":{"Storage":{"DurationInMs":11,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":75,"Timings":{"Query":{"DurationInMs":75,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":14,"Timings":{"Storage":{"DurationInMs":14,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -4024,34 +3856,34 @@ The selectivity-driven entry-scan path with *multiple* residuals — and a demon
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.097 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.097"];
-  op1 [label="EntryScanCheck\n→slot 0\ncount=9943\n0.000 ms", data_destslot="0", data_count="9943", data_ms="0.000"];
-  op2 [label="AND\n[MultiTerm]\nFieldName=Created\nClauseType=Between\nTerm=630822816000000000\nTerm2=630832320000000000\n~50,000\n→slot 0\ncount=15\n28.354 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Created", data_term="630822816000000000", data_term2="630832320000000000", data_clausetype="Between", data_estimatedrows="50,000", data_count="15", data_ms="28.354"];
-  op3 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op4 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=30\n~50,000\n→slot 0", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="30", data_clausetype="GreaterThan", data_estimatedrows="50,000"];
-  op5 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op6 [label="AND\n[MultiTerm]\nFieldName=Score\nClauseType=LessThan\nTerm=500\n~50,000\n→slot 0", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Score", data_term="500", data_clausetype="LessThan", data_estimatedrows="50,000"];
-  op7 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op8 [label="ANDNOT\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=erin\nNEGATED\n~50,000\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="erin", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000"];
-  op9 [label="EntryScan\n→slot 1\ntaken=True\nafter=2\nscanned=15\npassed=2", data_destslot="1", data_sourceslot="0", data_taken="True", data_switchedafterclauses="2", data_entriesscanned="15", data_entriespassed="2"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op0 -> op2 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> op3 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op2 -> op4 [style=dotted, color=grey, label="slot 0"];
-  op4 -> op5 [style=dotted, color=grey, label="gate slot 0"];
-  op4 -> op6 [style=dotted, color=grey, label="slot 0"];
-  op6 -> op7 [style=dotted, color=grey, label="gate slot 0"];
-  op6 -> op8 [style=dotted, color=grey, label="slot 0"];
-  op8 -> result [style=dotted, color=grey, label="(not taken)"];
-  op1 -> op9 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> op9 [style=bold, color="#1a7f37", label="switched here"];
-  op5 -> op9 [style=dashed, color=grey, label="candidate switch"];
-  op7 -> op9 [style=dashed, color=grey, label="candidate switch"];
-  op9 -> result [style=bold, color="#1a7f37", label="entry-scan TAKEN"];
-  res_entry [shape=note, color="#1a7f37", label="Created Between AND Age GreaterThan AND Score LessThan AND Name NotEqual"];
-  op9 -> res_entry [style=bold, color="#1a7f37", label="per entry"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.071 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.071", data_taken="True"];
+  op1 [label="EntryScanCheck\n→slot 0\ncount=9943\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="9943", data_ms="0.000", data_taken="True"];
+  op2 [label="AND\n[MultiTerm]\nFieldName=Created\nClauseType=Between\nTerm=630822816000000000\nTerm2=630832320000000000\n~50,000\n→slot 0\ncount=15\n27.902 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Created", data_term="630822816000000000", data_term2="630832320000000000", data_clausetype="Between", data_estimatedrows="50,000", data_count="15", data_ms="27.902", data_taken="True"];
+  op3 [label="EntryScanCheck\n→slot 0", data_operation="EntryScanCheck", data_destslot="0", data_taken="True"];
+  op4 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=30\n~50,000\n→slot 0", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="30", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_taken="False"];
+  op5 [label="EntryScanCheck\n→slot 0", data_operation="EntryScanCheck", data_destslot="0", data_taken="False"];
+  op6 [label="AND\n[MultiTerm]\nFieldName=Score\nClauseType=LessThan\nTerm=500\n~50,000\n→slot 0", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Score", data_term="500", data_clausetype="LessThan", data_estimatedrows="50,000", data_taken="False"];
+  op7 [label="EntryScanCheck\n→slot 0", data_operation="EntryScanCheck", data_destslot="0", data_taken="False"];
+  op8 [label="ANDNOT\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=erin\nNEGATED\n~50,000\n→slot 0", data_operation="ANDNOT", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="erin", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_taken="False"];
+  op9 [label="EntryScan\n→slot 1\nafter=2\nscanned=15\npassed=2", data_operation="EntryScan", data_destslot="1", data_sourceslot="0", data_taken="True", data_switchedafterclauses="2", data_entriesscanned="15", data_entriespassed="2"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_entry [shape="note", color="#1a7f37", label="Created Between AND Age GreaterThan AND Score LessThan AND Name NotEqual", data_operation="ResidualNote", data_filter="Created Between AND Age GreaterThan AND Score LessThan AND Name NotEqual", data_flow="on"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op0 -> op2 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> op3 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op2 -> op4 [style="dotted", color="grey", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="off"];
+  op4 -> op5 [style="dotted", color="grey", label="gate slot 0", data_kind="gate", data_flow="off"];
+  op4 -> op6 [style="dotted", color="grey", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="off"];
+  op6 -> op7 [style="dotted", color="grey", label="gate slot 0", data_kind="gate", data_flow="off"];
+  op6 -> op8 [style="dotted", color="grey", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="off"];
+  op8 -> result [style="dotted", color="grey", label="(not taken)", data_kind="result", data_variant="not-taken", data_flow="off"];
+  op1 -> op9 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op3 -> op9 [style="bold", color="#1a7f37", label="switched here", data_kind="branch", data_flow="on"];
+  op5 -> op9 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op7 -> op9 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op9 -> result [style="bold", color="#1a7f37", label="entry-scan TAKEN", data_kind="result", data_variant="entryscan-taken", data_flow="on"];
+  op9 -> res_entry [style="bold", color="#1a7f37", label="per entry", data_kind="residual", data_flow="on"];
 }
 ```
 
@@ -4183,7 +4015,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "London",
         "EstimatedRows": "9,943",
         "Count": "9943",
-        "Ms": "0.097"
+        "Ms": "0.071"
       }
     },
     {
@@ -4205,7 +4037,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "Between",
         "EstimatedRows": "50,000",
         "Count": "15",
-        "Ms": "28.354"
+        "Ms": "27.902"
       }
     },
     {
@@ -4314,7 +4146,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":38,"Timings":{"Query":{"DurationInMs":38,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":0,"Timings":{"Storage":{"DurationInMs":0,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":37,"Timings":{"Query":{"DurationInMs":37,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":0,"Timings":{"Storage":{"DurationInMs":0,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -4325,34 +4157,34 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Paris\n~9,943\n→slot 0\ncount=9997\n0.043 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Paris", data_estimatedrows="9,943", data_count="9997", data_ms="0.043"];
-  op1 [label="EntryScanCheck\n→slot 0\ncount=9997\n0.000 ms", data_destslot="0", data_count="9997", data_ms="0.000"];
-  op2 [label="AND\n[MultiTerm]\nFieldName=Created\nClauseType=Between\nTerm=630822816000000000\nTerm2=631454400000000000\n~50,000\n→slot 0\ncount=783\n127.248 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Created", data_term="630822816000000000", data_term2="631454400000000000", data_clausetype="Between", data_estimatedrows="50,000", data_count="783", data_ms="127.248"];
-  op3 [label="EntryScanCheck\n→slot 0\ncount=783\n0.000 ms", data_destslot="0", data_count="783", data_ms="0.000"];
-  op4 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=75\n~50,000\n→slot 0\ncount=60\n0.037 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="75", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="60", data_ms="0.037"];
-  op5 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op6 [label="AND\n[MultiTerm]\nFieldName=Score\nClauseType=LessThan\nTerm=200\n~50,000\n→slot 0", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Score", data_term="200", data_clausetype="LessThan", data_estimatedrows="50,000"];
-  op7 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op8 [label="ANDNOT\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=bob\nNEGATED\n~50,000\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="bob", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000"];
-  op9 [label="EntryScan\n→slot 1\ntaken=True\nafter=3\nscanned=60\npassed=11", data_destslot="1", data_sourceslot="0", data_taken="True", data_switchedafterclauses="3", data_entriesscanned="60", data_entriespassed="11"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op0 -> op2 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> op3 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op2 -> op4 [style=bold, color="#1a7f37", label="slot 0"];
-  op4 -> op5 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op4 -> op6 [style=dotted, color=grey, label="slot 0"];
-  op6 -> op7 [style=dotted, color=grey, label="gate slot 0"];
-  op6 -> op8 [style=dotted, color=grey, label="slot 0"];
-  op8 -> result [style=dotted, color=grey, label="(not taken)"];
-  op1 -> op9 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> op9 [style=dashed, color=grey, label="candidate switch"];
-  op5 -> op9 [style=bold, color="#1a7f37", label="switched here"];
-  op7 -> op9 [style=dashed, color=grey, label="candidate switch"];
-  op9 -> result [style=bold, color="#1a7f37", label="entry-scan TAKEN"];
-  res_entry [shape=note, color="#1a7f37", label="Created Between AND Age GreaterThan AND Score LessThan AND Name NotEqual"];
-  op9 -> res_entry [style=bold, color="#1a7f37", label="per entry"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Paris\n~9,943\n→slot 0\ncount=9997\n0.075 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Paris", data_estimatedrows="9,943", data_count="9997", data_ms="0.075", data_taken="True"];
+  op1 [label="EntryScanCheck\n→slot 0\ncount=9997\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="9997", data_ms="0.000", data_taken="True"];
+  op2 [label="AND\n[MultiTerm]\nFieldName=Created\nClauseType=Between\nTerm=630822816000000000\nTerm2=631454400000000000\n~50,000\n→slot 0\ncount=783\n108.022 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Created", data_term="630822816000000000", data_term2="631454400000000000", data_clausetype="Between", data_estimatedrows="50,000", data_count="783", data_ms="108.022", data_taken="True"];
+  op3 [label="EntryScanCheck\n→slot 0\ncount=783\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="783", data_ms="0.000", data_taken="True"];
+  op4 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=75\n~50,000\n→slot 0\ncount=60\n0.036 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="75", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="60", data_ms="0.036", data_taken="True"];
+  op5 [label="EntryScanCheck\n→slot 0", data_operation="EntryScanCheck", data_destslot="0", data_taken="True"];
+  op6 [label="AND\n[MultiTerm]\nFieldName=Score\nClauseType=LessThan\nTerm=200\n~50,000\n→slot 0", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Score", data_term="200", data_clausetype="LessThan", data_estimatedrows="50,000", data_taken="False"];
+  op7 [label="EntryScanCheck\n→slot 0", data_operation="EntryScanCheck", data_destslot="0", data_taken="False"];
+  op8 [label="ANDNOT\n[Term]\nFieldName=Name\nClauseType=NotEquals\nTerm=bob\nNEGATED\n~50,000\n→slot 0", data_operation="ANDNOT", data_destslot="0", data_dispatch="Term", data_fieldname="Name", data_term="bob", data_clausetype="NotEquals", data_negated="true", data_estimatedrows="50,000", data_taken="False"];
+  op9 [label="EntryScan\n→slot 1\nafter=3\nscanned=60\npassed=11", data_operation="EntryScan", data_destslot="1", data_sourceslot="0", data_taken="True", data_switchedafterclauses="3", data_entriesscanned="60", data_entriespassed="11"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_entry [shape="note", color="#1a7f37", label="Created Between AND Age GreaterThan AND Score LessThan AND Name NotEqual", data_operation="ResidualNote", data_filter="Created Between AND Age GreaterThan AND Score LessThan AND Name NotEqual", data_flow="on"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op0 -> op2 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> op3 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op2 -> op4 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op4 -> op5 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op4 -> op6 [style="dotted", color="grey", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="off"];
+  op6 -> op7 [style="dotted", color="grey", label="gate slot 0", data_kind="gate", data_flow="off"];
+  op6 -> op8 [style="dotted", color="grey", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="off"];
+  op8 -> result [style="dotted", color="grey", label="(not taken)", data_kind="result", data_variant="not-taken", data_flow="off"];
+  op1 -> op9 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op3 -> op9 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op5 -> op9 [style="bold", color="#1a7f37", label="switched here", data_kind="branch", data_flow="on"];
+  op7 -> op9 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op9 -> result [style="bold", color="#1a7f37", label="entry-scan TAKEN", data_kind="result", data_variant="entryscan-taken", data_flow="on"];
+  op9 -> res_entry [style="bold", color="#1a7f37", label="per entry", data_kind="residual", data_flow="on"];
 }
 ```
 
@@ -4484,7 +4316,7 @@ Executed strategy: `BitmapPipeline`
         "Term": "Paris",
         "EstimatedRows": "9,943",
         "Count": "9997",
-        "Ms": "0.043"
+        "Ms": "0.075"
       }
     },
     {
@@ -4506,7 +4338,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "Between",
         "EstimatedRows": "50,000",
         "Count": "783",
-        "Ms": "127.248"
+        "Ms": "108.022"
       }
     },
     {
@@ -4527,7 +4359,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "GreaterThan",
         "EstimatedRows": "50,000",
         "Count": "60",
-        "Ms": "0.037"
+        "Ms": "0.036"
       }
     },
     {
@@ -4619,7 +4451,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":127,"Timings":{"Query":{"DurationInMs":127,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":0,"Timings":{"Storage":{"DurationInMs":0,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":108,"Timings":{"Query":{"DurationInMs":108,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":0,"Timings":{"Storage":{"DurationInMs":0,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -4640,10 +4472,10 @@ A bare `exists(field)` leaf. It does not look at any value — it fills the accu
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[MultiTerm]\nFieldName=Tags\nClauseType=Exists\n~50,000\n→slot 0\ncount=50000\n1.690 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Tags", data_clausetype="Exists", data_estimatedrows="50,000", data_count="50000", data_ms="1.690"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[MultiTerm]\nFieldName=Tags\nClauseType=Exists\n~50,000\n→slot 0\ncount=50000\n3.361 ms", data_operation="Fill", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Tags", data_clausetype="Exists", data_estimatedrows="50,000", data_count="50000", data_ms="3.361", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -4685,7 +4517,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "Exists",
         "EstimatedRows": "50,000",
         "Count": "50000",
-        "Ms": "1.690"
+        "Ms": "3.361"
       }
     }
   ]
@@ -4697,7 +4529,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":129,"Timings":{"Query":{"DurationInMs":129,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":53,"Timings":{"Storage":{"DurationInMs":51,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":194,"Timings":{"Query":{"DurationInMs":194,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":108,"Timings":{"Storage":{"DurationInMs":106,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -4718,12 +4550,12 @@ from index 'Items/Index' where Tags all in ($a, $b)
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Tags\nClauseType=AllIn\nTerm=red\n~14,559\n→slot 0\ncount=21818\n0.083 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Tags", data_term="red", data_clausetype="AllIn", data_estimatedrows="14,559", data_count="21818", data_ms="0.083"];
-  op1 [label="AND-Range\n[Term]\nFieldName=Tags\nClauseType=AllIn\nTerm=green\nTerms=2\n~43,679\n→slot 0\ncount=6284\n0.378 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Tags", data_term="green", data_clausetype="AllIn", data_estimatedrows="43,679", data_count="6284", data_ms="0.378", data_terms="2"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=Tags\nClauseType=AllIn\nTerm=red\n~14,559\n→slot 0\ncount=21818\n0.086 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="Tags", data_term="red", data_clausetype="AllIn", data_estimatedrows="14,559", data_count="21818", data_ms="0.086", data_taken="True"];
+  op1 [label="AND-Range\n[Term]\nFieldName=Tags\nClauseType=AllIn\nTerm=green\nTerms=2\n~43,679\n→slot 0\ncount=6284\n0.381 ms", data_operation="AND-Range", data_destslot="0", data_dispatch="Term", data_fieldname="Tags", data_term="green", data_clausetype="AllIn", data_estimatedrows="43,679", data_count="6284", data_ms="0.381", data_terms="2", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -4775,7 +4607,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "AllIn",
         "EstimatedRows": "14,559",
         "Count": "21818",
-        "Ms": "0.083"
+        "Ms": "0.086"
       }
     },
     {
@@ -4788,7 +4620,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "AllIn",
         "EstimatedRows": "43,679",
         "Count": "6284",
-        "Ms": "0.378",
+        "Ms": "0.381",
         "Terms": "2"
       }
     }
@@ -4812,12 +4644,12 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Tags\nClauseType=AllIn\nTerm=red\n~14,559\n→slot 0\ncount=21818\n0.082 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Tags", data_term="red", data_clausetype="AllIn", data_estimatedrows="14,559", data_count="21818", data_ms="0.082"];
-  op1 [label="AND-Range\n[Term]\nFieldName=Tags\nClauseType=AllIn\nTerm=red\nTerms=2\n~43,679\n→slot 0\ncount=21818\n0.193 ms", data_destslot="0", data_dispatch="Term", data_fieldname="Tags", data_term="red", data_clausetype="AllIn", data_estimatedrows="43,679", data_count="21818", data_ms="0.193", data_terms="2"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="slot 0"];
-  op1 -> result [style=bold, color="#1a7f37"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=Tags\nClauseType=AllIn\nTerm=red\n~14,559\n→slot 0\ncount=21818\n0.108 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="Tags", data_term="red", data_clausetype="AllIn", data_estimatedrows="14,559", data_count="21818", data_ms="0.108", data_taken="True"];
+  op1 [label="AND-Range\n[Term]\nFieldName=Tags\nClauseType=AllIn\nTerm=red\nTerms=2\n~43,679\n→slot 0\ncount=21818\n0.220 ms", data_operation="AND-Range", data_destslot="0", data_dispatch="Term", data_fieldname="Tags", data_term="red", data_clausetype="AllIn", data_estimatedrows="43,679", data_count="21818", data_ms="0.220", data_terms="2", data_taken="True"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op1 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
 }
 ```
 
@@ -4869,7 +4701,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "AllIn",
         "EstimatedRows": "14,559",
         "Count": "21818",
-        "Ms": "0.082"
+        "Ms": "0.108"
       }
     },
     {
@@ -4882,7 +4714,7 @@ Executed strategy: `BitmapPipeline`
         "ClauseType": "AllIn",
         "EstimatedRows": "43,679",
         "Count": "21818",
-        "Ms": "0.193",
+        "Ms": "0.220",
         "Terms": "2"
       }
     }
@@ -4895,7 +4727,7 @@ Executed strategy: `BitmapPipeline`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":96,"Timings":{"Query":{"DurationInMs":96,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":50,"Timings":{"Storage":{"DurationInMs":49,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":128,"Timings":{"Query":{"DurationInMs":128,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":15,"Timings":{"Storage":{"DurationInMs":14,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -4916,12 +4748,10 @@ A pure ordering with no filter. `FieldSortedScan` IS still a structural candidat
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Match]\n→slot 0", data_destslot="0", data_dispatch="Match"];
-  directscan [shape=box, style=bold, color="#1a7f37", label="DirectScan\ntree=Age\ndrive=Age [all]\ndir=Forward\nscanned=50000\npassed=0\nrejected=0\nstopped=TreeExhausted\ntree=19.832 ms", data_drivingtree="Age", data_drivingclause="Age [all]", data_treedirection="Forward", data_reason="full index-only scan (no WHERE clause)", data_treescan_ms="19.832", data_treeentriesscanned="50000", data_entriespassedfilter="0", data_entriesrejected="0", data_stoppedat="TreeExhausted"];
-  result [shape=ellipse, label="Result"];
-  op0 -> result [style=dotted, color=grey, label="(bitmap candidate, not executed)"];
-  directscan -> result [style=bold, color="#1a7f37", label="scan result"];
+  node [shape="box", fontname="monospace"];
+  producer [style="bold", color="#1a7f37", label="DirectScan\ntree=Age\ndrive=Age [all]\ndir=Forward\nscanned=50000\nstopped=TreeExhausted\ntree=19.440 ms", data_operation="DirectScan", data_drivingtree="Age", data_drivingclause="Age [all]", data_treedirection="Forward", data_reason="full index-only scan (no WHERE clause)", data_treescan_ms="19.440", data_treeentriesscanned="50000", data_stoppedat="TreeExhausted"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  producer -> result [style="bold", color="#1a7f37", label="scan result", data_kind="result", data_variant="scan-result", data_flow="on"];
 }
 ```
 
@@ -4959,13 +4789,6 @@ Decision trail:
   },
   "Children": [
     {
-      "Operation": "Fill",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "Match"
-      }
-    },
-    {
       "Operation": "DecisionTrail",
       "Children": [
         {
@@ -4991,10 +4814,8 @@ Decision trail:
         "DrivingClause": "Age [all]",
         "TreeDirection": "Forward",
         "Reason": "full index-only scan (no WHERE clause)",
-        "TreeScan_ms": "19.832",
+        "TreeScan_ms": "19.440",
         "TreeEntriesScanned": "50000",
-        "EntriesPassedFilter": "0",
-        "EntriesRejected": "0",
         "StoppedAt": "TreeExhausted"
       }
     }
@@ -5007,7 +4828,7 @@ Decision trail:
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":204,"Timings":{"Query":{"DurationInMs":204,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":83,"Timings":{"Storage":{"DurationInMs":81,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":225,"Timings":{"Query":{"DurationInMs":225,"Timings":{"Corax":{"DurationInMs":0,"Timings":{"Optimizer":{"DurationInMs":0,"Timings":null}}},"Retriever":{"DurationInMs":110,"Timings":{"Storage":{"DurationInMs":108,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -5028,19 +4849,10 @@ Run against `Items/Compound`, which declares a Corax compound field on **(City, 
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Age\nTerm=40\n~770\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="Age", data_term="40", data_estimatedrows="770"];
-  op1 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op2 [label="AND\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943"];
-  op3 [label="EntryScan\n→slot 1", data_destslot="1", data_sourceslot="0"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=dashed, label="gate slot 0"];
-  op0 -> op2 [label="slot 0"];
-  op2 -> result;
-  op1 -> op3 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="City Equal"];
-  op3 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  producer [style="bold", color="#1a7f37", label="CompoundKeyLookup\n[CompoundTerm]\nFieldName=compound(City,Age)\nkey: City=London AND Age=40\ncount=154", data_operation="CompoundKeyLookup", data_dispatch="CompoundTerm", data_fieldname="compound(City,Age)", data_components="City=London AND Age=40", data_count="154"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  producer -> result [style="bold", color="#1a7f37", label="lookup result", data_kind="result", data_variant="lookup-result", data_flow="on"];
 }
 ```
 
@@ -5108,47 +4920,13 @@ Executed strategy: `CompoundKeyLookup`
   },
   "Children": [
     {
-      "Operation": "Fill",
+      "Operation": "CompoundKeyLookup",
       "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "Term",
-        "FieldName": "Age",
-        "Term": "40",
-        "EstimatedRows": "770"
+        "Dispatch": "CompoundTerm",
+        "FieldName": "compound(City,Age)",
+        "Components": "City=London AND Age=40",
+        "Count": "154"
       }
-    },
-    {
-      "Operation": "EntryScanCheck",
-      "Parameters": {
-        "DestSlot": "0"
-      }
-    },
-    {
-      "Operation": "AND",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "Term",
-        "FieldName": "City",
-        "Term": "London",
-        "EstimatedRows": "9,943"
-      }
-    },
-    {
-      "Operation": "EntryScan",
-      "Parameters": {
-        "DestSlot": "1",
-        "SourceSlot": "0"
-      },
-      "Children": [
-        {
-          "Operation": "Residual",
-          "Parameters": {
-            "FieldName": "City",
-            "Compare": "Equal",
-            "ValueType": "Slice"
-          }
-        }
-      ]
     }
   ]
 }
@@ -5159,7 +4937,7 @@ Executed strategy: `CompoundKeyLookup`
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":4,"Timings":{"Query":{"DurationInMs":4,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":0,"Timings":{"Storage":{"DurationInMs":0,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":4,"Timings":{"Query":{"DurationInMs":4,"Timings":{"Corax":{"DurationInMs":2,"Timings":{"Optimizer":{"DurationInMs":2,"Timings":null}}},"Retriever":{"DurationInMs":0,"Timings":{"Storage":{"DurationInMs":0,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -5170,19 +4948,10 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=Age\nTerm=55\n~770\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="Age", data_term="55", data_estimatedrows="770"];
-  op1 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op2 [label="AND\n[Term]\nFieldName=City\nTerm=Rome\n~9,943\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Rome", data_estimatedrows="9,943"];
-  op3 [label="EntryScan\n→slot 1", data_destslot="1", data_sourceslot="0"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=dashed, label="gate slot 0"];
-  op0 -> op2 [label="slot 0"];
-  op2 -> result;
-  op1 -> op3 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="City Equal"];
-  op3 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  producer [style="bold", color="#1a7f37", label="CompoundKeyLookup\n[CompoundTerm]\nFieldName=compound(City,Age)\nkey: City=Rome AND Age=55\ncount=170", data_operation="CompoundKeyLookup", data_dispatch="CompoundTerm", data_fieldname="compound(City,Age)", data_components="City=Rome AND Age=55", data_count="170"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  producer -> result [style="bold", color="#1a7f37", label="lookup result", data_kind="result", data_variant="lookup-result", data_flow="on"];
 }
 ```
 
@@ -5250,47 +5019,13 @@ Executed strategy: `CompoundKeyLookup`
   },
   "Children": [
     {
-      "Operation": "Fill",
+      "Operation": "CompoundKeyLookup",
       "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "Term",
-        "FieldName": "Age",
-        "Term": "55",
-        "EstimatedRows": "770"
+        "Dispatch": "CompoundTerm",
+        "FieldName": "compound(City,Age)",
+        "Components": "City=Rome AND Age=55",
+        "Count": "170"
       }
-    },
-    {
-      "Operation": "EntryScanCheck",
-      "Parameters": {
-        "DestSlot": "0"
-      }
-    },
-    {
-      "Operation": "AND",
-      "Parameters": {
-        "DestSlot": "0",
-        "Dispatch": "Term",
-        "FieldName": "City",
-        "Term": "Rome",
-        "EstimatedRows": "9,943"
-      }
-    },
-    {
-      "Operation": "EntryScan",
-      "Parameters": {
-        "DestSlot": "1",
-        "SourceSlot": "0"
-      },
-      "Children": [
-        {
-          "Operation": "Residual",
-          "Parameters": {
-            "FieldName": "City",
-            "Compare": "Equal",
-            "ValueType": "Slice"
-          }
-        }
-      ]
     }
   ]
 }
@@ -5329,24 +5064,24 @@ This is the headline lesson of the introspection output: **`StrategyCandidate` i
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.056 ms", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.056"];
-  op1 [label="EntryScanCheck\n→slot 0\ncount=9943\n0.000 ms", data_destslot="0", data_count="9943", data_ms="0.000"];
-  op2 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=18\n~50,000\n→slot 0\ncount=9778\n0.275 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="9778", data_ms="0.275"];
-  op3 [label="EntryScanCheck\n→slot 0\ncount=9778\n0.000 ms", data_destslot="0", data_count="9778", data_ms="0.000"];
-  op4 [label="AND\n[MultiTerm]\nFieldName=Score\nClauseType=GreaterThan\nTerm=500\n~50,000\n→slot 0\ncount=4875\n44.969 ms", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Score", data_term="500", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="4875", data_ms="44.969"];
-  op5 [label="EntryScan\n→slot 1\ntaken=False", data_destslot="1", data_sourceslot="0", data_taken="False"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op0 -> op2 [style=bold, color="#1a7f37", label="slot 0"];
-  op2 -> op3 [style=bold, color="#1a7f37", label="gate slot 0"];
-  op2 -> op4 [style=bold, color="#1a7f37", label="slot 0"];
-  op4 -> result [style=bold, color="#1a7f37"];
-  op1 -> op5 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> op5 [style=dashed, color=grey, label="candidate switch"];
-  op5 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="Age GreaterThan AND Score GreaterThan"];
-  op5 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=London\n~9,943\n→slot 0\ncount=9943\n0.066 ms", data_operation="Fill", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="London", data_estimatedrows="9,943", data_count="9943", data_ms="0.066", data_taken="True"];
+  op1 [label="EntryScanCheck\n→slot 0\ncount=9943\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="9943", data_ms="0.000", data_taken="True"];
+  op2 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=18\n~50,000\n→slot 0\ncount=9778\n0.301 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="9778", data_ms="0.301", data_taken="True"];
+  op3 [label="EntryScanCheck\n→slot 0\ncount=9778\n0.000 ms", data_operation="EntryScanCheck", data_destslot="0", data_count="9778", data_ms="0.000", data_taken="True"];
+  op4 [label="AND\n[MultiTerm]\nFieldName=Score\nClauseType=GreaterThan\nTerm=500\n~50,000\n→slot 0\ncount=4875\n95.732 ms", data_operation="AND", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Score", data_term="500", data_clausetype="GreaterThan", data_estimatedrows="50,000", data_count="4875", data_ms="95.732", data_taken="True"];
+  op5 [label="EntryScan\n→slot 1", data_operation="EntryScan", data_destslot="1", data_sourceslot="0", data_taken="False"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_entry [shape="note", color="grey", label="Age GreaterThan AND Score GreaterThan", data_operation="ResidualNote", data_filter="Age GreaterThan AND Score GreaterThan", data_flow="off"];
+  op0 -> op1 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op0 -> op2 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op2 -> op3 [style="bold", color="#1a7f37", label="gate slot 0", data_kind="gate", data_flow="on"];
+  op2 -> op4 [style="bold", color="#1a7f37", label="slot 0", data_kind="dataflow", data_slot="0", data_flow="on"];
+  op4 -> result [style="bold", color="#1a7f37", data_kind="result", data_variant="bitmap-final", data_flow="on"];
+  op1 -> op5 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op3 -> op5 [style="dashed", color="grey", label="candidate switch", data_kind="branch", data_flow="candidate"];
+  op5 -> result [style="dashed", color="grey", label="if entry-scan taken", data_kind="result", data_variant="entryscan-iftaken", data_flow="candidate"];
+  op5 -> res_entry [style="dotted", color="grey", label="per entry", data_kind="residual", data_flow="off"];
 }
 ```
 
@@ -5514,7 +5249,7 @@ Decision trail:
             "Term": "London",
             "EstimatedRows": "9,943",
             "Count": "9943",
-            "Ms": "0.056"
+            "Ms": "0.066"
           }
         },
         {
@@ -5535,7 +5270,7 @@ Decision trail:
             "ClauseType": "GreaterThan",
             "EstimatedRows": "50,000",
             "Count": "9778",
-            "Ms": "0.275"
+            "Ms": "0.301"
           }
         },
         {
@@ -5556,7 +5291,7 @@ Decision trail:
             "ClauseType": "GreaterThan",
             "EstimatedRows": "50,000",
             "Count": "4875",
-            "Ms": "44.969"
+            "Ms": "95.732"
           }
         },
         {
@@ -5608,7 +5343,7 @@ Decision trail:
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":78,"Timings":{"Query":{"DurationInMs":78,"Timings":{"Corax":{"DurationInMs":1,"Timings":{"Optimizer":{"DurationInMs":1,"Timings":null}}},"Retriever":{"DurationInMs":6,"Timings":{"Storage":{"DurationInMs":6,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":144,"Timings":{"Query":{"DurationInMs":144,"Timings":{"Corax":{"DurationInMs":2,"Timings":{"Optimizer":{"DurationInMs":2,"Timings":null}}},"Retriever":{"DurationInMs":10,"Timings":{"Storage":{"DurationInMs":9,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
@@ -5619,28 +5354,12 @@ Query timings (wall-clock, illustrative):
 ```dot
 digraph QueryPlan {
   rankdir=TB;
-  node [shape=box, fontname="monospace"];
-  op0 [label="Fill\n[Term]\nFieldName=City\nTerm=Vatican\n~9,943\n→slot 0", data_destslot="0", data_dispatch="Term", data_fieldname="City", data_term="Vatican", data_estimatedrows="9,943"];
-  op1 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op2 [label="AND\n[MultiTerm]\nFieldName=Age\nClauseType=GreaterThan\nTerm=18\n~50,000\n→slot 0", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Age", data_term="18", data_clausetype="GreaterThan", data_estimatedrows="50,000"];
-  op3 [label="EntryScanCheck\n→slot 0", data_destslot="0"];
-  op4 [label="AND\n[MultiTerm]\nFieldName=Score\nClauseType=GreaterThan\nTerm=500\n~50,000\n→slot 0", data_destslot="0", data_dispatch="MultiTerm", data_fieldname="Score", data_term="500", data_clausetype="GreaterThan", data_estimatedrows="50,000"];
-  op5 [label="EntryScan\n→slot 1", data_destslot="1", data_sourceslot="0"];
-  directscan [shape=box, style=bold, color="#1a7f37", label="DirectScan\ntree=compound(City,Age)\ndrive=City = 'Vatican'\nseek='Vatican' (prefix, validatePostfixLen)\ndir=Forward\nresiduals: Score GreaterThan\nscanned=197\npassed=95\nrejected=102\nstopped=TreeExhausted\ntree=0.253 ms\nentry=0.679 ms", data_drivingtree="compound(City,Age)", data_drivingclause="City = 'Vatican'", data_seekbound="'Vatican' (prefix, validatePostfixLen)", data_treedirection="Forward", data_residualpredicates="Score GreaterThan", data_reason="entries_to_scan(200) × 64 < bitmap_cost(100200)", data_treescan_ms="0.253", data_entryscans_ms="0.679", data_treeentriesscanned="197", data_entriespassedfilter="95", data_entriesrejected="102", data_stoppedat="TreeExhausted"];
-  result [shape=ellipse, label="Result"];
-  op0 -> op1 [style=dashed, label="gate slot 0"];
-  op0 -> op2 [label="slot 0"];
-  op2 -> op3 [style=dashed, label="gate slot 0"];
-  op2 -> op4 [label="slot 0"];
-  op4 -> result [style=dotted, color=grey, label="(bitmap candidate, not executed)"];
-  directscan -> result [style=bold, color="#1a7f37", label="scan result"];
-  res_direct [shape=note, color="#1a7f37", label="Score GreaterThan"];
-  directscan -> res_direct [style=bold, color="#1a7f37", label="per entry"];
-  op1 -> op5 [style=dashed, color=grey, label="candidate switch"];
-  op3 -> op5 [style=dashed, color=grey, label="candidate switch"];
-  op5 -> result [style=dashed, color=grey, label="if entry-scan taken"];
-  res_entry [shape=note, color=grey, label="Age GreaterThan AND Score GreaterThan"];
-  op5 -> res_entry [style=dotted, color=grey, label="per entry"];
+  node [shape="box", fontname="monospace"];
+  producer [style="bold", color="#1a7f37", label="DirectScan\ntree=compound(City,Age)\ndrive=City = 'Vatican'\nseek='Vatican' (prefix, validatePostfixLen)\ndir=Forward\nresiduals: Score GreaterThan\nscanned=197\npassed=95\nrejected=102\nstopped=TreeExhausted\ntree=0.253 ms\nentry=0.674 ms", data_operation="DirectScan", data_drivingtree="compound(City,Age)", data_drivingclause="City = 'Vatican'", data_seekbound="'Vatican' (prefix, validatePostfixLen)", data_treedirection="Forward", data_residualpredicates="Score GreaterThan", data_reason="entries_to_scan(200) × 64 < bitmap_cost(100200)", data_treescan_ms="0.253", data_entryscans_ms="0.674", data_treeentriesscanned="197", data_entriespassedfilter="95", data_entriesrejected="102", data_stoppedat="TreeExhausted"];
+  result [shape="ellipse", label="Result", data_operation="Result"];
+  res_producer [shape="note", color="#1a7f37", label="Score GreaterThan", data_operation="ResidualNote", data_filter="Score GreaterThan", data_flow="on"];
+  producer -> result [style="bold", color="#1a7f37", label="scan result", data_kind="result", data_variant="scan-result", data_flow="on"];
+  producer -> res_producer [style="bold", color="#1a7f37", label="per entry", data_kind="residual", data_flow="on"];
 }
 ```
 
@@ -5799,75 +5518,6 @@ Decision trail:
       },
       "Children": [
         {
-          "Operation": "Fill",
-          "Parameters": {
-            "DestSlot": "0",
-            "Dispatch": "Term",
-            "FieldName": "City",
-            "Term": "Vatican",
-            "EstimatedRows": "9,943"
-          }
-        },
-        {
-          "Operation": "EntryScanCheck",
-          "Parameters": {
-            "DestSlot": "0"
-          }
-        },
-        {
-          "Operation": "AND",
-          "Parameters": {
-            "DestSlot": "0",
-            "Dispatch": "MultiTerm",
-            "FieldName": "Age",
-            "Term": "18",
-            "ClauseType": "GreaterThan",
-            "EstimatedRows": "50,000"
-          }
-        },
-        {
-          "Operation": "EntryScanCheck",
-          "Parameters": {
-            "DestSlot": "0"
-          }
-        },
-        {
-          "Operation": "AND",
-          "Parameters": {
-            "DestSlot": "0",
-            "Dispatch": "MultiTerm",
-            "FieldName": "Score",
-            "Term": "500",
-            "ClauseType": "GreaterThan",
-            "EstimatedRows": "50,000"
-          }
-        },
-        {
-          "Operation": "EntryScan",
-          "Parameters": {
-            "DestSlot": "1",
-            "SourceSlot": "0"
-          },
-          "Children": [
-            {
-              "Operation": "Residual",
-              "Parameters": {
-                "FieldName": "Age",
-                "Compare": "GreaterThan",
-                "ValueType": "Long"
-              }
-            },
-            {
-              "Operation": "Residual",
-              "Parameters": {
-                "FieldName": "Score",
-                "Compare": "GreaterThan",
-                "ValueType": "Double"
-              }
-            }
-          ]
-        },
-        {
           "Operation": "DecisionTrail",
           "Children": [
             {
@@ -5889,7 +5539,7 @@ Decision trail:
             "ResidualPredicates": "Score GreaterThan",
             "Reason": "entries_to_scan(200) \u00D7 64 \u003C bitmap_cost(100200)",
             "TreeScan_ms": "0.253",
-            "EntryScans_ms": "0.679",
+            "EntryScans_ms": "0.674",
             "TreeEntriesScanned": "197",
             "EntriesPassedFilter": "95",
             "EntriesRejected": "102",
@@ -5917,7 +5567,7 @@ Decision trail:
 Query timings (wall-clock, illustrative):
 
 ```
-{"DurationInMs":5,"Timings":{"Query":{"DurationInMs":5,"Timings":{"Corax":{"DurationInMs":2,"Timings":{"Optimizer":{"DurationInMs":2,"Timings":null}}},"Retriever":{"DurationInMs":0,"Timings":{"Storage":{"DurationInMs":0,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
+{"DurationInMs":6,"Timings":{"Query":{"DurationInMs":5,"Timings":{"Corax":{"DurationInMs":2,"Timings":{"Optimizer":{"DurationInMs":2,"Timings":null}}},"Retriever":{"DurationInMs":0,"Timings":{"Storage":{"DurationInMs":0,"Timings":null}}}}},"Staleness":{"DurationInMs":0,"Timings":null}}}
 ```
 
 </details>
