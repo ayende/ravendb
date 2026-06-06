@@ -55,9 +55,6 @@ namespace Corax.Querying.Matches
                     { Constants.QueryInspectionNode.BoostFactor, BoostFactor.ToString(CultureInfo.InvariantCulture) }
                 })
             {
-                // A boost wrapper is transparent to the post-filter classification: a boosted spatial/vector slot is
-                // still a post-filter. Propagate the inner flag so it is skipped as a pipeline leaf and surfaced
-                // (with its boost factor) in the post-filter chain.
                 IsPostFilter = inner.IsPostFilter
             };
         }

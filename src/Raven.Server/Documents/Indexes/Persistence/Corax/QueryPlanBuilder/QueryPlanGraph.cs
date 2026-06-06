@@ -86,7 +86,7 @@ internal static class QueryPlanGraph
         List<QueryInspectionNode> postFilters = [];
         foreach (QueryInspectionNode child in compiled.Children)
         {
-            if (IsPostFilterOp(child))
+            if (child is { IsPostFilter: true })
                 postFilters.Add(child);
         }
 
@@ -439,16 +439,6 @@ internal static class QueryPlanGraph
     }
 
     /// <summary>
-    ///     A post-filter is a per-entry match that consumes the candidate set rather than writing a bitmap slot:
-    ///     the spatial and vector families. The match tags its own inspection node (<see cref="QueryInspectionNode.IsPostFilter"/>);
-    ///     we read that structural flag rather than sniffing the operation name, so the set of post-filter match
-    ///     types lives in one place — the matches themselves — instead of being mirrored as string lists here and in
-    ///     <c>QueryPlanBuilder.AppendPostFilterNodes</c>.
-    /// </summary>
-    internal static bool IsPostFilterOp(QueryInspectionNode node)
-        => node is { IsPostFilter: true };
-
-    /// <summary>
     ///     Walks the result-shaping wrappers (sort / boost) that sit between the plan root and the bitmap
     ///     pipeline node <paramref name="pipeline" />, returning them OUTERMOST-FIRST. These are the
     ///     SortingMatch / SortingMultiMatch / BoostingMatch the executor layered on top of the candidate set;
@@ -539,7 +529,7 @@ internal static class QueryPlanGraph
         List<QueryInspectionNode> postFilters = [];
         foreach (QueryInspectionNode child in postFilter.Children ?? [])
         {
-            if (IsPostFilterOp(child))
+            if (child is { IsPostFilter: true })
                 postFilters.Add(child);
         }
 
