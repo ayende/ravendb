@@ -166,7 +166,7 @@ public sealed class DirectScanFilteredMatch(
 
     public override QueryInspectionNode Inspect()
     {
-        var result =  base.Inspect();
+        var result = base.Inspect();
         var parameters = result.Parameters;
         parameters["EntriesPassedFilter"] = EntriesPassedFilter.ToString();
         parameters["EntriesRejected"] = EntriesRejected.ToString();

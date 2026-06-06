@@ -430,7 +430,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private void SortGroupBySecondary()
     {
         var entriesSpan = _groupEntries.ToSpan();
-        var secondarySpan = _groupSecondary.ToSpan();
+        var secondarySpan = new Span<long>(_groupSecondary.RawItems, _groupSecondary.Capacity);
         var indexesSpan = new Span<int>(_groupSortedIndexes.RawItems, _groupSortedIndexes.Capacity);
         _groupEmitIdx = 0;
         switch (_secondaryType)

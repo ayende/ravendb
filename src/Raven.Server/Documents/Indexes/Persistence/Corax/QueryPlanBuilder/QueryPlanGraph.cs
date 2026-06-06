@@ -128,7 +128,7 @@ internal static class QueryPlanGraph
             Dictionary<string, string> d = g.CreateNode("op" + i);
             d[OperationKey] = ops[i].Operation;
             CopyParameters(ops[i], d);
-            if (hasRuntime && (ops[i].Parameters == null || !ops[i].Parameters.ContainsKey("Taken")))
+            if (hasRuntime && (ops[i].Parameters == null || ops[i].Parameters.ContainsKey("Taken") == false))
             {
                 d["Taken"] = NodeTaken(i).ToString();
             }
@@ -353,7 +353,7 @@ internal static class QueryPlanGraph
             ResultKind => ResultEdgeLabel(edge),
             _ => null
         };
-        if (!string.IsNullOrEmpty(label))
+        if (string.IsNullOrEmpty(label) == false)
         {
             edge.Attributes["label"] = GraphvizGraph.Escape(label);
         }
@@ -429,7 +429,7 @@ internal static class QueryPlanGraph
 
         // Dispatch (Term / MultiTerm / Match) — how this leaf reaches its postings. Slot-algebra and control-flow
         // ops have no dispatch and so render none.
-        if (p.TryGetValue("Dispatch", out string dispatch) && !string.IsNullOrEmpty(dispatch))
+        if (p.TryGetValue("Dispatch", out string dispatch) && string.IsNullOrEmpty(dispatch) == false)
         {
             parts.Add("[" + dispatch + "]");
         }
@@ -450,7 +450,7 @@ internal static class QueryPlanGraph
         AddIf(p, parts, "SwitchedAfterClauses", "after=");
         AddIf(p, parts, "EntriesScanned", "scanned=");
         AddIf(p, parts, "EntriesPassed", "passed=");
-        if (p.TryGetValue("Ms", out string ms) && !string.IsNullOrEmpty(ms))
+        if (p.TryGetValue("Ms", out string ms) && string.IsNullOrEmpty(ms) == false)
         {
             parts.Add(ms + " ms");
         }
@@ -498,7 +498,7 @@ internal static class QueryPlanGraph
     {
         List<string> parts = new()
             { CompoundLookupOp };
-        if (p.TryGetValue("Dispatch", out string dispatch) && !string.IsNullOrEmpty(dispatch))
+        if (p.TryGetValue("Dispatch", out string dispatch) && string.IsNullOrEmpty(dispatch) == false)
         {
             parts.Add("[" + dispatch + "]");
         }
@@ -516,7 +516,7 @@ internal static class QueryPlanGraph
 
     private static void AddIf(Dictionary<string, string> p, List<string> into, string key, string prefix = "", string suffix = "")
     {
-        if (p.TryGetValue(key, out string val) && !string.IsNullOrEmpty(val))
+        if (p.TryGetValue(key, out string val) && string.IsNullOrEmpty(val) == false)
         {
             into.Add(prefix.Length == 0 ? key + "=" + val : prefix + val + suffix);
         }

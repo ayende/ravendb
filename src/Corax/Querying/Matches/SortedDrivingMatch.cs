@@ -224,7 +224,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
         if (_nullFirst is false && count is 0 && _providerExhausted && (_nonExistingExhausted && _nullExhausted) is false)
         {
-            // we are now exhausted the provider, but has no entries (all fields are null?), we still need 
+            // we have now exhausted the provider, but have no entries (all fields are null?), we still need
             // to return the null values, easiest is to recurse to fetch them
             RuntimeHelpers.EnsureSufficientExecutionStack();
             return Fill(matches);
