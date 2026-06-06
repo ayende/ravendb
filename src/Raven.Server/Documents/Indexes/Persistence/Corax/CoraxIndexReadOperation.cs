@@ -1338,7 +1338,11 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             var (sortingData, _) = SetupSortingData(query, compileResult.QueryBuilderParams, queryMatch, ids.Length);
 
-            int docsToLoad = CoraxBufferSize(IndexSearcher, pageSize, query);
+            // docsToLoad is the logical page budget (how many entries to yield), NOT the buffer-rental size.
+            // CoraxBufferSize returns MaxBufferSizeForCorax whenever SkipStatistics == false, so using it here
+            // would ignore the page limit and over-yield. The main query read path uses the raw pageSize for
+            // the same reason (see `long docsToLoad = pageSize`); mirror that.
+            int docsToLoad = pageSize >= int.MaxValue ? int.MaxValue : (int)pageSize;
             using var coraxEntryReader = new CoraxIndexedEntriesReader(documentsContext, IndexSearcher);
             int read;
             long i = Skip();
