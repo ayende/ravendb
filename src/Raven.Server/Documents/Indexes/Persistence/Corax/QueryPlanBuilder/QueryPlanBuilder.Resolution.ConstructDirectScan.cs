@@ -111,7 +111,7 @@ internal static partial class QueryPlanBuilder
             {
                 MatchCompareFieldType.Integer => indexSearcher.BetweenQuery(fieldMeta, long.MinValue, long.MaxValue, forward: forward),
                 MatchCompareFieldType.Floating => indexSearcher.BetweenQuery(fieldMeta, double.MinValue, double.MaxValue, forward: forward),
-                _ => indexSearcher.ExistsQuery(fieldMeta, forward: forward)
+                _ => indexSearcher.ExistsQueryForSortedScan(fieldMeta, forward: forward)
             };
             return (match, ctx.WantTimings ? $"{fieldMeta.FieldName} [all]" : null);
         }
