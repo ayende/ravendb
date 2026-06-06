@@ -225,6 +225,28 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             }
         }
 
+        // Nulls / non-existing sort LAST: drain them in the SAME Fill that exhausts the provider.
+        // The start-of-Fill drain (top of this method) only fires once _providerExhausted is already
+        // set — i.e. on the *next* Fill. But when the provider yields no real terms (e.g. a field whose
+        // only values are null, so the skipNulls driving provider is empty) the provider-exhausting Fill
+        // reaches here with count == 0; returning 0 tells the caller "end of results" and the trailing
+        // null group is silently dropped. Draining it here keeps Fill from reporting 0 prematurely.
+        while (_nullFirst is false && _providerExhausted && count < matches.Length)
+        {
+            if (_hasPendingLargeIterator is false)
+            {
+                bool hadSource = _nonExistingExhausted is false || _nullExhausted is false;
+                HandleNullOrNonExistent();
+                if (hadSource is false || _hasPendingLargeIterator is false)
+                    break; // no trailing group left to drain
+            }
+
+            int before = count;
+            count += DrainLargePostingList(matches[count..], entryBuffer);
+            if (count == before)
+                _hasPendingLargeIterator = false; // current iterator drained; advance to the next source
+        }
+
         return count;
     }
 
