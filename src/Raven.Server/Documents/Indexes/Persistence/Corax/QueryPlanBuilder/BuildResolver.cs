@@ -40,19 +40,11 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     {
         var (scanSet, perClause) = BuildScanPredicates();
         var (ops, requiredBitmaps) = PlanEmitter.Emit(template, _exec.Executions, planParams, perClause);
-        // The entry-scan delegate is always emitted (an empty predicate set when there is no
-        // entry-scan path); its C# mirror joins the plan Source.
+        // The entry-scan delegate is always emitted (an empty predicate set when there is no entry-scan path); its C# mirror joins the plan Source.
         scanSet.Compiled = ResidualScanIlEmitter.EmitDelegate(scanSet.Predicates, out var scanCsharp);
 
-        // DirectScan / CompoundField walk the driving clause via the tree and filter every OTHER
-        // clause per-entry. Their residual set excludes the DRIVING clause, whereas the entry-scan
-        // set excludes clause[0] (the bitmap seed). Those differ whenever the driving clause is not
-        // the smallest-cardinality clause (always, for a range-driven scan), so each path bakes its
-        // own delegate from its own residual set. They are built BEFORE the plan so each delegate's
-        // C# mirror can join the plan Source (the per-entry filter each scan path actually runs).
-        // A set is built only when its driving clause exists: without one the path is structurally
-        // ineligible (it can never run), and BuildResidualSet with a null skip would otherwise skip
-        // nothing and fabricate an all-clauses residual that the plan never executes.
+        // DirectScan / CompoundField walk the driving clause via the tree and filter every OTHER clause per-entry. Their residual set excludes the DRIVING clause, whereas the entry-scan
+        // set excludes clause[0] (the bitmap seed). Those differ whenever the driving clause is not the smallest-cardinality clause (always, for a range-driven scan).
         var compoundFieldResidualSet = _exec.CompoundFieldDrivingClause is not null
             ? BuildResidualSet(_exec.Executions, perClause, _exec.CompoundFieldDrivingClause, _exec.CompoundFieldField2Range)
             : null;
@@ -70,7 +62,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         {
             CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
             CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
-
             Template = template,
             Source = ComposePlanSource(csharpText, scanCsharp, directScanCsharp, compoundCsharp),
             CacheKeyHash = _cacheKeyHash,
@@ -88,11 +79,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         return FinalizePlan();
     }
 
-    /// <summary>Joins the query-pipeline C# with each non-empty residual-filter C# mirror, so the plan Source shows
-    /// every per-entry filter a path may run (entry-scan, direct-scan, compound) — not just the bitmap pipeline's.
-    /// Each residual method is emitted as a "ResidualScan" function preceded by a comment header naming its path.
-    /// Sources identical to one already included are skipped (single-clause shapes share a residual set across
-    /// paths), so the common case stays a single method.</summary>
     private static string ComposePlanSource(string queryCsharp, string entryScanCsharp, string directScanCsharp, string compoundCsharp)
     {
         string result = queryCsharp ?? string.Empty;

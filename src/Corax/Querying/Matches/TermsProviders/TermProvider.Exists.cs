@@ -5,6 +5,7 @@ using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Sparrow;
 using Sparrow.Compression;
 using Sparrow.Server;
@@ -20,41 +21,24 @@ namespace Corax.Querying.Matches.TermsProviders
     {
         private readonly long _numberOfTerms;
         private readonly CompactTree _tree;
-        private readonly Querying.IndexSearcher _searcher;
+        private readonly IndexSearcher _searcher;
         private readonly FieldMetadata _field;
         
-        
         private readonly bool _nullExists;
-        private readonly PostingList _nullPostingList;
-        private PostingList.Iterator _nullIterator;
         private bool _fetchNulls;
-        private long _postingListId;
+        private readonly long _nullPostingListId;
         
         private CompactTree.Iterator<TLookupIterator> _iterator;
         private readonly CompactKey _compactKey;
 
-        public ExistsTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, bool forAggregation = false, bool skipNulls = false)
+        public ExistsTermsProvider(IndexSearcher searcher, CompactTree tree, in FieldMetadata field, bool forAggregation = false, bool skipNulls = false)
         {
             _tree = tree;
             _field = field;
             _searcher = searcher;
-            _nullIterator = default;
-            _nullExists = false;
-            _fetchNulls = false;
-            // A sorted index-only scan (SortedDrivingMatch / SortedDrivingWithTieBreakMatch) owns null and
-            // non-existing placement itself, keyed on the requested sort direction. If we injected the null
-            // posting list here it would be emitted ahead of the real terms regardless of direction, so the
-            // driving provider must yield only the real terms in that case.
-            if (skipNulls == false && _searcher.TryGetPostingListForNull(field, out  _postingListId))
-            {
-                _nullPostingList = searcher.GetPostingList(_postingListId);
-                _nullExists = _nullPostingList.State.NumberOfEntries > 0;
-                if (_nullExists)
-                {
-                    _nullIterator = _nullPostingList.Iterate();
-                    _fetchNulls = true;
-                }
-            }
+            // A sorted index-only scan (SortedDrivingMatch / SortedDrivingWithTieBreakMatch) owns null, so we shouldn't emit it as well
+            _nullExists = skipNulls == false && _searcher.TryGetPostingListForNull(field, out  _nullPostingListId);
+            _fetchNulls = _nullExists;
 
             if (forAggregation)
             {
@@ -71,7 +55,7 @@ namespace Corax.Querying.Matches.TermsProviders
         {
             if (_fetchNulls)
             {
-                postingListIds[0] = _postingListId;
+                postingListIds[0] = _nullPostingListId;
                 _fetchNulls = false;
                 return 1;
             }
@@ -82,9 +66,6 @@ namespace Corax.Querying.Matches.TermsProviders
         public void Reset()
         {
             _fetchNulls = _nullExists;
-            if (_fetchNulls)
-                _nullIterator = _nullPostingList.Iterate();
-
             _iterator.Reset();
         }
         
@@ -93,7 +74,7 @@ namespace Corax.Querying.Matches.TermsProviders
             if (_fetchNulls)
             {
                 _fetchNulls = false;
-                term = _searcher.TermQuery(_field, containerId: _postingListId, 1D);
+                term = _searcher.TermQuery(_field, containerId: _nullPostingListId, 1D);
                 return true;
             }
             
@@ -161,7 +142,8 @@ namespace Corax.Querying.Matches.TermsProviders
             if (_fetchNulls)
             {
                 terms.Add(Constants.ProjectionNullValue);
-                termCount[termIdx++] = _nullPostingList.State.NumberOfEntries;
+                using var nullPostingList = _searcher.GetPostingList(_nullPostingListId);
+                termCount[termIdx++] = nullPostingList.State.NumberOfEntries;
                 _fetchNulls = false;
             }
 

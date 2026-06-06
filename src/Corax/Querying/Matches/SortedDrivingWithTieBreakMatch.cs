@@ -76,18 +76,12 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private NativeList<int> _groupSortedIndexes;
     // String tie-break scratch: resolved CompactKey blobs per group entry.
     private NativeList<UnmanagedSpan> _groupTerms;
-    private int _groupSize;
     private int _groupEmitIdx;
 
     // Non-existing entries (docs where the primary sort field was absent) are treated as null-adjacent:
     //   nullFirst=true → non-existing, then nulls, then normal values
     //   nullFirst=false → normal values, then nulls, then non-existing
     private readonly bool _nullFirst;
-    // Only the posting-list IDs are kept from construction. The PostingList and its Iterator
-    // hold a FastPForDecoder whose scratch is allocated from the (bump) transaction allocator;
-    // creating them in the ctor and consuming them lazily in PrepareNullGroup lets intervening
-    // drain operations recycle that scratch region, so the iterator would decode clobbered
-    // memory. Instead we build them fresh at drain time, exactly like the regular-term path.
     private readonly long _nullPostingListId;
     private readonly bool _hasNullPostingList;
     private bool _nullExhausted;
@@ -196,7 +190,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             PrepareNullGroup(entryBuffer);
 
         // Emit any remaining entries from a previously-sorted group (null or regular).
-        if (_groupSize > 0)
+        if (_groupEntries.Count > 0)
         {
             count += EmitFromSortedGroup(matches[count..]);
             if (count >= matches.Length)
@@ -240,7 +234,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             while (_plIdsIdx < _plIdsRead && count < matches.Length)
             {
                 long plId = _plIdsBuffer.RawItems[_plIdsIdx];
-                _groupSize = 0;
+                _groupEntries.Clear();
                 var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
                 switch (termType)
                 {
@@ -286,7 +280,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                         throw new ArgumentException($"Unexpected TermIdMask value {termType} for plId {plId}");
                 }
 
-                if (_groupSize == 0)
+                if (_groupEntries.Count == 0)
                     continue;
 
                 SortGroupBySecondary();
@@ -300,7 +294,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         if (_providerExhausted && _nullFirst == false && _nullGroupPrepared == false)
         {
             PrepareNullGroup(entryBuffer);
-            if (_groupSize > 0)
+            if (_groupEntries.Count> 0)
                 count += EmitFromSortedGroup(matches[count..]);
         }
 
@@ -317,14 +311,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         while (newCap < required)
             newCap = (int)Math.Min((long)newCap * 2, _maxGroupSize);
         int addition = newCap - curCap;
-
-        // This class tracks the live group population in _groupSize and writes entries through
-        // RawItems directly, so NativeList.Count stays 0. Grow copies only Count*sizeof(T) bytes,
-        // so we must publish the live count to _groupEntries before growing or every accumulated
-        // entry is dropped (the new buffer is left uninitialized). The other three lists are
-        // scratch — SortGroupBySecondary fully rewrites them before they are read — so their
-        // contents need not survive the grow.
-        _groupEntries.Count = _groupSize;
 
         _groupEntries.Grow(_allocator, addition);
         _groupSecondary.Grow(_allocator, addition);
@@ -373,8 +359,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 if (_emittedBitmap.Contains(entryId))
                     return;
                 _emittedBitmap.Add(entryId);
-                EnsureGroupCapacity(_groupSize + 1);
-                _groupEntries.RawItems[_groupSize++] = entryId;
+                EnsureGroupCapacity(_groupEntries.Count + 1);
+                _groupEntries.AddUnsafe(entryId);
                 break;
             }
             case TermIdMask.SmallPostingList:
@@ -412,12 +398,12 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         int newCount = _emittedBitmap.DedupAddNew(entryBuffer, read);
         if (newCount == 0)
             return;
-        if (_groupSize + newCount >= _maxGroupSize)
+        if (_groupEntries.Count + newCount >= _maxGroupSize)
             TruncateGroupToTopTake();
-        EnsureGroupCapacity(_groupSize + newCount);
+        EnsureGroupCapacity(_groupEntries.Count + newCount);
         entryBuffer[..newCount].CopyTo(
-            new Span<long>(_groupEntries.RawItems + _groupSize, newCount));
-        _groupSize += newCount;
+            new Span<long>(_groupEntries.RawItems + _groupEntries.Count, newCount));
+        _groupEntries.Count += newCount;
     }
 
     /// <summary>Sort the current group by secondary and keep only the top <see cref="_take"/>
@@ -426,28 +412,25 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private void TruncateGroupToTopTake()
     {
         SortGroupBySecondary();
-        int keep = Math.Min(_take, _groupSize);
+        int keep = Math.Min(_take, _groupEntries.Count);
         var entries = _groupEntries.RawItems;
         var indexes = _groupSortedIndexes.RawItems;
         var scratch = _groupSecondary.RawItems;
 
         // For ascending: indexes[0..keep] are the smallest (emitted first).
         // For descending: indexes[groupSize-keep..groupSize] are the largest (emitted first).
-        int start = _secondaryDescending ? _groupSize - keep : 0;
+        int start = _secondaryDescending ? _groupEntries.Count - keep : 0;
         for (int i = 0; i < keep; i++)
             scratch[i] = entries[indexes[start + i]];
         new Span<long>(scratch, keep).CopyTo(new Span<long>(entries, keep));
 
-        _groupSize = keep;
+        _groupSortedIndexes.Count = _groupSecondary.Count = _groupEntries.Count = keep;
     }
 
     private void SortGroupBySecondary()
     {
-        var entriesSpan = new Span<long>(_groupEntries.RawItems, _groupSize);
-        var secondarySpan = new Span<long>(_groupSecondary.RawItems, _groupSize);
-        // _groupSortedIndexes is allocated to capacity (power-of-2, >= _groupSize),
-        // which is always a multiple of 8 (TieBreakGroupInitialCapacity = 1024),
-        // satisfying the SIMD padding contract of InitializeIndices.
+        var entriesSpan = _groupEntries.ToSpan();
+        var secondarySpan = _groupSecondary.ToSpan();
         var indexesSpan = new Span<int>(_groupSortedIndexes.RawItems, _groupSortedIndexes.Capacity);
         _groupEmitIdx = 0;
         switch (_secondaryType)
@@ -474,14 +457,14 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     {
         var entries = _groupEntries.RawItems;
         var indexes = _groupSortedIndexes.RawItems;
-        int remaining = _groupSize - _groupEmitIdx;
+        int remaining = _groupEntries.Count - _groupEmitIdx;
         int toEmit = Math.Min(remaining, matches.Length);
-        var (pos, step) = _secondaryDescending ? (_groupSize - 1 - _groupEmitIdx, -1) : (_groupEmitIdx, 1);
+        var (pos, step) = _secondaryDescending ? ( _groupEntries.Count - 1 - _groupEmitIdx, -1) : (_groupEmitIdx, 1);
         for (int i = 0; i < toEmit; i++, pos += step)
             matches[i] = entries[indexes[pos]];
         _groupEmitIdx += toEmit;
-        if (_groupEmitIdx >= _groupSize)
-            _groupSize = 0;
+        if (_groupEmitIdx >=  _groupEntries.Count)
+            _groupEntries.Count = 0;
         return toEmit;
     }
 
@@ -497,7 +480,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         if (hasNull == false && hasNonExisting == false)
             return;
 
-        _groupSize = 0;
+        _groupEntries.Count = 0;
 
         // Drain both null and non-existing entries into a single group; the secondary sort
         // determines their interleaved order within the group.
@@ -512,7 +495,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             _nullExhausted = true;
         }
 
-        if (_groupSize <= 0) return;
+        if ( _groupEntries.Count <= 0) return;
         SortGroupBySecondary();
     }
 

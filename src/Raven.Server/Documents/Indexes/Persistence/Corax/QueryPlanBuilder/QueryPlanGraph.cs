@@ -4,18 +4,12 @@ using Corax.Querying.Matches.Meta;
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 /// <summary>
-/// Renders a compiled-query <see cref="QueryInspectionNode"/> plan as a Graphviz (DOT) dataflow graph, server-side.
-/// The op stream is linear, but the bitmap SLOTS turn it into a graph: every op writes its <c>DestSlot</c>;
-/// a non-Fill op that targets a slot consumes whatever last wrote that slot (the running accumulator); the
-/// slot-to-slot merges (AND/ANDNOT/OR-Bitmaps) additionally consume their <c>SourceSlot</c>; and the
-/// EntryScanCheck branches slot 0 into the entry-scan tail (slot 1). Walking the ops while tracking the last
-/// writer per slot reconstructs the edges.
-///
-/// This is split in two: a BUILD pass populates a <see cref="GraphvizGraph"/> with the structural facts (every
-/// node and edge carries its data — dispatch, slot, cardinality, timing, taken-state — in its Data bag), and a
-/// STYLE pass (the <c>StyleNode</c>/<c>StyleEdge</c> callbacks handed to <see cref="GraphvizGraph.Render"/>) derives
-/// presentation (labels, shapes, the green/grey taken colouring) from that data at render time. Keeping the model
-/// and the data separate from the string generation means future changes touch one concern at a time.
+///     Renders a compiled-query <see cref="QueryInspectionNode" /> plan as a Graphviz (DOT) dataflow graph.
+///     The op stream is linear, but the bitmap SLOTS turn it into a graph: every op writes its <c>DestSlot</c>;
+///     a non-Fill op that targets a slot consumes whatever last wrote that slot (the running accumulator); the
+///     slot-to-slot merges (AND/ANDNOT/OR-Bitmaps) additionally consume their <c>SourceSlot</c>; and the
+///     EntryScanCheck branches slot 0 into the entry-scan tail (slot 1). Walking the ops while tracking the last
+///     writer per slot reconstructs the edges.
 /// </summary>
 internal static class QueryPlanGraph
 {
@@ -42,117 +36,102 @@ internal static class QueryPlanGraph
     private const string SequenceKind = "sequence";
 
     // Edge/node flow (taken) states. Drive the green/grey colouring at style time.
-    private const string FlowOn = "on";           // traversed this run            -> bold green
-    private const string FlowOff = "off";         // known NOT taken this run       -> dotted grey
-    private const string FlowCandidate = "candidate"; // conditional, did not fire  -> dashed grey
-    private const string FlowDashed = "dashed";   // gate with no runtime overlay   -> plain dashed
-    private const string FlowInvis = "invis";     // sequencing-only edge           -> invisible
-    private const string FlowNone = "none";       // no runtime info                -> plain
+    private const string FlowOn = "on";
+    private const string FlowOff = "off";
+    private const string FlowCandidate = "candidate";
+    private const string FlowDashed = "dashed";
+    private const string FlowInvis = "invis";
+    private const string FlowNone = "none";
 
     private const string TakenGreen = "#1a7f37";
 
-    /// <summary>Render <paramref name="plan"/> (or the CompiledQuery node within it) as Graphviz DOT text.</summary>
+    /// <summary>Render <paramref name="plan" /> (or the CompiledQuery node within it) as Graphviz DOT text.</summary>
     public static string ToGraphviz(QueryInspectionNode plan)
     {
         QueryInspectionNode compiled = FindNode(plan, "CompiledQuery");
         if (compiled?.Children == null)
-            return "digraph QueryPlan { /* no compiled op stream */ }\n";
-
-        // Op nodes are exactly the children that carry a DestSlot (Fill/AND/OR/ANDNOT/*-Bitmaps/Clear/
-        // EntryScanCheck/Range). DecisionTrail / ResolvedClauses / Vector / Spatial nodes have no DestSlot and are
-        // skipped — they are not part of the bitmap dataflow.
-        var ops = new List<QueryInspectionNode>();
-        foreach (QueryInspectionNode child in compiled.Children)
         {
-            if (child.Parameters != null && child.Parameters.ContainsKey("DestSlot"))
-                ops.Add(child);
+            return "digraph QueryPlan { /* no compiled op stream */ }\n";
         }
 
-        // The producer node — present when a scan/lookup strategy actually executed (DirectScan tree scan, or a
-        // CompoundKeyLookup composite-key TermQuery) — is a child of CompiledQuery with no DestSlot, so it is NOT
-        // part of `ops`. Find it separately: when it exists, it (not the bitmap pipeline) produced the answer, and
-        // the unused candidate ops were already dropped at build time, so `ops` is empty and this node is the whole
-        // dataflow.
+        List<QueryInspectionNode> ops = [];
         QueryInspectionNode producerNode = null;
         foreach (QueryInspectionNode child in compiled.Children)
         {
-            if (child.Operation == DirectScanOp || child.Operation == CompoundLookupOp)
+            if (child.Parameters != null && child.Parameters.ContainsKey("DestSlot"))
+            {
+                ops.Add(child);
+            } 
+            if (child.Operation is DirectScanOp or CompoundLookupOp)
             {
                 producerNode = child;
-                break;
             }
         }
 
-        // --- Runtime taken-path analysis ------------------------------------------------------------------------
-        // Locate the entry-scan tail and the cost gates so every node can carry a taken-state and every edge can be
-        // coloured by whether THIS run traversed it. The runtime facts come from OverlayTimings (present only when
-        // the query asked for include timings()): the tail's Taken flag, and SwitchedAfterClauses = how many leaf
-        // clauses had merged into slot 0 when the scan switched on. The j-th gate (1-indexed in op order) is the one
-        // that fires when SwitchedAfterClauses == j, so the fired gate is gateOpIds[switchedAfter-1].
+
         int entryScanTailId = -1;
-        var gateOpIds = new List<int>();
+        List<int> gateOpIds = [];
         for (int i = 0; i < ops.Count; i++)
         {
             if (ops[i].Operation == "EntryScan")
+            {
                 entryScanTailId = i;
+            }
             else if (ops[i].Operation == "EntryScanCheck")
+            {
                 gateOpIds.Add(i);
+            }
         }
 
         bool entryScanTaken = entryScanTailId >= 0
-            && ops[entryScanTailId].Parameters != null
-            && ops[entryScanTailId].Parameters.TryGetValue("Taken", out string takenVal)
-            && takenVal == "True";
+                              && ops[entryScanTailId].Parameters != null
+                              && ops[entryScanTailId].Parameters.TryGetValue("Taken", out string takenVal)
+                              && takenVal == "True";
 
         int switchedAfter = -1;
         if (entryScanTaken && ops[entryScanTailId].Parameters.TryGetValue("SwitchedAfterClauses", out string sac))
+        {
             int.TryParse(sac, out switchedAfter);
+        }
+
         int firedGateOp = switchedAfter >= 1 && switchedAfter <= gateOpIds.Count ? gateOpIds[switchedAfter - 1] : -1;
 
-        // Did the runtime overlay run at all? Without it we cannot know the taken path, so nodes carry no data_taken
-        // and edges fall back to a plain (uncoloured) style rather than falsely claiming a route. With an entry-scan
-        // gate the Taken flag is the signal; otherwise any op carrying a runtime Count proves the overlay ran.
         bool hasRuntime = entryScanTailId >= 0
             ? ops[entryScanTailId].Parameters != null && ops[entryScanTailId].Parameters.ContainsKey("Taken")
             : AnyHasCount(ops);
 
-        // An op executed this run iff the run did not switch to the entry scan before reaching it: when the scan
-        // fired at firedGateOp, only ops BEFORE that gate built the slot-0 accumulator; the post-switch merges were
-        // skipped. When the scan did not fire, every op ran.
-        bool OpExecuted(int opIndex) => entryScanTaken == false || firedGateOp < 0 || opIndex < firedGateOp;
+        bool OpExecuted(int opIndex) => !entryScanTaken || firedGateOp < 0 || opIndex < firedGateOp;
 
-        // A cost gate READS the slot-0 accumulator to decide whether to switch to the entry scan. A gate ran this
-        // run iff it was reached before (or AT) the switch: with no switch every gate ran and declined; with a switch
-        // the gates up to and INCLUDING the one that fired read slot 0 (the fired gate made the call), while gates
-        // after it were never reached. So a gate is reached iff gateOp <= firedGateOp (or no switch happened at all).
-        bool GateReached(int gateOp) => hasRuntime && (entryScanTaken == false || (firedGateOp >= 0 && gateOp <= firedGateOp));
+        bool GateReached(int gateOp) => hasRuntime && (!entryScanTaken || (firedGateOp >= 0 && gateOp <= firedGateOp));
 
-        // Whether op `i` was on the path the run actually took, mirroring the green/grey edge colouring so a DOT
-        // consumer reads the executed path off data_taken: the entry-scan tail uses its own Taken flag; a cost gate
-        // uses GateReached (taken if the run reached it); any other op uses OpExecuted.
         bool NodeTaken(int i)
-            => ops[i].Operation == "EntryScan" ? entryScanTaken
-             : ops[i].Operation == "EntryScanCheck" ? GateReached(i)
-             : OpExecuted(i);
+            => ops[i].Operation switch
+            {
+                "EntryScan" => entryScanTaken,
+                "EntryScanCheck" => GateReached(i),
+                _ => OpExecuted(i)
+            };
 
-        // The flow state of a real dataflow edge whose CONSUMER is op `to`: on = traversed this run; off = skipped
-        // (the entry scan replaced these merges); none = no runtime info, so make no claim.
-        string DataEdgeFlow(int to) => hasRuntime == false ? FlowNone : OpExecuted(to) ? FlowOn : FlowOff;
+        string DataEdgeFlow(int to) => !hasRuntime ? FlowNone : OpExecuted(to) ? FlowOn : FlowOff;
 
-        // --- BUILD pass: nodes + edges carrying only facts (Data). Presentation is derived in the STYLE pass. -----
-        var g = new GraphvizGraph();
-        g.NodeDefaults["shape"] = "box";
-        g.NodeDefaults["fontname"] = "monospace";
+        GraphvizGraph g = new()
+        {
+            NodeDefaults =
+            {
+                ["shape"] = "box",
+                ["fontname"] = "monospace"
+            }
+        };
 
         for (int i = 0; i < ops.Count; i++)
         {
             Dictionary<string, string> d = g.CreateNode("op" + i);
             d[OperationKey] = ops[i].Operation;
             CopyParameters(ops[i], d);
-            // Per-node taken state, for every node, mirroring the edge colouring. The entry-scan tail already carries
-            // a Taken param (copied above); for every other node we synthesise it. Skipped when no overlay ran.
-            if (hasRuntime && (ops[i].Parameters == null || ops[i].Parameters.ContainsKey("Taken") == false))
-                d["Taken"] = NodeTaken(i) ? "True" : "False";
+            if (hasRuntime && (ops[i].Parameters == null || !ops[i].Parameters.ContainsKey("Taken")))
+            {
+                d["Taken"] = NodeTaken(i).ToString();
+            }
         }
 
         if (producerNode != null)
@@ -165,39 +144,31 @@ internal static class QueryPlanGraph
         Dictionary<string, string> resultData = g.CreateNode("result");
         resultData[OperationKey] = ResultOp;
 
-        // Edges by slot dataflow. Track the last writer per slot to reconstruct consumers; realEdges records which
-        // consecutive op pairs already have a real edge so the invisible sequencing pass can skip them.
-        var lastWriter = new Dictionary<int, int>();
-        var realEdges = new HashSet<(int From, int To)>();
+        Dictionary<int, int> lastWriter = [];
+        HashSet<(int From, int To)> realEdges = [];
         for (int i = 0; i < ops.Count; i++)
         {
             QueryInspectionNode op = ops[i];
-
-            // The EntryScan tail is the shared branch TARGET, not part of the linear slot dataflow. Wired after the
-            // loop (gate edges from every check, and its slot-1 survivors to the result).
-            if (op.Operation == "EntryScan")
-                continue;
-
-            // EntryScanCheck is a read-only cost GATE on the slot-0 accumulator: it reads slot 0 and may divert to
-            // the entry-scan tail, but writes NO slot. Draw a gate edge from the current slot-0 writer; crucially do
-            // NOT make it a writer — that would chain the next op through a phantom slot.
-            if (op.Operation == "EntryScanCheck")
+            switch (op.Operation)
             {
-                if (lastWriter.TryGetValue(0, out int gateSrc))
+                case "EntryScan":
+                    continue;
+                case "EntryScanCheck":
                 {
-                    Dictionary<string, string> e = g.CreateEdge("op" + gateSrc, "op" + i);
-                    e[KindKey] = GateKind;
-                    e[FlowKey] = hasRuntime == false ? FlowDashed : GateReached(i) ? FlowOn : FlowOff;
+                    if (lastWriter.TryGetValue(0, out int gateSrc))
+                    {
+                        Dictionary<string, string> e = g.CreateEdge("op" + gateSrc, "op" + i);
+                        e[KindKey] = GateKind;
+                        e[FlowKey] = !hasRuntime ? FlowDashed : GateReached(i) ? FlowOn : FlowOff;
+                    }
+                    continue;
                 }
-
-                continue;
             }
 
             int dest = ParseSlot(op, "DestSlot");
             bool isFill = op.Operation is "Fill" or "Fill-AllEntries";
 
-            // A combining op reads the running accumulator already in its destination slot.
-            if (isFill == false && lastWriter.TryGetValue(dest, out int destWriter))
+            if (!isFill && lastWriter.TryGetValue(dest, out int destWriter))
             {
                 Dictionary<string, string> e = g.CreateEdge("op" + destWriter, "op" + i);
                 e[KindKey] = DataflowKind;
@@ -206,7 +177,6 @@ internal static class QueryPlanGraph
                 realEdges.Add((destWriter, i));
             }
 
-            // A slot-to-slot merge also reads its source slot.
             if (op.Parameters.ContainsKey("SourceSlot"))
             {
                 int src = ParseSlot(op, "SourceSlot");
@@ -223,10 +193,6 @@ internal static class QueryPlanGraph
             lastWriter[dest] = i;
         }
 
-        // Result edge: the bitmap pipeline leaves its answer in slot 0 — UNLESS the entry scan fired this run, in
-        // which case the survivors live in slot 1 and the bitmap pipeline's slot-0 result was thrown away. (When a
-        // scan/lookup strategy ran instead, there are no ops at all — `ops` is empty — so this block does not run
-        // and the producer node below carries the answer.)
         if (lastWriter.TryGetValue(0, out int finalWriter))
         {
             Dictionary<string, string> e = g.CreateEdge("op" + finalWriter, "result");
@@ -248,10 +214,6 @@ internal static class QueryPlanGraph
             }
         }
 
-        // When a scan/lookup strategy actually ran, its producer node — not the bitmap pipeline — is the real
-        // producer of the answer. Its result edge is on (mirroring the entry-scan TAKEN styling). A tree scan also
-        // carries a per-entry residual filter (every OTHER clause), which hangs off it as one note node; a compound
-        // key lookup has none (both clauses are folded into the key), so CombinedResidualFilter returns null.
         if (producerNode != null)
         {
             Dictionary<string, string> resultEdge = g.CreateEdge("producer", "result");
@@ -273,10 +235,6 @@ internal static class QueryPlanGraph
             }
         }
 
-        // Entry-scan branch: a gate that fires diverts the slot-0 accumulator into the single scan tail, whose slot-1
-        // survivors become the answer. Only the gate that actually fired this run (firedGateOp) is on; the other
-        // checks — whether they ran and declined, or were never reached — stay candidate, so exactly one switch edge
-        // lights up as the route the run took.
         if (entryScanTailId >= 0)
         {
             foreach (int gate in gateOpIds)
@@ -292,9 +250,6 @@ internal static class QueryPlanGraph
             tailResult[VariantKey] = entryScanTaken ? "entryscan-taken" : "entryscan-iftaken";
             tailResult[FlowKey] = entryScanTaken ? FlowOn : FlowCandidate;
 
-            // Residual predicates: the per-entry checks the scan applies to each slot-0 survivor once a gate switched
-            // the pipeline off. One conjunctive note node (every survivor must pass ALL of them). On when the scan
-            // fired this run; off otherwise — the bitmap pipeline ignores them.
             string entryFilter = CombinedResidualFilter(ops[entryScanTailId].Children);
             if (entryFilter != null)
             {
@@ -309,18 +264,16 @@ internal static class QueryPlanGraph
             }
         }
 
-        // Invisible sequencing edges: pin parallel-looking branches to true execution order. For each consecutive op
-        // pair with no real dataflow edge, an invisible edge forces the second to rank below the first. Entry-scan
-        // nodes are skipped — their branch edges already express the (conditional) ordering, and chaining through
-        // them would imply a false data dependency.
+        // Invisible sequencing edges: pin parallel-looking branches to true execution order. An invisible edge forces the second to rank below the first. 
         for (int i = 0; i + 1 < ops.Count; i++)
         {
-            if (ops[i].Operation is "EntryScan" or "EntryScanCheck")
+            if (ops[i].Operation is "EntryScan" or "EntryScanCheck" &&   // Entry-scan nodes are skipped — their branch edges already express the (conditional) ordering.
+                ops[i + 1].Operation is "EntryScan" or "EntryScanCheck")
                 continue;
-            if (ops[i + 1].Operation is "EntryScan" or "EntryScanCheck")
-                continue;
+            
             if (realEdges.Contains((i, i + 1)))
                 continue;
+
             Dictionary<string, string> e = g.CreateEdge("op" + i, "op" + (i + 1));
             e[KindKey] = SequenceKind;
             e[FlowKey] = FlowInvis;
@@ -328,8 +281,6 @@ internal static class QueryPlanGraph
 
         return g.Render(StyleNode, StyleEdge);
     }
-
-    // --- STYLE pass: derive presentation (label/shape/style/color) from each element's facts at render time. ------
 
     private static void StyleNode(GraphvizGraph.Node node)
     {
@@ -395,15 +346,17 @@ internal static class QueryPlanGraph
         edge.Data.TryGetValue(KindKey, out string kind);
         string label = kind switch
         {
-            DataflowKind => "slot " + (edge.Data.TryGetValue(SlotKey, out string slot) ? slot : ""),
+            DataflowKind => "slot " + edge.Data.GetValueOrDefault(SlotKey, ""),
             GateKind => "gate slot 0",
             BranchKind => flow == FlowOn ? "switched here" : "candidate switch",
             ResidualKind => "per entry",
             ResultKind => ResultEdgeLabel(edge),
             _ => null
         };
-        if (string.IsNullOrEmpty(label) == false)
+        if (!string.IsNullOrEmpty(label))
+        {
             edge.Attributes["label"] = GraphvizGraph.Escape(label);
+        }
     }
 
     private static string ResultEdgeLabel(GraphvizGraph.Edge edge)
@@ -421,54 +374,65 @@ internal static class QueryPlanGraph
     }
 
     private static int ParseSlot(QueryInspectionNode op, string key)
-        => op.Parameters != null && op.Parameters.TryGetValue(key, out string v) && int.TryParse(v, out int n) ? n : -1;
+    {
+        return op.Parameters != null && op.Parameters.TryGetValue(key, out string v) && int.TryParse(v, out int n) ? n : -1;
+    }
 
     private static QueryInspectionNode FindNode(QueryInspectionNode node, string operation)
     {
         if (node == null)
             return null;
+
         if (node.Operation == operation)
             return node;
-        if (node.Children != null)
+
+        foreach (QueryInspectionNode child in node.Children ?? [])
         {
-            foreach (QueryInspectionNode child in node.Children)
-            {
-                QueryInspectionNode found = FindNode(child, operation);
-                if (found != null)
-                    return found;
-            }
+            QueryInspectionNode found = FindNode(child, operation);
+            if (found != null)
+                return found;
         }
 
         return null;
     }
 
-    /// <summary>Copy an inspection node's parameters into a node Data bag, skipping the large source/graph blobs that
-    /// only live on the root node — they must never bloat a rendered op/scan node.</summary>
+    /// <summary>
+    ///     Copy an inspection node's parameters into a node Data bag, skipping the large source/graph blobs that
+    ///     only live on the root node — they must never bloat a rendered op/scan node.
+    /// </summary>
     private static void CopyParameters(QueryInspectionNode op, Dictionary<string, string> data)
     {
         if (op.Parameters == null)
             return;
+
         foreach (KeyValuePair<string, string> kv in op.Parameters)
         {
             if (kv.Key is "CSharpSource" or "CSharpSourceFormatted" or "PlanGraphDot")
                 continue;
+
             if (string.IsNullOrEmpty(kv.Value))
                 continue;
+
             data[kv.Key] = kv.Value;
         }
     }
 
-    /// <summary>Builds the readable, multi-line label for a bitmap op node from its facts. The taken-state is NOT
-    /// rendered into the label — it is surfaced as data_taken and via the edge colouring — so the label stays the
-    /// structural picture (dispatch, field, term, slot, cardinality, count, timing).</summary>
+    /// <summary>
+    ///     Builds the readable, multi-line label for a bitmap op node from its facts. The taken-state is NOT
+    ///     rendered into the label — it is surfaced as data_taken and via the edge colouring — so the label stays the
+    ///     structural picture (dispatch, field, term, slot, cardinality, count, timing).
+    /// </summary>
     private static string OpLabel(string operation, Dictionary<string, string> p)
     {
-        var parts = new List<string> { operation };
+        List<string> parts = new()
+            { operation };
 
         // Dispatch (Term / MultiTerm / Match) — how this leaf reaches its postings. Slot-algebra and control-flow
         // ops have no dispatch and so render none.
-        if (p.TryGetValue("Dispatch", out string dispatch) && string.IsNullOrEmpty(dispatch) == false)
+        if (p.TryGetValue("Dispatch", out string dispatch) && !string.IsNullOrEmpty(dispatch))
+        {
             parts.Add("[" + dispatch + "]");
+        }
 
         AddIf(p, parts, "FieldName");
         AddIf(p, parts, "ClauseType");
@@ -476,26 +440,37 @@ internal static class QueryPlanGraph
         AddIf(p, parts, "Term2");
         AddIf(p, parts, "Terms");
         if (p.TryGetValue("Negated", out string neg) && neg == "true")
+        {
             parts.Add("NEGATED");
+        }
+
         AddIf(p, parts, "EstimatedRows", "~");
         AddIf(p, parts, "DestSlot", "→slot ");
         AddIf(p, parts, "Count", "count=");
         AddIf(p, parts, "SwitchedAfterClauses", "after=");
         AddIf(p, parts, "EntriesScanned", "scanned=");
         AddIf(p, parts, "EntriesPassed", "passed=");
-        if (p.TryGetValue("Ms", out string ms) && string.IsNullOrEmpty(ms) == false)
+        if (p.TryGetValue("Ms", out string ms) && !string.IsNullOrEmpty(ms))
+        {
             parts.Add(ms + " ms");
+        }
 
         for (int i = 0; i < parts.Count; i++)
+        {
             parts[i] = GraphvizGraph.Escape(parts[i]);
+        }
+
         return string.Join("\\n", parts);
     }
 
-    /// <summary>Builds the readable label for the executed-tree-scan node from its facts: the driving tree / clause /
-    /// seek bound / direction, the per-entry residual predicates, the scan counts, and the per-phase timing.</summary>
+    /// <summary>
+    ///     Builds the readable label for the executed-tree-scan node from its facts: the driving tree / clause /
+    ///     seek bound / direction, the per-entry residual predicates, the scan counts, and the per-phase timing.
+    /// </summary>
     private static string DirectScanLabel(Dictionary<string, string> p)
     {
-        var parts = new List<string> { DirectScanOp };
+        List<string> parts = new()
+            { DirectScanOp };
         AddIf(p, parts, "DrivingTree", "tree=");
         AddIf(p, parts, "DrivingClause", "drive=");
         AddIf(p, parts, "SeekBound", "seek=");
@@ -508,78 +483,103 @@ internal static class QueryPlanGraph
         AddIf(p, parts, "TreeScan_ms", "tree=", " ms");
         AddIf(p, parts, "EntryScans_ms", "entry=", " ms");
         for (int i = 0; i < parts.Count; i++)
+        {
             parts[i] = GraphvizGraph.Escape(parts[i]);
+        }
+
         return string.Join("\\n", parts);
     }
 
-    /// <summary>Builds the readable label for a CompoundKeyLookup producer node from its facts: the synthetic
-    /// compound field, the two component field=value pairs the composite key encodes, and the result count.</summary>
+    /// <summary>
+    ///     Builds the readable label for a CompoundKeyLookup producer node from its facts: the synthetic
+    ///     compound field, the two component field=value pairs the composite key encodes, and the result count.
+    /// </summary>
     private static string CompoundLookupLabel(Dictionary<string, string> p)
     {
-        var parts = new List<string> { CompoundLookupOp };
-        if (p.TryGetValue("Dispatch", out string dispatch) && string.IsNullOrEmpty(dispatch) == false)
+        List<string> parts = new()
+            { CompoundLookupOp };
+        if (p.TryGetValue("Dispatch", out string dispatch) && !string.IsNullOrEmpty(dispatch))
+        {
             parts.Add("[" + dispatch + "]");
+        }
+
         AddIf(p, parts, "FieldName");
         AddIf(p, parts, "Components", "key: ");
         AddIf(p, parts, "Count", "count=");
         for (int i = 0; i < parts.Count; i++)
+        {
             parts[i] = GraphvizGraph.Escape(parts[i]);
+        }
+
         return string.Join("\\n", parts);
     }
 
-    // prefix == "" => render as "Key=value"; otherwise render as "prefix" + value + suffix (e.g. "~1,234").
     private static void AddIf(Dictionary<string, string> p, List<string> into, string key, string prefix = "", string suffix = "")
     {
-        if (p.TryGetValue(key, out string val) && string.IsNullOrEmpty(val) == false)
+        if (p.TryGetValue(key, out string val) && !string.IsNullOrEmpty(val))
+        {
             into.Add(prefix.Length == 0 ? key + "=" + val : prefix + val + suffix);
+        }
     }
 
-    /// <summary>True when any op carries a runtime <c>Count</c> parameter, i.e. OverlayTimings ran and the taken path
-    /// is knowable. Used for plans with no entry-scan gate, where there is no Taken flag to key off.</summary>
+    /// <summary>
+    ///     True when any op carries a runtime <c>Count</c> parameter, i.e. OverlayTimings ran and the taken path
+    ///     is knowable. Used for plans with no entry-scan gate, where there is no Taken flag to key off.
+    /// </summary>
     private static bool AnyHasCount(List<QueryInspectionNode> ops)
     {
         foreach (QueryInspectionNode op in ops)
         {
             if (op.Parameters != null && op.Parameters.ContainsKey("Count"))
+            {
                 return true;
+            }
         }
 
         return false;
     }
 
-    /// <summary>Joins a scan's Residual children into a single conjunctive filter string — "A AND B AND C" — for one
-    /// note node, since every survivor must pass ALL of them. Returns null when there are no residual children.</summary>
+    /// <summary>
+    ///     Joins a scan's Residual children into a single conjunctive filter string — "A AND B AND C" — for one
+    ///     note node, since every survivor must pass ALL of them. Returns null when there are no residual children.
+    /// </summary>
     private static string CombinedResidualFilter(List<QueryInspectionNode> children)
     {
         if (children == null)
+        {
             return null;
-        var tokens = new List<string>();
+        }
+
+        List<string> tokens = new();
         foreach (QueryInspectionNode child in children)
         {
             string token = ResidualToken(child);
             if (token != null)
+            {
                 tokens.Add(token);
+            }
         }
 
         return tokens.Count == 0 ? null : string.Join(" AND ", tokens);
     }
 
-    /// <summary>Renders one residual-predicate node into a compact "Field Compare" token (a leading "!" marks a
-    /// negated check, and an AND/OR group is wrapped in parentheses with the matching joiner). Returns null when the
-    /// node is not a residual. Recurses into Residual-AndGroup / Residual-OrGroup children.</summary>
+    /// <summary>
+    ///     Renders one residual-predicate node into a compact "Field Compare" token (a leading "!" marks a
+    ///     negated check, and an AND/OR group is wrapped in parentheses with the matching joiner). Returns null when the
+    ///     node is not a residual. Recurses into Residual-AndGroup / Residual-OrGroup children.
+    /// </summary>
     private static string ResidualToken(QueryInspectionNode node)
     {
         if (node.Operation is "Residual-AndGroup" or "Residual-OrGroup")
         {
             string joiner = node.Operation == "Residual-OrGroup" ? " OR " : " AND ";
-            var inner = new List<string>();
-            if (node.Children != null)
+            List<string> inner = [];
+            foreach (QueryInspectionNode sub in node.Children ?? [])
             {
-                foreach (QueryInspectionNode sub in node.Children)
+                string token = ResidualToken(sub);
+                if (token != null)
                 {
-                    string token = ResidualToken(sub);
-                    if (token != null)
-                        inner.Add(token);
+                    inner.Add(token);
                 }
             }
 

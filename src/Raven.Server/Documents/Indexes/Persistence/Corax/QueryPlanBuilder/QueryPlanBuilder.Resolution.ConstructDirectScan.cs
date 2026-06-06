@@ -17,13 +17,9 @@ internal static partial class QueryPlanBuilder
         string sortFieldName = ctx.WantTimings ? ctx.OrderByFields[0].Field.FieldName.ToString() : null;
         bool forward = ctx.OrderByFields[0].Ascending;
 
-        // A full scan (bare ORDER BY, no WHERE) legitimately has no residual set: there are no clauses to
-        // filter, so the sorted tree walk emits every entry id directly. TryCreateSimpleFieldDirectScan
-        // already admits this shape as a FieldSortedScan candidate, so bailing here on a null residual set
-        // would advertise FieldSortedScan in the plan yet silently fall back to the bitmap pipeline. Only the
-        // driving-clause path requires a residual set (without it the per-entry filter is non-scannable).
+        // FROM Posts ORDER BY PublishedAt DESC - full scan, no WHERE, has no residuals. This check ensure we construct a sorted driving match for this
         if (isFullScan == false && ctx.Exec.Plan.DirectScanResidualSet is null)
-            return null;
+            return null; 
 
         var (drivingMatchProvider, drivingClauseDescription) = isFullScan ?
             ResolveFullScanDrivingProvider(ref ctx, forward) :
@@ -37,10 +33,6 @@ internal static partial class QueryPlanBuilder
             ? BuildSortedDrivingWithTieBreakMatch(ctx, tpm.Provider, tpm.Llt, ctx.BuilderParams.Index.Configuration.NullsSortMode, indexSearcher, nullFirst)
             : new SortedDrivingMatch(tpm.Provider, tpm.Llt, ctx.PlanParams.Allocator, indexSearcher, ctx.OrderByFields[0].Field, nullFirst);
 
-        // The driving match yields entries already in ORDER BY order, so the first `take` survivors ARE the
-        // answer — stop once we have them rather than scanning the whole tree. `Take` already folds in the
-        // page offset (pageSize + query.Start), matching the sorted tie-break path. A server-side `filter`
-        // clause breaks that assumption (see ResolveSortedScanTake), so it falls back to a full sorted scan.
         int take = ResolveSortedScanTake(ctx.BuilderParams);
 
         DirectScanMatchBase ds;

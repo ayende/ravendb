@@ -13,54 +13,40 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 /// <item><b>Attributes</b> — presentation only (label, shape, style, color), emitted as raw DOT attributes. Filled
 /// by the styler callbacks at RENDER time, derived from each element's Data.</item>
 /// </list>
-/// This keeps the three concerns apart: building the model (the facts), styling it (the presentation), and
-/// serialising it (the DOT text). Callers fill Data via <see cref="CreateNode"/> / <see cref="CreateEdge"/> while
-/// walking their domain structure, then pass per-element styler callbacks to <see cref="Render"/>, which derives
-/// the Attributes and writes the DOT.
 /// </summary>
 internal sealed class GraphvizGraph
 {
     internal abstract class Element
     {
-        /// <summary>Machine-readable facts; serialised as <c>data_&lt;key&gt;</c> attributes (key lower-cased).</summary>
-        public readonly Dictionary<string, string> Data = new();
+        /// <summary>Machine-readable facts; serialized as <c>data_&lt;key&gt;</c> attributes (key lower-cased).</summary>
+        public readonly Dictionary<string, string> Data = [];
 
-        /// <summary>Presentation attributes (label/shape/style/color/…); serialised as raw DOT attributes. The value
-        /// is written verbatim, so a styler that puts a multi-line label here is responsible for its own escaping
-        /// and for the literal <c>\n</c> line breaks DOT expects.</summary>
-        public readonly Dictionary<string, string> Attributes = new();
+        /// <summary>Presentation attributes (label/shape/style/color/…); serialized as raw DOT attributes.</summary>
+        public readonly Dictionary<string, string> Attributes = [];
     }
 
-    internal sealed class Node : Element
+    internal sealed class Node(string id) : Element
     {
-        public readonly string Id;
-        internal Node(string id) => Id = id;
+        public readonly string Id = id;
     }
 
-    internal sealed class Edge : Element
+    internal sealed class Edge(string from, string to) : Element
     {
-        public readonly string From;
-        public readonly string To;
-
-        internal Edge(string from, string to)
-        {
-            From = from;
-            To = to;
-        }
+        public readonly string From = from;
+        public readonly string To = to;
     }
 
-    private readonly List<Node> _nodes = new();
-    private readonly List<Edge> _edges = new();
+    private readonly List<Node> _nodes = [];
+    private readonly List<Edge> _edges = [];
 
     public string RankDir = "TB";
 
     /// <summary>Default attributes applied to every node via a DOT <c>node [...]</c> statement.</summary>
-    public readonly Dictionary<string, string> NodeDefaults = new();
+    public readonly Dictionary<string, string> NodeDefaults = [];
 
     public IReadOnlyList<Node> Nodes => _nodes;
     public IReadOnlyList<Edge> Edges => _edges;
 
-    /// <summary>Create a node and return its Data bag for the caller to fill. Order is preserved for rendering.</summary>
     public Dictionary<string, string> CreateNode(string id)
     {
         var node = new Node(id);
@@ -68,7 +54,6 @@ internal sealed class GraphvizGraph
         return node.Data;
     }
 
-    /// <summary>Create an edge and return its Data bag for the caller to fill. Order is preserved for rendering.</summary>
     public Dictionary<string, string> CreateEdge(string from, string to)
     {
         var edge = new Edge(from, to);
@@ -76,16 +61,11 @@ internal sealed class GraphvizGraph
         return edge.Data;
     }
 
-    /// <summary>Serialise to DOT text. The optional <paramref name="styleNode"/> / <paramref name="styleEdge"/>
-    /// callbacks run once per element immediately before it is written, deriving its presentation Attributes from
-    /// its Data — so all styling decisions (colours, labels, shapes) live at render time, not in the model or the
-    /// build. For each element the presentation Attributes are written first (raw), then every non-empty Data entry
-    /// as a <c>data_&lt;key&gt;</c> attribute (escaped).</summary>
     public string Render(Action<Node> styleNode = null, Action<Edge> styleEdge = null)
     {
         var sb = new StringBuilder();
-        sb.Append("digraph QueryPlan {\n");
-        sb.Append("  rankdir=").Append(RankDir).Append(";\n");
+        sb.AppendLine("digraph QueryPlan {");
+        sb.AppendLine("  rankdir=").Append(RankDir).Append(";");
 
         if (NodeDefaults.Count > 0)
         {
@@ -93,7 +73,7 @@ internal sealed class GraphvizGraph
             bool firstDefault = true;
             foreach (KeyValuePair<string, string> kv in NodeDefaults)
                 firstDefault = AppendRawAttr(sb, firstDefault, kv.Key, kv.Value);
-            sb.Append("];\n");
+            sb.AppendLine("];");
         }
 
         foreach (Node node in _nodes)
@@ -101,7 +81,7 @@ internal sealed class GraphvizGraph
             styleNode?.Invoke(node);
             sb.Append("  ").Append(node.Id).Append(" [");
             AppendElement(sb, node);
-            sb.Append("];\n");
+            sb.AppendLine("];");
         }
 
         foreach (Edge edge in _edges)
@@ -109,10 +89,10 @@ internal sealed class GraphvizGraph
             styleEdge?.Invoke(edge);
             sb.Append("  ").Append(edge.From).Append(" -> ").Append(edge.To).Append(" [");
             AppendElement(sb, edge);
-            sb.Append("];\n");
+            sb.AppendLine("];");
         }
 
-        sb.Append("}\n");
+        sb.AppendLine("}");
         return sb.ToString();
     }
 
@@ -141,10 +121,7 @@ internal sealed class GraphvizGraph
         return false;
     }
 
-    /// <summary>Escape a string for use inside a Graphviz double-quoted label or attribute value.</summary>
     public static string Escape(string s) => s.Replace("\\", "\\\\").Replace("\"", "\\\"");
 
-    /// <summary>Escape for a DOT attribute value: like <see cref="Escape"/>, plus collapse newlines to spaces so a
-    /// multi-line value (e.g. a residual description) cannot break the attribute out of its quotes.</summary>
     private static string EscapeAttr(string s) => Escape(s).Replace("\r", " ").Replace("\n", " ");
 }
