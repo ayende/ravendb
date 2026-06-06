@@ -44,6 +44,47 @@ internal static partial class QueryPlanBuilder
             match.SortHint = new SortHint(sortExec.Clause.FieldName, seekValue);
     }
 
+    /// <summary>
+    /// True when a single vector-search post-filter is the sole scoring source AND the only ordering the query
+    /// needs is similarity-score order — which the vector's HNSW output already streams. In that case the
+    /// implicit (or explicit <c>ORDER BY score()</c>) SortingMatch wrapper is redundant: the match can stream
+    /// its score-ordered results directly and the wrapper is skipped. Covers both the bare
+    /// <c>WHERE vector.search(...)</c> case and the AND-filtered <c>WHERE x = $v AND vector.search(...)</c> case
+    /// (both lift the vector to a top-level post-filter, so it appears in <see cref="QueryExecution.VectorSelects"/>;
+    /// OR-branch vectors are leaves, never post-filters, so they never qualify and keep their sort).
+    /// </summary>
+    private static bool VectorPostFilterProvidesResultOrder(QueryExecution exec, QueryBuilderParameters bp)
+    {
+        // Exactly one vector post-filter — with two, the outermost vector's order is not a single native order.
+        if (exec.VectorSelects is not { Length: 1 })
+            return false;
+
+        // The vector distance must be the SOLE scoring contributor. Any index-static boost or explicit boost()
+        // in the query composes with the distance, so the final order is the SUM and a real sort is required.
+        if (bp.Index is not { HasBoostedFields: false })
+            return false;
+        if (bp.Metadata.HasBoost)
+            return false;
+
+        // Per-document boosting (a stored boost tree) multiplies the similarity, so the final order is no longer
+        // the vector's native distance order and the wrapper's BoostDocuments pass is required. Keep the sort.
+        if (bp.IndexSearcher.DocumentsAreBoosted)
+            return false;
+
+        var orderBy = bp.Metadata.OrderBy;
+        if (orderBy is null or { Length: 0 })
+        {
+            // No explicit ORDER BY: a score sort only exists because the index/config auto-promotes it
+            // (matches the ImplicitScore branch in BuildSortMetadataTemplate). If neither opt-in is set there
+            // is no sort to skip — and the AND case would not be score-ordered — so do not engage.
+            return bp.Index.Configuration.OrderByScoreAutomaticallyWhenBoostingIsInvolved
+                   || bp.Index.Configuration.CoraxVectorSearchOrderByScoreAutomatically;
+        }
+
+        // An explicit, single `ORDER BY score()` asks for exactly the order the vector emits.
+        return orderBy is { Length: 1 } && orderBy[0].OrderingType == OrderByFieldType.Score;
+    }
+
     private static SortMetadataTemplate BuildSortMetadataTemplate(PlanParameters p)
     {
         var orderByFields = p.Metadata.OrderBy;
