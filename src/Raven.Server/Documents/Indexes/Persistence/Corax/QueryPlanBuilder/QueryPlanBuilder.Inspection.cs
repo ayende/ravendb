@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
@@ -20,7 +21,24 @@ internal static partial class QueryPlanBuilder
     {
         var plan = BuildPlan(result, out var compiledRoot, out var opNodes, out var entryScanNode);
         if (plan == null)
-            return result.ExecutedMatch.Inspect();
+        {
+            // No bitmap op-template to render: the spatial/vector all-entries bypass
+            // (InstantiateAllEntriesPostFilter) whose executed match is a PostFilterMatch over an implicit full
+            // scan. Still emit the dataflow graph (AllEntries → post-filters → sort/boost → Result) so this path
+            // is not a blind spot in the catalog/Studio view.
+            var bypass = result.ExecutedMatch.Inspect();
+            if (result.SortingWrapper != null)
+            {
+                // Mirror the BuildPlan wrapping so the sort strategy renders as the dataflow tail here too.
+                var bypassSort = result.SortingWrapper.Inspect();
+                bypassSort.Children.Clear();
+                bypassSort.Children.Add(bypass);
+                bypass = bypassSort;
+            }
+
+            bypass.Parameters["PlanGraphDot"] = QueryPlanGraph.ToGraphviz(bypass);
+            return bypass;
+        }
 
         OverlayTimings(result, compiledRoot, opNodes, entryScanNode);
 
@@ -101,6 +119,12 @@ internal static partial class QueryPlanBuilder
                 var clauseExec = flatExecs[t.FlatClauseIndex];
                 var packed = clauseExec.PackedParamValue;
                 int inTermCount = clauseExec.InTermCount;
+
+                // Surface a boosted leaf: this clause's postings are wrapped in a BoostingMatch (IndexSearcher.Boost)
+                // that scales their score contribution. The factor feeds the score-ordered ranking (boosting
+                // auto-promotes to ORDER BY score()), so showing it on the leaf explains where the ranking weight came from.
+                if (clauseExec.Clause.HasBoost || clauseExec.BoostFactor > 0)
+                    parameters["Boost"] = clauseExec.BoostFactor.ToString(CultureInfo.InvariantCulture);
 
                 var term = FormatValueFromPlan(packed, exec, packed.Param1);
                 if (term != null) parameters["Term"] = term;

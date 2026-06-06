@@ -109,8 +109,21 @@ internal sealed class GraphvizGraph
         {
             if (string.IsNullOrEmpty(kv.Value))
                 continue;
-            first = AppendRawAttr(sb, first, "data_" + kv.Key.ToLowerInvariant(), EscapeAttr(kv.Value));
+            first = AppendRawAttr(sb, first, "data_" + SanitizeKey(kv.Key), EscapeAttr(kv.Value));
         }
+    }
+
+    /// <summary>
+    /// Reduces an arbitrary fact key to a valid DOT attribute identifier (lower-cased, non-alphanumeric
+    /// characters folded to '_'). Inspection parameter names can contain spaces (e.g. "Number Of Candidates"),
+    /// which would otherwise emit a bare token mid-attribute and break the DOT parse.
+    /// </summary>
+    private static string SanitizeKey(string key)
+    {
+        var sb = new StringBuilder(key.Length);
+        foreach (char c in key)
+            sb.Append(char.IsLetterOrDigit(c) ? char.ToLowerInvariant(c) : '_');
+        return sb.ToString();
     }
 
     private static bool AppendRawAttr(StringBuilder sb, bool first, string key, string value)
