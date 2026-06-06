@@ -5,7 +5,6 @@ using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
-using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Sparrow;
 using Sparrow.Compression;
 using Sparrow.Server;
