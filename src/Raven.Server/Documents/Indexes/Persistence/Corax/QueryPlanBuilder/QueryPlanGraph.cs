@@ -26,6 +26,16 @@ internal static class QueryPlanGraph
     private const string ResidualNoteOp = "ResidualNote";
     private const string DirectScanOp = "DirectScan";
     private const string CompoundLookupOp = "CompoundKeyLookup";
+    private const string CandidatesOp = "Candidates";
+    private const string AllEntriesOp = "AllEntries";
+    private const string PostFilterOp = "PostFilter";
+    private const string SortOp = "Sort";
+    private const string BoostOp = "Boost";
+
+    // Operation names of the result-shaping wrappers that sit ABOVE the bitmap pipeline (CompiledQuery) in the
+    // plan tree. The graph roots at the pipeline, so these are peeled off and rendered as the dataflow tail
+    // (candidates → post-filters → sort/boost → Result).
+    private static readonly HashSet<string> ResultWrapperOps = ["SortingMatch", "SortingMultiMatch", "BoostingMatch"];
 
     // Edge kinds.
     private const string DataflowKind = "dataflow";
@@ -34,6 +44,7 @@ internal static class QueryPlanGraph
     private const string ResultKind = "result";
     private const string ResidualKind = "residual";
     private const string SequenceKind = "sequence";
+    private const string RankKind = "rank";
 
     // Edge/node flow (taken) states. Drive the green/grey colouring at style time.
     private const string FlowOn = "on";
@@ -51,6 +62,13 @@ internal static class QueryPlanGraph
         QueryInspectionNode compiled = FindNode(plan, "CompiledQuery");
         if (compiled?.Children == null)
         {
+            // No bitmap pipeline. The only plan shape without a CompiledQuery is the spatial/vector
+            // all-entries bypass (InstantiateAllEntriesPostFilter): a PostFilterMatch over an implicit
+            // full scan. Render it as an AllEntries source feeding the post-filter chain.
+            QueryInspectionNode bypass = FindNode(plan, "PostFilterMatch");
+            if (bypass != null)
+                return RenderAllEntriesBypass(bypass, CollectResultWrappers(plan, bypass));
+
             return "digraph QueryPlan { /* no compiled op stream */ }\n";
         }
 
@@ -61,12 +79,31 @@ internal static class QueryPlanGraph
             if (child.Parameters != null && child.Parameters.ContainsKey("DestSlot"))
             {
                 ops.Add(child);
-            } 
+            }
             if (child.Operation is DirectScanOp or CompoundLookupOp)
             {
                 producerNode = child;
             }
         }
+
+        // Spatial / vector post-filters are CompiledQuery children with no DestSlot: they consume the
+        // candidate bitmap per entry rather than writing a slot (matched by name so the And/Multi variants —
+        // "VectorSearchMatch [And]", "MultiVectorSearchMatch" — are caught too, mirroring AppendPostFilterNodes).
+        List<QueryInspectionNode> postFilters = [];
+        foreach (QueryInspectionNode child in compiled.Children)
+        {
+            if (IsPostFilterOp(child.Operation))
+                postFilters.Add(child);
+        }
+
+        // Sort / boost wrappers sit above CompiledQuery in the plan tree (the graph roots at the pipeline).
+        // Peel them off so they render as the tail of the dataflow rather than being silently skipped.
+        List<QueryInspectionNode> wrappers = CollectResultWrappers(plan, compiled);
+        bool hasPostChain = postFilters.Count > 0 || wrappers.Count > 0;
+
+        // When a post-filter / sort chain exists, the bitmap pipeline no longer terminates at Result directly;
+        // it terminates at a "candidates" anchor that the chain consumes.
+        string bitmapSink = hasPostChain ? "candidates" : "result";
 
 
         int entryScanTailId = -1;
@@ -195,7 +232,7 @@ internal static class QueryPlanGraph
 
         if (lastWriter.TryGetValue(0, out int finalWriter))
         {
-            Dictionary<string, string> e = g.CreateEdge("op" + finalWriter, "result");
+            Dictionary<string, string> e = g.CreateEdge("op" + finalWriter, bitmapSink);
             e[KindKey] = ResultKind;
             if (entryScanTaken)
             {
@@ -216,7 +253,7 @@ internal static class QueryPlanGraph
 
         if (producerNode != null)
         {
-            Dictionary<string, string> resultEdge = g.CreateEdge("producer", "result");
+            Dictionary<string, string> resultEdge = g.CreateEdge("producer", bitmapSink);
             resultEdge[KindKey] = ResultKind;
             resultEdge[VariantKey] = producerNode.Operation == CompoundLookupOp ? "lookup-result" : "scan-result";
             resultEdge[FlowKey] = FlowOn;
@@ -245,7 +282,7 @@ internal static class QueryPlanGraph
                 e[FlowKey] = isFired ? FlowOn : FlowCandidate;
             }
 
-            Dictionary<string, string> tailResult = g.CreateEdge("op" + entryScanTailId, "result");
+            Dictionary<string, string> tailResult = g.CreateEdge("op" + entryScanTailId, bitmapSink);
             tailResult[KindKey] = ResultKind;
             tailResult[VariantKey] = entryScanTaken ? "entryscan-taken" : "entryscan-iftaken";
             tailResult[FlowKey] = entryScanTaken ? FlowOn : FlowCandidate;
@@ -264,7 +301,14 @@ internal static class QueryPlanGraph
             }
         }
 
-        // Invisible sequencing edges: pin parallel-looking branches to true execution order. An invisible edge forces the second to rank below the first. 
+        if (hasPostChain)
+        {
+            Dictionary<string, string> candidates = g.CreateNode(bitmapSink);
+            candidates[OperationKey] = CandidatesOp;
+            BuildPostFilterChain(g, bitmapSink, postFilters, wrappers);
+        }
+
+        // Invisible sequencing edges: pin parallel-looking branches to true execution order. An invisible edge forces the second to rank below the first.
         for (int i = 0; i + 1 < ops.Count; i++)
         {
             if (ops[i].Operation is "EntryScan" or "EntryScanCheck" &&   // Entry-scan nodes are skipped — their branch edges already express the (conditional) ordering.
@@ -312,6 +356,36 @@ internal static class QueryPlanGraph
                 node.Attributes["label"] = CompoundLookupLabel(node.Data);
                 break;
 
+            case CandidatesOp:
+                node.Attributes["shape"] = "ellipse";
+                node.Attributes["style"] = "dashed";
+                node.Attributes["label"] = "candidate set\\n(slot 0)";
+                break;
+
+            case AllEntriesOp:
+                node.Attributes["style"] = "bold";
+                node.Attributes["color"] = TakenGreen;
+                node.Attributes["label"] = "AllEntries\\n\u2192 slot 0";
+                break;
+
+            case PostFilterOp:
+                node.Attributes["color"] = TakenGreen;
+                node.Attributes["label"] = PostFilterLabel(node.Data);
+                break;
+
+            case SortOp:
+                node.Attributes["shape"] = "box";
+                node.Attributes["style"] = "bold";
+                node.Attributes["color"] = TakenGreen;
+                node.Attributes["label"] = SortLabel(node.Data);
+                break;
+
+            case BoostOp:
+                node.Attributes["style"] = "bold";
+                node.Attributes["color"] = TakenGreen;
+                node.Attributes["label"] = BoostLabel(node.Data);
+                break;
+
             default:
                 node.Attributes["label"] = OpLabel(operation, node.Data);
                 break;
@@ -350,6 +424,7 @@ internal static class QueryPlanGraph
             GateKind => "gate slot 0",
             BranchKind => flow == FlowOn ? "switched here" : "candidate switch",
             ResidualKind => "per entry",
+            RankKind => "sort",
             ResultKind => ResultEdgeLabel(edge),
             _ => null
         };
@@ -371,6 +446,114 @@ internal static class QueryPlanGraph
             "entryscan-iftaken" => "if entry-scan taken",
             _ => null // bitmap-final / bitmap-plain carry no label
         };
+    }
+
+    /// <summary>
+    ///     A post-filter is a per-entry match that consumes the candidate set rather than writing a bitmap slot:
+    ///     the spatial and vector families. Matched by name (not exact equality) so the conjunctive / multi
+    ///     variants — "VectorSearchMatch [And]", "MultiVectorSearchMatch", "SpatialMatch" — are all recognised,
+    ///     mirroring <c>QueryPlanBuilder.AppendPostFilterNodes</c> which appends them to the plan tree the same way.
+    /// </summary>
+    internal static bool IsPostFilterOp(string operation)
+        => operation != null && (operation.Contains("Spatial") || operation.Contains("VectorSearch"));
+
+    /// <summary>
+    ///     Walks the result-shaping wrappers (sort / boost) that sit between the plan root and the bitmap
+    ///     pipeline node <paramref name="pipeline" />, returning them OUTERMOST-FIRST. These are the
+    ///     SortingMatch / SortingMultiMatch / BoostingMatch the executor layered on top of the candidate set;
+    ///     the graph roots at the pipeline, so without this they would be invisible.
+    /// </summary>
+    private static List<QueryInspectionNode> CollectResultWrappers(QueryInspectionNode plan, QueryInspectionNode pipeline)
+    {
+        List<QueryInspectionNode> wrappers = [];
+        QueryInspectionNode node = plan;
+        while (node != null && node != pipeline && ResultWrapperOps.Contains(node.Operation))
+        {
+            wrappers.Add(node);
+            node = node.Children is { Count: > 0 } ? node.Children[0] : null;
+        }
+
+        return wrappers;
+    }
+
+    /// <summary>
+    ///     Chains the per-entry post-filters and the result-shaping wrappers off the bitmap pipeline output,
+    ///     terminating at the Result node: <c>candidates → SpatialMatch → … → Sort/Boost → Result</c>. The
+    ///     wrappers arrive outermost-first and are emitted innermost-first (the order data actually flows toward
+    ///     the result), so a SortingMatch(BoostingMatch(pipeline)) renders as <c>… → Boost → Sort → Result</c>.
+    /// </summary>
+    private static void BuildPostFilterChain(GraphvizGraph g, string fromNode,
+        List<QueryInspectionNode> postFilters, List<QueryInspectionNode> wrappers)
+    {
+        string prev = fromNode;
+        for (int i = 0; i < postFilters.Count; i++)
+        {
+            string id = "pf" + i;
+            Dictionary<string, string> node = g.CreateNode(id);
+            node[OperationKey] = PostFilterOp;
+            CopyParameters(postFilters[i], node);
+            node["MatchOperation"] = postFilters[i].Operation;
+
+            Dictionary<string, string> e = g.CreateEdge(prev, id);
+            e[KindKey] = ResidualKind;
+            e[FlowKey] = FlowOn;
+            prev = id;
+        }
+
+        // Innermost wrapper first: reverse the outermost-first list so the chain matches dataflow order.
+        for (int i = wrappers.Count - 1; i >= 0; i--)
+        {
+            QueryInspectionNode wrapper = wrappers[i];
+            bool isBoost = wrapper.Operation == "BoostingMatch";
+            string id = (isBoost ? "boost" : "sort") + i;
+            Dictionary<string, string> node = g.CreateNode(id);
+            node[OperationKey] = isBoost ? BoostOp : SortOp;
+            CopyParameters(wrapper, node);
+            node["MatchOperation"] = wrapper.Operation;
+
+            Dictionary<string, string> e = g.CreateEdge(prev, id);
+            if (isBoost == false)
+                e[KindKey] = RankKind; // boost edge carries no label; the factor is on the node
+            e[FlowKey] = FlowOn;
+            prev = id;
+        }
+
+        Dictionary<string, string> resultEdge = g.CreateEdge(prev, "result");
+        resultEdge[KindKey] = ResultKind;
+        resultEdge[FlowKey] = FlowOn;
+    }
+
+    /// <summary>
+    ///     Renders the spatial/vector all-entries bypass (InstantiateAllEntriesPostFilter): there is no
+    ///     compiled bitmap pipeline, just an implicit full scan feeding a PostFilterMatch. The PostFilterMatch
+    ///     children are the spatial/vector filters; they are chained off a synthetic AllEntries source, with
+    ///     any sort/boost wrapper that was peeled off the plan root rendered after them.
+    /// </summary>
+    private static string RenderAllEntriesBypass(QueryInspectionNode postFilter, List<QueryInspectionNode> wrappers)
+    {
+        GraphvizGraph g = new()
+        {
+            NodeDefaults =
+            {
+                ["shape"] = "box",
+                ["fontname"] = "monospace"
+            }
+        };
+
+        Dictionary<string, string> source = g.CreateNode("allentries");
+        source[OperationKey] = AllEntriesOp;
+
+        g.CreateNode("result")[OperationKey] = ResultOp;
+
+        List<QueryInspectionNode> postFilters = [];
+        foreach (QueryInspectionNode child in postFilter.Children ?? [])
+        {
+            if (IsPostFilterOp(child.Operation))
+                postFilters.Add(child);
+        }
+
+        BuildPostFilterChain(g, "allentries", postFilters, wrappers);
+        return g.Render(StyleNode, StyleEdge);
     }
 
     private static int ParseSlot(QueryInspectionNode op, string key)
@@ -444,6 +627,7 @@ internal static class QueryPlanGraph
             parts.Add("NEGATED");
         }
 
+        AddIf(p, parts, "Boost", "boost x");
         AddIf(p, parts, "EstimatedRows", "~");
         AddIf(p, parts, "DestSlot", "→slot ");
         AddIf(p, parts, "Count", "count=");
@@ -511,6 +695,114 @@ internal static class QueryPlanGraph
             parts[i] = GraphvizGraph.Escape(parts[i]);
         }
 
+        return string.Join("\\n", parts);
+    }
+
+    /// <summary>
+    ///     Builds the label for a per-entry post-filter node. The underlying match (stashed as MatchOperation)
+    ///     decides the facts shown: a spatial match surfaces its relation (Within / Intersects), field, and tested
+    ///     shape; a vector match surfaces its field. The "[And]" / "Multi" variant names flow through verbatim so
+    ///     the heading reflects exactly which match ran.
+    /// </summary>
+    private static string PostFilterLabel(Dictionary<string, string> p)
+    {
+        string match = p.GetValueOrDefault("MatchOperation", PostFilterOp);
+        List<string> parts;
+        if (match.Contains("Spatial"))
+        {
+            p.TryGetValue("SpatialRelation", out string relation);
+            parts = new() { string.IsNullOrEmpty(relation) ? match : match + " [" + relation + "]" };
+            AddIf(p, parts, "Field", "");
+            AddIf(p, parts, "Shape", "");
+        }
+        else
+        {
+            parts = new() { match };
+            AddIf(p, parts, "FieldName", "");
+        }
+
+        for (int i = 0; i < parts.Count; i++)
+        {
+            parts[i] = GraphvizGraph.Escape(parts[i]);
+        }
+
+        return string.Join("\\n", parts);
+    }
+
+    /// <summary>
+    ///     Builds the label for a sort wrapper node, naming the exact strategy and the sort key(s). A single-field
+    ///     <c>SortingMatch</c> renders the materialize-then-sort heap with its field / direction / compare type
+    ///     (score and spatial-distance sorts are called out explicitly); a <c>SortingMultiMatch</c> lists every
+    ///     ORDER BY field in priority order. (The streaming sorted-scan strategy is NOT a wrapper — it shows up as
+    ///     the DirectScan producer node, since the scan itself yields entries already in order.)
+    /// </summary>
+    private static string SortLabel(Dictionary<string, string> p)
+    {
+        string match = p.GetValueOrDefault("MatchOperation", SortOp);
+
+        if (match == "SortingMultiMatch")
+        {
+            List<string> parts = new() { match + " [multi-field heap sort]" };
+            for (int i = 0; p.ContainsKey("Comparer" + i + "_FieldName"); i++)
+            {
+                string prefix = "Comparer" + i + "_";
+                parts.Add(SortKeyDescription(
+                    p.GetValueOrDefault(prefix + "FieldName"),
+                    p.GetValueOrDefault(prefix + "Ascending"),
+                    p.GetValueOrDefault(prefix + "FieldType")));
+            }
+
+            for (int i = 0; i < parts.Count; i++)
+                parts[i] = GraphvizGraph.Escape(parts[i]);
+            return string.Join("\\n", parts);
+        }
+
+        // Single-field SortingMatch.
+        p.TryGetValue("FieldType", out string fieldType);
+        List<string> single;
+        if (fieldType == "Score")
+        {
+            bool boosting = p.GetValueOrDefault("IsBoosting") == "True";
+            single = new() { match + " [heap sort]", "rank by score()" + (boosting ? " (boosting)" : "") };
+        }
+        else if (fieldType == "Spatial")
+        {
+            single = new() { match + " [heap sort]", "by distance" };
+            AddIf(p, single, "Point", "from ");
+            AddIf(p, single, "Round", "round ");
+            AddIf(p, single, "Units", "", "");
+            single.Add(SortDirection(p.GetValueOrDefault("Ascending")));
+        }
+        else
+        {
+            single = new()
+            {
+                match + " [heap sort]",
+                SortKeyDescription(p.GetValueOrDefault("FieldName"), p.GetValueOrDefault("Ascending"), fieldType)
+            };
+        }
+
+        for (int i = 0; i < single.Count; i++)
+            single[i] = GraphvizGraph.Escape(single[i]);
+        return string.Join("\\n", single);
+    }
+
+    private static string SortKeyDescription(string field, string ascending, string fieldType)
+    {
+        string dir = SortDirection(ascending);
+        string type = string.IsNullOrEmpty(fieldType) ? "" : " (" + fieldType + ")";
+        return (field ?? "") + " " + dir + type;
+    }
+
+    private static string SortDirection(string ascending) => ascending == "False" ? "DESC" : "ASC";
+
+    /// <summary>Builds the label for a boost wrapper node, surfacing the boost factor applied to the inner scores.</summary>
+    private static string BoostLabel(Dictionary<string, string> p)
+    {
+        List<string> parts = new() { p.GetValueOrDefault("MatchOperation", BoostOp) };
+        AddIf(p, parts, "BoostFactor", "factor x");
+        for (int i = 0; i < parts.Count; i++)
+            parts[i] = GraphvizGraph.Escape(parts[i]);
         return string.Join("\\n", parts);
     }
 

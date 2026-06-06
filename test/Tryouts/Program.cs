@@ -42,6 +42,9 @@ public sealed class Item
     public double Score { get; set; }
     public DateTime Created { get; set; }
     public string[] Tags { get; set; }
+    public double Lat { get; set; }
+    public double Lon { get; set; }
+    public float[] Embedding { get; set; }
 }
 
 public sealed class Items_Index : AbstractIndexCreationTask<Item>
@@ -64,6 +67,31 @@ public sealed class Items_Compound : AbstractIndexCreationTask<Item>
         Map = items => from i in items
                        select new { i.Name, i.City, i.Age, i.Score, i.Created, i.Tags };
         CompoundField(i => i.City, i => i.Age);
+    }
+}
+
+/// <summary>Same documents as <see cref="Items_Index"/> but with a Corax spatial field (<c>Coordinates</c>,
+/// from lat/lon) and a vector field (<c>Embedding</c>, from a stored <c>float[]</c>). These are what let the
+/// catalog exercise <c>spatial.within(...)</c> and <c>vector.search(...)</c> — both standalone and combined
+/// with an ordinary term filter (the "vegan restaurants in this area" shape: a category equality AND a
+/// spatial circle). Spatial and vector clauses are not part of the bitmap term pipeline: spatial resolves
+/// through <c>PostFilterMatch</c> (a per-entry geometry test layered over the term match, or over all entries
+/// when it is the only clause) and vector resolves through the vector match (an approximate nearest-neighbour
+/// scan re-ranked by similarity), so their plans look different from the term-leaf entries above.</summary>
+public sealed class Items_Geo : AbstractIndexCreationTask<Item>
+{
+    public Items_Geo()
+    {
+        Map = items => from i in items
+                       select new
+                       {
+                           i.Name,
+                           i.City,
+                           i.Age,
+                           i.Tags,
+                           Coordinates = CreateSpatialField(i.Lat, i.Lon),
+                           Embedding = CreateVector(i.Embedding),
+                       };
     }
 }
 
@@ -96,6 +124,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         Seed(store);
         new Items_Index().Execute(store);
         new Items_Compound().Execute(store);
+        new Items_Geo().Execute(store);
         Indexes.WaitForIndexing(store);
 
         var queries = BuildCatalog();
@@ -615,6 +644,82 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                     new ParamSet("london-bitmap", "$c=\"London\", $a=18, $s=500 → BitmapPipeline (driving ~10K)", q => { q.AddParameter("c", "London"); q.AddParameter("a", 18); q.AddParameter("s", 500.0); }),
                     new ParamSet("vatican-scan", "$c=\"Vatican\", $a=18, $s=500 → CompoundSortedScan fires (driving ~200)", q => { q.AddParameter("c", "Vatican"); q.AddParameter("a", 18); q.AddParameter("s", 500.0); }),
                 ]),
+
+            new CatalogQuery("spatial-within", "standalone spatial circle",
+                "from index 'Items/Geo' where spatial.within(Coordinates, spatial.circle($r, $lat, $lon, 'miles'))",
+                "A bare `spatial.within` over the `Coordinates` field on `Items/Geo` (lat/lon indexed via `CreateSpatialField`). A single spatial clause compiles to a `SpatialMatch` — the circle-containment geometry test — and the bitmap pipeline fills the accumulator straight from it: the `Fill` node's `Dispatch=Match` (`CtxFillFromMatch`) means there is no term posting list to seed from, so the `SpatialMatch` itself *is* the match source and every entry it accepts is added to slot 0. `Executed strategy: BitmapPipeline`. The plan surfaces the resolved geometry — `Circle(Pt(0,0), 0.9° / 96.56km)` for the 60-mile circle — and the geohash approximation `Error`. A wider radius simply lets more entries pass the test: same plan, larger result. (The all-entries post-filter bypass, `InstantiateAllEntriesPostFilter`, is reserved for *spatial AND spatial* — two spatial filters layered with no term match; a single spatial leaf does not take it.)",
+                [
+                    new ParamSet("origin-60mi", "$r=60, $lat=0, $lon=0 (60-mile circle at origin)",
+                        q => { q.AddParameter("r", 60.0); q.AddParameter("lat", 0.0); q.AddParameter("lon", 0.0); }),
+                    new ParamSet("origin-300mi", "$r=300, $lat=0, $lon=0 (wider circle, more hits)",
+                        q => { q.AddParameter("r", 300.0); q.AddParameter("lat", 0.0); q.AddParameter("lon", 0.0); }),
+                ]),
+
+            new CatalogQuery("spatial-filtered", "term filter AND spatial circle (\"vegan restaurants in this area\")",
+                "from index 'Items/Geo' where Tags = $tag and spatial.within(Coordinates, spatial.circle($r, $lat, $lon, 'miles'))",
+                "The canonical \"find all <category> in <area>\" query: a category equality (`Tags = $tag`, standing in for \"vegan\") intersected with a spatial circle (the \"given area\"). Here the term clause fills the accumulator from its posting list (the `Fill` node's `Dispatch=Term`, `FieldName=Tags`, ~21,884 entries), and the spatial clause is applied as a `SpatialMatch` filter on top of that fill (the `SpatialMatch` node following the `Fill[Term]`). This is the efficient shape: the cheap `Tags` posting list narrows the candidate set first, and the (relatively expensive) per-entry circle-containment test only runs on documents that already carry the tag, rather than over all 50K entries. The generated C# below is the term-leaf bitmap fill; the spatial filter is layered on top of it (it is not part of the emitted IL).",
+                [
+                    new ParamSet("red-origin", "$tag=\"red\", $r=300, $lat=0, $lon=0",
+                        q => { q.AddParameter("tag", "red"); q.AddParameter("r", 300.0); q.AddParameter("lat", 0.0); q.AddParameter("lon", 0.0); }),
+                    new ParamSet("blue-offset", "$tag=\"blue\", $r=300, $lat=20, $lon=-15",
+                        q => { q.AddParameter("tag", "blue"); q.AddParameter("r", 300.0); q.AddParameter("lat", 20.0); q.AddParameter("lon", -15.0); }),
+                ]),
+
+            new CatalogQuery("vector-search", "standalone vector.search (approximate nearest-neighbour)",
+                "from index 'Items/Geo' where vector.search(Embedding, $q)",
+                "A bare `vector.search` over the `Embedding` field (2-D unit vectors indexed via `CreateVector`). This does not fill a term bitmap: it runs an approximate nearest-neighbour scan over the vector index and ranks every matching document by cosine similarity to the query vector `$q`, so results come back ordered by `@index-score` (similarity) even with no explicit `order by score()`. Since the embeddings are unit vectors at a fixed angle, querying with `[1,0]` (\"east\") ranks the documents nearest angle 0 first and `[0,1]` (\"north\") ranks those near 90° first — the *same* compiled plan; only the query vector moves the ranking. `numberOfCandidates` / `minimumSimilarity` are left at their defaults here.",
+                [
+                    new ParamSet("east", "$q=[1,0]", q => q.AddParameter("q", new[] { 1f, 0f })),
+                    new ParamSet("north", "$q=[0,1]", q => q.AddParameter("q", new[] { 0f, 1f })),
+                ]),
+
+            new CatalogQuery("vector-filtered", "term filter AND vector.search",
+                "from index 'Items/Geo' where City = $c and vector.search(Embedding, $q)",
+                "Vector similarity narrowed by an ordinary term filter: `City = $c` restricts the candidate set through the term pipeline, and `vector.search` ranks the survivors by similarity to `$q`. This is the \"nearest matches *that also* satisfy a hard filter\" shape — the term predicate is an exact constraint, the vector clause is the ranking signal. The generated C# below shows the `City = $c` bitmap fill; the vector match consumes that candidate set and re-ranks it by score.",
+                [
+                    new ParamSet("london-east", "$c=\"London\", $q=[1,0]",
+                        q => { q.AddParameter("c", "London"); q.AddParameter("q", new[] { 1f, 0f }); }),
+                    new ParamSet("rome-north", "$c=\"Rome\", $q=[0,1]",
+                        q => { q.AddParameter("c", "Rome"); q.AddParameter("q", new[] { 0f, 1f }); }),
+                ]),
+
+            new CatalogQuery("spatial-and-spatial", "two spatial circles AND-ed (all-entries fill + both circles post-filter)",
+                "from index 'Items/Geo' where spatial.within(Coordinates, spatial.circle($r1, $lat1, $lon1, 'miles')) and spatial.within(Coordinates, spatial.circle($r2, $lat2, $lon2, 'miles'))",
+                "Two `spatial.within` circles AND-ed together with no term clause. There is no posting list to seed from, but the planner does **not** take the dedicated all-entries bypass here — that path (`InstantiateAllEntriesPostFilter`, which builds a `PostFilterMatch` straight over an `AllEntriesMatch` with no `CompiledQueryMatch` at all) is reserved for a query whose *only* WHERE content is a single spatial/vector leaf (`exec is { IsAllEntries: true, HasSpatialOrVector: true }`). With two spatial clauses the planner instead emits a trivial one-op bitmap pipeline — the generated C# is a single `CtxFillFromMatch(ctx, cursor, bitmapSlot: 0)` (the `Fill` node's `Dispatch=Match`), which fills slot 0 from the implicit all-entries match because no clause produces a posting list — and then `ApplyPostFilters` layers **both** circles on top as a `SpatialMatch` post-filter chain. So the plan graph renders as `Fill[Match] → SpatialMatch → SpatialMatch → Result` (`Executed strategy: BitmapPipeline`): every document is fed through both circle-containment tests per entry and survives only if it falls inside their intersection. Functionally this is the same all-entries + both-spatials shape as the bypass, just realised through the normal `CompiledQueryMatch` fill rather than the dedicated bypass code path. The two parameter sets move the circle centres/radii: same plan, the overlap region (and thus the result count) shifts.",
+                [
+                    new ParamSet("overlap-origin", "$r1=300@(0,0), $r2=300@(10,0) (overlapping circles)",
+                        q => { q.AddParameter("r1", 300.0); q.AddParameter("lat1", 0.0); q.AddParameter("lon1", 0.0); q.AddParameter("r2", 300.0); q.AddParameter("lat2", 10.0); q.AddParameter("lon2", 0.0); }),
+                    new ParamSet("overlap-wide", "$r1=600@(0,0), $r2=600@(-20,15) (wider overlap)",
+                        q => { q.AddParameter("r1", 600.0); q.AddParameter("lat1", 0.0); q.AddParameter("lon1", 0.0); q.AddParameter("r2", 600.0); q.AddParameter("lat2", -20.0); q.AddParameter("lon2", 15.0); }),
+                ]),
+
+            new CatalogQuery("spatial-distance-sort", "spatial filter ORDER BY spatial.distance (nearest-first)",
+                "from index 'Items/Geo' where spatial.within(Coordinates, spatial.circle($r, $lat, $lon, 'miles')) order by spatial.distance(Coordinates, spatial.point($lat, $lon))",
+                "The \"nearest matches first\" shape: a `spatial.within` circle narrows the candidate set, and `order by spatial.distance(...)` sorts the survivors by their great-circle distance from the query point. The distance sort is a result-shaping wrapper above the bitmap pipeline — the plan graph renders it as a `Sort` tail node carrying the spatial sort field, the reference point, and the direction (ascending = nearest first). The `SpatialMatch` filter still runs inside the pipeline; the sort only reorders what it produced. Both param sets keep the filter and sort anchored on the same point, so a wider radius simply admits more documents into the same nearest-first ordering.",
+                [
+                    new ParamSet("origin-300mi", "$r=300, $lat=0, $lon=0 (nearest-first within 300mi of origin)",
+                        q => { q.AddParameter("r", 300.0); q.AddParameter("lat", 0.0); q.AddParameter("lon", 0.0); }),
+                    new ParamSet("offset-600mi", "$r=600, $lat=20, $lon=-15 (wider radius, offset centre)",
+                        q => { q.AddParameter("r", 600.0); q.AddParameter("lat", 20.0); q.AddParameter("lon", -15.0); }),
+                ]),
+
+            new CatalogQuery("boost-score", "boosted clauses ORDER BY score() (relevance ranking)",
+                "from index 'Items/Index' where boost(City = $c, 10) or boost(Name = $n, 2) order by score()",
+                "Two leaves with explicit per-clause `boost(...)` factors OR-ed together, ranked by `order by score()`. Each `boost(leaf, factor)` wraps that leaf's postings in a `BoostingMatch` that scales its score contribution — the plan graph surfaces the factor on the leaf node (`boost x10` on the `City` fill, `boost x2` on the `Name` fill). The `order by score()` is the result wrapper that consumes those scores: the graph renders a `Sort` tail node flagged `rank by score()`. (Boosting also auto-promotes to score ordering even without an explicit `order by score()`, but here it is requested explicitly.) The two parameter sets move which city/name dominate the ranking; the plan shape is identical.",
+                [
+                    new ParamSet("london-alice", "$c=\"London\", $n=\"alice\"",
+                        q => { q.AddParameter("c", "London"); q.AddParameter("n", "alice"); }),
+                    new ParamSet("rome-bob", "$c=\"Rome\", $n=\"bob\"",
+                        q => { q.AddParameter("c", "Rome"); q.AddParameter("n", "bob"); }),
+                ]),
+
+            new CatalogQuery("regex", "regex(...) term scan",
+                "from index 'Items/Index' where regex(Name, $p)",
+                "A `regex` predicate over the `Name` field. Regex is not a posting-list seek: it resolves through a `TermsProviderMatch` backed by a `RegexTermsProvider`, which walks the field's term dictionary and tests each distinct term against the pattern, unioning the postings of every term that matches. The plan graph renders it as a single pipeline leaf (`Fill` from the terms provider) — there is no per-term IL, the provider streams matching terms at runtime. The two parameter sets use different anchored patterns over the small name vocabulary (alice/bob/carol/dave/erin); the result count follows how many distinct names match.",
+                [
+                    new ParamSet("starts-a", "$p=\"^a\" (names starting with a → alice)", q => q.AddParameter("p", "^a")),
+                    new ParamSet("contains-r", "$p=\"r\" (names containing r → carol, erin)", q => q.AddParameter("p", "r")),
+                ]),
         ];
     }
 
@@ -633,6 +738,17 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         using Raven.Client.Documents.BulkInsert.BulkInsertOperation bulk = store.BulkInsert();
         for (int i = 0; i < DocCount; i++)
         {
+            // Spatial: scatter documents over a 100°×100° lat/lon box centred on (0,0). At ~5 docs per
+            // square degree a 60-mile circle (≈0.87° radius) selects a small, geometry-dependent subset —
+            // enough to make spatial.within selective and its result count move with the radius/centre.
+            double lat = rng.NextDouble() * 100 - 50;
+            double lon = rng.NextDouble() * 100 - 50;
+
+            // Vector: a 2-D unit vector at a random angle. Cosine similarity to a query vector is then just
+            // the angle between them, so vector.search against e.g. [1,0] (due "east") ranks the documents
+            // whose angle is closest to 0 first — a deterministic, model-free embedding the catalog can rank.
+            double angle = rng.NextDouble() * 2 * Math.PI;
+
             bulk.Store(new Item
             {
                 Name = names[rng.Next(names.Length)],
@@ -640,7 +756,10 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 Age = rng.Next(18, 80),
                 Score = rng.NextDouble() * 1000,
                 Created = new DateTime(2000, 1, 1).AddDays(rng.Next(0, 9000)).AddSeconds(rng.Next(0, 86400)),
-                Tags = new[] { tags[rng.Next(tags.Length)], tags[rng.Next(tags.Length)] }
+                Tags = new[] { tags[rng.Next(tags.Length)], tags[rng.Next(tags.Length)] },
+                Lat = lat,
+                Lon = lon,
+                Embedding = new[] { (float)Math.Cos(angle), (float)Math.Sin(angle) }
             });
         }
     }
