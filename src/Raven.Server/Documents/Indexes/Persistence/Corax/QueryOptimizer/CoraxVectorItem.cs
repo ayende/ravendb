@@ -59,7 +59,10 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
         };
     }
 
-    public IQueryMatch Materialize(IQueryMatch inner)
+    /// <param name="isPostFilter">True when the planner lifted this vector clause to a top-level post-filter
+    /// (an AND context); false when it is an ordinary leaf inside an OR branch. Recorded on the produced match so
+    /// inspection reads the role rather than re-deriving it from the type. <see cref="IPostFilterMatch"/>.</param>
+    public IQueryMatch Materialize(IQueryMatch inner, bool isPostFilter)
     {
         if (_isEmpty)
             return parameters.IndexSearcher.EmptyMatch();
@@ -77,6 +80,10 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
         {
             vs = parameters.IndexSearcher.VectorSearch(_field, _vectorToSearch, _minimumDistance, _numberOfCandidates, _isExact, _isVectorSingleClause, inner, parameters.Index.Configuration.CoraxVectorSearchScanningThreshold);
         }
+
+        // Set on the boxed match (vs is IQueryMatch) so the flag travels with the instance that inspection walks.
+        if (vs is IPostFilterMatch pf)
+            pf.IsPostFilter = isPostFilter;
 
         return Boosting is null ? vs : parameters.IndexSearcher.Boost(vs, Boosting.Value);
     }

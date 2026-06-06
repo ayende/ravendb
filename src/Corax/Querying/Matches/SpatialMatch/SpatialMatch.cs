@@ -16,9 +16,13 @@ using SpatialRelation = Spatial4n.Shapes.SpatialRelation;
 
 namespace Corax.Querying.Matches.SpatialMatch;
 
-public sealed class SpatialMatch<TBoosting> : IQueryMatch
+public sealed class SpatialMatch<TBoosting> : IQueryMatch, IPostFilterMatch
     where TBoosting : IBoostingMarker
 {
+    /// <summary>Set by <c>QueryPlanBuilder.ApplyPostFilters</c> when this spatial match was lifted to a top-level
+    /// post-filter. Left false when it is an ordinary leaf inside an OR branch.</summary>
+    public bool IsPostFilter { get; set; }
+
     private readonly Querying.IndexSearcher _indexSearcher;
     private readonly SpatialContext _spatialContext;
     private readonly double _error;
@@ -205,7 +209,9 @@ public sealed class SpatialMatch<TBoosting> : IQueryMatch
                 {"SpatialRelation", _spatialRelation.ToString()},
             })
         {
-            IsPostFilter = true // spatial is always applied as a per-entry filter on the candidate set
+            // Reflects the lifting decision recorded on this match, not the type: a spatial leaf inside an OR is
+            // a pipeline leaf, not a post-filter (see IPostFilterMatch).
+            IsPostFilter = IsPostFilter
         };
     }
 }
