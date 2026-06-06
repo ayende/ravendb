@@ -78,7 +78,7 @@ public struct RegexTermsProvider<TLookupIterator> : ITermsProvider
         return new QueryInspectionNode($"{nameof(RegexTermsProvider<TLookupIterator>)}",
             parameters: new Dictionary<string, string>()
             {
-                { Constants.QueryInspectionNode.FieldName, _field.ToString() },
+                { Constants.QueryInspectionNode.FieldName, _field.FieldName.ToString() },
                 { Constants.QueryInspectionNode.Term, _regex.ToString()}
             });
     }

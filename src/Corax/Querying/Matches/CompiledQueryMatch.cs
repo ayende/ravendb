@@ -197,15 +197,24 @@ public class CompiledQueryMatch(
         var children = new List<QueryInspectionNode>();
         if (ResolvedMatches != null)
         {
-            foreach (var it in ResolvedMatches)
+            // Spatial / vector post-filters are appended to ResolvedMatches as a trailing block (see
+            // AttachPostFilterPhases — each adds exactly one slot). They are NOT part of the bitmap pipeline
+            // this match represents; the wrapping PostFilterMatch / VectorSearchMatch already surfaces them in
+            // the inspection tree. Emitting them here as well would render every spatial/vector node twice, so
+            // stop before the trailing block.
+            int postFilterCount = (Exec?.SpatialFilters?.Length ?? 0) + (Exec?.VectorSelects?.Length ?? 0);
+            int pipelineSlotCount = ResolvedMatches.Length - postFilterCount;
+
+            for (int i = 0; i < pipelineSlotCount; i++)
             {
+                var it = ResolvedMatches[i];
                 // A BitmapMatch leaf is a pre-materialized bitmap (e.g. a search() result) that the pipeline
                 // fed into the slot-0 accumulator via Or/And/AndNotWith — a destructive merge that CONSUMES the
                 // leaf's bitmap (its containers are moved into the accumulator). After execution its Count is
                 // meaningless, and reading it is the exact contract the RoaringBitmap consumed-assertion forbids.
                 // The leaf's contribution is already captured in the per-op telemetry (ResultCounts), so skip it
-                // here rather than re-reading a consumed bitmap. Non-bitmap leaves (vector / spatial / term) are
-                // not consumed and remain safe to inspect.
+                // here rather than re-reading a consumed bitmap. Non-bitmap leaves (term) are not consumed and
+                // remain safe to inspect.
                 if (it is null or BitmapMatch)
                     continue;
                 children.Add(it.Inspect());
