@@ -113,9 +113,12 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     public int Fill(Span<long> matches)
     {
         Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-        if (_nullFirst && _nonExistingExhausted is false && _nullExhausted is false)
+        if (_nullFirst && (_nonExistingExhausted is false || _nullExhausted is false))
         {
             // If nulls-first, drain non-existing and null iterators at the start of every Fill call.
+            // Either source may be absent (e.g. an explicit-null term with no non-existing entries, or
+            // vice-versa), so drain whenever *either* still has entries — requiring both is wrong and
+            // silently drops the present source. HandleNullOrNonExistent picks non-existing before null.
             HandleNullOrNonExistent();
         }
         else if (_nullFirst is false && _providerExhausted)
