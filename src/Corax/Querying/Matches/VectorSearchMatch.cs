@@ -315,7 +315,10 @@ public struct VectorSearchMatch : IQueryMatch
                 { "Minimum match", _minimumMatch.ToString(CultureInfo.InvariantCulture) },
                 { "Number of candidates", _numberOfCandidates.ToString() },
                 { "Number of candidates scanned", (_vectorSearchRetriever.CandidatesProcessed).ToString()}
-            });
+            })
+        {
+            IsPostFilter = true // vector search consumes the candidate set as a per-entry filter
+        };
 
         if (_filterQuery is not null)
         {

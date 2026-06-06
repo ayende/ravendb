@@ -44,15 +44,22 @@ namespace Corax.Querying.Matches
 
         public QueryInspectionNode Inspect()
         {
+            var inner = _inner.Inspect();
             return new QueryInspectionNode($"{nameof(BoostingMatch)}",
-                children: new List<QueryInspectionNode> { _inner.Inspect() },
+                children: new List<QueryInspectionNode> { inner },
                 parameters: new Dictionary<string, string>()
                 {
                     { Constants.QueryInspectionNode.IsBoosting, IsBoosting.ToString() },
                     { Constants.QueryInspectionNode.Count, Count.ToString()},
                     { Constants.QueryInspectionNode.CountConfidence, Confidence.ToString() },
                     { Constants.QueryInspectionNode.BoostFactor, BoostFactor.ToString(CultureInfo.InvariantCulture) }
-                });
+                })
+            {
+                // A boost wrapper is transparent to the post-filter classification: a boosted spatial/vector slot is
+                // still a post-filter. Propagate the inner flag so it is skipped as a pipeline leaf and surfaced
+                // (with its boost factor) in the post-filter chain.
+                IsPostFilter = inner.IsPostFilter
+            };
         }
     }
 }

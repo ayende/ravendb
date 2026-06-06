@@ -11,6 +11,12 @@ namespace Corax.Querying.Matches.Meta
         public readonly Dictionary<string, string> Parameters = parameters ?? new Dictionary<string, string>();
         public readonly List<QueryInspectionNode> Children = children ?? new List<QueryInspectionNode>();
 
+        /// <summary>Set by a match that is structurally a per-entry post-filter (spatial / vector): it consumes the
+        /// candidate set via AndWith rather than producing a bitmap slot. The plan-graph renderer reads this to place
+        /// the node in the post-filter chain, instead of sniffing the operation name. Server-internal — not serialized
+        /// to the client.</summary>
+        public bool IsPostFilter;
+
         public DynamicJsonValue ToJson()
         {
             var children = new DynamicJsonArray();
