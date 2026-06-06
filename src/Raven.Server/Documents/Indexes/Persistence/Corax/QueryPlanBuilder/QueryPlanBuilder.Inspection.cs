@@ -22,32 +22,21 @@ internal static partial class QueryPlanBuilder
         var plan = BuildPlan(result, out var compiledRoot, out var opNodes, out var entryScanNode);
         if (plan == null)
         {
-            // No bitmap op-template to render: the spatial/vector all-entries bypass
-            // (InstantiateAllEntriesPostFilter) whose executed match is a PostFilterMatch over an implicit full
-            // scan. Still emit the dataflow graph (AllEntries → post-filters → sort/boost → Result) so this path
-            // is not a blind spot in the catalog/Studio view.
             var bypass = result.ExecutedMatch.Inspect();
-            if (result.SortingWrapper != null)
+            if (result.SortingWrapper?.Inspect() is {} bypassSort)
             {
                 // Mirror the BuildPlan wrapping so the sort strategy renders as the dataflow tail here too.
-                var bypassSort = result.SortingWrapper.Inspect();
                 bypassSort.Children.Clear();
                 bypassSort.Children.Add(bypass);
                 bypass = bypassSort;
             }
-
-            bypass.Parameters["PlanGraphDot"] = QueryPlanGraph.ToGraphviz(bypass);
-            return bypass;
+            plan = bypass;
         }
-
-        OverlayTimings(result, compiledRoot, opNodes, entryScanNode);
-
-        // Render the physical-dataflow graph once, server-side, from the fully overlaid plan (so node labels carry
-        // the run's timing/scan telemetry) and attach it to the CompiledQuery node. It rides to the client on the
-        // same QueryInspectionNode as CSharpSourceFormatted, so any consumer (Studio, the catalog) gets the graph
-        // without re-deriving it.
+        else
+        {
+            OverlayTimings(result, compiledRoot, opNodes, entryScanNode);
+        }
         compiledRoot.Parameters["PlanGraphDot"] = QueryPlanGraph.ToGraphviz(plan);
-
         return plan;
     }
 
