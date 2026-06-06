@@ -74,11 +74,16 @@ internal static partial class QueryPlanBuilder
         var orderBy = bp.Metadata.OrderBy;
         if (orderBy is null or { Length: 0 })
         {
-            // No explicit ORDER BY: a score sort only exists because the index/config auto-promotes it
-            // (matches the ImplicitScore branch in BuildSortMetadataTemplate). If neither opt-in is set there
-            // is no sort to skip — and the AND case would not be score-ordered — so do not engage.
-            return bp.Index.Configuration.OrderByScoreAutomaticallyWhenBoostingIsInvolved
-                   || bp.Index.Configuration.CoraxVectorSearchOrderByScoreAutomatically;
+            // No explicit ORDER BY: a score sort wrapper exists only when the implicit-score promotion fires,
+            // which (see the ImplicitScore branch in BuildSortMetadataTemplate) requires HasBoost AND a config
+            // opt-in. The HasBoost gate is essential: for an AND-filtered vector, HasBoost folds in
+            // (HasVectorSearch && CoraxVectorSearchOrderByScoreAutomatically), so when that config is off
+            // HasBoost is false, no wrapper is added, and the post-filter keeps its entry-id order — there is
+            // nothing to skip. Without this gate we would wrongly stream score order in the config-off case,
+            // because OrderByScoreAutomaticallyWhenBoostingIsInvolved defaults to true.
+            return bp.HasBoost
+                   && (bp.Index.Configuration.OrderByScoreAutomaticallyWhenBoostingIsInvolved
+                       || bp.Index.Configuration.CoraxVectorSearchOrderByScoreAutomatically);
         }
 
         // An explicit, single `ORDER BY score()` asks for exactly the order the vector emits.
