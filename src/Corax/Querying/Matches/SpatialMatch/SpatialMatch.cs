@@ -203,7 +203,10 @@ public sealed class SpatialMatch<TBoosting> : IQueryMatch
                 {"Shape", _shape.ToString()},
                 {"Error", _error.ToString(CultureInfo.InvariantCulture)},
                 {"SpatialRelation", _spatialRelation.ToString()},
-            });
+            })
+        {
+            IsPostFilter = true // spatial is always applied as a per-entry filter on the candidate set
+        };
     }
 }
 

@@ -197,15 +197,17 @@ public class CompiledQueryMatch(
         var children = new List<QueryInspectionNode>();
         if (ResolvedMatches != null)
         {
-            int postFilterCount = (Exec?.SpatialFilters?.Length ?? 0) + (Exec?.VectorSelects?.Length ?? 0);
-            int pipelineSlotCount = ResolvedMatches.Length - postFilterCount;
-
-            for (int i = 0; i < pipelineSlotCount; i++)
+            foreach (var it in ResolvedMatches)
             {
-                var it = ResolvedMatches[i];
                 if (it is null or BitmapMatch) // a bitmap match is consumed by the pipeline and should not be inspected
                     continue;
-                children.Add(it.Inspect());
+                var node = it.Inspect();
+                // Spatial/vector slots live in ResolvedMatches too, but they are post-filters surfaced by the
+                // wrapping PostFilterMatch / vector match — not pipeline leaves. The match tags its own node, so
+                // we skip it here by reading that flag rather than inferring the trailing-slot count.
+                if (node.IsPostFilter)
+                    continue;
+                children.Add(node);
             }
         }
 

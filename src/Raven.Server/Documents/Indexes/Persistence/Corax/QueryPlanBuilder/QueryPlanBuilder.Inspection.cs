@@ -36,7 +36,12 @@ internal static partial class QueryPlanBuilder
         {
             OverlayTimings(result, compiledRoot, opNodes, entryScanNode);
         }
-        compiledRoot.Parameters["PlanGraphDot"] = QueryPlanGraph.ToGraphviz(plan);
+
+        // The bypass path (spatial/vector-only) has no CompiledQuery node — BuildPlan returns null and leaves
+        // compiledRoot null — so the DOT hangs off the bypass root itself. The normal path keeps it on the
+        // CompiledQuery node.
+        var dotTarget = compiledRoot ?? plan;
+        dotTarget.Parameters["PlanGraphDot"] = QueryPlanGraph.ToGraphviz(plan);
         return plan;
     }
 
@@ -225,6 +230,14 @@ internal static partial class QueryPlanBuilder
             return root;
 
         var sortNode = result.SortingWrapper.Inspect();
+        // The sort over score() may not be something the query TEXT asked for: when the query has no ORDER BY but
+        // carries boosting (or vector search) and the index opts in, the planner auto-promotes to ORDER BY score()
+        // (BuildSortMetadataTemplate, recorded as SortMetadataTemplate.ImplicitScore). Surface that recorded fact so
+        // the plan distinguishes an injected score sort from an explicit one — and stays correct if the promotion
+        // rule changes — instead of leaving the reason implicit.
+        if (compiledPlan.Template.SortMetadataTemplate is { ImplicitScore: true })
+            sortNode.Parameters["ImplicitScore"] = "auto-promoted from boosting / vector search (no explicit ORDER BY)";
+
         sortNode.Children.Clear();
         sortNode.Children.Add(root);
         return sortNode;
@@ -435,7 +448,11 @@ internal static partial class QueryPlanBuilder
 
     private static void AppendPostFilterNodes(QueryInspectionNode source, QueryInspectionNode target)
     {
-        if (source.Operation.Contains("VectorSearch") || source.Operation.Contains("Spatial"))
+        // A post-filter match (spatial / vector) tags its own inspection node — read that flag rather than
+        // matching the operation name, so adding a new post-filter match type doesn't require updating string lists
+        // here. Wrapper nodes (e.g. "VectorSearchMatch [And]") are NOT tagged, so we descend through them and pick up
+        // the tagged self-node without re-nesting the inner pipeline.
+        if (source.IsPostFilter)
         {
             target.Children.Add(source);
             return;
