@@ -684,12 +684,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     if (read == 0)
                         goto Done;
 
-                    // A single vector post-filter streams its HNSW output in similarity-score order, so the
-                    // implicit (or explicit ORDER BY score()) SortingMatch wrapper was skipped. That wrapper is
-                    // what normally surfaces the similarity into the scores buffer, so replicate its scoring call
-                    // here per Fill batch — before RegisterDuplicates reshuffles the skipped pagination prefix —
-                    // so IndexScore is still populated for the entries we actually return.
-                    if (sortingData.IncludeScores && compileResult.Execution is { VectorPostFilterProvidesScoreOrder: true })
+                    // When the scores buffer is filled by Fill (not by a SortingMatch wrapper), replicate the
+                    // wrapper's scoring call here per Fill batch — before RegisterDuplicates reshuffles the
+                    // skipped pagination prefix — so IndexScore is still populated for the entries we return.
+                    if (sortingData.IncludeScores && compileResult.ScoresProducedDuringFill)
                     {
                         var scoresForBatch = sortingData.ScoresBuffer.AsSpan(0, read);
                         scoresForBatch.Fill(Bm25Relevance.InitialScoreValue);

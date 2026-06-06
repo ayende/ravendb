@@ -88,7 +88,7 @@ internal static partial class QueryPlanBuilder
         // ORDER BY score()), the implicit SortingMatch wrapper is pure overhead — record that here so the vector
         // match streams score order (ApplyPostFilters) and the wrapper is skipped (Instantiate). The order-agnostic
         // BuildFilterMatch path never reaches this, so facets / MLT keep the entry-id-sorted vector output.
-        exec.VectorPostFilterProvidesScoreOrder = VectorPostFilterProvidesResultOrder(exec, builderParameters);
+        exec.VectorPostFilterProvidesScoreOrder = VectorPostFilterProvidesResultOrder(exec, builderParameters, orderByFields);
         var queryMatch = Instantiate(plan, exec, orderByFields,
             planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
         return new(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, exec, builderParameters, orderByFields);
