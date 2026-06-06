@@ -74,3 +74,15 @@ public enum DuplicatesOccurrence
     Possible,
     NotPossible
 }
+
+/// <summary>
+/// Implemented by the per-entry post-filter match families (spatial / vector). The flag is NOT intrinsic to the
+/// match type: the same match is a top-level post-filter when the planner lifted it out of an AND, but an ordinary
+/// pipeline leaf when it sits inside an OR branch (the planner only lifts in an AND context — see
+/// <c>PlanWalker.GroupCollapse</c>). The locus that actually applies post-filters (<c>QueryPlanBuilder.ApplyPostFilters</c>)
+/// sets the flag on the matches it wraps, so inspection reads the recorded role instead of re-deriving it from the type.
+/// </summary>
+public interface IPostFilterMatch
+{
+    bool IsPostFilter { get; set; }
+}

@@ -71,7 +71,10 @@ internal static partial class QueryPlanBuilder
                 return HandleSpatial(clause.SpatialMethodType);
 
             case ClauseType.Vector:
-                return HandleVector(builderParams, cur).Materialize(null);
+                // A vector clause resolved here is an ordinary pipeline leaf (e.g. inside an OR branch), not a
+                // top-level post-filter — the planner only lifts vector clauses to post-filters in an AND context
+                // via ApplyPostFilters. Pass isPostFilter:false so inspection reports the correct role.
+                return HandleVector(builderParams, cur).Materialize(null, isPostFilter: false);
             case ClauseType.OrGroup:
                 throw new InvalidOperationException(
                     "OrGroup should be expanded by ResolveMatches, not resolved as a single clause.");

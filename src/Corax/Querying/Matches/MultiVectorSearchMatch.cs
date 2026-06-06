@@ -13,9 +13,13 @@ using Voron.Util;
 
 namespace Corax.Querying.Matches;
 
-public struct MultiVectorSearchMatch : IQueryMatch
+public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
 {
     private const int ScanningThreshold = 1024;
+
+    /// <summary>Set by <c>QueryPlanBuilder.ApplyPostFilters</c> when this vector match was lifted to a top-level
+    /// post-filter. Left false when it is an ordinary leaf inside an OR branch.</summary>
+    public bool IsPostFilter { get; set; }
 
     private readonly IndexSearcher _indexSearcher;
     private readonly FieldMetadata _metadata;
@@ -277,7 +281,9 @@ public struct MultiVectorSearchMatch : IQueryMatch
                 { "Number of candidates", _numberOfCandidates.ToString() },
             })
         {
-            IsPostFilter = true // vector search consumes the candidate set as a per-entry filter
+            // Reflects the lifting decision recorded on this match, not the type: a vector leaf inside an OR is
+            // a pipeline leaf, not a post-filter (see IPostFilterMatch).
+            IsPostFilter = this.IsPostFilter
         };
 
         if (_filterQuery is not null)

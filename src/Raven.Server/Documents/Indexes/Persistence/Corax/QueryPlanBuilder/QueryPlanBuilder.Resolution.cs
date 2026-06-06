@@ -350,6 +350,15 @@ internal static partial class QueryPlanBuilder
 
         if (spatialMatches is { Length: > 0 })
         {
+            // These spatial matches were lifted to top-level post-filters by the planner (AND context). Record the
+            // role on each one so inspection reports it as a post-filter rather than re-deriving it from the type
+            // (a spatial leaf inside an OR is NOT a post-filter — see IPostFilterMatch).
+            foreach (var spatialMatch in spatialMatches)
+            {
+                if (spatialMatch is IPostFilterMatch postFilter)
+                    postFilter.IsPostFilter = true;
+            }
+
             result = result is null
                 ? new PostFilterMatch(spatialMatches[0], spatialMatches.Length is 1 ? [] : spatialMatches[1..], wantTimings)
                 : new PostFilterMatch(result, spatialMatches, wantTimings);
@@ -359,7 +368,7 @@ internal static partial class QueryPlanBuilder
         {
             foreach (var item in ResolveVectorItems(exec, builderParameters))
             {
-                result = item.Materialize(result);
+                result = item.Materialize(result, isPostFilter: true);
             }
         }
 
