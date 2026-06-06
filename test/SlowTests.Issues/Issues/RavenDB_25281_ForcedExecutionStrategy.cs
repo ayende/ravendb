@@ -126,7 +126,7 @@ namespace SlowTests.Issues
         private void AssertForcedMatchesBitmap(IDocumentStore store, string rql, string forcedStrategy, bool ordered,
             Action<IRawDocumentQuery<Item>> bind)
         {
-            (List<string> Ids, List<long> Ages, string Strategy) baseline = Run(store, rql, "Bitmap", bind);
+            (List<string> Ids, List<long> Ages, string Strategy) baseline = Run(store, rql, "BitmapPipeline", bind);
             (List<string> Ids, List<long> Ages, string Strategy) forced = Run(store, rql, forcedStrategy, bind);
 
             // The baseline really is the bitmap pipeline, and the forced run really is the requested strategy
