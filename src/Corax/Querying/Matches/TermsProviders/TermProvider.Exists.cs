@@ -35,8 +35,15 @@ namespace Corax.Querying.Matches.TermsProviders
             _tree = tree;
             _field = field;
             _searcher = searcher;
-            // A sorted index-only scan (SortedDrivingMatch / SortedDrivingWithTieBreakMatch) owns null, so we shouldn't emit it as well
-            _nullExists = skipNulls == false && _searcher.TryGetPostingListForNull(field, out  _nullPostingListId);
+            // A sorted index-only scan (SortedDrivingMatch / SortedDrivingWithTieBreakMatch) owns null, so we shouldn't emit it as well.
+            // The null posting-list container can linger with zero entries after every null-valued document is deleted, so a non-empty
+            // entry count - not mere container existence - is what decides whether null contributes a term/group here.
+            _nullExists = false;
+            if (skipNulls == false && _searcher.TryGetPostingListForNull(field, out _nullPostingListId))
+            {
+                using var nullPostingList = _searcher.GetPostingList(_nullPostingListId);
+                _nullExists = nullPostingList.State.NumberOfEntries > 0;
+            }
             _fetchNulls = _nullExists;
 
             if (forAggregation)
