@@ -62,11 +62,8 @@ internal static class QueryPlanGraph
         QueryInspectionNode compiled = FindNode(plan, "CompiledQuery");
         if (compiled?.Children == null)
         {
-            // No bitmap pipeline. The only plan shape without a CompiledQuery is the spatial/vector
-            // all-entries bypass (InstantiateAllEntriesPostFilter): a PostFilterMatch over an implicit
-            // full scan. Render it as an AllEntries source feeding the post-filter chain.
-            QueryInspectionNode bypass = FindNode(plan, "PostFilterMatch");
-            if (bypass != null)
+            // plan shape without a CompiledQuery is the spatial/vector all-entries bypass (InstantiateAllEntriesPostFilter)
+            if (FindNode(plan, "PostFilterMatch") is {} bypass)
                 return RenderAllEntriesBypass(bypass, CollectResultWrappers(plan, bypass));
 
             return "digraph QueryPlan { /* no compiled op stream */ }\n";
@@ -86,9 +83,6 @@ internal static class QueryPlanGraph
             }
         }
 
-        // Spatial / vector post-filters are CompiledQuery children with no DestSlot: they consume the
-        // candidate bitmap per entry rather than writing a slot (matched by name so the And/Multi variants —
-        // "VectorSearchMatch [And]", "MultiVectorSearchMatch" — are caught too, mirroring AppendPostFilterNodes).
         List<QueryInspectionNode> postFilters = [];
         foreach (QueryInspectionNode child in compiled.Children)
         {
@@ -96,13 +90,9 @@ internal static class QueryPlanGraph
                 postFilters.Add(child);
         }
 
-        // Sort / boost wrappers sit above CompiledQuery in the plan tree (the graph roots at the pipeline).
-        // Peel them off so they render as the tail of the dataflow rather than being silently skipped.
         List<QueryInspectionNode> wrappers = CollectResultWrappers(plan, compiled);
         bool hasPostChain = postFilters.Count > 0 || wrappers.Count > 0;
 
-        // When a post-filter / sort chain exists, the bitmap pipeline no longer terminates at Result directly;
-        // it terminates at a "candidates" anchor that the chain consumes.
         string bitmapSink = hasPostChain ? "candidates" : "result";
 
 

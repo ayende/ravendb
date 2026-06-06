@@ -96,15 +96,12 @@ internal sealed class GraphvizGraph
         return sb.ToString();
     }
 
-    private static void AppendElement(StringBuilder sb, Element e)
+    private void AppendElement(StringBuilder sb, Element e)
     {
         bool first = true;
-
-        // Presentation first, written verbatim — the styler owns escaping (labels carry intentional \n breaks).
         foreach (KeyValuePair<string, string> kv in e.Attributes)
             first = AppendRawAttr(sb, first, kv.Key, kv.Value);
 
-        // Then the data facts, as data_<key>, escaped so a value can never break out of its quotes.
         foreach (KeyValuePair<string, string> kv in e.Data)
         {
             if (string.IsNullOrEmpty(kv.Value))
@@ -113,17 +110,27 @@ internal sealed class GraphvizGraph
         }
     }
 
-    /// <summary>
-    /// Reduces an arbitrary fact key to a valid DOT attribute identifier (lower-cased, non-alphanumeric
-    /// characters folded to '_'). Inspection parameter names can contain spaces (e.g. "Number Of Candidates"),
-    /// which would otherwise emit a bare token mid-attribute and break the DOT parse.
-    /// </summary>
-    private static string SanitizeKey(string key)
+    private readonly Dictionary<string, string> _sanitizedKeyCache = [];
+
+    private string SanitizeKey(string key) // we may be called with "Number Of Candidates", for example, needs to fix this
     {
-        var sb = new StringBuilder(key.Length);
-        foreach (char c in key)
-            sb.Append(char.IsLetterOrDigit(c) ? char.ToLowerInvariant(c) : '_');
-        return sb.ToString();
+        if (string.IsNullOrEmpty(key)) 
+            return string.Empty;
+        
+        if (_sanitizedKeyCache.TryGetValue(key, out string cachedValue))
+            return cachedValue;
+
+        string sanitized = string.Create(key.Length, key, static (span, state) =>
+        {
+            for (int i = 0; i < state.Length; i++)
+            {
+                char c = state[i];
+                span[i] = char.IsLetterOrDigit(c) ? char.ToLowerInvariant(c) : '_';
+            }
+        });
+
+        _sanitizedKeyCache[key] = sanitized;
+        return sanitized;
     }
 
     private static bool AppendRawAttr(StringBuilder sb, bool first, string key, string value)
