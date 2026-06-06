@@ -199,7 +199,7 @@ public sealed class SpatialMatch<TBoosting> : IQueryMatch
         return new QueryInspectionNode($"{nameof(SpatialMatch)}",
             parameters: new Dictionary<string, string>()
             {
-                {"Field", _field.ToString()},
+                {"Field", _field.FieldName.ToString()},
                 {"Shape", _shape.ToString()},
                 {"Error", _error.ToString(CultureInfo.InvariantCulture)},
                 {"SpatialRelation", _spatialRelation.ToString()},

@@ -203,7 +203,7 @@ namespace Corax.Querying.Matches.TermsProviders
             return new QueryInspectionNode(nameof(TermsNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>),
                             parameters: new Dictionary<string, string>()
                             {
-                                { Constants.QueryInspectionNode.FieldName, _field.ToString() },
+                                { Constants.QueryInspectionNode.FieldName, _field.FieldName.ToString() },
                                 { Constants.QueryInspectionNode.LowValue, lowValue},
                                 { Constants.QueryInspectionNode.HighValue, highValue},
                                 { Constants.QueryInspectionNode.LowOption, typeof(TLow).Name},

@@ -202,7 +202,7 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
         return new QueryInspectionNode(nameof(TermsRangeProvider<TLookupIterator, TLow, THigh>),
             parameters: new Dictionary<string, string>()
             {
-                { Constants.QueryInspectionNode.FieldName, _field.ToString() },
+                { Constants.QueryInspectionNode.FieldName, _field.FieldName.ToString() },
                 { Constants.QueryInspectionNode.LowValue, lowValue },
                 { Constants.QueryInspectionNode.HighValue, highValue },
                 { Constants.QueryInspectionNode.LowOption, typeof(TLow).Name },
