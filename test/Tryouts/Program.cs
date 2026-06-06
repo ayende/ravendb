@@ -196,7 +196,11 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 // 1 + 2. Physical dataflow graph (rendered server-side by QueryPlanGraph and shipped on the plan
                 // node as PlanGraphDot). Render the DOT to a PNG via Graphviz and embed the image, then keep the
                 // original DOT source in a collapsed <details> — done inline so one run produces the final catalog.
-                if (TryGetParam(compiled, "PlanGraphDot", out string dot))
+                // PlanGraphDot is attached to the OUTER plan root (BuildInspectionGraph): for a sort-wrapped query
+                // that root is the SortingMatch node, not the inner CompiledQuery — so read it from `plan`, not
+                // `compiled`, otherwise every sorted / vector / boosted query (whose root is a sort wrapper) would
+                // silently lose its graph. Reading the root also renders the full dataflow including the sort tail.
+                if (TryGetParam(plan, "PlanGraphDot", out string dot))
                 {
                     string dotSrc = dot.TrimEnd('\n');
                     planNumber++;
@@ -681,6 +685,16 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                         q => { q.AddParameter("c", "London"); q.AddParameter("q", new[] { 1f, 0f }); }),
                     new ParamSet("rome-north", "$c=\"Rome\", $q=[0,1]",
                         q => { q.AddParameter("c", "Rome"); q.AddParameter("q", new[] { 0f, 1f }); }),
+                ]),
+
+            new CatalogQuery("vector-or-term", "vector.search OR a term equality (vector as an OR-branch leaf)",
+                "from index 'Items/Geo' where vector.search(Embedding, $q) or City = $c",
+                "A `vector.search` **OR-ed** with an ordinary term equality — contrast `vector-filtered`, where the term clause is an AND constraint that pre-narrows the candidate set. Here the two branches are a **union**: a document qualifies if it is a near neighbour of `$q` OR it lives in city `$c`. The key point is the vector clause's ROLE: inside an OR branch it is an ordinary bitmap-pipeline leaf, NOT a top-level post-filter. The planner only lifts vector/spatial clauses to per-entry post-filters in an AND context (`ApplyPostFilters` runs over the top-level AND); in an OR the vector match must contribute its own matching set to be unioned, so it resolves as a fill-from-match source that is OR-ed with the `City = $c` posting list. (This is exactly the nested-leaf path that `IsPostFilter` must report as `false` — a vector leaf in an OR is not a post-filter.) The two parameter sets move the query vector and the city; the plan shape is identical.",
+                [
+                    new ParamSet("east-or-london", "$q=[1,0], $c=\"London\"",
+                        q => { q.AddParameter("q", new[] { 1f, 0f }); q.AddParameter("c", "London"); }),
+                    new ParamSet("north-or-rome", "$q=[0,1], $c=\"Rome\"",
+                        q => { q.AddParameter("q", new[] { 0f, 1f }); q.AddParameter("c", "Rome"); }),
                 ]),
 
             new CatalogQuery("spatial-and-spatial", "two spatial circles AND-ed (all-entries fill + both circles post-filter)",
