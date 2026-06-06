@@ -174,7 +174,7 @@ internal static partial class QueryPlanBuilder
             // (EntryTermsReader, ~64× a posting decode) to test the residual, and it over-scans the sorted
             // stream to fill the page because only a fraction of scanned entries survive. Estimate that
             // over-scan and let the gate decide whether it still beats the bitmap pipeline.
-            entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ctx.BuilderParams.Query.PageSize, indexSearcher);
+            entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
             return IsDirectScanCostEffective(entriesToScan, bitmapCost);
         }
         
@@ -213,7 +213,7 @@ internal static partial class QueryPlanBuilder
             // over-scans the sorted stream to fill the page. Estimate the over-scan and let the gate compare
             // it to the cost of building and sorting the bitmap instead.
             long drivingCard = drivingExec.GetEffectiveCardinality(indexSearcher);
-            var entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ctx.BuilderParams.Query.PageSize, indexSearcher);
+            var entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
 
             if (ctx.WantTimings)
                 directScanReason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";

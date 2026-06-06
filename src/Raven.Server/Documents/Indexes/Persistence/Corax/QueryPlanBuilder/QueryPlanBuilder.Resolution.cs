@@ -631,6 +631,23 @@ internal static partial class QueryPlanBuilder
         return builderParams?.Take ?? Constants.IndexSearcher.TakeAll;
     }
 
+    /// <summary>
+    /// The page size the residual-DirectScan cost model is allowed to assume. A residual scan only
+    /// early-terminates at the page boundary when the executor's take is page-bounded; <see cref="ResolveSortedScanTake"/>
+    /// returns <c>TakeAll</c> whenever a total-result count must be reported (<c>SkipStatistics == false</c>, the
+    /// default), the query is a count query, or a post-filter is present. In those cases the scan enumerates every
+    /// matching entry — doing a stored-entry read per entry — so the page no longer bounds the work. Modelling the
+    /// page bound there would let the cost gate price a handful of reads when the scan actually reads the whole
+    /// driving tree, so report the full matching set (<see cref="long.MaxValue"/>, clamped to the driving
+    /// cardinality by the caller) instead.
+    /// </summary>
+    private static long ResolveEffectiveScanPageSize(QueryBuilderParameters builderParams)
+    {
+        return ResolveSortedScanTake(builderParams) == Constants.IndexSearcher.TakeAll
+            ? long.MaxValue
+            : builderParams.Query.PageSize;
+    }
+
     private static IQueryMatch BuildSortedDrivingWithTieBreakMatch(InstCtx ctx, ITermsProvider provider, LowLevelTransaction llt, NullsSortMode indexDefaultNullsSortMode,
         IndexSearcher indexSearcher, bool nullFirst)
     {

@@ -180,6 +180,69 @@ public class DirectScanResidualTests : RavenTestBase
         Assert.True(directScan.Parameters.ContainsKey("TreeEntriesScanned"));
     }
 
+    // Cost-model regression (RavenDB-25281). A sorted residual scan only early-terminates at the page boundary
+    // when its take is page-bounded. Requesting statistics (or a count query, or a post-filter) forces the scan
+    // to TakeAll so it can report an exact TotalResults — it then reads every matching entry's stored fields.
+    // The DirectScan cost gate must therefore price the scan against the FULL matching set, not the limit-1 page.
+    // Before the fix the estimate always assumed the page bound, so a "ORDER BY non-selective-field DESC LIMIT 1
+    // + residual + statistics" query chose DirectScan and drained the whole driving tree (TreeExhausted, slow).
+    // This pins the contrast: the SAME query picks DirectScan without statistics (page-bounded, a few entries)
+    // and the bitmap pipeline with statistics (no stored-entry read per scanned entry), returning identical rows.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task DirectScanResidual_StatisticsRequested_RejectsFullTreeScan(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Items_Index();
+        index.Execute(store);
+        var items = BuildSeed(4000);
+        await SeedAsync(store, items);
+        Indexes.WaitForIndexing(store);
+
+        string query = $"from index '{index.IndexName}' where Seq between 0 and 3999 and Name = 'BOB' " +
+                       "order by Seq as long desc limit 1 include timings()";
+
+        using var session = store.OpenAsyncSession();
+
+        // No statistics requested -> client sends SkipStatistics=true -> the sorted scan is page-bounded
+        // (take=1), so DirectScan wins the cost gate and the plan reports the FieldSortedScan strategy.
+        var noStatsResults = await session.Advanced
+            .AsyncRawQuery<Item>(query)
+            .Timings(out var noStatsTimings)
+            .ToListAsync();
+
+        var noStatsPlan = noStatsTimings.QueryPlan as QueryInspectionNode;
+        Assert.NotNull(noStatsPlan);
+        Assert.True(noStatsPlan.Parameters.TryGetValue("OptimizationHint", out var noStatsHint) && noStatsHint == "FieldSortedScan",
+            "Without statistics the page-bounded scan should pick FieldSortedScan, but OptimizationHint was '" +
+            (noStatsHint ?? "<missing>") + "'. Plan: " + Describe(noStatsPlan));
+
+        // Statistics requested -> SkipStatistics=false -> the read must drain the driving tree to count
+        // TotalResults, so DirectScan would do a stored-entry read per matching entry. The cost model now
+        // prices it against the full matching set and rejects it, falling back to the bitmap pipeline.
+        var statsResults = await session.Advanced
+            .AsyncRawQuery<Item>(query)
+            .Statistics(out var stats)
+            .Timings(out var statsTimings)
+            .ToListAsync();
+
+        var statsPlan = statsTimings.QueryPlan as QueryInspectionNode;
+        Assert.NotNull(statsPlan);
+        statsPlan.Parameters.TryGetValue("OptimizationHint", out var statsHint);
+        Assert.True(statsHint != "FieldSortedScan",
+            "With statistics the scan is TakeAll (full tree drain), so DirectScan must be rejected for the bitmap " +
+            "pipeline, but OptimizationHint was 'FieldSortedScan'. Plan: " + Describe(statsPlan));
+        var compiled = FindOperation(statsPlan, "CompiledQuery");
+        Assert.True(compiled?.Children?.FirstOrDefault(c => c.Operation == "DirectScan") == null,
+            "Expected NO DirectScan node when statistics are requested. Plan: " + Describe(statsPlan));
+
+        // Both shapes return the identical correct top-1 row, and statistics report the true total match count.
+        Assert.Equal(noStatsResults.Select(r => r.Id), statsResults.Select(r => r.Id));
+        long expectedTotal = items.Count(i => i.Seq >= 0 && i.Seq <= 3999 &&
+                                              string.Equals(i.Name, "BOB", StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(expectedTotal, stats.TotalResults);
+    }
+
     private static QueryInspectionNode FindOperation(QueryInspectionNode node, string operation)
     {
         if (node == null)
