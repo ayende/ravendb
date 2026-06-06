@@ -113,12 +113,9 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     public int Fill(Span<long> matches)
     {
         Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-        if (_nullFirst && (_nonExistingExhausted is false || _nullExhausted is false))
+        if (_nullFirst && (_nonExistingExhausted && _nullExhausted) is false)
         {
             // If nulls-first, drain non-existing and null iterators at the start of every Fill call.
-            // Either source may be absent (e.g. an explicit-null term with no non-existing entries, or
-            // vice-versa), so drain whenever *either* still has entries — requiring both is wrong and
-            // silently drops the present source. HandleNullOrNonExistent picks non-existing before null.
             HandleNullOrNonExistent();
         }
         else if (_nullFirst is false && _providerExhausted)
@@ -225,26 +222,12 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             }
         }
 
-        // Nulls / non-existing sort LAST: drain them in the SAME Fill that exhausts the provider.
-        // The start-of-Fill drain (top of this method) only fires once _providerExhausted is already
-        // set — i.e. on the *next* Fill. But when the provider yields no real terms (e.g. a field whose
-        // only values are null, so the skipNulls driving provider is empty) the provider-exhausting Fill
-        // reaches here with count == 0; returning 0 tells the caller "end of results" and the trailing
-        // null group is silently dropped. Draining it here keeps Fill from reporting 0 prematurely.
-        while (_nullFirst is false && _providerExhausted && count < matches.Length)
+        if (_nullFirst is false && count is 0 && _providerExhausted && (_nonExistingExhausted && _nullExhausted) is false)
         {
-            if (_hasPendingLargeIterator is false)
-            {
-                bool hadSource = _nonExistingExhausted is false || _nullExhausted is false;
-                HandleNullOrNonExistent();
-                if (hadSource is false || _hasPendingLargeIterator is false)
-                    break; // no trailing group left to drain
-            }
-
-            int before = count;
-            count += DrainLargePostingList(matches[count..], entryBuffer);
-            if (count == before)
-                _hasPendingLargeIterator = false; // current iterator drained; advance to the next source
+            // we are now exhausted the provider, but has no entries (all fields are null?), we still need 
+            // to return the null values, easiest is to recurse to fetch them
+            RuntimeHelpers.EnsureSufficientExecutionStack();
+            return Fill(matches);
         }
 
         return count;

@@ -31,10 +31,7 @@ internal static partial class QueryPlanBuilder
             SelectExecutionStrategy(ref ctx);
 
         // A query may pin a specific execution strategy via the reserved $rvn_corax_strategy parameter.
-        // Forcing bypasses the per-execution cost gate but NOT structural validity: a strategy that is
-        // structurally impossible for this query still falls back to BitmapPipeline when its Construct*
-        // returns null. The cached CompiledPlan.Strategy (the natural choice) is never mutated — forcing
-        // only redirects this one execution. This exists so every strategy can be exercised under test.
+        // Forcing bypasses the per-execution cost gate but NOT structural validity. This exists so every strategy can be exercised under user's explicit request.
         ExecutionStrategy? forced = TryGetForcedStrategy(ctx.PlanParams.QueryParameters);
         ExecutionStrategy effective = forced ?? compiledPlan.Strategy;
 
@@ -202,12 +199,7 @@ internal static partial class QueryPlanBuilder
 
             if (execs.Count <= 1)
             {
-                // No residual filter beyond the driving clause: DirectScanSimpleMatch walks the sorted
-                // single-field tree and emits entry ids directly — it reads no stored entries. That is the
-                // same posting-list work the bitmap path does, minus the sort the bitmap path still performs.
-                // So the sorted walk is unconditionally cheaper than build-bitmap-then-sort, paged or not.
-                if (ctx.WantTimings)
-                    directScanReason = "sorted walk, no residual filter (no stored-entry reads, sort is free)";
+                directScanReason = "sorted walk, no residual filter (no stored-entry reads, sort is free)";
                 return true;
             }
 
@@ -257,19 +249,8 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>
-    /// Reserved query-parameter name used to pin a query to a specific execution strategy. Supplied as
-    /// <c>$rvn_corax_strategy</c> in RQL (stored without the leading <c>$</c> in the parameters object).
-    /// Intended for tests that must exercise a particular strategy regardless of the cost gate's verdict.
-    /// </summary>
     private const string ForceStrategyParameterName = "rvn_corax_strategy";
 
-    /// <summary>
-    /// Reads the reserved <see cref="ForceStrategyParameterName"/> parameter, if present, and maps it to an
-    /// <see cref="ExecutionStrategy"/>. Accepts the exact enum names (case-insensitive) plus a few friendly
-    /// aliases. Returns <c>null</c> when the parameter is absent. Throws on an unrecognized value so a typo
-    /// in a test fails loudly rather than silently falling back to the natural strategy.
-    /// </summary>
     private static ExecutionStrategy? TryGetForcedStrategy(BlittableJsonReaderObject queryParameters)
     {
         if (queryParameters is null)
@@ -277,29 +258,10 @@ internal static partial class QueryPlanBuilder
         if (queryParameters.TryGet(ForceStrategyParameterName, out string value) == false || string.IsNullOrEmpty(value))
             return null;
 
-        switch (value.ToLowerInvariant())
-        {
-            case "bitmap":
-            case "bitmappipeline":
-                return ExecutionStrategy.BitmapPipeline;
-            case "compoundkey":
-            case "compoundexact":
-            case "compoundkeylookup":
-                return ExecutionStrategy.CompoundKeyLookup;
-            case "compoundsort":
-            case "compoundscan":
-            case "compoundsortedscan":
-                return ExecutionStrategy.CompoundSortedScan;
-            case "directsort":
-            case "directscan":
-            case "fieldsort":
-            case "fieldsortedscan":
-                return ExecutionStrategy.FieldSortedScan;
-            default:
-                throw new InvalidQueryException(
-                    $"The reserved query parameter '${ForceStrategyParameterName}' has an unrecognized value '{value}'. " +
-                    "Valid values are: BitmapPipeline, CompoundKeyLookup, CompoundSortedScan, FieldSortedScan " +
-                    "(aliases: Bitmap; CompoundKey/CompoundExact; CompoundSort/CompoundScan; DirectSort/DirectScan/FieldSort).");
-        }
+        if(Enum.TryParse(value, out ExecutionStrategy result) is false)
+            throw new InvalidQueryException(
+                $"The reserved query parameter '${ForceStrategyParameterName}' has an unrecognized value '{value}'. Expected on of: {string.Join(", ", Enum.GetNames<ExecutionStrategy>())}");
+        return result;
+
     }
 }

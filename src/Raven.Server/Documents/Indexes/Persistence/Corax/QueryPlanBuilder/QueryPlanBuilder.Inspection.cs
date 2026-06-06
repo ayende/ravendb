@@ -77,17 +77,9 @@ internal static partial class QueryPlanBuilder
         opNodes = new List<QueryInspectionNode>(template.Length);
         bool hasEntryScanGate = false;
 
-        // When a scan/lookup strategy actually ran, the bitmap op-template below is the UNUSED candidate that only
-        // fed cost estimation — the pipeline never executed it. Skip emitting it (and, via hasEntryScanGate staying
-        // false, the entry-scan tail, which lives only inside the bitmap pipeline); the executed producer node
-        // attached after the loop becomes the plan's sole dataflow. BitmapPipeline — including its vector/spatial
-        // post-filter and its entry-scan fallback — keeps the template, because that IS what ran.
-        ExecutionStrategy actualStrategy = exec.ActualStrategy != ExecutionStrategy.NotEvaluated
-            ? exec.ActualStrategy
-            : compiledPlan.Strategy;
-        bool scanOrLookupRan = actualStrategy is ExecutionStrategy.CompoundKeyLookup
-            or ExecutionStrategy.CompoundSortedScan
-            or ExecutionStrategy.FieldSortedScan;
+        // When a scan/lookup strategy actually ran, the bitmap op-template below is the UNUSED candidate that only fed cost estimation — the pipeline never executed it. Skip emitting it 
+        ExecutionStrategy actualStrategy = exec.ActualStrategy != ExecutionStrategy.NotEvaluated ? exec.ActualStrategy : compiledPlan.Strategy;
+        bool scanOrLookupRan = actualStrategy is ExecutionStrategy.CompoundKeyLookup or ExecutionStrategy.CompoundSortedScan or ExecutionStrategy.FieldSortedScan;
 
         for (int i = 0; scanOrLookupRan == false && i < template.Length; i++)
         {
@@ -194,14 +186,8 @@ internal static partial class QueryPlanBuilder
         {
             var directScanNode = directScan.Inspect();
 
-            // Surface the per-entry residual filter as structured Residual children (mirroring the EntryScan tail),
-            // so the graph can draw each predicate as its own node hanging off the scan and a reader sees the exact
-            // filter the scan runs against every survivor — not just the flat "residuals: …" label. A compound-tree
-            // scan filters via CompoundFieldResidualSet (driving pair excluded); a simple field scan via
-            // DirectScanResidualSet (sort-driving clause excluded). Both walk the same ScanPredicateInfo shape.
-            var residualSet = result.CompiledPlan.Strategy == ExecutionStrategy.CompoundSortedScan
-                ? result.CompiledPlan.CompoundFieldResidualSet
-                : result.CompiledPlan.DirectScanResidualSet;
+            // Surface the per-entry residual filter as structured Residual children (mirroring the EntryScan tail).
+            var residualSet = result.CompiledPlan.Strategy == ExecutionStrategy.CompoundSortedScan ? result.CompiledPlan.CompoundFieldResidualSet : result.CompiledPlan.DirectScanResidualSet;
             if (residualSet is { HasPredicates: true })
             {
                 foreach (var predicate in residualSet.Predicates)
@@ -212,9 +198,7 @@ internal static partial class QueryPlanBuilder
         }
         else if (actualStrategy == ExecutionStrategy.CompoundKeyLookup)
         {
-            // The two Equals clauses were folded into one composite-key TermQuery on the synthetic compound field,
-            // so neither component appears in the op stream. Surface that single lookup as the producer node — the
-            // same role the DirectScan node plays for a tree scan — so the executed strategy is visible.
+            // The two Equals clauses were folded into one composite-key TermQuery on the synthetic compound field, Surface that single lookup as the producer node 
             root.Children.Add(BuildCompoundKeyLookupNode(result, exec, compiledPlan));
         }
         else if (result.ExecutedMatch != null)
@@ -492,9 +476,6 @@ internal static partial class QueryPlanBuilder
                     PlanOpKind.LazyOrBitmaps => "OR-Bitmaps",
                     PlanOpKind.ClearBitmap => "Clear",
                     PlanOpKind.MaybeEntryScan => "EntryScanCheck",
-                    // The expansion width (how many terms this IN/range unions or intersects) is a RUNTIME value
-                    // held in ctx.InRangeCounts — it is NOT op.ParamIndex2 (that is the *index* into that array).
-                    // So the template name stays count-free; OverlayTimings surfaces the real term count as "Terms".
                     PlanOpKind.OrRangeFromPostingSource or PlanOpKind.OrRangeFromMatch => "OR-Range",
                     PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch => "AND-Range",
                     _ => op.Kind.ToString()
@@ -505,22 +486,13 @@ internal static partial class QueryPlanBuilder
                         or PlanOpKind.AndNotFromPostingSource or PlanOpKind.OrRangeFromPostingSource or PlanOpKind.AndRangeFromPostingSource => "Term",
                     PlanOpKind.FillFromTreeScan or PlanOpKind.AndFromTreeScan or PlanOpKind.OrFromTreeScan
                         or PlanOpKind.AndNotFromTreeScan => "MultiTerm",
-                    // MaybeEntryScan is a control-flow branch, not a match dispatch — leave Dispatch unset so the
-                    // EntryScanCheck node is not mislabelled "Match" (which would read as "matched via in-memory match").
-                    // The slot-to-slot algebra ops (AND/ANDNOT/OR-Bitmaps), Clear, and Fill-AllEntries have no leaf
-                    // dispatch either; they operate on whole bitmaps.
+                    // MaybeEntryScan is a control-flow branch, not a match dispatch — leave Dispatch unset 
                     PlanOpKind.MaybeEntryScan or PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps
                         or PlanOpKind.LazyOrBitmaps or PlanOpKind.ClearBitmap or PlanOpKind.FillAllEntries => null,
                     _ => "Match"
                 },
                 EstimatedCardinality = op.EstimatedCardinality,
                 OpIndex = i,
-
-                // Physical dataflow annotation: every op writes BitmapLocal; the slot-to-slot merges also read a
-                // source slot (ParamIndex2). A consumer threads these to build the graph — slots are nodes, ops are
-                // edges into DestSlot. MaybeEntryScan is a read-only GATE on the slot-0 accumulator (it diverts to
-                // the entry-scan tail without writing a slot), so it reports slot 0 as its observed destination; the
-                // actual slot 0 -> slot 1 move lives on the separate EntryScan tail node (see BuildPlan).
                 DestSlot = op.BitmapLocal,
                 SourceSlot = op.Kind switch
                 {
