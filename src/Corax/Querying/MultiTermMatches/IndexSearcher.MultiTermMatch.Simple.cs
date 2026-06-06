@@ -88,6 +88,24 @@ public partial class IndexSearcher
             : TermsProviderMatchBuilder<ExistsTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>>(field, default(Slice), token: token);
     }
 
+    /// <summary>
+    /// Builds an exists provider for a sorted index-only scan. Unlike <see cref="ExistsQuery"/> this does NOT
+    /// inject the null posting list inline: the sorted-driving matches place null and non-existing entries
+    /// themselves according to the sort direction, so the driving provider must yield only the real terms.
+    /// </summary>
+    public IQueryMatch ExistsQueryForSortedScan(in FieldMetadata field, bool forward)
+    {
+        var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
+        if (terms == null)
+            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+
+        ITermsProvider provider = forward
+            ? new ExistsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, terms, field, skipNulls: true)
+            : new ExistsTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>(this, terms, field, skipNulls: true);
+
+        return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator);
+    }
+
     public IQueryMatch RegexQuery(in FieldMetadata field, Regex regex, bool forward = true, in CancellationToken token = default)
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);

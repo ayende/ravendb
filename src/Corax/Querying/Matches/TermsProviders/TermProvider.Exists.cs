@@ -33,7 +33,7 @@ namespace Corax.Querying.Matches.TermsProviders
         private CompactTree.Iterator<TLookupIterator> _iterator;
         private readonly CompactKey _compactKey;
 
-        public ExistsTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, bool forAggregation = false)
+        public ExistsTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, bool forAggregation = false, bool skipNulls = false)
         {
             _tree = tree;
             _field = field;
@@ -41,7 +41,11 @@ namespace Corax.Querying.Matches.TermsProviders
             _nullIterator = default;
             _nullExists = false;
             _fetchNulls = false;
-            if (_searcher.TryGetPostingListForNull(field, out  _postingListId))
+            // A sorted index-only scan (SortedDrivingMatch / SortedDrivingWithTieBreakMatch) owns null and
+            // non-existing placement itself, keyed on the requested sort direction. If we injected the null
+            // posting list here it would be emitted ahead of the real terms regardless of direction, so the
+            // driving provider must yield only the real terms in that case.
+            if (skipNulls == false && _searcher.TryGetPostingListForNull(field, out  _postingListId))
             {
                 _nullPostingList = searcher.GetPostingList(_postingListId);
                 _nullExists = _nullPostingList.State.NumberOfEntries > 0;
