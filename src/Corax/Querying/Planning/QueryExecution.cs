@@ -58,6 +58,13 @@ public class QueryExecution
 
     public VectorSearchOp[] VectorSelects;
 
+    /// <summary>True when a single vector-search post-filter already emits its results in similarity-score
+    /// order, making the implicit (or explicit <c>ORDER BY score()</c>) SortingMatch wrapper redundant. When
+    /// set, the vector match is told to stream score-ordered output and the sort wrapper is skipped. Set only
+    /// on the sorted-query path (BuildSortedQuery); the order-agnostic BuildFilterMatch path (facets / MLT)
+    /// leaves it false so those callers keep the entry-id-sorted vector output they rely on.</summary>
+    public bool VectorPostFilterProvidesScoreOrder;
+
     public bool HasSpatialOrVector => SpatialFilters is { Length: > 0 } || VectorSelects is { Length: > 0 };
 
     public Slice GetAnalyzedSlice(IndexSearcher indexSearcher, in FieldMetadata fieldMeta, int slot)

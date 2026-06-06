@@ -83,6 +83,12 @@ internal static partial class QueryPlanBuilder
         }
 
         var orderByFields = GetSortMetadata(builderParameters, plan.Template);
+        // A single vector-search post-filter already streams its HNSW output in similarity-score order. When that
+        // score order is exactly what the query asks for (no ORDER BY auto-promoted to score, or an explicit
+        // ORDER BY score()), the implicit SortingMatch wrapper is pure overhead — record that here so the vector
+        // match streams score order (ApplyPostFilters) and the wrapper is skipped (Instantiate). The order-agnostic
+        // BuildFilterMatch path never reaches this, so facets / MLT keep the entry-id-sorted vector output.
+        exec.VectorPostFilterProvidesScoreOrder = VectorPostFilterProvidesResultOrder(exec, builderParameters);
         var queryMatch = Instantiate(plan, exec, orderByFields,
             planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
         return new(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, exec, builderParameters, orderByFields);
@@ -368,7 +374,7 @@ internal static partial class QueryPlanBuilder
         {
             foreach (var item in ResolveVectorItems(exec, builderParameters))
             {
-                result = item.Materialize(result, isPostFilter: true);
+                result = item.Materialize(result, isPostFilter: true, streamScoreOrder: exec.VectorPostFilterProvidesScoreOrder);
             }
         }
 

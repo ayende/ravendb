@@ -74,6 +74,11 @@ internal static partial class QueryPlanBuilder
                 exec.ActualStrategy = ExecutionStrategy.BitmapPipeline;
                 innerMatch = InstantiateBitmapPipeline(ctx.Plan, ctx.Exec, ctx.PlanParams, ctx.BuilderParams, walkerCtx, highlightingTerms, wantTimings, token);
                 if (ctx.OrderByFields == null) return innerMatch;
+                // A single vector-search post-filter already streamed its results in similarity-score order
+                // (ApplyPostFilters told it to via VectorPostFilterProvidesScoreOrder). The score sort the query
+                // asks for is exactly that order, so the SortingMatch wrapper is redundant — return the match as is.
+                if (ctx.Exec.VectorPostFilterProvidesScoreOrder)
+                    return innerMatch;
                 if (innerMatch is CompiledQueryMatch seekMatch)
                     TrySetSortSeekHint(ctx.Plan, ctx.Exec, seekMatch);
                 return OrderBy(ctx.BuilderParams, innerMatch, ctx.OrderByFields);

@@ -679,12 +679,24 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 {
                     token.ThrowIfCancellationRequested();
 
-                    // We look for items that hadn't seen before in the case of paging. 
+                    // We look for items that hadn't seen before in the case of paging.
                     int read = compileResult.QueryMatch.Fill(ids);
                     if (read == 0)
                         goto Done;
 
-                    // If we are going to skip, we've better do it knowing how many we have passed. 
+                    // A single vector post-filter streams its HNSW output in similarity-score order, so the
+                    // implicit (or explicit ORDER BY score()) SortingMatch wrapper was skipped. That wrapper is
+                    // what normally surfaces the similarity into the scores buffer, so replicate its scoring call
+                    // here per Fill batch — before RegisterDuplicates reshuffles the skipped pagination prefix —
+                    // so IndexScore is still populated for the entries we actually return.
+                    if (sortingData.IncludeScores && compileResult.Execution is { VectorPostFilterProvidesScoreOrder: true })
+                    {
+                        var scoresForBatch = sortingData.ScoresBuffer.AsSpan(0, read);
+                        scoresForBatch.Fill(Bm25Relevance.InitialScoreValue);
+                        compileResult.QueryMatch.Score(ids.AsSpan(0, read), scoresForBatch, 1f);
+                    }
+
+                    // If we are going to skip, we've better do it knowing how many we have passed.
                     // After this call the order of ids from 0 to `i` may be changed, and we cannot rely on it (a sorting case).
                     long i = identityTracker.RegisterDuplicates(ref hasProjections, totalResults.Value, ids.AsSpan(0, read), token);
                     totalResults.Value += read; // important that this is *after* RegisterDuplicates

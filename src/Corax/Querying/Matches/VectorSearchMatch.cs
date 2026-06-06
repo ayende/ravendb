@@ -49,6 +49,7 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
     private bool _resultsPersisted;
     private bool _returnedAllResults = false;
     private int _positionOnPersistedValues = 0;
+    private int _scorePosition = 0;
     private bool _isEmpty;
     
     
@@ -285,8 +286,8 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
             ref var distanceRef = ref MemoryMarshal.GetReference(_distances.Results);
             if (_filterQuery != null)
                 _filterQuery.Score(matches, scores, boostFactor);
-            
-            
+
+
             for (var i = 0; i < matches.Length; ++i)
             {
                 var match = Unsafe.Add(ref matchesRef, i);
@@ -296,15 +297,29 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
 
                 Unsafe.Add(ref scoresRef, i) += _vectorSearchRetriever.DistanceToScore(Unsafe.Add(ref distanceRef, pos));
             }
+
+            _matches.Dispose();
+            _distances.Dispose();
         }
         else
         {
-            _distances.Results[..scores.Length].CopyTo(scores);
+            // Single vector post-filter streaming in score order: the SortingMatch wrapper that would
+            // normally surface scores was skipped, so the read loop calls Score once per Fill batch. The
+            // persisted distances are already in score order and aligned 1:1 with Fill's emission, so we
+            // copy the batch starting at the running position (rather than always from 0) and convert it.
+            _distances.Results.Slice(_scorePosition, scores.Length).CopyTo(scores);
             _vectorSearchRetriever.DistancesToScores(scores);
+            _scorePosition += scores.Length;
+
+            // A single full-set call (from the SortingMatch comparer) drains immediately; the batched
+            // read-loop path releases on the final batch. The buffers are allocator-backed, so an early
+            // paging stop simply defers the free to the query-end allocator reset.
+            if (_scorePosition >= _distances.Count)
+            {
+                _matches.Dispose();
+                _distances.Dispose();
+            }
         }
-        
-        _matches.Dispose();
-        _distances.Dispose();
     }
 
     public QueryInspectionNode Inspect()
