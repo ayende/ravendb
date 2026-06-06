@@ -53,7 +53,7 @@ internal static partial class QueryPlanBuilder
     /// (both lift the vector to a top-level post-filter, so it appears in <see cref="QueryExecution.VectorSelects"/>;
     /// OR-branch vectors are leaves, never post-filters, so they never qualify and keep their sort).
     /// </summary>
-    private static bool VectorPostFilterProvidesResultOrder(QueryExecution exec, QueryBuilderParameters bp)
+    private static bool VectorPostFilterProvidesResultOrder(QueryExecution exec, QueryBuilderParameters bp, OrderMetadata[] orderByFields)
     {
         // Exactly one vector post-filter — with two, the outermost vector's order is not a single native order.
         if (exec.VectorSelects is not { Length: 1 })
@@ -71,23 +71,12 @@ internal static partial class QueryPlanBuilder
         if (bp.IndexSearcher.DocumentsAreBoosted)
             return false;
 
-        var orderBy = bp.Metadata.OrderBy;
-        if (orderBy is null or { Length: 0 })
-        {
-            // No explicit ORDER BY: a score sort wrapper exists only when the implicit-score promotion fires,
-            // which (see the ImplicitScore branch in BuildSortMetadataTemplate) requires HasBoost AND a config
-            // opt-in. The HasBoost gate is essential: for an AND-filtered vector, HasBoost folds in
-            // (HasVectorSearch && CoraxVectorSearchOrderByScoreAutomatically), so when that config is off
-            // HasBoost is false, no wrapper is added, and the post-filter keeps its entry-id order — there is
-            // nothing to skip. Without this gate we would wrongly stream score order in the config-off case,
-            // because OrderByScoreAutomaticallyWhenBoostingIsInvolved defaults to true.
-            return bp.HasBoost
-                   && (bp.Index.Configuration.OrderByScoreAutomaticallyWhenBoostingIsInvolved
-                       || bp.Index.Configuration.CoraxVectorSearchOrderByScoreAutomatically);
-        }
-
-        // An explicit, single `ORDER BY score()` asks for exactly the order the vector emits.
-        return orderBy is { Length: 1 } && orderBy[0].OrderingType == OrderByFieldType.Score;
+        // The resolved sort is exactly a single score() sort — whether requested explicitly (ORDER BY score())
+        // or auto-promoted at template time (the ImplicitScore branch of BuildSortMetadataTemplate, gated on
+        // HasBoost + config opt-in). Either way it is precisely the order the vector's HNSW output already
+        // streams, so the SortingMatch wrapper is redundant. We read the already-materialized sort shape here
+        // instead of re-deriving the promotion gate.
+        return orderByFields is { Length: 1 } && orderByFields[0].FieldType == MatchCompareFieldType.Score;
     }
 
     private static SortMetadataTemplate BuildSortMetadataTemplate(PlanParameters p)
