@@ -227,7 +227,14 @@ internal static partial class QueryPlanBuilder
                     // FieldMetadata holds transaction-bound slices, so re-resolve it per query
                     var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
                     var p = template.Prebuilt[i];
-                    bool mayHaveMissingEntries = p.MayHaveMissingEntries || indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0;
+                    // The field "may have missing entries" when some documents carry no value for it.
+                    // GetDistinctTermCountInField == 0 catches a fully-empty field; HasAnyNonExistingEntries
+                    // catches the partial case (some docs have a value, some are in the non-existing posting list).
+                    // Either way the sort must surface those docs null-adjacent, which routes the single-field
+                    // full-scan away from the streaming DirectScan and through SortingMatch (ExtractAndSort).
+                    bool mayHaveMissingEntries = p.MayHaveMissingEntries
+                        || indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0
+                        || indexSearcher.HasAnyNonExistingEntries(fieldMeta);
                     result[i] = new OrderMetadata(fieldMeta, p.Ascending, p.FieldType, p.NullsSortMode, mayHaveMissingEntries);
                     break;
                 }
