@@ -29,7 +29,7 @@ public partial class Hnsw
         private bool _foundCandidateInCurrentSmallPostingList;
         private readonly IHnswSearcher _vectorsSearcher;
         private readonly Memory<byte> _vector;
-        private IEnumerator<bool> _resultsEnumerator;
+        private Sparrow.Server.ByteStringContext<Sparrow.Server.ByteStringMemoryCache>.InternalScope? _queryVectorScope;
         private RoaringBitmap _alreadySeen;
 
         public SimilarityMethod? SimilarityMethod => _searchState?.Options.SimilarityMethod;
@@ -51,6 +51,7 @@ public partial class Hnsw
             _ownsSearchState = ownsSearchState;
             _vectorsSearcher = vectorsSearcher;
             _vector = vector;
+            _queryVectorScope = queryVectorScope;
             _alreadySeen = new (searchState.Llt.Allocator);
             _postingListResults = new(_searchState.Llt.Allocator);
             _pforDecoder = new(searchState.Llt.Allocator);
@@ -212,11 +213,8 @@ public partial class Hnsw
                         break;
                     }
 
-                    if (_resultsEnumerator.MoveNext() == false)
-                    {
-                        _resultsEnumerator = _vectorsSearcher.Search().GetEnumerator();
-                        _resultsEnumerator.MoveNext();
-                    }
+                    // Pull the next batch into _vectorsSearcher. An empty batch is valid — TryGetCurrentCandidates below handles it.
+                    _vectorsSearcher.MoveNextBatch();
 
                     // If we fetch more than once, we've no guarantee that the whole set of results are sorted by distances.
                     // We could explore not previously seen nodes that are closer to the query vector than the ones we've already seen.

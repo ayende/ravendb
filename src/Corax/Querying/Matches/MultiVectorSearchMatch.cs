@@ -115,24 +115,11 @@ public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
             }
         }
 
-        _vectorsRetrievers = new Hnsw.VectorSearchRetriever[_vectorsToSearch.Length];
-        var llt = _indexSearcher.Transaction.LowLevelTransaction;
-        var allEmpty = true;
-        for (int i = 0; i < _vectorsRetrievers.Length; ++i)
-        {
-            var vector = _vectorsToSearch[i].GetEmbeddingMemory();
-            _vectorsRetrievers[i] = (_isExact) switch
-            {
-                _ when _scanningQuery => Hnsw.ExactNearest(llt, _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, false, _nodesIdsToScan),
-                true => Hnsw.ExactNearest(llt, _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null, null),
-                false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(llt, _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults, _random)),
-                false => Hnsw.ApproximateNearest(llt, _metadata.FieldName, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
-            };
+        // Obtain the IndexSearcher-scoped SearchState for this field; sub-queries below reuse it
+        // so loaded node data (edges, vectors) is shared across them.
+        var sharedSearchState = _indexSearcher.GetOrCreateVectorSearchState(_metadata.FieldName);
 
-            allEmpty &= _vectorsRetrievers[i].IsEmpty;
-        }
-
-        _isEmpty = allEmpty || (_hasFilterResults && _filterResults.Count == 0);
+        _isEmpty = sharedSearchState.IsEmpty || (_hasFilterResults && _filterResults.Count == 0);
     }
 
     public int Fill(Span<long> matches)
@@ -183,7 +170,7 @@ public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
             {
                 _ when _scanningQuery => Hnsw.ExactNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, false, _nodesIdsToScan),
                 true => Hnsw.ExactNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null, null),
-                false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults!.Value, _random)),
+                false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults, _random)),
                 false => Hnsw.ApproximateNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
             };
 
@@ -197,11 +184,11 @@ public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
                 var distanceBuffer = _distances.GetSpace();
                 Debug.Assert(matchBuffer.Length == distanceBuffer.Length, "matchBuffer.Length == distanceBuffer.Length");
 
-
                 currentRead = _hasFilterResults
                     ? vectorSearcher.Fill(matchBuffer, distanceBuffer, ref _filterResults)
                     : vectorSearcher.Fill(matchBuffer, distanceBuffer);
-                
+
+
                 _matches.AddUsage(currentRead);
                 _distances.AddUsage(currentRead);
                 Count += currentRead;

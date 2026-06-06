@@ -38,6 +38,13 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
     /// GC'd when the index instance is replaced (e.g., on index reset/rebuild).</summary>
     internal readonly global::Corax.Querying.Planning.PlanCache SharedPlanCache;
 
+    private Dictionary<Slice, HnswIndexCache> _hnswCaches;
+    private IndexTransactionCache _currentCache;
+    private StorageEnvironment _environment;
+    private Action<LowLevelTransaction> _newTransactionCreatedHandler;
+    internal IndexWriter ActiveWriter;
+    internal Dictionary<Slice, HashSet<long>> PendingDirtyVectorSets;
+
     public CoraxIndexPersistence(Index index, IIndexReadOperationFactory indexReadOperationFactory) : base(index, indexReadOperationFactory)
     {
         _logger = RavenLogManager.Instance.GetLoggerForIndex<CoraxIndexPersistence>(index);
