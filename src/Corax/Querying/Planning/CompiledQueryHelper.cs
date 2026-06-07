@@ -291,6 +291,14 @@ public static class CompiledQueryHelper
                 ctx.EntryScanEntriesPassed += passed;
                 for (int i = 0; i < passed; i++)
                     targetBitmap.Add(buffer[i]);
+
+                // ctx.Limit is the already-gated "we don't need the full set" signal: the read operation
+                // only sets it below int.MaxValue when there's no ORDER BY / DISTINCT / filter and the client
+                // skipped statistics (see CoraxIndexReadOperation). Mirrors the monotonic-growth EmitLimitReachedGoto
+                // exit — once enough survivors are collected we stop scanning; the truncated bitmap is a lower
+                // bound (Confidence = Low), which is exactly what the gate promises.
+                if (ctx.EntryScanEntriesPassed >= ctx.Limit)
+                    break;
             }
         }
         finally
