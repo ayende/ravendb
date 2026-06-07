@@ -1,10 +1,9 @@
 namespace Corax.Querying.Planning;
 
-/// <summary>Emit-time-only selector for a leaf op's execution-time source. No longer stored
-/// on <see cref="PlanOp"/> or <see cref="CompiledPlan"/> — it is folded into the concrete
-/// <see cref="PlanOpKind"/> (the <c>…From{PostingSource,TreeScan,Match}</c> families) by
-/// Raven.Server's <c>ToPlanOpKind</c>, and consumed transiently inside the emitter to pick the
-/// right array for range bounds-check hints.</summary>
+/// <summary>Emit-time-only selector for a leaf op's execution-time source. Folded into the
+/// concrete <see cref="PlanOpKind"/> (the <c>…From{PostingSource,TreeScan,Match}</c> families)
+/// by Raven.Server's <c>ToPlanOpKind</c>, and consumed transiently inside the emitter to pick
+/// the right array for range bounds-check hints.</summary>
 public enum MatchDispatch : byte
 {
     /// <summary>IQueryMatch.Fill() dispatch — the general-purpose path for spatial,

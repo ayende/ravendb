@@ -55,7 +55,6 @@ public unsafe partial struct RoaringBitmap
         return c0 + c1 + c2 + c3;
     }
 
-    /// <summary>Helper to clear an 8KB bitmap buffer.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void ClearBitmap(ulong* bitmap)
     {
@@ -91,11 +90,9 @@ public unsafe partial struct RoaringBitmap
         }
     }
 
-    /// <summary>Set bits in <paramref name="bitmap"/> for every value in <paramref name="arr"/>.</summary>
     internal static void SetArrayInBitmap(ushort* arr, int arrLen, ulong* bitmap)
         => ApplyArrayToBitmap<ArrayOrOp>(arr, arrLen, bitmap);
 
-    /// <summary>Clear bits in <paramref name="bitmap"/> for every value in <paramref name="arr"/>.</summary>
     internal static void ClearArrayInBitmap(ushort* arr, int arrLen, ulong* bitmap)
         => ApplyArrayToBitmap<ArrayAndNotOp>(arr, arrLen, bitmap);
 

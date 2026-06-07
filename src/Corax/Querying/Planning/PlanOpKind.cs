@@ -8,29 +8,23 @@ namespace Corax.Querying.Planning;
 public enum PlanOpKind : byte
 {
     // ── Fill bitmap[0] from one leaf ────────────────────────────────
-    /// <summary>Seed bitmap[0] from a native posting-list leaf.
-    /// <code>QueryPrimitives.CtxFillFromPostingSource(ctx, cursor); cursor++;</code></summary>
+    /// <summary>Seed bitmap[0] from a native posting-list leaf.</summary>
     FillFromPostingSource,
 
-    /// <summary>Seed bitmap[0] from a CompactTree-scan leaf.
-    /// <code>QueryPrimitives.CtxFillFromTreeScan(ctx, cursor); cursor++;</code></summary>
+    /// <summary>Seed bitmap[0] from a CompactTree-scan leaf.</summary>
     FillFromTreeScan,
 
-    /// <summary>Seed bitmap[0] from an IQueryMatch leaf (spatial / vector / search / boosted,
-    /// and the match-all plan).
-    /// <code>QueryPrimitives.CtxOrWithMatch(ctx, cursor); cursor++;</code></summary>
+    /// <summary>Seed bitmap[0] from an IQueryMatch leaf (spatial / vector / search / boosted, and the match-all plan).</summary>
     FillFromMatch,
 
     /// <summary>Seed <c>bitmap[BitmapLocal]</c> with every entry via <c>Searcher.AllEntries()</c> — used for
     /// all-negated AND chains, match-all, and complement builds (universe seeded into a scratch slot, then the
-    /// positive form is subtracted). No term-slot lookup (sidesteps IN's structural-vs-runtime slot-index mismatch).
-    /// <code>QueryPrimitives.CtxFillAllEntries(ctx, BitmapLocal);</code></summary>
+    /// positive form is subtracted). No term-slot lookup (sidesteps IN's structural-vs-runtime slot-index mismatch).</summary>
     FillAllEntries,
 
     // ── Intersect bitmap[0] with one leaf ───────────────────────────
-    /// <summary>Intersect bitmap[0] with a posting-list leaf (scratch = bitmap[1]); stop the plan
-    /// if the result is empty, unless <see cref="PlanOp.SkipEarlyExit"/> is set.
-    /// <code>QueryPrimitives.CtxAndFromPostingSource(ctx, cursor); cursor++; if (ctx.Bitmaps[0].IsEmpty) goto done;</code></summary>
+    /// <summary>Intersect bitmap[0] with a posting-list leaf; stop the plan if the result is empty,
+    /// unless <see cref="PlanOp.SkipEarlyExit"/> is set.</summary>
     AndFromPostingSource,
 
     /// <summary>Intersect bitmap[0] with a tree-scan leaf. <see cref="AndFromPostingSource"/> semantics.</summary>
@@ -40,9 +34,7 @@ public enum PlanOpKind : byte
     AndFromMatch,
 
     // ── Union one leaf into bitmap[BitmapLocal] ─────────────────────
-    /// <summary>Union a posting-list leaf into bitmap[BitmapLocal]. When the target is slot 0,
-    /// stop once the page limit is reached.
-    /// <code>QueryPrimitives.CtxOrFillFromPostingSource(ctx, cursor, 0); cursor++; if ((long)ctx.Bitmaps[0].Count >= ctx.Limit) goto done;</code></summary>
+    /// <summary>Union a posting-list leaf into bitmap[BitmapLocal]. When the target is slot 0, stop once the page limit is reached.</summary>
     OrFromPostingSource,
 
     /// <summary>Union a tree-scan leaf into bitmap[BitmapLocal]. <see cref="OrFromPostingSource"/> semantics.</summary>
@@ -52,8 +44,7 @@ public enum PlanOpKind : byte
     OrFromMatch,
 
     // ── Subtract one leaf from bitmap[0] ────────────────────────────
-    /// <summary>Subtract a posting-list leaf from bitmap[0] (scratch = bitmap[1]).
-    /// <code>QueryPrimitives.CtxAndNotFromPostingSource(ctx, cursor); cursor++;</code></summary>
+    /// <summary>Subtract a posting-list leaf from bitmap[0].</summary>
     AndNotFromPostingSource,
 
     /// <summary>Subtract a tree-scan leaf from bitmap[0]. <see cref="AndNotFromPostingSource"/> semantics.</summary>
@@ -78,33 +69,26 @@ public enum PlanOpKind : byte
     AndRangeFromMatch,
 
     // ── Source-agnostic ops ─────────────────────────────────────────
-    /// <summary><code>ctx.Bitmaps[slot].Clear();</code></summary>
+    /// <summary>Clear a bitmap slot.</summary>
     ClearBitmap,
 
-    /// <summary>Intersect two bitmap slots. BitmapLocal = target, ParamIndex2 = source.
-    /// <code>ctx.Bitmaps[target].AndWith(ref ctx.Bitmaps[source]);</code></summary>
+    /// <summary>Intersect two bitmap slots. BitmapLocal = target, ParamIndex2 = source.</summary>
     AndBitmaps,
 
-    /// <summary>Subtract the source slot from the target slot. BitmapLocal = target, ParamIndex2 = source.
-    /// <code>ctx.Bitmaps[target].AndNotWith(ref ctx.Bitmaps[source]);</code></summary>
+    /// <summary>Subtract the source slot from the target slot. BitmapLocal = target, ParamIndex2 = source.</summary>
     AndNotBitmaps,
 
     /// <summary>Lazy-union two bitmap slots — defers container merging for speed, so the result
-    /// bitmap is repaired once at the done label before it can be iterated. BitmapLocal = target,
-    /// ParamIndex2 = source.
-    /// <code>ctx.Bitmaps[target].LazyOrWith(ref ctx.Bitmaps[source]);</code></summary>
+    /// bitmap is repaired once at the done label before it can be iterated. BitmapLocal = target, ParamIndex2 = source.</summary>
     LazyOrBitmaps,
 
-    /// <summary>Short-circuit the plan when a bitmap slot is empty.
-    /// <code>if (ctx.Bitmaps[slot].IsEmpty) goto done;</code></summary>
+    /// <summary>Short-circuit the plan when a bitmap slot is empty.</summary>
     GotoDoneIfEmpty,
 
     /// <summary>Switch to the entry-scan tail when bitmap[0] is small relative to the next clause's
-    /// cardinality (cheaper to scan the surviving entries than to keep intersecting).
-    /// <code>if (QueryPrimitives.ShouldSwitchToEntryScan((long)ctx.Bitmaps[0].Count, ctx.Cardinalities[cursor])) goto EntryScan;</code></summary>
+    /// cardinality (cheaper to scan the surviving entries than to keep intersecting).</summary>
     MaybeEntryScan,
 
-    /// <summary>Terminal op: jump to the done label that ends the bitmap pipeline.
-    /// <code>goto done;</code></summary>
+    /// <summary>Terminal op: jump to the done label that ends the bitmap pipeline.</summary>
     GotoDone,
 }

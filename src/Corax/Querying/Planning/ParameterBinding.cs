@@ -3,9 +3,7 @@ using Sparrow.Json;
 
 namespace Corax.Querying.Planning;
 
-/// <summary>Explicit classification of a binding's resolution path. Set at template
-/// creation time. Eliminates the need for callers to infer source kind from
-/// field combinations (LiteralType, ParameterName, DeferredExpression).</summary>
+/// <summary>Explicit classification of a binding's resolution path, set at template-creation time.</summary>
 public enum BindingSource : byte
 {
     /// <summary>LiteralValue + LiteralType hold the resolved value. No runtime resolution needed.</summary>
@@ -20,9 +18,7 @@ public enum BindingSource : byte
 /// name for blittable lookup. Leaf type with no nesting.</summary>
 public sealed class ParameterBinding
 {
-    /// <summary>How this binding resolves. Set at creation time in ParseComparison / ParseIn /
-    /// CreateBinding. Replaces the implicit inference from LiteralType == Parameter or
-    /// DeferredExpression != null.</summary>
+    /// <summary>How this binding resolves.</summary>
     public BindingSource Source;
     /// <summary>Cached native value for literals (long/double/string). Null for parameters
     /// and for literal nulls. Only valid when LiteralType != Parameter.</summary>

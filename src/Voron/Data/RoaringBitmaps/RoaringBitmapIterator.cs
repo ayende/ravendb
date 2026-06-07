@@ -66,10 +66,6 @@ public unsafe struct RoaringBitmapIterator : IDisposable
         Sort.Run(packedPtr, _entryCount);
     }
 
-    /// <summary>
-    /// Fill the buffer with the next batch of values from the bitmap.
-    /// Returns the number of values written.
-    /// </summary>
     public int Fill(ref RoaringBitmap data, Span<long> buffer)
     {
         int written = 0;

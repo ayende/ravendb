@@ -39,8 +39,7 @@ public sealed class QueryBuilderParameters
     /// without a full <see cref="Index"/> / <see cref="IndexQueryServerSide"/> stack. The supplied
     /// <see cref="IndexFieldsMapping"/> is required so resolvers (<c>ResolveFieldMetadata</c>,
     /// compound-exact / compound-field branches) can route through
-    /// <see cref="QueryBuilderHelper.GetFieldMetadata"/> uniformly — the production code no longer
-    /// branches on <c>IndexFieldsMapping == null</c>.</summary>
+    /// <see cref="QueryBuilderHelper.GetFieldMetadata"/> uniformly — there is no null-mapping branch.</summary>
     internal QueryBuilderParameters(IndexSearcher searcher, ByteStringContext allocator, QueryMetadata metadata, BlittableJsonReaderObject queryParameters, IndexFieldsMapping indexFieldsMapping, bool hasBoost = false)
     {
         IndexSearcher = searcher;

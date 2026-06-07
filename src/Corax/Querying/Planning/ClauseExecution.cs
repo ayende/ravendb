@@ -11,7 +11,6 @@ namespace Corax.Querying.Planning;
 /// operand reordering (negated clauses sort last, ties broken by ascending cardinality).</summary>
 public sealed class ClauseExecution : IComparable<ClauseExecution>
 {
-    /// <summary>Back-reference to the template clause this execution belongs to.</summary>
     public readonly ClauseInfo Clause;
 
     public PackedParam PackedParamValue = PackedParam.None;

@@ -36,12 +36,11 @@ public enum LeafResolveKind : byte
 }
 
 /// <summary>Per-leaf resolution descriptor produced by Raven.Server and consumed by the
-/// compiled IL pipeline. Replaces the eagerly-decoded <c>PostingSource[]</c> and
-/// <c>ITermsProvider[]</c> arrays: the value-independent <see cref="FieldMeta"/> and
-/// <see cref="Packed"/> are computed once, and the posting source / terms provider is
-/// materialized lazily inside <c>QueryPrimitives</c> when the slot is consumed.
-/// Parallel to <see cref="CompiledQueryMatch.ResolvedMatches"/>; slots whose
-/// <see cref="Kind"/> is <see cref="LeafResolveKind.PreResolved"/> carry no data here.</summary>
+/// compiled IL pipeline. The value-independent <see cref="FieldMeta"/> and <see cref="Packed"/>
+/// are computed once, and the posting source / terms provider is materialized lazily inside
+/// <c>QueryPrimitives</c> when the slot is consumed. Parallel to
+/// <see cref="CompiledQueryMatch.ResolvedMatches"/>; slots whose <see cref="Kind"/> is
+/// <see cref="LeafResolveKind.PreResolved"/> carry no data here.</summary>
 public struct LeafResolveInfo
 {
     public LeafResolveKind Kind;

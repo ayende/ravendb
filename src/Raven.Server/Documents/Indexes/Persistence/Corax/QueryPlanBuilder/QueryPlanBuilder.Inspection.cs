@@ -11,12 +11,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>
-    /// Builds the structural query plan AND overlays the per-op execution timing onto it. This is the
-    /// composition used by the live query path (timings requested): <see cref="BuildPlan"/> authors the
-    /// timing-independent structure, <see cref="OverlayTimings"/> annotates it with the wall-clock / count
-    /// telemetry of the run that just executed.
-    /// </summary>
+    /// <summary>Build the structural plan (<see cref="BuildPlan"/>) and overlay this run's
+    /// execution timing onto it (<see cref="OverlayTimings"/>).</summary>
     public static QueryInspectionNode BuildInspectionGraph(CompiledQuery result)
     {
         var plan = BuildPlan(result, out var compiledRoot, out var opNodes, out var entryScanNode);
@@ -40,16 +36,13 @@ internal static partial class QueryPlanBuilder
         return plan;
     }
 
-    /// <summary>
-    /// Authors the structural query plan from the cached <see cref="CompiledPlan.InspectionTemplate"/>, the
-    /// decision trail, the live clause values, and the post-filter / sort wrappers. Carries NO timing
-    /// (no Ms / Count / EntryScan / ScannedEntries) — those are overlaid separately by <see cref="OverlayTimings"/>,
-    /// so the plan is fully formed even when no timing telemetry exists (e.g. the spatial/vector-only path whose
-    /// executed match is not a <see cref="CompiledQueryMatch"/>). Returns the outer root (the sort wrapper when
-    /// sorting, otherwise the CompiledQuery node), the CompiledQuery node itself via <paramref name="compiledRoot"/>,
-    /// and the per-template-op nodes in template order via <paramref name="opNodes"/> so timings can be joined by
-    /// op index. Returns null only when there is genuinely no structural template to render.
-    /// </summary>
+    /// <summary>Author the structural plan from the cached <see cref="CompiledPlan.InspectionTemplate"/>,
+    /// decision trail, live clause values, and post-filter/sort wrappers — with no timing (overlaid
+    /// separately by <see cref="OverlayTimings"/>, so the plan is fully formed even on the spatial/vector-only
+    /// path whose match is not a <see cref="CompiledQueryMatch"/>). Returns the outer root (sort wrapper when
+    /// sorting, else the CompiledQuery node), the CompiledQuery node via <paramref name="compiledRoot"/>, and
+    /// the per-template-op nodes in template order via <paramref name="opNodes"/> (joined to timings by op
+    /// index). Null only when there is no structural template to render.</summary>
     private static QueryInspectionNode BuildPlan(CompiledQuery result, out QueryInspectionNode compiledRoot, out List<QueryInspectionNode> opNodes, out QueryInspectionNode entryScanNode)
     {
         compiledRoot = null;
@@ -233,12 +226,9 @@ internal static partial class QueryPlanBuilder
         return sortNode;
     }
 
-    /// <summary>
-    /// Overlays the just-executed run's timing telemetry onto a structural plan produced by <see cref="BuildPlan"/>:
-    /// the total scanned-entry count onto the CompiledQuery node, and the per-op wall-clock (Ms), result count, and
-    /// entry-scan trigger onto each template-op node by op index. A no-op when the executed match exposed no
-    /// telemetry (e.g. spatial/vector-only path), leaving a clean structure-only plan.
-    /// </summary>
+    /// <summary>Overlay this run's timing telemetry (scanned-entry count, plus per-op wall-clock, result
+    /// count, and entry-scan trigger joined by op index) onto a structural plan from <see cref="BuildPlan"/>.
+    /// A no-op when the executed match exposed no telemetry (e.g. spatial/vector-only path).</summary>
     private static void OverlayTimings(CompiledQuery result, QueryInspectionNode compiledRoot, List<QueryInspectionNode> opNodes, QueryInspectionNode entryScanNode)
     {
         if (result.ExecutedMatch is not CompiledQueryMatch compiled)
@@ -293,10 +283,9 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>Renders one entry-scan residual predicate (and, recursively, its AND/OR sub-group children) as an
-    /// inspection node. These are the per-entry checks the scan applies once the cost gate switches off the bitmap
-    /// pipeline; surfacing field / compare / negation makes the entry-scan body legible without reading the
-    /// generated C#.</summary>
+    /// <summary>Render one entry-scan residual predicate (and, recursively, its AND/OR sub-group children) as
+    /// an inspection node, surfacing field/compare/negation so the entry-scan body is legible without reading
+    /// the generated C#.</summary>
     private static QueryInspectionNode BuildScanPredicateNode(ScanPredicateInfo predicate)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
@@ -354,14 +343,11 @@ internal static partial class QueryPlanBuilder
         return new QueryInspectionNode("CompoundKeyLookup", parameters: parameters);
     }
 
-    /// <summary>
-    /// Walks the runtime clause-execution tree (groups included) and, for every clause the resolution pass
-    /// collapsed to a MatchAll / MatchNothing sentinel, appends an informational node under a single
-    /// "ResolvedClauses" parent. Each node reports the clause's field, its ORIGINAL clause type (read from the
-    /// template <see cref="ClauseInfo"/>, which is never mutated), and the static answer the resolver reached —
-    /// MatchAll == "always true" (the clause was dropped, e.g. a WHEN(false) guard), MatchNothing == "always
-    /// false" (a contradiction, e.g. a self-excluding BETWEEN). Adds nothing when no clause was collapsed.
-    /// </summary>
+    /// <summary>For every clause the resolution pass collapsed to a MatchAll / MatchNothing sentinel, append
+    /// an informational node under a single "ResolvedClauses" parent reporting the clause's field, its original
+    /// clause type (from the never-mutated template <see cref="ClauseInfo"/>), and the static answer —
+    /// MatchAll = always true (clause dropped, e.g. WHEN(false)), MatchNothing = always false (a contradiction,
+    /// e.g. a self-excluding BETWEEN). Adds nothing when no clause was collapsed.</summary>
     private static void AppendResolvedClauses(QueryExecution exec, QueryInspectionNode root)
     {
         QueryInspectionNode resolvedNode = null;

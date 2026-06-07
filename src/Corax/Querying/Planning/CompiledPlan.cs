@@ -28,8 +28,7 @@ public enum ExecutionStrategy : byte
 
 public sealed class CompiledPlan
 {
-    /// <summary>The template this plan was compiled from. Provides access to structural
-    /// template-level data (OptimizationFlags, ParameterSlots, etc.) without copying.</summary>
+    /// <summary>The template this plan was compiled from.</summary>
     public PlanTemplate Template { get; init; }
 
     /// <summary>IL-emitted delegate that executes the posting-list scan plan (no timing instrumentation).</summary>

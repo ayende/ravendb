@@ -12,11 +12,9 @@ using Voron.Data.RoaringBitmaps;
 namespace Corax.Querying.Planning;
 
 /// <summary>
-/// Helper methods called by emitted IL for timing, result tracking, and
-/// the entry-scan iteration loop. The per-entry predicate evaluation is
-/// no longer in this file — it's emitted as specialized IL by
-/// <see cref="ResidualScanIlEmitter"/> and reached via
-/// <c>CompiledQueryMatch.CompiledEntryPredicate</c>.
+/// Helper methods called by emitted IL for timing, result tracking, and the entry-scan
+/// iteration loop. Per-entry predicate evaluation is emitted as specialized IL by
+/// <see cref="ResidualScanIlEmitter"/> and reached via <c>CompiledQueryMatch.CompiledEntryPredicate</c>.
 /// </summary>
 public static class CompiledQueryHelper
 {

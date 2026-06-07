@@ -20,7 +20,6 @@ public unsafe struct ContainerEntry
     /// <summary>Memory handle for disposal. Default for Range containers.</summary>
     internal ByteString Storage;
 
-    /// <summary>Number of set bits (0..65536)..</summary>
     public int Cardinality;
 
     /// <summary>
@@ -29,9 +28,6 @@ public unsafe struct ContainerEntry
     /// </summary>
     public uint Key;
 
-    /// <summary>
-    /// This is to reuse the Key field in a clearer manner
-    /// </summary>
     internal uint NextFreeSlot
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -41,9 +37,6 @@ public unsafe struct ContainerEntry
     }
 
 
-    /// <summary>
-    /// Access container data as an ushort array.
-    /// </summary>
     public ushort* ArrayData
     {
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
