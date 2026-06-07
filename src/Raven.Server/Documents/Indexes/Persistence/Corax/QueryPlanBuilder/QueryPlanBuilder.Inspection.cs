@@ -279,6 +279,8 @@ internal static partial class QueryPlanBuilder
                     p["EntriesScanned"] = compiled.EntryScanEntriesScanned.ToString();
                 if (compiled.EntryScanEntriesPassed > 0)
                     p["EntriesPassed"] = compiled.EntryScanEntriesPassed.ToString();
+                if (timings != null && compiled.EntryScanTiming > 0)
+                    p["Ms"] = (compiled.EntryScanTiming / tickFreq).ToString("F3");
             }
         }
     }

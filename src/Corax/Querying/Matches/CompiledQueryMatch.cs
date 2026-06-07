@@ -53,8 +53,9 @@ public class CompiledQueryMatch(
     /// so the IL cursor can index it directly regardless of dispatch.</summary>
     public long[] Cardinalities;
 
-    public long EntryScanEntriesScanned; 
+    public long EntryScanEntriesScanned;
     public long EntryScanEntriesPassed;
+    public long EntryScanTiming;
 
     public readonly IndexSearcher Searcher = searcher;
     public readonly CancellationToken Token = token;

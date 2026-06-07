@@ -232,6 +232,8 @@ public static class CompiledQueryHelper
         ref RoaringBitmap sourceBitmap,
         ref RoaringBitmap targetBitmap)
     {
+        long startTick = Stopwatch.GetTimestamp();
+
         Span<long> buffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         Span<long> containerLocs = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
@@ -299,6 +301,7 @@ public static class CompiledQueryHelper
         finally
         {
             iterator.Dispose();
+            ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
         }
     }
 }
