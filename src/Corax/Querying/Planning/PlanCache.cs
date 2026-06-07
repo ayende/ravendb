@@ -17,11 +17,11 @@ namespace Corax.Querying.Planning;
 /// entire generation atomically — no intermediate state where current and previous
 /// point to the same dict.
 ///
-/// Per-query: fixed-capacity SoA (struct-of-arrays, default 32 slots) — a long[] holding
-/// the low 64 bits of each plan's <see cref="PlanCacheKeyHash"/> plus a CompiledPlan[] for
-/// the payloads. SIMD compares scan all slots in Vector256/Vector128 iterations on the low
-/// 64 bits; a lane hit is confirmed with a full 256-bit digest compare. Capacity is
-/// configurable via the constructor; must be a multiple of 8 for alignment.
+/// Per-query: fixed-capacity SoA (struct-of-arrays, default 32 slots) — a ushort[] holding
+/// a 16-bit pre-filter slice of each plan's <see cref="PlanCacheKeyHash"/> plus a CompiledPlan[]
+/// for the payloads. SIMD compares scan all slots in Vector256/Vector128 iterations over 16-bit
+/// lanes (16 slots per Vector256 step); a lane hit is confirmed with a full 256-bit digest
+/// compare. Capacity is configurable via the constructor; must be a multiple of 16 for alignment.
 /// </summary>
 public class PlanCache
 {
@@ -36,9 +36,9 @@ public class PlanCache
 
     public PlanCache(int maxPlansPerQuery = 32, int halfOfMaxDistinctQueries = 2048)
     {
-        // MaxPlansPerQuery must be a multiple of 8 for SIMD Vector256 alignment
-        if (maxPlansPerQuery % 8 != 0)
-            maxPlansPerQuery = ((maxPlansPerQuery / 8) + 1) * 8;
+        // MaxPlansPerQuery must be a multiple of 16 so the Vector256<ushort> loop (16 lanes) never reads past the array end
+        if (maxPlansPerQuery % 16 != 0)
+            maxPlansPerQuery = ((maxPlansPerQuery / 16) + 1) * 16;
         MaxPlansPerQuery = maxPlansPerQuery;
         HalfOfMaxDistinctQueries = Math.Max(16, halfOfMaxDistinctQueries / 2);
         _generation = new CacheGeneration([], []);
@@ -125,21 +125,26 @@ public class PlanCache
 
     /// <summary>
     /// Fixed-slot per-query plan cache. Two parallel arrays (_hashLo, _plans) of maxSlots
-    /// entries (default 32, must be a multiple of 8).
+    /// entries (default 32, must be a multiple of 16).
     ///
-    /// Lookup: broadcast the target hash's low 64 bits into a Vector256&lt;long&gt; (4 lanes)
-    /// and compare 4 slots per iteration. ExtractMostSignificantBits yields a bitmask of hits;
-    /// TrailingZeroCount walks set bits. Vec128 fallback does 2 lanes per iteration. A lane hit
-    /// is the low-64-bit pre-filter only — it is confirmed by comparing the plan's full 256-bit
+    /// Lookup: broadcast a 16-bit pre-filter slice of the target hash into a Vector256&lt;ushort&gt;
+    /// (16 lanes) and compare 16 slots per iteration. ExtractMostSignificantBits yields a bitmask of
+    /// hits; TrailingZeroCount walks set bits. Vec128 fallback does 8 lanes per iteration. A lane hit
+    /// is only the 16-bit pre-filter — it is confirmed by comparing the plan's full 256-bit
     /// <see cref="PlanCacheKeyHash"/>. The digest is the complete plan identity, so distinct keys
-    /// occupy distinct slots and there is no collision chain.
+    /// occupy distinct slots and there is no collision chain. The narrow slice raises the pre-filter
+    /// false-positive rate to ~1/65536 per slot, which the digest confirm absorbs, in exchange for
+    /// scanning 4x more slots per SIMD step.
     ///
-    /// maxSlots alignment: must be a multiple of 8 so the Vec256 loop never reads past the
-    /// array end (4 longs per iteration divides 8). The constructor rounds up if needed.
+    /// The pre-filter slice maps 0 to 1 so a populated slot never collides with the default-zero
+    /// value of an empty slot.
+    ///
+    /// maxSlots alignment: must be a multiple of 16 so the Vec256 loop never reads past the
+    /// array end (16 ushorts per iteration). The constructor rounds up if needed.
     /// </summary>
     private sealed class PerQueryPlans(int maxSlots, PlanTemplate template)
     {
-        private readonly long[] _hashLo = new long[maxSlots];
+        private readonly ushort[] _hashLo = new ushort[maxSlots];
         private readonly CompiledPlan[] _plans = new CompiledPlan[maxSlots];
 
         /// <summary>
@@ -161,17 +166,30 @@ public class PlanCache
 
         public CompiledPlan TryLookup(in Vector256<long> hash)
         {
+            ushort key = PreFilterKey(hash);
             if (Vector256.IsHardwareAccelerated)
-                return Vec256Lookup(hash);
+                return Vec256Lookup(key, hash);
             if (Vector128.IsHardwareAccelerated)
-                return Vec128Lookup(hash);
-            return ScalarLookup(hash);
+                return Vec128Lookup(key, hash);
+            return ScalarLookup(key, hash);
+        }
+
+        /// <summary>
+        /// 16-bit pre-filter slice taken from the top bits of the digest's first lane. Hash bits are
+        /// well-distributed, so any 16 give good coverage. Maps 0 to 1 so a populated slot's key never
+        /// equals the default-zero value of an empty slot.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static ushort PreFilterKey(in Vector256<long> hash)
+        {
+            ushort bits = (ushort)((ulong)hash[0] >> 48);
+            return bits == 0 ? (ushort)1 : bits;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private CompiledPlan Confirm(int slot, in Vector256<long> hash)
         {
-            // Already matched the low 64 bits; confirm the full 256-bit digest against the
+            // Already matched the 16-bit pre-filter; confirm the full 256-bit digest against the
             // plan's own embedded key. Volatile read guards against torn writes — the
             // _hashLo entry could be published before _plans[slot] in a concurrent Publish.
             var plan = Volatile.Read(ref _plans[slot]);
@@ -179,13 +197,13 @@ public class PlanCache
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec256Lookup(in Vector256<long> hash)
+        private CompiledPlan Vec256Lookup(ushort key, in Vector256<long> hash)
         {
-            var key = Vector256.Create(hash[0]); // compare the first lane
-            for (int i = 0; i < _hashLo.Length; i += Vector256<long>.Count)
+            var keyVec = Vector256.Create(key);
+            for (int i = 0; i < _hashLo.Length; i += Vector256<ushort>.Count)
             {
                 var slots = Vector256.LoadUnsafe(ref _hashLo[i]);
-                uint mask = Vector256.Equals(slots, key).ExtractMostSignificantBits();
+                uint mask = Vector256.Equals(slots, keyVec).ExtractMostSignificantBits();
                 while (mask != 0)
                 {
                     int lane = BitOperations.TrailingZeroCount(mask);
@@ -200,13 +218,13 @@ public class PlanCache
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec128Lookup(in Vector256<long> hash)
+        private CompiledPlan Vec128Lookup(ushort key, in Vector256<long> hash)
         {
-            var key = Vector128.Create(hash[0]);
-            for (int i = 0; i < _hashLo.Length; i += Vector128<long>.Count)
+            var keyVec = Vector128.Create(key);
+            for (int i = 0; i < _hashLo.Length; i += Vector128<ushort>.Count)
             {
                 var slots = Vector128.LoadUnsafe(ref _hashLo[i]);
-                uint mask = Vector128.Equals(slots, key).ExtractMostSignificantBits();
+                uint mask = Vector128.Equals(slots, keyVec).ExtractMostSignificantBits();
                 while (mask != 0)
                 {
                     int lane = BitOperations.TrailingZeroCount(mask);
@@ -220,12 +238,11 @@ public class PlanCache
             return null;
         }
 
-        private CompiledPlan ScalarLookup(in Vector256<long> hash)
+        private CompiledPlan ScalarLookup(ushort key, in Vector256<long> hash)
         {
-            long lo = hash[0];
             for (int i = 0; i < _hashLo.Length; i++)
             {
-                if (_hashLo[i] != lo)
+                if (_hashLo[i] != key)
                     continue;
                 var resolved = Confirm(i, hash);
                 if (resolved != null)
@@ -261,7 +278,7 @@ public class PlanCache
             // step re-reads _plans[slot] volatile and re-checks the full digest, so a stale
             // key with a not-yet-written (or already-replaced) plan resolves to a miss.
             Volatile.Write(ref _plans[slot], plan);
-            Volatile.Write(ref _hashLo[slot], plan.CacheKeyHash[0]);
+            Volatile.Write(ref _hashLo[slot], PreFilterKey(plan.CacheKeyHash));
         }
 
         /// <summary>Lock-free snapshot of all non-null plan slots. Best-effort; see <see cref="Snapshot"/>.</summary>

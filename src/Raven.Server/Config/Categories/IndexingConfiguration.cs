@@ -323,7 +323,7 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Indexing.Corax.UnmanagedAllocationsBatchSizeLimitInMb", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
         public Size? UnmanagedAllocationsBatchLimit { get; protected set; }
 
-        [Description("EXPERT: The maximum number of distinct compiled query plans cached per query shape in the Corax query plan cache. Must be multiple of 8.")]
+        [Description("EXPERT: The maximum number of distinct compiled query plans cached per query shape in the Corax query plan cache. Must be multiple of 16.")]
         [DefaultValue(32)]
         [IndexUpdateType(IndexUpdateType.Refresh)]
         [ConfigurationEntry("Indexing.Corax.QueryPlanCache.MaxPlansPerQuery", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
