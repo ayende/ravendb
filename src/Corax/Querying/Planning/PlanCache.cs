@@ -127,7 +127,7 @@ public class PlanCache
     ///
     /// Lookup: compare 16 slots per iteration, then confirm by comparing the plan's full 256-bit
     /// <see cref="PlanCacheKeyHash"/>. The digest is the complete plan identity, so we check that too.
-    /// Collision changes are 1/64K, and we have 32 slots by default. Meaning the chance is ~0.75% for
+    /// Collision chances are 1/64K, and we have 32 slots by default. Meaning the chance is ~0.75% for
     /// a collision (acceptable, since we'll check the full digest).
     /// </summary>
     private sealed class PerQueryPlans(int maxSlots, PlanTemplate template)
@@ -138,7 +138,7 @@ public class PlanCache
         /// <summary>
         /// Monotonically increasing slot allocator. Counts from 0 up to maxSlots and
         /// then stays there — it is intentionally never decremented. Once it reaches
-        /// maxSlots, all subsequent published use random eviction (pick any slot).
+        /// maxSlots, all subsequent publishes use random eviction (pick any slot).
         ///
         /// This is by design: a PerQueryPlans is expected to stabilize at maxSlots
         /// distinct plan variants for the lifetime of the IndexSearcher; past that
