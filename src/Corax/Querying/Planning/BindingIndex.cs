@@ -12,7 +12,7 @@ public static class BindingIndex
     public const int BetweenHigh = 1;
 
     // Spatial circle: [0]=distErrPct, [1]=radius, [2]=lat, [3]=lng, [4]=units
-    public const int SpatialCircleBindingCount = 5;
+    public const int SpatialCircleBindingCount = 5; // distErrPct + radius + lat + lng + units
     public const int SpatialDistErrPct = 0;
     public const int SpatialRadius = 1;
     public const int SpatialLatitude = 2;

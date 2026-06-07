@@ -36,9 +36,7 @@ public class PlanCache
 
     public PlanCache(int maxPlansPerQuery = 32, int halfOfMaxDistinctQueries = 2048)
     {
-        // MaxPlansPerQuery must be a multiple of 16 so the Vector256<ushort> loop (16 lanes) never reads past the array end
-        if (maxPlansPerQuery % 16 != 0)
-            maxPlansPerQuery = ((maxPlansPerQuery / 16) + 1) * 16;
+        maxPlansPerQuery = (maxPlansPerQuery + 15) & ~15; // 16 aligned - Vector256<ushort> loop can never read past the end of the array
         MaxPlansPerQuery = maxPlansPerQuery;
         HalfOfMaxDistinctQueries = Math.Max(16, halfOfMaxDistinctQueries / 2);
         _generation = new CacheGeneration([], []);
@@ -127,20 +125,10 @@ public class PlanCache
     /// Fixed-slot per-query plan cache. Two parallel arrays (_hashLo, _plans) of maxSlots
     /// entries (default 32, must be a multiple of 16).
     ///
-    /// Lookup: broadcast a 16-bit pre-filter slice of the target hash into a Vector256&lt;ushort&gt;
-    /// (16 lanes) and compare 16 slots per iteration. ExtractMostSignificantBits yields a bitmask of
-    /// hits; TrailingZeroCount walks set bits. Vec128 fallback does 8 lanes per iteration. A lane hit
-    /// is only the 16-bit pre-filter — it is confirmed by comparing the plan's full 256-bit
-    /// <see cref="PlanCacheKeyHash"/>. The digest is the complete plan identity, so distinct keys
-    /// occupy distinct slots and there is no collision chain. The narrow slice raises the pre-filter
-    /// false-positive rate to ~1/65536 per slot, which the digest confirm absorbs, in exchange for
-    /// scanning 4x more slots per SIMD step.
-    ///
-    /// The pre-filter slice maps 0 to 1 so a populated slot never collides with the default-zero
-    /// value of an empty slot.
-    ///
-    /// maxSlots alignment: must be a multiple of 16 so the Vec256 loop never reads past the
-    /// array end (16 ushorts per iteration). The constructor rounds up if needed.
+    /// Lookup: compare 16 slots per iteration, then confirm by comparing the plan's full 256-bit
+    /// <see cref="PlanCacheKeyHash"/>. The digest is the complete plan identity, so we check that too.
+    /// Collision changes are 1/64K, and we have 32 slots by default. Meaning the chance is ~0.75% for
+    /// a collision (acceptable, since we'll check the full digest).
     /// </summary>
     private sealed class PerQueryPlans(int maxSlots, PlanTemplate template)
     {
@@ -150,18 +138,17 @@ public class PlanCache
         /// <summary>
         /// Monotonically increasing slot allocator. Counts from 0 up to maxSlots and
         /// then stays there — it is intentionally never decremented. Once it reaches
-        /// maxSlots, all subsequent publishes use random eviction (pick any slot).
+        /// maxSlots, all subsequent published use random eviction (pick any slot).
         ///
-        /// This is by design: a PerQueryPlans is expected to stabilise at maxSlots
+        /// This is by design: a PerQueryPlans is expected to stabilize at maxSlots
         /// distinct plan variants for the lifetime of the IndexSearcher; past that
         /// point we accept random replacement as the steady state. Decrementing on
         /// eviction would only complicate concurrency without changing the steady
-        /// behaviour — the outer PlanCache.Add still drives rotation based on
+        /// behavior — the outer PlanCache.Add still drives rotation based on
         /// distinct-query count, not per-query slot occupancy.
         /// </summary>
         private int _nextSlot;
 
-        /// <summary>Cached plan template. Set in constructor, immutable thereafter.</summary>
         public readonly PlanTemplate Template = template;
 
         public CompiledPlan TryLookup(in Vector256<long> hash)
@@ -175,14 +162,13 @@ public class PlanCache
         }
 
         /// <summary>
-        /// 16-bit pre-filter slice taken from the top bits of the digest's first lane. Hash bits are
-        /// well-distributed, so any 16 give good coverage. Maps 0 to 1 so a populated slot's key never
-        /// equals the default-zero value of an empty slot.
+        /// Hash bits are well-distributed, so any 16 give good coverage.
+        /// Maps 0 to 1 so a populated slot's key never equals the default-zero value of an empty slot.
         /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private static ushort PreFilterKey(in Vector256<long> hash)
         {
-            ushort bits = (ushort)((ulong)hash[0] >> 48);
+            ushort bits = (ushort)hash[0];
             return bits == 0 ? (ushort)1 : bits;
         }
 
