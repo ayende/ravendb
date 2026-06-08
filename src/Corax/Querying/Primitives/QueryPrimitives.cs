@@ -213,6 +213,12 @@ public static class QueryPrimitives
     // than the candidate set.
     public const long EntryScanCostMultiplier = 64;
 
+    // Sentinels for the $rvn_corax_entry_scan override carried on ForcedEntryScanGate.
+    // Unset leaves the cost gate in charge; Disabled is below any real gate cursor (>= 0),
+    // so it can never equal one and therefore suppresses every gate.
+    public const int EntryScanGateUnset = int.MinValue;
+    public const int EntryScanGateDisabled = -1;
+
     /// <summary>
     /// Fill a bitmap from a posting list. Walks leaf pages, decodes PFor blocks,
     /// adds entries to the bitmap via batch AddRange.
@@ -383,8 +389,11 @@ public static class QueryPrimitives
     /// true when entry scan is cheaper. Called directly from IL-emitted code.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool ShouldSwitchToEntryScan(long bitmapCount, long nextClauseCardinality)
+    public static bool ShouldSwitchToEntryScan(int forcedGate, int gate, long bitmapCount, long nextClauseCardinality)
     {
+        if (forcedGate != EntryScanGateUnset)
+            return forcedGate == gate;
+
         return bitmapCount < EntryScanCountThreshold
             && bitmapCount * EntryScanCostMultiplier < nextClauseCardinality;
     }

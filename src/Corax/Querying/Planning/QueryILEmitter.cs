@@ -307,9 +307,15 @@ public static class QueryIlEmitter
         d.CsLine("");
     }
 
-    /// <summary>if (ShouldSwitchToEntryScan(bitmaps[0].Count, ctx.Cardinalities[cursor])) goto EntryScan.</summary>
+    /// <summary>if (ShouldSwitchToEntryScan(ctx.ForcedEntryScanGate, cursor, bitmaps[0].Count, ctx.Cardinalities[cursor])) goto EntryScan.
+    /// The cursor doubles as this gate's index, so the $rvn_corax_entry_scan override can target it.</summary>
     private static void EmitEntryScanCheck(ref DualEmit d, LocalBuilder cursorVar, LabelPair entryScanLabel)
     {
+        // ctx.ForcedEntryScanGate, cursor
+        d.Il.Emit(OpCodes.Ldarg_0);
+        d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxForcedEntryScanGate);
+        d.Il.Emit(OpCodes.Ldloc, cursorVar);
+
         d.IlLoadBitmapRef(0);
         d.Il.Emit(OpCodes.Call, IlEmitterShared.CountGetter);
         d.Il.Emit(OpCodes.Conv_I8);
@@ -323,7 +329,7 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.ShouldSwitchToEntryScan);
         d.Il.Emit(OpCodes.Brtrue, entryScanLabel.Il);
 
-        d.CsLine($"if (QueryPrimitives.ShouldSwitchToEntryScan((long)ctx.Bitmaps[0].Count, ctx.Cardinalities[{d.GetLocalName(cursorVar)}]))");
+        d.CsLine($"if (QueryPrimitives.ShouldSwitchToEntryScan(ctx.ForcedEntryScanGate, {d.GetLocalName(cursorVar)}, (long)ctx.Bitmaps[0].Count, ctx.Cardinalities[{d.GetLocalName(cursorVar)}]))");
         d.CsLine($"    goto {entryScanLabel.Name};");
     }
 

@@ -73,6 +73,8 @@ internal static partial class QueryPlanBuilder
             default: // may either be the selected strategy or a one-off (because of bad parameters preventing a faster strategy)
                 exec.ActualStrategy = ExecutionStrategy.BitmapPipeline;
                 innerMatch = InstantiateBitmapPipeline(ctx.Plan, ctx.Exec, ctx.PlanParams, ctx.BuilderParams, walkerCtx, highlightingTerms, wantTimings, token);
+                if (innerMatch is CompiledQueryMatch forcedScanMatch)
+                    forcedScanMatch.ForcedEntryScanGate = TryGetForcedEntryScanGate(ctx.PlanParams.QueryParameters);
                 if (ctx.OrderByFields == null) return innerMatch;
                 // A single vector-search post-filter already streamed its results in similarity-score order
                 // (ApplyPostFilters told it to via VectorPostFilterProvidesScoreOrder). The score sort the query
@@ -268,5 +270,19 @@ internal static partial class QueryPlanBuilder
                 $"The reserved query parameter '${ForceStrategyParameterName}' has an unrecognized value '{value}'. Expected on of: {string.Join(", ", Enum.GetNames<ExecutionStrategy>())}");
         return result;
 
+    }
+
+    private const string ForceEntryScanParameterName = "rvn_corax_entry_scan";
+
+    // A query may force or disable the entry-scan gate via $rvn_corax_entry_scan: the op-index of the
+    // gate to force (matches the EntryScanAt the plan reports), -1 to disable every gate, or absent to
+    // leave the runtime cost gate in charge. Read at instantiation time, never part of the plan-cache key.
+    private static int TryGetForcedEntryScanGate(BlittableJsonReaderObject queryParameters)
+    {
+        if (queryParameters is null)
+            return QueryPrimitives.EntryScanGateUnset;
+        if (queryParameters.TryGet(ForceEntryScanParameterName, out long value) == false)
+            return QueryPrimitives.EntryScanGateUnset;
+        return (int)value;
     }
 }

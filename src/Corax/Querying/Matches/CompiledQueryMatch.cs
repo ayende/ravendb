@@ -71,6 +71,12 @@ public class CompiledQueryMatch(
 
     public int Limit = int.MaxValue;
 
+    /// <summary>Diagnostic override for the entry-scan gate, set from the reserved $rvn_corax_entry_scan
+    /// parameter. <see cref="QueryPrimitives.EntryScanGateUnset"/> leaves the cost gate in charge;
+    /// <see cref="QueryPrimitives.EntryScanGateDisabled"/> suppresses every gate; any other value forces
+    /// the scan at the gate whose cursor equals it (the index reported as EntryScanAt).</summary>
+    public int ForcedEntryScanGate = Primitives.QueryPrimitives.EntryScanGateUnset;
+
     public long[] Timings;  
     public long[] ResultCounts;
     public int EntryScanTakenAtOp;

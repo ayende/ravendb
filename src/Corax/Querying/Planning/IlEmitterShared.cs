@@ -59,6 +59,8 @@ public static class IlEmitterShared
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Cardinalities));
     public static readonly FieldInfo CtxEntryScanTakenAtOp =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.EntryScanTakenAtOp));
+    public static readonly FieldInfo CtxForcedEntryScanGate =
+        typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.ForcedEntryScanGate));
     public static readonly FieldInfo CtxToken =
         typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Token));
 
@@ -97,7 +99,7 @@ public static class IlEmitterShared
     public static readonly MethodInfo ShouldSwitchToEntryScan =
         typeof(QueryPrimitives).GetMethod(
             nameof(QueryPrimitives.ShouldSwitchToEntryScan),
-            [typeof(long), typeof(long)])!;
+            [typeof(int), typeof(int), typeof(long), typeof(long)])!;
 
     public static readonly FieldInfo ResidualLongs =
         typeof(QueryExecution).GetField(nameof(QueryExecution.LongValues))!;
