@@ -245,16 +245,9 @@ public static class CompiledQueryHelper
         var predicate = ctx.CompiledEntryPredicate;
         var llt = searcher.Transaction.LowLevelTransaction;
 
-        // One CompactKey per reader slot, allocated and pool-initialized once and reused across every
-        // batch. Without this each per-entry reader construction would rent two pool buffers (CompactKey
-        // dominated this loop). Each slot has its own key so readers in a batch don't alias each other's
-        // Current as the predicate scans the batch span. 
+        // One CompactKey per reader slot, allocated and pool-initialized once and reused across every batch.
         var entryKeys = ArrayPool<CompactKey>.Shared.Rent(QueryPrimitives.EntryScanBatchSize);
-        for (int i = 0; i < QueryPrimitives.EntryScanBatchSize; i++)
-        {
-            var key = entryKeys[i] ??= new CompactKey();
-            key.Initialize(llt);
-        }
+        int maxInitKey = 0;
 
         // The target slot may have been used as AND/AndNot scratch by an earlier op, which
         // leaves it marked consumed (and possibly holding stale containers). Reset it so the
@@ -279,6 +272,16 @@ public static class CompiledQueryHelper
             while ((read = iterator.Fill(ref sourceBitmap, buffer)) > 0)
             {
                 ctx.Token.ThrowIfCancellationRequested();
+
+                if (maxInitKey < read)
+                {   // avoid null checks in the hot loop below
+                    for (int i = maxInitKey; i < read; i++)
+                    {
+                        var key = entryKeys[i] ??= new();
+                        key.Initialize(llt);
+                    }
+                    maxInitKey = read;
+                }
 
                 var batch = buffer[..read];
                 ctx.EntryScanEntriesScanned += read;
@@ -316,12 +319,13 @@ public static class CompiledQueryHelper
         finally
         {
             iterator.Dispose();
-            // Return each slot's pooled CompactKey buffers (_storage / _keyMappingCache).
-            for (int i = 0; i < QueryPrimitives.EntryScanBatchSize; i++)
+            // Return each slot's pooled CompactKey buffers (_storage / _keyMappingCache). 
+            foreach (var key in entryKeys)
             {
-                entryKeys[i].Dispose();
+                if (key is null || key.IsValid is false) break;
+                key.Dispose();
             }
-            // explicitly want to reuse the instances the next time, so let's NOT clear them, we'll init anyway
+            // we want to _reuse_ the compact key instances as well
             ArrayPool<CompactKey>.Shared.Return(entryKeys, clearArray: false);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
         }
