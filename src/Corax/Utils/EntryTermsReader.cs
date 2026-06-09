@@ -84,6 +84,12 @@ public unsafe struct EntryTermsReader
     private byte* _end, _start;
     private long _prevTerm;
     private long _prevLong;
+    // Deferred key materialization: HandleRegularTerm records the matched term's container item
+    // here instead of copying its key into Current on every term. FindNext/MoveNext only call
+    // EnsureCurrentKey() once positioned on the term the caller keeps, so the per-term key copy
+    // (CompactKey.Set's CopyBlock) is skipped for all the terms a FindNext scan walks past.
+    private Container.Item _pendingTermItem;
+    private bool _currentKeyReady;
 
     public readonly CompactKey Current;
     public long CurrentLong;
@@ -147,10 +153,13 @@ public unsafe struct EntryTermsReader
     }
     public bool FindNext(long fieldRootPage)
     {
-        while (MoveNext())
+        while (MoveNextNoMaterialize())
         {
             if (FieldRootPage == fieldRootPage)
+            {
+                EnsureCurrentKey();
                 return true;
+            }
         }
         return false;
     }
@@ -171,6 +180,17 @@ public unsafe struct EntryTermsReader
 
     public bool MoveNext()
     {
+        if (MoveNextNoMaterialize() == false)
+            return false;
+
+        // Standalone MoveNext callers read Current directly, so honor the eager contract here.
+        // FindNext bypasses this and materializes only the term it stops on.
+        EnsureCurrentKey();
+        return true;
+    }
+
+    private bool MoveNextNoMaterialize()
+    {
         Start:
         if (_cur >= _end)
             return false;
@@ -182,7 +202,7 @@ public unsafe struct EntryTermsReader
         var termContainerId = VariableSizeEncoding.Read<long>(_cur, out var offset) + _prevTerm;
         _prevTerm = termContainerId;
         _cur += offset;
-        
+
         if ((termContainerId & 0b11) == 0b10) // special term markers, rare
         {
             HandleSpecialTerm(termContainerId, skipStoredFieldLoad: true);
@@ -191,6 +211,17 @@ public unsafe struct EntryTermsReader
 
         HandleRegularTerm(termContainerId);
         return true;
+    }
+
+    /// <summary>Copy the current regular term's key into <see cref="Current"/> if it hasn't been
+    /// materialized yet. No-op for null/non-existing terms (which never populate Current) and when
+    /// the key has already been materialized for this term.</summary>
+    private void EnsureCurrentKey()
+    {
+        if (_currentKeyReady)
+            return;
+        TermsReader.Set(Current, _pendingTermItem, _dicId);
+        _currentKeyReady = true;
     }
     
     public bool MoveNextSpatial()
@@ -264,10 +295,19 @@ public unsafe struct EntryTermsReader
         
         Container.Get(_llt, new ContainerEntryId(TermId), out var termItem);
         FieldRootPage = termItem.PageLevelMetadata;
-        
+
         if (IsNull == false && IsNonExisting == false)
         {
-            TermsReader.Set(Current, termItem, _dicId);
+            // Defer the key copy: stash the container item and let EnsureCurrentKey() copy it into
+            // Current only once the caller stops on this term. termItem points into a mapped Voron
+            // page that stays valid for the transaction, and materialization happens immediately on
+            // a FindNext/MoveNext hit before any further reads advance the cursor.
+            _pendingTermItem = termItem;
+            _currentKeyReady = false;
+        }
+        else
+        {
+            _currentKeyReady = true; // null/non-existing terms never populate Current
         }
 
         HasNumeric = (termContainerId & 0b1) != 0;
