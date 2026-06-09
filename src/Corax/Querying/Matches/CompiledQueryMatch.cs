@@ -255,7 +255,7 @@ public class CompiledQueryMatch(
             _bitmapData = Bitmaps[resultSlot];
             Bitmaps[resultSlot] = default; // don't dispose this
             _bitmapData.PrepareForReading();
-            _count = _bitmapData.Count;
+            _count = _bitmapData.ComputeCount();
             _iterator = _bitmapData.GetIterator();
             _executed = true;
         }

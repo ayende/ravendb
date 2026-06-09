@@ -92,14 +92,14 @@ public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
             _hasFilterResults = true;
 
             // Shortcut for empty filter
-            if (_filterResults.Count == 0)
+            if (_filterResults.ComputeCount() == 0)
             {
                 _isEmpty = true;
                 return;
             }
         }
 
-        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterResults.Count, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
+        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterResults.ComputeCount(), _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
         if (_scanningQuery)
         {
             var hasNodes = IndexSearcher.VectorSearchUtils.TryConvertDocumentsIdsToNodesIds(_indexSearcher, _metadata, ref _filterResults, out _nodesIdsToScan);
@@ -119,7 +119,7 @@ public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
         // so loaded node data (edges, vectors) is shared across them.
         var sharedSearchState = _indexSearcher.GetOrCreateVectorSearchState(_metadata.FieldName);
 
-        _isEmpty = sharedSearchState.IsEmpty || (_hasFilterResults && _filterResults.Count == 0);
+        _isEmpty = sharedSearchState.IsEmpty || (_hasFilterResults && _filterResults.ComputeCount() == 0);
     }
 
     public int Fill(Span<long> matches)

@@ -208,7 +208,7 @@ public partial class Hnsw
                     // Double the difference between accepted and searched number of candidates.
                     _vectorsSearcher.IncreaseNumberOfCandidates(_vectorsSearcher.NumberOfCandidates - _returnedCandidates);
 
-                    if (_vectorsSearcher.ShouldContinueSearch(filter.Count) == false)
+                    if (_vectorsSearcher.ShouldContinueSearch(filter.ComputeCount()) == false)
                     {
                         break;
                     }

@@ -74,7 +74,7 @@ public static class QueryPrimitives
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].Count : ctx.OpLimit;
+        long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].ComputeCount() : ctx.OpLimit;
         if (remaining <= 0) return;
         var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
         FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, remaining);
@@ -83,7 +83,7 @@ public static class QueryPrimitives
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].Count : ctx.OpLimit;
+        long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].ComputeCount() : ctx.OpLimit;
         if (remaining <= 0) return;
         FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, remaining);
     }
@@ -91,7 +91,7 @@ public static class QueryPrimitives
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrWithMatchSlot(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].Count : ctx.OpLimit;
+        long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].ComputeCount() : ctx.OpLimit;
         if (remaining <= 0) return;
         OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], remaining, ctx.Token);
     }
@@ -706,8 +706,18 @@ public static class QueryPrimitives
         bool readerInitialized = false;
         try
         {
+            // upperBound counts the entry ids fed into the bitmap; it is an upper bound on the
+            // real cardinality (duplicates across terms collapse on insert). While upperBound < limit
+            // the real count cannot have reached the limit, so the expensive bitmap.ComputeCount()
+            // (O(containers), repairs lazy popcounts) is skipped via short-circuit — the AND/ANDNOT and
+            // TermsProviderMatch callers pass limit = long.MaxValue and therefore never pay for it. The
+            // exact count is consulted only once upperBound says the limit might have been reached.
+            // We no longer clip each batch to the exact remaining room: overshooting by at most a batch
+            // (or one large posting list, as before) is harmless — the caller pages to its real limit and
+            // for an AND seed an over-full bitmap only feeds the narrowing clause more candidates.
+            long upperBound = 0;
             int read;
-            while (bitmap.Count < limit && (read = provider.FillPostingListIds(plIds)) > 0)
+            while ((upperBound < limit || bitmap.ComputeCount() < limit) && (read = provider.FillPostingListIds(plIds)) > 0)
             {
                 token.ThrowIfCancellationRequested();
                 for (int b = 0; b < buckets.Length; b++)
@@ -730,10 +740,9 @@ public static class QueryPrimitives
                 {
                     EntryIdEncodings.DecodeAndDiscardFrequency(singlesSpan, singlesSpan.Length);
                     var singlesLen = Sorting.SortAndRemoveDuplicates(singlesSpan);
-                    int singlesClipped = (int)Math.Min(singlesLen, limit - bitmap.Count);
-                    bitmap.AddRange(singlesSpan[..singlesClipped]);
+                    bitmap.AddRange(singlesSpan[..singlesLen]);
+                    upperBound += singlesLen;
                 }
-                if (bitmap.Count >= limit) break;
 
                 // Bucket 1: SmallPostingList -> strip frequency, dedup, batch fetch, decode
                 var smallsSpan = buckets[1].ToSpan();
@@ -755,24 +764,23 @@ public static class QueryPrimitives
 
                     fixed (long* pEntryBuffer = entryBuffer)
                     {
-                        for (int i = 0; i < smallLen && bitmap.Count < limit; i++)
+                        for (int i = 0; i < smallLen && (upperBound < limit || bitmap.ComputeCount() < limit); i++)
                         {
                             var item = containerItems[i];
                             _ = VariableSizeEncoding.Read<int>(item.Address, out var offset);
                             smallListReader.Init(item.Address + offset, item.Length - offset);
 
                             int smallRead;
-                            while (bitmap.Count < limit && (smallRead = smallListReader.Fill(pEntryBuffer, entryBuffer.Length)) > 0)
+                            while ((upperBound < limit || bitmap.ComputeCount() < limit) && (smallRead = smallListReader.Fill(pEntryBuffer, entryBuffer.Length)) > 0)
                             {
                                 token.ThrowIfCancellationRequested();
                                 EntryIdEncodings.DecodeAndDiscardFrequency(entryBuffer, smallRead);
-                                int clipped = (int)Math.Min(smallRead, limit - bitmap.Count);
-                                bitmap.AddRange(entryBuffer[..clipped]);
+                                bitmap.AddRange(entryBuffer[..smallRead]);
+                                upperBound += smallRead;
                             }
                         }
                     }
                 }
-                if (bitmap.Count >= limit) break;
 
                 // Bucket 2: PostingList -> strip frequency, dedup, then iterate each
                 var largeSpan = buckets[2].ToSpan();
@@ -780,13 +788,19 @@ public static class QueryPrimitives
                 {
                     EntryIdEncodings.DecodeAndDiscardFrequency(largeSpan, largeSpan.Length);
                     var largeLen = Sorting.SortAndRemoveDuplicates(largeSpan);
-                    for (int i = 0; i < largeLen && bitmap.Count < limit; i++)
+                    for (int i = 0; i < largeLen && (upperBound < limit || bitmap.ComputeCount() < limit); i++)
                     {
                         var setStateSpan = Container.GetReadOnly(llt, new ContainerEntryId(largeSpan[i]));
                         ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
                         using var postingList = new PostingList(llt, Slices.Empty, in setState);
                         var iterator = postingList.Iterate();
                         FillFromPostings(ref iterator, ref bitmap, token);
+
+                        // FillFromPostings adds an untracked number of entries, so the tally can no
+                        // longer gate the loop. Resync from the real count when bounded; when unbounded
+                        // there is no gate to keep accurate and the count is not worth its cost.
+                        if (limit != long.MaxValue)
+                            upperBound = bitmap.ComputeCount();
                     }
                 }
             }

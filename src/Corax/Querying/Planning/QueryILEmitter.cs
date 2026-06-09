@@ -329,7 +329,7 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Ldloc, cursorVar);
 
         d.IlLoadBitmapRef(0);
-        d.Il.Emit(OpCodes.Call, IlEmitterShared.CountGetter);
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.ComputeCountMethod);
         d.Il.Emit(OpCodes.Conv_I8);
 
         // ctx.Cardinalities[cursor]
@@ -341,7 +341,7 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.ShouldSwitchToEntryScan);
         d.Il.Emit(OpCodes.Brtrue, entryScanLabel.Il);
 
-        d.CsLine($"if (QueryPrimitives.ShouldSwitchToEntryScan(ctx.ForcedEntryScanGate, {d.GetLocalName(cursorVar)}, (long)ctx.Bitmaps[0].Count, ctx.Cardinalities[{d.GetLocalName(cursorVar)}]))");
+        d.CsLine($"if (QueryPrimitives.ShouldSwitchToEntryScan(ctx.ForcedEntryScanGate, {d.GetLocalName(cursorVar)}, ctx.Bitmaps[0].ComputeCount(), ctx.Cardinalities[{d.GetLocalName(cursorVar)}]))");
         d.CsLine($"    goto {entryScanLabel.Name};");
     }
 

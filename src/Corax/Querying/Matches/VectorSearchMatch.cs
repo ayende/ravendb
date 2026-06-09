@@ -113,14 +113,14 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
             _hasFilterResults = true;
 
             // Shortcut for empty filter
-            if (_filterResults.Count == 0)
+            if (_filterResults.ComputeCount() == 0)
             {
                 _isEmpty = true;
                 return;
             }
         }
 
-        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterResults.Count, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
+        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterResults.ComputeCount(), _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
         var vector = _vectorToSearch.GetEmbeddingMemory();
         var fieldName = _metadata.FieldName;
 
@@ -150,7 +150,7 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
         };
 
         _isEmpty = _scanningQuery
-            ? _filterResults.Count == 0 || _vectorSearchRetriever.IsEmpty
+            ? _filterResults.ComputeCount() == 0 || _vectorSearchRetriever.IsEmpty
             : _vectorSearchRetriever.IsEmpty;
     }
     

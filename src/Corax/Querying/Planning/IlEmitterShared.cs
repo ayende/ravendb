@@ -46,7 +46,7 @@ public static class IlEmitterShared
     public static readonly MethodInfo Clear =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.Clear), Type.EmptyTypes)!;
     public static readonly MethodInfo IsEmptyGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.IsEmpty))!.GetGetMethod()!;
-    public static readonly MethodInfo CountGetter = typeof(RoaringBitmap).GetProperty(nameof(RoaringBitmap.Count))!.GetGetMethod()!;
+    public static readonly MethodInfo ComputeCountMethod = typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.ComputeCount), Type.EmptyTypes)!;
     public static readonly MethodInfo RepairAfterLazy =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.RepairAfterLazy), Type.EmptyTypes)!;
 

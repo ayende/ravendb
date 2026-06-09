@@ -115,8 +115,18 @@ public unsafe struct EntryTermsReader
         _end = cur + size;
         _prevTerm = 0;
         _prevLong = 0;
-        Current = key ?? new();
-        Current.Initialize(llt);
+        // A supplied key is owned by the caller and already initialized (and reused across many
+        // readers — e.g. the entry-scan loop and vector search). Re-initializing it here would
+        // rent fresh pool buffers on every construction and leak the caller's previous rent.
+        if (key is null)
+        {
+            Current = new();
+            Current.Initialize(llt);
+        }
+        else
+        {
+            Current = key;
+        }
     }
 
     public bool FindNextStored(long fieldRootPage)

@@ -28,7 +28,7 @@ public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransact
         get
         {
             Initialize();
-            return _bitmap.Count;
+            return _bitmap.ComputeCount();
         }
     }
 

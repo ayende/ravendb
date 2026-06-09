@@ -93,7 +93,7 @@ public partial class IndexSearcher
                 _nodesByVectorId = searchState.NodeIdsByVectorId;
                 _current = -1L;
 
-                var filterCount = filterResults.Count;
+                var filterCount = filterResults.ComputeCount();
                 _isDone =
                     indexSearcher.TryGetRootPageByFieldName(metadata.FieldName, out _vectorRootPage) == false
                     || filterCount == 0;

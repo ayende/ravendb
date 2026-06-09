@@ -21,7 +21,7 @@ public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, I
         get
         {
             Initialize();
-            return _bitmap.Count;
+            return _bitmap.ComputeCount();
         }
     }
 

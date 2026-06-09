@@ -6,6 +6,7 @@ using Corax.Querying.Primitives;
 using Corax.Utils;
 using Sparrow;
 using Voron;
+using Voron.Data.CompactTrees;
 using Voron.Data.Containers;
 using Voron.Data.RoaringBitmaps;
 
@@ -27,7 +28,7 @@ public static class CompiledQueryHelper
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void RecordResultCount(CompiledQueryMatch ctx, int opIndex)
     {
-        ctx.ResultCounts[opIndex] = ctx.Bitmaps[0].Count;
+        ctx.ResultCounts[opIndex] = ctx.Bitmaps[0].ComputeCount();
     }
 
     /// <summary>Check StartsWith/EndsWith against ALL terms for a field (multi-value support).
@@ -238,6 +239,11 @@ public static class CompiledQueryHelper
         Span<long> containerLocs = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
         var readers = new EntryTermsReader[QueryPrimitives.EntryScanBatchSize];
+        // One CompactKey per reader slot, allocated and pool-initialized once and reused across every
+        // batch. Without this each per-entry reader construction would rent two pool buffers (CompactKey
+        // dominated this loop). Each slot has its own key so readers in a batch don't alias each other's
+        // Current as the predicate scans the batch span. Disposed (buffers returned) in the finally below.
+        var entryKeys = new CompactKey[QueryPrimitives.EntryScanBatchSize];
 
         // The target slot may have been used as AND/AndNot scratch by an earlier op, which
         // leaves it marked consumed (and possibly holding stale containers). Reset it so the
@@ -278,10 +284,17 @@ public static class CompiledQueryHelper
                 {
                     if (containerLocs[i] == -1 || spans[i].Address == null)
                         continue;
+                    var entryKey = entryKeys[validCount];
+                    if (entryKey is null)
+                    {
+                        entryKey = new CompactKey();
+                        entryKey.Initialize(llt);
+                        entryKeys[validCount] = entryKey;
+                    }
                     readers[validCount] = new EntryTermsReader(llt,
                         searcher.NullTermsMarkers, searcher.NonExistingTermsMarkers,
                         spans[i].Address, spans[i].Length, searcher.DictionaryId,
-                        searcher.VectorFieldsMarkers, null);
+                        searcher.VectorFieldsMarkers, entryKey);
                     buffer[validCount] = buffer[i]; // compact entry IDs in-place
                     validCount++;
                 }
@@ -301,6 +314,10 @@ public static class CompiledQueryHelper
         finally
         {
             iterator.Dispose();
+            // Return each slot's pooled CompactKey buffers (_storage / _keyMappingCache). Slots past
+            // the high-water mark of valid entries are still null and skipped.
+            foreach (var key in entryKeys)
+                key?.Dispose();
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
         }
     }

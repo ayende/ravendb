@@ -64,11 +64,11 @@ internal ref partial struct DualEmit
     public void EmitLimitReachedGoto(Label doneIlLabel, string doneCsName)
     {
         IlLoadBitmapRef(0);
-        Il.Emit(OpCodes.Call, IlEmitterShared.CountGetter);
+        Il.Emit(OpCodes.Call, IlEmitterShared.ComputeCountMethod);
         Il.Emit(OpCodes.Ldarg_0);
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxLimit);
         Il.Emit(OpCodes.Bge, doneIlLabel);
-        CsLine($"if (ctx.Bitmaps[0].Count >= ctx.Limit) goto {doneCsName};");
+        CsLine($"if (ctx.Bitmaps[0].ComputeCount() >= ctx.Limit) goto {doneCsName};");
     }
 
     /// <summary>Arm the per-op truncation budget: ctx.OpLimit = ctx.Limit. Emitted only before the first op
