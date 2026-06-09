@@ -50,18 +50,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// <see cref="ContainerEntry.NextFreeSlot"/> uses the same encoding for chaining.
     /// </summary>
     internal int _freeListHead;
-    /// <summary>
-    /// Segregated storage free list: one intrusive singly-linked list head per size class
-    /// (see <see cref="ClassSize"/>). The first <c>sizeof(ByteString)</c> bytes of each free
-    /// block hold the next <see cref="ByteString"/> in its class chain; a default (zero) head
-    /// means that class is empty. <see cref="_freeClassMask"/> has bit <c>c</c> set iff class
-    /// <c>c</c>'s list is non-empty, so allocation locates the smallest sufficient non-empty
-    /// class in O(1) via <see cref="BitOperations.TrailingZeroCount(ulong)"/> instead of walking
-    /// the whole list for a best fit.
-    /// </summary>
-    private FreeListHeads _freeHeads;
-    /// <summary>Bit <c>c</c> set iff <see cref="_freeHeads"/>[c] is non-empty. 42 classes fit one ulong.</summary>
-    private ulong _freeClassMask;
+    /// <summary>Segregated storage free list (heads + class mask + size-class tables).
+    /// See <see cref="FreeListHeads"/> in RoaringBitmap.FreeListHeads.cs.</summary>
+    private FreeListHeads _freeList;
 
     private readonly ByteStringContext _ctx;
 
@@ -264,7 +255,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
         for (int i = 0; i < count; i++)
         {
             if (types[i] != ContainerType.Free && entries[i].Storage.HasValue)
-                ReturnStorageToFreeList(entries[i].Storage);
+                _freeList.Return(entries[i].Storage);
         }
 
         _entries.Clear();
@@ -275,103 +266,6 @@ public unsafe partial struct RoaringBitmap : IDisposable
         int* indexRaw = _index.RawItems;
         int indexLen = _index.Count;
         new Span<int>(indexRaw, indexLen).Fill(IndexAbsent);
-    }
-
-    // ── Segregated storage free list ───────────────────────────────────
-    //
-    // Storage blocks are bucketed into NumSizeClasses size classes on a 32-byte-aligned
-    // x1.091 geometric ladder spanning InitialArrayContainerSizeInBytes (64) ..
-    // BitmapContainerSizeInBytes (8192). Allocations round their requested byte count up to
-    // the enclosing class size, so every block in a class is exactly ClassSize[c] bytes — a
-    // recycled block always fits any request mapping to its class, and its class is recovered
-    // on free directly from its Length. Rounding up keeps every Length a multiple of
-    // SimdAlignment (32), which the array-container SIMD set ops rely on. Worst-case internal
-    // fragmentation is the x1.091 step (~9%); measured waste on real query traffic is ~4%.
-
-    private const int NumSizeClasses = 42;
-
-    /// <summary>Byte size of each storage class (32-aligned, strictly increasing).</summary>
-    private static readonly int[] ClassSize =
-    [
-        64, 96, 128, 160, 192, 224, 256, 288, 320, 352, 416, 480, 544, 608, 672, 736, 832, 928,
-        1024, 1120, 1248, 1376, 1504, 1664, 1824, 2016, 2208, 2432, 2656, 2912, 3200, 3520, 3872,
-        4256, 4672, 5120, 5600, 6112, 6688, 7328, 8000, 8192
-    ];
-
-    /// <summary>Maps a 32-byte quantum (<c>bytes / 32</c>) to the smallest class whose size covers it.
-    /// Indexed by <c>(neededBytes + 31) &gt;&gt; 5</c>; covers quanta 0..256 (0..8192 bytes).</summary>
-    private static ReadOnlySpan<byte> ClassOfQuantum =>
-    [
-        0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 11, 11, 12, 12, 13, 13, 14, 14, 15, 15, 16,
-        16, 16, 17, 17, 17, 18, 18, 18, 19, 19, 19, 20, 20, 20, 20, 21, 21, 21, 21, 22, 22, 22,
-        22, 23, 23, 23, 23, 23, 24, 24, 24, 24, 24, 25, 25, 25, 25, 25, 25, 26, 26, 26, 26, 26,
-        26, 27, 27, 27, 27, 27, 27, 27, 28, 28, 28, 28, 28, 28, 28, 29, 29, 29, 29, 29, 29, 29,
-        29, 30, 30, 30, 30, 30, 30, 30, 30, 30, 31, 31, 31, 31, 31, 31, 31, 31, 31, 31, 32, 32,
-        32, 32, 32, 32, 32, 32, 32, 32, 32, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 33, 34,
-        34, 34, 34, 34, 34, 34, 34, 34, 34, 34, 34, 34, 35, 35, 35, 35, 35, 35, 35, 35, 35, 35,
-        35, 35, 35, 35, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 36, 37, 37, 37,
-        37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 37, 38, 38, 38, 38, 38, 38, 38, 38, 38,
-        38, 38, 38, 38, 38, 38, 38, 38, 38, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39, 39,
-        39, 39, 39, 39, 39, 39, 39, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40, 40,
-        40, 40, 40, 40, 40, 40, 41, 41, 41, 41, 41, 41
-    ];
-
-    /// <summary>Inline array of one free-list head per size class. Lives in the struct (no extra
-    /// allocation); a default RoaringBitmap has all-empty heads. Swapped wholesale by
-    /// <see cref="SwapContents"/>, which is a cold per-set-op path.</summary>
-    [System.Runtime.CompilerServices.InlineArray(NumSizeClasses)]
-    private struct FreeListHeads
-    {
-        private ByteString _head0;
-    }
-
-    /// <summary>Smallest size class whose <see cref="ClassSize"/> is &gt;= <paramref name="bytes"/>.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int SizeClassFor(int bytes)
-    {
-        Debug.Assert(bytes is >= 0 and <= BitmapContainerSizeInBytes, "storage request out of size-class range");
-        return ClassOfQuantum[(bytes + SimdAlignment - 1) >> 5];
-    }
-
-    /// <summary>
-    /// Push <paramref name="bs"/> onto the head of its size class's free list. The first
-    /// <c>sizeof(ByteString)</c> bytes of <paramref name="bs"/>'s data are overwritten with the
-    /// current head, forming the intrusive next-pointer. The class is recovered from
-    /// <c>bs.Length</c>, which is always exactly a <see cref="ClassSize"/> value.
-    /// </summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private void ReturnStorageToFreeList(ByteString bs)
-    {
-        int c = SizeClassFor(bs.Length);
-        *(ByteString*)bs.Ptr = _freeHeads[c]; // chain: new node's next = old class head
-        _freeHeads[c] = bs;                   // new class head = bs
-        _freeClassMask |= 1UL << c;
-    }
-
-    /// <summary>
-    /// Acquire storage of at least <paramref name="neededBytes"/>. Pops the head of the smallest
-    /// non-empty size class that can satisfy the request (O(1) via the class mask), unlinking it
-    /// in-place. Falls back to a fresh ctx allocation rounded up to the class size when every
-    /// sufficient class is empty.
-    /// </summary>
-    private void AllocateOrRecycle(int neededBytes, out ByteString storage)
-    {
-        int c = SizeClassFor(neededBytes);
-
-        // Classes >= c hold blocks of ClassSize[>=c] >= neededBytes; pick the smallest non-empty one.
-        ulong avail = _freeClassMask & (~0UL << c);
-        if (avail != 0)
-        {
-            int fc = BitOperations.TrailingZeroCount(avail);
-            storage = _freeHeads[fc];                  // pop head
-            ByteString next = *(ByteString*)storage.Ptr;
-            _freeHeads[fc] = next;
-            if (next.HasValue == false)
-                _freeClassMask &= ~(1UL << fc);        // class now empty
-            return;
-        }
-
-        _ctx.Allocate(ClassSize[c], out storage);
     }
 
     /// <summary>
@@ -472,7 +366,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     private void CreateBitmapContainerFromSorted(long key, ReadOnlySpan<long> sortedValues)
     {
-        AllocateOrRecycle(BitmapContainerSizeInBytes, out ByteString storage);
+        _freeList.Allocate(_ctx, BitmapContainerSizeInBytes, out ByteString storage);
         new Span<byte>(storage.Ptr, BitmapContainerSizeInBytes).Clear();
 
         OrSortedIntoBitmap((ulong*)storage.Ptr, sortedValues);
@@ -520,7 +414,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     private void CreateArrayContainerFromSorted(long key, ReadOnlySpan<long> sortedValues)
     {
         int neededBytes = AlignForSimd(sortedValues.Length * sizeof(ushort));
-        AllocateOrRecycle(neededBytes, out ByteString storage);
+        _freeList.Allocate(_ctx, neededBytes, out ByteString storage);
 
         CopyDenseBottom16BitsToUshortArray(sortedValues, (ushort*)storage.Ptr);
 
@@ -596,10 +490,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 int neededBytes = AlignForSimd(newTotal * sizeof(ushort));
                 if (entry.Storage.Length < neededBytes)
                 {
-                    AllocateOrRecycle(neededBytes, out ByteString newStorage);
+                    _freeList.Allocate(_ctx, neededBytes, out ByteString newStorage);
                     new Span<byte>(entry.Data, entry.Cardinality * sizeof(ushort))
                         .CopyTo(new Span<byte>(newStorage.Ptr, newStorage.Length));
-                    ReturnStorageToFreeList(entry.Storage); // recycle old; new is larger
+                    _freeList.Return(entry.Storage); // recycle old; new is larger
                     entry.Data = newStorage.Ptr;
                     entry.Storage = newStorage;
                 }
@@ -1628,7 +1522,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
         ref ContainerEntry entry = ref _entries[slot];
         if (entry.Storage.HasValue)
         {
-            recipient.ReturnStorageToFreeList(entry.Storage);
+            recipient._freeList.Return(entry.Storage);
             entry.Storage = default;
         }
         FreeContainer(key, slot);
@@ -1978,7 +1872,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     {
         ref ContainerEntry entry = ref _entries[slot];
         if (entry.Storage.HasValue)
-            ReturnStorageToFreeList(entry.Storage);
+            _freeList.Return(entry.Storage);
 
         entry = default;
         _types.RawItems[slot] = ContainerType.Free;
@@ -2062,13 +1956,13 @@ public unsafe partial struct RoaringBitmap : IDisposable
         int newSize = Math.Max(entry.Storage.Length * 2, requiredBytes);
         newSize = Math.Min(newSize, BitmapContainerSizeInBytes);
 
-        AllocateOrRecycle(newSize, out ByteString newStorage);
+        _freeList.Allocate(_ctx, newSize, out ByteString newStorage);
         int copyBytes = entry.Cardinality * sizeof(ushort);
         if (copyBytes > 0)
             Unsafe.CopyBlockUnaligned(newStorage.Ptr, entry.Data, (uint)copyBytes);
 
         if (entry.Storage.HasValue)
-            ReturnStorageToFreeList(entry.Storage);
+            _freeList.Return(entry.Storage);
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
     }
@@ -2154,7 +2048,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
         ushort* arr = entry.ArrayData;
         int count = entry.Cardinality;
 
-        AllocateOrRecycle(BitmapContainerSizeInBytes, out ByteString newStorage);
+        _freeList.Allocate(_ctx, BitmapContainerSizeInBytes, out ByteString newStorage);
         ClearBitmap((ulong*)newStorage.Ptr);
         SetArrayInBitmap(arr, count, (ulong*)newStorage.Ptr);
 
@@ -2164,7 +2058,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
             entry.Cardinality = updatedCount;
         }
         if (entry.Storage.HasValue)
-            ReturnStorageToFreeList(entry.Storage);
+            _freeList.Return(entry.Storage);
 
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
@@ -2188,25 +2082,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
             _entries.Dispose(_ctx);
         }
 
-        // Release every storage parked on the segregated free lists — these are storages that
-        // were recycled via FreeContainer/Clear but never re-used before Dispose. Walk only the
-        // non-empty classes by consuming set bits of the class mask.
-        ulong mask = _freeClassMask;
-        while (mask != 0)
-        {
-            int c = BitOperations.TrailingZeroCount(mask);
-            mask &= mask - 1;
-
-            ByteString freeNode = _freeHeads[c];
-            while (freeNode.HasValue)
-            {
-                ByteString nextNode = *(ByteString*)freeNode.Ptr; // read next before releasing
-                _ctx.Release(ref freeNode);
-                freeNode = nextNode;
-            }
-            _freeHeads[c] = default;
-        }
-        _freeClassMask = 0;
+        _freeList.ReleaseAll(_ctx);
 
         if (_types.IsValid)
             _types.Dispose(_ctx);
