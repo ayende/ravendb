@@ -71,6 +71,14 @@ public class CompiledQueryMatch(
 
     public int Limit = int.MaxValue;
 
+    /// <summary>Per-op truncation budget for fill/OR/AND primitives. Defaults to "unlimited" and is armed
+    /// (set to <see cref="Limit"/>) by the compiled delegate only on ops that grow slot 0 monotonically to
+    /// the result — i.e. no later op narrows slot 0 (AND/ANDNOT or an entry-scan residual filter). A fill or
+    /// AND that feeds a downstream narrowing op must read the full posting list, not a limit-truncated prefix,
+    /// or the narrowing/scan could leave fewer than Limit survivors. The entry scan's own survivor early-exit
+    /// reads <see cref="Limit"/> directly, not this.</summary>
+    public long OpLimit = long.MaxValue;
+
     /// <summary>Diagnostic override for the entry-scan gate, set from the reserved $rvn_corax_entry_scan
     /// parameter. <see cref="QueryPrimitives.EntryScanGateUnset"/> leaves the cost gate in charge;
     /// <see cref="QueryPrimitives.EntryScanGateDisabled"/> suppresses every gate; any other value forces

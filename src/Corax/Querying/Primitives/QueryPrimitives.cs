@@ -48,7 +48,7 @@ public static class QueryPrimitives
     {
         ctx.Bitmaps[bitmapSlot].Clear();
         var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.Limit);
+        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.OpLimit);
     }
 
     /// <summary>Seed bitmap[0] with AllEntries — used by AllNegated AND chains
@@ -58,23 +58,23 @@ public static class QueryPrimitives
     /// term count differs from its template Bindings.Length.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillAllEntries(Matches.CompiledQueryMatch ctx, int bitmapSlot)
-        => OrWithMatch(ctx.Searcher.AllEntries(), ref ctx.Bitmaps[bitmapSlot], ctx.Limit);
+        => OrWithMatch(ctx.Searcher.AllEntries(), ref ctx.Bitmaps[bitmapSlot], ctx.OpLimit);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         ctx.Bitmaps[bitmapSlot].Clear();
-        FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.Limit);
+        FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.OpLimit);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrWithMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ctx.Limit, ctx.Token);
+        => OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ctx.OpLimit, ctx.Token);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
+        long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].Count : ctx.OpLimit;
         if (remaining <= 0) return;
         var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
         FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, remaining);
@@ -83,7 +83,7 @@ public static class QueryPrimitives
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
+        long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].Count : ctx.OpLimit;
         if (remaining <= 0) return;
         FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, remaining);
     }
@@ -91,7 +91,7 @@ public static class QueryPrimitives
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrWithMatchSlot(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        long remaining = bitmapSlot == 0 ? ctx.Limit - ctx.Bitmaps[0].Count : ctx.Limit;
+        long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].Count : ctx.OpLimit;
         if (remaining <= 0) return;
         OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], remaining, ctx.Token);
     }
@@ -102,7 +102,7 @@ public static class QueryPrimitives
     public static void CtxFillFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         ctx.Bitmaps[bitmapSlot].Clear();
-        OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ctx.Limit, ctx.Token);
+        OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ctx.OpLimit, ctx.Token);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -110,7 +110,7 @@ public static class QueryPrimitives
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
         var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        AndWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token, ctx.Limit);
+        AndWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token, ctx.OpLimit);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -557,7 +557,11 @@ public static class QueryPrimitives
                 }
 
             case Planning.PostingSourceKind.SmallPostingList:
-                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap, token, limit);
+                // limit bounds the AND *result*, not the operand. Truncating the materialized term to
+                // `limit` entries would drop its low-id postings that intersect `bitmap`, leaving fewer
+                // than `limit` survivors (or none). The operand is a small posting list, so materializing
+                // it in full is cheap and the intersection is bounded by min(|bitmap|, |operand|) anyway.
+                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap, token);
                 bitmap.AndWith(ref tempBitmap);
                 return;
 

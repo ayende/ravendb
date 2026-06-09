@@ -69,6 +69,12 @@ public static class QueryIlEmitter
 
         int lastEffectiveIndex = GetLastEffectiveIndex(ops);
 
+        // OpLimit starts unlimited; arm it (= ctx.Limit) on the first slot-0 op past which nothing narrows
+        // slot 0. From there the set only grows toward the result, so fills/AND may truncate to the limit;
+        // everything upstream of a narrowing op (incl. an entry-scan gate) keeps the full set. Monotonic:
+        // once "nothing narrows after" holds it holds for every later slot-0 op, so a single arm suffices.
+        bool opLimitArmed = false;
+
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
@@ -85,6 +91,12 @@ public static class QueryIlEmitter
 
             if (op.DebugLabel != null)
                 d.SetPendingComment(op.DebugLabel);
+
+            if (!opLimitArmed && op.BitmapLocal == 0 && LaterOpNarrowsSlot0(ops, i + 1) is false)
+            {
+                d.EmitArmOpLimit();
+                opLimitArmed = true;
+            }
 
             // Timing: record start tick before each op
             if (emitTimings)
@@ -447,13 +459,21 @@ public static class QueryIlEmitter
     }
     
     /// <summary>
-    /// Output always goes to slot 0, so we need to check only ops that effect it.
+    /// Whether any op at or after <paramref name="from"/> can shrink slot 0's result. Used both to decide if a
+    /// fill may early-exit at the limit and whether it may truncate its posting-list read to the limit: a fill
+    /// feeding a downstream narrowing op must materialize its full set, since the narrowing can drop enough
+    /// entries to leave fewer than the limit. Output always lands in slot 0, so only slot-0 ops matter — except
+    /// the entry-scan gate, which consumes slot 0 as a residual-filter candidate set (it only ever removes
+    /// entries, never adds) regardless of its own destination slot.
     /// </summary>
     private static bool LaterOpNarrowsSlot0(PlanOp[] ops, int from)
     {
         for (int i = from; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
+
+            if (op.Kind is PlanOpKind.MaybeEntryScan)
+                return true;
 
             if (op.BitmapLocal != 0)
                 continue;

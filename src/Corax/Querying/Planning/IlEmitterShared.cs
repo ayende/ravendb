@@ -20,6 +20,7 @@ public static class IlEmitterShared
     public static readonly FieldInfo CtxBitmaps = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Bitmaps));
     public static readonly FieldInfo CtxLeaves = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Leaves));
     public static readonly FieldInfo CtxLimit = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Limit));
+    public static readonly FieldInfo CtxOpLimit = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.OpLimit));
 
     public static readonly MethodInfo GetTimestamp =
         typeof(Stopwatch).GetMethod(nameof(Stopwatch.GetTimestamp))!;

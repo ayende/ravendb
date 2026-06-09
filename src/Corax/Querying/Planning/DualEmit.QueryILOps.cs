@@ -71,6 +71,19 @@ internal ref partial struct DualEmit
         CsLine($"if (ctx.Bitmaps[0].Count >= ctx.Limit) goto {doneCsName};");
     }
 
+    /// <summary>Arm the per-op truncation budget: ctx.OpLimit = ctx.Limit. Emitted only before the first op
+    /// that grows slot 0 monotonically to the result, so every fill/AND upstream of a narrowing op (which read
+    /// the default unlimited OpLimit) materialize their full posting list instead of a limit-truncated prefix.</summary>
+    public void EmitArmOpLimit()
+    {
+        Il.Emit(OpCodes.Ldarg_0);
+        Il.Emit(OpCodes.Ldarg_0);
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxLimit);
+        Il.Emit(OpCodes.Conv_I8);
+        Il.Emit(OpCodes.Stfld, IlEmitterShared.CtxOpLimit);
+        CsLine("ctx.OpLimit = ctx.Limit;");
+    }
+
     public void EmitCancelledCursorSlotCall(LocalBuilder cursorVar, MethodInfo ilMethod, string csMethodName, int bitmapSlot, bool advanceCursor = true)
     {
         IlCancellationCheck();
