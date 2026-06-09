@@ -319,12 +319,13 @@ public static class CompiledQueryHelper
         finally
         {
             iterator.Dispose();
-            // Return each slot's pooled CompactKey buffers (_storage / _keyMappingCache). 
-            foreach (var key in entryKeys)
-            {
-                if (key is null || key.IsValid is false) break;
-                key.Dispose();
-            }
+            // Return each slot's pooled CompactKey buffers (_storage / _keyMappingCache). Only slots
+            // [0, maxInitKey) were Initialize()'d this call, so only those hold live buffers to return.
+            // IsValid is NOT a usable sentinel: a key that was initialized but whose reader never
+            // materialized a string term still has Dictionary == Invalid (IsValid == false), and slots
+            // past maxInitKey are null or already-disposed instances kept for reuse (re-disposing throws).
+            for (int i = 0; i < maxInitKey; i++)
+                entryKeys[i].Dispose();
             // we want to _reuse_ the compact key instances as well
             ArrayPool<CompactKey>.Shared.Return(entryKeys, clearArray: false);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
