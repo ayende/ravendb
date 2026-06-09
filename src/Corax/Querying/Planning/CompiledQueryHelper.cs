@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Matches;
@@ -243,7 +244,10 @@ public static class CompiledQueryHelper
         // batch. Without this each per-entry reader construction would rent two pool buffers (CompactKey
         // dominated this loop). Each slot has its own key so readers in a batch don't alias each other's
         // Current as the predicate scans the batch span. Disposed (buffers returned) in the finally below.
-        var entryKeys = new CompactKey[QueryPrimitives.EntryScanBatchSize];
+        // Rent the slot array too — Rent does not zero (and may over-provision), so clear it: the lazy
+        // create-on-null logic below and the null-skipping dispose loop both depend on empty slots.
+        var entryKeys = ArrayPool<CompactKey>.Shared.Rent(QueryPrimitives.EntryScanBatchSize);
+        Array.Clear(entryKeys);
 
         // The target slot may have been used as AND/AndNot scratch by an earlier op, which
         // leaves it marked consumed (and possibly holding stale containers). Reset it so the
@@ -318,6 +322,8 @@ public static class CompiledQueryHelper
             // the high-water mark of valid entries are still null and skipped.
             foreach (var key in entryKeys)
                 key?.Dispose();
+            // clearArray so the pool doesn't retain references to the now-disposed keys.
+            ArrayPool<CompactKey>.Shared.Return(entryKeys, clearArray: true);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
         }
     }
