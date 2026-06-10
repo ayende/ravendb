@@ -268,13 +268,16 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         double estimatedScan = (double)match._take * indexSize / candidates;
         match._rawStreamScanEstimate = estimatedScan; // retained for the EWMA update on completion/bailout
 
-        // Correct the uniform-distribution estimate by what this plan has actually scanned in past
-        // streaming runs: clustered candidates push (actual scanned / estimate) above 1, so a plan that
-        // kept over-scanning (and bailing) inflates the estimate here and stops choosing streaming. The
-        // factor is 0 until the plan has streamed at least once (no history -> trust the raw estimate).
-        double inflation = (bitmapMatch as CompiledQueryMatch)?.CompiledPlan.StreamScanInflation.GetRate() ?? 0;
-        if (inflation > 0)
-            estimatedScan *= inflation;
+        if (bitmapMatch is CompiledQueryMatch { CompiledPlan.StreamScanInflation: { } scanInflation })
+        {
+            // Correct the uniform-distribution estimate by what this plan has actually scanned in past
+            // streaming runs: clustered candidates push (actual scanned / estimate) above 1, so a plan that
+            // kept over-scanning (and bailing) inflates the estimate here and stops choosing streaming. The
+            // factor is 0 until the plan has streamed at least once (no history -> trust the raw estimate).
+            var inflation = scanInflation.GetRate();
+            if(inflation > 0)
+                estimatedScan *= inflation;
+        }
 
         return estimatedScan < candidates;
     }
@@ -580,7 +583,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
         // Runtime escape hatch. ShouldUseIndexOrderStreaming assumed candidates spread uniformly across the index);
         // if they are actually clustered far from the scan's start the walk reads far more index entries without hitting the limit.
-        // Once we have // scanned past this multiple of the candidate count we abandon the walk and materialize+sort the
+        // Once we have scanned past this multiple of the candidate count we abandon the walk and materialize+sort the
         // candidates instead, limiting the max cost we spend
         const int maxScanCandidateMultiplier = 2;
         long scanBailoutThreshold = match.TotalResults * maxScanCandidateMultiplier;
@@ -589,7 +592,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // Per-plan learning: record (entries actually scanned / the gate's uniform estimate) so a future
         // ShouldUseIndexOrderStreaming for this plan can inflate its estimate when candidates turn out to
         // cluster. Skipped on the forced path — those runs ignore the gate and would pollute the signal.
-        var scanInflation = forceUsingOnlyIndex ? null : (bitmapMatch as CompiledQueryMatch)?.CompiledPlan.StreamScanInflation;
+        var scanInflation = forceUsingOnlyIndex is false && bitmapMatch is CompiledQueryMatch { CompiledPlan.StreamScanInflation: { } si } ? si : null;
 
         using var sortedIdsScope = allocator.Allocate(sizeof(long) * SortBatchSize, out ByteString bs);
         Span<long> sortedIdBuffer = new(bs.Ptr, SortBatchSize);

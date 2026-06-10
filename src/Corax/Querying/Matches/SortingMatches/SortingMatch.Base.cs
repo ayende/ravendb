@@ -5,8 +5,7 @@ using Corax.Querying.Matches.SortingMatches.Meta;
 namespace Corax.Querying.Matches.SortingMatches;
 
 /// <summary>The concrete strategy a <see cref="SortingMatch"/> used to produce the sorted result set.
-/// This is the canonical, typed identity for each strategy (replacing the old free-text tag): it is the
-/// value surfaced as "Strategy" in the query plan graph and the value a query may pin via the reserved
+/// Surfaced as "Strategy" in the query plan graph and the value a query may pin via the reserved
 /// <c>$rvn_corax_sort</c> parameter. Pinning is honored only where a runtime choice actually exists
 /// (the <see cref="InMemorySort"/> vs <see cref="IndexOrderStreaming"/> decision on an iterable sort
 /// index); a pin that cannot apply to the query shape is ignored, mirroring <c>$rvn_corax_strategy</c>.</summary>
@@ -30,7 +29,7 @@ public enum CoraxSortingStrategy : byte
     /// wasted scan stays visible as EntriesStreamed so the degenerate case is legible in the plan graph.</summary>
     IndexOrderFallbackToInMemorySort,
 
-    /// <summary>Non-bitmap inner match (vector/post-filter/scoring): drain it via Fill, then heap-sort.</summary>
+    /// <summary>Non-bitmap inner match (vector/spatial/boosting/scoring): drain it via Fill, then heap-sort.</summary>
     ComputedResultsSort,
 }
 
@@ -57,7 +56,7 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     public long TotalResults;
 
     /// <summary>Wall-clock ticks spent producing the sorted result set, accumulated across Fill calls.
-    /// <see cref="Inspect"/> emit it as the sort node's "Ms" so include timings().</summary>
+    /// <see cref="Inspect"/> emits it as the sort node's "Ms" so include timings().</summary>
     public long SortingTimeInTicks;
 
     /// <summary>The sort strategy that actually ran this query. Set lazily on the first Fill;

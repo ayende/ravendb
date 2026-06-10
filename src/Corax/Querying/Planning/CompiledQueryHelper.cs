@@ -318,7 +318,7 @@ public static class CompiledQueryHelper
         finally
         {
             iterator.Dispose();
-            // slots  [0, maxInitKey) were Initialize()'d this call, so only those hold live buffers to return.
+            // slots [0, maxInitKey) were Initialize()'d this call, so only those hold live buffers to return.
             for (int i = 0; i < maxInitKey; i++)
                 entryKeys[i].Dispose();
             // we want to _reuse_ the compact key instances as well, so we are not clearing the array intentionally
