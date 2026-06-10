@@ -410,7 +410,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
         bitmapPtr[currentWordIndex] |= currentMask;
     }
 
-    /// <summary>Create a new array container from sorted values with SIMD-friendly allocation.</summary>
+    /// <summary>Create a new array container from sorted values with SIMD-friendly allocation.
+    /// Tagged <see cref="ContainerType.Array"/> (not ArrayUnsorted): AddRange contractually requires
+    /// strictly sorted, unique input (see AssertSorted), so the data is already in read order and the
+    /// lazy sort pass in PrepareForReading/AndContainerInPlace would be wasted work.</summary>
     private void CreateArrayContainerFromSorted(long key, ReadOnlySpan<long> sortedValues)
     {
         int neededBytes = AlignForSimd(sortedValues.Length * sizeof(ushort));
@@ -418,7 +421,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
         CopyDenseBottom16BitsToUshortArray(sortedValues, (ushort*)storage.Ptr);
 
-        AddNewContainer(key, ContainerType.ArrayUnsorted, new ContainerEntry
+        AddNewContainer(key, ContainerType.Array, new ContainerEntry
         {
             Cardinality = sortedValues.Length,
             Data = storage.Ptr,
