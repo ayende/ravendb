@@ -545,17 +545,15 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
         int maxResults = match._take == -1 ? int.MaxValue : match._take;
 
-        // Runtime escape hatch. ShouldStreamAndIntersect only made an a-priori bet (candidates assumed
-        // spread uniformly across the index); if they are actually clustered far from the scan's start
-        // the walk reads far more index entries than candidates without filling the page. Once we have
-        // scanned past this multiple of the candidate count we abandon the walk and materialize+sort the
-        // candidates instead, bounding the degenerate case the way v7.2's SortUsingIndex did. Skipped when
-        // a test pins the index path via ForceSortingUsingIndex.
+        // Runtime escape hatch. ShouldStreamAndIntersect assumed candidates spread uniformly across the index);
+        // if they are actually clustered far from the scan's start the walk reads far more index entries without hitting the limit.
+        // Once we have // scanned past this multiple of the candidate count we abandon the walk and materialize+sort the
+        // candidates instead, limiting the max cost we spend
         const int maxScanCandidateMultiplier = 2;
         long scanBailoutThreshold = match.TotalResults * maxScanCandidateMultiplier;
         bool forceUsingOnlyIndex = match._searcher._testingConfiguration is { ForceSortingUsingIndex: true };
 
-        var sortedIdsScope = allocator.Allocate(sizeof(long) * SortBatchSize, out ByteString bs);
+        using var sortedIdsScope = allocator.Allocate(sizeof(long) * SortBatchSize, out ByteString bs);
         Span<long> sortedIdBuffer = new(bs.Ptr, SortBatchSize);
 
         using var emittedBitmap = new RoaringBitmap(allocator);
@@ -571,7 +569,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             hintValue = hint.Value;
         }
 
-        var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId, hintValue);
+        using var reader = GetReader(bitmapMatch.MinEntryId, bitmapMatch.MaxEntryId, hintValue);
 
         while (match._results.Count < maxResults)
         {
@@ -580,15 +578,11 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             if (forceUsingOnlyIndex == false && match.EntriesStreamed > scanBailoutThreshold)
             {
                 // Degenerate walk: scanned too much for too few hits. Discard the streamed prefix
-                // and re-sort the full candidate set via ExtractAndSort. We drop the prefix rather
-                // than appending the sorted remainder so the whole result goes through one comparer
-                // pass, keeping tie ordering identical to a plain ExtractAndSort (and to the streaming
-                // strategy, whose ties ExtractAndSort already mirrors). EntriesStreamed is kept so the
-                // wasted scan stays visible in the query plan graph.
+                // and re-sort the full candidate set via ExtractAndSort. We discard the sorted portion from the 
+                // scan to ensure that the sort is done consistently with the ExtractAndSort.
+                // EntriesStreamed is kept so the wasted scan stays visible in the query plan graph.
                 match.SortStrategy = "StreamAndIntersect->ExtractAndSort (bailout)";
                 match._results.Clear();
-                reader.Dispose();
-                sortedIdsScope.Dispose();
                 ExtractAndSort<TEntryComparer>(match, bitmapMatch);
                 return;
             }
@@ -597,7 +591,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             if (read == 0)
                 break;
 
-            match.EntriesStreamed += read; // sort-index IDs read before intersection; see EntriesStreamed docs
+            match.EntriesStreamed += read; // sort-index IDs read before intersection
 
             // Intersect this batch with the WHERE bitmap, then dedup against the emitted
             // bitmap in a single pass — filters + adds new entries to emittedBitmap at once.
@@ -609,8 +603,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 match._results.Add(sortedIdBuffer[i]);
         }
 
-        reader.Dispose();
-        sortedIdsScope.Dispose();
 
         [SkipLocalsInit]
         SortedIndexReader<TDirection> GetReader(long min, long max, object hint)

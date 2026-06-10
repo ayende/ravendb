@@ -245,7 +245,6 @@ public static class CompiledQueryHelper
         var predicate = ctx.CompiledEntryPredicate;
         var llt = searcher.Transaction.LowLevelTransaction;
 
-        // One CompactKey per reader slot, allocated and pool-initialized once and reused across every batch.
         var entryKeys = ArrayPool<CompactKey>.Shared.Rent(QueryPrimitives.EntryScanBatchSize);
         int maxInitKey = 0;
 
@@ -319,14 +318,10 @@ public static class CompiledQueryHelper
         finally
         {
             iterator.Dispose();
-            // Return each slot's pooled CompactKey buffers (_storage / _keyMappingCache). Only slots
-            // [0, maxInitKey) were Initialize()'d this call, so only those hold live buffers to return.
-            // IsValid is NOT a usable sentinel: a key that was initialized but whose reader never
-            // materialized a string term still has Dictionary == Invalid (IsValid == false), and slots
-            // past maxInitKey are null or already-disposed instances kept for reuse (re-disposing throws).
+            // slots  [0, maxInitKey) were Initialize()'d this call, so only those hold live buffers to return.
             for (int i = 0; i < maxInitKey; i++)
                 entryKeys[i].Dispose();
-            // we want to _reuse_ the compact key instances as well
+            // we want to _reuse_ the compact key instances as well, so we are not clearing the array intentionally
             ArrayPool<CompactKey>.Shared.Return(entryKeys, clearArray: false);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
         }

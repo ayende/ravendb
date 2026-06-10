@@ -27,9 +27,7 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     public long TotalResults;
 
     /// <summary>Wall-clock ticks spent producing the sorted result set, accumulated across Fill calls.
-    /// The sort runs OUTSIDE the compiled bitmap pipeline's per-op timing array, so it has no slot in
-    /// <c>CompiledQueryMatch</c>'s telemetry; surfacing it here lets <see cref="Inspect"/> emit it as the
-    /// sort node's "Ms" so include timings() accounts for the sort instead of leaving a 0 ms gap.</summary>
+    /// <see cref="Inspect"/> emit it as the sort node's "Ms" so include timings().</summary>
     public long SortingTimeInTicks;
 
     /// <summary>Name of the sort strategy that actually ran this query (stream-and-intersect,
