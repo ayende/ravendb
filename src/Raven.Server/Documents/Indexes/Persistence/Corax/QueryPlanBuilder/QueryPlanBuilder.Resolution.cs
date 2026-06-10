@@ -253,13 +253,17 @@ internal static partial class QueryPlanBuilder
 
             case BindingSource.QueryParameter:
             default:
-                if (queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)
-                {
-                    var (val, type) = ResolveParameterValue(raw);
-                    return (val, ToParamValueType(type));
-                }
+                if (queryParameters == null) // query text references $param but no parameters were supplied
+                    QueryBuilderHelper.ThrowParametersWereNotProvided(builderParameters?.Metadata?.QueryText);
 
-                return (null, ParamValueType.Null);
+                if (queryParameters.TryGet(binding.ParameterName, out object raw) == false) // referenced parameter is absent from the supplied set
+                    QueryBuilderHelper.ThrowParameterValueWasNotProvided(binding.ParameterName, builderParameters?.Metadata?.QueryText, queryParameters);
+
+                if (raw == null) // explicit null value is allowed (matches null terms)
+                    return (null, ParamValueType.Null);
+
+                var (paramVal, paramType) = ResolveParameterValue(raw);
+                return (paramVal, ToParamValueType(paramType));
         }
     }
 

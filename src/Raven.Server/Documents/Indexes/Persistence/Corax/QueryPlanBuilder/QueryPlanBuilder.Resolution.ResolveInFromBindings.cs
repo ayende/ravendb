@@ -17,6 +17,7 @@ internal static partial class QueryPlanBuilder
         foreach (var it in bindings)
         {
             if (it.Source == BindingSource.QueryParameter // handle array-valued query parameters
+                && queryParameters != null
                 && queryParameters.TryGet(it.ParameterName, out object raw)
                 && raw is BlittableJsonReaderArray arr)
             {
