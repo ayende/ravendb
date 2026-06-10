@@ -10,7 +10,7 @@ namespace FastTests.Corax;
 /// <summary>
 /// Guards native sort over a field that has zero distinct terms in the index (RavenDB-25281 #4871). Such a
 /// field used to have its sort slot dropped (non-sharded) or flagged FieldHasNoTerms then stripped (sharded);
-/// now the slot is kept and flagged MayHaveMissingEntries, so the sort routes through ExtractAndSort which
+/// now the slot is kept and flagged MayHaveMissingEntries, so the sort routes through InMemorySort which
 /// drains the whole bitmap and treats every doc as "missing" for that field — no term tree is walked (which
 /// would NRE on a never-indexed field) and no result is silently dropped. A multi-key sort whose leading key
 /// is empty must therefore degenerate to the remaining tie-break key for every doc. Single-field ordering by

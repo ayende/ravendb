@@ -29,7 +29,7 @@ public class RavenDB_21998 : RavenTestBase
             {
                 // CreatedAt has no terms (every value was patched away), so ordering by it is a uniform
                 // "missing" key: the order between docs is unspecified, but no doc may be dropped
-                // (RavenDB-25281 #4871 keeps the empty sort slot and sorts via ExtractAndSort).
+                // (RavenDB-25281 #4871 keeps the empty sort slot and sorts via InMemorySort).
                 var result = session.Query<Question, DummyIndex>().Where(x => x.Community == "SomeCommunity").OrderByDescending(x => x.CreatedAt).ToList();
 
                 Assert.Equal(NumberOfDocsToPut, result.Count);

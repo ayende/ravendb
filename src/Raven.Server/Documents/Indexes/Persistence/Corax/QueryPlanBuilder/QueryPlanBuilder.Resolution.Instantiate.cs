@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Matches.SortingMatches;
 using Corax.Querying.Planning;
 using Corax.Querying.Primitives;
 using Corax.Utils;
@@ -35,6 +36,10 @@ internal static partial class QueryPlanBuilder
         ExecutionStrategy? forced = TryGetForcedStrategy(ctx.PlanParams.QueryParameters);
         ExecutionStrategy effective = forced ?? compiledPlan.Strategy;
 
+        // Independent of the bitmap-pipeline strategy above: a query may also pin the SortingMatch's sort
+        // strategy via $rvn_corax_sort. Applied to whichever SortingMatch the dispatch below produces.
+        CoraxSortingStrategy? forcedSort = TryGetForcedSortStrategy(ctx.PlanParams.QueryParameters);
+
         switch (effective)
         {
             case ExecutionStrategy.CompoundKeyLookup:
@@ -53,7 +58,7 @@ internal static partial class QueryPlanBuilder
                 innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost);
                 if (innerMatch is null) goto default;
                 exec.ActualStrategy = ExecutionStrategy.CompoundSortedScan;
-                return OrderBy(builderParameters, innerMatch, orderByFields);
+                return ApplyForcedSort(OrderBy(builderParameters, innerMatch, orderByFields), forcedSort);
             case ExecutionStrategy.FieldSortedScan when orderByFields != null:
                 var execs = exec.Executions;
                 bool isFullScan = execs is not { Count: > 0 };
@@ -83,7 +88,7 @@ internal static partial class QueryPlanBuilder
                     return innerMatch;
                 if (innerMatch is CompiledQueryMatch seekMatch)
                     TrySetSortSeekHint(ctx.Plan, ctx.Exec, seekMatch);
-                return OrderBy(ctx.BuilderParams, innerMatch, ctx.OrderByFields);
+                return ApplyForcedSort(OrderBy(ctx.BuilderParams, innerMatch, ctx.OrderByFields), forcedSort);
         }
 
         static void SelectExecutionStrategy(ref InstCtx ctx)
@@ -270,6 +275,32 @@ internal static partial class QueryPlanBuilder
                 $"The reserved query parameter '${ForceStrategyParameterName}' has an unrecognized value '{value}'. Expected on of: {string.Join(", ", Enum.GetNames<ExecutionStrategy>())}");
         return result;
 
+    }
+
+    private const string ForceSortParameterName = "rvn_corax_sort";
+
+    // A query may pin the SortingMatch sort strategy via $rvn_corax_sort (e.g. "IndexOrderStreaming" to
+    // force the index walk, "InMemorySort" to force the bounded materialize-and-sort). Read at
+    // instantiation time, never part of the plan-cache key. The pin is honored only where a runtime
+    // choice exists (see SortingMatch.Fill); a pin that can't apply to the query shape is ignored.
+    private static CoraxSortingStrategy? TryGetForcedSortStrategy(BlittableJsonReaderObject queryParameters)
+    {
+        if (queryParameters is null)
+            return null;
+        if (queryParameters.TryGet(ForceSortParameterName, out string value) == false || string.IsNullOrEmpty(value))
+            return null;
+
+        if (Enum.TryParse(value, out CoraxSortingStrategy result) is false)
+            throw new InvalidQueryException(
+                $"The reserved query parameter '${ForceSortParameterName}' has an unrecognized value '{value}'. Expected one of: {string.Join(", ", Enum.GetNames<CoraxSortingStrategy>())}");
+        return result;
+    }
+
+    private static IQueryMatch ApplyForcedSort(IQueryMatch match, CoraxSortingStrategy? forcedSort)
+    {
+        if (forcedSort is { } strategy && match is SortingMatch sortingMatch)
+            sortingMatch.ForcedStrategy = strategy;
+        return match;
     }
 
     private const string ForceEntryScanParameterName = "rvn_corax_entry_scan";

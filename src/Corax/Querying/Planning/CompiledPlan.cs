@@ -1,4 +1,5 @@
 using System.Runtime.Intrinsics;
+using Sparrow.Utils;
 
 namespace Corax.Querying.Planning;
 
@@ -96,4 +97,11 @@ public sealed class CompiledPlan
     /// <summary>True when every clause in the execution is negated (NOT pattern).
     /// This is per-CompiledPlan (not per-template) because WHEN elimination can remove all non-negated clauses, leaving only negated ones.</summary>
     public bool AllNegated { get; init; }
+
+    /// <summary>Per-plan EWMA of (actual index entries scanned)/(uniform-estimate) for the IndexOrderStreaming
+    /// strategy. Each streaming run (including over-scan bailouts) feeds it, and the cost gate multiplies its
+    /// uniform estimate by this factor — so a plan whose candidates turn out to be clustered (and therefore
+    /// over-scans) learns to prefer InMemorySort. Concurrent queries sharing this plan update it without
+    /// locking: benign races on aligned doubles are acceptable for a heuristic.</summary>
+    public readonly TimeAgnosticEwma StreamScanInflation = new();
 }

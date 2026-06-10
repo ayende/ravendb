@@ -51,7 +51,12 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
 
     private SortingDataTransfer _sortingDataTransfer;
-    
+
+    /// <summary>Uniform-distribution scan estimate the cost gate computed when it chose IndexOrderStreaming,
+    /// retained so the streaming run can feed (actual EntriesStreamed / this estimate) into the plan's
+    /// scan-inflation EWMA. Zero when streaming wasn't gated (forced path / non-CompiledQueryMatch inner).</summary>
+    private double _rawStreamScanEstimate;
+
     public override DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
     public SortingMatch(IndexSearcher searcher, in TInner inner, OrderMetadata orderMetadata, in CancellationToken cancellationToken, NullsSortMode defaultNullsSortMode, int take = -1)
@@ -154,38 +159,56 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
                 if (typeof(TDirection) == typeof(RandomDirection))
                 {
-                    match.SortStrategy = "ReservoirSample";
-                    ReservoirSampleFromBitmap(match, bitmapMatch);
+                    match.SortStrategy = CoraxSortingStrategy.RandomOrder;
+                    SampleRandomOrder(match, bitmapMatch);
                 }
                 else if (typeof(TDirection) == typeof(NoIterationOptimization) || match._orderMetadata.MayHaveMissingEntries)
                 {
                     // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort.
                     // Also taken when MayHaveMissingEntries is set (e.g. dynamic CreateField sort fields):
-                    // StreamAndIntersect only walks tree terms + null/nonExisting posting lists, so
-                    // docs that didn't emit the field would be silently dropped. ExtractAndSort drains
+                    // IndexOrderStreaming only walks tree terms + null/nonExisting posting lists, so
+                    // docs that didn't emit the field would be silently dropped. InMemorySort drains
                     // the entire bitmap and uses the comparer's missing-value sentinel for those docs.
-                    match.SortStrategy = "ExtractAndSort";
-                    ExtractAndSort<TEntryComparer>(match, bitmapMatch);
+                    // A $rvn_corax_sort pin can't override this branch: it guards correctness, not cost.
+                    match.SortStrategy = CoraxSortingStrategy.InMemorySort;
+                    SortInMemory<TEntryComparer>(match, bitmapMatch);
                 }
-                else if (ShouldStreamAndIntersect(match))
+                else if (ShouldUseIndexOrderStreaming(match, bitmapMatch))
                 {
-                    match.SortStrategy = "StreamAndIntersect";
-                    StreamAndIntersect<TEntryComparer, TDirection>(match, bitmapMatch);
+                    // Cost gate chose streaming; an InMemorySort pin overrides it (forces the bounded sort).
+                    if (match.ForcedStrategy == CoraxSortingStrategy.InMemorySort)
+                    {
+                        match.SortStrategy = CoraxSortingStrategy.InMemorySort;
+                        SortInMemory<TEntryComparer>(match, bitmapMatch);
+                    }
+                    else
+                    {
+                        match.SortStrategy = CoraxSortingStrategy.IndexOrderStreaming;
+                        StreamInIndexOrder<TEntryComparer, TDirection>(match, bitmapMatch);
+                    }
+                }
+                else if (match.ForcedStrategy == CoraxSortingStrategy.IndexOrderStreaming)
+                {
+                    // Cost gate rejected streaming, but the query explicitly pinned it: walk the index anyway
+                    // (and, being forced, with the over-scan bailout suppressed). Used to exercise the
+                    // streaming path's ordering semantics regardless of the candidate distribution.
+                    match.SortStrategy = CoraxSortingStrategy.IndexOrderStreaming;
+                    StreamInIndexOrder<TEntryComparer, TDirection>(match, bitmapMatch);
                 }
                 else
                 {
                     // Cost model rejected the streaming scan: the candidate set is too sparse in the
                     // sort index for early termination to pay off, so walking the index would read far
                     // more entries than the candidate set itself. Materialize the candidates and sort.
-                    match.SortStrategy = "ExtractAndSort";
-                    ExtractAndSort<TEntryComparer>(match, bitmapMatch);
+                    match.SortStrategy = CoraxSortingStrategy.InMemorySort;
+                    SortInMemory<TEntryComparer>(match, bitmapMatch);
                 }
             }
             else
             {
                 // Non-bitmap path (VectorSearchMatch, PostFilterMatch, scoring matches, etc.)
                 // Must drain via Fill to preserve match-specific state (vector distances, scores).
-                DrainAndSort<TEntryComparer>(match);
+                SortComputedResults<TEntryComparer>(match);
             }
         }
 
@@ -214,28 +237,28 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// Cost-based choice between the two indexed-sort strategies once a real iterable index exists
     /// (score/spatial/alphanumeric and MayHaveMissingEntries are already excluded by the caller).
     ///
-    /// <para><b>StreamAndIntersect</b> walks the whole sort index in order, intersecting each batch
+    /// <para><b>IndexOrderStreaming</b> walks the whole sort index in order, intersecting each batch
     /// against the candidate bitmap and stopping as soon as <c>take</c> results are collected. Its
     /// cost is the number of index entries scanned before that happens — roughly
     /// <c>take · indexSize / candidates</c> under a uniform-distribution assumption (and the FULL index
-    /// when there is no LIMIT, since it can never stop early). <b>ExtractAndSort</b> instead materializes
+    /// when there is no LIMIT, since it can never stop early). <b>InMemorySort</b> instead materializes
     /// the candidate set (cost ∝ <c>candidates</c>) and heap-sorts it.</para>
     ///
     /// <para>So streaming only wins when the estimated scan is smaller than the candidate set itself,
     /// i.e. the candidates are dense in the index and the limit is small. For a selective WHERE with a
     /// large/absent LIMIT the streaming scan degenerates into a near-full index walk to surface a handful
-    /// of matches — the case this guard steers to ExtractAndSort. <see cref="IndexSearcher.NumberOfEntries"/>
+    /// of matches — the case this guard steers to InMemorySort. <see cref="IndexSearcher.NumberOfEntries"/>
     /// is the cheap proxy for the reader's full-scan size (terms + null/non-existing posting lists ≈ the
     /// whole index); it slightly overestimates for sparse sort fields, which only biases toward the
-    /// always-bounded ExtractAndSort.</para>
+    /// always-bounded InMemorySort.</para>
     /// </summary>
-    private static bool ShouldStreamAndIntersect(SortingMatch<TInner> match)
+    private static bool ShouldUseIndexOrderStreaming(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
     {
         long candidates = match.TotalResults; // == bitmapMatch.Count, already set by the caller
         long indexSize = match._searcher.NumberOfEntries;
 
         // No LIMIT (or a limit that can't cut below the candidate count): streaming can never terminate
-        // early, so it walks the entire index. ExtractAndSort touches only the candidates (a subset of the
+        // early, so it walks the entire index. InMemorySort touches only the candidates (a subset of the
         // index), so it is never worse here.
         if (match._take < 0 || match._take >= candidates)
             return false;
@@ -243,10 +266,20 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // Expected entries scanned to collect `take` matches, assuming candidates are spread uniformly
         // across the index. Computed in double to avoid overflow on the multiply.
         double estimatedScan = (double)match._take * indexSize / candidates;
+        match._rawStreamScanEstimate = estimatedScan; // retained for the EWMA update on completion/bailout
+
+        // Correct the uniform-distribution estimate by what this plan has actually scanned in past
+        // streaming runs: clustered candidates push (actual scanned / estimate) above 1, so a plan that
+        // kept over-scanning (and bailing) inflates the estimate here and stops choosing streaming. The
+        // factor is 0 until the plan has streamed at least once (no history -> trust the raw estimate).
+        double inflation = (bitmapMatch as CompiledQueryMatch)?.CompiledPlan.StreamScanInflation.GetRate() ?? 0;
+        if (inflation > 0)
+            estimatedScan *= inflation;
+
         return estimatedScan < candidates;
     }
 
-    private static void ReservoirSampleFromBitmap(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
+    private static void SampleRandomOrder(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
     {
         var random = new Random(match._orderMetadata.RandomSeed);
         int take = match._take;
@@ -534,7 +567,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// with the bitmap via AndWith. Stops early once _take results are collected.
     /// Avoids full materialization by intersecting directly against the bitmap.
     /// </summary>
-    private static void StreamAndIntersect<TEntryComparer, TDirection>(
+    private static void StreamInIndexOrder<TEntryComparer, TDirection>(
         SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
         where TDirection : struct, ILookupIterator
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
@@ -545,13 +578,18 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
         int maxResults = match._take == -1 ? int.MaxValue : match._take;
 
-        // Runtime escape hatch. ShouldStreamAndIntersect assumed candidates spread uniformly across the index);
+        // Runtime escape hatch. ShouldUseIndexOrderStreaming assumed candidates spread uniformly across the index);
         // if they are actually clustered far from the scan's start the walk reads far more index entries without hitting the limit.
         // Once we have // scanned past this multiple of the candidate count we abandon the walk and materialize+sort the
         // candidates instead, limiting the max cost we spend
         const int maxScanCandidateMultiplier = 2;
         long scanBailoutThreshold = match.TotalResults * maxScanCandidateMultiplier;
-        bool forceUsingOnlyIndex = match._searcher._testingConfiguration is { ForceSortingUsingIndex: true };
+        bool forceUsingOnlyIndex = match.ForcedStrategy == CoraxSortingStrategy.IndexOrderStreaming;
+
+        // Per-plan learning: record (entries actually scanned / the gate's uniform estimate) so a future
+        // ShouldUseIndexOrderStreaming for this plan can inflate its estimate when candidates turn out to
+        // cluster. Skipped on the forced path — those runs ignore the gate and would pollute the signal.
+        var scanInflation = forceUsingOnlyIndex ? null : (bitmapMatch as CompiledQueryMatch)?.CompiledPlan.StreamScanInflation;
 
         using var sortedIdsScope = allocator.Allocate(sizeof(long) * SortBatchSize, out ByteString bs);
         Span<long> sortedIdBuffer = new(bs.Ptr, SortBatchSize);
@@ -578,12 +616,13 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             if (forceUsingOnlyIndex == false && match.EntriesStreamed > scanBailoutThreshold)
             {
                 // Degenerate walk: scanned too much for too few hits. Discard the streamed prefix
-                // and re-sort the full candidate set via ExtractAndSort. We discard the sorted portion from the 
-                // scan to ensure that the sort is done consistently with the ExtractAndSort.
+                // and re-sort the full candidate set via SortInMemory. We discard the sorted portion from the
+                // scan to ensure that the sort is done consistently with the SortInMemory.
                 // EntriesStreamed is kept so the wasted scan stays visible in the query plan graph.
-                match.SortStrategy = "StreamAndIntersect->ExtractAndSort (bailout)";
+                match.SortStrategy = CoraxSortingStrategy.IndexOrderFallbackToInMemorySort;
+                scanInflation?.UpdateOnBatchCompletion(match.EntriesStreamed, (long)match._rawStreamScanEstimate);
                 match._results.Clear();
-                ExtractAndSort<TEntryComparer>(match, bitmapMatch);
+                SortInMemory<TEntryComparer>(match, bitmapMatch);
                 return;
             }
 
@@ -602,6 +641,9 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             for (int i = 0; i < toAdd; i++)
                 match._results.Add(sortedIdBuffer[i]);
         }
+
+        // Streaming completed within budget: feed the observed scan back so the gate keeps trusting this plan.
+        scanInflation?.UpdateOnBatchCompletion(match.EntriesStreamed, (long)match._rawStreamScanEstimate);
 
 
         [SkipLocalsInit]
@@ -696,7 +738,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// For sort types without an index to walk (score, spatial, alphanumeric, random),
     /// materialize all bitmap entries directly and heap sort.
     /// </summary>
-    private static void ExtractAndSort<TEntryComparer>(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
+    private static void SortInMemory<TEntryComparer>(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
     {
         var allocator = match._searcher.Allocator;
@@ -721,7 +763,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// <summary>Drain all results from the inner match via Fill, then heap sort.
     /// Used for non-bitmap matches (VectorSearchMatch, PostFilterMatch, scoring matches)
     /// where materializing into a bitmap would lose match-specific state.</summary>
-    private static void DrainAndSort<TEntryComparer>(SortingMatch<TInner> match)
+    private static void SortComputedResults<TEntryComparer>(SortingMatch<TInner> match)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
     {
         var count = match._inner.Count;
@@ -836,18 +878,18 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // Surface the sort's own runtime cost. The compiled bitmap pipeline times its ops into
         // CompiledQueryMatch's telemetry array, but the sort wrapper runs above it and is otherwise
         // absent from include timings(). EntriesStreamed >> result count flags a degenerate
-        // StreamAndIntersect (scattered/tiny candidate set scanning most of the sort index).
-        if (SortStrategy != null)
-            parameters["Strategy"] = SortStrategy;
+        // IndexOrderStreaming (scattered/tiny candidate set scanning most of the sort index).
+        if (SortStrategy is { } strategy)
+            parameters["Strategy"] = strategy.ToString();
         if (SortingTimeInTicks > 0)
             parameters["Ms"] = (SortingTimeInTicks / (Stopwatch.Frequency / 1000.0)).ToString("F3", CultureInfo.InvariantCulture);
         if (EntriesStreamed > 0)
         {
             parameters["EntriesStreamed"] = EntriesStreamed.ToString();
             // Pair the scan count with the candidate count so the cost ratio is legible. A healthy
-            // StreamAndIntersect keeps streamed close to candidates; a bailout shows streamed well above
+            // IndexOrderStreaming keeps streamed close to candidates; a bailout shows streamed well above
             // it — the walk read far more sort-index entries than there were candidates, which is exactly
-            // the degenerate case the "(bailout)" strategy label flags after it fell back to ExtractAndSort.
+            // the degenerate case the IndexOrderFallbackToInMemorySort strategy label flags after it fell back to SortInMemory.
             parameters["Candidates"] = TotalResults.ToString();
         }
 

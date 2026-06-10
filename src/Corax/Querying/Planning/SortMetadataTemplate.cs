@@ -40,7 +40,7 @@ public enum SortSlotPatchKind : byte
 
     /// <summary>Field-backed sort slot. <see cref="FieldMetadata"/> holds transaction-bound slices, so it must be
     /// re-resolved every query. If the field has zero distinct terms, the slot is flagged
-    /// <see cref="OrderMetadata.MayHaveMissingEntries"/> so SortingMatch routes through ExtractAndSort (every doc
+    /// <see cref="OrderMetadata.MayHaveMissingEntries"/> so SortingMatch routes through InMemorySort (every doc
     /// is treated as missing) instead of walking a non-existent term tree.</summary>
     FieldRuntimeResolve,
 

@@ -21,8 +21,8 @@ public readonly struct OrderMetadata
     /// <summary>True when the sort field may be missing on some docs in the input bitmap —
     /// e.g. dynamic CreateField fields, which write no entry (not even a NonExisting marker)
     /// for docs that don't emit them. When true, SortingMatch must route through
-    /// ExtractAndSort (which drains the bitmap and uses the comparer's missing-value sentinel)
-    /// instead of StreamAndIntersect (which only walks tree terms + null/nonExisting posting
+    /// InMemorySort (which drains the bitmap and uses the comparer's missing-value sentinel)
+    /// instead of IndexOrderStreaming (which only walks tree terms + null/nonExisting posting
     /// lists, silently dropping docs that lack the field). See RavenDB-22703.</summary>
     public readonly bool MayHaveMissingEntries;
 

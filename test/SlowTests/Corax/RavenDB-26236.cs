@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Corax.Querying.Matches.SortingMatches;
 using Corax.Utils;
 using FastTests;
 using Raven.Client.Documents;
@@ -39,37 +40,35 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingStringViaRql(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending, bool forceSortUsingIndex)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var fromClause = isAutoIndex ? "from Documents" : $"from index '{new DocumentIndex().IndexName}'";
         var rql = $"{fromClause} where exists(id()) order by Name {OrderByDirection(isAscending)} {NullFirstClause(nullsFirst)} include timings()";
-        var queryResults = await session.Advanced.AsyncRawQuery<Document>(rql).Timings(out var timings).ToListAsync();
+        var rawQuery = session.Advanced.AsyncRawQuery<Document>(rql);
+        if (forceSortUsingIndex)
+            rawQuery = rawQuery.AddParameter("rvn_corax_sort", nameof(CoraxSortingStrategy.IndexOrderStreaming));
+        var queryResults = await rawQuery.Timings(out var timings).ToListAsync();
 
         AssertSortingMatchPlan(options, timings, "Name", "Sequence", isAscending);
         AssertStringNullsOrdering(queryResults, isAscending, nullsFirst);
     }
 
+    // No forceSortUsingIndex dimension here: the LINQ provider has no way to attach the reserved
+    // $rvn_corax_sort query parameter, so the streaming sort path can't be pinned through LINQ. That
+    // path with a per-query NULLS clause is covered by the Rql and DocumentQuery variants above.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, Data = [true, true, true, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, true, true, false])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, Data = [true, true, false, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, true, false, false])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, Data = [true, false, true, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, false, true, false])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, Data = [true, false, false, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, false, false, false])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, Data = [false, true, true, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, true, true, false])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, Data = [false, true, false, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, true, false, false])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, Data = [false, false, true, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, true, false])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, Data = [false, false, false, true])]
-    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false, false])]
-    public async Task CanUsePerQueryNullsClauseWhenSortingStringViaLinq(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending, bool forceSortUsingIndex)
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, true, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, true, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, false, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [true, false, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, true, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, true, false])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, true])]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
+    public async Task CanUsePerQueryNullsClauseWhenSortingStringViaLinq(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -104,7 +103,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingStringViaDocumentQuery(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending, bool forceSortUsingIndex)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -112,6 +111,8 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
                 ? session.Advanced.AsyncDocumentQuery<Document>()
                 : session.Advanced.AsyncDocumentQuery<Document, DocumentIndex>())
             .WhereExists(x => x.Id);
+        if (forceSortUsingIndex)
+            query = query.AddParameter("rvn_corax_sort", nameof(CoraxSortingStrategy.IndexOrderStreaming));
         query = isAscending
             ? query.OrderBy(x => x.Name, nulls, OrderingType.String)
             : query.OrderByDescending(x => x.Name, nulls, OrderingType.String);
@@ -131,7 +132,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingIntViaRql(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var fromClause = isAutoIndex ? "from Documents" : $"from index '{new DocumentIndex().IndexName}'";
@@ -153,7 +154,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingIntViaLinq(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -180,7 +181,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingIntViaDocumentQuery(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -208,7 +209,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingDoubleViaRql(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var fromClause = isAutoIndex ? "from Documents" : $"from index '{new DocumentIndex().IndexName}'";
@@ -230,7 +231,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingDoubleViaLinq(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -257,7 +258,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingDoubleViaDocumentQuery(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -284,7 +285,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingAlphaNumericViaRql(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var fromClause = isAutoIndex ? "from Documents" : $"from index '{new DocumentIndex().IndexName}'";
@@ -306,7 +307,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingAlphaNumericViaLinq(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -333,7 +334,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingAlphaNumericViaDocumentQuery(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -360,7 +361,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingSpatialViaRql(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var fromClause = isAutoIndex ? "from Documents" : $"from index '{new DocumentIndex().IndexName}'";
@@ -384,7 +385,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenSortingSpatialViaDocumentQuery(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -421,7 +422,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenStreamingSortingStringViaRql(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var fromClause = isAutoIndex ? "from Documents" : $"from index '{new DocumentIndex().IndexName}'";
@@ -443,7 +444,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenStreamingSortingStringViaLinq(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -469,7 +470,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenStreamingSortingStringViaDocumentQuery(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -497,7 +498,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenStreamingSortingIntViaDocumentQuery(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -525,7 +526,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanUsePerQueryNullsClauseWhenStreamingSortingDoubleViaDocumentQuery(Options options, bool nullsFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, isAutoIndex);
         using var session = store.OpenAsyncSession();
 
         var nulls = ToNullsOrdering(nullsFirst);
@@ -678,7 +679,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
     private static void AssertStreamingPlan(Options options, QueryTimings timings)
     {
         // Post-#4826: when the sort field has non-existing entries, the planner routes through
-        // SortingMatch (ExtractAndSort) so that the missing rows surface as null-adjacent in
+        // SortingMatch (InMemorySort) so that the missing rows surface as null-adjacent in
         // the final ordering.
         if (options.DatabaseMode == RavenDatabaseMode.Sharded)
             return;
@@ -839,7 +840,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
         }
     }
 
-    private async Task<DocumentStore> CreateDocumentsAndIndexes(Options options, bool autoIndexes, bool forceSortUsingIndex)
+    private async Task<DocumentStore> CreateDocumentsAndIndexes(Options options, bool autoIndexes)
     {
         var store = GetDocumentStore(options);
         await StoreFixtureDocuments(store);
@@ -863,14 +864,6 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
         }
 
         await Indexes.WaitForIndexingAsync(store);
-
-        if (forceSortUsingIndex)
-        {
-            Assert.NotEqual(RavenDatabaseMode.Sharded, options.DatabaseMode);
-            var db = await GetDatabase(store.Database);
-            var indexInstance = db.IndexStore.GetIndex(indexName);
-            indexInstance.ForTestingPurposesOnly().CoraxConfiguration = new CoraxTestingConfiguration { ForceSortingUsingIndex = true };
-        }
 
         return store;
     }

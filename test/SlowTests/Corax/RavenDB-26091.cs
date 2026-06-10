@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
+using Corax.Querying.Matches.SortingMatches;
 using Corax.Utils;
 using FastTests;
 using Raven.Client.Documents;
@@ -38,7 +39,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false, false])]
     public async Task CanChangeOrderOfTheNullsWhenSortingString(Options options, bool nullFirst, bool isAutoIndex, bool isAscending, bool forceSortUsingIndex)
     {
-        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex);
+        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true);
         using var session = store.OpenAsyncSession();
         var queryResults = await CreateQuery(out var timings)
             .ToListAsync();
@@ -95,6 +96,8 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
 
             query = query.WhereExists(x => x.ToIgnore);
             query = query.Timings(out timings);
+            if (forceSortUsingIndex)
+                query = query.AddParameter("rvn_corax_sort", nameof(CoraxSortingStrategy.IndexOrderStreaming));
             query = isAscending
                 ? query.OrderBy(x => x.Name)
                 : query.OrderByDescending(x => x.Name);
@@ -121,7 +124,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false, false])]
     public async Task CanChangeOrderOfTheNullsWhenSortingInt(Options options, bool nullFirst, bool isAutoIndex, bool isAscending, bool forceSortUsingIndex)
     {
-        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex);
+        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true);
         using var session = store.OpenAsyncSession();
         var queryResults = await CreateQuery(out var timings)
             .ToListAsync();
@@ -177,6 +180,8 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
 
             query = query.WhereExists(x => x.ToIgnore);
             query = query.Timings(out timings);
+            if (forceSortUsingIndex)
+                query = query.AddParameter("rvn_corax_sort", nameof(CoraxSortingStrategy.IndexOrderStreaming));
             query = isAscending
                 ? query.OrderBy(x => x.IntValue, OrderingType.Long)
                 : query.OrderByDescending(x => x.IntValue, OrderingType.Long);
@@ -203,7 +208,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false, false])]
     public async Task CanChangeOrderOfTheNullsWhenSortingDouble(Options options, bool nullFirst, bool isAutoIndex, bool isAscending, bool forceSortUsingIndex)
     {
-        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex);
+        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true);
         using var session = store.OpenAsyncSession();
         var queryResults = await CreateQuery(out var timings)
             .ToListAsync();
@@ -259,6 +264,8 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
 
             query = query.WhereExists(x => x.ToIgnore);
             query = query.Timings(out timings);
+            if (forceSortUsingIndex)
+                query = query.AddParameter("rvn_corax_sort", nameof(CoraxSortingStrategy.IndexOrderStreaming));
             query = isAscending
                 ? query.OrderBy(x => x.DoubleValue, OrderingType.Double)
                 : query.OrderByDescending(x => x.DoubleValue, OrderingType.Double);
@@ -277,14 +284,14 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanChangeOrderOfTheNullsWhenStreamingSortingString(Options options, bool nullFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true);
         using var session = store.OpenAsyncSession();
         var queryResults = await CreateQuery(out var timings)
             .ToListAsync();
 
         // Post-#4826: non-existing entries are treated as null-adjacent in ORDER BY.
         // When the field has non-existing entries the planner routes through SortingMatch
-        // (ExtractAndSort) rather than the streaming path, so all 4 docs are surfaced.
+        // (InMemorySort) rather than the streaming path, so all 4 docs are surfaced.
         if (options.DatabaseMode != RavenDatabaseMode.Sharded)
         {
             var root = (QueryInspectionNode)timings.QueryPlan;
@@ -350,7 +357,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanChangeOrderOfTheNullsWhenStreamingSortingInt(Options options, bool nullFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true);
         using var session = store.OpenAsyncSession();
         var queryResults = await CreateQuery(out var timings)
             .ToListAsync();
@@ -422,7 +429,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanChangeOrderOfTheNullsWhenStreamingSortingDouble(Options options, bool nullFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true);
         using var session = store.OpenAsyncSession();
         var queryResults = await CreateQuery(out var timings)
             .ToListAsync();
@@ -494,7 +501,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanChangeOrderOfTheNullsWhenSortingAlphaNumeric(Options options, bool nullFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true);
         using var session = store.OpenAsyncSession();
         var queryResults = await CreateQuery(out var timings)
             .ToListAsync();
@@ -568,7 +575,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax, DatabaseMode = RavenDatabaseMode.All, Data = [false, false, false])]
     public async Task CanChangeOrderOfTheNullsWhenSortingSpatial(Options options, bool nullFirst, bool isAutoIndex, bool isAscending)
     {
-        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true, forceSortUsingIndex: false);
+        using var store = await CreateDocumentsAndIndexes(options, nullFirst, isAutoIndex, true);
         using var session = store.OpenAsyncSession();
         WaitForUserToContinueTheTest(store);
         var orderClause = isAscending ? "" : " desc";
@@ -761,7 +768,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
     }
     
 
-    private async Task<DocumentStore> CreateDocumentsAndIndexes(Options options, bool nullFirst, bool autoIndexes, bool testNonExisting, bool forceSortUsingIndex)
+    private async Task<DocumentStore> CreateDocumentsAndIndexes(Options options, bool nullFirst, bool autoIndexes, bool testNonExisting)
     {
         options.ModifyDatabaseRecord += record =>
         {
@@ -820,14 +827,6 @@ update {{
         }
 
         await Indexes.WaitForIndexingAsync(store);
-
-        if (forceSortUsingIndex)
-        {
-            Assert.NotEqual(RavenDatabaseMode.Sharded, options.DatabaseMode);
-            var db = await GetDatabase(store.Database);
-            var indexInstance = db.IndexStore.GetIndex(indexName);
-            indexInstance.ForTestingPurposesOnly().CoraxConfiguration = new CoraxTestingConfiguration() { ForceSortingUsingIndex = true };
-        }
 
         return store;
     }

@@ -1,4 +1,4 @@
-namespace Raven.Server.Utils.Metrics;
+namespace Sparrow.Utils;
 
 public sealed class TimeAgnosticEwma
 {
@@ -19,7 +19,7 @@ public sealed class TimeAgnosticEwma
     {
         if (totalItemsInThisBatch == 0)
             return;
-        
+
         if (_initialized == false)
         {
             _ewmaErrors = errorsInThisBatch;
@@ -36,8 +36,8 @@ public sealed class TimeAgnosticEwma
     public double GetRate()
     {
         if (_ewmaTotalItems == 0)
-            return 0; 
-        
+            return 0;
+
         return _ewmaErrors / _ewmaTotalItems;
     }
 }

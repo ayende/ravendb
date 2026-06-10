@@ -556,7 +556,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
             // Detach the stolen slot from `other` so subsequent Contains/AndWith calls on
             // `other` don't dereference the now-empty ContainerEntry. Without this the
             // slot is still indexed (GetSlotForKey returns it) and ContainsAtSlot would
-            // NRE on entry.Data. Hit by SortingMatch.ExtractAndSort → Score paths that
+            // NRE on entry.Data. Hit by SortingMatch.SortInMemory → Score paths that
             // need to read membership from a bitmap whose containers were absorbed by
             // a prior OrWith.
             other._types.RawItems[otherSlot] = ContainerType.Free;
@@ -740,7 +740,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// <summary>
     /// Filter a buffer in-place, keeping only values present in this bitmap.
     /// The buffer does NOT need to be sorted — callers may pass entry IDs in any order
-    /// (e.g. sort-field order from <c>StreamAndIntersect</c>).
+    /// (e.g. sort-field order from <c>IndexOrderStreaming</c>).
     ///
     /// Algorithm: sort buffer to entry-ID order carrying a parallel index array, walk
     /// containers once (amortising slot lookup and type dispatch to once per container
@@ -888,7 +888,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// Buffer order is preserved (via the same index-tracking approach as <see cref="AndWith"/>).
     /// Uses the same container-group batching as <see cref="AndWith"/> but with inverted logic:
     /// entries absent from a container are kept; entries present are discarded.
-    /// Used by SortingMatch.StreamAndIntersect to replace the per-entry Contains+Add loop.</summary>
+    /// Used by SortingMatch.StreamInIndexOrder to replace the per-entry Contains+Add loop.</summary>
     public int DedupAddNew(Span<long> buffer, int count)
     {
         if (count == 0) return 0;

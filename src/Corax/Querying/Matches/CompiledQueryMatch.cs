@@ -31,6 +31,10 @@ public class CompiledQueryMatch(
 
     public readonly ResidualScanIlEmitter.ResidualScanPredicate CompiledEntryPredicate = compiledPlan.EntryScanSet.Compiled;
 
+    /// <summary>The plan this match executes. Exposed so a wrapping SortingMatch can reach per-plan learned
+    /// state (the IndexOrderStreaming scan-inflation EWMA) that must persist across queries sharing this plan.</summary>
+    public readonly CompiledPlan CompiledPlan = compiledPlan;
+
     /// <summary>Per-execution state — entry-scan IL reads this for analyzer-encoded slices,
     /// field-root pages, and direct long/double values via baked field indices.</summary>
     public readonly QueryExecution Exec = exec;
@@ -184,8 +188,8 @@ public class CompiledQueryMatch(
     {
         var parameters = new Dictionary<string, string>
         {
-            ["CSharpSource"] = compiledPlan?.Source ?? "N/A",
-            ["CSharpSourceFormatted"] = compiledPlan?.FormattedSource ?? "N/A"
+            ["CSharpSource"] = CompiledPlan?.Source ?? "N/A",
+            ["CSharpSourceFormatted"] = CompiledPlan?.FormattedSource ?? "N/A"
         };
 
         if (EntryScanTakenAtOp >= 0)

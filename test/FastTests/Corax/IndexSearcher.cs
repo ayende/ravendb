@@ -1828,8 +1828,8 @@ namespace FastTests.Corax
         public void RandomOrderOnBitmapMatchProducesActualRandomOrder()
         {
             // Regression: the bitmap path for ORDER BY random() was calling
-            // ExtractAndSort<EntryComparerByTerm>, which sorted by term name instead
-            // of shuffling. ReservoirSampleFromBitmap must be called instead.
+            // SortInMemory<EntryComparerByTerm>, which sorted by term name instead
+            // of shuffling. SampleRandomOrder must be called instead.
             //
             // We use BitmapMatch directly (rather than going through RQL / CompiledQueryMatch)
             // so the test is independent of the QueryILEmitter.

@@ -266,7 +266,7 @@ internal static partial class QueryPlanBuilder
                     // GetDistinctTermCountInField == 0 catches a fully-empty field; HasAnyNonExistingEntries
                     // catches the partial case (some docs have a value, some are in the non-existing posting list).
                     // Either way the sort must surface those docs null-adjacent, which routes the single-field
-                    // full-scan away from the streaming DirectScan and through SortingMatch (ExtractAndSort).
+                    // full-scan away from the streaming DirectScan and through SortingMatch (InMemorySort).
                     bool mayHaveMissingEntries = p.MayHaveMissingEntries
                         || indexSearcher.GetDistinctTermCountInField(fieldMeta) == 0
                         || indexSearcher.HasAnyNonExistingEntries(fieldMeta);
