@@ -26,6 +26,22 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     /// <summary>Total number of matching entries (set after the first Fill call).</summary>
     public long TotalResults;
 
+    /// <summary>Wall-clock ticks spent producing the sorted result set, accumulated across Fill calls.
+    /// The sort runs OUTSIDE the compiled bitmap pipeline's per-op timing array, so it has no slot in
+    /// <c>CompiledQueryMatch</c>'s telemetry; surfacing it here lets <see cref="Inspect"/> emit it as the
+    /// sort node's "Ms" so include timings() accounts for the sort instead of leaving a 0 ms gap.</summary>
+    public long SortingTimeInTicks;
+
+    /// <summary>Name of the sort strategy that actually ran this query (stream-and-intersect,
+    /// extract-and-sort, reservoir-sample, drain-and-sort). Set lazily on the first Fill.</summary>
+    public string SortStrategy;
+
+    /// <summary>For the streaming strategy only: how many entry IDs were read from the sort index and
+    /// intersected against the candidate set. A value far larger than the result count is the signature
+    /// of a degenerate stream-and-intersect — a tiny/scattered candidate set forces a near-full scan of
+    /// the sort index, which is exactly the cost the streaming strategy is supposed to avoid.</summary>
+    public long EntriesStreamed;
+
     public abstract bool IsBoosting { get; }
     public abstract DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
     public abstract long Count { get; }

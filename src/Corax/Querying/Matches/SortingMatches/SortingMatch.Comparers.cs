@@ -599,9 +599,16 @@ unsafe sealed partial class SortingMatch<TInner>
             var xIdx = (ushort)x & 0X7FFF;
             var yIdx = (ushort)y & 0X7FFF;
             Debug.Assert(yIdx < SortingMatch.SortBatchSize && xIdx < SortingMatch.SortBatchSize);
-            return _isDescending
+            var cmp = _isDescending
                 ? -_inner.Compare(_terms[xIdx], _terms[yIdx])
                 : _inner.Compare(_terms[xIdx], _terms[yIdx]);
+            if (cmp != 0)
+                return cmp;
+            // Equal sort terms: break the tie by ascending batch index. bitmap Fill yields entry IDs in
+            // ascending order, so this reproduces the streaming strategy's tie order (forward posting-list
+            // walk = ascending entry id) — keeping result order identical across sort strategies, including
+            // for descending sorts where the negation above would otherwise reverse the tie order.
+            return xIdx - yIdx;
         }
 
         public int Compare(int x, int y)

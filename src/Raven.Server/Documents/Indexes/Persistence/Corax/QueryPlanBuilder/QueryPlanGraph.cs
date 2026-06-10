@@ -720,10 +720,11 @@ internal static class QueryPlanGraph
     private static string SortLabel(Dictionary<string, string> p)
     {
         string match = p.GetValueOrDefault("MatchOperation", SortOp);
+        List<string> parts;
 
         if (match == "SortingMultiMatch")
         {
-            List<string> parts = new() { match + " [multi-field heap sort]" };
+            parts = new() { match + " [multi-field heap sort]" };
             for (int i = 0; p.ContainsKey("Comparer" + i + "_FieldName"); i++)
             {
                 string prefix = "Comparer" + i + "_";
@@ -732,40 +733,46 @@ internal static class QueryPlanGraph
                     p.GetValueOrDefault(prefix + "Ascending"),
                     p.GetValueOrDefault(prefix + "FieldType")));
             }
-
-            for (int i = 0; i < parts.Count; i++)
-                parts[i] = GraphvizGraph.Escape(parts[i]);
-            return string.Join("\\n", parts);
-        }
-
-        // Single-field SortingMatch.
-        p.TryGetValue("FieldType", out string fieldType);
-        List<string> single;
-        if (fieldType == "Score")
-        {
-            bool boosting = p.GetValueOrDefault("IsBoosting") == "True";
-            single = new() { match + " [heap sort]", "rank by score()" + (boosting ? " (boosting)" : "") };
-        }
-        else if (fieldType == "Spatial")
-        {
-            single = new() { match + " [heap sort]", "by distance" };
-            AddIf(p, single, "Point", "from ");
-            AddIf(p, single, "Round", "round ");
-            AddIf(p, single, "Units", "", "");
-            single.Add(SortDirection(p.GetValueOrDefault("Ascending")));
         }
         else
         {
-            single = new()
+            // Single-field SortingMatch.
+            p.TryGetValue("FieldType", out string fieldType);
+            if (fieldType == "Score")
             {
-                match + " [heap sort]",
-                SortKeyDescription(p.GetValueOrDefault("FieldName"), p.GetValueOrDefault("Ascending"), fieldType)
-            };
+                bool boosting = p.GetValueOrDefault("IsBoosting") == "True";
+                parts = new() { match + " [heap sort]", "rank by score()" + (boosting ? " (boosting)" : "") };
+            }
+            else if (fieldType == "Spatial")
+            {
+                parts = new() { match + " [heap sort]", "by distance" };
+                AddIf(p, parts, "Point", "from ");
+                AddIf(p, parts, "Round", "round ");
+                AddIf(p, parts, "Units", "", "");
+                parts.Add(SortDirection(p.GetValueOrDefault("Ascending")));
+            }
+            else
+            {
+                parts = new()
+                {
+                    match + " [heap sort]",
+                    SortKeyDescription(p.GetValueOrDefault("FieldName"), p.GetValueOrDefault("Ascending"), fieldType)
+                };
+            }
         }
 
-        for (int i = 0; i < single.Count; i++)
-            single[i] = GraphvizGraph.Escape(single[i]);
-        return string.Join("\\n", single);
+        // Runtime sort telemetry (set by SortingMatch.Inspect): the actual strategy chosen, how many
+        // sort-index entries were streamed (streaming strategy only), and the wall-clock sort time. The
+        // sort runs outside the compiled bitmap pipeline, so this is the only place these surface.
+        AddIf(p, parts, "Strategy", "via ");
+        AddIf(p, parts, "EntriesStreamed", "streamed=");
+        AddIf(p, parts, "Candidates", "candidates=");
+        if (p.TryGetValue("Ms", out string ms) && string.IsNullOrEmpty(ms) == false)
+            parts.Add(ms + " ms");
+
+        for (int i = 0; i < parts.Count; i++)
+            parts[i] = GraphvizGraph.Escape(parts[i]);
+        return string.Join("\\n", parts);
     }
 
     private static string SortKeyDescription(string field, string ascending, string fieldType)
