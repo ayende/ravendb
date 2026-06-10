@@ -1447,4 +1447,283 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     }
 
     #endregion
+
+    #region AndWithRange / RemoveContainersFrom (limit-aware posting AND building blocks)
+
+    // Container key k covers entry ids [k * ContainerSize, (k+1) * ContainerSize).
+    private const int ContainerSize = 65536;
+
+    private static long Entry(int containerKey, int offset) => (long)containerKey * ContainerSize + offset;
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithRange_IntersectsOnlyContainersInKeyRange()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+
+        // a spans containers 0,1,2,3; container 1 has two entries.
+        a.Add(Entry(0, 5));
+        a.Add(Entry(1, 5));
+        a.Add(Entry(1, 7));
+        a.Add(Entry(2, 5));
+        a.Add(Entry(3, 5));
+
+        // b overlaps a only in container 1 (at offset 5); container 2 has a non-matching offset.
+        b.Add(Entry(1, 5));
+        b.Add(Entry(2, 9));
+
+        a.PrepareForReading();
+        b.PrepareForReading();
+
+        // Intersect only the key range [1,3): containers 1 and 2.
+        long survivors = a.AndWithRange(ref b, 1, 3);
+        a.PrepareForReading();
+
+        Assert.Equal(1, survivors); // only container 1 keeps {5}; container 2 empties out
+
+        // Containers outside the range are left completely untouched.
+        Assert.True(a.Contains(Entry(0, 5)));
+        Assert.True(a.Contains(Entry(3, 5)));
+
+        // Container 1 was intersected down to {5}.
+        Assert.True(a.Contains(Entry(1, 5)));
+        Assert.False(a.Contains(Entry(1, 7)));
+
+        // Container 2 had no overlap, so it was dropped.
+        Assert.False(a.Contains(Entry(2, 5)));
+
+        Assert.Equal(3, a.ComputeCount()); // containers 0, 1, 3 with one survivor each
+
+        a.Dispose();
+        b.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithRange_DoesNotConsumeOther_SoItCanBeReusedAcrossCalls()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+
+        a.Add(Entry(0, 1));
+        a.Add(Entry(1, 1));
+        a.Add(Entry(2, 1));
+        b.Add(Entry(0, 1));
+        b.Add(Entry(1, 1));
+        b.Add(Entry(2, 1));
+
+        a.PrepareForReading();
+        b.PrepareForReading();
+
+        // First settled-prefix call over [0,1) then a second over [1,3): b must survive both.
+        long first = a.AndWithRange(ref b, 0, 1);
+        long second = a.AndWithRange(ref b, 1, 3);
+        a.PrepareForReading();
+
+        Assert.Equal(1, first);
+        Assert.Equal(2, second);
+
+        // b is unchanged and still fully readable after being used as the (non-consumed) operand.
+        Assert.True(b.Contains(Entry(0, 1)));
+        Assert.True(b.Contains(Entry(1, 1)));
+        Assert.True(b.Contains(Entry(2, 1)));
+        Assert.Equal(3, b.ComputeCount());
+
+        a.Dispose();
+        b.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithRange_ClampsKeyBoundsAndTreatsEmptyRangeAsNoOp()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+        RoaringBitmap b = new(ctx);
+
+        a.Add(Entry(0, 5));
+        a.Add(Entry(2, 5));
+        b.Add(Entry(0, 5));
+        b.Add(Entry(2, 5));
+
+        a.PrepareForReading();
+        b.PrepareForReading();
+
+        // from >= to => empty range, nothing intersected, nothing dropped.
+        long none = a.AndWithRange(ref b, 2, 2);
+        a.PrepareForReading();
+        Assert.Equal(0, none);
+        Assert.Equal(2, a.ComputeCount());
+
+        // Negative from and an oversized to are clamped to the valid container span; this is the
+        // "finish the tail" call the limit-aware path issues with int.MaxValue once the term is complete.
+        long all = a.AndWithRange(ref b, -10, int.MaxValue);
+        a.PrepareForReading();
+        Assert.Equal(2, all);
+        Assert.True(a.Contains(Entry(0, 5)));
+        Assert.True(a.Contains(Entry(2, 5)));
+
+        a.Dispose();
+        b.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithRange_TailPassDropsCandidateContainersTheTermNeverReached()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap candidate = new(ctx);
+        RoaringBitmap term = new(ctx);
+
+        // Candidate has containers 0..3; the term (fully read) only reaches container 1.
+        candidate.Add(Entry(0, 5));
+        candidate.Add(Entry(1, 5));
+        candidate.Add(Entry(2, 5));
+        candidate.Add(Entry(3, 5));
+        term.Add(Entry(0, 5));
+        term.Add(Entry(1, 5));
+
+        candidate.PrepareForReading();
+        term.PrepareForReading();
+
+        // Mirror the never-reached tail: settle [0,1) in the loop, then finish [1, int.MaxValue).
+        long settled = candidate.AndWithRange(ref term, 0, 1);
+        long tail = candidate.AndWithRange(ref term, 1, int.MaxValue);
+        candidate.PrepareForReading();
+
+        Assert.Equal(1, settled); // container 0
+        Assert.Equal(1, tail);    // container 1 survives; containers 2 and 3 are dropped (not in term)
+
+        Assert.True(candidate.Contains(Entry(0, 5)));
+        Assert.True(candidate.Contains(Entry(1, 5)));
+        Assert.False(candidate.Contains(Entry(2, 5)));
+        Assert.False(candidate.Contains(Entry(3, 5)));
+        Assert.Equal(2, candidate.ComputeCount());
+
+        candidate.Dispose();
+        term.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void RemoveContainersFrom_DropsContainersAtOrAboveKeyAndKeepsThePrefix()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+
+        for (int k = 0; k < 4; k++)
+            a.Add(Entry(k, 5));
+        a.PrepareForReading();
+
+        // This is the early-exit branch: enough survivors were already found below container 2,
+        // so the unscanned tail (containers >= 2) is discarded wholesale.
+        a.RemoveContainersFrom(2);
+        a.PrepareForReading();
+
+        Assert.True(a.Contains(Entry(0, 5)));
+        Assert.True(a.Contains(Entry(1, 5)));
+        Assert.False(a.Contains(Entry(2, 5)));
+        Assert.False(a.Contains(Entry(3, 5)));
+        Assert.Equal(2, a.ComputeCount());
+
+        a.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void RemoveContainersFrom_ZeroClearsAll_BeyondMaxIsNoOp()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap a = new(ctx);
+
+        for (int k = 0; k < 3; k++)
+            a.Add(Entry(k, 5));
+        a.PrepareForReading();
+
+        a.RemoveContainersFrom(100); // above every container key => no-op
+        a.PrepareForReading();
+        Assert.Equal(3, a.ComputeCount());
+
+        a.RemoveContainersFrom(0); // at/above key 0 => everything dropped
+        a.PrepareForReading();
+        Assert.Equal(0, a.ComputeCount());
+        Assert.True(a.IsEmpty);
+
+        a.Dispose();
+    }
+
+    [RavenFact(RavenTestCategory.Corax)]
+    public void AndWithRange_SettledPrefixPlusTailEqualsFullAndWith()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+
+        // Build a candidate set and a term that overlap partially across several containers.
+        // The candidate also has a trailing container (5) the term never reaches, so the tail
+        // pass must drop it; the term has entries in a container (6) the candidate lacks, which
+        // the intersection must simply ignore.
+        var rng = new Random(1234);
+        var candidateSet = new SortedSet<long>();
+        var termSet = new SortedSet<long>();
+        for (int k = 0; k <= 6; k++)
+        {
+            for (int i = 0; i < 60; i++)
+            {
+                int offset = rng.Next(ContainerSize);
+                if (k <= 5)
+                    candidateSet.Add(Entry(k, offset));          // candidate: containers 0..5
+                if (k >= 1 && k != 5)
+                    termSet.Add(Entry(k, rng.Next(ContainerSize))); // term: containers 1..4 and 6 (skips 0 and 5)
+            }
+        }
+        // Guarantee real overlap in containers 1..4 so the intersection is non-empty there.
+        foreach (var e in candidateSet.Where(e => { long k = e / ContainerSize; return k >= 1 && k <= 4; }).Take(40))
+            termSet.Add(e);
+
+        RoaringBitmap candidate = new(ctx);
+        RoaringBitmap term = new(ctx);
+        foreach (var e in candidateSet)
+            candidate.Add(e);
+        foreach (var e in termSet)
+            term.Add(e);
+        candidate.PrepareForReading();
+        term.PrepareForReading();
+
+        // Reference: one monolithic AndWith on clones.
+        RoaringBitmap reference = candidate.Clone();
+        RoaringBitmap termForRef = term.Clone();
+        reference.AndWith(ref termForRef);
+        reference.PrepareForReading();
+
+        // Streaming decomposition: feed the term in ascending order in container-unaligned chunks,
+        // intersect the settled prefix [processedKey, seenMaxKey) per chunk, finish the tail after.
+        RoaringBitmap result = candidate.Clone();
+        RoaringBitmap temp = new(ctx);
+        var ascendingTerm = termSet.ToList(); // already sorted
+
+        int processedKey = 0;
+        const int chunkSize = 37; // deliberately unaligned to the 65536 container boundary
+        Span<long> buf = stackalloc long[chunkSize];
+        for (int start = 0; start < ascendingTerm.Count; start += chunkSize)
+        {
+            int read = Math.Min(chunkSize, ascendingTerm.Count - start);
+            for (int i = 0; i < read; i++)
+                buf[i] = ascendingTerm[start + i];
+            temp.AddRange(buf[..read]);
+
+            int seenMaxKey = (int)(buf[read - 1] >> 16);
+            result.AndWithRange(ref temp, processedKey, seenMaxKey);
+            processedKey = seenMaxKey;
+        }
+        result.AndWithRange(ref temp, processedKey, int.MaxValue);
+        result.PrepareForReading();
+
+        Assert.Equal(reference.ComputeCount(), result.ComputeCount());
+        foreach (var e in candidateSet)
+            Assert.Equal(reference.Contains(e), result.Contains(e));
+
+        reference.Dispose();
+        result.Dispose();
+        temp.Dispose();
+        candidate.Dispose();
+        term.Dispose();
+    }
+
+    #endregion
 }
