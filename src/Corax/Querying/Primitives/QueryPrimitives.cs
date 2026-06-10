@@ -29,6 +29,15 @@ public static class QueryPrimitives
     // Buffer size for stackalloc Fill operations (posting-list batch reads).
     internal const int FillBufferSize = 4096;
 
+    // Buffer size for the posting-list AND/ANDNOT/Fill scans that feed RoaringBitmap.AddRange.
+    // Deliberately 2x FillBufferSize, which is larger than a RoaringBitmap array container's max
+    // cardinality (also 4096): since posting-list entries are sorted, a dense container's entries are
+    // contiguous, so a batch this size lets AddRange see a single container's slice exceed the
+    // array->bitmap crossover and build it as a bitmap directly — instead of growing an array and
+    // re-converting it later. Local to these scans; the global FillBufferSize stays 4096 for the
+    // compiled-query stackallocs and the generic IQueryMatch.Fill paths.
+    internal const int PostingScanBufferSize = 2 * FillBufferSize;
+
     // Bitmap slot reserved as scratch for the AND/ANDNOT primitives: materializing a posting source
     // or tree scan into a temporary before intersecting/subtracting needs a working bitmap. The plan
     // emitter never targets this slot as an AND destination (the destination is passed explicitly),
@@ -230,7 +239,7 @@ public static class QueryPrimitives
     [SkipLocalsInit]
     private static void FillFromPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, CancellationToken token, long limit = long.MaxValue)
     {
-        Span<long> buffer = stackalloc long[FillBufferSize];
+        Span<long> buffer = stackalloc long[PostingScanBufferSize];
 
         long total = 0;
         while (iterator.Fill(buffer, out int read) && read > 0)
@@ -247,28 +256,20 @@ public static class QueryPrimitives
     }
 
     /// <summary>
-    /// AND bitmap with a posting list using bounded range scan.
-    /// Uses bitmap's container key range to bound the posting list scan:
-    /// Seek() jumps past entries below the bitmap's min, and pruneGreaterThan
-    /// stops reading past the bitmap's max. Only posting list pages that overlap
-    /// with the bitmap's entry ID range are read.
-    ///
-    /// For a 50K bitmap vs 10M posting list, this reads only the pages covering
-    /// the 50K range instead of all 10M entries.
-    ///
-    /// When <paramref name="limit"/> is finite (unordered "limit N" queries, where any N valid
-    /// survivors suffice) the scan also stops early: the posting list is read in ascending order,
-    /// so after each batch every candidate container below the highest container seen is "settled"
-    /// (tempBitmap holds all of its term entries). We intersect just that settled prefix per batch —
-    /// reusing the full container-level AND, no per-entry membership test — and stop reading once
-    /// the survivors reach the limit, dropping the still-unintersected tail. If the limit is never
-    /// reached, the tail is intersected against the now-complete term after the loop.
+    /// Shared setup for the posting-list AND scans. Bounds the scan to the bitmap's container key
+    /// range — <see cref="PostingList.Iterator.Seek"/> jumps past entries below the bitmap's min and
+    /// the returned <paramref name="pruneAfter"/> stops reading past its max, so only posting-list
+    /// pages overlapping the bitmap's entry-id range are touched (a 50K bitmap vs a 10M posting list
+    /// reads only the pages covering the 50K range). Clears <paramref name="tempBitmap"/> for reuse.
+    /// Returns false when there is nothing left to do — either the bitmap was already empty, or the
+    /// seek found no posting-list entries in range (in which case the bitmap is cleared) — and the
+    /// caller must return immediately.
     /// </summary>
-    [SkipLocalsInit]
-    private static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token, long limit = long.MaxValue)
+    private static bool TrySetupPostingScan(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, out long pruneAfter)
     {
+        pruneAfter = 0;
         if (bitmap.IsEmpty)
-            return;
+            return false;
 
         tempBitmap.Clear();
 
@@ -281,33 +282,58 @@ public static class QueryPrimitives
         // Encode to posting-list space: the posting list stores encoded values (entryId << 10 | freq | type),
         // so Seek and Fill both expect encoded bounds, not raw decoded entry IDs.
         long seekFrom = EntryIdEncodings.PrepareIdForSeekInPostingList(minKey * RoaringBitmap.ContainerSize);
-        long pruneAfter = EntryIdEncodings.PrepareIdForPruneInPostingList((maxKey + 1) * RoaringBitmap.ContainerSize - 1);
+        pruneAfter = EntryIdEncodings.PrepareIdForPruneInPostingList((maxKey + 1) * RoaringBitmap.ContainerSize - 1);
 
         // Seek past all posting list entries below the bitmap's range
         if (!iterator.Seek(seekFrom))
         {
             // No entries at or after seekFrom — nothing to AND
             bitmap.Clear();
-            return;
+            return false;
         }
 
-        Span<long> buffer = stackalloc long[FillBufferSize];
+        return true;
+    }
 
-        if (limit >= long.MaxValue)
+    /// <summary>
+    /// AND bitmap with a posting list using the bounded range scan from <see cref="TrySetupPostingScan"/>.
+    /// Materializes the whole in-range slice into <paramref name="tempBitmap"/>, then does a single
+    /// container-level AND.
+    /// </summary>
+    [SkipLocalsInit]
+    private static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token)
+    {
+        if (!TrySetupPostingScan(ref iterator, ref bitmap, ref tempBitmap, out long pruneAfter))
+            return;
+
+        Span<long> buffer = stackalloc long[PostingScanBufferSize];
+        while (iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
         {
-            // Unlimited: materialize the whole in-range slice, then a single container-level AND.
-            while (iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
-            {
-                token.ThrowIfCancellationRequested();
-                EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
-                tempBitmap.AddRange(buffer[..read]);
-            }
-
-            bitmap.AndWith(ref tempBitmap);
-            return;
+            token.ThrowIfCancellationRequested();
+            EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
+            tempBitmap.AddRange(buffer[..read]);
         }
 
-        // Limit-aware streaming intersection (see remarks above).
+        bitmap.AndWith(ref tempBitmap);
+    }
+
+    /// <summary>
+    /// Limit-aware AND for unordered "limit N" queries, where any N valid survivors suffice. Same
+    /// bounded range scan as <see cref="AndWithPostings"/>, but the scan also stops early: the posting
+    /// list is read in ascending order, so after each batch every candidate container below the highest
+    /// container seen is "settled" (<paramref name="tempBitmap"/> holds all of its term entries). We
+    /// intersect just that settled prefix per batch — reusing the full container-level AND, no per-entry
+    /// membership test — and stop reading once the survivors reach <paramref name="limit"/>, dropping the
+    /// still-unintersected tail. If the limit is never reached, the tail is intersected against the
+    /// now-complete term after the loop.
+    /// </summary>
+    [SkipLocalsInit]
+    private static void AndWithPostingsLimited(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token, long limit)
+    {
+        if (!TrySetupPostingScan(ref iterator, ref bitmap, ref tempBitmap, out long pruneAfter))
+            return;
+
+        Span<long> buffer = stackalloc long[PostingScanBufferSize];
         long matched = 0;
         int processedKey = 0;
         bool reached = false;
@@ -359,7 +385,7 @@ public static class QueryPrimitives
         if (!iterator.Seek(seekFrom))
             return; // No entries in range — nothing to subtract
 
-        Span<long> buffer = stackalloc long[FillBufferSize];
+        Span<long> buffer = stackalloc long[PostingScanBufferSize];
         while (iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
         {
             token.ThrowIfCancellationRequested();
@@ -554,7 +580,7 @@ public static class QueryPrimitives
                 return;
 
             case Planning.PostingSourceKind.PostingList:
-                AndWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap, token, limit);
+                AndWithPostingsLimited(ref source.LargeIterator, ref bitmap, ref tempBitmap, token, limit);
                 return;
 
             default:
