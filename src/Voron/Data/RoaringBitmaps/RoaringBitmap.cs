@@ -1449,26 +1449,26 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Limit-aware AND: same container-level intersection as <see cref="AndWith"/>,
-    /// but stops processing containers once the result has ≥ limit entries.
-    /// Remaining containers in this bitmap that haven't been intersected are removed.
-    /// For unsorted queries, any N valid results are sufficient.
+    /// Streaming AND helper for the limit-aware posting-list path. Intersects, in place, only this
+    /// bitmap's containers whose key is in [<paramref name="fromKeyInclusive"/>,
+    /// <paramref name="toKeyExclusive"/>) against <paramref name="other"/>, and returns the surviving
+    /// cardinality within that key range. Containers outside the range are left untouched.
+    ///
+    /// Unlike <see cref="AndWith"/> this does NOT consume <paramref name="other"/>: the caller feeds
+    /// an ever-growing <paramref name="other"/> across posting-list batches and, on each call, processes
+    /// only the key range it has already fully covered (the "settled" prefix — every term entry for
+    /// those containers has been read, because the posting list is scanned in ascending order). The
+    /// still-growing tail is processed by a later call once it too settles, or after the scan ends.
     /// </summary>
-    public void AndWithLimited(scoped ref RoaringBitmap other, long limit)
+    public long AndWithRange(scoped ref RoaringBitmap other, int fromKeyInclusive, int toKeyExclusive)
     {
         AssertNotConsumed();
-        if (limit <= 0)
-        {
-            Clear();
-            MarkConsumed(ref other);
-            return;
-        }
         int* myIdx = _index.RawItems;
-        int myLen = _index.Count;
-        long accumulated = 0;
-        int stoppedAtKey = -1;
+        int from = Math.Max(0, fromKeyInclusive);
+        int to = Math.Min(_index.Count, toKeyExclusive);
+        long survivors = 0;
 
-        for (int key = 0; key < myLen; key++)
+        for (int key = from; key < to; key++)
         {
             int mySlot = myIdx[key];
             if (mySlot < 0)
@@ -1477,7 +1477,8 @@ public unsafe partial struct RoaringBitmap : IDisposable
             int otherSlot = other.GetSlotForKey(key);
             if (otherSlot < 0)
             {
-                DonateStorageThenFreeContainer(key, mySlot, ref other);
+                // Settled container has no term entries — it cannot survive the intersection.
+                FreeContainer(key, mySlot);
             }
             else
             {
@@ -1486,31 +1487,28 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 AndContainerInPlace(ref myEntry, ref _types.RawItems[mySlot], ref otherEntry, other._types.RawItems[otherSlot]);
                 int card = ResolveCardinality(ref myEntry);
                 if (card == 0)
-                    DonateStorageThenFreeContainer(key, mySlot, ref other);
+                    FreeContainer(key, mySlot);
                 else
-                    accumulated += card;
-            }
-
-            if (accumulated >= limit)
-            {
-                stoppedAtKey = key + 1;
-                break;
+                    survivors += card;
             }
         }
+        return survivors;
+    }
 
-        // Remove remaining un-intersected containers — they weren't checked against
-        // other, so they'd be false positives.
-        if (stoppedAtKey >= 0)
+    /// <summary>Drop every container whose key is ≥ <paramref name="fromKeyInclusive"/>. Used by the
+    /// limit-aware streaming AND to discard the still-unintersected tail once enough survivors were
+    /// already found in the settled prefix.</summary>
+    public void RemoveContainersFrom(int fromKeyInclusive)
+    {
+        AssertNotConsumed();
+        int* myIdx = _index.RawItems;
+        int myLen = _index.Count;
+        for (int key = Math.Max(0, fromKeyInclusive); key < myLen; key++)
         {
-            for (int key = stoppedAtKey; key < myLen; key++)
-            {
-                int mySlot = myIdx[key];
-                if (mySlot < 0)
-                    continue;
-                DonateStorageThenFreeContainer(key, mySlot, ref other);
-            }
+            int mySlot = myIdx[key];
+            if (mySlot >= 0)
+                FreeContainer(key, mySlot);
         }
-        MarkConsumed(ref other);
     }
 
     /// <summary>Donate this slot's storage to <paramref name="recipient"/>'s free pool

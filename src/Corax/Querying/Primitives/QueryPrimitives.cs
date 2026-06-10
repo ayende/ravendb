@@ -256,11 +256,13 @@ public static class QueryPrimitives
     /// For a 50K bitmap vs 10M posting list, this reads only the pages covering
     /// the 50K range instead of all 10M entries.
     ///
-    /// When <paramref name="limit"/> is finite the intersection is done via
-    /// <see cref="RoaringBitmap.AndWithLimited"/>, which stops once the result has ≥ limit
-    /// entries. We still materialize the full posting-list range first: the bounded scan has
-    /// already decoded those pages, so there is no I/O to save by filtering per-entry — the
-    /// only win the limit buys is skipping the tail of the container-level AND.
+    /// When <paramref name="limit"/> is finite (unordered "limit N" queries, where any N valid
+    /// survivors suffice) the scan also stops early: the posting list is read in ascending order,
+    /// so after each batch every candidate container below the highest container seen is "settled"
+    /// (tempBitmap holds all of its term entries). We intersect just that settled prefix per batch —
+    /// reusing the full container-level AND, no per-entry membership test — and stop reading once
+    /// the survivors reach the limit, dropping the still-unintersected tail. If the limit is never
+    /// reached, the tail is intersected against the now-complete term after the loop.
     /// </summary>
     [SkipLocalsInit]
     private static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token, long limit = long.MaxValue)
@@ -289,19 +291,50 @@ public static class QueryPrimitives
             return;
         }
 
-        // Fill only entries within the bitmap's range
         Span<long> buffer = stackalloc long[FillBufferSize];
+
+        if (limit >= long.MaxValue)
+        {
+            // Unlimited: materialize the whole in-range slice, then a single container-level AND.
+            while (iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
+            {
+                token.ThrowIfCancellationRequested();
+                EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
+                tempBitmap.AddRange(buffer[..read]);
+            }
+
+            bitmap.AndWith(ref tempBitmap);
+            return;
+        }
+
+        // Limit-aware streaming intersection (see remarks above).
+        long matched = 0;
+        int processedKey = 0;
+        bool reached = false;
         while (iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
         {
             token.ThrowIfCancellationRequested();
             EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
             tempBitmap.AddRange(buffer[..read]);
+
+            // buffer is sorted ascending, so its last entry's container is the highest seen. Every
+            // container strictly below it is now settled and safe to intersect; that container itself
+            // may still grow in the next batch, so leave it for later.
+            int seenMaxKey = (int)(buffer[read - 1] >> RoaringBitmap.ContainerKeyShift);
+            matched += bitmap.AndWithRange(ref tempBitmap, processedKey, seenMaxKey);
+            processedKey = seenMaxKey;
+
+            if (matched >= limit)
+            {
+                reached = true;
+                break;
+            }
         }
 
-        if (limit < long.MaxValue)
-            bitmap.AndWithLimited(ref tempBitmap, limit);
+        if (reached)
+            bitmap.RemoveContainersFrom(processedKey); // enough survivors already; drop the unscanned tail
         else
-            bitmap.AndWith(ref tempBitmap);
+            bitmap.AndWithRange(ref tempBitmap, processedKey, int.MaxValue); // term complete: finish the tail
     }
 
     /// <summary>
