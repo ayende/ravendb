@@ -153,9 +153,15 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         {
             if (match._inner is IBitmapQueryMatch bitmapMatch)
             {
+                // First access to Count runs the inner compiled pipeline (the AND/OR/scan that builds the
+                // candidate bitmap). Deliberately left outside the sort timer below: that execution is timed
+                // onto the inner CompiledQuery node's per-op telemetry, so charging it to the sort too would
+                // double-count the query. Everything after this line is sort-specific work.
                 match.TotalResults = bitmapMatch.Count;
                 if (match.TotalResults == 0)
                     return 0;
+
+                long sortStart = Stopwatch.GetTimestamp();
 
                 if (typeof(TDirection) == typeof(RandomDirection))
                 {
@@ -203,6 +209,8 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                     match.SortStrategy = CoraxSortingStrategy.InMemorySort;
                     SortInMemory<TEntryComparer>(match, bitmapMatch);
                 }
+
+                match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
             }
             else
             {
@@ -769,6 +777,8 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     private static void SortComputedResults<TEntryComparer>(SortingMatch<TInner> match)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
     {
+        // Draining the inner match (Count + the Fill loop) is the inner query's execution, not sort work,
+        // so it is deliberately left untimed here — only the SortResults call below is charged to the sort.
         var count = match._inner.Count;
         int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
         var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
@@ -792,7 +802,9 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             return;
         }
 
+        long sortStart = Stopwatch.GetTimestamp();
         SortResults<TEntryComparer>(match, allMatches[..filled]);
+        match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
         scope.Dispose();
     }
 
@@ -842,13 +854,11 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override int Fill(Span<long> matches)
     {
-        // Time the whole sort. The first call does the actual sort/stream work (TotalResults == NotStarted);
-        // later calls just page out already-sorted results. Two timestamps per Fill is negligible against the
-        // sort itself and gives include timings() a real number for the sort node, which is otherwise untimed.
-        long start = Stopwatch.GetTimestamp();
-        var read = _fillFunc(this, matches);
-        SortingTimeInTicks += Stopwatch.GetTimestamp() - start;
-        return read;
+        // No timing here: the sort-specific work (heap sort / index-order walk) is timed at the strategy
+        // call sites into SortingTimeInTicks, so the inner match's own execution stays out of the sort
+        // metric. The first call does the actual work (TotalResults == NotStarted); later calls just page
+        // out already-sorted results.
+        return _fillFunc(this, matches);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

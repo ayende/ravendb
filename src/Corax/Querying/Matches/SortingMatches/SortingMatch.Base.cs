@@ -55,8 +55,10 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     /// <summary>Total number of matching entries (set after the first Fill call).</summary>
     public long TotalResults;
 
-    /// <summary>Wall-clock ticks spent producing the sorted result set, accumulated across Fill calls.
-    /// <see cref="Inspect"/> emits it as the sort node's "Ms" so include timings().</summary>
+    /// <summary>Wall-clock ticks spent on sort-specific work — heap-sorting the candidates or walking the
+    /// sort index in order. Excludes the inner match's execution (the compiled bitmap pipeline), which is
+    /// timed onto the child CompiledQuery node's per-op telemetry; counting it here too would double-count
+    /// the query as sort time. <see cref="Inspect"/> emits this as the sort node's "Ms" so include timings().</summary>
     public long SortingTimeInTicks;
 
     /// <summary>The sort strategy that actually ran this query. Set lazily on the first Fill;
