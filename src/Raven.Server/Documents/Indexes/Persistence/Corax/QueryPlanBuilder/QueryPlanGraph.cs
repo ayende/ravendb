@@ -145,8 +145,7 @@ internal static class QueryPlanGraph
         {
             NodeDefaults =
             {
-                ["shape"] = "box",
-                ["fontname"] = "monospace"
+                ["shape"] = "box"
             }
         };
 
@@ -516,8 +515,7 @@ internal static class QueryPlanGraph
         {
             NodeDefaults =
             {
-                ["shape"] = "box",
-                ["fontname"] = "monospace"
+                ["shape"] = "box"
             }
         };
 
