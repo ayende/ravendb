@@ -255,9 +255,15 @@ public static class QueryPrimitives
     ///
     /// For a 50K bitmap vs 10M posting list, this reads only the pages covering
     /// the 50K range instead of all 10M entries.
+    ///
+    /// When <paramref name="limit"/> is finite the intersection is done via
+    /// <see cref="RoaringBitmap.AndWithLimited"/>, which stops once the result has ≥ limit
+    /// entries. We still materialize the full posting-list range first: the bounded scan has
+    /// already decoded those pages, so there is no I/O to save by filtering per-entry — the
+    /// only win the limit buys is skipping the tail of the container-level AND.
     /// </summary>
     [SkipLocalsInit]
-    private static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token)
+    private static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token, long limit = long.MaxValue)
     {
         if (bitmap.IsEmpty)
             return;
@@ -292,61 +298,10 @@ public static class QueryPrimitives
             tempBitmap.AddRange(buffer[..read]);
         }
 
-        bitmap.AndWith(ref tempBitmap);
-    }
-
-    /// <summary>
-    /// Limit-aware AND: bounded range scan as <see cref="AndWithPostings"/>, but
-    /// each batch from the posting list is filtered against <paramref name="bitmap"/>
-    /// in place, accumulating only intersecting entries into <paramref name="tempBitmap"/>.
-    /// Reading stops as soon as the intersection has ≥ limit entries — no need to
-    /// materialize the rest of the posting list. The result then replaces bitmap.
-    /// For unsorted queries any N valid results are sufficient.
-    /// </summary>
-    [SkipLocalsInit]
-    private static void AndWithPostingsLimited(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, long limit, CancellationToken token)
-    {
-        if (bitmap.IsEmpty)
-            return;
-
-        tempBitmap.Clear();
-
-        long minKey = bitmap.MinContainerKey;
-        long maxKey = bitmap.MaxContainerKey;
-        Debug.Assert(minKey is not -1 && maxKey is not -1);
-
-        long seekFrom = EntryIdEncodings.PrepareIdForSeekInPostingList(minKey * RoaringBitmap.ContainerSize);
-        long pruneAfter = EntryIdEncodings.PrepareIdForPruneInPostingList((maxKey + 1) * RoaringBitmap.ContainerSize - 1);
-
-        if (!iterator.Seek(seekFrom))
-        {
-            bitmap.Clear();
-            return;
-        }
-
-        Span<long> buffer = stackalloc long[FillBufferSize];
-        long matchCount = 0;
-        while (matchCount < limit && iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
-        {
-            token.ThrowIfCancellationRequested();
-            EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
-
-            // Filter the batch in-place against bitmap. The posting list is sorted by
-            // entry id, so the kept prefix stays sorted — AddRange remains efficient.
-            int kept = 0;
-            for (int i = 0; i < read; i++)
-            {
-                if (bitmap.Contains(buffer[i]))
-                {
-                    buffer[kept++] = buffer[i];
-                    if (++matchCount >= limit)
-                        break;
-                }
-            }
-            tempBitmap.AddRange(buffer[..kept]);
-        }
-
-        bitmap.SwapContents(ref tempBitmap);
+        if (limit < long.MaxValue)
+            bitmap.AndWithLimited(ref tempBitmap, limit);
+        else
+            bitmap.AndWith(ref tempBitmap);
     }
 
     /// <summary>
@@ -566,10 +521,7 @@ public static class QueryPrimitives
                 return;
 
             case Planning.PostingSourceKind.PostingList:
-                if (limit < long.MaxValue)
-                    AndWithPostingsLimited(ref source.LargeIterator, ref bitmap, ref tempBitmap, limit, token);
-                else
-                    AndWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap, token);
+                AndWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap, token, limit);
                 return;
 
             default:
