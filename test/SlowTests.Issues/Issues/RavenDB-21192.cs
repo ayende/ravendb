@@ -35,7 +35,6 @@ using Raven.Server.ServerWide.Context;
 using Raven.Server.Utils.Metrics;
 using Raven.Server.Utils.Monitoring;
 using Sparrow.Json;
-using Sparrow.Utils;
 using Tests.Infrastructure;
 using Xunit;
 

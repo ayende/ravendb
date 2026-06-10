@@ -274,7 +274,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             // streaming runs: clustered candidates push (actual scanned / estimate) above 1, so a plan that
             // kept over-scanning (and bailing) inflates the estimate here and stops choosing streaming. The
             // factor is 0 until the plan has streamed at least once (no history -> trust the raw estimate).
-            var inflation = scanInflation.GetRate();
+            var inflation = scanInflation.Factor;
             if(inflation > 0)
                 estimatedScan *= inflation;
         }
@@ -623,7 +623,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 // scan to ensure that the sort is done consistently with the SortInMemory.
                 // EntriesStreamed is kept so the wasted scan stays visible in the query plan graph.
                 match.SortStrategy = CoraxSortingStrategy.IndexOrderFallbackToInMemorySort;
-                scanInflation?.UpdateOnBatchCompletion(match.EntriesStreamed, (long)match._rawStreamScanEstimate);
+                scanInflation?.Observe(match.EntriesStreamed, (long)match._rawStreamScanEstimate);
                 match._results.Clear();
                 SortInMemory<TEntryComparer>(match, bitmapMatch);
                 return;
@@ -646,7 +646,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         }
 
         // Streaming completed within budget: feed the observed scan back so the gate keeps trusting this plan.
-        scanInflation?.UpdateOnBatchCompletion(match.EntriesStreamed, (long)match._rawStreamScanEstimate);
+        scanInflation?.Observe(match.EntriesStreamed, (long)match._rawStreamScanEstimate);
 
 
         [SkipLocalsInit]
