@@ -20,6 +20,13 @@ namespace Corax.Querying.Planning;
 /// </summary>
 public static class CompiledQueryHelper
 {
+    // Per-thread CompactKey buffers for the entry scan. CompactKey.Initialize rents pool buffers
+    // (~3KB each); doing that for every batch slot on every query made Initialize a hotspot. We
+    // allocate+Initialize each slot once per thread and Rebind it to the current transaction on
+    // subsequent queries, so the pool rent is paid once for the thread's lifetime.
+    [ThreadStatic]
+    private static CompactKey[] _entryScanKeys;
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void RecordTiming(CompiledQueryMatch ctx, int opIndex, long startTick)
     {
@@ -245,7 +252,7 @@ public static class CompiledQueryHelper
         var predicate = ctx.CompiledEntryPredicate;
         var llt = searcher.Transaction.LowLevelTransaction;
 
-        var entryKeys = ArrayPool<CompactKey>.Shared.Rent(QueryPrimitives.EntryScanBatchSize);
+        var entryKeys = _entryScanKeys ??= new CompactKey[QueryPrimitives.EntryScanBatchSize];
         int maxInitKey = 0;
 
         // The target slot may have been used as AND/AndNot scratch by an earlier op, which
@@ -276,8 +283,16 @@ public static class CompiledQueryHelper
                 {   // avoid null checks in the hot loop below
                     for (int i = maxInitKey; i < read; i++)
                     {
-                        var key = entryKeys[i] ??= new();
-                        key.Initialize(llt);
+                        var key = entryKeys[i];
+                        if (key is null)
+                        {   // first use of this slot on this thread: rent its pool buffers once
+                            key = entryKeys[i] = new();
+                            key.Initialize(llt);
+                        }
+                        else
+                        {   // slot already holds buffers from a prior query: just re-arm for this tx
+                            key.Rebind(llt);
+                        }
                     }
                     maxInitKey = read;
                 }
@@ -318,11 +333,8 @@ public static class CompiledQueryHelper
         finally
         {
             iterator.Dispose();
-            // slots [0, maxInitKey) were Initialize()'d this call, so only those hold live buffers to return.
-            for (int i = 0; i < maxInitKey; i++)
-                entryKeys[i].Dispose();
-            // we want to _reuse_ the compact key instances as well, so we are not clearing the array intentionally
-            ArrayPool<CompactKey>.Shared.Return(entryKeys, clearArray: false);
+            // entryKeys is the thread-static cache: its CompactKey buffers are retained for the
+            // thread's lifetime (re-armed via Rebind next query), so we neither Dispose nor return it.
             ArrayPool<EntryTermsReader>.Shared.Return(readers);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
         }

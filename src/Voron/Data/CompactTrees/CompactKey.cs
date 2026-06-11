@@ -76,6 +76,26 @@ public sealed unsafe class CompactKey : IDisposable
         _keyMappingCache = KeyMappingPool.Rent(2 * MappingTableMask);
     }
 
+    /// <summary>Re-arm an already-initialized key for a new transaction without renting fresh pool
+    /// buffers. <see cref="Set"/> restarts the arena on every key, so the existing storage/mapping
+    /// buffers can be reused across transactions indefinitely — only the owner and arena cursors need
+    /// resetting. Lets long-lived key caches (e.g. the entry-scan loop) pay the pool rent once instead
+    /// of once per query.</summary>
+    public void Rebind(LowLevelTransaction tx)
+    {
+        Debug.Assert(_storage is not null && _keyMappingCache is not null, "Rebind requires an initialized key; call Initialize first.");
+
+        _owner = tx;
+
+        Dictionary = Invalid;
+        _currentKeyIdx = Invalid;
+        _decodedKeyIdx = Invalid;
+        _lastKeyMappingItem = Invalid;
+
+        _currentIdx = 0;
+        MaxLength = 0;
+    }
+
     public void Reset()
     {
         if (_storage is null || _keyMappingCache is null)
