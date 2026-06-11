@@ -234,7 +234,7 @@ namespace Raven.Server.Documents.Queries
             }
         }
 
-        public static IndexQueryServerSide Create(HttpContext httpContext, long start, long pageSize, JsonOperationContext context, RequestTimeTracker tracker, bool addSpatialProperties = false, string clientQueryId = null, string overrideQuery = null)
+        public static IndexQueryServerSide Create(HttpContext httpContext, long start, long pageSize, JsonOperationContext context, RequestTimeTracker tracker, bool addSpatialProperties = false, string clientQueryId = null, string overrideQuery = null, QueryMetadataCache cache = null)
         {
             IndexQueryServerSide result = null;
             try
@@ -287,7 +287,15 @@ namespace Raven.Server.Documents.Queries
                     }
                 }
 
-                result.Metadata = new QueryMetadata(result.Query, result.QueryParameters, 0, addSpatialProperties);
+                // Query parameters are already populated above (read synchronously per RavenDB-24102), so the
+                // metadata hash folds in their names just like the POST path. Hashing the raw text needs no
+                // parse, and a hash collision is caught by the QueryText equality check inside TryGetMetadata.
+                ulong metadataHash = 0;
+                QueryMetadata metadata = null;
+                if (cache != null)
+                    cache.TryGetMetadata(result, addSpatialProperties, out metadataHash, out metadata);
+
+                result.Metadata = metadata ?? new QueryMetadata(result.Query, result.QueryParameters, metadataHash, addSpatialProperties);
 
                 SetupTimings(result);
                 SetupPagingFromQueryMetadata();
