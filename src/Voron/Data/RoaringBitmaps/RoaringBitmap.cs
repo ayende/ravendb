@@ -741,147 +741,74 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Filter a buffer in-place, keeping only values present in this bitmap.
-    /// The buffer does NOT need to be sorted — callers may pass entry IDs in any order
-    /// (e.g. sort-field order from <c>IndexOrderStreaming</c>).
+    /// Filter a buffer in-place, keeping only values present in this bitmap. Buffer order is
+    /// preserved; callers may pass entry IDs in any order (e.g. sort-field order from
+    /// <c>IndexOrderStreaming</c>).
     ///
-    /// Algorithm: sort buffer to entry-ID order carrying a parallel index array, walk
-    /// containers once (amortising slot lookup and type dispatch to once per container
-    /// group), then restore the original order via the index array.
+    /// Algorithm: a straight order-preserving per-element membership test. Each entry resolves its
+    /// container via the O(1) <c>_index[key]</c> lookup and probes that container directly. A prior
+    /// design sorted the buffer to entry-ID order, walked container groups, then restored order — the
+    /// idea being to amortise slot resolution across a container group. But the slot lookup is a single
+    /// array index (~1 ns), so the two <c>Span.Sort</c> passes it paid for dwarfed what they saved: a
+    /// benchmark across container shapes / selectivities / orderings showed per-element 3–30× faster on
+    /// the realistic scattered (sort-field-order) input and never slower, only tying on already-sorted
+    /// input with a dense Array container.
     ///
-    /// ArrayUnsorted containers are sorted in-place and upgraded to Array on first
-    /// multi-element group hit — cheaper than O(m × k) per-element SIMD linear scans.
+    /// ArrayUnsorted containers are sorted in-place and upgraded to Array on first touch, so repeated
+    /// calls on the same bitmap binary-search instead of re-running O(k) SIMD linear scans.
     /// </summary>
     public int AndWith(Span<long> buffer, int count)
     {
         if (count == 0) return 0;
 
-        using var _ = _ctx.Allocate(PadToVector256Width(count), out Span<int> indices);
-
-        // Fill indices with 0..count-1 via AVX2, then parallel-sort buffer ascending.
-        InitializeIndices(indices, count);
-        buffer[..count].Sort(indices[..count]);
-
-        // Container walk — same structure as the old AndWithSorted but uses gallop to
-        // find each group's end and tracks the index array in parallel with the buffer.
-        int kept = 0;
-        int i = 0;
         int* idx = _index.RawItems;
         int idxLen = _index.Count;
         ContainerEntry* entries = _entries.RawItems;
         ContainerType* types = _types.RawItems;
 
-        while (i < count)
+        int kept = 0;
+        for (int i = 0; i < count; i++)
         {
-            long containerKey = buffer[i] >> ContainerKeyShift;
-
-            // Fast reject: container key out of range or absent — gallop past the group.
-            if (containerKey < 0 || containerKey >= idxLen || idx[containerKey] < 0)
-            {
-                i = GallopRight(buffer, i, count, (containerKey + 1) << ContainerKeyShift);
+            long value = buffer[i];
+            long containerKey = value >> ContainerKeyShift;
+            if (containerKey < 0 || containerKey >= idxLen)
                 continue;
-            }
 
             int slot = idx[containerKey];
+            if (slot < 0) // absent or freed (FreeContainer resets _index[key] to IndexAbsent)
+                continue;
+
+            ushort low = (ushort)(value & ContainerValueMask);
             ref ContainerEntry entry = ref entries[slot];
             ref ContainerType type = ref types[slot];
-            long containerEnd = (containerKey + 1) << ContainerKeyShift;
-            int groupEnd = GallopRight(buffer, i, count, containerEnd);
-
             switch (type)
             {
                 case ContainerType.Bitmap:
-                {
-                    ulong* bmp = (ulong*)entry.Data;
-                    for (int gi = i; gi < groupEnd; gi++)
-                    {
-                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
-                        if (BitmapContains(bmp, low))
-                        {
-                            buffer[kept] = buffer[gi];
-                            indices[kept] = indices[gi];
-                            kept++;
-                        }
-                    }
+                    if (BitmapContains((ulong*)entry.Data, low) == false) continue;
                     break;
-                }
-
-                case ContainerType.Range:
-                {
-                    int rangeStart = entry.RangeStart;
-                    int rangeEnd = rangeStart + entry.Cardinality;
-                    for (int gi = i; gi < groupEnd; gi++)
-                    {
-                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
-                        if (low >= rangeStart && low < rangeEnd)
-                        {
-                            buffer[kept] = buffer[gi];
-                            indices[kept] = indices[gi];
-                            kept++;
-                        }
-                    }
-                    break;
-                }
 
                 case ContainerType.Array:
-                {
-                    // Two-pointer merge: buffer group (sorted) vs sorted array.
-                    ushort* arr = entry.ArrayData;
-                    int arrLen = entry.Cardinality;
-                    int ai = 0;
-                    for (int gi = i; gi < groupEnd && ai < arrLen; )
-                    {
-                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
-                        if (low < arr[ai])       { gi++; }
-                        else if (low > arr[ai])  { ai++; }
-                        else
-                        {
-                            buffer[kept] = buffer[gi];
-                            indices[kept] = indices[gi];
-                            kept++;
-                            gi++; ai++;
-                        }
-                    }
+                    if (ArrayContainerContains(entry.ArrayData, entry.Cardinality, low) == false) continue;
                     break;
-                }
+
+                case ContainerType.Range:
+                    if (low < entry.RangeStart || low >= entry.RangeStart + entry.Cardinality) continue;
+                    break;
 
                 case ContainerType.ArrayUnsorted:
-                {
-                    int groupLen = groupEnd - i;
-                    if (groupLen == 1)
-                    {
-                        // Single element: SIMD linear scan, avoid sorting the container.
-                        ushort low = (ushort)(buffer[i] & ContainerValueMask);
-                        if (SimdLinearContains(entry.ArrayData, entry.Cardinality, low))
-                        {
-                            buffer[kept] = buffer[i];
-                            indices[kept] = indices[i];
-                            kept++;
-                        }
-                    }
-                    else
-                    {
-                        // Multiple elements: sort the container in-place once, upgrade to Array,
-                        // then use the two-pointer merge. Cheaper than groupLen × O(k) SIMD scans.
-                        new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
-                        type = ContainerType.Array;
-                        goto case ContainerType.Array;
-                    }
+                    // Normalize once: sort + upgrade so later probes of this container binary-search.
+                    new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
+                    type = ContainerType.Array;
+                    if (ArrayContainerContains(entry.ArrayData, entry.Cardinality, low) == false) continue;
                     break;
-                }
-
-                case ContainerType.Free:
-                    break; // tombstone — skip
 
                 default:
                     throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in AndWith");
             }
 
-            i = groupEnd;
+            buffer[kept++] = value;
         }
 
-        // Restore original order: sort the kept indices ascending; buffer follows.
-        indices[..kept].Sort(buffer[..kept]);
         return kept;
     }
 
