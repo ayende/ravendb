@@ -69,6 +69,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
         private readonly IndexFieldsMapping _fieldMappings;
         private readonly ByteStringContext _allocator;
+        private readonly global::Voron.Impl.LowLevelTransaction _lowLevelTransaction;
 
         private readonly int _maxNumberOfOutputsPerDocument;
 
@@ -79,6 +80,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
         public CoraxIndexReadOperation(Index index, RavenLogger logger, Transaction readTransaction, QueryBuilderFactories queryBuilderFactories, IndexFieldsMapping fieldsMapping, IndexQueryServerSide query) : base(index, logger, queryBuilderFactories, query)
         {
             _allocator = readTransaction.Allocator;
+            _lowLevelTransaction = readTransaction.LowLevelTransaction;
             _fieldMappings = fieldsMapping;
             IndexSearcher = new IndexSearcher(readTransaction, _fieldMappings)
             {
@@ -624,6 +626,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             long docsToLoad = pageSize;
             bool runQuery = true;
+            // Reuse a single CompactKey across the whole result loop. With no key supplied, GetEntryTermsReader
+            // allocates a fresh CompactKey per entry and rents pool buffers that are never returned (the reader
+            // is discarded without Reset), so the thread-static pool stays empty and every entry allocates anew.
+            // EntryTermsReader's Set() restarts the key arena per entry, so reuse is safe and bounded.
+            var entryReaderKey = new global::Voron.Data.CompactTrees.CompactKey();
+            entryReaderKey.Initialize(_lowLevelTransaction);
             while (runQuery)
             {
                 QueryPlanBuilder.CompiledQuery compileResult;
@@ -742,7 +750,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         CoraxSpatialResult? documentDistance = hasOrderByDistance ? sortingData.DistancesBuffer[i] : null;
 
                         var key = _documentIdReader.GetTermFor(indexEntryId);
-                        EntryTermsReader entryTermsReader = IndexSearcher.GetEntryTermsReader(indexEntryId, ref page);
+                        EntryTermsReader entryTermsReader = IndexSearcher.GetEntryTermsReader(indexEntryId, ref page, entryReaderKey);
                         var retrieverInput = new RetrieverInput(IndexSearcher, _fieldMappings, in entryTermsReader, key, _index.IndexFieldsPersistence.HasTimeValues, documentScore, documentDistance);
 
                         var filterResult = queryFilter.Apply(ref retrieverInput, key);
@@ -854,6 +862,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     identityTracker.QueryStart = totalResults.Value;
                 }
             }
+
+            entryReaderKey.Dispose();
 
             if (isDistinctCount)
                 totalResults.Value -= skippedResults.Value;

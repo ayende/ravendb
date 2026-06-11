@@ -239,7 +239,7 @@ public static class CompiledQueryHelper
         Span<long> buffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         Span<long> containerLocs = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
-        var readers = new EntryTermsReader[QueryPrimitives.EntryScanBatchSize];
+        var readers = ArrayPool<EntryTermsReader>.Shared.Rent(QueryPrimitives.EntryScanBatchSize);
         
         var searcher = ctx.Searcher;
         var predicate = ctx.CompiledEntryPredicate;
@@ -323,6 +323,7 @@ public static class CompiledQueryHelper
                 entryKeys[i].Dispose();
             // we want to _reuse_ the compact key instances as well, so we are not clearing the array intentionally
             ArrayPool<CompactKey>.Shared.Return(entryKeys, clearArray: false);
+            ArrayPool<EntryTermsReader>.Shared.Return(readers);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
         }
     }
