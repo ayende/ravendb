@@ -98,11 +98,14 @@ public partial class IndexSearcher
             termKey = null;
         }
 
-        return termKey is null 
-            ? TermMatch.CreateEmpty(this, Allocator) 
-            : TermQuery(field, termKey, terms);
+        if (termKey is null)
+            return TermMatch.CreateEmpty(this, Allocator);
+
+        var match = TermQuery(field, termKey, terms);
+        _fieldsTree.Llt.ReleaseCompactKey(ref termKey);
+        return match;
     }
-    
+
     //Should be already analyzed...
     public TermMatch TermQuery(in FieldMetadata field, Slice term, CompactTree termsTree = null)
     {
@@ -124,7 +127,10 @@ public partial class IndexSearcher
             termKey = null;
         }
 
-        return TermQuery(field, termKey, terms);
+        var match = TermQuery(field, termKey, terms);
+        if (termKey != null)
+            _fieldsTree.Llt.ReleaseCompactKey(ref termKey);
+        return match;
     }
 
     public TermMatch TermQuery(in FieldMetadata field, CompactKey term, CompactTree tree)
@@ -228,7 +234,9 @@ public partial class IndexSearcher
         var termKey = _fieldsTree.Llt.AcquireCompactKey();
         termKey.Set(termSlice.AsReadOnlySpan());
 
-        return terms.TryGetValue(termKey, out var value) ? value : -1;
+        var result = terms.TryGetValue(termKey, out var value) ? value : -1;
+        _fieldsTree.Llt.ReleaseCompactKey(ref termKey);
+        return result;
     }
 
     /// <summary>
@@ -257,7 +265,9 @@ public partial class IndexSearcher
         var termKey = _fieldsTree.Llt.AcquireCompactKey();
         termKey.Set(term.AsReadOnlySpan());
 
-        return terms.TryGetValue(termKey, out var value) ? value : -1;
+        var result = terms.TryGetValue(termKey, out var value) ? value : -1;
+        _fieldsTree.Llt.ReleaseCompactKey(ref termKey);
+        return result;
     }
 
     public long NumberOfDocumentsUnderSpecificTerm<TData>(in FieldMetadata binding, TData term)
