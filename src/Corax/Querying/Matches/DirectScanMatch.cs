@@ -191,6 +191,9 @@ public sealed class DirectScanFilteredMatch(
         Span<long> packedIds = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         Span<int> packedOrigIdx = stackalloc int[QueryPrimitives.EntryScanBatchSize];
         var readersArr = ArrayPool<EntryTermsReader>.Shared.Rent(QueryPrimitives.EntryScanBatchSize);
+        // The compiled predicate evaluates readers one at a time and RunEntryScan-style consumers
+        // only read entry IDs afterwards, so the whole batch can share a single scratch key.
+        var scanKey = Llt.AcquireCompactKey();
         try
         {
             while (count < remaining)
@@ -243,7 +246,7 @@ public sealed class DirectScanFilteredMatch(
 
                     readersArr[packed] = new EntryTermsReader(Llt,
                         Searcher.NullTermsMarkers, Searcher.NonExistingTermsMarkers,
-                        spans[s].Address, spans[s].Length, Searcher.DictionaryId, Searcher.VectorFieldsMarkers, null);
+                        spans[s].Address, spans[s].Length, Searcher.DictionaryId, Searcher.VectorFieldsMarkers, scanKey);
                     pIds[packed] = entryId;
                     pIdxs[packed] = origIdx;
                     packed++;
@@ -286,6 +289,7 @@ public sealed class DirectScanFilteredMatch(
         }
         finally
         {
+            Llt.ReleaseCompactKey(ref scanKey);
             ArrayPool<EntryTermsReader>.Shared.Return(readersArr);
         }
     }

@@ -108,7 +108,7 @@ public unsafe struct EntryTermsReader
     public bool IsNonExisting;
 
     //rootPages has to be sorted.
-    public EntryTermsReader(LowLevelTransaction llt, HashSet<long> nullTermsMarkers, HashSet<long> nonExistingTermsMarkers, byte* cur, int size, long dicId, long[] vectorFieldsMarkers, CompactKey key = null)
+    public EntryTermsReader(LowLevelTransaction llt, HashSet<long> nullTermsMarkers, HashSet<long> nonExistingTermsMarkers, byte* cur, int size, long dicId, long[] vectorFieldsMarkers, CompactKey key)
     {
         _llt = llt;
         _nullTermsMarkers = nullTermsMarkers;
@@ -121,18 +121,12 @@ public unsafe struct EntryTermsReader
         _end = cur + size;
         _prevTerm = 0;
         _prevLong = 0;
-        // A supplied key is owned by the caller and already initialized (and reused across many
-        // readers — e.g. the entry-scan loop and vector search). Re-initializing it here would
-        // rent fresh pool buffers on every construction and leak the caller's previous rent.
-        if (key is null)
-        {
-            Current = new();
-            Current.Initialize(llt);
-        }
-        else
-        {
-            Current = key;
-        }
+        // The key is owned by the caller (acquired from LowLevelTransaction.AcquireCompactKey, or a
+        // single scratch key reused across many readers). The reader never rents its own buffers, so
+        // the caller is responsible for releasing the key. Previously a null key rented fresh pool
+        // buffers on every construction that were never returned — a top managed-allocation source.
+        System.Diagnostics.Debug.Assert(key != null, "EntryTermsReader requires a caller-owned CompactKey");
+        Current = key;
     }
 
     public bool FindNextStored(long fieldRootPage)

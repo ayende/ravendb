@@ -48,7 +48,6 @@ namespace Corax.Querying.Matches.TermsProviders
             if (forAggregation)
             {
                 _compactKey = _searcher._transaction.LowLevelTransaction.AcquireCompactKey();
-                _compactKey.Initialize(_searcher._transaction.LowLevelTransaction);
             }
             
             _iterator = tree.Iterate<TLookupIterator>();

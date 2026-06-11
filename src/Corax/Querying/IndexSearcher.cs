@@ -40,6 +40,9 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private HashSet<long> _nullTermsMarkers;
     private HashSet<long> _nonExistingTermsMarkers;
     private long[] _vectorFieldsMarkers;
+    // Searcher-lifetime scratch key handed to EntryTermsReaders created via GetEntryTermsReader
+    // without an explicit key. Acquired lazily from the pool on first use and released in Dispose.
+    private CompactKey _sharedEntryReaderKey;
     private Tree _persistedDynamicTreeAnalyzer;
     private long? _numberOfEntries;
     private bool _nullTermsMarkersLoaded;
@@ -189,6 +192,11 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         InitializeSpecialTermsMarkers();
         ContainerEntryId loc = (ContainerEntryId)locLong;
         var item = Container.MaybeGetFromSamePage(_transaction.LowLevelTransaction, ref p, loc);
+        // EntryTermsReader requires a caller-owned key. When the caller doesn't supply one, fall back
+        // to the searcher's scratch key (acquired once, released in Dispose). This is safe because
+        // these callers consume one reader at a time; callers that need two readers' decoded terms
+        // live simultaneously must pass their own keys.
+        key ??= _sharedEntryReaderKey ??= _transaction.LowLevelTransaction.AcquireCompactKey();
         return new EntryTermsReader(_transaction.LowLevelTransaction, _nullTermsMarkers, _nonExistingTermsMarkers, item.Address, item.Length, _dictionaryId, _vectorFieldsMarkers, key);
     }
 
@@ -546,6 +554,9 @@ public sealed unsafe partial class IndexSearcher : IDisposable
 
     public void Dispose()
     {
+        if (_sharedEntryReaderKey != null)
+            _transaction.LowLevelTransaction.ReleaseCompactKey(ref _sharedEntryReaderKey);
+
         if (_vectorSearchStateCache != null)
         {
             foreach (var kvp in _vectorSearchStateCache)

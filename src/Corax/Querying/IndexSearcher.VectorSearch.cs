@@ -86,8 +86,7 @@ public partial class IndexSearcher
             {
                 _indexSearcher = indexSearcher;
                 _random = random ?? Random.Shared;
-                _key = new();
-                _key.Initialize(indexSearcher._transaction.LowLevelTransaction);
+                _key = indexSearcher._transaction.LowLevelTransaction.AcquireCompactKey();
                 var searchState = new Hnsw.SearchState(indexSearcher.Transaction.LowLevelTransaction, metadata.FieldName);
                 _vectorsByHash = indexSearcher._transaction.CompactTreeFor(Hnsw.VectorsIdByHashSlice);
                 _nodesByVectorId = searchState.NodeIdsByVectorId;
@@ -156,7 +155,7 @@ public partial class IndexSearcher
             {
                 _current = -1;
                 _isDone = true;
-                _key.Dispose();
+                _indexSearcher._transaction.LowLevelTransaction.ReleaseCompactKey(ref _key);
             }
 
             public bool MoveNext()

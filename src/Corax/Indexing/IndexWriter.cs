@@ -604,7 +604,8 @@ namespace Corax.Indexing
         private void RecordTermDeletionsForEntry(Container.Item entryTerms, LowLevelTransaction llt, Dictionary<long, IndexedField> fieldsByRootPage,
             HashSet<long> nullTermMarkers, HashSet<long> nonExistingTermMarkers, long dicId, DocumentEntryId entryToDelete, int termsPerEntryIndex)
         {
-            var reader = new EntryTermsReader(llt, nullTermMarkers, nonExistingTermMarkers, entryTerms.Address, entryTerms.Length, dicId, _persistedVectorRootPages);
+            var entryReaderKey = llt.AcquireCompactKey();
+            var reader = new EntryTermsReader(llt, nullTermMarkers, nonExistingTermMarkers, entryTerms.Address, entryTerms.Length, dicId, _persistedVectorRootPages, entryReaderKey);
 
             reader.Reset();
             while (reader.MoveNextStoredField())
@@ -698,6 +699,8 @@ namespace Corax.Indexing
                 term = ref field.Storage.GetAsRef(doubleTermLocation);
                 term.Removal(_entriesAllocator, entryToDelete, termsPerEntryIndex, freq: 1, InserterMode.Numerical);
             }
+
+            llt.ReleaseCompactKey(ref entryReaderKey);
         }
 
         private void RemoveMarkerTerm(IndexedField field, EntryTermsReader reader, Slice termSlice, DocumentEntryId entryToDelete, int termsPerEntryIndex)

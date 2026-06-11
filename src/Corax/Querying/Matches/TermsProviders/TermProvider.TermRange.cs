@@ -228,8 +228,7 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
         }
         
         var allocator = _indexSearcher.Allocator;
-        CompactKey compactKey = new();
-        compactKey.Initialize(_indexSearcher._transaction.LowLevelTransaction);
+        CompactKey compactKey = _indexSearcher._transaction.LowLevelTransaction.AcquireCompactKey();
         
         NativeList<long> postingLists = new();
         postingLists.Initialize(allocator);
@@ -286,6 +285,7 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
 
         postingLists.Dispose(allocator);
         postingListsType.Dispose(allocator);
+        _indexSearcher._transaction.LowLevelTransaction.ReleaseCompactKey(ref compactKey);
         return totalCount;
     }
 }

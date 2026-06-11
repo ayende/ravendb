@@ -20,13 +20,6 @@ namespace Corax.Querying.Planning;
 /// </summary>
 public static class CompiledQueryHelper
 {
-    // Per-thread CompactKey buffers for the entry scan. CompactKey.Initialize rents pool buffers
-    // (~3KB each); doing that for every batch slot on every query made Initialize a hotspot. We
-    // allocate+Initialize each slot once per thread and Rebind it to the current transaction on
-    // subsequent queries, so the pool rent is paid once for the thread's lifetime.
-    [ThreadStatic]
-    private static CompactKey[] _entryScanKeys;
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void RecordTiming(CompiledQueryMatch ctx, int opIndex, long startTick)
     {
@@ -252,9 +245,11 @@ public static class CompiledQueryHelper
         var predicate = ctx.CompiledEntryPredicate;
         var llt = searcher.Transaction.LowLevelTransaction;
 
-        var entryKeys = _entryScanKeys ??= InitializeCompactKeysArray();
-        foreach (var key in entryKeys)
-            key.Rebind(llt);
+        // The emitted predicate evaluates readers strictly one at a time (it never decodes terms
+        // from two readers simultaneously), and once it returns RunEntryScan only consumes entry
+        // IDs — never the readers' decoded terms. So every reader in the batch can share a single
+        // scratch CompactKey instead of one per slot. Acquire it from the pooled buffer set.
+        var entryKey = llt.AcquireCompactKey();
 
         // The target slot may have been used as AND/AndNot scratch by an earlier op, which
         // leaves it marked consumed (and possibly holding stale containers). Reset it so the
@@ -292,7 +287,6 @@ public static class CompiledQueryHelper
                 {
                     if (containerLocs[i] == -1 || spans[i].Address == null)
                         continue;
-                    var entryKey = entryKeys[validCount];
                     readers[validCount] = new EntryTermsReader(llt,
                         searcher.NullTermsMarkers, searcher.NonExistingTermsMarkers,
                         spans[i].Address, spans[i].Length, searcher.DictionaryId,
@@ -315,25 +309,12 @@ public static class CompiledQueryHelper
         }
         finally
         {
-            // Drop the per-query transaction reference from all the cached key 
-            foreach (var key in entryKeys)
-                key.Unbind();
+            // Return the shared scratch key to the pool (keeps its rented buffers for reuse).
+            llt.ReleaseCompactKey(ref entryKey);
 
             iterator.Dispose();
             ArrayPool<EntryTermsReader>.Shared.Return(readers);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
-        }
-
-        CompactKey[] InitializeCompactKeysArray()
-        {
-            var keys = new CompactKey[QueryPrimitives.EntryScanBatchSize];
-            for (int i = 0; i < keys.Length; i++)
-            {
-                var key = new CompactKey();
-                key.Initialize(null); //setting it to null is fine, we'll call Rebind shortly 
-                keys[i] = key;
-            }
-            return keys;
         }
     }
 }
