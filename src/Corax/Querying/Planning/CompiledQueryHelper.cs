@@ -252,21 +252,9 @@ public static class CompiledQueryHelper
         var predicate = ctx.CompiledEntryPredicate;
         var llt = searcher.Transaction.LowLevelTransaction;
 
-        var entryKeys = _entryScanKeys;
-        if (entryKeys is null)
-        {
-            // First entry scan on this thread: allocate the cache and rent each key's pool buffers once.
-            var keys = new CompactKey[QueryPrimitives.EntryScanBatchSize];
-            for (int i = 0; i < keys.Length; i++)
-                (keys[i] = new CompactKey()).Initialize(llt);
-            _entryScanKeys = entryKeys = keys; // publish only once fully built, so a throw can't poison the cache
-        }
-        else
-        {
-            // Re-arm every cached key for this transaction (cheap field resets, no pool rent).
-            for (int i = 0; i < entryKeys.Length; i++)
-                entryKeys[i].Rebind(llt);
-        }
+        var entryKeys = _entryScanKeys ??= InitializeCompactKeysArray();
+        foreach (var key in entryKeys)
+            key.Rebind(llt);
 
         // The target slot may have been used as AND/AndNot scratch by an earlier op, which
         // leaves it marked consumed (and possibly holding stale containers). Reset it so the
@@ -327,14 +315,25 @@ public static class CompiledQueryHelper
         }
         finally
         {
+            // Drop the per-query transaction reference from all the cached key 
+            foreach (var key in entryKeys)
+                key.Unbind();
+
             iterator.Dispose();
-            // Drop the per-query transaction reference from every cached key so the LowLevelTransaction
-            // (and the pages/scratch it roots) can be collected while this thread idles between queries.
-            // The rented pool buffers stay put — Rebind re-arms the keys on the next entry scan.
-            for (int i = 0; i < entryKeys.Length; i++)
-                entryKeys[i].Unbind();
             ArrayPool<EntryTermsReader>.Shared.Return(readers);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
+        }
+
+        CompactKey[] InitializeCompactKeysArray()
+        {
+            var keys = new CompactKey[QueryPrimitives.EntryScanBatchSize];
+            for (int i = 0; i < keys.Length; i++)
+            {
+                var key = new CompactKey();
+                key.Initialize(null); //setting it to null is fine, we'll call Rebind shortly 
+                keys[i] = key;
+            }
+            return keys;
         }
     }
 }
