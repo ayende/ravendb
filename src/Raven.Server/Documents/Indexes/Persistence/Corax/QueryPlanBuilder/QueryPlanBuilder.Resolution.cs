@@ -29,10 +29,26 @@ internal static partial class QueryPlanBuilder
 {
     public static PlanTemplate BuildTemplate(PlanParameters planParams)
     {
-        var queryText = planParams.CacheKey;
         var planCache = planParams.IndexSearcher.PlanCache;
+
+        // Fast path: the QueryMetadata may already hold the template resolved against THIS cache instance,
+        // letting us skip the string-keyed dictionary lookup. The Id compare (a value, pins nothing) rejects
+        // a memo left over from a previous index instance; the weak ref guards against the template having
+        // been collected. Only the main query path is eligible — CacheKeyOverride callers (e.g. more-like-this)
+        // compile a different expression than Metadata.Query.QueryText, so they must not share the memo.
+        var metadata = planParams.CacheKeyOverride == null ? planParams.Metadata : null;
+        if (metadata?.CachedPlanMemo is { } memo
+            && memo.PlanCacheId == planCache.Id
+            && memo.Template.TryGetTarget(out var memoized))
+            return memoized;
+
+        var queryText = planParams.CacheKey;
         if (planCache.TryGetTemplate(queryText) is { } template)
+        {
+            if (metadata != null)
+                metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, template);
             return template;
+        }
 
         template = ParseTemplate(planParams);
         template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams);

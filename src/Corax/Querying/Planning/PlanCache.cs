@@ -28,6 +28,16 @@ public class PlanCache
     private int MaxPlansPerQuery { get; }
     private int HalfOfMaxDistinctQueries { get; }
 
+    private static long _idGen;
+
+    /// <summary>
+    /// Per-instance identity, stamped from a process-wide monotonic counter. Callers that memoize a
+    /// resolved <see cref="PlanTemplate"/> outside this cache (e.g. on a QueryMetadata instance) record
+    /// this value alongside it; comparing it against the live cache's Id detects an index-instance swap
+    /// (the PlanCache is replaced with the index) without dereferencing or pinning anything.
+    /// </summary>
+    public readonly long Id = Interlocked.Increment(ref _idGen);
+
     private sealed record CacheGeneration(
         ConcurrentDictionary<string, PerQueryPlans> Current,
         ConcurrentDictionary<string, PerQueryPlans> Previous);

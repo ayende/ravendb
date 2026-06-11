@@ -51,6 +51,38 @@ namespace Raven.Server.Documents.Queries
 
         public readonly Dictionary<StringSegment, (string PropertyPath, bool Array, bool Parameter, bool Quoted, string LoadFromAlias)> RootAliasPaths = new Dictionary<StringSegment, (string, bool, bool, bool, string)>();
 
+        private volatile PlanMemo _planMemo;
+
+        /// <summary>
+        /// Memoizes the resolved Corax plan template for this query so the plan builder can skip the
+        /// string-keyed PlanCache lookup on the hot path. The memo is trusted only when its
+        /// <see cref="PlanMemo.PlanCacheId"/> still matches the live cache instance (the PlanCache is
+        /// replaced when its index is) and the weakly-held template is still alive; otherwise the builder
+        /// falls back to the string lookup and re-stamps. Unused by the Lucene engine.
+        /// </summary>
+        public PlanMemo CachedPlanMemo
+        {
+            get => _planMemo;
+            set => _planMemo = value;
+        }
+
+        /// <summary>
+        /// A resolved plan template memoized on a QueryMetadata, tagged with the originating PlanCache's
+        /// <see cref="global::Corax.Querying.Planning.PlanCache.Id"/>. The template is held weakly so a
+        /// replaced index's plans aren't pinned alive by a metadata instance that outlives the index.
+        /// </summary>
+        public sealed class PlanMemo
+        {
+            public readonly long PlanCacheId;
+            public readonly WeakReference<global::Corax.Querying.Planning.PlanTemplate> Template;
+
+            public PlanMemo(long planCacheId, global::Corax.Querying.Planning.PlanTemplate template)
+            {
+                PlanCacheId = planCacheId;
+                Template = new WeakReference<global::Corax.Querying.Planning.PlanTemplate>(template);
+            }
+        }
+
         public QueryMetadata(string query, BlittableJsonReaderObject parameters, ulong cacheKey, bool addSpatialProperties = false, QueryType queryType = QueryType.Select)
             : this(ParseQuery(query, queryType), parameters, cacheKey, addSpatialProperties)
         {
