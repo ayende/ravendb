@@ -252,8 +252,21 @@ public static class CompiledQueryHelper
         var predicate = ctx.CompiledEntryPredicate;
         var llt = searcher.Transaction.LowLevelTransaction;
 
-        var entryKeys = _entryScanKeys ??= new CompactKey[QueryPrimitives.EntryScanBatchSize];
-        int maxInitKey = 0;
+        var entryKeys = _entryScanKeys;
+        if (entryKeys is null)
+        {
+            // First entry scan on this thread: allocate the cache and rent each key's pool buffers once.
+            var keys = new CompactKey[QueryPrimitives.EntryScanBatchSize];
+            for (int i = 0; i < keys.Length; i++)
+                (keys[i] = new CompactKey()).Initialize(llt);
+            _entryScanKeys = entryKeys = keys; // publish only once fully built, so a throw can't poison the cache
+        }
+        else
+        {
+            // Re-arm every cached key for this transaction (cheap field resets, no pool rent).
+            for (int i = 0; i < entryKeys.Length; i++)
+                entryKeys[i].Rebind(llt);
+        }
 
         // The target slot may have been used as AND/AndNot scratch by an earlier op, which
         // leaves it marked consumed (and possibly holding stale containers). Reset it so the
@@ -278,24 +291,6 @@ public static class CompiledQueryHelper
             while ((read = iterator.Fill(ref sourceBitmap, buffer)) > 0)
             {
                 ctx.Token.ThrowIfCancellationRequested();
-
-                if (maxInitKey < read)
-                {   // avoid null checks in the hot loop below
-                    for (int i = maxInitKey; i < read; i++)
-                    {
-                        var key = entryKeys[i];
-                        if (key is null)
-                        {   // first use of this slot on this thread: rent its pool buffers once
-                            key = entryKeys[i] = new();
-                            key.Initialize(llt);
-                        }
-                        else
-                        {   // slot already holds buffers from a prior query: just re-arm for this tx
-                            key.Rebind(llt);
-                        }
-                    }
-                    maxInitKey = read;
-                }
 
                 var batch = buffer[..read];
                 ctx.EntryScanEntriesScanned += read;
@@ -333,8 +328,11 @@ public static class CompiledQueryHelper
         finally
         {
             iterator.Dispose();
-            // entryKeys is the thread-static cache: its CompactKey buffers are retained for the
-            // thread's lifetime (re-armed via Rebind next query), so we neither Dispose nor return it.
+            // Drop the per-query transaction reference from every cached key so the LowLevelTransaction
+            // (and the pages/scratch it roots) can be collected while this thread idles between queries.
+            // The rented pool buffers stay put — Rebind re-arms the keys on the next entry scan.
+            for (int i = 0; i < entryKeys.Length; i++)
+                entryKeys[i].Unbind();
             ArrayPool<EntryTermsReader>.Shared.Return(readers);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
         }

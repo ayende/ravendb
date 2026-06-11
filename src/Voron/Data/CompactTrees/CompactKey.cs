@@ -96,6 +96,16 @@ public sealed unsafe class CompactKey : IDisposable
         MaxLength = 0;
     }
 
+    /// <summary>Drop the transaction reference taken by <see cref="Rebind"/>/<see cref="Initialize"/>
+    /// without returning the rented buffers. A long-lived key cache must call this once a query finishes
+    /// so the <see cref="LowLevelTransaction"/> (and the pages/scratch it roots) can be collected while
+    /// the thread idles, instead of being pinned until the next query rebinds. The buffers stay rented
+    /// for reuse; call <see cref="Rebind"/> before the next use.</summary>
+    public void Unbind()
+    {
+        _owner = null;
+    }
+
     public void Reset()
     {
         if (_storage is null || _keyMappingCache is null)
