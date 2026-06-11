@@ -287,13 +287,9 @@ namespace Raven.Server.Documents.Queries
                     }
                 }
 
-                // Query parameters are already populated above (read synchronously per RavenDB-24102), so the
-                // metadata hash folds in their names just like the POST path. Hashing the raw text needs no
-                // parse, and a hash collision is caught by the QueryText equality check inside TryGetMetadata.
                 ulong metadataHash = 0;
                 QueryMetadata metadata = null;
-                if (cache != null)
-                    cache.TryGetMetadata(result, addSpatialProperties, out metadataHash, out metadata);
+                cache?.TryGetMetadata(result, addSpatialProperties, out metadataHash, out metadata);
 
                 result.Metadata = metadata ?? new QueryMetadata(result.Query, result.QueryParameters, metadataHash, addSpatialProperties);
 

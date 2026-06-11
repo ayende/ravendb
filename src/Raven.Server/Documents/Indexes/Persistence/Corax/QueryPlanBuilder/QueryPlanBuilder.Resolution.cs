@@ -31,22 +31,18 @@ internal static partial class QueryPlanBuilder
     {
         var planCache = planParams.IndexSearcher.PlanCache;
 
-        // Fast path: the QueryMetadata may already hold the template resolved against THIS cache instance,
-        // letting us skip the string-keyed dictionary lookup. The Id compare (a value, pins nothing) rejects
-        // a memo left over from a previous index instance; the weak ref guards against the template having
-        // been collected. Only the main query path is eligible — CacheKeyOverride callers (e.g. more-like-this)
-        // compile a different expression than Metadata.Query.QueryText, so they must not share the memo.
+        // Fast path: the QueryMetadata may already hold the template resolved against THIS cache instance, saving string dic lookup.
+        // We use weak ref to avoid holding reference outside to the plan cache, so we can easily evict
         var metadata = planParams.CacheKeyOverride == null ? planParams.Metadata : null;
         if (metadata?.CachedPlanMemo is { } memo
-            && memo.PlanCacheId == planCache.Id
+            && memo.PlanCacheId == planCache.Id // if we reset the index, we want to re-create the plan
             && memo.Template.TryGetTarget(out var memoized))
             return memoized;
 
         var queryText = planParams.CacheKey;
         if (planCache.TryGetTemplate(queryText) is { } template)
         {
-            if (metadata != null)
-                metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, template);
+            metadata?.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, template);
             return template;
         }
 
