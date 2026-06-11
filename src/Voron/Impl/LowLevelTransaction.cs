@@ -1089,26 +1089,19 @@ namespace Voron.Impl
             }
         }
 
-        // The factory rents each pooled key's storage buffers once (Initialize(null) only rents; it
-        // doesn't touch the tx). AcquireCompactKey then Rebinds the pooled key to the current
-        // transaction and ReleaseCompactKey only Unbinds it, so the rented buffers stay attached to
-        // the pooled object across acquire/release instead of being churned through the ArrayPool on
-        // every call (which was a top managed-allocation source on the query path).
-        // Sized at ProcessorCount * 4 (default ObjectPool size is * 2). Each in-flight query holds a
-        // handful of keys at once (entry scan, range/exists term providers, vector search), so * 2
-        // can be exhausted by a few concurrent queries; the extra headroom keeps the rented buffers
-        // pooled instead of falling through to transient per-call rents. ~3KB/key, so the retained
-        // footprint stays small (e.g. ~192KB on a 16-core box). Overflow on Free is simply dropped.
-        private static readonly ObjectPool<CompactKey> _sharedCompactKeyPool = new(static () =>
+        // The factory rents each pooled key's storage buffers once (Initialize(null) only rents; it doesn't touch the tx). AcquireCompactKey then
+        // Rebinds the pooled key to the current transaction and ReleaseCompactKey only Unbinds it, so the rented buffers stay attached to
+        // the pooled object across acquire/release instead of being churned through the ArrayPool on every call.
+        private static readonly ObjectPool<CompactKey> SharedCompactKeyPool = new(static () =>
         {
             var key = new CompactKey();
             key.Initialize(null);
             return key;
-        }, ProcessorInfo.ProcessorCount * 4);
+        }, ProcessorInfo.ProcessorCount * 8);
 
         public CompactKey AcquireCompactKey()
         {
-            var key = _sharedCompactKeyPool.Allocate();
+            var key = SharedCompactKeyPool.Allocate();
             key.Rebind(this);
             return key;
         }
@@ -1118,13 +1111,13 @@ namespace Voron.Impl
             if (key == null)
                 return;
 
-            // Unbind drops the transaction reference but keeps the rented buffers, so the next
-            // AcquireCompactKey reuses them. A released key still carries stale storage, but its
-            // owner is null, so any decode use after release fails fast on the null owner.
             if (ReferenceEquals(key, CompactKey.NullInstance) == false)
             {
+                // Unbind drops the transaction reference but keeps the rented buffers, so the next
+                // AcquireCompactKey reuses them. A released key still carries stale storage, but its
+                // owner is null, so any decode use after release fails fast on the null owner.
                 key.Unbind();
-                _sharedCompactKeyPool.Free(key);
+                SharedCompactKeyPool.Free(key);
             }
             key = null;
         }

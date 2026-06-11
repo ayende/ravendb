@@ -121,10 +121,6 @@ public unsafe struct EntryTermsReader
         _end = cur + size;
         _prevTerm = 0;
         _prevLong = 0;
-        // The key is owned by the caller (acquired from LowLevelTransaction.AcquireCompactKey, or a
-        // single scratch key reused across many readers). The reader never rents its own buffers, so
-        // the caller is responsible for releasing the key. Previously a null key rented fresh pool
-        // buffers on every construction that were never returned — a top managed-allocation source.
         System.Diagnostics.Debug.Assert(key != null, "EntryTermsReader requires a caller-owned CompactKey");
         Current = key;
     }
