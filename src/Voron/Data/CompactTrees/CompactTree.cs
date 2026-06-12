@@ -450,7 +450,7 @@ public sealed partial class CompactTree : IPrepareForCommit
     /// Sub-linear estimate of how many terms have a key in <c>[low, high]</c> (both bounds inclusive), forwarding to
     /// the inner <see cref="Lookup{TLookupKey}"/>. See <see cref="Lookup{TLookupKey}.GetNumberOfEntriesInRangeEstimate"/>.
     /// </summary>
-    public long GetNumberOfEntriesInRangeEstimate(ReadOnlySpan<byte> low, ReadOnlySpan<byte> high, bool highToEnd = false)
+    public long GetNumberOfEntriesInRangeEstimate(ReadOnlySpan<byte> low, ReadOnlySpan<byte> high, bool highToEnd)
     {
         using var lowScope = new CompactKeyCacheScope(_inner.Llt, low, _inner.State.DictionaryId);
         using var highScope = new CompactKeyCacheScope(_inner.Llt, high, _inner.State.DictionaryId);

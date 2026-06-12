@@ -24,16 +24,7 @@ internal static class CardinalityEstimator
                     return e.Cardinality; // sentinels carry a preset cardinality (NumberOfEntries / 0); never re-estimated
 
                 case ClauseType.Equals:
-                {
-                    FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx); // find the relevant analyzer here
-                    PackedParam p = e.PackedParamValue;
-                    return p.ValueType switch
-                    {
-                        PackedParam.TypeLong => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetLong(p.Param1)),
-                        PackedParam.TypeDouble => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetDouble(p.Param1)),
-                        _ => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetString(p.Param1))
-                    };
-                }
+                    return EstimateNumberOfDocumentsUnderSpecificTerm(clause, e);
 
                 case ClauseType.GreaterThan:
                 case ClauseType.GreaterThanOrEqual:
@@ -51,13 +42,7 @@ internal static class CardinalityEstimator
                     if (p.IsNone)
                         return indexSearcher.NumberOfEntries;
 
-                    FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx);
-                    long eq = p.ValueType switch
-                    {
-                        PackedParam.TypeLong => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetLong(p.Param1)),
-                        PackedParam.TypeDouble => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetDouble(p.Param1)),
-                        _ => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetString(p.Param1))
-                    };
+                    long eq = EstimateNumberOfDocumentsUnderSpecificTerm(clause, e);
                     return Math.Max(0, indexSearcher.NumberOfEntries - eq);
                 }
 
@@ -145,53 +130,39 @@ internal static class CardinalityEstimator
                 if (type != ClauseType.Between)
                     return indexSearcher.NumberOfEntries;
 
-                return indexSearcher.EstimateMatchesInRange(fieldMeta, writer.GetString(p.Param1), writer.GetString(p.Param2),
-                    UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
+                return indexSearcher.EstimateMatchesInRange(fieldMeta, writer.GetString(p.Param1), writer.GetString(p.Param2));
             }
 
-            // Numeric ranges are estimated natively per type: longs keep full precision (e.g. DateTime ticks
-            // above 2^53 that would round if widened to double), doubles likewise. Open sides use the type's
-            // own min/max sentinel. The bounds are resolved to concrete values here (only BETWEEN has a second
-            // value index; the half-open operators leave Param2 == NoParam, so it is never read) and the
-            // dispatched helper just maps the operator onto the (low, high, inclusivity) tuple.
             bool isBetween = type == ClauseType.Between;
             return p.ValueType == PackedParam.TypeLong
-                ? EstimateNumeric(writer.GetLong(p.Param1), isBetween ? writer.GetLong(p.Param2) : default, long.MinValue, long.MaxValue)
-                : EstimateNumeric(writer.GetDouble(p.Param1), isBetween ? writer.GetDouble(p.Param2) : default, double.MinValue, double.MaxValue);
+                ? EstimateNumeric(writer.GetLong(p.Param1), isBetween ? writer.GetLong(p.Param2) : 0, long.MinValue, long.MaxValue)
+                : EstimateNumeric(writer.GetDouble(p.Param1), isBetween ? writer.GetDouble(p.Param2) : 0, double.MinValue, double.MaxValue);
 
             long EstimateNumeric<T>(T value1, T value2, T min, T max)
             {
-                T low, high;
-                UnaryMatchOperation left = UnaryMatchOperation.GreaterThanOrEqual;
-                UnaryMatchOperation right = UnaryMatchOperation.LessThanOrEqual;
-                switch (type)
+                var (low, high, left, right) = type switch
                 {
-                    case ClauseType.Between:
-                        low = value1;
-                        high = value2;
-                        break;
-                    case ClauseType.GreaterThan:
-                        low = value1;
-                        high = max;
-                        left = UnaryMatchOperation.GreaterThan;
-                        break;
-                    case ClauseType.GreaterThanOrEqual:
-                        low = value1;
-                        high = max;
-                        break;
-                    case ClauseType.LessThan:
-                        low = min;
-                        high = value1;
-                        right = UnaryMatchOperation.LessThan;
-                        break;
-                    default: // LessThanOrEqual
-                        low = min;
-                        high = value1;
-                        break;
-                }
-
+                    ClauseType.Between            => (value1, value2, UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual),
+                    ClauseType.GreaterThan        => (value1, max,    UnaryMatchOperation.GreaterThan,        UnaryMatchOperation.LessThanOrEqual),
+                    ClauseType.GreaterThanOrEqual => (value1, max,    UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual),
+                    ClauseType.LessThan           => (min,    value1, UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan),
+                    ClauseType.LessThanOrEqual    => (min,    value1, UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual),
+                    _ => throw new ArgumentOutOfRangeException(nameof(type), type, "invalid clause type for range estimation")
+                };
                 return indexSearcher.EstimateMatchesInRange(fieldMeta, low, high, left, right);
             }
+        }
+
+        long EstimateNumberOfDocumentsUnderSpecificTerm(ClauseInfo clause, ClauseExecution e)
+        {
+            FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx); // find the relevant analyzer here
+            PackedParam p = e.PackedParamValue;
+            return p.ValueType switch
+            {
+                PackedParam.TypeLong => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetLong(p.Param1)),
+                PackedParam.TypeDouble => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetDouble(p.Param1)),
+                _ => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetString(p.Param1))
+            };
         }
     }
 }

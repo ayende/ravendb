@@ -149,8 +149,7 @@ public partial class IndexSearcher
         if (len == 0)
         {
             // empty prefix or all-0xFF carry: no finite successor, so the match set runs to the end of the tree
-            return EstimateMatchesInRange(field, encodedPrefix, Slices.AfterAllKeys,
-                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
+            return EstimateMatchesInRange(field, encodedPrefix, Slices.AfterAllKeys);
         }
 
         using var _ = Allocator.Allocate(len, out Span<byte> successor);

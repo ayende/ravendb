@@ -44,7 +44,7 @@ internal static class RangePostingBuckets
     // Folds the filled buckets into the breakdown: singles need no container read; the small/large buckets have their
     // headers summed. The total postings plus the single/small/large split is the raw material the two-ended
     // range-cardinality probe extrapolates from.
-    public static unsafe void Summarize(Span<NativeList<long>> buckets, ByteStringContext allocator, LowLevelTransaction llt, ref RangePostingStats stats)
+    public static void Summarize(Span<NativeList<long>> buckets, ByteStringContext allocator, LowLevelTransaction llt, ref RangePostingStats stats)
     {
         if (buckets[3].Count > 0)
             throw new InvalidOperationException("Unknown TermIdMask type");
@@ -58,7 +58,7 @@ internal static class RangePostingBuckets
     // Reads one posting-list bucket: strip the container ids, sort them so Container.GetAll walks pages in order, then
     // sum each list's header count. isLarge picks the decode once (outside the loop) so neither read path carries a
     // per-term branch.
-    private static unsafe long SumBucketPostings(NativeList<long> bucket, ByteStringContext allocator, LowLevelTransaction llt, bool isLarge, out int count)
+    private static unsafe long SumBucketPostings(in NativeList<long> bucket, ByteStringContext allocator, LowLevelTransaction llt, bool isLarge, out int count)
     {
         count = bucket.Count;
         if (count == 0)

@@ -268,7 +268,7 @@ namespace Corax.Querying.Matches.TermsProviders
                 return 0;
 
             // Numeric bounds are always concrete (MinValue/MaxValue for open ranges), so the estimate is always available.
-            return _set.GetNumberOfEntriesInRangeEstimate(_low, _high);
+            return _set.GetNumberOfEntriesInRangeEstimate(_low, _high, highToEnd: false);
         }
 
         public long TotalTermCount() => _set.NumberOfEntries;
