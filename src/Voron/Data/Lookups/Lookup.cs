@@ -431,6 +431,180 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
         return true;
     }
 
+    /// <summary>
+    /// Counts how many entries have a key in <c>[low, high]</c> (both bounds inclusive). Exact: walks the
+    /// in-range terms via a forward iterator, so the cost is O(#in-range entries). This is the small/medium-range
+    /// answer and the oracle the sampling estimator (<see cref="GetNumberOfEntriesInRangeEstimate"/>) is validated
+    /// against. <paramref name="low"/> must not be greater than <paramref name="high"/>; an empty/inverted range
+    /// returns 0.
+    /// </summary>
+    public long GetNumberOfEntriesInRange(TLookupKey low, TLookupKey high)
+    {
+        if (_state.NumberOfEntries == 0)
+            return 0;
+
+        var it = Iterate<ForwardIterator>();
+        it.Seek(low); // forward seek lands on the first key >= low (inclusive low bound)
+
+        long count = 0;
+        while (it.MoveNext<TLookupKey>(out var key, out _, out _))
+        {
+            // Compare via the (parent, keyData) overload rather than key.CompareTo(high): the iterator
+            // materializes each key from its long form with no decoded payload (CompactKeyLookup.Key is null),
+            // so a key-to-key compare would NRE for string trees. The parent overload lazily resolves the
+            // stored key and works for every TLookupKey. high < key => key is past the inclusive high bound.
+            if (high.CompareTo(this, key.ToLong()) < 0)
+                break;
+            count++;
+        }
+
+        return count;
+    }
+
+    /// <summary>
+    /// When a contiguous run of fully-enclosed sibling subtrees is no larger than this, we estimate each one
+    /// individually instead of sampling a single representative and multiplying by the sibling count. This caps
+    /// the "one sample stands in for all" error for the small groups that show up along the two edge paths.
+    /// </summary>
+    private const int ExactChildSampleThreshold = 8;
+
+    /// <summary>
+    /// Sub-linear estimate of how many entries have a key in <c>[low, high]</c> (both bounds inclusive). Where
+    /// <see cref="GetNumberOfEntriesInRange"/> walks every in-range term (O(#in-range)), this descends to both
+    /// bounds, finds the lowest common ancestor branch (LCA) where the two paths diverge into child indices
+    /// <c>a &lt; b</c>, and counts the band directly — never the whole tree:
+    /// <list type="bullet">
+    /// <item>the fully-enclosed children strictly between <c>a</c> and <c>b</c> at the LCA;</item>
+    /// <item>the low edge — within child <c>a</c>, the right-siblings along the low path plus the exact leaf tail;</item>
+    /// <item>the high edge — within child <c>b</c>, the left-siblings along the high path plus the exact leaf head.</item>
+    /// </list>
+    /// Fully-enclosed sibling groups are estimated by sampling one representative subtree (<see cref="EstimateSubtreeEntries"/>)
+    /// and multiplying by the sibling count (groups up to <see cref="ExactChildSampleThreshold"/> are sampled per-child).
+    /// Because the band is counted directly rather than as <c>rank(high) − rank(low)</c>, the error scales with the
+    /// answer instead of with the tree size, so small ranges stay accurate. The leaf-fill assumption introduces a
+    /// systematic bias that the caller's EWMA is expected to correct. Cost is O(height²) page reads. An empty or
+    /// inverted range (<paramref name="low"/> &gt; <paramref name="high"/>) returns 0.
+    /// </summary>
+    public long GetNumberOfEntriesInRangeEstimate(TLookupKey low, TLookupKey high)
+    {
+        if (_state.NumberOfEntries == 0)
+            return 0;
+
+        // Two independent root->leaf paths; FindPageFor normalizes the branch positions to the descended child
+        // index and leaves the leaf position in raw (~insertion) form.
+        var lowCursor = new IteratorCursorState { _stk = new CursorState[8], _pos = -1, _len = 0 };
+        var highCursor = new IteratorCursorState { _stk = new CursorState[8], _pos = -1, _len = 0 };
+        FindPageFor(ref low, ref lowCursor);
+        FindPageFor(ref high, ref highCursor);
+
+        int depth = lowCursor._pos; // leaf level; both paths share the tree height
+
+        // LCA = the shallowest branch level where the two paths take different children.
+        int lca = -1;
+        for (int i = 0; i < depth; i++)
+        {
+            if (lowCursor._stk[i].LastSearchPosition != highCursor._stk[i].LastSearchPosition)
+            {
+                lca = i;
+                break;
+            }
+        }
+
+        if (lca == -1)
+        {
+            // low and high resolve to the same leaf: the answer is exact, no sampling involved.
+            ref var leaf = ref lowCursor._stk[depth];
+            int loStart = LowerBoundIndex(ref leaf);
+            int hiEnd = UpperBoundIndex(ref highCursor._stk[depth]);
+            return Math.Max(0, hiEnd - loStart);
+        }
+
+        int a = lowCursor._stk[lca].LastSearchPosition;
+        int b = highCursor._stk[lca].LastSearchPosition;
+        if (a > b)
+            return 0; // inverted range (low > high)
+
+        long total = 0;
+
+        // Middle: children strictly between a and b at the LCA are wholly inside [low, high].
+        if (b - 1 >= a + 1)
+            total += EstimateChildrenRange(ref lowCursor._stk[lca], a + 1, b - 1);
+
+        // Low edge: within child a, everything at or after the low path is >= low (and < high's child, so <= high).
+        for (int i = lca + 1; i < depth; i++)
+        {
+            ref var s = ref lowCursor._stk[i];
+            int p = s.LastSearchPosition;
+            total += EstimateChildrenRange(ref s, p + 1, s.Header->NumberOfEntries - 1);
+        }
+        {
+            ref var leaf = ref lowCursor._stk[depth];
+            total += leaf.Header->NumberOfEntries - LowerBoundIndex(ref leaf); // exact tail of the low leaf
+        }
+
+        // High edge: within child b, everything at or before the high path is <= high (and > low's child, so >= low).
+        for (int i = lca + 1; i < depth; i++)
+        {
+            ref var s = ref highCursor._stk[i];
+            int p = s.LastSearchPosition;
+            total += EstimateChildrenRange(ref s, 0, p - 1);
+        }
+        {
+            ref var leaf = ref highCursor._stk[depth];
+            total += UpperBoundIndex(ref leaf); // exact head of the high leaf (count of keys <= high)
+        }
+
+        // The structural sampling can overshoot a sparse tree; never claim more than actually exists.
+        return Math.Min(total, _state.NumberOfEntries);
+    }
+
+    // First leaf index whose key is >= the searched (low) key. The leaf was searched with the low bound, so an exact
+    // hit means that slot is the first >= low; a miss leaves ~insertion, which is also the first key >= low.
+    private static int LowerBoundIndex(ref CursorState leaf)
+        => leaf.LastMatch == 0 ? leaf.LastSearchPosition : ~leaf.LastSearchPosition;
+
+    // First leaf index whose key is > the searched (high) key == count of keys <= high. An exact hit on high means
+    // the next slot is the first > high; a miss leaves ~insertion, the first key > high.
+    private static int UpperBoundIndex(ref CursorState leaf)
+        => leaf.LastMatch == 0 ? leaf.LastSearchPosition + 1 : ~leaf.LastSearchPosition;
+
+    // Estimated number of entries in the contiguous child range [from, to] of a branch page. Small groups are
+    // sampled per-child; larger groups sample one representative subtree and scale by the sibling count.
+    private long EstimateChildrenRange(ref CursorState branch, int from, int to)
+    {
+        int n = to - from + 1;
+        if (n <= 0)
+            return 0;
+
+        if (n <= ExactChildSampleThreshold)
+        {
+            long sum = 0;
+            for (int i = from; i <= to; i++)
+                sum += EstimateSubtreeEntries(GetValue(ref branch, i));
+            return sum;
+        }
+
+        long sample = EstimateSubtreeEntries(GetValue(ref branch, from + n / 2));
+        return sample * n;
+    }
+
+    // Estimated leaf-entry count under the subtree rooted at <paramref name="pageNumber"/>. Branch fan-outs are read
+    // exactly down a single representative (middle-child) path; only the leaf fill is assumed uniform across the level.
+    private long EstimateSubtreeEntries(long pageNumber)
+    {
+        var state = new CursorState { Page = _llt.GetPage(pageNumber) };
+        long factor = 1;
+        while (state.Header->IsBranch)
+        {
+            int n = state.Header->NumberOfEntries;
+            factor *= n;
+            long child = GetValue(ref state, n / 2);
+            state = new CursorState { Page = _llt.GetPage(child) };
+        }
+
+        return factor * state.Header->NumberOfEntries;
+    }
+
     public bool TryRemove(TLookupKey key) => TryRemove(ref key);
 
     public bool TryRemove(ref TLookupKey key)

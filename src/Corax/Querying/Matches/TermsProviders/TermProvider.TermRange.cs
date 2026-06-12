@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using System.Runtime.CompilerServices;
 using Corax.Indexing;
 using Corax.Mappings;
@@ -28,6 +27,7 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
 {
     private readonly IndexSearcher _indexSearcher;
     private readonly FieldMetadata _field;
+    private readonly CompactTree _tree;
     private Slice _low, _high;
 
     private CompactTree.Iterator<TLookupIterator> _iterator;
@@ -42,6 +42,7 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
     {
         _indexSearcher = indexSearcher;
         _field = field;
+        _tree = tree;
         _iterator = tree.Iterate<TLookupIterator>();
         _isForward = default(TLookupIterator).IsForward;
 
@@ -218,25 +219,56 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
         throw new NotImplementedException();
     }
 
-    public unsafe long AggregateByRange()
+    public long AggregateByRange()
     {
-        //we do not support Long ranges since we want to perform aggregation on doubles 
-        const long singleMarker = -1L;
+        //we do not support Long ranges since we want to perform aggregation on doubles
         if (_isEmpty)
-        {
             return 0;
+
+        // maxTerms: 0 -> scan every in-range term, giving the exact (multi-valued-overcounting) total.
+        return CountPostingsInRange(maxTerms: 0).Postings;
+    }
+
+    // One in-range term, captured for the batched header read. The type tag (Single/Small/Large) lives in the low
+    // two bits of the term id, so it must travel alongside the resolved container id once we strip them off.
+    private readonly struct RangeSample : IComparable<RangeSample>
+    {
+        public readonly long ContainerId;
+        public readonly TermIdMask Type;
+
+        public RangeSample(long containerId, TermIdMask type)
+        {
+            ContainerId = containerId;
+            Type = type;
         }
-        
+
+        // Sort by container id so Container.GetAll walks the container pages in ascending order.
+        public int CompareTo(RangeSample other) => ContainerId.CompareTo(other.ContainerId);
+    }
+
+    /// <summary>
+    /// Header-only walk over the in-range terms (capped at <paramref name="maxTerms"/>; 0 = all). For each term we
+    /// classify it branchlessly from the low two bits of the term id, resolve its posting-list container id, sort the
+    /// batch by container id for page locality, then read just the header of each container — a small posting list's
+    /// varint length prefix or a large posting list's <see cref="PostingListState.NumberOfEntries"/>; singles count as
+    /// one. No posting ids are decoded. The returned breakdown (total postings plus the single / small / large split
+    /// and their sub-totals) is the raw material the two-ended range-cardinality probe extrapolates from.
+    /// </summary>
+    public unsafe RangePostingStats CountPostingsInRange(int maxTerms)
+    {
+        var stats = new RangePostingStats();
+        if (_isEmpty)
+            return stats;
+
+        const long singleMarker = -1L;
         var allocator = _indexSearcher.Allocator;
-        CompactKey compactKey = _indexSearcher._transaction.LowLevelTransaction.AcquireCompactKey();
-        
-        NativeList<long> postingLists = new();
-        postingLists.Initialize(allocator);
-        
-        NativeList<TermIdMask> postingListsType = new();
-        postingListsType.Initialize(allocator);
-        
-        while (_isEmpty == false && _iterator.MoveNext(compactKey, out var termId, out var _))
+        var llt = _indexSearcher._transaction.LowLevelTransaction;
+        CompactKey compactKey = llt.AcquireCompactKey();
+
+        NativeList<RangeSample> samples = new();
+        samples.Initialize(allocator);
+
+        while (_isEmpty == false && _iterator.MoveNext(compactKey, out var termId, out _))
         {
             if (termId == _endContainerId)
             {
@@ -245,47 +277,84 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
                 if (_shouldIncludeLastTerm == false)
                     break;
             }
-            
-            if ((termId & (long)TermIdMask.PostingList) != 0)
-            {
-                postingLists.Add(allocator, (long)EntryIdEncodings.GetContainerId(termId));
-                postingListsType.Add(allocator, TermIdMask.PostingList);
-            }
-            else if ((termId & (long)TermIdMask.SmallPostingList) != 0)
-            {
-                postingLists.Add(allocator, (long)EntryIdEncodings.GetContainerId(termId));
-                postingListsType.Add(allocator, TermIdMask.SmallPostingList);
-            }
-            else
-            {
-                postingLists.Add(allocator, singleMarker);
-                postingListsType.Add(allocator, TermIdMask.Single);
-            }
+
+            // Single=0b00, SmallPostingList=0b01, PostingList=0b10 are mutually exclusive in the low two bits, so the
+            // mask classifies in one step (no ordered bit tests). Singles have no container -> the marker id.
+            var type = (TermIdMask)(termId & (long)TermIdMask.EnsureIsSingleMask);
+            long id = type == TermIdMask.Single ? singleMarker : (long)EntryIdEncodings.GetContainerId(termId);
+            samples.Add(allocator, new RangeSample(id, type));
+
+            if (maxTerms > 0 && samples.Count >= maxTerms)
+                break;
         }
 
-        using var _ = allocator.Allocate((sizeof(UnmanagedSpan)) * postingLists.Count, out ByteString containers);
-        var containersPtr = (UnmanagedSpan*)containers.Ptr;
-
-        Container.GetAll(_indexSearcher._transaction.LowLevelTransaction, postingLists.ToSpan(), new Span<UnmanagedSpan>(containersPtr, postingLists.Count), singleMarker,
-            _indexSearcher._transaction.LowLevelTransaction.PageLocator);
-
-        long totalCount = 0;
-        for (int i = 0; i < postingLists.Count; ++i)
+        stats.Terms = samples.Count;
+        if (samples.Count == 0)
         {
-            var localCount = (postingListsType[i]) switch
-            {
-                TermIdMask.PostingList => ((PostingListState*)(containersPtr[i].Address))->NumberOfEntries,
-                TermIdMask.SmallPostingList => VariableSizeEncoding.Read<long>(containersPtr[i].Address, out var _),
-                TermIdMask.Single => 1,
-                _ => throw new InvalidDataException($"Supported posting lists types are: 'PostingList', 'SmallPostingList', 'Single' but got {postingListsType[i]}")
-            };
-            
-            totalCount += localCount;
+            samples.Dispose(allocator);
+            llt.ReleaseCompactKey(ref compactKey);
+            return stats;
         }
 
-        postingLists.Dispose(allocator);
-        postingListsType.Dispose(allocator);
-        _indexSearcher._transaction.LowLevelTransaction.ReleaseCompactKey(ref compactKey);
-        return totalCount;
+        var sampleSpan = samples.ToSpan();
+        sampleSpan.Sort();
+
+        using var idsScope = allocator.Allocate(sizeof(long) * samples.Count, out ByteString idsBuffer);
+        var ids = new Span<long>(idsBuffer.Ptr, samples.Count);
+        for (int i = 0; i < samples.Count; i++)
+            ids[i] = sampleSpan[i].ContainerId;
+
+        using var containersScope = allocator.Allocate(sizeof(UnmanagedSpan) * samples.Count, out ByteString containers);
+        var containersPtr = (UnmanagedSpan*)containers.Ptr;
+        Container.GetAll(llt, ids, new Span<UnmanagedSpan>(containersPtr, samples.Count), singleMarker, llt.PageLocator);
+
+        for (int i = 0; i < samples.Count; i++)
+        {
+            switch (sampleSpan[i].Type)
+            {
+                case TermIdMask.PostingList:
+                    long large = ((PostingListState*)containersPtr[i].Address)->NumberOfEntries;
+                    stats.Larges++;
+                    stats.LargePostings += large;
+                    stats.Postings += large;
+                    break;
+                case TermIdMask.SmallPostingList:
+                    long small = VariableSizeEncoding.Read<long>(containersPtr[i].Address, out _);
+                    stats.Smalls++;
+                    stats.SmallPostings += small;
+                    stats.Postings += small;
+                    break;
+                default: // Single
+                    stats.Singles++;
+                    stats.Postings += 1;
+                    break;
+            }
+        }
+
+        samples.Dispose(allocator);
+        llt.ReleaseCompactKey(ref compactKey);
+        return stats;
     }
+
+    /// <summary>
+    /// Sub-linear estimate of how many distinct terms fall in this provider's range, forwarding to
+    /// <see cref="CompactTree.GetNumberOfEntriesInRangeEstimate"/>. Returns -1 when a bound is open-ended (there is no
+    /// concrete high key to seek to), which tells the cardinality combiner it cannot estimate this range cheaply.
+    /// </summary>
+    public long EstimateTermCountInRange()
+    {
+        if (_isEmpty)
+            return 0;
+
+        // An open high bound (AfterAllKeys) has no concrete key to seek; let the caller fall back.
+        if (_high.Options == SliceOptions.AfterAllKeys)
+            return -1;
+
+        // A "before all keys" low bound is represented by the empty span, which sorts before every stored key.
+        var lowSpan = _low.Options == SliceOptions.BeforeAllKeys ? ReadOnlySpan<byte>.Empty : _low.AsSpan();
+        return _tree.GetNumberOfEntriesInRangeEstimate(lowSpan, _high.AsSpan());
+    }
+
+    /// <summary>Total number of terms stored for this field (O(1)); used by the cardinality combiner's whale guard.</summary>
+    public long TotalTermCount() => _tree.NumberOfEntries;
 }

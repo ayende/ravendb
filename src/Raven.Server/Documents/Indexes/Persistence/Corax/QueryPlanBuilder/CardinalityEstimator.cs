@@ -1,6 +1,7 @@
 using System;
 using System.Runtime.CompilerServices;
 using Corax.Mappings;
+using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
@@ -34,12 +35,14 @@ internal static class CardinalityEstimator
                     };
                 }
 
-                case ClauseType.NotEquals:
                 case ClauseType.GreaterThan:
                 case ClauseType.GreaterThanOrEqual:
                 case ClauseType.LessThan:
                 case ClauseType.LessThanOrEqual:
                 case ClauseType.Between:
+                    return EstimateRangeClause(e, e.ClauseType);
+
+                case ClauseType.NotEquals:
                 case ClauseType.Exists:
                 case ClauseType.StartsWith:
                 case ClauseType.EndsWith:
@@ -93,6 +96,65 @@ internal static class CardinalityEstimator
                 default:
                     return indexSearcher.NumberOfEntries;
             }
+        }
+
+        // Estimates how many documents a range predicate (BETWEEN / GT / GTE / LT / LTE) matches.
+        // Numeric bounds are widened to double (the estimator keys on DoubleLookupKey); open sides use
+        // double.MinValue/MaxValue. Textual fields can only be estimated for a fully-bounded BETWEEN -
+        // a half-open string range has no concrete opposite bound to sample, so it falls back to the
+        // whole-index size. A negative estimate (combiner declined to estimate cheaply) also falls back.
+        long EstimateRangeClause(ClauseExecution e, ClauseType type)
+        {
+            PackedParam p = e.PackedParamValue;
+            if (p.IsNone)
+                return indexSearcher.NumberOfEntries;
+
+            FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(e.Clause, walkerCtx);
+
+            if (p.ValueType == PackedParam.TypeString)
+            {
+                if (type != ClauseType.Between)
+                    return indexSearcher.NumberOfEntries;
+
+                long s = indexSearcher.EstimateMatchesInRange(fieldMeta, writer.GetString(p.Param1), writer.GetString(p.Param2),
+                    UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
+                return s < 0 ? indexSearcher.NumberOfEntries : s;
+            }
+
+            double Bound(int slot) => p.ValueType == PackedParam.TypeLong ? writer.GetLong(slot) : writer.GetDouble(slot);
+
+            double low, high;
+            UnaryMatchOperation left = UnaryMatchOperation.GreaterThanOrEqual;
+            UnaryMatchOperation right = UnaryMatchOperation.LessThanOrEqual;
+
+            switch (type)
+            {
+                case ClauseType.Between:
+                    low = Bound(p.Param1);
+                    high = Bound(p.Param2);
+                    break;
+                case ClauseType.GreaterThan:
+                    low = Bound(p.Param1);
+                    high = double.MaxValue;
+                    left = UnaryMatchOperation.GreaterThan;
+                    break;
+                case ClauseType.GreaterThanOrEqual:
+                    low = Bound(p.Param1);
+                    high = double.MaxValue;
+                    break;
+                case ClauseType.LessThan:
+                    low = double.MinValue;
+                    high = Bound(p.Param1);
+                    right = UnaryMatchOperation.LessThan;
+                    break;
+                default: // LessThanOrEqual
+                    low = double.MinValue;
+                    high = Bound(p.Param1);
+                    break;
+            }
+
+            long est = indexSearcher.EstimateMatchesInRange(fieldMeta, low, high, left, right);
+            return est < 0 ? indexSearcher.NumberOfEntries : est;
         }
     }
 }

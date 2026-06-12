@@ -213,7 +213,22 @@ namespace Corax.Querying.Matches.TermsProviders
         {
             throw new NotSupportedException($"{nameof(ExistsTermsProvider<TLookupIterator>)} supports only terms aggregation.");
         }
-        
+
+        public RangePostingStats CountPostingsInRange(int maxTerms)
+        {
+            throw new NotSupportedException($"{nameof(ExistsTermsProvider<TLookupIterator>)} supports only terms aggregation.");
+        }
+
+        public long EstimateTermCountInRange()
+        {
+            throw new NotSupportedException($"{nameof(ExistsTermsProvider<TLookupIterator>)} supports only terms aggregation.");
+        }
+
+        public long TotalTermCount()
+        {
+            throw new NotSupportedException($"{nameof(ExistsTermsProvider<TLookupIterator>)} supports only terms aggregation.");
+        }
+
         private int NumberOfTerms => (int)_numberOfTerms + (_nullExists ? 1 : 0);
     }
 }

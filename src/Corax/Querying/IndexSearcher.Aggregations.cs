@@ -128,6 +128,55 @@ public partial class IndexSearcher
         throw new ArgumentException($"{typeof(TValue)} is not supported in {nameof(BetweenQuery)}");
     }
 
+    // Two-ended probe + combiner. Cheaply estimates how many *documents* match a range without scanning it: it samples
+    // the posting-count distribution at the bottom and top of the range, gets a sub-linear estimate of the in-range
+    // term count, and extrapolates the unscanned middle assuming a similar per-term density. Returns -1 when the range
+    // can't be estimated cheaply (e.g. an open-ended textual bound) so the caller can fall back to a coarser bound.
+    private const int RangeBottomSample = 512;
+    private const int RangeTopSample = 256;
+
+    public long EstimateMatchesInRange<TValue>(in FieldMetadata field, TValue low, TValue high,
+        UnaryMatchOperation leftSide = UnaryMatchOperation.GreaterThanOrEqual,
+        UnaryMatchOperation rightSide = UnaryMatchOperation.LessThanOrEqual)
+    {
+        var forward = BetweenAggregation(field, low, high, leftSide, rightSide, forward: true);
+
+        long terms = forward.EstimateTermCountInRange();
+        if (terms < 0)
+            return -1; // not cheaply estimable -> caller decides on a fallback
+        if (terms == 0)
+            return 0;
+
+        // Scan the bottom of the range. If we never hit the cap, we have walked every in-range term: the count is exact.
+        RangePostingStats bottom = forward.CountPostingsInRange(RangeBottomSample);
+        if (bottom.Terms < RangeBottomSample)
+            return Math.Min(bottom.Postings, NumberOfEntries);
+
+        // Cap the top sample so it cannot overlap the bottom sample (matters only for ranges barely above the cap).
+        int topCap = (int)Math.Min(RangeTopSample, Math.Max(0, terms - bottom.Terms));
+        if (topCap == 0)
+            return Math.Min(bottom.Postings, NumberOfEntries);
+
+        var backward = BetweenAggregation(field, low, high, leftSide, rightSide, forward: false);
+        RangePostingStats top = backward.CountPostingsInRange(topCap);
+
+        long sampledTerms = bottom.Terms + top.Terms;
+        long sampledPostings = bottom.Postings + top.Postings;
+        long middleTerms = Math.Max(0, terms - sampledTerms);
+
+        double sampledAvg = (double)sampledPostings / sampledTerms;
+
+        // Whale guard: a dense ("whale") term hiding in the unscanned middle would be invisible to the edge samples.
+        // The global average postings-per-term (total docs / total terms, both O(1)) is a floor that lifts the estimate
+        // when the sampled edges look unusually sparse relative to the field as a whole.
+        long totalTerms = forward.TotalTermCount();
+        double globalAvg = totalTerms > 0 ? (double)NumberOfEntries / totalTerms : sampledAvg;
+        double middleAvg = Math.Max(sampledAvg, globalAvg);
+
+        long estimate = sampledPostings + (long)(middleTerms * middleAvg);
+        return Math.Min(estimate, NumberOfEntries);
+    }
+
     private IAggregationProvider AggregationRangeBuilder<TLow, THigh>(in FieldMetadata field, Slice low, Slice high, bool forward)
         where TLow : struct, Range.Marker
         where THigh : struct, Range.Marker

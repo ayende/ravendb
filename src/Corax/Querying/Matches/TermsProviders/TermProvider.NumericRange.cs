@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.IO;
 using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
@@ -219,24 +218,45 @@ namespace Corax.Querying.Matches.TermsProviders
             throw new NotSupportedException($"Primitive {nameof(TermsNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>)} doesnt support aggregation by terms.");
         }
         
-        public unsafe long AggregateByRange()
+        public long AggregateByRange()
         {
-            //we do not support Long ranges since we want to perform aggregation on doubles 
+            //we do not support Long ranges since we want to perform aggregation on doubles
             Debug.Assert(typeof(TVal) == typeof(DoubleLookupKey), "typeof(TVal) == typeof(DoubleLookupKey)");
-            
-            const long singleMarker = -1L;
+
             if (_isEmpty)
-            {
                 return 0;
+
+            return CountPostingsInRange(maxTerms: 0).Postings;
+        }
+
+        // One in-range term captured for the batched header read; the type tag lives in the low two bits of the term id.
+        private readonly struct RangeSample : IComparable<RangeSample>
+        {
+            public readonly long ContainerId;
+            public readonly TermIdMask Type;
+
+            public RangeSample(long containerId, TermIdMask type)
+            {
+                ContainerId = containerId;
+                Type = type;
             }
 
+            public int CompareTo(RangeSample other) => ContainerId.CompareTo(other.ContainerId);
+        }
+
+        public unsafe RangePostingStats CountPostingsInRange(int maxTerms)
+        {
+            var stats = new RangePostingStats();
+            if (_isEmpty)
+                return stats;
+
+            const long singleMarker = -1L;
             var allocator = _searcher.Allocator;
-            
-            NativeList<long> postingLists = new();
-            postingLists.Initialize(allocator);
-            NativeList<TermIdMask> postingListsType = new();
-            postingListsType.Initialize(allocator);
-            
+            var llt = _searcher._transaction.LowLevelTransaction;
+
+            NativeList<RangeSample> samples = new();
+            samples.Initialize(allocator);
+
             while (_isEmpty == false && _iterator.MoveNext(out var termId))
             {
                 if (termId == _lastTermId)
@@ -245,47 +265,72 @@ namespace Corax.Querying.Matches.TermsProviders
                     if (_includeLastTerm == false)
                         break;
                 }
-                
-                if ((termId & (long)TermIdMask.PostingList) != 0)
-                {
-                    postingLists.Add(allocator, (long)EntryIdEncodings.GetContainerId(termId));
-                    postingListsType.Add(allocator, TermIdMask.PostingList);
-                }
-                else if ((termId & (long)TermIdMask.SmallPostingList) != 0)
-                {
-                    postingLists.Add(allocator, (long)EntryIdEncodings.GetContainerId(termId));
-                    postingListsType.Add(allocator, TermIdMask.SmallPostingList);
-                }
-                else
-                {
-                    postingLists.Add(allocator, singleMarker);
-                    postingListsType.Add(allocator, TermIdMask.Single);
-                }
-            }
-            
-            using var _ = allocator.Allocate((sizeof(UnmanagedSpan)) * postingLists.Count, out ByteString containers);
-            var containersPtr = (UnmanagedSpan*)containers.Ptr;
-      
-            Container.GetAll(_searcher._transaction.LowLevelTransaction, postingLists.ToSpan(), new Span<UnmanagedSpan>(containersPtr, postingLists.Count), singleMarker, _searcher._transaction.LowLevelTransaction.PageLocator);
 
-            long totalCount = 0;
-            for (int i = 0; i < postingLists.Count; ++i)
+                // Single=0b00, SmallPostingList=0b01, PostingList=0b10 are mutually exclusive low bits -> mask classifies.
+                var type = (TermIdMask)(termId & (long)TermIdMask.EnsureIsSingleMask);
+                long id = type == TermIdMask.Single ? singleMarker : (long)EntryIdEncodings.GetContainerId(termId);
+                samples.Add(allocator, new RangeSample(id, type));
+
+                if (maxTerms > 0 && samples.Count >= maxTerms)
+                    break;
+            }
+
+            stats.Terms = samples.Count;
+            if (samples.Count == 0)
             {
-                var localCount = (postingListsType[i]) switch
-                {
-                    TermIdMask.PostingList => ((PostingListState*)(containersPtr[i].Address))->NumberOfEntries,
-                    TermIdMask.SmallPostingList => VariableSizeEncoding.Read<long>(containersPtr[i].Address, out var _),
-                    TermIdMask.Single => 1,
-                    _ => throw new InvalidDataException($"Supported posting lists types are: 'PostingList', 'SmallPostingList', 'Single' but got {postingListsType[i]}")
-                };
-
-                totalCount += localCount;
+                samples.Dispose(allocator);
+                return stats;
             }
-            
-            postingLists.Dispose(allocator);
-            postingListsType.Dispose(allocator);
-            return totalCount;
+
+            var sampleSpan = samples.ToSpan();
+            sampleSpan.Sort();
+
+            using var idsScope = allocator.Allocate(sizeof(long) * samples.Count, out ByteString idsBuffer);
+            var ids = new Span<long>(idsBuffer.Ptr, samples.Count);
+            for (int i = 0; i < samples.Count; i++)
+                ids[i] = sampleSpan[i].ContainerId;
+
+            using var containersScope = allocator.Allocate(sizeof(UnmanagedSpan) * samples.Count, out ByteString containers);
+            var containersPtr = (UnmanagedSpan*)containers.Ptr;
+            Container.GetAll(llt, ids, new Span<UnmanagedSpan>(containersPtr, samples.Count), singleMarker, llt.PageLocator);
+
+            for (int i = 0; i < samples.Count; i++)
+            {
+                switch (sampleSpan[i].Type)
+                {
+                    case TermIdMask.PostingList:
+                        long large = ((PostingListState*)containersPtr[i].Address)->NumberOfEntries;
+                        stats.Larges++;
+                        stats.LargePostings += large;
+                        stats.Postings += large;
+                        break;
+                    case TermIdMask.SmallPostingList:
+                        long small = VariableSizeEncoding.Read<long>(containersPtr[i].Address, out _);
+                        stats.Smalls++;
+                        stats.SmallPostings += small;
+                        stats.Postings += small;
+                        break;
+                    default: // Single
+                        stats.Singles++;
+                        stats.Postings += 1;
+                        break;
+                }
+            }
+
+            samples.Dispose(allocator);
+            return stats;
         }
+
+        public long EstimateTermCountInRange()
+        {
+            if (_isEmpty)
+                return 0;
+
+            // Numeric bounds are always concrete (MinValue/MaxValue for open ranges), so the estimate is always available.
+            return _set.GetNumberOfEntriesInRangeEstimate(_low, _high);
+        }
+
+        public long TotalTermCount() => _set.NumberOfEntries;
 
         public int NumberOfTerms => throw new NotSupportedException($"{nameof(NumberOfTerms)} is not supported in {nameof(TermsNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>)}."); // unknown
     }
