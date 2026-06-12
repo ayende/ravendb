@@ -43,8 +43,39 @@ internal static class CardinalityEstimator
                     return EstimateRangeClause(e, e.ClauseType);
 
                 case ClauseType.NotEquals:
-                case ClauseType.Exists:
+                {
+                    // NotEquals(X) is MatchAll AndNot Equals(X): the count is the whole index minus the docs under
+                    // term X - the same O(1) term lookup as Equals, just complemented. A missing packed value (can't
+                    // resolve the term) falls back to the whole-index bound.
+                    PackedParam p = e.PackedParamValue;
+                    if (p.IsNone)
+                        return indexSearcher.NumberOfEntries;
+
+                    FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx);
+                    long eq = p.ValueType switch
+                    {
+                        PackedParam.TypeLong => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetLong(p.Param1)),
+                        PackedParam.TypeDouble => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetDouble(p.Param1)),
+                        _ => indexSearcher.NumberOfDocumentsUnderSpecificTerm(fieldMeta, writer.GetString(p.Param1))
+                    };
+                    return Math.Max(0, indexSearcher.NumberOfEntries - eq);
+                }
+
                 case ClauseType.StartsWith:
+                {
+                    // StartsWith(prefix) is the bounded prefix range [prefix, successor(prefix)): the same two-descent
+                    // range estimate as a BETWEEN, not the whole index. A missing/non-string packed value (can't encode
+                    // the prefix) falls back to the whole-index bound.
+                    PackedParam p = e.PackedParamValue;
+                    if (p.IsNone || p.ValueType != PackedParam.TypeString)
+                        return indexSearcher.NumberOfEntries;
+
+                    FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx);
+                    long est = indexSearcher.EstimateStartsWith(fieldMeta, writer.GetString(p.Param1));
+                    return est < 0 ? indexSearcher.NumberOfEntries : est;
+                }
+
+                case ClauseType.Exists:
                 case ClauseType.EndsWith:
                 case ClauseType.Search:
                 case ClauseType.Regex:
@@ -121,40 +152,47 @@ internal static class CardinalityEstimator
                 return s < 0 ? indexSearcher.NumberOfEntries : s;
             }
 
-            double Bound(int slot) => p.ValueType == PackedParam.TypeLong ? writer.GetLong(slot) : writer.GetDouble(slot);
+            // Numeric ranges are estimated natively per type: longs keep full precision (e.g. DateTime ticks
+            // above 2^53 that would round if widened to double), doubles likewise. Open sides use the type's
+            // own min/max sentinel.
+            return p.ValueType == PackedParam.TypeLong
+                ? EstimateNumeric(long.MinValue, long.MaxValue, writer.GetLong)
+                : EstimateNumeric(double.MinValue, double.MaxValue, writer.GetDouble);
 
-            double low, high;
-            UnaryMatchOperation left = UnaryMatchOperation.GreaterThanOrEqual;
-            UnaryMatchOperation right = UnaryMatchOperation.LessThanOrEqual;
-
-            switch (type)
+            long EstimateNumeric<T>(T min, T max, Func<int, T> read)
             {
-                case ClauseType.Between:
-                    low = Bound(p.Param1);
-                    high = Bound(p.Param2);
-                    break;
-                case ClauseType.GreaterThan:
-                    low = Bound(p.Param1);
-                    high = double.MaxValue;
-                    left = UnaryMatchOperation.GreaterThan;
-                    break;
-                case ClauseType.GreaterThanOrEqual:
-                    low = Bound(p.Param1);
-                    high = double.MaxValue;
-                    break;
-                case ClauseType.LessThan:
-                    low = double.MinValue;
-                    high = Bound(p.Param1);
-                    right = UnaryMatchOperation.LessThan;
-                    break;
-                default: // LessThanOrEqual
-                    low = double.MinValue;
-                    high = Bound(p.Param1);
-                    break;
-            }
+                T low, high;
+                UnaryMatchOperation left = UnaryMatchOperation.GreaterThanOrEqual;
+                UnaryMatchOperation right = UnaryMatchOperation.LessThanOrEqual;
+                switch (type)
+                {
+                    case ClauseType.Between:
+                        low = read(p.Param1);
+                        high = read(p.Param2);
+                        break;
+                    case ClauseType.GreaterThan:
+                        low = read(p.Param1);
+                        high = max;
+                        left = UnaryMatchOperation.GreaterThan;
+                        break;
+                    case ClauseType.GreaterThanOrEqual:
+                        low = read(p.Param1);
+                        high = max;
+                        break;
+                    case ClauseType.LessThan:
+                        low = min;
+                        high = read(p.Param1);
+                        right = UnaryMatchOperation.LessThan;
+                        break;
+                    default: // LessThanOrEqual
+                        low = min;
+                        high = read(p.Param1);
+                        break;
+                }
 
-            long est = indexSearcher.EstimateMatchesInRange(fieldMeta, low, high, left, right);
-            return est < 0 ? indexSearcher.NumberOfEntries : est;
+                long est = indexSearcher.EstimateMatchesInRange(fieldMeta, low, high, left, right);
+                return est < 0 ? indexSearcher.NumberOfEntries : est;
+            }
         }
     }
 }

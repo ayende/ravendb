@@ -229,96 +229,95 @@ namespace Corax.Querying.Matches.TermsProviders
             return CountPostingsInRange(maxTerms: 0).Postings;
         }
 
-        // One in-range term captured for the batched header read; the type tag lives in the low two bits of the term id.
-        private readonly struct RangeSample : IComparable<RangeSample>
-        {
-            public readonly long ContainerId;
-            public readonly TermIdMask Type;
-
-            public RangeSample(long containerId, TermIdMask type)
-            {
-                ContainerId = containerId;
-                Type = type;
-            }
-
-            public int CompareTo(RangeSample other) => ContainerId.CompareTo(other.ContainerId);
-        }
-
         public unsafe RangePostingStats CountPostingsInRange(int maxTerms)
         {
             var stats = new RangePostingStats();
             if (_isEmpty)
                 return stats;
 
-            const long singleMarker = -1L;
             var allocator = _searcher.Allocator;
             var llt = _searcher._transaction.LowLevelTransaction;
 
-            NativeList<RangeSample> samples = new();
-            samples.Initialize(allocator);
-
-            while (_isEmpty == false && _iterator.MoveNext(out var termId))
+            // Branchless partition: (termId & EnsureIsSingleMask) -> 0=Single, 1=SmallPostingList, 2=PostingList.
+            // Slot 3 (0b11) is unused; we keep it so the index is always in range and assert it stays empty. Singles
+            // carry no container, so their bucket is just a tally; the small/large buckets are read uniformly below.
+            Span<NativeList<long>> buckets = stackalloc NativeList<long>[4];
+            for (int b = 0; b < buckets.Length; b++)
             {
-                if (termId == _lastTermId)
+                buckets[b] = new NativeList<long>();
+                buckets[b].Initialize(allocator);
+            }
+
+            try
+            {
+                while (_isEmpty == false && _iterator.MoveNext(out var termId))
                 {
-                    _isEmpty = true;
-                    if (_includeLastTerm == false)
+                    if (termId == _lastTermId)
+                    {
+                        _isEmpty = true;
+                        if (_includeLastTerm == false)
+                            break;
+                    }
+
+                    int idx = (int)(termId & (long)TermIdMask.EnsureIsSingleMask);
+                    buckets[idx].Add(allocator, termId);
+                    stats.Terms++;
+
+                    if (maxTerms > 0 && stats.Terms >= maxTerms)
                         break;
                 }
 
-                // Single=0b00, SmallPostingList=0b01, PostingList=0b10 are mutually exclusive low bits -> mask classifies.
-                var type = (TermIdMask)(termId & (long)TermIdMask.EnsureIsSingleMask);
-                long id = type == TermIdMask.Single ? singleMarker : (long)EntryIdEncodings.GetContainerId(termId);
-                samples.Add(allocator, new RangeSample(id, type));
+                if (buckets[3].Count > 0)
+                    throw new InvalidOperationException("Unknown TermIdMask type");
 
-                if (maxTerms > 0 && samples.Count >= maxTerms)
-                    break;
-            }
+                stats.Singles = buckets[0].Count; // single = exactly one posting, no container read
+                stats.SmallPostings = SumBucketPostings(buckets[1], isLarge: false, out stats.Smalls);
+                stats.LargePostings = SumBucketPostings(buckets[2], isLarge: true, out stats.Larges);
+                stats.Postings = stats.Singles + stats.SmallPostings + stats.LargePostings;
 
-            stats.Terms = samples.Count;
-            if (samples.Count == 0)
-            {
-                samples.Dispose(allocator);
                 return stats;
             }
-
-            var sampleSpan = samples.ToSpan();
-            sampleSpan.Sort();
-
-            using var idsScope = allocator.Allocate(sizeof(long) * samples.Count, out ByteString idsBuffer);
-            var ids = new Span<long>(idsBuffer.Ptr, samples.Count);
-            for (int i = 0; i < samples.Count; i++)
-                ids[i] = sampleSpan[i].ContainerId;
-
-            using var containersScope = allocator.Allocate(sizeof(UnmanagedSpan) * samples.Count, out ByteString containers);
-            var containersPtr = (UnmanagedSpan*)containers.Ptr;
-            Container.GetAll(llt, ids, new Span<UnmanagedSpan>(containersPtr, samples.Count), singleMarker, llt.PageLocator);
-
-            for (int i = 0; i < samples.Count; i++)
+            finally
             {
-                switch (sampleSpan[i].Type)
-                {
-                    case TermIdMask.PostingList:
-                        long large = ((PostingListState*)containersPtr[i].Address)->NumberOfEntries;
-                        stats.Larges++;
-                        stats.LargePostings += large;
-                        stats.Postings += large;
-                        break;
-                    case TermIdMask.SmallPostingList:
-                        long small = VariableSizeEncoding.Read<long>(containersPtr[i].Address, out _);
-                        stats.Smalls++;
-                        stats.SmallPostings += small;
-                        stats.Postings += small;
-                        break;
-                    default: // Single
-                        stats.Singles++;
-                        stats.Postings += 1;
-                        break;
-                }
+                for (int b = 0; b < buckets.Length; b++)
+                    buckets[b].Dispose(allocator);
             }
 
-            samples.Dispose(allocator);
-            return stats;
+            // Reads one posting-list bucket: strip the container ids, sort them so Container.GetAll walks pages in
+            // order, then sum each list's header count. isLarge picks the decode once (outside the loop) so neither
+            // read path carries a per-term branch.
+            long SumBucketPostings(NativeList<long> bucket, bool isLarge, out int count)
+            {
+                count = bucket.Count;
+                if (count == 0)
+                    return 0;
+
+                var termIds = bucket.ToSpan();
+
+                using var idsScope = allocator.Allocate(sizeof(long) * count, out ByteString idsBuffer);
+                var ids = new Span<long>(idsBuffer.Ptr, count);
+                for (int i = 0; i < count; i++)
+                    ids[i] = (long)EntryIdEncodings.GetContainerId(termIds[i]);
+                ids.Sort();
+
+                using var containersScope = allocator.Allocate(sizeof(UnmanagedSpan) * count, out ByteString containers);
+                var containersPtr = (UnmanagedSpan*)containers.Ptr;
+                Container.GetAll(llt, ids, new Span<UnmanagedSpan>(containersPtr, count), -1L, llt.PageLocator);
+
+                long total = 0;
+                if (isLarge)
+                {
+                    for (int i = 0; i < count; i++)
+                        total += ((PostingListState*)containersPtr[i].Address)->NumberOfEntries;
+                }
+                else
+                {
+                    for (int i = 0; i < count; i++)
+                        total += VariableSizeEncoding.Read<long>(containersPtr[i].Address, out _);
+                }
+
+                return total;
+            }
         }
 
         public long EstimateTermCountInRange()

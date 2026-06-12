@@ -138,6 +138,34 @@ namespace FastTests.Voron
             AssertEstimateClose(keys, 30_000, 10_000, 0.0, 0);   // inverted -> 0
         }
 
+        // An open high bound descends the rightmost leaf instead of seeking a concrete key, so the estimate must
+        // cover everything from low to the end of the tree regardless of the (ignored) high argument.
+        private void AssertOpenHighEstimateClose(List<long> keys, long low, double relTol, long absFloor)
+        {
+            using var rtx = Env.ReadTransaction();
+            var lookup = rtx.LookupFor<Int64LookupKey>("test");
+            long expected = BruteForce(keys, low, long.MaxValue);
+            // pass an arbitrary (here: deliberately wrong, far-below) high to prove it is ignored when highToEnd
+            long actual = lookup.GetNumberOfEntriesInRangeEstimate(low, low, highToEnd: true);
+
+            long allowed = Math.Max(absFloor, (long)(expected * relTol));
+            long diff = Math.Abs(actual - expected);
+            Assert.True(diff <= allowed,
+                $"open-high estimate {actual} vs exact {expected} for [{low}, +inf): |diff|={diff} > allowed={allowed}");
+        }
+
+        [RavenFact(RavenTestCategory.Voron)]
+        public void Estimate_OpenHighBound_CountsToEnd()
+        {
+            var keys = Seed(Enumerable.Range(0, 200_000).Select(i => (long)i));
+
+            AssertOpenHighEstimateClose(keys, 0, 0.10, 200);         // entire tree
+            AssertOpenHighEstimateClose(keys, 100_000, 0.10, 200);   // upper half
+            AssertOpenHighEstimateClose(keys, 187_654, 0.10, 200);   // small tail near the top
+            AssertOpenHighEstimateClose(keys, 199_990, 0.0, 16);     // tiny tail resolves within the last leaf
+            AssertOpenHighEstimateClose(keys, 250_000, 0.0, 0);      // low past the max -> 0
+        }
+
         [RavenFact(RavenTestCategory.Voron)]
         public void Estimate_WithGaps_CloseToOracle()
         {

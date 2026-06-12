@@ -485,7 +485,7 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
     /// systematic bias that the caller's EWMA is expected to correct. Cost is O(height²) page reads. An empty or
     /// inverted range (<paramref name="low"/> &gt; <paramref name="high"/>) returns 0.
     /// </summary>
-    public long GetNumberOfEntriesInRangeEstimate(TLookupKey low, TLookupKey high)
+    public long GetNumberOfEntriesInRangeEstimate(TLookupKey low, TLookupKey high, bool highToEnd = false)
     {
         if (_state.NumberOfEntries == 0)
             return 0;
@@ -495,13 +495,26 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
         var lowCursor = new IteratorCursorState { _stk = new CursorState[8], _pos = -1, _len = 0 };
         var highCursor = new IteratorCursorState { _stk = new CursorState[8], _pos = -1, _len = 0 };
         FindPageFor(ref low, ref lowCursor);
-        FindPageFor(ref high, ref highCursor);
+        // An open high bound (e.g. "field >= x" with no upper limit) has no concrete key to seek. There is no key
+        // value that sorts after every term, so we descend the rightmost child at each level directly - the same
+        // leaf FindPageFor's branch clamp would reach for a key larger than everything - and mark the high leaf as
+        // fully matched so the high edge counts the whole tail.
+        if (highToEnd)
+            DescendToRightmostLeaf(ref highCursor);
+        else
+            FindPageFor(ref high, ref highCursor);
 
-        int depth = lowCursor._pos; // leaf level; both paths share the tree height
+        // The tree is not guaranteed to be depth-balanced: one branch can sit a level deeper than its sibling, so
+        // the two leaves may live at different depths. Track each path's own leaf level.
+        int lowDepth = lowCursor._pos;
+        int highDepth = highCursor._pos;
 
-        // LCA = the shallowest branch level where the two paths take different children.
+        // LCA = the shallowest branch level where the two paths take different children. It can only occur within
+        // the shared prefix, so it is bounded by the shorter path; once the paths diverge they descend independent
+        // subtrees of possibly different heights.
         int lca = -1;
-        for (int i = 0; i < depth; i++)
+        int sharedLevels = Math.Min(lowDepth, highDepth);
+        for (int i = 0; i < sharedLevels; i++)
         {
             if (lowCursor._stk[i].LastSearchPosition != highCursor._stk[i].LastSearchPosition)
             {
@@ -512,10 +525,11 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
 
         if (lca == -1)
         {
-            // low and high resolve to the same leaf: the answer is exact, no sampling involved.
-            ref var leaf = ref lowCursor._stk[depth];
+            // Shared prefix all the way down: both paths land on the same leaf (which forces equal depth). The
+            // answer is exact, no sampling involved.
+            ref var leaf = ref lowCursor._stk[lowDepth];
             int loStart = LowerBoundIndex(ref leaf);
-            int hiEnd = UpperBoundIndex(ref highCursor._stk[depth]);
+            int hiEnd = UpperBoundIndex(ref highCursor._stk[lowDepth]);
             return Math.Max(0, hiEnd - loStart);
         }
 
@@ -531,31 +545,34 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
             total += EstimateChildrenRange(ref lowCursor._stk[lca], a + 1, b - 1);
 
         // Low edge: within child a, everything at or after the low path is >= low (and < high's child, so <= high).
-        for (int i = lca + 1; i < depth; i++)
-        {
-            ref var s = ref lowCursor._stk[i];
-            int p = s.LastSearchPosition;
-            total += EstimateChildrenRange(ref s, p + 1, s.Header->NumberOfEntries - 1);
-        }
-        {
-            ref var leaf = ref lowCursor._stk[depth];
-            total += leaf.Header->NumberOfEntries - LowerBoundIndex(ref leaf); // exact tail of the low leaf
-        }
-
         // High edge: within child b, everything at or before the high path is <= high (and > low's child, so >= low).
-        for (int i = lca + 1; i < depth; i++)
-        {
-            ref var s = ref highCursor._stk[i];
-            int p = s.LastSearchPosition;
-            total += EstimateChildrenRange(ref s, 0, p - 1);
-        }
-        {
-            ref var leaf = ref highCursor._stk[depth];
-            total += UpperBoundIndex(ref leaf); // exact head of the high leaf (count of keys <= high)
-        }
+        // Each path descends to its own leaf level, independent of the other's depth.
+        total += SumEdge(ref lowCursor, lowDepth, low: true);
+        total += SumEdge(ref highCursor, highDepth, low: false);
 
         // The structural sampling can overshoot a sparse tree; never claim more than actually exists.
         return Math.Min(total, _state.NumberOfEntries);
+
+        // Walks one edge path from just below the LCA to its leaf, summing the siblings that fall inside the range at
+        // each branch level (right of the low path / left of the high path) plus the exact in-range slice of the leaf.
+        long SumEdge(ref IteratorCursorState cursor, int depth, bool low)
+        {
+            long sum = 0;
+            for (int i = lca + 1; i < depth; i++)
+            {
+                ref var s = ref cursor._stk[i];
+                int p = s.LastSearchPosition;
+                sum += low
+                    ? EstimateChildrenRange(ref s, p + 1, s.Header->NumberOfEntries - 1) // right siblings of the low path
+                    : EstimateChildrenRange(ref s, 0, p - 1);                            // left siblings of the high path
+            }
+
+            ref var leaf = ref cursor._stk[depth];
+            sum += low
+                ? leaf.Header->NumberOfEntries - LowerBoundIndex(ref leaf) // exact tail of the low leaf (keys >= low)
+                : UpperBoundIndex(ref leaf);                               // exact head of the high leaf (keys <= high)
+            return sum;
+        }
     }
 
     // First leaf index whose key is >= the searched (low) key. The leaf was searched with the low bound, so an exact
@@ -1476,6 +1493,31 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
         ref var state = ref cstate._stk[cstate._pos];
 
         FindPageFor(ref cstate, ref state, ref key);
+    }
+
+    // Descends taking the last child at every branch, landing on the rightmost leaf - the page FindPageFor's branch
+    // clamp (Math.Min(NumberOfEntries - 1, ...)) reaches for a key greater than every stored key. The leaf is marked
+    // as an exact hit on its final slot so UpperBoundIndex reports the whole leaf, letting an open high bound be
+    // estimated as "everything from low to the end of the tree".
+    private void DescendToRightmostLeaf(ref IteratorCursorState cstate)
+    {
+        cstate._pos = -1;
+        cstate._len = 0;
+        PushPage(_state.RootPage, ref cstate);
+
+        ref var state = ref cstate._stk[cstate._pos];
+        while (state.Header->IsBranch)
+        {
+            int last = state.Header->NumberOfEntries - 1;
+            state.LastSearchPosition = last;
+            var nextPage = GetValue(ref state, last);
+            PushPage(nextPage, ref cstate);
+            state = ref cstate._stk[cstate._pos];
+        }
+
+        // LastMatch == 0 + position on the last slot makes UpperBoundIndex return NumberOfEntries (the full leaf).
+        state.LastSearchPosition = state.Header->NumberOfEntries - 1;
+        state.LastMatch = 0;
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

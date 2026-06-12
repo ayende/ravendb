@@ -229,30 +229,14 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
         return CountPostingsInRange(maxTerms: 0).Postings;
     }
 
-    // One in-range term, captured for the batched header read. The type tag (Single/Small/Large) lives in the low
-    // two bits of the term id, so it must travel alongside the resolved container id once we strip them off.
-    private readonly struct RangeSample : IComparable<RangeSample>
-    {
-        public readonly long ContainerId;
-        public readonly TermIdMask Type;
-
-        public RangeSample(long containerId, TermIdMask type)
-        {
-            ContainerId = containerId;
-            Type = type;
-        }
-
-        // Sort by container id so Container.GetAll walks the container pages in ascending order.
-        public int CompareTo(RangeSample other) => ContainerId.CompareTo(other.ContainerId);
-    }
-
     /// <summary>
-    /// Header-only walk over the in-range terms (capped at <paramref name="maxTerms"/>; 0 = all). For each term we
-    /// classify it branchlessly from the low two bits of the term id, resolve its posting-list container id, sort the
-    /// batch by container id for page locality, then read just the header of each container — a small posting list's
-    /// varint length prefix or a large posting list's <see cref="PostingListState.NumberOfEntries"/>; singles count as
-    /// one. No posting ids are decoded. The returned breakdown (total postings plus the single / small / large split
-    /// and their sub-totals) is the raw material the two-ended range-cardinality probe extrapolates from.
+    /// Header-only walk over the in-range terms (capped at <paramref name="maxTerms"/>; 0 = all). Terms are
+    /// partitioned branchlessly into per-type buckets keyed by the low two bits of the term id, then each bucket is
+    /// read with one uniform pass: singles count as one apiece (no container), small/large posting lists are sorted
+    /// by container id for page locality and have just their header read — a small list's varint length prefix or a
+    /// large list's <see cref="PostingListState.NumberOfEntries"/>. No posting ids are decoded. The returned breakdown
+    /// (total postings plus the single / small / large split and their sub-totals) is the raw material the two-ended
+    /// range-cardinality probe extrapolates from.
     /// </summary>
     public unsafe RangePostingStats CountPostingsInRange(int maxTerms)
     {
@@ -260,99 +244,109 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
         if (_isEmpty)
             return stats;
 
-        const long singleMarker = -1L;
         var allocator = _indexSearcher.Allocator;
         var llt = _indexSearcher._transaction.LowLevelTransaction;
         CompactKey compactKey = llt.AcquireCompactKey();
 
-        NativeList<RangeSample> samples = new();
-        samples.Initialize(allocator);
-
-        while (_isEmpty == false && _iterator.MoveNext(compactKey, out var termId, out _))
+        // Branchless partition: (termId & EnsureIsSingleMask) -> 0=Single, 1=SmallPostingList, 2=PostingList. Slot 3
+        // (0b11) is unused; we keep it so the index is always in range and assert it stays empty. Singles carry no
+        // container, so their bucket is just a tally; the small/large buckets are read uniformly below.
+        Span<NativeList<long>> buckets = stackalloc NativeList<long>[4];
+        for (int b = 0; b < buckets.Length; b++)
         {
-            if (termId == _endContainerId)
-            {
-                _isEmpty = true;
+            buckets[b] = new NativeList<long>();
+            buckets[b].Initialize(allocator);
+        }
 
-                if (_shouldIncludeLastTerm == false)
+        try
+        {
+            while (_isEmpty == false && _iterator.MoveNext(compactKey, out var termId, out _))
+            {
+                if (termId == _endContainerId)
+                {
+                    _isEmpty = true;
+
+                    if (_shouldIncludeLastTerm == false)
+                        break;
+                }
+
+                int idx = (int)(termId & (long)TermIdMask.EnsureIsSingleMask);
+                buckets[idx].Add(allocator, termId);
+                stats.Terms++;
+
+                if (maxTerms > 0 && stats.Terms >= maxTerms)
                     break;
             }
 
-            // Single=0b00, SmallPostingList=0b01, PostingList=0b10 are mutually exclusive in the low two bits, so the
-            // mask classifies in one step (no ordered bit tests). Singles have no container -> the marker id.
-            var type = (TermIdMask)(termId & (long)TermIdMask.EnsureIsSingleMask);
-            long id = type == TermIdMask.Single ? singleMarker : (long)EntryIdEncodings.GetContainerId(termId);
-            samples.Add(allocator, new RangeSample(id, type));
+            if (buckets[3].Count > 0)
+                throw new InvalidOperationException("Unknown TermIdMask type");
 
-            if (maxTerms > 0 && samples.Count >= maxTerms)
-                break;
-        }
+            stats.Singles = buckets[0].Count; // single = exactly one posting, no container read
+            stats.SmallPostings = SumBucketPostings(buckets[1], isLarge: false, out stats.Smalls);
+            stats.LargePostings = SumBucketPostings(buckets[2], isLarge: true, out stats.Larges);
+            stats.Postings = stats.Singles + stats.SmallPostings + stats.LargePostings;
 
-        stats.Terms = samples.Count;
-        if (samples.Count == 0)
-        {
-            samples.Dispose(allocator);
-            llt.ReleaseCompactKey(ref compactKey);
             return stats;
         }
-
-        var sampleSpan = samples.ToSpan();
-        sampleSpan.Sort();
-
-        using var idsScope = allocator.Allocate(sizeof(long) * samples.Count, out ByteString idsBuffer);
-        var ids = new Span<long>(idsBuffer.Ptr, samples.Count);
-        for (int i = 0; i < samples.Count; i++)
-            ids[i] = sampleSpan[i].ContainerId;
-
-        using var containersScope = allocator.Allocate(sizeof(UnmanagedSpan) * samples.Count, out ByteString containers);
-        var containersPtr = (UnmanagedSpan*)containers.Ptr;
-        Container.GetAll(llt, ids, new Span<UnmanagedSpan>(containersPtr, samples.Count), singleMarker, llt.PageLocator);
-
-        for (int i = 0; i < samples.Count; i++)
+        finally
         {
-            switch (sampleSpan[i].Type)
-            {
-                case TermIdMask.PostingList:
-                    long large = ((PostingListState*)containersPtr[i].Address)->NumberOfEntries;
-                    stats.Larges++;
-                    stats.LargePostings += large;
-                    stats.Postings += large;
-                    break;
-                case TermIdMask.SmallPostingList:
-                    long small = VariableSizeEncoding.Read<long>(containersPtr[i].Address, out _);
-                    stats.Smalls++;
-                    stats.SmallPostings += small;
-                    stats.Postings += small;
-                    break;
-                default: // Single
-                    stats.Singles++;
-                    stats.Postings += 1;
-                    break;
-            }
+            for (int b = 0; b < buckets.Length; b++)
+                buckets[b].Dispose(allocator);
+            llt.ReleaseCompactKey(ref compactKey);
         }
 
-        samples.Dispose(allocator);
-        llt.ReleaseCompactKey(ref compactKey);
-        return stats;
+        // Reads one posting-list bucket: strip the container ids, sort them so Container.GetAll walks pages in order,
+        // then sum each list's header count. isLarge picks the decode once (outside the loop) so neither read path
+        // carries a per-term branch.
+        long SumBucketPostings(NativeList<long> bucket, bool isLarge, out int count)
+        {
+            count = bucket.Count;
+            if (count == 0)
+                return 0;
+
+            var termIds = bucket.ToSpan();
+
+            using var idsScope = allocator.Allocate(sizeof(long) * count, out ByteString idsBuffer);
+            var ids = new Span<long>(idsBuffer.Ptr, count);
+            for (int i = 0; i < count; i++)
+                ids[i] = (long)EntryIdEncodings.GetContainerId(termIds[i]);
+            ids.Sort();
+
+            using var containersScope = allocator.Allocate(sizeof(UnmanagedSpan) * count, out ByteString containers);
+            var containersPtr = (UnmanagedSpan*)containers.Ptr;
+            Container.GetAll(llt, ids, new Span<UnmanagedSpan>(containersPtr, count), -1L, llt.PageLocator);
+
+            long total = 0;
+            if (isLarge)
+            {
+                for (int i = 0; i < count; i++)
+                    total += ((PostingListState*)containersPtr[i].Address)->NumberOfEntries;
+            }
+            else
+            {
+                for (int i = 0; i < count; i++)
+                    total += VariableSizeEncoding.Read<long>(containersPtr[i].Address, out _);
+            }
+
+            return total;
+        }
     }
 
     /// <summary>
     /// Sub-linear estimate of how many distinct terms fall in this provider's range, forwarding to
-    /// <see cref="CompactTree.GetNumberOfEntriesInRangeEstimate"/>. Returns -1 when a bound is open-ended (there is no
-    /// concrete high key to seek to), which tells the cardinality combiner it cannot estimate this range cheaply.
+    /// <see cref="CompactTree.GetNumberOfEntriesInRangeEstimate"/>. Open bounds are estimated directly: a
+    /// "before all keys" low is the empty span (sorts before every term, descending the leftmost leaf) and an
+    /// "after all keys" high descends the rightmost leaf, so an open-ended range counts to the edge of the tree.
     /// </summary>
     public long EstimateTermCountInRange()
     {
         if (_isEmpty)
             return 0;
 
-        // An open high bound (AfterAllKeys) has no concrete key to seek; let the caller fall back.
-        if (_high.Options == SliceOptions.AfterAllKeys)
-            return -1;
-
         // A "before all keys" low bound is represented by the empty span, which sorts before every stored key.
         var lowSpan = _low.Options == SliceOptions.BeforeAllKeys ? ReadOnlySpan<byte>.Empty : _low.AsSpan();
-        return _tree.GetNumberOfEntriesInRangeEstimate(lowSpan, _high.AsSpan());
+        // An "after all keys" high has no concrete key to seek; signal the descent to walk to the rightmost leaf.
+        return _tree.GetNumberOfEntriesInRangeEstimate(lowSpan, _high.AsSpan(), highToEnd: _high.Options == SliceOptions.AfterAllKeys);
     }
 
     /// <summary>Total number of terms stored for this field (O(1)); used by the cardinality combiner's whale guard.</summary>
