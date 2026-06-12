@@ -161,6 +161,13 @@ public partial class IndexSearcher
             UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan);
     }
 
+    // Encodes a query term to its stored byte form using the field's own analyzer, writing into the transaction
+    // allocator (no managed byte[], unlike the public string overload's Utf8.GetBytes(term)). The cardinality
+    // estimator uses this to build Slice range bounds analyzed exactly as the real query would, instead of routing
+    // a raw string through the default-field encoding path inside the aggregation builder.
+    public Slice EncodeTermForRangeEstimate(in FieldMetadata field, ReadOnlySpan<char> term)
+        => EncodeAndApplyAnalyzer(field, field.Analyzer, term);
+
     private IAggregationProvider AggregationRangeBuilder<TLow, THigh>(in FieldMetadata field, Slice low, Slice high, bool forward)
         where TLow : struct, Range.Marker
         where THigh : struct, Range.Marker

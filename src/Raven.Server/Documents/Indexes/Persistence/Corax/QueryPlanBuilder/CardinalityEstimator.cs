@@ -3,6 +3,7 @@ using System.Runtime.CompilerServices;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
+using Voron;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
@@ -113,10 +114,12 @@ internal static class CardinalityEstimator
             }
         }
 
-        // Estimates how many documents a range predicate (BETWEEN / GT / GTE / LT / LTE) matches.
-        // Numeric ranges are estimated natively per type (see below). Textual fields are only estimated for a
-        // fully-bounded BETWEEN - a half-open string range has no concrete opposite bound built here, so it falls
-        // back to the whole-index size.
+        // Estimates how many documents a range predicate (BETWEEN / GT / GTE / LT / LTE) matches. All three value
+        // types share one helper: the per-type fan-out only resolves the concrete bound(s) and the open-side
+        // sentinels, then the helper maps the operator onto the (low, high, inclusivity) tuple. Numeric opens use
+        // the type's own min/max; string opens use the before/after-all-keys slices. Strings are analyzed with the
+        // field's own analyzer here (into the tx allocator, no managed byte[]), so the estimate samples the same
+        // byte ordering the real query does instead of the aggregation builder's default-field encoding.
         long EstimateRangeClause(ClauseExecution e, ClauseType type)
         {
             PackedParam p = e.PackedParamValue;
@@ -125,20 +128,18 @@ internal static class CardinalityEstimator
 
             FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(e.Clause, walkerCtx);
 
-            if (p.ValueType == PackedParam.TypeString)
-            {
-                if (type != ClauseType.Between)
-                    return indexSearcher.NumberOfEntries;
-
-                return indexSearcher.EstimateMatchesInRange(fieldMeta, writer.GetString(p.Param1), writer.GetString(p.Param2));
-            }
-
             bool isBetween = type == ClauseType.Between;
-            return p.ValueType == PackedParam.TypeLong
-                ? EstimateNumeric(writer.GetLong(p.Param1), isBetween ? writer.GetLong(p.Param2) : 0, long.MinValue, long.MaxValue)
-                : EstimateNumeric(writer.GetDouble(p.Param1), isBetween ? writer.GetDouble(p.Param2) : 0, double.MinValue, double.MaxValue);
+            return p.ValueType switch
+            {
+                PackedParam.TypeLong => EstimateRange(writer.GetLong(p.Param1), isBetween ? writer.GetLong(p.Param2) : 0, long.MinValue, long.MaxValue),
+                PackedParam.TypeDouble => EstimateRange(writer.GetDouble(p.Param1), isBetween ? writer.GetDouble(p.Param2) : 0, double.MinValue, double.MaxValue),
+                _ => EstimateRange(
+                    indexSearcher.EncodeTermForRangeEstimate(fieldMeta, writer.GetString(p.Param1)),
+                    isBetween ? indexSearcher.EncodeTermForRangeEstimate(fieldMeta, writer.GetString(p.Param2)) : default,
+                    Slices.BeforeAllKeys, Slices.AfterAllKeys)
+            };
 
-            long EstimateNumeric<T>(T value1, T value2, T min, T max)
+            long EstimateRange<T>(T value1, T value2, T min, T max)
             {
                 var (low, high, left, right) = type switch
                 {
