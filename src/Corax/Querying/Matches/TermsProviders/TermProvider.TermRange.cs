@@ -5,15 +5,9 @@ using System.Runtime.CompilerServices;
 using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
-using Corax.Utils;
-using Sparrow;
-using Sparrow.Compression;
-using Sparrow.Server;
 using Voron;
 using Voron.Data.CompactTrees;
-using Voron.Data.Containers;
 using Voron.Data.Lookups;
-using Voron.Data.PostingLists;
 using Voron.Util;
 using Range = Corax.Querying.Matches.Meta.Range;
 
@@ -230,13 +224,10 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
     }
 
     /// <summary>
-    /// Header-only walk over the in-range terms (capped at <paramref name="maxTerms"/>; 0 = all). Terms are
-    /// partitioned branchlessly into per-type buckets keyed by the low two bits of the term id, then each bucket is
-    /// read with one uniform pass: singles count as one apiece (no container), small/large posting lists are sorted
-    /// by container id for page locality and have just their header read — a small list's varint length prefix or a
-    /// large list's <see cref="PostingListState.NumberOfEntries"/>. No posting ids are decoded. The returned breakdown
-    /// (total postings plus the single / small / large split and their sub-totals) is the raw material the two-ended
-    /// range-cardinality probe extrapolates from.
+    /// Header-only walk over the in-range terms (capped at <paramref name="maxTerms"/>; 0 = all), partitioning them
+    /// into the per-type buckets and reading their headers via <see cref="RangePostingBuckets"/>. The returned
+    /// breakdown (total postings plus the single / small / large split and their sub-totals) is the raw material the
+    /// two-ended range-cardinality probe extrapolates from.
     /// </summary>
     public unsafe RangePostingStats CountPostingsInRange(int maxTerms)
     {
@@ -248,15 +239,8 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
         var llt = _indexSearcher._transaction.LowLevelTransaction;
         CompactKey compactKey = llt.AcquireCompactKey();
 
-        // Branchless partition: (termId & EnsureIsSingleMask) -> 0=Single, 1=SmallPostingList, 2=PostingList. Slot 3
-        // (0b11) is unused; we keep it so the index is always in range and assert it stays empty. Singles carry no
-        // container, so their bucket is just a tally; the small/large buckets are read uniformly below.
-        Span<NativeList<long>> buckets = stackalloc NativeList<long>[4];
-        for (int b = 0; b < buckets.Length; b++)
-        {
-            buckets[b] = new NativeList<long>();
-            buckets[b].Initialize(allocator);
-        }
+        Span<NativeList<long>> buckets = stackalloc NativeList<long>[RangePostingBuckets.Count];
+        RangePostingBuckets.Initialize(buckets, allocator);
 
         try
         {
@@ -270,65 +254,20 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
                         break;
                 }
 
-                int idx = (int)(termId & (long)TermIdMask.EnsureIsSingleMask);
-                buckets[idx].Add(allocator, termId);
+                buckets[(int)(termId & (long)TermIdMask.EnsureIsSingleMask)].Add(allocator, termId);
                 stats.Terms++;
 
                 if (maxTerms > 0 && stats.Terms >= maxTerms)
                     break;
             }
 
-            if (buckets[3].Count > 0)
-                throw new InvalidOperationException("Unknown TermIdMask type");
-
-            stats.Singles = buckets[0].Count; // single = exactly one posting, no container read
-            stats.SmallPostings = SumBucketPostings(buckets[1], isLarge: false, out stats.Smalls);
-            stats.LargePostings = SumBucketPostings(buckets[2], isLarge: true, out stats.Larges);
-            stats.Postings = stats.Singles + stats.SmallPostings + stats.LargePostings;
-
+            RangePostingBuckets.Summarize(buckets, allocator, llt, ref stats);
             return stats;
         }
         finally
         {
-            for (int b = 0; b < buckets.Length; b++)
-                buckets[b].Dispose(allocator);
+            RangePostingBuckets.Release(buckets, allocator);
             llt.ReleaseCompactKey(ref compactKey);
-        }
-
-        // Reads one posting-list bucket: strip the container ids, sort them so Container.GetAll walks pages in order,
-        // then sum each list's header count. isLarge picks the decode once (outside the loop) so neither read path
-        // carries a per-term branch.
-        long SumBucketPostings(NativeList<long> bucket, bool isLarge, out int count)
-        {
-            count = bucket.Count;
-            if (count == 0)
-                return 0;
-
-            var termIds = bucket.ToSpan();
-
-            using var idsScope = allocator.Allocate(sizeof(long) * count, out ByteString idsBuffer);
-            var ids = new Span<long>(idsBuffer.Ptr, count);
-            for (int i = 0; i < count; i++)
-                ids[i] = (long)EntryIdEncodings.GetContainerId(termIds[i]);
-            ids.Sort();
-
-            using var containersScope = allocator.Allocate(sizeof(UnmanagedSpan) * count, out ByteString containers);
-            var containersPtr = (UnmanagedSpan*)containers.Ptr;
-            Container.GetAll(llt, ids, new Span<UnmanagedSpan>(containersPtr, count), -1L, llt.PageLocator);
-
-            long total = 0;
-            if (isLarge)
-            {
-                for (int i = 0; i < count; i++)
-                    total += ((PostingListState*)containersPtr[i].Address)->NumberOfEntries;
-            }
-            else
-            {
-                for (int i = 0; i < count; i++)
-                    total += VariableSizeEncoding.Read<long>(containersPtr[i].Address, out _);
-            }
-
-            return total;
         }
     }
 

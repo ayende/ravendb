@@ -71,8 +71,7 @@ internal static class CardinalityEstimator
                         return indexSearcher.NumberOfEntries;
 
                     FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx);
-                    long est = indexSearcher.EstimateStartsWith(fieldMeta, writer.GetString(p.Param1));
-                    return est < 0 ? indexSearcher.NumberOfEntries : est;
+                    return indexSearcher.EstimateStartsWith(fieldMeta, writer.GetString(p.Param1));
                 }
 
                 case ClauseType.Exists:
@@ -130,10 +129,9 @@ internal static class CardinalityEstimator
         }
 
         // Estimates how many documents a range predicate (BETWEEN / GT / GTE / LT / LTE) matches.
-        // Numeric bounds are widened to double (the estimator keys on DoubleLookupKey); open sides use
-        // double.MinValue/MaxValue. Textual fields can only be estimated for a fully-bounded BETWEEN -
-        // a half-open string range has no concrete opposite bound to sample, so it falls back to the
-        // whole-index size. A negative estimate (combiner declined to estimate cheaply) also falls back.
+        // Numeric ranges are estimated natively per type (see below). Textual fields are only estimated for a
+        // fully-bounded BETWEEN - a half-open string range has no concrete opposite bound built here, so it falls
+        // back to the whole-index size.
         long EstimateRangeClause(ClauseExecution e, ClauseType type)
         {
             PackedParam p = e.PackedParamValue;
@@ -147,19 +145,21 @@ internal static class CardinalityEstimator
                 if (type != ClauseType.Between)
                     return indexSearcher.NumberOfEntries;
 
-                long s = indexSearcher.EstimateMatchesInRange(fieldMeta, writer.GetString(p.Param1), writer.GetString(p.Param2),
+                return indexSearcher.EstimateMatchesInRange(fieldMeta, writer.GetString(p.Param1), writer.GetString(p.Param2),
                     UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual);
-                return s < 0 ? indexSearcher.NumberOfEntries : s;
             }
 
             // Numeric ranges are estimated natively per type: longs keep full precision (e.g. DateTime ticks
             // above 2^53 that would round if widened to double), doubles likewise. Open sides use the type's
-            // own min/max sentinel.
+            // own min/max sentinel. The bounds are resolved to concrete values here (only BETWEEN has a second
+            // value index; the half-open operators leave Param2 == NoParam, so it is never read) and the
+            // dispatched helper just maps the operator onto the (low, high, inclusivity) tuple.
+            bool isBetween = type == ClauseType.Between;
             return p.ValueType == PackedParam.TypeLong
-                ? EstimateNumeric(long.MinValue, long.MaxValue, writer.GetLong)
-                : EstimateNumeric(double.MinValue, double.MaxValue, writer.GetDouble);
+                ? EstimateNumeric(writer.GetLong(p.Param1), isBetween ? writer.GetLong(p.Param2) : default, long.MinValue, long.MaxValue)
+                : EstimateNumeric(writer.GetDouble(p.Param1), isBetween ? writer.GetDouble(p.Param2) : default, double.MinValue, double.MaxValue);
 
-            long EstimateNumeric<T>(T min, T max, Func<int, T> read)
+            long EstimateNumeric<T>(T value1, T value2, T min, T max)
             {
                 T low, high;
                 UnaryMatchOperation left = UnaryMatchOperation.GreaterThanOrEqual;
@@ -167,31 +167,30 @@ internal static class CardinalityEstimator
                 switch (type)
                 {
                     case ClauseType.Between:
-                        low = read(p.Param1);
-                        high = read(p.Param2);
+                        low = value1;
+                        high = value2;
                         break;
                     case ClauseType.GreaterThan:
-                        low = read(p.Param1);
+                        low = value1;
                         high = max;
                         left = UnaryMatchOperation.GreaterThan;
                         break;
                     case ClauseType.GreaterThanOrEqual:
-                        low = read(p.Param1);
+                        low = value1;
                         high = max;
                         break;
                     case ClauseType.LessThan:
                         low = min;
-                        high = read(p.Param1);
+                        high = value1;
                         right = UnaryMatchOperation.LessThan;
                         break;
                     default: // LessThanOrEqual
                         low = min;
-                        high = read(p.Param1);
+                        high = value1;
                         break;
                 }
 
-                long est = indexSearcher.EstimateMatchesInRange(fieldMeta, low, high, left, right);
-                return est < 0 ? indexSearcher.NumberOfEntries : est;
+                return indexSearcher.EstimateMatchesInRange(fieldMeta, low, high, left, right);
             }
         }
     }

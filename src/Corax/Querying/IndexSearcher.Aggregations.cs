@@ -85,8 +85,9 @@ public partial class IndexSearcher
 
     // Two-ended probe + combiner. Cheaply estimates how many *documents* match a range without scanning it: it samples
     // the posting-count distribution at the bottom and top of the range, gets a sub-linear estimate of the in-range
-    // term count, and extrapolates the unscanned middle assuming a similar per-term density. Returns -1 when the range
-    // can't be estimated cheaply (e.g. an open-ended textual bound) so the caller can fall back to a coarser bound.
+    // term count, and extrapolates the unscanned middle assuming a similar per-term density. Open bounds are estimated
+    // directly (the term-count descent walks to the edge of the tree), so every range yields a concrete, non-negative
+    // estimate capped at NumberOfEntries.
     private const int RangeBottomSample = 512;
     private const int RangeTopSample = 256;
 
@@ -97,8 +98,6 @@ public partial class IndexSearcher
         var forward = BetweenAggregation(field, low, high, leftSide, rightSide, forward: true);
 
         long terms = forward.EstimateTermCountInRange();
-        if (terms < 0)
-            return -1; // not cheaply estimable -> caller decides on a fallback
         if (terms == 0)
             return 0;
 
