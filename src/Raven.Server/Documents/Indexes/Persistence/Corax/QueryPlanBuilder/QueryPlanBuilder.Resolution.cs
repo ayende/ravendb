@@ -670,6 +670,25 @@ internal static partial class QueryPlanBuilder
             : builderParams.Query.PageSize;
     }
 
+    /// <summary>
+    /// When <see cref="ResolveSortedScanTake"/> returns <c>TakeAll</c>, the residual-scan cost gate prices the
+    /// whole driving cardinality instead of a page (see <see cref="ResolveEffectiveScanPageSize"/>), which is what
+    /// usually pushes <c>entries_to_scan</c> past the cap and forces the bitmap fall-back. This names the cause for
+    /// the decision trail so a rejection reads as "page unbounded because X" rather than an unexplained huge count.
+    /// Returns null when the take is page-bounded (the gate priced a real page). Mirrors the TakeAll conditions in
+    /// <see cref="ResolveSortedScanTake"/> exactly, including their precedence.
+    /// </summary>
+    private static string DescribeUnboundedScanTake(QueryBuilderParameters builderParams)
+    {
+        if (builderParams?.Metadata?.Query?.Filter != null)
+            return "post-filter present";
+        if (builderParams?.Query is { IsCountQuery: true })
+            return "count query";
+        if (builderParams?.Query is { SkipStatistics: false })
+            return "statistics requested (SkipStatistics=false)";
+        return null;
+    }
+
     private static IQueryMatch BuildSortedDrivingWithTieBreakMatch(InstCtx ctx, ITermsProvider provider, LowLevelTransaction llt, NullsSortMode indexDefaultNullsSortMode,
         IndexSearcher indexSearcher, bool nullFirst)
     {

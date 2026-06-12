@@ -44,6 +44,14 @@ public class QueryExecution
     /// until Instantiate runs.</summary>
     public ExecutionStrategy ActualStrategy = ExecutionStrategy.NotEvaluated;
 
+    /// <summary>Per-execution cost-gate verdict for the candidate scan strategy, populated only when timings are
+    /// requested. Carries the actual arithmetic the gate compared for THIS parameter set
+    /// (entries_to_scan × cost vs bitmap_cost, or a short reason such as "full scan requested"), so the decision
+    /// trail can explain why the cached structural candidate (FieldSortedScan / CompoundSortedScan) did or did
+    /// not fire this run rather than just stating that a per-execution gate exists. Null when timings are off or
+    /// the chosen strategy has no per-execution gate.</summary>
+    public string StrategyGateReason;
+
     public Action PopulateScanParams;
 
     /// <summary>Holds the analyzed slices for each field, indexed by the field's slot.</summary>

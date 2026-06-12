@@ -53,6 +53,8 @@ internal static partial class QueryPlanBuilder
                 // Always compute the cost estimate: ConstructCompoundField consumes entriesToScan/bitmapCost.
                 // When forced, we ignore the gate's verdict but still need those values.
                 bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost);
+                if (wantTimings)
+                    exec.StrategyGateReason = $"entries_to_scan({cfEntriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} {(cfEffective ? "<" : ">=")} bitmap_cost({cfBitmapCost})";
                 if (forced is null && cfEffective == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
                 innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost);
@@ -63,7 +65,13 @@ internal static partial class QueryPlanBuilder
                 var execs = exec.Executions;
                 bool isFullScan = execs is not { Count: > 0 };
                 string directScanReason = forced is not null ? "forced via $rvn_corax_strategy" : null;
-                if (forced is not null || DirectScanCostEffective(ref ctx, isFullScan, out directScanReason))
+                bool directScanEffective = forced is not null || DirectScanCostEffective(ref ctx, isFullScan, out directScanReason);
+                // Capture the gate's actual arithmetic for the decision trail (timings only). directScanReason now
+                // holds either the formula (residual-present branch, set only when WantTimings) or a short reason;
+                // recording it on both accept and reject is what makes the trail explain THIS run's fall-back.
+                if (wantTimings)
+                    exec.StrategyGateReason = directScanReason;
+                if (directScanEffective)
                 {
                     bool hasTieBreak = orderByFields.Length == 2;
                     innerMatch = ConstructDirectScan(ref ctx, walkerCtx, exec.SortDrivingClause, isFullScan, hasTieBreak, directScanReason);
@@ -227,9 +235,28 @@ internal static partial class QueryPlanBuilder
             long drivingCard = drivingExec.GetEffectiveCardinality(indexSearcher);
             var entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
 
+            bool effective = IsDirectScanCostEffective(entriesToScan, bitmapCost);
             if (ctx.WantTimings)
-                directScanReason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
-            return IsDirectScanCostEffective(entriesToScan, bitmapCost);
+                directScanReason = FormatGateReason(entriesToScan, bitmapCost, DescribeUnboundedScanTake(ctx.BuilderParams));
+            return effective;
+        }
+
+        // Render the gate's actual arithmetic and verdict for the decision trail. Mirrors the two guards in
+        // IsDirectScanCostEffective so a rejection reports WHICH guard failed (the 32,768 over-scan cap vs. the
+        // scan-cost-beats-bitmap comparison), instead of a hardcoded "<" that reads as accepted on a fall-back.
+        // unboundedReason (non-null only on the TakeAll path) names WHY entries_to_scan was priced against the whole
+        // driving set rather than a page — the usual trigger for blowing the cap — so the trail explains the cause.
+        static string FormatGateReason(long entriesToScan, long bitmapCost, string unboundedReason)
+        {
+            string suffix = unboundedReason is null ? "" : $" [page unbounded: {unboundedReason}]";
+            long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier
+                ? long.MaxValue
+                : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+            if (entriesToScan > QueryPrimitives.EntryScanCountThreshold)
+                return $"entries_to_scan({entriesToScan}) > cap({QueryPrimitives.EntryScanCountThreshold}) → bitmap{suffix}";
+            return directCost < bitmapCost
+                ? $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} < bitmap_cost({bitmapCost}) → scan{suffix}"
+                : $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} >= bitmap_cost({bitmapCost}) → bitmap{suffix}";
         }
 
         static long ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,

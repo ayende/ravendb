@@ -753,7 +753,7 @@ internal static class QueryPlanGraph
             {
                 parts = new()
                 {
-                    match + " [heap sort]",
+                    match + " [" + SortMechanism(p) + "]",
                     SortKeyDescription(p.GetValueOrDefault("FieldName"), p.GetValueOrDefault("Ascending"), fieldType)
                 };
             }
@@ -772,6 +772,22 @@ internal static class QueryPlanGraph
             parts[i] = GraphvizGraph.Escape(parts[i]);
         return string.Join("\\n", parts);
     }
+
+    /// <summary>
+    ///     The bracketed mechanism for a single-field sort, derived from the strategy SortingMatch actually ran
+    ///     (surfaced as the "Strategy" parameter by <c>SortingMatch.Inspect</c>). <c>IndexOrderStreaming</c> walks
+    ///     the sort index in order and streams to the page limit — it is NOT a heap sort, so a hardcoded
+    ///     "[heap sort]" would contradict the "via IndexOrderStreaming" line on the same node. Score / spatial
+    ///     sorts reach this only via the heap-sorting branches above; the field branch is the one that can stream.
+    ///     Falls back to "heap sort" with no runtime strategy (the materialize-then-sort default).
+    /// </summary>
+    private static string SortMechanism(Dictionary<string, string> p) => p.GetValueOrDefault("Strategy") switch
+    {
+        "IndexOrderStreaming" => "index-order streaming",
+        "IndexOrderFallbackToInMemorySort" => "index-order scan \u2192 heap-sort fallback",
+        "RandomOrder" => "reservoir sample",
+        _ => "heap sort"
+    };
 
     private static string SortKeyDescription(string field, string ascending, string fieldType)
     {
