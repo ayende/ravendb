@@ -163,10 +163,6 @@ internal static partial class QueryPlanBuilder
         if (result.CompiledPlan.DecisionTrail is { Entries.Count: > 0 } trail)
         {
             var trailNode = new QueryInspectionNode("DecisionTrail");
-            // The trail Reason is the cached, structural verdict ("...cost gated per-execution"). When timings are
-            // on, overlay THIS run's actual gate arithmetic (captured at instantiate time) onto the entry for the
-            // cached candidate strategy, so the trail explains the per-parameter fall-back instead of merely noting
-            // that a gate exists. exec.StrategyGateReason is null when timings are off / the strategy has no gate.
             string candidateName = compiledPlan.Strategy.ToString();
             foreach (var entry in trail.Entries)
             {

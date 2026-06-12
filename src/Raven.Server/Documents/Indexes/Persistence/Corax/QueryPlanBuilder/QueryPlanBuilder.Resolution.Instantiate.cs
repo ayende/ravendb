@@ -66,11 +66,7 @@ internal static partial class QueryPlanBuilder
                 bool isFullScan = execs is not { Count: > 0 };
                 string directScanReason = forced is not null ? "forced via $rvn_corax_strategy" : null;
                 bool directScanEffective = forced is not null || DirectScanCostEffective(ref ctx, isFullScan, out directScanReason);
-                // Capture the gate's actual arithmetic for the decision trail (timings only). directScanReason now
-                // holds either the formula (residual-present branch, set only when WantTimings) or a short reason;
-                // recording it on both accept and reject is what makes the trail explain THIS run's fall-back.
-                if (wantTimings)
-                    exec.StrategyGateReason = directScanReason;
+                exec.StrategyGateReason = directScanReason;
                 if (directScanEffective)
                 {
                     bool hasTieBreak = orderByFields.Length == 2;
@@ -146,15 +142,6 @@ internal static partial class QueryPlanBuilder
             }
 
             ctx.Plan.DecisionTrail.Record("BitmapPipeline", true, "bitmap pipeline with SortingMatch fallback");
-        }
-        
-        static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)
-        {
-            long directCost =  entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier
-                ? long.MaxValue // avoid overflow
-                : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
-            // check what will be more costly, and set a hard limit (32K) to how many entries we may scan
-            return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
         }
         
         static bool CompoundFieldCostEffective(ref InstCtx ctx, out long entriesToScan, out long bitmapCost)
@@ -240,25 +227,36 @@ internal static partial class QueryPlanBuilder
                 directScanReason = FormatGateReason(entriesToScan, bitmapCost, DescribeUnboundedScanTake(ctx.BuilderParams));
             return effective;
         }
+        
+        static long CalculateDirectCost(long entriesToScan)
+        {
+            return entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier
+                ? long.MaxValue // avoid overflow
+                : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+        }
 
-        // Render the gate's actual arithmetic and verdict for the decision trail. Mirrors the two guards in
-        // IsDirectScanCostEffective so a rejection reports WHICH guard failed (the 32,768 over-scan cap vs. the
-        // scan-cost-beats-bitmap comparison), instead of a hardcoded "<" that reads as accepted on a fall-back.
-        // unboundedReason (non-null only on the TakeAll path) names WHY entries_to_scan was priced against the whole
-        // driving set rather than a page — the usual trigger for blowing the cap — so the trail explains the cause.
+        static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)
+        {
+            long directCost = CalculateDirectCost(entriesToScan);
+    
+            // check what will be more costly, and set a hard limit (32K) to how many entries we may scan
+            return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
+        }
+
         static string FormatGateReason(long entriesToScan, long bitmapCost, string unboundedReason)
         {
             string suffix = unboundedReason is null ? "" : $" [page unbounded: {unboundedReason}]";
-            long directCost = entriesToScan > long.MaxValue / QueryPrimitives.EntryScanCostMultiplier
-                ? long.MaxValue
-                : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
+    
             if (entriesToScan > QueryPrimitives.EntryScanCountThreshold)
                 return $"entries_to_scan({entriesToScan}) > cap({QueryPrimitives.EntryScanCountThreshold}) → bitmap{suffix}";
+
+            long directCost = CalculateDirectCost(entriesToScan);
+    
             return directCost < bitmapCost
                 ? $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} < bitmap_cost({bitmapCost}) → scan{suffix}"
                 : $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} >= bitmap_cost({bitmapCost}) → bitmap{suffix}";
         }
-
+        
         static long ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
             ClauseExecution drivingClause, long drivingCard, long pageSize, IndexSearcher indexSearcher)
         {
