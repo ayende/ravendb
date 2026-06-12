@@ -298,8 +298,9 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         if (term == Constants.NullValue)
             return Constants.NullValueSlice;
 
-        ApplyAnalyzer(binding, binding.Analyzer, Encodings.Utf8.GetBytes(term), out var encodedTerm);
-        return encodedTerm;
+        // Delegate to the span overload, which encodes into the transaction allocator instead of allocating a
+        // managed byte[] via Encodings.Utf8.GetBytes(term). AsSpan() is allocation-free.
+        return EncodeAndApplyAnalyzer(binding, binding.Analyzer, term.AsSpan());
     }
 
 

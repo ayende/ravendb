@@ -134,8 +134,8 @@ internal static class CardinalityEstimator
                 PackedParam.TypeLong => EstimateRange(writer.GetLong(p.Param1), isBetween ? writer.GetLong(p.Param2) : 0, long.MinValue, long.MaxValue),
                 PackedParam.TypeDouble => EstimateRange(writer.GetDouble(p.Param1), isBetween ? writer.GetDouble(p.Param2) : 0, double.MinValue, double.MaxValue),
                 _ => EstimateRange(
-                    indexSearcher.EncodeTermForRangeEstimate(fieldMeta, writer.GetString(p.Param1)),
-                    isBetween ? indexSearcher.EncodeTermForRangeEstimate(fieldMeta, writer.GetString(p.Param2)) : default,
+                    indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, writer.GetString(p.Param1)),
+                    isBetween ? indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, writer.GetString(p.Param2)) : default,
                     Slices.BeforeAllKeys, Slices.AfterAllKeys)
             };
 
