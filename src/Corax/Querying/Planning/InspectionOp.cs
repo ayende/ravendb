@@ -7,7 +7,6 @@ public sealed class InspectionOp
     public string FieldName;
     public string ClauseType;
     public bool IsNegated;
-    public long EstimatedCardinality;
 
     public int FlatClauseIndex = -1;
 

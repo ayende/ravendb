@@ -6,6 +6,7 @@ using Corax.Mappings;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Matches.TermsProviders;
+using Corax.Querying.Planning;
 using Voron;
 using Voron.Data.CompactTrees;
 using Voron.Data.Lookups;
@@ -99,25 +100,46 @@ public partial class IndexSearcher
     private const double CalibrationBetaMax = 4.0;
 
     public long EstimateMatchesInRange<TValue>(in FieldMetadata field, TValue low, TValue high,
+        out RangeEstimateBreakdown breakdown,
         UnaryMatchOperation leftSide = UnaryMatchOperation.GreaterThanOrEqual,
         UnaryMatchOperation rightSide = UnaryMatchOperation.LessThanOrEqual,
         double calibrationFactor = 0)
     {
+        breakdown = new RangeEstimateBreakdown { CalibrationFactor = calibrationFactor };
+
         var forward = BetweenAggregation(field, low, high, leftSide, rightSide, forward: true);
 
         long terms = forward.EstimateTermCountInRange();
+        breakdown.RangeTerms = terms;
         if (terms == 0)
+        {
+            breakdown.IsExact = true;
             return 0;
+        }
 
         // Scan the bottom of the range. If we never hit the cap, we have walked every in-range term: the count is exact.
         RangePostingStats bottom = forward.CountPostingsInRange(RangeBottomSample);
         if (bottom.Terms < RangeBottomSample)
-            return Math.Min(bottom.Postings, NumberOfEntries);
+        {
+            long exact = Math.Min(bottom.Postings, NumberOfEntries);
+            breakdown.IsExact = true;
+            breakdown.SampledTerms = bottom.Terms;
+            breakdown.SampledPostings = bottom.Postings;
+            breakdown.Estimate = exact;
+            return exact;
+        }
 
         // Cap the top sample so it cannot overlap the bottom sample (matters only for ranges barely above the cap).
         int topCap = (int)Math.Min(RangeTopSample, Math.Max(0, terms - bottom.Terms));
         if (topCap == 0)
-            return Math.Min(bottom.Postings, NumberOfEntries);
+        {
+            long exact = Math.Min(bottom.Postings, NumberOfEntries);
+            breakdown.IsExact = true;
+            breakdown.SampledTerms = bottom.Terms;
+            breakdown.SampledPostings = bottom.Postings;
+            breakdown.Estimate = exact;
+            return exact;
+        }
 
         var backward = BetweenAggregation(field, low, high, leftSide, rightSide, forward: false);
         RangePostingStats top = backward.CountPostingsInRange(topCap);
@@ -138,22 +160,25 @@ public partial class IndexSearcher
         //
         // We have measured the per-term posting density on the sampled edges (sampledAvg) and we know the
         // field-wide density (globalAvg). The unscanned middle of the range (middleTerms terms) is unknown, so we
-        // must guess its density. Two failure modes bound the choice:
-        //   * Trust sampledAvg blindly -> a whale in the middle is missed, we UNDER-estimate a genuinely dense range.
-        //   * Snap up to globalAvg     -> the old `max(sampledAvg, globalAvg)` floor; on a skewed field a legitimately
-        //                                 sparse range gets its whole middle filled at the global rate, OVER-estimating it badly.
-        // The floor has no leeway: any below-average range is treated as average. Instead we shrink the middle
-        // density toward globalAvg with a strength proportional to how much of the range we actually sampled:
+        // must guess its density. Two naive choices bound the spectrum:
+        //   * Trust sampledAvg blindly  -> a whale in the middle is missed, we UNDER-estimate a genuinely dense range.
+        //   * Snap the middle to globalAvg (i.e. max(sampledAvg, globalAvg)) -> on a skewed field a legitimately sparse
+        //     range gets its whole middle filled at the global rate, OVER-estimating it badly; any below-average range
+        //     is treated as average, with no leeway.
+        // Instead we shrink the middle density toward globalAvg with a strength proportional to how much of the range
+        // we actually sampled:
         //
         //     middleAvg = (sampledPostings + k*globalAvg) / (sampledTerms + k)        // k pseudo-observations at globalAvg
         //               = (sampledTerms*sampledAvg + k*globalAvg) / (sampledTerms + k) // since sampledPostings = sampledTerms*sampledAvg
         //
-        // with k = beta * middleTerms. At beta = 1 (the cold-start default; calibrationFactor 0 -> "no history") this is
-        // exactly the coverage-weighted blend  coverage*sampledAvg + (1-coverage)*globalAvg  with
-        // coverage = sampledTerms / (sampledTerms + middleTerms): a well-sampled range (coverage -> 1) mostly trusts its
-        // own edges, a barely-sampled one (coverage -> 0) defers to the global rate. beta is the single leeway dial:
-        // beta < 1 trusts the local sample faster (less whale protection, less over-count on sparse ranges); beta > 1
-        // leans back toward globalAvg (more whale-cautious). The old behaviour is the beta -> inf limit.
+        // with k = beta * middleTerms — beta pseudo-observations per unscanned term, each carrying the global rate. At
+        // beta = 1 (the cold-start default; calibrationFactor 0 -> "no history") this is exactly the coverage-weighted
+        // blend  coverage*sampledAvg + (1-coverage)*globalAvg  with  coverage = sampledTerms / (sampledTerms +
+        // middleTerms): a well-sampled range (coverage -> 1) mostly trusts its own edges, a barely-sampled one
+        // (coverage -> 0) defers to the global rate. beta is the single leeway dial: beta < 1 trusts the local sample
+        // faster (less whale protection, less over-count on sparse ranges); beta > 1 leans back toward globalAvg (more
+        // whale-cautious). As beta -> inf, k -> inf and the middle snaps entirely to globalAvg (the over-estimating
+        // extreme above).
         //
         // How beta adapts over time: calibrationFactor is a per-clause EWMA of (docs the clause actually matched) /
         // (the estimate this method produced) — see ClauseInfo.RangeEstimateCalibration / InflationEwma. If a clause
@@ -164,17 +189,29 @@ public partial class IndexSearcher
         // can't run away.
         //
         // Worked example: field of 1,000,000 docs over 100,000 terms -> globalAvg = 10 docs/term. A sparse range with
-        // 1500 terms total, of which we sample sampledTerms = 768 (sampledAvg = 2 docs/term), leaving middleTerms = 732:
-        //     old floor:  middle filled at globalAvg=10 -> 1536 + 732*10   = 8856  (assumes the unseen half is average)
-        //     beta = 1:   middle = 0.512*2 + 0.488*10   -> 1536 + 732*5.9  = 5855  (~34% lower: trusts the sparse edges)
-        //     beta = 4:   middle = (1536 + 2928*10)/3696 = 8.34 -> 1536 + 732*8.34 = 7641 (leans back toward the floor
-        //                 once the clause has shown it under-estimates).
+        // 1500 terms total, of which we sample sampledTerms = 768 (sampledAvg = 2 docs/term, so sampledPostings = 1536),
+        // leaving middleTerms = 732:
+        //     beta = 1:    k = 1*732 = 732.   middleAvg = (1536 + 732*10)  / (768+732)  = 5.9  -> 1536 + 732*5.9  = 5855
+        //                  (== coverage blend: 0.512*2 + 0.488*10; trusts the sparse edges)
+        //     beta = 4:    k = 4*732 = 2928.  middleAvg = (1536 + 2928*10) / (768+2928) = 8.34 -> 1536 + 732*8.34 = 7641
+        //                  (leans back toward globalAvg once the clause has shown it under-estimates)
+        //     beta -> inf: middle snaps to globalAvg = 10            -> 1536 + 732*10   = 8856 (the whole unseen middle treated as average)
         double beta = calibrationFactor <= 0 ? 1.0 : Math.Clamp(calibrationFactor, CalibrationBetaMin, CalibrationBetaMax);
         double k = beta * middleTerms;
         double middleAvg = (sampledPostings + k * globalAvg) / (sampledTerms + k);
 
-        long estimate = sampledPostings + (long)(middleTerms * middleAvg);
-        return Math.Min(estimate, NumberOfEntries);
+        long estimate = Math.Min(sampledPostings + (long)(middleTerms * middleAvg), NumberOfEntries);
+
+        breakdown.SampledTerms = sampledTerms;
+        breakdown.SampledPostings = sampledPostings;
+        breakdown.MiddleTerms = middleTerms;
+        breakdown.SampledAvg = sampledAvg;
+        breakdown.GlobalAvg = globalAvg;
+        breakdown.Beta = beta;
+        breakdown.K = k;
+        breakdown.MiddleAvg = middleAvg;
+        breakdown.Estimate = estimate;
+        return estimate;
     }
 
     // StartsWith(prefix) matches exactly the contiguous byte-range [encodedPrefix, successor(encodedPrefix)). The prefix
@@ -183,7 +220,7 @@ public partial class IndexSearcher
     // incremented and trailing 0xFF bytes dropped; if every byte is 0xFF (or the prefix is empty) no finite successor
     // exists and the range runs to the end of the tree. Reuses the range estimator so StartsWith costs the same two
     // descents as a bounded range instead of falling back to the whole-index size.
-    public long EstimateStartsWith(in FieldMetadata field, string prefix, double calibrationFactor = 0)
+    public long EstimateStartsWith(in FieldMetadata field, string prefix, out RangeEstimateBreakdown breakdown, double calibrationFactor = 0)
     {
         Slice encodedPrefix = EncodeAndApplyAnalyzer(field, prefix);
         ReadOnlySpan<byte> prefixBytes = encodedPrefix.AsReadOnlySpan();
@@ -195,7 +232,7 @@ public partial class IndexSearcher
         if (len == 0)
         {
             // empty prefix or all-0xFF carry: no finite successor, so the match set runs to the end of the tree
-            return EstimateMatchesInRange(field, encodedPrefix, Slices.AfterAllKeys,
+            return EstimateMatchesInRange(field, encodedPrefix, Slices.AfterAllKeys, out breakdown,
                 UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, calibrationFactor);
         }
 
@@ -204,7 +241,7 @@ public partial class IndexSearcher
         successor[len - 1]++;
 
         using var __ = Slice.From(Allocator, successor, out Slice high);
-        return EstimateMatchesInRange(field, encodedPrefix, high,
+        return EstimateMatchesInRange(field, encodedPrefix, high, out breakdown,
             UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan, calibrationFactor);
     }
 

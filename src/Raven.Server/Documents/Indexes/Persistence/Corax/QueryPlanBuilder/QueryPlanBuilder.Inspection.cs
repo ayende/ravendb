@@ -125,13 +125,38 @@ internal static partial class QueryPlanBuilder
 
                     parameters["Terms"] = string.Join(", ", displayTerms) + (inTermCount > 5 ? $" ... ({inTermCount} total)" : "");
                 }
+
+                // Per-execution estimate (the live ClauseExecution.Cardinality for THIS run's bound parameters),
+                // not the cached plan-emit-time value: plans are reused across parameter sets, so the cached number
+                // would be stale. For range/StartsWith clauses also surface the raw estimator inputs so the reader
+                // can see HOW the number was reached (sampled edges, the unscanned-middle shrinkage blend), not just
+                // the final count. See IndexSearcher.EstimateMatchesInRange / RangeEstimateBreakdown.
+                if (clauseExec.Cardinality is > 0 and < long.MaxValue)
+                    parameters["EstimatedRows"] = clauseExec.Cardinality.ToString("N0");
+
+                if (clauseExec.RangeEstimate is { } bd)
+                {
+                    parameters["EstRangeTerms"] = bd.RangeTerms.ToString("N0", CultureInfo.InvariantCulture);
+                    parameters["EstSampledTerms"] = bd.SampledTerms.ToString("N0", CultureInfo.InvariantCulture);
+                    parameters["EstSampledPostings"] = bd.SampledPostings.ToString("N0", CultureInfo.InvariantCulture);
+                    if (bd.IsExact)
+                    {
+                        parameters["EstExact"] = "true"; // small range: every in-range term was counted, no extrapolation
+                    }
+                    else
+                    {
+                        parameters["EstMiddleTerms"] = bd.MiddleTerms.ToString("N0", CultureInfo.InvariantCulture);
+                        parameters["EstSampledAvg"] = bd.SampledAvg.ToString("0.###", CultureInfo.InvariantCulture);
+                        parameters["EstGlobalAvg"] = bd.GlobalAvg.ToString("0.###", CultureInfo.InvariantCulture);
+                        parameters["EstMiddleAvg"] = bd.MiddleAvg.ToString("0.###", CultureInfo.InvariantCulture);
+                        parameters["EstBeta"] = bd.Beta.ToString("0.###", CultureInfo.InvariantCulture);
+                        parameters["EstCalibrationFactor"] = bd.CalibrationFactor.ToString("0.###", CultureInfo.InvariantCulture);
+                    }
+                }
             }
 
             if (t.ClauseType != null) parameters["ClauseType"] = t.ClauseType;
             if (t.IsNegated) parameters["Negated"] = "true";
-
-            if (t.EstimatedCardinality is > 0 and < long.MaxValue)
-                parameters["EstimatedRows"] = t.EstimatedCardinality.ToString("N0");
 
             var node = new QueryInspectionNode(t.Name, parameters: parameters);
             opNodes.Add(node);
@@ -498,7 +523,6 @@ internal static partial class QueryPlanBuilder
                         or PlanOpKind.LazyOrBitmaps or PlanOpKind.ClearBitmap or PlanOpKind.FillAllEntries => null,
                     _ => "Match"
                 },
-                EstimatedCardinality = op.EstimatedCardinality,
                 OpIndex = i,
                 DestSlot = op.BitmapLocal,
                 SourceSlot = op.Kind switch

@@ -16,6 +16,12 @@ public sealed class ClauseExecution : IComparable<ClauseExecution>
     public PackedParam PackedParamValue = PackedParam.None;
     public ParamValueType TermValueType;
     public long Cardinality = -1;
+
+    /// <summary>Raw inputs behind this execution's range/StartsWith cardinality estimate, captured by the
+    /// estimator so the inspection / include timings() view can explain how the number was reached. Null for
+    /// non-range clauses (and for ranges whose plan was never re-estimated this run).</summary>
+    public RangeEstimateBreakdown? RangeEstimate;
+
     public int InTermCount;
     public bool HasNullTerm;
     public float BoostFactor;
