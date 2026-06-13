@@ -136,35 +136,37 @@ public partial class IndexSearcher
 
         // === Unscanned-middle extrapolation: Bayesian shrinkage toward the global density ===
         //
-        // We have measured the per-term posting density on the sampled edges (sampledAvg = a) and we know the
-        // field-wide density (globalAvg = g). The middle of the range (middleTerms = m terms) is unscanned, so we
+        // We have measured the per-term posting density on the sampled edges (sampledAvg) and we know the
+        // field-wide density (globalAvg). The unscanned middle of the range (middleTerms terms) is unknown, so we
         // must guess its density. Two failure modes bound the choice:
-        //   * Trust a blindly  -> a whale in the middle is missed, we UNDER-estimate a genuinely dense range.
-        //   * Snap up to g      -> the old `max(a, g)` floor; on a skewed field a legitimately sparse range gets
-        //                          its whole middle filled at the global rate, OVER-estimating it badly.
+        //   * Trust sampledAvg blindly -> a whale in the middle is missed, we UNDER-estimate a genuinely dense range.
+        //   * Snap up to globalAvg     -> the old `max(sampledAvg, globalAvg)` floor; on a skewed field a legitimately
+        //                                 sparse range gets its whole middle filled at the global rate, OVER-estimating it badly.
         // The floor has no leeway: any below-average range is treated as average. Instead we shrink the middle
-        // density toward g with a strength proportional to how much of the range we actually sampled:
+        // density toward globalAvg with a strength proportional to how much of the range we actually sampled:
         //
-        //     middleAvg = (sampledPostings + k*g) / (sampledTerms + k)            // k pseudo-observations at rate g
-        //               = (n*a + k*g) / (n + k)                                   // since sampledPostings = n*a
+        //     middleAvg = (sampledPostings + k*globalAvg) / (sampledTerms + k)        // k pseudo-observations at globalAvg
+        //               = (sampledTerms*sampledAvg + k*globalAvg) / (sampledTerms + k) // since sampledPostings = sampledTerms*sampledAvg
         //
-        // with k = beta * m. At beta = 1 (the cold-start default; calibrationFactor 0 -> "no history") this is
-        // exactly the coverage-weighted blend  c*a + (1-c)*g  with  c = n/(n+m): a well-sampled range (c -> 1)
-        // mostly trusts its own edges, a barely-sampled one (c -> 0) defers to the global rate. beta is the single
-        // leeway dial: beta < 1 trusts the local sample faster (less whale protection, less over-count on sparse
-        // ranges); beta > 1 leans back toward g (more whale-cautious). The old behaviour is the beta -> inf limit.
+        // with k = beta * middleTerms. At beta = 1 (the cold-start default; calibrationFactor 0 -> "no history") this is
+        // exactly the coverage-weighted blend  coverage*sampledAvg + (1-coverage)*globalAvg  with
+        // coverage = sampledTerms / (sampledTerms + middleTerms): a well-sampled range (coverage -> 1) mostly trusts its
+        // own edges, a barely-sampled one (coverage -> 0) defers to the global rate. beta is the single leeway dial:
+        // beta < 1 trusts the local sample faster (less whale protection, less over-count on sparse ranges); beta > 1
+        // leans back toward globalAvg (more whale-cautious). The old behaviour is the beta -> inf limit.
         //
         // How beta adapts over time: calibrationFactor is a per-clause EWMA of (docs the clause actually matched) /
         // (the estimate this method produced) — see ClauseInfo.RangeEstimateCalibration / InflationEwma. If a clause
         // systematically UNDER-estimates (whales keep hiding in its middles), the ratio climbs above 1, beta climbs,
-        // k grows, the middle is pulled toward g and the estimate rises — self-correcting. Systematic OVER-estimates
-        // pull beta below 1, trusting the sparse local sample. With no history the EWMA reports 0 and we fall back to
-        // the neutral blend. beta is clamped to [CalibrationBetaMin, CalibrationBetaMax] so one bad run can't run away.
+        // k grows, the middle is pulled toward globalAvg and the estimate rises — self-correcting. Systematic
+        // OVER-estimates pull beta below 1, trusting the sparse local sample. With no history the EWMA reports 0 and we
+        // fall back to the neutral blend. beta is clamped to [CalibrationBetaMin, CalibrationBetaMax] so one bad run
+        // can't run away.
         //
-        // Worked example: field of 1,000,000 docs over 100,000 terms -> g = 10 docs/term. A sparse range with
-        // T = 1500 terms, of which we sample n = 768 (a = 2 docs/term), leaving m = 732:
-        //     old floor:  middle filled at g=10        -> 1536 + 732*10   = 8856  (assumes the unseen half is average)
-        //     beta = 1:   middle = 0.512*2 + 0.488*10  -> 1536 + 732*5.9  = 5855  (~34% lower: trusts the sparse edges)
+        // Worked example: field of 1,000,000 docs over 100,000 terms -> globalAvg = 10 docs/term. A sparse range with
+        // 1500 terms total, of which we sample sampledTerms = 768 (sampledAvg = 2 docs/term), leaving middleTerms = 732:
+        //     old floor:  middle filled at globalAvg=10 -> 1536 + 732*10   = 8856  (assumes the unseen half is average)
+        //     beta = 1:   middle = 0.512*2 + 0.488*10   -> 1536 + 732*5.9  = 5855  (~34% lower: trusts the sparse edges)
         //     beta = 4:   middle = (1536 + 2928*10)/3696 = 8.34 -> 1536 + 732*8.34 = 7641 (leans back toward the floor
         //                 once the clause has shown it under-estimates).
         double beta = calibrationFactor <= 0 ? 1.0 : Math.Clamp(calibrationFactor, CalibrationBetaMin, CalibrationBetaMax);
