@@ -485,7 +485,7 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
     /// systematic bias that the caller's EWMA is expected to correct. Cost is O(height²) page reads. An empty or
     /// inverted range (<paramref name="low"/> &gt; <paramref name="high"/>) returns 0.
     /// </summary>
-    public long GetNumberOfEntriesInRangeEstimate(TLookupKey low, TLookupKey high, bool highToEnd)
+    public long GetNumberOfEntriesInRangeEstimate(TLookupKey low, TLookupKey high, bool highToEnd, bool lowToStart)
     {
         if (_state.NumberOfEntries == 0)
             return 0;
@@ -494,7 +494,10 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
         // index and leaves the leaf position in raw (~insertion) form.
         var lowCursor = new IteratorCursorState { _stk = new CursorState[8], _pos = -1, _len = 0 };
         var highCursor = new IteratorCursorState { _stk = new CursorState[8], _pos = -1, _len = 0 };
-        FindPageFor(ref low, ref lowCursor);
+        if (lowToStart)
+            DescendToLeftmostLeaf(ref lowCursor);
+        else
+            FindPageFor(ref low, ref lowCursor);
         if (highToEnd)
             DescendToRightmostLeaf(ref highCursor);
         else
@@ -1507,6 +1510,29 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
 
         // LastMatch == 0 + position on the last slot makes UpperBoundIndex return NumberOfEntries (the full leaf).
         state.LastSearchPosition = state.Header->NumberOfEntries - 1;
+        state.LastMatch = 0;
+    }
+
+    // Descends taking the first child at every branch, landing on the leftmost leaf - reaches for a key smaller than
+    // every stored key. The leaf is marked as an exact hit on its first slot so LowerBoundIndex returns 0, letting an
+    // open low bound be estimated as "everything from the start of the tree up to high".
+    private void DescendToLeftmostLeaf(ref IteratorCursorState cstate)
+    {
+        cstate._pos = -1;
+        cstate._len = 0;
+        PushPage(_state.RootPage, ref cstate);
+
+        ref var state = ref cstate._stk[cstate._pos];
+        while (state.Header->IsBranch)
+        {
+            state.LastSearchPosition = 0;
+            var nextPage = GetValue(ref state, 0);
+            PushPage(nextPage, ref cstate);
+            state = ref cstate._stk[cstate._pos];
+        }
+
+        // LastMatch == 0 + position on the first slot makes LowerBoundIndex return 0 (start of the leaf).
+        state.LastSearchPosition = 0;
         state.LastMatch = 0;
     }
 

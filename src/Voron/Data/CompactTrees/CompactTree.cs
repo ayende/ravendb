@@ -452,9 +452,19 @@ public sealed partial class CompactTree : IPrepareForCommit
     /// </summary>
     public long GetNumberOfEntriesInRangeEstimate(ReadOnlySpan<byte> low, ReadOnlySpan<byte> high, bool highToEnd)
     {
+        // An empty low bound (the open BeforeAllKeys edge, or a term the analyzer stripped to nothing) sorts before
+        // every stored key, so the low edge becomes the leftmost leaf instead of a seek - symmetric to highToEnd. The
+        // empty key is never encoded because lowToStart skips FindPageFor for it.
+        bool lowToStart = low.IsEmpty;
+
+        // An empty high bound that is not the open AfterAllKeys edge means "<= empty"; no stored key is empty (the
+        // dictionary refuses to encode empty keys), so the range is empty.
+        if (high.IsEmpty && highToEnd == false)
+            return 0;
+
         using var lowScope = new CompactKeyCacheScope(_inner.Llt, low, _inner.State.DictionaryId);
         using var highScope = new CompactKeyCacheScope(_inner.Llt, high, _inner.State.DictionaryId);
-        return _inner.GetNumberOfEntriesInRangeEstimate(new CompactKeyLookup(lowScope.Key), new CompactKeyLookup(highScope.Key), highToEnd);
+        return _inner.GetNumberOfEntriesInRangeEstimate(new CompactKeyLookup(lowScope.Key), new CompactKeyLookup(highScope.Key), highToEnd, lowToStart);
     }
 
     public bool TryGetValue(ReadOnlySpan<byte> key, out ContainerEntryId termContainerId, out long value)

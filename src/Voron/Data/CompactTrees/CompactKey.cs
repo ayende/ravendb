@@ -283,12 +283,18 @@ public sealed unsafe class CompactKey : IDisposable
 
         Debug.Assert(_storage.Length >= maxLength);
 
-        // We write the size and the key. 
+        // We write the size and the key.
         Unsafe.WriteUnaligned<int>(ref _storage[0], key.Length);
 
-        // PERF: Between pinning the pointer and just execute the Unsafe.CopyBlock unintuitively it is faster to just copy. 
-        ref readonly byte kPtr = ref key[0];
-        Unsafe.CopyBlock(ref _storage[sizeof(int)],  in kPtr, (uint)key.Length);
+        // An empty key is a valid "before all keys" sentinel (e.g. open-ended range estimation): there is nothing
+        // to copy, and dereferencing key[0] on an empty span would throw. The Set(int, ...) overload handles the
+        // zero-length case the same way.
+        if (key.Length > 0)
+        {
+            // PERF: Between pinning the pointer and just execute the Unsafe.CopyBlock unintuitively it is faster to just copy.
+            ref readonly byte kPtr = ref key[0];
+            Unsafe.CopyBlock(ref _storage[sizeof(int)],  in kPtr, (uint)key.Length);
+        }
 
         _currentIdx = key.Length + sizeof(int);
 
