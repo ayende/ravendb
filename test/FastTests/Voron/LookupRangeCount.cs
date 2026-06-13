@@ -41,7 +41,7 @@ namespace FastTests.Voron
             using var rtx = Env.ReadTransaction();
             var lookup = rtx.LookupFor<Int64LookupKey>("test");
             long expected = BruteForce(keys, low, high);
-            long actual = lookup.GetNumberOfEntriesInRangeEstimate(low, high);
+            long actual = lookup.GetNumberOfEntriesInRangeEstimate(low, high, highToEnd: false);
 
             long allowed = Math.Max(absFloor, (long)(expected * relTol));
             long diff = Math.Abs(actual - expected);
