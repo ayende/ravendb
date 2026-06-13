@@ -75,4 +75,13 @@ public sealed class ClauseInfo
     /// Evaluated per-execution in BuildAndCompile: called with the query's BlittableJsonReaderObject
     /// parameters; returns true to keep the clause, false to eliminate it.</summary>
     public Func<BlittableJsonReaderObject, bool> WhenCondition { get; set; }
+
+    /// <summary>Per-clause, per-query calibration for the range-cardinality estimator. Lives on the
+    /// (immutable) template clause, so it is shared by every CompiledPlan derived from this template and
+    /// by every concurrent execution of them — calibration is a property of the predicate shape, not of a
+    /// particular data shape. Nesting is handled for free: each clause in a SubClauses group is its own
+    /// ClauseInfo and carries its own instance. Only range clauses (BETWEEN / GT / GTE / LT / LTE /
+    /// StartsWith) read or write it; for every other clause type it stays at the neutral "no history" state.
+    /// See <c>IndexSearcher.EstimateMatchesInRange</c> for how Factor steers the unscanned-middle blend.</summary>
+    public readonly InflationEwma RangeEstimateCalibration = new();
 }

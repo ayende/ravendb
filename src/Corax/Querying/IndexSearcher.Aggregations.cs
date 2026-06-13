@@ -91,9 +91,17 @@ public partial class IndexSearcher
     private const int RangeBottomSample = 512;
     private const int RangeTopSample = 256;
 
+    // Clamp on the per-clause calibration multiplier (beta). beta scales the shrinkage prior k = beta * middleTerms
+    // (see the worked rationale in EstimateMatchesInRange). The clamp keeps a noisy or pathological calibration
+    // signal from collapsing the estimate onto a single source: beta can pull the unscanned middle at most 4x toward
+    // the global density (whale-cautious) or trust the local sample down to 1/4 the neutral prior, never further.
+    private const double CalibrationBetaMin = 0.25;
+    private const double CalibrationBetaMax = 4.0;
+
     public long EstimateMatchesInRange<TValue>(in FieldMetadata field, TValue low, TValue high,
         UnaryMatchOperation leftSide = UnaryMatchOperation.GreaterThanOrEqual,
-        UnaryMatchOperation rightSide = UnaryMatchOperation.LessThanOrEqual)
+        UnaryMatchOperation rightSide = UnaryMatchOperation.LessThanOrEqual,
+        double calibrationFactor = 0)
     {
         var forward = BetweenAggregation(field, low, high, leftSide, rightSide, forward: true);
 
@@ -120,12 +128,48 @@ public partial class IndexSearcher
 
         double sampledAvg = (double)sampledPostings / sampledTerms;
 
-        // Whale guard: a dense ("whale") term hiding in the unscanned middle would be invisible to the edge samples.
-        // The global average postings-per-term (total docs / total terms, both O(1)) is a floor that lifts the estimate
-        // when the sampled edges look unusually sparse relative to the field as a whole.
+        // Field-wide density (total docs / total terms, both O(1)). This is what the unscanned middle would
+        // average if it looked like the field as a whole, and is the floor a "whale" (a dense term hiding in
+        // the middle, invisible to the edge samples) would push the true average toward.
         long totalTerms = forward.TotalTermCount();
         double globalAvg = totalTerms > 0 ? (double)NumberOfEntries / totalTerms : sampledAvg;
-        double middleAvg = Math.Max(sampledAvg, globalAvg);
+
+        // === Unscanned-middle extrapolation: Bayesian shrinkage toward the global density ===
+        //
+        // We have measured the per-term posting density on the sampled edges (sampledAvg = a) and we know the
+        // field-wide density (globalAvg = g). The middle of the range (middleTerms = m terms) is unscanned, so we
+        // must guess its density. Two failure modes bound the choice:
+        //   * Trust a blindly  -> a whale in the middle is missed, we UNDER-estimate a genuinely dense range.
+        //   * Snap up to g      -> the old `max(a, g)` floor; on a skewed field a legitimately sparse range gets
+        //                          its whole middle filled at the global rate, OVER-estimating it badly.
+        // The floor has no leeway: any below-average range is treated as average. Instead we shrink the middle
+        // density toward g with a strength proportional to how much of the range we actually sampled:
+        //
+        //     middleAvg = (sampledPostings + k*g) / (sampledTerms + k)            // k pseudo-observations at rate g
+        //               = (n*a + k*g) / (n + k)                                   // since sampledPostings = n*a
+        //
+        // with k = beta * m. At beta = 1 (the cold-start default; calibrationFactor 0 -> "no history") this is
+        // exactly the coverage-weighted blend  c*a + (1-c)*g  with  c = n/(n+m): a well-sampled range (c -> 1)
+        // mostly trusts its own edges, a barely-sampled one (c -> 0) defers to the global rate. beta is the single
+        // leeway dial: beta < 1 trusts the local sample faster (less whale protection, less over-count on sparse
+        // ranges); beta > 1 leans back toward g (more whale-cautious). The old behaviour is the beta -> inf limit.
+        //
+        // How beta adapts over time: calibrationFactor is a per-clause EWMA of (docs the clause actually matched) /
+        // (the estimate this method produced) — see ClauseInfo.RangeEstimateCalibration / InflationEwma. If a clause
+        // systematically UNDER-estimates (whales keep hiding in its middles), the ratio climbs above 1, beta climbs,
+        // k grows, the middle is pulled toward g and the estimate rises — self-correcting. Systematic OVER-estimates
+        // pull beta below 1, trusting the sparse local sample. With no history the EWMA reports 0 and we fall back to
+        // the neutral blend. beta is clamped to [CalibrationBetaMin, CalibrationBetaMax] so one bad run can't run away.
+        //
+        // Worked example: field of 1,000,000 docs over 100,000 terms -> g = 10 docs/term. A sparse range with
+        // T = 1500 terms, of which we sample n = 768 (a = 2 docs/term), leaving m = 732:
+        //     old floor:  middle filled at g=10        -> 1536 + 732*10   = 8856  (assumes the unseen half is average)
+        //     beta = 1:   middle = 0.512*2 + 0.488*10  -> 1536 + 732*5.9  = 5855  (~34% lower: trusts the sparse edges)
+        //     beta = 4:   middle = (1536 + 2928*10)/3696 = 8.34 -> 1536 + 732*8.34 = 7641 (leans back toward the floor
+        //                 once the clause has shown it under-estimates).
+        double beta = calibrationFactor <= 0 ? 1.0 : Math.Clamp(calibrationFactor, CalibrationBetaMin, CalibrationBetaMax);
+        double k = beta * middleTerms;
+        double middleAvg = (sampledPostings + k * globalAvg) / (sampledTerms + k);
 
         long estimate = sampledPostings + (long)(middleTerms * middleAvg);
         return Math.Min(estimate, NumberOfEntries);
@@ -137,7 +181,7 @@ public partial class IndexSearcher
     // incremented and trailing 0xFF bytes dropped; if every byte is 0xFF (or the prefix is empty) no finite successor
     // exists and the range runs to the end of the tree. Reuses the range estimator so StartsWith costs the same two
     // descents as a bounded range instead of falling back to the whole-index size.
-    public long EstimateStartsWith(in FieldMetadata field, string prefix)
+    public long EstimateStartsWith(in FieldMetadata field, string prefix, double calibrationFactor = 0)
     {
         Slice encodedPrefix = EncodeAndApplyAnalyzer(field, prefix);
         ReadOnlySpan<byte> prefixBytes = encodedPrefix.AsReadOnlySpan();
@@ -149,7 +193,8 @@ public partial class IndexSearcher
         if (len == 0)
         {
             // empty prefix or all-0xFF carry: no finite successor, so the match set runs to the end of the tree
-            return EstimateMatchesInRange(field, encodedPrefix, Slices.AfterAllKeys);
+            return EstimateMatchesInRange(field, encodedPrefix, Slices.AfterAllKeys,
+                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, calibrationFactor);
         }
 
         using var _ = Allocator.Allocate(len, out Span<byte> successor);
@@ -158,7 +203,7 @@ public partial class IndexSearcher
 
         using var __ = Slice.From(Allocator, successor, out Slice high);
         return EstimateMatchesInRange(field, encodedPrefix, high,
-            UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan);
+            UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan, calibrationFactor);
     }
 
     private IAggregationProvider AggregationRangeBuilder<TLow, THigh>(in FieldMetadata field, Slice low, Slice high, bool forward)

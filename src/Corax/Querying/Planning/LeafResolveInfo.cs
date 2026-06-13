@@ -47,4 +47,19 @@ public struct LeafResolveInfo
     public ClauseType ClauseType;
     public PackedParam Packed;
     public FieldMetadata FieldMeta;
+
+    /// <summary>Range-cardinality calibration EWMA for this leaf's clause, set only for calibrated
+    /// range tree-scans (BETWEEN / GT / GTE / LT / LTE / StartsWith). Null for every other leaf
+    /// (including the other tree-scan shapes — Exists / EndsWith / Regex — whose estimate is just
+    /// NumberOfEntries, with no EstimateMatchesInRange to calibrate). When non-null and the tree-scan
+    /// fill is unbounded, the consuming primitive feeds the measured over-counting postings tally back
+    /// via <c>RangeCalibration.Observe(tally, RangeEstimate)</c> so the estimator self-corrects over
+    /// time. See <see cref="InflationEwma"/> and IndexSearcher.EstimateMatchesInRange.</summary>
+    public InflationEwma RangeCalibration;
+
+    /// <summary>The cardinality the estimator predicted for this clause — the over-counting postings
+    /// sum EstimateMatchesInRange returns, the same quantity the fill tally measures. Paired with the
+    /// measured tally as the "predicted" argument of <see cref="RangeCalibration"/>.Observe. Meaningful
+    /// only when <see cref="RangeCalibration"/> is non-null.</summary>
+    public long RangeEstimate;
 }

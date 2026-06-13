@@ -119,17 +119,31 @@ internal static partial class QueryPlanBuilder
                     break;
                 case MatchDispatch.TreeScan:
                     matches.Add(null);
+                    // Only the range/StartsWith tree-scans carry an EstimateMatchesInRange prediction worth
+                    // calibrating; the other tree-scan shapes (Exists / EndsWith / Regex) estimate to the whole
+                    // index, so they get no calibration handle and never feed Observe back.
+                    bool calibrated = IsCalibratedRangeClause(clauseExec.ClauseType);
                     leaves.Add(new LeafResolveInfo
                     {
                         Kind = LeafResolveKind.TreeScan,
                         ClauseType = clauseExec.ClauseType,
                         Packed = clauseExec.PackedParamValue,
-                        FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx)
+                        FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx),
+                        RangeCalibration = calibrated ? clauseExec.Clause.RangeEstimateCalibration : null,
+                        RangeEstimate = calibrated ? clauseExec.Cardinality : 0
                     });
                     break;
                 default:
-                    throw new ArgumentOutOfRangeException(dispatch.ToString()); 
+                    throw new ArgumentOutOfRangeException(dispatch.ToString());
             }
         }
+
+        static bool IsCalibratedRangeClause(ClauseType type) => type switch
+        {
+            ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
+                or ClauseType.LessThan or ClauseType.LessThanOrEqual
+                or ClauseType.Between or ClauseType.StartsWith => true,
+            _ => false
+        };
     }
 }

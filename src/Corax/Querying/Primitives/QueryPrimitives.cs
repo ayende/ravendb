@@ -73,7 +73,23 @@ public static class QueryPrimitives
     public static void CtxFillFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         ctx.Bitmaps[bitmapSlot].Clear();
-        FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.OpLimit);
+        long tally = FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.OpLimit);
+        // A driving fill honors OpLimit and may stop early; only an unbounded fill yields a complete,
+        // calibration-grade tally. AND/ANDNOT scratch fills are always unbounded (handled in their helpers).
+        if (ctx.OpLimit == long.MaxValue)
+            ObserveTreeScanTally(ref ctx.Leaves[paramIndex], tally);
+    }
+
+    /// <summary>Feed a tree-scan fill's over-counting postings tally back into the leaf's range-estimate
+    /// calibration. No-op unless the leaf carries calibration (range/StartsWith only) and a fill actually
+    /// ran (tally >= 0). The tally and the stored estimate are the same over-counting quantity, so the
+    /// ratio the EWMA smooths is unit-clean. Only AND-side tree-scan consumers call this — OR fills are
+    /// deliberately excluded (cardinality drives no OR-group decision).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static void ObserveTreeScanTally(ref Planning.LeafResolveInfo leaf, long tally)
+    {
+        if (tally >= 0 && leaf.RangeCalibration != null)
+            leaf.RangeCalibration.Observe(tally, leaf.RangeEstimate);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -126,7 +142,8 @@ public static class QueryPrimitives
     public static void CtxAndFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
-        AndBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
+        long tally = AndBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
+        ObserveTreeScanTally(ref ctx.Leaves[paramIndex], tally);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -148,7 +165,8 @@ public static class QueryPrimitives
     public static void CtxAndNotFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
-        AndNotBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
+        long tally = AndNotBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
+        ObserveTreeScanTally(ref ctx.Leaves[paramIndex], tally);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -689,8 +707,14 @@ public static class QueryPrimitives
     ///   - PostingList: container ID strip + sort/dedup, then iterate each via FillFromPostings.
     /// Partitioning is branchless: (id &amp; EnsureIsSingleMask) yields the bucket index.
     /// </summary>
+    /// <returns>The over-counting postings tally: the running sum of posting-list sizes fed into the
+    /// bitmap (singles + small + large bucket <c>PostingListState.NumberOfEntries</c>), counting
+    /// multi-valued documents once per matching term. This is exactly the quantity
+    /// <c>EstimateMatchesInRange</c> predicts, so callers can Observe(tally, estimate) to calibrate it —
+    /// but only when the fill was unbounded (<paramref name="limit"/> == long.MaxValue); a truncated fill
+    /// stops early and the tally is a partial undercount.</returns>
     [SkipLocalsInit]
-    public static unsafe void FillBitmapFromTreeScan(
+    public static unsafe long FillBitmapFromTreeScan(
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -715,18 +739,22 @@ public static class QueryPrimitives
         var containerItems = new ContextBoundNativeList<UnmanagedSpan>(llt.Allocator, FillBufferSize);
         FastPForBufferedReader smallListReader = default;
         bool readerInitialized = false;
+
+        // upperBound counts the entry ids fed into the bitmap; it is an upper bound on the
+        // real cardinality (duplicates across terms collapse on insert). While upperBound < limit
+        // the real count cannot have reached the limit, so the expensive bitmap.ComputeCount()
+        // (O(containers), repairs lazy popcounts) is skipped via short-circuit — the AND/ANDNOT and
+        // TermsProviderMatch callers pass limit = long.MaxValue and therefore never pay for it. The
+        // exact count is consulted only once upperBound says the limit might have been reached.
+        // We no longer clip each batch to the exact remaining room: overshooting by at most a batch
+        // (or one large posting list, as before) is harmless — the caller pages to its real limit and
+        // for an AND seed an over-full bitmap only feeds the narrowing clause more candidates.
+        // It is also returned as the over-counting postings tally the range estimator calibrates against
+        // (see the <returns> note), which is why the large bucket below adds NumberOfEntries to it rather
+        // than resyncing to the dedup'd ComputeCount.
+        long upperBound = 0;
         try
         {
-            // upperBound counts the entry ids fed into the bitmap; it is an upper bound on the
-            // real cardinality (duplicates across terms collapse on insert). While upperBound < limit
-            // the real count cannot have reached the limit, so the expensive bitmap.ComputeCount()
-            // (O(containers), repairs lazy popcounts) is skipped via short-circuit — the AND/ANDNOT and
-            // TermsProviderMatch callers pass limit = long.MaxValue and therefore never pay for it. The
-            // exact count is consulted only once upperBound says the limit might have been reached.
-            // We no longer clip each batch to the exact remaining room: overshooting by at most a batch
-            // (or one large posting list, as before) is harmless — the caller pages to its real limit and
-            // for an AND seed an over-full bitmap only feeds the narrowing clause more candidates.
-            long upperBound = 0;
             int read;
             while ((upperBound < limit || bitmap.ComputeCount() < limit) && (read = provider.FillPostingListIds(plIds)) > 0)
             {
@@ -807,11 +835,12 @@ public static class QueryPrimitives
                         var iterator = postingList.Iterate();
                         FillFromPostings(ref iterator, ref bitmap, token);
 
-                        // FillFromPostings adds an untracked number of entries, so the tally can no
-                        // longer gate the loop. Resync from the real count when bounded; when unbounded
-                        // there is no gate to keep accurate and the count is not worth its cost.
-                        if (limit != long.MaxValue)
-                            upperBound = bitmap.ComputeCount();
+                        // FillFromPostings adds an untracked number of entries, so add the posting list's
+                        // own NumberOfEntries (already in the header we just read) to keep upperBound an
+                        // over-counting tally. It stays a valid loop gate (>= the entries actually added,
+                        // so the exact ComputeCount still guards the real stop) and is exactly the postings
+                        // sum the range estimator predicts, so the returned tally needs no popcount.
+                        upperBound += setState.NumberOfEntries;
                     }
                 }
             }
@@ -824,12 +853,17 @@ public static class QueryPrimitives
             for (int b = 0; b < buckets.Length; b++)
                 buckets[b].Dispose(llt.Allocator);
         }
+
+        return upperBound;
     }
 
     /// <summary>AND the bitmap with the union of all posting lists produced by the term provider.
     /// Fills a scratch bitmap from the provider, then ANDs the result bitmap with it.
     /// If the provider produces no matches, the bitmap is cleared.</summary>
-    private static void AndBitmapWithTreeScan(
+    /// <returns>The scratch fill's over-counting postings tally (the scratch fill is always unbounded,
+    /// so it is always complete and calibration-grade), or -1 when the bitmap was already empty and no
+    /// fill ran — the caller must not Observe on -1.</returns>
+    private static long AndBitmapWithTreeScan(
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -837,20 +871,23 @@ public static class QueryPrimitives
         CancellationToken token)
     {
         if (bitmap.IsEmpty)
-            return;
+            return -1;
         tempBitmap.Clear();
-        FillBitmapFromTreeScan(provider, llt, ref tempBitmap, token);
+        long tally = FillBitmapFromTreeScan(provider, llt, ref tempBitmap, token);
         if (tempBitmap.IsEmpty)
         {
             bitmap.Clear();
-            return;
+            return tally;
         }
         bitmap.AndWith(ref tempBitmap);
+        return tally;
     }
 
     /// <summary>ANDNOT the bitmap with the union of all posting lists produced by the term provider
     /// (subtract matching entries). If the provider produces no matches, the bitmap is unchanged.</summary>
-    private static void AndNotBitmapWithTreeScan(
+    /// <returns>The scratch fill's over-counting postings tally (always unbounded, hence
+    /// calibration-grade), or -1 when the bitmap was already empty and no fill ran.</returns>
+    private static long AndNotBitmapWithTreeScan(
         ITermsProvider provider,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
@@ -858,11 +895,12 @@ public static class QueryPrimitives
         CancellationToken token)
     {
         if (bitmap.IsEmpty)
-            return;
+            return -1;
         tempBitmap.Clear();
-        FillBitmapFromTreeScan(provider, llt, ref tempBitmap, token);
+        long tally = FillBitmapFromTreeScan(provider, llt, ref tempBitmap, token);
         if (tempBitmap.IsEmpty)
-            return; // subtracting nothing is a no-op
+            return tally; // subtracting nothing is a no-op
         bitmap.AndNotWith(ref tempBitmap);
+        return tally;
     }
 }

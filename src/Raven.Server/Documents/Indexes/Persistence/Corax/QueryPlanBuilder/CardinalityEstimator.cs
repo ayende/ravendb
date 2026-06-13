@@ -57,7 +57,7 @@ internal static class CardinalityEstimator
                         return indexSearcher.NumberOfEntries;
 
                     FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx);
-                    return indexSearcher.EstimateStartsWith(fieldMeta, writer.GetString(p.Param1));
+                    return indexSearcher.EstimateStartsWith(fieldMeta, writer.GetString(p.Param1), clause.RangeEstimateCalibration.Factor);
                 }
 
                 case ClauseType.Exists:
@@ -150,7 +150,7 @@ internal static class CardinalityEstimator
                     ClauseType.LessThanOrEqual    => (min,    value1, UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual),
                     _ => throw new ArgumentOutOfRangeException(nameof(type), type, "invalid clause type for range estimation")
                 };
-                return indexSearcher.EstimateMatchesInRange(fieldMeta, low, high, left, right);
+                return indexSearcher.EstimateMatchesInRange(fieldMeta, low, high, left, right, e.Clause.RangeEstimateCalibration.Factor);
             }
         }
 

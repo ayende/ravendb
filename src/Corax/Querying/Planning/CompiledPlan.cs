@@ -102,5 +102,5 @@ public sealed class CompiledPlan
     /// uniform estimate by this factor — so a plan whose candidates turn out to be clustered (and therefore
     /// over-scans) learns to prefer InMemorySort. Concurrent queries sharing this plan update it without
     /// locking: benign races on aligned doubles are acceptable for a heuristic.</summary>
-    public readonly ScanInflationEwma StreamScanInflation = new();
+    public readonly InflationEwma StreamScanInflation = new();
 }
