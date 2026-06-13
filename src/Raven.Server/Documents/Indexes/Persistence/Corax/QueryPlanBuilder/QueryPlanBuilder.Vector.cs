@@ -19,7 +19,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 internal static partial class QueryPlanBuilder
 {
     /// <summary>Resolve vector parameters from cached bindings (no MethodExpression dependency).</summary>
-    private static void ResolveVectorFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters)
+    private static void ResolveVectorFromBindings(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters)
     {
         var bindings = exec.Clause.Bindings;
 
@@ -27,7 +27,7 @@ internal static partial class QueryPlanBuilder
 
         if (bindings.Length > BindingIndex.VectorValue && bindings[BindingIndex.VectorValue] != null)
         {
-            var (val, valType) = ResolveBindingRaw(bindings[BindingIndex.VectorValue], queryParameters);
+            var (val, valType) = ResolveBindingRaw(bindings[BindingIndex.VectorValue], slotBindings, queryParameters);
             vec.ResolvedValue = val;
             vec.ResolvedValueType = valType;
             // For scalar parameters, resolve the native type
@@ -41,7 +41,7 @@ internal static partial class QueryPlanBuilder
         
         if (bindings.Length > BindingIndex.VectorMinMatch && bindings[BindingIndex.VectorMinMatch] != null)
         {
-            var (simVal, _) = ResolveBindingScalar(bindings[BindingIndex.VectorMinMatch], queryParameters, builderParameters: null);
+            var (simVal, _) = ResolveBindingScalar(bindings[BindingIndex.VectorMinMatch], slotBindings, queryParameters, builderParameters: null);
             vec.MinimumMatch = simVal switch
             {
                 double d => (float)d,
@@ -52,21 +52,24 @@ internal static partial class QueryPlanBuilder
 
         if (bindings.Length > BindingIndex.VectorCandidates && bindings[BindingIndex.VectorCandidates] != null)
         {
-            var (candVal, candType) = ResolveBindingScalar(bindings[BindingIndex.VectorCandidates], queryParameters, builderParameters: null);
+            var (candVal, candType) = ResolveBindingScalar(bindings[BindingIndex.VectorCandidates], slotBindings, queryParameters, builderParameters: null);
             if (candType != ParamValueType.Null)
                 vec.NumberOfCandidates = Convert.ToInt32(candVal);
         }
 
         if (bindings.Length > BindingIndex.VectorAiTask && bindings[BindingIndex.VectorAiTask] != null)
         {
-            var (taskVal, _) = ResolveBindingScalar(bindings[BindingIndex.VectorAiTask], queryParameters, builderParameters: null);
+            var (taskVal, _) = ResolveBindingScalar(bindings[BindingIndex.VectorAiTask], slotBindings, queryParameters, builderParameters: null);
             vec.AiTaskName = taskVal?.ToString();
         }
 
     }
     
-    private static (object Value, ParamValueType Type) ResolveBindingRaw(ParameterBinding binding, BlittableJsonReaderObject queryParameters)
+    private static (object Value, ParamValueType Type) ResolveBindingRaw(ParameterBinding binding, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters)
     {
+        // The template binding only carries structure; the vector value for THIS query text lives in the
+        // per-query slot vector at the binding's canonical hole index.
+        binding = SlotBindingFor(binding, slotBindings);
         if (binding.LiteralType != ParamValueType.Parameter)
             return (binding.LiteralValue, binding.LiteralType);
         if (queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)

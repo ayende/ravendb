@@ -1,9 +1,14 @@
 using System;
+using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
+using System.Runtime.Intrinsics;
+using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using Corax.Mappings;
 using Corax.Querying.Matches;
@@ -31,24 +36,90 @@ internal static partial class QueryPlanBuilder
     {
         var planCache = planParams.IndexSearcher.PlanCache;
 
-        // Fast path: the QueryMetadata may already hold the template resolved against THIS cache instance, saving string dic lookup.
-        // We use weak ref to avoid holding reference outside to the plan cache, so we can easily evict
+        // Fast path: the QueryMetadata may already hold the bucket resolved against THIS cache instance, saving the
+        // structural-key dictionary lookup. We use a weak ref so we don't pin the plan cache and it can be evicted.
         var metadata = planParams.CacheKeyOverride == null ? planParams.Metadata : null;
+
+        // Per-query slot-binding vector — collected by the canonical WHERE walk, indexed by HoleIndex. Pure
+        // function of the query text/AST, so it is memoized on QueryMetadata for the main path and rebuilt fresh
+        // for an MLT override. Resolved on every path (incl. the memo/existing-bucket fast returns) so the
+        // downstream resolver always has it. Not yet consumed for value resolution in this stage.
+        var slotBindings = ResolveSlotBindings(planParams, metadata);
+        planParams.SlotBindings = slotBindings;
+
         if (metadata?.CachedPlanMemo is { } memo
             && memo.PlanCacheId == planCache.Id // if we reset the index, we want to re-create the plan
-            && memo.Template.TryGetTarget(out var memoized))
-            return memoized;
-
-        var queryText = planParams.CacheKey;
-        if (planCache.TryGetTemplate(queryText) is { } template)
+            && memo.Bucket.TryGetTarget(out var memoBucket))
         {
-            metadata?.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, template);
-            return template;
+            planParams.Bucket = memoBucket;
+            AssertSlotBindingsMatchTemplate(memoBucket.Template, slotBindings);
+            return memoBucket.Template;
         }
 
-        template = ParseTemplate(planParams);
+        var structuralKey = ComputeStructuralKey(planParams);
+
+        // Bucket already exists for this structural key: reuse its template (and its compiled plan variants).
+        if (planCache.GetBucket(structuralKey) is { } existing)
+        {
+            planParams.Bucket = existing;
+            metadata?.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, existing);
+            AssertSlotBindingsMatchTemplate(existing.Template, slotBindings);
+            return existing.Template;
+        }
+
+        var template = ParseTemplate(planParams);
         template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams);
-        return template;
+        AssertSlotBindingsMatchTemplate(template, slotBindings);
+
+        // Create (or join a racing thread's) bucket carrying this template. BuildResolver publishes the compiled
+        // plan into planParams.Bucket; we return the bucket's template so a lost race uses the winner's instance.
+        var bucket = planCache.GetOrAddBucket(structuralKey, template, planParams.CacheKey);
+        planParams.Bucket = bucket;
+        metadata?.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, bucket);
+        return bucket.Template;
+    }
+
+    /// <summary>Resolve the per-query slot-binding vector. Main path (no cache-key override): memoize on the
+    /// QueryMetadata, since the vector is a pure function of the query text/AST. Override path (e.g. MLT
+    /// sub-expression): build fresh and do not touch the metadata memo.</summary>
+    private static ParameterBinding[] ResolveSlotBindings(PlanParameters planParams, QueryMetadata metadata)
+    {
+        if (metadata == null)
+            return ExtractSlotBindings(planParams);
+
+        return metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams);
+    }
+
+    [Conditional("DEBUG")]
+    private static void AssertSlotBindingsMatchTemplate(PlanTemplate template, ParameterBinding[] slotBindings)
+    {
+        Debug.Assert(template.HoleCount == slotBindings.Length,
+            $"Slot-binding vector length ({slotBindings.Length}) must equal the template hole count " +
+            $"({template.HoleCount}). Both come from the same canonical WHERE walk, so a mismatch means the " +
+            "template parse and the per-query slot-vector parse diverged.");
+    }
+
+    // Phase 1 structural plan key: behaviorally identical to the former query-text dictionary key — a SHA256 digest
+    // of the canonical query text (or the MLT sub-expression override). It only replaces the string key with a
+    // fixed-size 256-bit value so the per-query bucket can be keyed by Vector256<long>. Phase 2 will replace the
+    // body with an AST walk that blanks parameter names and inline literal values, so value/name variants collapse
+    // onto one shared plan; the bucket plumbing here does not change.
+    private static Vector256<long> ComputeStructuralKey(PlanParameters planParams)
+    {
+        var text = planParams.CacheKey;
+        int maxBytes = Encoding.UTF8.GetByteCount(text);
+        byte[] rented = ArrayPool<byte>.Shared.Rent(maxBytes);
+        try
+        {
+            int written = Encoding.UTF8.GetBytes(text, rented);
+            Span<byte> digest = stackalloc byte[32];
+            SHA256.HashData(rented.AsSpan(0, written), digest);
+            return Vector256.Create(MemoryMarshal.Cast<byte, long>(digest));
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(rented);
+        }
     }
 
     /// <summary>
@@ -144,27 +215,40 @@ internal static partial class QueryPlanBuilder
         full[binding.ParameterSlot] |= SentinelParamMark;
     }
 
-    internal static void PopulateClauseValues(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters,
+    /// <summary>Redirect a template binding to its counterpart in the per-query slot vector via the binding's
+    /// canonical <see cref="ParameterBinding.HoleIndex"/>. The slot binding carries this query text's actual
+    /// literal value / parameter name / deferred expression, while the template binding only carries structure.
+    /// Returns the binding unchanged when there is no slot vector or no hole index (defensive: any binding not
+    /// produced by <c>CreateBinding</c>), and is idempotent on bindings already drawn from the slot vector.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private static ParameterBinding SlotBindingFor(ParameterBinding binding, ParameterBinding[] slotBindings)
+    {
+        if (slotBindings != null && binding.HoleIndex >= 0)
+            return slotBindings[binding.HoleIndex];
+        return binding;
+    }
+
+    internal static void PopulateClauseValues(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters,
         int parameterSlotCount, ref byte[] full)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         foreach (var it in exec.SubExecutions ?? [])
         {   // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
-            PopulateClauseValues(it, queryParameters, writer, builderParameters, parameterSlotCount, ref full);
+            PopulateClauseValues(it, slotBindings, queryParameters, writer, builderParameters, parameterSlotCount, ref full);
         }
 
         if (exec.Clause is { HasBoost: true, Bindings.Length: > 0 })
         {
-            ResolveBoostFactor(exec, queryParameters);
+            ResolveBoostFactor(exec, slotBindings, queryParameters);
         }
 
-        switch (exec.Clause.ClauseType) // Spatial and vector resolve via their binding array. 
+        switch (exec.Clause.ClauseType) // Spatial and vector resolve via their binding array.
         {
             case ClauseType.Spatial when exec.Clause.Bindings is { Length: > 0 }:
-                ResolveSpatialFromBindings(exec, queryParameters);
+                ResolveSpatialFromBindings(exec, slotBindings, queryParameters);
                 return;
             case ClauseType.Vector when exec.Clause.Bindings is { Length: > 0 }:
-                ResolveVectorFromBindings(exec, queryParameters);
+                ResolveVectorFromBindings(exec, slotBindings, queryParameters);
                 return;
         }
 
@@ -176,8 +260,8 @@ internal static partial class QueryPlanBuilder
         {
             case ClauseType.Between: // BETWEEN: open-range "*"/"NULL" sentinel bounds (literal or parameter-bound) are detected here and rewritten to the equivalent half-open range / match-all leaf.
             {
-                var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], queryParameters, builderParameters);
-                var (high, highType) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], queryParameters, builderParameters);
+                var (low, lowType) = ResolveBindingScalar(bindings[BindingIndex.BetweenLow], slotBindings, queryParameters, builderParameters);
+                var (high, highType) = ResolveBindingScalar(bindings[BindingIndex.BetweenHigh], slotBindings, queryParameters, builderParameters);
                 bool lowIsSentinel = low is RavenConstants.Documents.Querying.Terms.LeftNullValueOfBetweenQuery;
                 bool highIsSentinel = high is RavenConstants.Documents.Querying.Terms.RightNullValueOfBetweenQuery;
                 switch (lowIsSentinel, highIsSentinel)
@@ -211,10 +295,10 @@ internal static partial class QueryPlanBuilder
                 {   // Boosted clauses store the boost factor in the trailing binding (read by ResolveBoostFactor via Bindings[^1]); exclude it from the IN-term walk.
                     inBindings = inBindings[..^1];
                 }
-                ResolveInFromBindings(exec, queryParameters, writer, inBindings, builderParameters);
+                ResolveInFromBindings(exec, slotBindings, queryParameters, writer, inBindings, builderParameters);
                 break;
             default: // Simple clause (Equals, Range, Search, Regex, etc.): single value at Bindings[0]
-                var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], queryParameters, builderParameters);
+                var (value, valueType) = ResolveBindingScalar(bindings[BindingIndex.Value], slotBindings, queryParameters, builderParameters);
                 if (value == null && exec.Clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith or ClauseType.Search or ClauseType.Regex)
                 {
                     throw new InvalidQueryException(  // reject null (matches Lucene behavior).
@@ -247,8 +331,13 @@ internal static partial class QueryPlanBuilder
         exec.HasNullTerm = hasNullTerm;
     }
 
-    private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
+    private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
     {
+        // The template binding supplies only structure plus its canonical HoleIndex. The value for THIS query's
+        // text lives in the per-query slot vector at that index, so value/name/param variants can share one
+        // shared template. Redirect to the slot binding before reading any value. (Already-slot bindings are
+        // idempotent under this lookup, since slotBindings[b.HoleIndex] == b.)
+        binding = SlotBindingFor(binding, slotBindings);
         switch (binding.Source)
         {
             case BindingSource.Literal:
@@ -279,9 +368,9 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static void ResolveBoostFactor(ClauseExecution exec, BlittableJsonReaderObject queryParameters)
+    private static void ResolveBoostFactor(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters)
     {
-        var (boostVal, boostType) = ResolveBindingScalar(exec.Clause.Bindings[^1], queryParameters, builderParameters: null);
+        var (boostVal, boostType) = ResolveBindingScalar(exec.Clause.Bindings[^1], slotBindings, queryParameters, builderParameters: null);
         if (boostVal == null) return;
 
         exec.BoostFactor = boostType switch

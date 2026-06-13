@@ -39,8 +39,8 @@ public class PlanCache
     public readonly long Id = Interlocked.Increment(ref _idGen);
 
     private sealed record CacheGeneration(
-        ConcurrentDictionary<string, PerQueryPlans> Current,
-        ConcurrentDictionary<string, PerQueryPlans> Previous);
+        ConcurrentDictionary<Vector256<long>, PerQueryPlans> Current,
+        ConcurrentDictionary<Vector256<long>, PerQueryPlans> Previous);
 
     private CacheGeneration _generation;
 
@@ -52,28 +52,21 @@ public class PlanCache
         _generation = new CacheGeneration([], []);
     }
 
-    public CompiledPlan Get(string queryText, in Vector256<long> hash)
+    /// <summary>Locate the per-query bucket for a structural plan key, or null if no plan has been compiled
+    /// for it yet. Stale reads are harmless — a miss just falls through to ParseTemplate + GetOrAddBucket.</summary>
+    public PerQueryPlans GetBucket(in Vector256<long> structuralKey)
     {
         var gen = _generation;
-        if (gen.Current.TryGetValue(queryText, out var per) is false)
-            gen.Previous.TryGetValue(queryText, out per);
+        if (gen.Current.TryGetValue(structuralKey, out var per) is false)
+            gen.Previous.TryGetValue(structuralKey, out per);
 
-        return per?.TryLookup(hash);
+        return per;
     }
 
-    /// <summary>Try to retrieve the cached plan template for a query text.
-    /// Stale reads are harmless — the worst case is one redundant ParseTemplate call.
-    /// Write side uses ConcurrentDictionary.GetOrAdd ensuring correctness.</summary>
-    public PlanTemplate TryGetTemplate(string queryText)
-    {
-        var gen = _generation;
-        if (gen.Current.TryGetValue(queryText, out var per) is false)
-            gen.Previous.TryGetValue(queryText, out per);
-
-        return per?.Template;
-    }
-
-    public void Add(string queryText, CompiledPlan plan, PlanTemplate template = null)
+    /// <summary>Get the existing bucket for a structural key or atomically create one carrying the parsed
+    /// template. The caller publishes compiled plan variants into the returned bucket. Rotation is driven here
+    /// (on distinct-query count), so bucket creation is the single place the two-generation swap can trigger.</summary>
+    public PerQueryPlans GetOrAddBucket(in Vector256<long> structuralKey, PlanTemplate template, string queryText)
     {
         var gen = _generation;
 
@@ -88,13 +81,9 @@ public class PlanCache
             gen = prev == gen ? newGen : prev!;
         }
 
-        var current = gen.Current;
-
-        var per = current.GetOrAdd(queryText,
-            static (_, arg) => new PerQueryPlans(arg.MaxPlansPerQuery, arg.template),
-            (MaxPlansPerQuery, template));
-
-        per.Publish(plan);
+        return gen.Current.GetOrAdd(structuralKey,
+            static (_, arg) => new PerQueryPlans(arg.MaxPlansPerQuery, arg.template, arg.queryText),
+            (MaxPlansPerQuery, template, queryText));
     }
 
     /// <summary>
@@ -106,7 +95,7 @@ public class PlanCache
 
     /// <summary>
     /// Point-in-time snapshot of every cached query and its compiled plan variants across both
-    /// generations. The current generation wins on duplicate query texts. Reads are lock-free and
+    /// generations. The current generation wins on duplicate structural keys. Reads are lock-free and
     /// may observe concurrent publishes, so the result is best-effort — adequate for diagnostics
     /// and tooling, not for correctness-sensitive logic.
     /// </summary>
@@ -114,18 +103,18 @@ public class PlanCache
     {
         var gen = _generation;
         var result = new List<PlanCacheEntry>();
-        var seen = new HashSet<string>();
+        var seen = new HashSet<Vector256<long>>();
 
-        foreach (var (text, per) in gen.Current)
+        foreach (var (key, per) in gen.Current)
         {
-            if (seen.Add(text))
-                result.Add(new PlanCacheEntry(text, per.Template, per.SnapshotPlans()));
+            if (seen.Add(key))
+                result.Add(new PlanCacheEntry(per.QueryText, per.Template, per.SnapshotPlans()));
         }
 
-        foreach (var (text, per) in gen.Previous)
+        foreach (var (key, per) in gen.Previous)
         {
-            if (seen.Add(text))
-                result.Add(new PlanCacheEntry(text, per.Template, per.SnapshotPlans()));
+            if (seen.Add(key))
+                result.Add(new PlanCacheEntry(per.QueryText, per.Template, per.SnapshotPlans()));
         }
 
         return result;
@@ -140,10 +129,16 @@ public class PlanCache
     /// Collision chances are 1/64K, and we have 32 slots by default. Meaning the chance is ~0.75% for
     /// a collision (acceptable, since we'll check the full digest).
     /// </summary>
-    private sealed class PerQueryPlans(int maxSlots, PlanTemplate template)
+    public sealed class PerQueryPlans(int maxSlots, PlanTemplate template, string queryText)
     {
         private readonly ushort[] _hashLo = new ushort[maxSlots];
         private readonly CompiledPlan[] _plans = new CompiledPlan[maxSlots];
+
+        /// <summary>The query text (or MLT sub-expression override) this bucket was first compiled for.
+        /// Diagnostics only — surfaced by <see cref="Snapshot"/>; never read on any hot path. The structural
+        /// key, not this string, is the dictionary identity, so two texts that collapse to one plan in a later
+        /// phase would share a bucket and only the first-seen text is recorded.</summary>
+        public readonly string QueryText = queryText;
 
         /// <summary>
         /// Monotonically increasing slot allocator. Counts from 0 up to maxSlots and
@@ -154,7 +149,7 @@ public class PlanCache
         /// distinct plan variants for the lifetime of the IndexSearcher; past that
         /// point we accept random replacement as the steady state. Decrementing on
         /// eviction would only complicate concurrency without changing the steady
-        /// behavior — the outer PlanCache.Add still drives rotation based on
+        /// behavior — the outer PlanCache.GetOrAddBucket still drives rotation based on
         /// distinct-query count, not per-query slot occupancy.
         /// </summary>
         private int _nextSlot;

@@ -72,8 +72,12 @@ internal static partial class QueryPlanBuilder
         BooleanOp rootOp = ParseExpression(where, walkerCtx);
         PlanWalker.ThrowIfErrors(walkerCtx);
 
+        // Hole count comes from the canonical parse walk above; every template returned past this point
+        // carries it so the per-query slot vector (built by re-running the same walk) can be asserted to match.
+        int holeCount = walkerCtx.SlotBindings.Count;
+
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
-            return new PlanTemplate { Clauses = [] };
+            return new PlanTemplate { Clauses = [], HoleCount = holeCount };
 
         Debug.Assert(rootOp != BooleanOp.False,
             "No RQL expression currently reduces to BooleanOp.False at template time. " +
@@ -91,6 +95,7 @@ internal static partial class QueryPlanBuilder
                 Clauses = [],
                 SpatialClauses = walkerCtx.SpatialClauses,
                 VectorClauses = walkerCtx.VectorClauses,
+                HoleCount = holeCount,
             };
         }
 
@@ -134,7 +139,26 @@ internal static partial class QueryPlanBuilder
             ParameterSlots = parameterSlots,
             SortSeekHintTemplateIdx = sortSeekHintIdx,
             SortSeekUseParam2 = sortSeekUseParam2,
+            HoleCount = holeCount,
         };
+    }
+
+    /// <summary>Re-run the canonical WHERE parse purely to collect the value-bearing bindings, in the same
+    /// left-to-right DFS order used by <see cref="ParseTemplate"/>. The returned vector is indexed by
+    /// <see cref="ParameterBinding.HoleIndex"/> and is a pure function of the query text/AST (literal values
+    /// live in the text, parameters store names, deferred methods store closures) — parameter-value- and
+    /// index-independent — so it can be memoized per <see cref="QueryMetadata"/>. Returns an empty array when
+    /// there is no WHERE clause.</summary>
+    public static ParameterBinding[] ExtractSlotBindings(PlanParameters p)
+    {
+        QueryExpression where = p.WhereOverride ?? p.Metadata.Query.Where;
+        if (where == null)
+            return [];
+
+        ResolutionContext ctx = new(p) { Clauses = [] };
+        ParseExpression(where, ctx);
+        PlanWalker.ThrowIfErrors(ctx);
+        return ctx.SlotBindings.ToArray();
     }
 
     private static void CollectParameterNames(List<ClauseInfo> clauses, HashSet<string> seen)
@@ -962,6 +986,22 @@ internal static partial class QueryPlanBuilder
     }
 
     private static ParameterBinding CreateBinding(QueryExpression expr, ResolutionContext ctx)
+    {
+        // CreateBinding is the single chokepoint for every value leaf, invoked in strict left-to-right DFS
+        // order while parsing WHERE. Stamp each created binding with its canonical hole index and record it,
+        // so both the shared template (hole numbering) and a query's per-text slot vector (built by re-running
+        // the same parse) agree on leaf order by construction.
+        var binding = BuildBinding(expr, ctx);
+        if (binding != null)
+        {
+            binding.HoleIndex = ctx.SlotBindings.Count;
+            ctx.SlotBindings.Add(binding);
+        }
+
+        return binding;
+    }
+
+    private static ParameterBinding BuildBinding(QueryExpression expr, ResolutionContext ctx)
     {
         switch (expr)
         {

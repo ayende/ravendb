@@ -7,7 +7,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private static void ResolveSpatialFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters)
+    private static void ResolveSpatialFromBindings(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters)
     {
         var bindings = exec.Clause.Bindings;
         var sp = new SpatialParams();
@@ -15,7 +15,7 @@ internal static partial class QueryPlanBuilder
         // [0] = distanceErrorPct
         if (bindings.Length > 0 && bindings[BindingIndex.SpatialDistErrPct] != null)
         {
-            var (depVal, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialDistErrPct], queryParameters, builderParameters: null);
+            var (depVal, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialDistErrPct], slotBindings, queryParameters, builderParameters: null);
             sp.DistanceErrorPct = depVal != null ? Convert.ToDouble(depVal) : -1;
         }
 
@@ -24,15 +24,15 @@ internal static partial class QueryPlanBuilder
             case >= BindingIndex.SpatialCircleBindingCount - 1: // circle: at least distErrPct + radius + lat + lng
             {
                 sp.ShapeType = SpatialShapeType.Circle;
-                var (r, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialRadius], queryParameters, builderParameters: null);
-                var (lat, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLatitude], queryParameters, builderParameters: null);
-                var (lng, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLongitude], queryParameters, builderParameters: null);
+                var (r, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialRadius], slotBindings, queryParameters, builderParameters: null);
+                var (lat, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLatitude], slotBindings, queryParameters, builderParameters: null);
+                var (lng, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLongitude], slotBindings, queryParameters, builderParameters: null);
                 sp.CircleRadius = Convert.ToDouble(r);
                 sp.CircleLatitude = Convert.ToDouble(lat);
                 sp.CircleLongitude = Convert.ToDouble(lng);
                 if (bindings.Length > BindingIndex.SpatialUnits && bindings[BindingIndex.SpatialUnits] != null)
                 {
-                    var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialUnits], queryParameters, builderParameters: null);
+                    var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialUnits], slotBindings, queryParameters, builderParameters: null);
                     if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
                         sp.Units = ToCoraxUnits(su);
                 }
@@ -44,11 +44,11 @@ internal static partial class QueryPlanBuilder
                 sp.ShapeType = SpatialShapeType.Wkt;
                 if (bindings.Length > BindingIndex.SpatialWkt && bindings[BindingIndex.SpatialWkt] != null)
                 {
-                    var (wkt, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWkt], queryParameters, builderParameters: null);
+                    var (wkt, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWkt], slotBindings, queryParameters, builderParameters: null);
                     sp.Wkt = wkt?.ToString();
                     if (bindings.Length > BindingIndex.SpatialWktUnits && bindings[BindingIndex.SpatialWktUnits] != null)
                     {
-                        var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWktUnits], queryParameters, builderParameters: null);
+                        var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWktUnits], slotBindings, queryParameters, builderParameters: null);
                         if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
                             sp.Units = ToCoraxUnits(su);
                     }
@@ -87,7 +87,7 @@ internal static partial class QueryPlanBuilder
             {
                 var sc = template.SpatialClauses[si];
                 var scExec = new ClauseExecution(sc);
-                PopulateClauseValues(scExec, planParams.QueryParameters, writer, builderParameters, 0, ref _);
+                PopulateClauseValues(scExec, planParams.SlotBindings, planParams.QueryParameters, writer, builderParameters, 0, ref _);
                 spatialArr[si] = sc;
                 spatialExecs[si] = scExec;
             }
@@ -102,7 +102,7 @@ internal static partial class QueryPlanBuilder
             {
                 var vc = template.VectorClauses[vi];
                 var vcExec = new ClauseExecution(vc);
-                PopulateClauseValues(vcExec, planParams.QueryParameters, writer, builderParameters, 0, ref _);
+                PopulateClauseValues(vcExec, planParams.SlotBindings, planParams.QueryParameters, writer, builderParameters, 0, ref _);
                 vectorArr[vi] = vc;
                 vectorExecs[vi] = vcExec;
             }

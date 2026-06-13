@@ -35,6 +35,14 @@ public sealed class ParameterBinding
     /// once at template-build time. -1 for literal/deferred bindings (no slot).</summary>
     public int ParameterSlot = -1;
 
+    /// <summary>Position of this binding in the canonical value-leaf order (the left-to-right DFS order in
+    /// which <c>CreateBinding</c> is invoked while parsing the WHERE expression). Every value-bearing binding —
+    /// literal, query parameter, or deferred method — gets a sequential hole index. This is the auto-parameterization
+    /// slot: the shared template carries only the hole index, while each query's per-text slot vector (built by the
+    /// same DFS) supplies the actual literal value / parameter name / deferred expression at <c>HoleIndex</c>.
+    /// -1 until assigned.</summary>
+    public int HoleIndex = -1;
+
     /// <summary>For deferred method expressions (e.g. cmpxchg(), now(), today()) that must
     /// be resolved at execution time rather than template creation time. The first parameter
     /// is the QueryBuilderParameters boxed as object (cast at the resolution site in

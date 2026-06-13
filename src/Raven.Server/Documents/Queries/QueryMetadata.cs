@@ -53,14 +53,25 @@ namespace Raven.Server.Documents.Queries
 
 
         /// <summary>
-        /// Holds the resolved Corax plan template for this query so we skip string-keyed lookup on the hot path. 
+        /// Holds the resolved Corax plan bucket for this query so we skip the structural-key dictionary lookup on
+        /// the hot path. The bucket carries the parse template plus every compiled plan variant for this query.
         /// </summary>
         public PlanMemo CachedPlanMemo { get; set; }
 
-        public sealed class PlanMemo(long planCacheId, Corax.Querying.Planning.PlanTemplate template)
+        /// <summary>
+        /// Memoized per-query slot-binding vector — the value-bearing bindings collected by the canonical WHERE
+        /// walk (<see cref="QueryPlanBuilder.ExtractSlotBindings"/>), indexed by
+        /// <see cref="ParameterBinding.HoleIndex"/>. It is a pure function of the query text/AST (independent of
+        /// parameter values and of the target index), so it is safe to cache here for the lifetime of this
+        /// QueryMetadata and never needs invalidation. Only set for the main WHERE path; an MLT sub-expression
+        /// override builds its own vector fresh and does not touch this field.
+        /// </summary>
+        public Corax.Querying.Planning.ParameterBinding[] CachedSlotBindings { get; set; }
+
+        public sealed class PlanMemo(long planCacheId, Corax.Querying.Planning.PlanCache.PerQueryPlans bucket)
         {
             public readonly long PlanCacheId = planCacheId;
-            public readonly WeakReference<Corax.Querying.Planning.PlanTemplate> Template = new(template);
+            public readonly WeakReference<Corax.Querying.Planning.PlanCache.PerQueryPlans> Bucket = new(bucket);
         }
 
         public QueryMetadata(string query, BlittableJsonReaderObject parameters, ulong cacheKey, bool addSpatialProperties = false, QueryType queryType = QueryType.Select)

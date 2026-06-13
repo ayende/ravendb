@@ -7,15 +7,18 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private static void ResolveInFromBindings(ClauseExecution exec, BlittableJsonReaderObject queryParameters, ValueWriter writer,
+    private static void ResolveInFromBindings(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, ValueWriter writer,
         Span<ParameterBinding> bindings, QueryBuilderParameters builderParameters)
     {
         var resolvedValues = new List<object>(bindings.Length);
         var termTypes = new List<ParamValueType>(bindings.Length);
         bool hasNullTerm = false;
 
-        foreach (var it in bindings)
+        foreach (var templateBinding in bindings)
         {
+            // Resolve the per-query slot binding for this leaf; the template binding only carries structure, so
+            // the array-valued-parameter pre-check below must inspect the slot binding's name/source too.
+            var it = SlotBindingFor(templateBinding, slotBindings);
             if (it.Source == BindingSource.QueryParameter // handle array-valued query parameters
                 && queryParameters != null
                 && queryParameters.TryGet(it.ParameterName, out object raw)
@@ -30,7 +33,7 @@ internal static partial class QueryPlanBuilder
                 continue;
             }
 
-            var (val, type) = ResolveBindingScalar(it, queryParameters, builderParameters); // normal parameter
+            var (val, type) = ResolveBindingScalar(it, slotBindings, queryParameters, builderParameters); // normal parameter
             AddInValue(val, type);
         }
 

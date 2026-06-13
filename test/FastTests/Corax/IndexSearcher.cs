@@ -1378,6 +1378,156 @@ namespace FastTests.Corax
             }
         }
 
+        // Compile (and cache) a plan for an RQL filter against the given searcher. Returns the QueryMetadata used,
+        // so a caller can reuse the same instance across builds to exercise the QueryMetadata plan memo.
+        private QueryMetadata BuildPlanForCacheTest(IndexSearcher searcher, IndexFieldsMapping fields, JsonOperationContext ctx,
+            string rql, global::Sparrow.Json.Parsing.DynamicJsonValue paramsJson, QueryMetadata metadata = null)
+        {
+            var queryParams = ctx.ReadObject(paramsJson, "params");
+            metadata ??= new QueryMetadata(rql, queryParams, 0);
+            var planParams = new PlanParameters
+            {
+                IndexSearcher = searcher, Metadata = metadata,
+                QueryParameters = queryParams, Allocator = Allocator
+            };
+            var match = QueryPlanBuilder.BuildFilterMatch(planParams,
+                new QueryBuilderParameters(searcher, Allocator, metadata, queryParams, fields), out _, out _, null, false, default);
+            Span<long> buf = stackalloc long[64];
+            match.Fill(buf); // drive execution; result count is irrelevant to plan-cache identity
+            return metadata;
+        }
+
+        private static IndexSingleEntry[] PlanCacheSeed() =>
+        [
+            new IndexSingleEntry { Id = "entry/1", Content = "Alpha" },
+            new IndexSingleEntry { Id = "entry/2", Content = "Beta" },
+        ];
+
+        // Phase 1 plan-cache bucketing: the per-query bucket is keyed by a fixed-size structural key (a SHA256 of
+        // the query text), not a string. Two executions of the SAME query text (only the bound parameter value
+        // differs — values are never part of the key) resolve to ONE bucket holding ONE compiled plan variant.
+        [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+        public void PlanCache_SameQueryText_SharesSingleBucketAndPlan()
+        {
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            IndexEntries(bsc, PlanCacheSeed(), CreateKnownFields(bsc));
+
+            using var fields = CreateKnownFields(Allocator);
+            using var searcher = new IndexSearcher(Env, fields);
+            using var ctx = JsonOperationContext.ShortTermSingleUse();
+
+            const string rql = "FROM TestIndex WHERE Content = $p0";
+
+            // Fresh QueryMetadata each time so the memo doesn't short-circuit — this exercises the GetBucket path.
+            BuildPlanForCacheTest(searcher, fields, ctx, rql, new() { ["p0"] = "Alpha" });
+            BuildPlanForCacheTest(searcher, fields, ctx, rql, new() { ["p0"] = "Beta" });
+
+            var snapshot = searcher.PlanCache.Snapshot();
+            Assert.Single(snapshot);
+            Assert.Equal(rql, snapshot[0].QueryText);
+            Assert.Single(snapshot[0].Plans); // same param type → one inner variant
+        }
+
+        // Same query text, but the bound parameter's RUNTIME TYPE differs (string vs long). The structural key is
+        // identical (one bucket) while the inner 256-bit key encodes the per-parameter type, so the two type
+        // variants live as TWO compiled plans inside the SAME bucket.
+        [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+        public void PlanCache_SameText_DifferentParamType_SplitsWithinOneBucket()
+        {
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            IndexEntries(bsc, PlanCacheSeed(), CreateKnownFields(bsc));
+
+            using var fields = CreateKnownFields(Allocator);
+            using var searcher = new IndexSearcher(Env, fields);
+            using var ctx = JsonOperationContext.ShortTermSingleUse();
+
+            const string rql = "FROM TestIndex WHERE Content = $p0";
+
+            BuildPlanForCacheTest(searcher, fields, ctx, rql, new() { ["p0"] = "Alpha" }); // string
+            BuildPlanForCacheTest(searcher, fields, ctx, rql, new() { ["p0"] = 5L });      // long
+
+            var snapshot = searcher.PlanCache.Snapshot();
+            Assert.Single(snapshot); // one bucket (one structural key)
+            Assert.Equal(2, snapshot[0].Plans.Length); // two inner type variants
+        }
+
+        // Different query texts hash to different structural keys → distinct buckets.
+        [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+        public void PlanCache_DifferentQueryText_DistinctBuckets()
+        {
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            IndexEntries(bsc, PlanCacheSeed(), CreateKnownFields(bsc));
+
+            using var fields = CreateKnownFields(Allocator);
+            using var searcher = new IndexSearcher(Env, fields);
+            using var ctx = JsonOperationContext.ShortTermSingleUse();
+
+            BuildPlanForCacheTest(searcher, fields, ctx, "FROM TestIndex WHERE Content = $p0", new() { ["p0"] = "Alpha" });
+            BuildPlanForCacheTest(searcher, fields, ctx, "FROM TestIndex WHERE Id = $p0", new() { ["p0"] = "entry/1" });
+
+            var snapshot = searcher.PlanCache.Snapshot();
+            Assert.Equal(2, snapshot.Count);
+        }
+
+        // The QueryMetadata plan memo lets the hot path skip the dictionary entirely. After the first build it is
+        // stamped with the live cache's Id and weakly holds the resolved bucket; a second build that reuses the
+        // SAME QueryMetadata takes the fast path and never reallocates the memo (object identity preserved).
+        [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+        public void PlanCache_Memo_ReusedAcrossBuilds_AndStampedWithCacheId()
+        {
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            IndexEntries(bsc, PlanCacheSeed(), CreateKnownFields(bsc));
+
+            using var fields = CreateKnownFields(Allocator);
+            using var searcher = new IndexSearcher(Env, fields);
+            using var ctx = JsonOperationContext.ShortTermSingleUse();
+
+            const string rql = "FROM TestIndex WHERE Content = $p0";
+
+            var metadata = BuildPlanForCacheTest(searcher, fields, ctx, rql, new() { ["p0"] = "Alpha" });
+            var memo = metadata.CachedPlanMemo;
+            Assert.NotNull(memo);
+            Assert.Equal(searcher.PlanCache.Id, memo.PlanCacheId);
+            Assert.True(memo.Bucket.TryGetTarget(out _));
+
+            // Reuse the same QueryMetadata: the memo fast path is taken, so the memo object is not replaced.
+            BuildPlanForCacheTest(searcher, fields, ctx, rql, new() { ["p0"] = "Beta" }, metadata);
+            Assert.Same(memo, metadata.CachedPlanMemo);
+        }
+
+        // An index swap replaces the IndexSearcher (and its PlanCache, which carries a fresh Id). A QueryMetadata
+        // memo stamped against the OLD cache must be rejected by the Id compare and re-resolved against the new
+        // cache, re-stamping the memo with the new Id — otherwise a stale bucket from a replaced index would be used.
+        [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+        public void PlanCache_IndexSwap_InvalidatesMemo_AndRebuilds()
+        {
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            IndexEntries(bsc, PlanCacheSeed(), CreateKnownFields(bsc));
+
+            using var fields = CreateKnownFields(Allocator);
+            using var ctx = JsonOperationContext.ShortTermSingleUse();
+
+            const string rql = "FROM TestIndex WHERE Content = $p0";
+            QueryMetadata metadata;
+            long oldCacheId;
+
+            using (var searcherA = new IndexSearcher(Env, fields))
+            {
+                metadata = BuildPlanForCacheTest(searcherA, fields, ctx, rql, new() { ["p0"] = "Alpha" });
+                oldCacheId = searcherA.PlanCache.Id;
+                Assert.Equal(oldCacheId, metadata.CachedPlanMemo.PlanCacheId);
+            }
+
+            // Simulate the index swap: a new searcher with its own PlanCache (distinct Id), reusing the metadata.
+            using var searcherB = new IndexSearcher(Env, fields);
+            Assert.NotEqual(oldCacheId, searcherB.PlanCache.Id);
+
+            BuildPlanForCacheTest(searcherB, fields, ctx, rql, new() { ["p0"] = "Beta" }, metadata);
+
+            Assert.Equal(searcherB.PlanCache.Id, metadata.CachedPlanMemo.PlanCacheId); // re-stamped against the new cache
+            Assert.Single(searcherB.PlanCache.Snapshot()); // the new cache compiled its own bucket
+        }
+
         [RavenFact(RavenTestCategory.Corax)]
         public void SimpleAndNot()
         {

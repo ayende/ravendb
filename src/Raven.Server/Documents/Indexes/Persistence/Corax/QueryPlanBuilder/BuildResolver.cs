@@ -27,7 +27,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         _exec = CreateQueryExecution();
         _cacheKeyHash = ComputeCacheKeyHash();
 
-        if (_indexSearcher.PlanCache.Get(planParams.CacheKey, _cacheKeyHash) is { } cachedPlan)
+        // BuildTemplate already resolved (or created) the per-query bucket for this structural key and stashed it
+        // on planParams; we only probe/publish the runtime variant (inner 256-bit key) within that bucket here.
+        if (planParams.Bucket.TryLookup(_cacheKeyHash) is { } cachedPlan)
         {
             _compiledPlan = cachedPlan; // use cached plan
             return FinalizePlan();
@@ -74,7 +76,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             AllNegated = CheckAllNegated(),
         };
 
-        _indexSearcher.PlanCache.Add(planParams.CacheKey, _compiledPlan, template);
+        planParams.Bucket.Publish(_compiledPlan);
 
         return FinalizePlan();
     }
@@ -121,7 +123,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             ApplyFate(exec, cached);
             if (exec.IsSentinel == false)
             {
-                QueryPlanBuilder.PopulateClauseValues(exec, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
+                QueryPlanBuilder.PopulateClauseValues(exec, planParams.SlotBindings, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
                 QueryPlanBuilder.PropagateBetweenContradiction(exec, _writer); // a contradictory BETWEEN collapses to MatchNothing
                 if (IsEmptyIn(exec))
                     exec.MarkAsSentinel(ClauseType.MatchNothing, 0); // an empty IN matches nothing
