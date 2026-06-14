@@ -31,59 +31,35 @@ internal static partial class QueryPlanBuilder
     {
         var planCache = planParams.IndexSearcher.PlanCache;
 
-        // The per-QueryMetadata memo is a hot-path shortcut to the bucket already resolved against THIS cache
-        // instance, letting a repeated query skip the structural-key lookup. An MLT sub-expression borrows the
-        // outer query's QueryMetadata but compiles a different expression, so it gets the empty memo target:
-        // reads miss and writes are dropped, leaving the outer query's memo untouched. Every path below treats
-        // the memo uniformly through this target, so there is no MLT-specific branching here.
         var memo = PlanMemoTarget.For(planParams);
 
-        ParameterBinding[] slotBindings;
-
-        // Fast path: the memo already holds the bucket for this cache instance (weak ref, so it does not pin the
-        // cache and can be evicted). The cache Id check forces a rebuild after an index reset.
         if (memo.TryGetWarmBucket(planCache.Id, out var memoBucket))
-        {
-            slotBindings = memo.ResolveSlotBindings(planParams);
-            planParams.SlotBindings = slotBindings;
-            planParams.Bucket = memoBucket;
-            AssertSlotBindingsMatchTemplate(memoBucket.Template, slotBindings);
-            return memoBucket.Template;
-        }
+            return Finalize(memoBucket, memo.ResolveSlotBindings(planParams));
 
         var structuralKey = ComputeStructuralKey(planParams);
-
-        // Bucket already exists for this structural key: reuse its template (and its compiled plan variants).
         if (planCache.GetBucket(structuralKey) is { } existing)
         {
-            slotBindings = memo.ResolveSlotBindings(planParams);
-            planParams.SlotBindings = slotBindings;
-            planParams.Bucket = existing;
             memo.Store(planCache.Id, existing);
-            AssertSlotBindingsMatchTemplate(existing.Template, slotBindings);
-            return existing.Template;
+            return Finalize(existing, memo.ResolveSlotBindings(planParams));
         }
 
         var template = ParseTemplate(planParams, out var parsedSlotBindings);
         template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams);
-
-        // This is the only path that walks the WHERE clause, so reuse the slot bindings ParseTemplate just
-        // collected (the memo target memoizes them on the QueryMetadata for the main path, or returns them
-        // unchanged for the MLT override) instead of walking a second time.
-        slotBindings = memo.MemoizeSlotBindings(parsedSlotBindings);
-        planParams.SlotBindings = slotBindings;
-        AssertSlotBindingsMatchTemplate(template, slotBindings);
-
-        // Create (or join a racing thread's) bucket carrying this template. BuildResolver publishes the compiled
-        // plan into planParams.Bucket; we return the bucket's template so a lost race uses the winner's instance.
         var bucket = planCache.GetOrAddBucket(structuralKey, template, planParams.CacheKey);
-        planParams.Bucket = bucket;
         memo.Store(planCache.Id, bucket);
-        return bucket.Template;
+        return Finalize(bucket, memo.MemoizeSlotBindings(parsedSlotBindings));
+        
+        PlanTemplate Finalize(PlanCache.PerQueryPlans b, ParameterBinding[] bindings)
+        {
+            planParams.SlotBindings = bindings;
+            planParams.Bucket = b;
+            AssertSlotBindingsMatchTemplate(b.Template, bindings);
+            return b.Template;
+        }
     }
 
     /// <summary>The per-QueryMetadata plan memo as a target the <see cref="BuildTemplate"/> paths can read and
-    /// write uniformly. For a normal query it wraps the query's <see cref="QueryMetadata"/>. For an MLT
+    /// write uniformly. For a normal query it wraps the query's <see cref="QueryMetadata"/>. For a More Like This
     /// sub-expression - which borrows the OUTER query's QueryMetadata but compiles a different expression - it is
     /// the empty target (<see cref="_metadata"/> null): warm lookups miss, stores are dropped, and the slot vector
     /// is built fresh, so the outer query's memo is never corrupted. This is the single place the MLT-vs-normal
@@ -110,22 +86,22 @@ internal static partial class QueryPlanBuilder
 
         public void Store(long planCacheId, PlanCache.PerQueryPlans bucket)
         {
-            if (_metadata != null)
-                _metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCacheId, bucket);
+            _metadata?.CachedPlanMemo = new QueryMetadata.PlanMemo(planCacheId, bucket);
         }
 
         // The slot vector is a pure function of the query text/AST, so the main path memoizes it on the
         // QueryMetadata; the MLT override builds it fresh and leaves the field untouched.
-        public ParameterBinding[] ResolveSlotBindings(PlanParameters planParams) =>
-            _metadata == null
-                ? ExtractSlotBindings(planParams)
-                : _metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams);
+        public ParameterBinding[] ResolveSlotBindings(PlanParameters planParams)
+        {
+            if (_metadata != null)
+                return _metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams);
+            
+            return ExtractSlotBindings(planParams);
+        }
 
         // Same memoization, but reusing the vector ParseTemplate already collected on the cold path.
         public ParameterBinding[] MemoizeSlotBindings(ParameterBinding[] parsedSlotBindings) =>
-            _metadata == null
-                ? parsedSlotBindings
-                : _metadata.CachedSlotBindings ??= parsedSlotBindings;
+            _metadata?.CachedSlotBindings ??= parsedSlotBindings;
     }
 
     [Conditional("DEBUG")]
