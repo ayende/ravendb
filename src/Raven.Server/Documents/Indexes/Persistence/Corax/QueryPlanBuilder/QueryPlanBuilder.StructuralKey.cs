@@ -23,10 +23,27 @@ internal static partial class QueryPlanBuilder
         Field = 6,
         Value = 7,
         True = 8,
+        QuotedField = 9, // a reserved-word field name quoted in the source ('Order'), parsed as a string value
     }
 
     // Width, in bits, of an AstTag in the packed stream. Holds every member above with room to spare.
     private const int AstTagBits = 4;
+
+    // Width, in bits, of an OperatorType (8 members); 4 bits leaves headroom.
+    private const int OperatorBits = 4;
+
+    // Width, in bits, of a ValueTokenType (7 members) - used for literal-type tokens and ORDER BY argument types.
+    private const int ValueTokenBits = 4;
+
+    // Width, in bits, of an OrderByFieldType (9 members).
+    private const int OrderingTypeBits = 4;
+
+    // Width, in bits, of a NullsOrderingType (3 members).
+    private const int NullsOrderingBits = 2;
+
+    // Width, in bits, of a MethodType. The enum churns (currently ~47 members), so keep a wide field (capacity
+    // 256): a release-mode overflow would silently truncate the value and collide otherwise-distinct plan keys.
+    private const int MethodTypeBits = 8;
 
     private static void AppendTag(ref PlanCacheKeyBuilder builder, AstTag tag) => builder.Append((int)tag, AstTagBits);
 
@@ -85,9 +102,21 @@ internal static partial class QueryPlanBuilder
             case BinaryExpression be:
                 // Operator goes right after the tag so a > b and a < b diverge before the operands are even read.
                 AppendTag(ref builder, AstTag.Binary);
-                builder.Append((int)be.Operator, 8);
-                AppendCanonicalExpression(ref builder, be.Left);
-                AppendCanonicalExpression(ref builder, be.Right);
+                builder.Append((int)be.Operator, OperatorBits);
+                if (be.Operator is OperatorType.And or OperatorType.Or)
+                {
+                    // Boolean connective: both operands are sub-expressions.
+                    AppendCanonicalExpression(ref builder, be.Left);
+                    AppendCanonicalExpression(ref builder, be.Right);
+                }
+                else
+                {
+                    // Comparison: ParseComparison/ParseRangeComparison resolve the left operand as the field
+                    // (via TryGetFieldName); the right operand is the value.
+                    AppendCanonicalField(ref builder, be.Left);
+                    AppendCanonicalExpression(ref builder, be.Right);
+                }
+
                 return;
 
             case NegatedExpression ne:
@@ -97,7 +126,7 @@ internal static partial class QueryPlanBuilder
 
             case BetweenExpression bw:
                 AppendTag(ref builder, AstTag.Between);
-                AppendCanonicalExpression(ref builder, bw.Source);
+                AppendCanonicalField(ref builder, bw.Source);
                 AppendCanonicalValue(ref builder, bw.Min);
                 AppendCanonicalValue(ref builder, bw.Max);
                 builder.Append(bw.MinInclusive ? 1 : 0, 1);
@@ -108,7 +137,7 @@ internal static partial class QueryPlanBuilder
                 // IN arity is structural: each value is its own binding, so (a,b) and (a,b,c) are different templates.
                 AppendTag(ref builder, AstTag.In);
                 builder.Append(ie.All ? 1 : 0, 1);
-                AppendCanonicalExpression(ref builder, ie.Source);
+                AppendCanonicalField(ref builder, ie.Source);
                 builder.Append(ie.Values.Count, 31);
                 foreach (var v in ie.Values)
                     AppendCanonicalExpression(ref builder, v);
@@ -120,8 +149,18 @@ internal static partial class QueryPlanBuilder
                 AppendTag(ref builder, AstTag.Method);
                 AppendString(ref builder, me.Name.Value);
                 builder.Append(me.Arguments.Count, 31);
-                foreach (var a in me.Arguments)
-                    AppendCanonicalExpression(ref builder, a);
+                for (int i = 0; i < me.Arguments.Count; i++)
+                {
+                    // arg[0] of a field-first method (search/startsWith/exists/regex/spatial.*/...) is the field;
+                    // a quoted reserved word lands here as a string value and must keep its name. Wrapper methods
+                    // (exact/boost/when) carry a sub-expression at arg[0], which AppendCanonicalField passes
+                    // through unchanged. Treating arg[0] this way only ever splits keys, never merges them.
+                    if (i == 0)
+                        AppendCanonicalField(ref builder, me.Arguments[i]);
+                    else
+                        AppendCanonicalExpression(ref builder, me.Arguments[i]);
+                }
+
                 return;
 
             case FieldExpression fe:
@@ -158,8 +197,27 @@ internal static partial class QueryPlanBuilder
         else
         {
             builder.Append(1, 1); // 1 = literal operand
-            builder.Append((int)ve.Value, 8);
+            builder.Append((int)ve.Value, ValueTokenBits);
         }
+    }
+
+    // Field-position operand. The template resolves these via TryGetFieldName, which accepts a bare field
+    // (FieldExpression) or a quoted reserved-word field that the parser represents as a string ValueExpression
+    // (e.g. 'Order'). A quoted field must keep its NAME in the key: collapsing it to a bare type token (as
+    // AppendCanonicalValue does for value operands) would let `where 'Order' = $p` and `where 'Group' = $p`
+    // share one template and resolve against the wrong field. The distinct QuotedField tag also keeps a quoted
+    // field from ever colliding with a same-typed value operand (e.g. a search term). Any other node
+    // (FieldExpression, id(), or a wrapped sub-expression) already encodes its identity through the normal walk.
+    private static void AppendCanonicalField(ref PlanCacheKeyBuilder builder, QueryExpression expr)
+    {
+        if (expr is ValueExpression { Value: ValueTokenType.String } ve)
+        {
+            AppendTag(ref builder, AstTag.QuotedField);
+            AppendString(ref builder, ve.Token.Value);
+            return;
+        }
+
+        AppendCanonicalExpression(ref builder, expr);
     }
 
     // Canonical ORDER BY serialization. The template bakes the resolved sort shape (field, ordering type,
@@ -181,13 +239,13 @@ internal static partial class QueryPlanBuilder
         foreach (var field in orderBy)
         {
             AppendString(ref builder, field.Name?.Value);
-            builder.Append((int)field.OrderingType, 8);
+            builder.Append((int)field.OrderingType, OrderingTypeBits);
             builder.Append(field.Ascending ? 1 : 0, 1);
-            builder.Append((int)field.NullsOrdering, 8);
+            builder.Append((int)field.NullsOrdering, NullsOrderingBits);
             if (field.Method.HasValue)
             {
                 builder.Append(1, 1);
-                builder.Append((int)field.Method.Value, 8);
+                builder.Append((int)field.Method.Value, MethodTypeBits);
             }
             else
             {
@@ -204,7 +262,7 @@ internal static partial class QueryPlanBuilder
                 builder.Append(field.Arguments.Length, 31);
                 foreach (var arg in field.Arguments)
                 {
-                    builder.Append((int)arg.Type, 8);
+                    builder.Append((int)arg.Type, ValueTokenBits);
                     AppendString(ref builder, arg.NameOrValue);
                 }
             }

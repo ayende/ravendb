@@ -45,6 +45,26 @@ public class PlanCacheCollapseTests : RavenTestBase
         }
     }
 
+    // Field names that are RQL reserved words, so referencing them must be quoted ('Order'). The parser then
+    // represents the quoted field as a string ValueExpression rather than a FieldExpression - the case the
+    // structural plan key has to keep distinct.
+    private class Reserved
+    {
+        public string Id { get; set; }
+        public string Order { get; set; }
+        public string Group { get; set; }
+    }
+
+    private class Reserved_Index : AbstractIndexCreationTask<Reserved>
+    {
+        public Reserved_Index()
+        {
+            Map = docs => from d in docs select new { d.Order, d.Group };
+            Index(x => x.Order, FieldIndexing.Search);
+            Index(x => x.Group, FieldIndexing.Search);
+        }
+    }
+
     private static List<Item> BuildSeed(int count)
     {
         string[] names = { "Bob", "Alice" };
@@ -175,5 +195,55 @@ public class PlanCacheCollapseTests : RavenTestBase
             }
             Assert.Equal(before + 1, Buckets()); // four distinct parameter values, one shared template
         }
+    }
+
+    // A quoted field name (e.g. 'Order' for a reserved word) is parsed as a string ValueExpression, not a
+    // FieldExpression. The structural key must still keep the field NAME: collapsing it like a value operand let
+    // search('Order',$t) and search('Group',$t) share one bucket+template, so the second resolved against the
+    // wrong field. This pins both halves: search-TERM variants on one quoted field still collapse (the term is a
+    // slot), but a DIFFERENT quoted field does not - and each query returns its own correct, field-specific result.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task QuotedFieldName_SearchSegregatesByFieldButCollapsesTermVariants(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Reserved_Index();
+        index.Execute(store);
+        using (var bulk = store.BulkInsert())
+        {
+            await bulk.StoreAsync(new Reserved { Id = "r/1", Order = "alpha", Group = "zeta" });
+            await bulk.StoreAsync(new Reserved { Id = "r/2", Order = "zeta", Group = "alpha" });
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        var database = await Databases.GetDocumentDatabaseInstanceFor(store);
+        var serverIndex = database.IndexStore.GetIndex(index.IndexName);
+        var cache = ((CoraxIndexPersistence)serverIndex.IndexPersistence).SharedPlanCache;
+
+        int Buckets() => cache.Snapshot().Count;
+        using var session = store.OpenAsyncSession();
+
+        async Task<string[]> Search(string field, object term)
+        {
+            var results = await session.Advanced
+                .AsyncRawQuery<Reserved>($"from index '{index.IndexName}' where search('{field}', $term)")
+                .AddParameter("term", term)
+                .ToListAsync();
+            return results.Select(r => r.Id).OrderBy(id => id).ToArray();
+        }
+
+        // Two search-TERM variants on the SAME quoted field collapse to one bucket (the term is a slot binding),
+        // and each still returns its own correct result.
+        int before = Buckets();
+        Assert.Equal(new[] { "r/1" }, await Search("Order", "alpha"));
+        Assert.Equal(new[] { "r/2" }, await Search("Order", "zeta"));
+        Assert.Equal(before + 1, Buckets());
+
+        // A DIFFERENT quoted field with the identical shape must NOT collapse onto the 'Order' bucket. Before the
+        // fix the key dropped the quoted field, so this collided and returned r/1 (the Order match) instead of r/2.
+        before = Buckets();
+        Assert.Equal(new[] { "r/2" }, await Search("Group", "alpha"));
+        Assert.Equal(before + 1, Buckets());
     }
 }
