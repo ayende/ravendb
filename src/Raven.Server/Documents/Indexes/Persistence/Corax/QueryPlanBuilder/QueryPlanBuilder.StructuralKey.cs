@@ -144,24 +144,29 @@ internal static partial class QueryPlanBuilder
                 return;
 
             case MethodExpression me:
+            {
                 // The method name (search/exact/boost/spatial.*/vector.search/...) drives clause shape and the
                 // HasBoost / HasVectorSearch flags, so it must be part of the key.
                 AppendTag(ref builder, AstTag.Method);
                 AppendString(ref builder, me.Name.Value);
                 builder.Append(me.Arguments.Count, 31);
-                for (int i = 0; i < me.Arguments.Count; i++)
+
+                // Field-first methods resolve arg[0] as their field via TryGetFieldName, so it must go through
+                // AppendCanonicalField to preserve a quoted reserved-word field's NAME. Every other argument -
+                // and all arguments of the remaining methods (wrappers exact/boost/when, moreLikeThis) - is a
+                // normal operand walked below.
+                int firstOperand = 0;
+                if (me.Arguments.Count > 0 && MethodTakesFieldAsFirstArgument(me.Name.Value))
                 {
-                    // arg[0] of a field-first method (search/startsWith/exists/regex/spatial.*/...) is the field;
-                    // a quoted reserved word lands here as a string value and must keep its name. Wrapper methods
-                    // (exact/boost/when) carry a sub-expression at arg[0], which AppendCanonicalField passes
-                    // through unchanged. Treating arg[0] this way only ever splits keys, never merges them.
-                    if (i == 0)
-                        AppendCanonicalField(ref builder, me.Arguments[i]);
-                    else
-                        AppendCanonicalExpression(ref builder, me.Arguments[i]);
+                    AppendCanonicalField(ref builder, me.Arguments[0]);
+                    firstOperand = 1;
                 }
 
+                for (int i = firstOperand; i < me.Arguments.Count; i++)
+                    AppendCanonicalExpression(ref builder, me.Arguments[i]);
+
                 return;
+            }
 
             case FieldExpression fe:
                 AppendTag(ref builder, AstTag.Field);
@@ -201,24 +206,54 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    // Field-position operand. The template resolves these via TryGetFieldName, which accepts a bare field
-    // (FieldExpression) or a quoted reserved-word field that the parser represents as a string ValueExpression
-    // (e.g. 'Order'). A quoted field must keep its NAME in the key: collapsing it to a bare type token (as
-    // AppendCanonicalValue does for value operands) would let `where 'Order' = $p` and `where 'Group' = $p`
-    // share one template and resolve against the wrong field. The distinct QuotedField tag also keeps a quoted
-    // field from ever colliding with a same-typed value operand (e.g. a search term). Any other node
-    // (FieldExpression, id(), or a wrapped sub-expression) already encodes its identity through the normal walk.
+    // A field-position operand: the template resolves these via TryGetFieldName, which accepts three concrete
+    // shapes, each handled explicitly here so the routing is visible rather than relying on the fall-through walk:
+    //   - a bare field (FieldExpression)            -> the same Field tag + name the expression walk emits;
+    //   - a quoted reserved-word field ('Order'), which the parser returns as a String ValueExpression
+    //     -> a distinct QuotedField tag + name. Blanking it to a type token (as AppendCanonicalValue does for
+    //     value operands) would let `where 'Order' = $p` and `where 'Group' = $p` share one template and resolve
+    //     against the wrong field; the separate tag also keeps it from colliding with a same-typed search term;
+    //   - a wrapper that names the field itself (spatial.point(...) / embedding.*(...) / id())
+    //     -> recurse into the normal walk, which encodes that MethodExpression's own identity.
     private static void AppendCanonicalField(ref PlanCacheKeyBuilder builder, QueryExpression expr)
     {
-        if (expr is ValueExpression { Value: ValueTokenType.String } ve)
+        switch (expr)
         {
-            AppendTag(ref builder, AstTag.QuotedField);
-            AppendString(ref builder, ve.Token.Value);
-            return;
-        }
+            case FieldExpression fe:
+                AppendTag(ref builder, AstTag.Field);
+                AppendString(ref builder, fe.FieldValue);
+                return;
 
-        AppendCanonicalExpression(ref builder, expr);
+            case ValueExpression { Value: ValueTokenType.String } ve:
+                AppendTag(ref builder, AstTag.QuotedField);
+                AppendString(ref builder, ve.Token.Value);
+                return;
+
+            default:
+                AppendCanonicalExpression(ref builder, expr);
+                return;
+        }
     }
+
+    // Methods whose first argument is a field reference, resolved through TryGetFieldName in QueryPlanBuilder.
+    // Kept in sync with that resolution (MethodHandlers): the wrapper methods exact/boost/when carry a
+    // sub-expression at arg[0] and moreLikeThis takes no field, so they are deliberately absent - their
+    // arguments are all walked as normal operands. An unknown name returns Unknown and falls through to false.
+    private static bool MethodTakesFieldAsFirstArgument(string methodName) =>
+        QueryMethod.GetMethodType(methodName, throwIfNoMatch: false) switch
+        {
+            MethodType.Search
+                or MethodType.StartsWith
+                or MethodType.EndsWith
+                or MethodType.Regex
+                or MethodType.Exists
+                or MethodType.Spatial_Within
+                or MethodType.Spatial_Contains
+                or MethodType.Spatial_Disjoint
+                or MethodType.Spatial_Intersects
+                or MethodType.Vector_Search => true,
+            _ => false
+        };
 
     // Canonical ORDER BY serialization. The template bakes the resolved sort shape (field, ordering type,
     // direction, nulls mode, and any literal random seed / distance coordinates), so the structural key must
