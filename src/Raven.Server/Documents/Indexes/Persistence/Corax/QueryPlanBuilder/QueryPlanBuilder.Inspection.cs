@@ -49,12 +49,12 @@ internal static partial class QueryPlanBuilder
         opNodes = null;
         entryScanNode = null;
 
-        var template = result.CompiledPlan.InspectionTemplate;
+        var template = result.Execution.Plan.InspectionTemplate;
         if (template == null || template.Length == 0)
             return null;
 
         var exec = result.Execution;
-        var compiledPlan = result.CompiledPlan;
+        var compiledPlan = result.Execution.Plan;
         var flatExecs = BuildFlatClauseExecutions(exec);
         Dictionary<string, string> rootParams = new()
             {
@@ -185,7 +185,7 @@ internal static partial class QueryPlanBuilder
             root.Children.Add(entryScanNode);
         }
 
-        if (result.CompiledPlan.DecisionTrail is { Entries.Count: > 0 } trail)
+        if (result.Execution.Plan.DecisionTrail is { Entries.Count: > 0 } trail)
         {
             var trailNode = new QueryInspectionNode("DecisionTrail");
             string candidateName = compiledPlan.Strategy.ToString();
@@ -221,7 +221,7 @@ internal static partial class QueryPlanBuilder
             var directScanNode = directScan.Inspect();
 
             // Surface the per-entry residual filter as structured Residual children (mirroring the EntryScan tail).
-            var residualSet = result.CompiledPlan.Strategy == ExecutionStrategy.CompoundSortedScan ? result.CompiledPlan.CompoundFieldResidualSet : result.CompiledPlan.DirectScanResidualSet;
+            var residualSet = result.Execution.Plan.Strategy == ExecutionStrategy.CompoundSortedScan ? result.Execution.Plan.CompoundFieldResidualSet : result.Execution.Plan.DirectScanResidualSet;
             if (residualSet is { HasPredicates: true })
             {
                 foreach (var predicate in residualSet.Predicates)
@@ -271,7 +271,7 @@ internal static partial class QueryPlanBuilder
         // The template is compacted (control-flow ops dropped), but per-op telemetry is recorded against the FULL
         // PlanOp[] index — so join each template node to its timing slot via the original OpIndex, not the node's
         // position in the compacted list (which drifts the moment any op is filtered out).
-        var template = result.CompiledPlan.InspectionTemplate;
+        var template = result.Execution.Plan.InspectionTemplate;
         double tickFreq = Stopwatch.Frequency / 1000.0;
         for (int i = 0; i < opNodes.Count; i++)
         {

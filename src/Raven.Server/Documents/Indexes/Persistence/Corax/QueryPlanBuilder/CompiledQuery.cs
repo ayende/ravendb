@@ -9,7 +9,6 @@ internal readonly record struct CompiledQuery(
     IQueryMatch QueryMatch,
     IQueryMatch ExecutedMatch,
     IQueryMatch SortingWrapper,
-    CompiledPlan CompiledPlan,
     QueryExecution Execution,
     QueryBuilderParameters QueryBuilderParams,
     OrderMetadata[] OrderByFields) : IDisposable

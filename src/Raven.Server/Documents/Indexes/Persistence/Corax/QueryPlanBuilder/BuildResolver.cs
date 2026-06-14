@@ -10,35 +10,27 @@ using IndexSearcher = Corax.Querying.IndexSearcher;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
-ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx, Span<byte> scratch)
+ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
 {
     private readonly IndexSearcher _indexSearcher = planParams.IndexSearcher;
 
-    private PlanCacheKeyBuilder _builder = new(scratch);
+    private PlanCacheKeyBuilder _builder = new();
     private readonly ValueWriter _writer = new();
     private byte[] _sentinelFull = null;
 
     private QueryExecution _exec;
-    private Vector256<long> _cacheKeyHash;
-    private CompiledPlan _compiledPlan;
 
-    public (CompiledPlan, QueryExecution) Resolve()
+    public QueryExecution Resolve()
     {
         _exec = CreateQueryExecution();
-        _cacheKeyHash = ComputeCacheKeyHash();
+        var cacheKeyHash = ComputeCacheKeyHash();
 
         // BuildTemplate already resolved (or created) the per-query bucket for this structural key and stashed it
-        // on planParams; we only probe/publish the runtime variant (inner 256-bit key) within that bucket here.
-        if (planParams.Bucket.TryLookup(_cacheKeyHash) is { } cachedPlan)
-        {
-            _compiledPlan = cachedPlan; // use cached plan
-            return FinalizePlan();
-        }
-
-        return BuildOnCacheMiss(); // Cache miss — full exec emission
+        // // on planParams; we only probe/publish the runtime variant (inner 256-bit key) within that bucket here.
+        return planParams.Bucket.TryLookup(cacheKeyHash) is { } cachedPlan ? FinalizePlan(cachedPlan) : BuildOnCacheMiss(cacheKeyHash);// Cache miss — full exec emission
     }
 
-    private (CompiledPlan, QueryExecution) BuildOnCacheMiss()
+    private QueryExecution BuildOnCacheMiss(in Vector256<long> cacheKeyHash)
     {
         var (scanSet, perClause) = BuildScanPredicates();
         var (ops, requiredBitmaps) = PlanEmitter.Emit(template, _exec.Executions, planParams, perClause);
@@ -60,13 +52,13 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         if (compoundFieldResidualSet is { HasPredicates: true } compoundSet)
             compoundSet.Compiled = ResidualScanIlEmitter.EmitDelegate(compoundSet.Predicates, out compoundCsharp);
 
-        _compiledPlan = new CompiledPlan
+        var plan = new CompiledPlan
         {
             CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
             CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
             Template = template,
             Source = ComposePlanSource(csharpText, scanCsharp, directScanCsharp, compoundCsharp),
-            CacheKeyHash = _cacheKeyHash,
+            CacheKeyHash = cacheKeyHash,
             OpCount = ops.Length,
             RequiredBitmaps = requiredBitmaps,
             InspectionTemplate = QueryPlanBuilder.BuildInspectionTemplate(ops, _exec.Executions),
@@ -76,9 +68,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             AllNegated = CheckAllNegated(),
         };
 
-        planParams.Bucket.Publish(_compiledPlan);
+        planParams.Bucket.Publish(plan);
 
-        return FinalizePlan();
+        return FinalizePlan(plan);
     }
 
     private static string ComposePlanSource(string queryCsharp, string entryScanCsharp, string directScanCsharp, string compoundCsharp)
@@ -99,16 +91,16 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         }
     }
 
-    private (CompiledPlan, QueryExecution) FinalizePlan()
+    private QueryExecution FinalizePlan(CompiledPlan plan)
     {
-        _exec.Plan = _compiledPlan;
+        _exec.Plan = plan;
         CardinalityArrayBuilder.Build(_exec.Executions, _exec.IsAllEntries, out var inRange, out var cards);
         _exec.InRangeCounts = inRange;
         _exec.Cardinalities = cards;
 
         QueryPlanBuilder.AttachSpatialAndVectorClauses(_exec, template, planParams, builderParameters, _writer);
         _writer.SetValues(_exec);
-        return (_compiledPlan, _exec);
+        return _exec;
     }
 
     private QueryExecution CreateQueryExecution()

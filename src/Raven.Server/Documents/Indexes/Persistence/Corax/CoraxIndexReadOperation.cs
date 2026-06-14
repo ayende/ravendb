@@ -630,7 +630,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             // allocates a fresh CompactKey per entry and rents pool buffers that are never returned (the reader
             // is discarded without Reset), so the thread-static pool stays empty and every entry allocates anew.
             // EntryTermsReader's Set() restarts the key arena per entry, so reuse is safe and bounded.
-            var entryReaderKey = new global::Voron.Data.CompactTrees.CompactKey();
+            var entryReaderKey = new Voron.Data.CompactTrees.CompactKey();
             entryReaderKey.Initialize(_lowLevelTransaction);
             while (runQuery)
             {
@@ -823,9 +823,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 Done:
                 if (queryTimings != null)
                 {
-                    var inspectionNode = compileResult.CompiledPlan != null
-                        ? QueryPlanBuilder.QueryPlanBuilder.BuildInspectionGraph(compileResult)
-                        : compileResult.QueryMatch.Inspect();
+                    var inspectionNode = QueryPlanBuilder.QueryPlanBuilder.BuildInspectionGraph(compileResult);
                     queryTimings.SetQueryPlan(inspectionNode);
                 }
 
@@ -1544,7 +1542,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 HasBoost = builderParameters.HasBoost
             };
             return QueryPlanBuilder.QueryPlanBuilder.BuildFilterMatch(
-                planParams, builderParameters, out _, out _, highlightingTerms: null, wantTimings: false, builderParameters.Token);
+                planParams, builderParameters, out _, highlightingTerms: null, wantTimings: false, builderParameters.Token);
         }
     }
 }

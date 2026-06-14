@@ -62,8 +62,7 @@ internal static partial class QueryPlanBuilder
     [SkipLocalsInit]
     private static Vector256<long> ComputeStructuralKey(PlanParameters planParams)
     {
-        Span<byte> scratch = stackalloc byte[256];
-        var builder = new PlanCacheKeyBuilder(scratch);
+        var builder = new PlanCacheKeyBuilder();
 
         AppendCanonicalExpression(ref builder, planParams.Metadata.Query.Where);
         AppendCanonicalOrderBy(ref builder, planParams.Metadata.OrderBy);

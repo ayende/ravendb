@@ -81,7 +81,6 @@ internal static partial class QueryPlanBuilder
         PlanParameters planParams,
         QueryBuilderParameters builderParameters,
         out QueryExecution exec,
-        out CompiledPlan compiledPlanOut,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         bool wantTimings,
         CancellationToken token)
@@ -91,11 +90,8 @@ internal static partial class QueryPlanBuilder
 
         var template = BuildTemplate(planParams);
 
-        (compiledPlanOut, exec) = Build(template, planParams, builderParameters, walkerCtx);
-        if (compiledPlanOut == null)
-            return TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-
-        return InstantiateBitmapPipeline(compiledPlanOut, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
+        exec = Build(template, planParams, builderParameters, walkerCtx);
+        return InstantiateBitmapPipeline(exec.Plan, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
     }
 
     public static CompiledQuery BuildSortedQuery(PlanParameters planParams,
@@ -109,30 +105,23 @@ internal static partial class QueryPlanBuilder
 
         var template = BuildTemplate(planParams);
 
-        var (plan, exec) = Build(template, planParams, builderParameters, walkerCtx);
-        if (plan == null)
-        {
-            var emptyMatch = TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator);
-            return new(emptyMatch, emptyMatch, null, null, null, builderParameters, null);
-        }
-
-        var orderByFields = GetSortMetadata(builderParameters, plan.Template);
+        var exec = Build(template, planParams, builderParameters, walkerCtx);
+        var orderByFields = GetSortMetadata(builderParameters, exec.Plan.Template);
         // A single vector-search post-filter already streams its HNSW output in similarity-score order. When that
         // score order is exactly what the query asks for (no ORDER BY auto-promoted to score, or an explicit
         // ORDER BY score()), the implicit SortingMatch wrapper is pure overhead — record that here so the vector
         // match streams score order (ApplyPostFilters) and the wrapper is skipped (Instantiate). The order-agnostic
         // BuildFilterMatch path never reaches this, so facets / MLT keep the entry-id-sorted vector output.
         exec.VectorPostFilterProvidesScoreOrder = VectorPostFilterProvidesResultOrder(exec, builderParameters, orderByFields);
-        var queryMatch = Instantiate(plan, exec, orderByFields,
+        var queryMatch = Instantiate(exec, orderByFields,
             planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
-        return new(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, plan, exec, builderParameters, orderByFields);
+        return new(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, exec, builderParameters, orderByFields);
     }
 
 
-    private static (CompiledPlan, QueryExecution) Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
+    private static QueryExecution Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
     {
-        Span<byte> scratch = stackalloc byte[128];
-        return new BuildResolver(template, planParams, builderParameters, walkerCtx, scratch).Resolve();
+        return new BuildResolver(template, planParams, builderParameters, walkerCtx).Resolve();
     }
 
     internal static ClauseExecution CreateExecution(ClauseInfo clause)
@@ -455,7 +444,7 @@ internal static partial class QueryPlanBuilder
             HasDynamics = builderParams.HasDynamics,
             DynamicFields = builderParams.DynamicFields,
             HasBoost = builderParams.HasBoost,
-        }, builderParams, out _, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
+        }, builderParams, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
 
         QueryMetadata CreateQueryMetadataForMoreLikeThis()
         {

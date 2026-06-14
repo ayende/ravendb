@@ -16,7 +16,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 internal static partial class QueryPlanBuilder
 {
     private static IQueryMatch Instantiate(
-        CompiledPlan compiledPlan,
         QueryExecution exec,
         OrderMetadata[] orderByFields,
         PlanParameters planParams,
@@ -27,6 +26,7 @@ internal static partial class QueryPlanBuilder
         out IQueryMatch innerMatch,
         CancellationToken token)
     {
+        var compiledPlan = exec.Plan;
         var ctx = new InstCtx(compiledPlan, exec, orderByFields, planParams, builderParameters, wantTimings);
         if (compiledPlan.Strategy == ExecutionStrategy.NotEvaluated)
             SelectExecutionStrategy(ref ctx);
