@@ -61,7 +61,7 @@ namespace Raven.Server.Documents.Queries
         /// <summary>
         /// Memoized per-query slot-binding vector — the value-bearing bindings collected by the canonical WHERE
         /// walk (<see cref="QueryPlanBuilder.ExtractSlotBindings"/>), indexed by
-        /// <see cref="ParameterBinding.HoleIndex"/>. It is a pure function of the query text/AST (independent of
+        /// <see cref="ParameterBinding.ValueOrdinal"/>. It is a pure function of the query text/AST (independent of
         /// parameter values and of the target index), so it is safe to cache here for the lifetime of this
         /// QueryMetadata and never needs invalidation. Only set for the main WHERE path; an MLT sub-expression
         /// override builds its own vector fresh and does not touch this field.

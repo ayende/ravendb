@@ -48,10 +48,10 @@ internal class PlanParameters
 
     /// <summary>
     /// Per-query slot-binding vector — the value-bearing bindings collected by the canonical WHERE walk
-    /// (<see cref="QueryPlanBuilder.ExtractSlotBindings"/>), indexed by <see cref="ParameterBinding.HoleIndex"/>.
+    /// (<see cref="QueryPlanBuilder.ExtractSlotBindings"/>), indexed by <see cref="ParameterBinding.ValueOrdinal"/>.
     /// Memoized on <see cref="QueryMetadata"/> for the main path (and rebuilt fresh for an MLT
     /// <see cref="WhereOverride"/>), then stashed here by <see cref="QueryPlanBuilder.BuildTemplate"/> so the
-    /// downstream resolver can supply each hole's literal value / parameter name / deferred expression without
+    /// downstream resolver can supply each slot's literal value / parameter name / deferred expression without
     /// re-parsing. Always set before <c>Build</c> runs.
     /// </summary>
     public ParameterBinding[] SlotBindings;

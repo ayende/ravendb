@@ -53,11 +53,12 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static PlanTemplate ParseTemplate(PlanParameters p)
+    private static PlanTemplate ParseTemplate(PlanParameters p, out ParameterBinding[] slotBindings)
     {
         QueryExpression where = p.WhereOverride ?? p.Metadata.Query.Where;
         if (where == null)
         {
+            slotBindings = [];
             // A bare sort with no WHERE clause is a full index scan, itself a direct-scan candidate, later we'll  validate the sort field is
             // sortable and has no missing entries before this candidacy is actually selecte.
             bool hasBareSort = p.Metadata.OrderBy is { Length: > 0 } && p.Metadata.OrderBy[0].Name?.Value is not null;
@@ -72,12 +73,15 @@ internal static partial class QueryPlanBuilder
         BooleanOp rootOp = ParseExpression(where, walkerCtx);
         PlanWalker.ThrowIfErrors(walkerCtx);
 
-        // Hole count comes from the canonical parse walk above; every template returned past this point
-        // carries it so the per-query slot vector (built by re-running the same walk) can be asserted to match.
-        int holeCount = walkerCtx.SlotBindings.Count;
+        // The slot bindings come from the canonical parse walk above (RewriteClauses below never adds bindings).
+        // We surface them to the caller so the cold path reuses this walk instead of re-walking the WHERE clause
+        // in ExtractSlotBindings; the count rides along on every template returned past this point so the per-query
+        // slot vector can be asserted to match.
+        slotBindings = walkerCtx.SlotBindings.ToArray();
+        int valueOrdinalCount = slotBindings.Length;
 
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
-            return new PlanTemplate { Clauses = [], HoleCount = holeCount };
+            return new PlanTemplate { Clauses = [], ValueOrdinalCount = valueOrdinalCount };
 
         Debug.Assert(rootOp != BooleanOp.False,
             "No RQL expression currently reduces to BooleanOp.False at template time. " +
@@ -95,7 +99,7 @@ internal static partial class QueryPlanBuilder
                 Clauses = [],
                 SpatialClauses = walkerCtx.SpatialClauses,
                 VectorClauses = walkerCtx.VectorClauses,
-                HoleCount = holeCount,
+                ValueOrdinalCount = valueOrdinalCount,
             };
         }
 
@@ -139,13 +143,13 @@ internal static partial class QueryPlanBuilder
             ParameterSlots = parameterSlots,
             SortSeekHintTemplateIdx = sortSeekHintIdx,
             SortSeekUseParam2 = sortSeekUseParam2,
-            HoleCount = holeCount,
+            ValueOrdinalCount = valueOrdinalCount,
         };
     }
 
     /// <summary>Re-run the canonical WHERE parse purely to collect the value-bearing bindings, in the same
     /// left-to-right DFS order used by <see cref="ParseTemplate"/>. The returned vector is indexed by
-    /// <see cref="ParameterBinding.HoleIndex"/> and is a pure function of the query text/AST (literal values
+    /// <see cref="ParameterBinding.ValueOrdinal"/> and is a pure function of the query text/AST (literal values
     /// live in the text, parameters store names, deferred methods store closures) — parameter-value- and
     /// index-independent — so it can be memoized per <see cref="QueryMetadata"/>. Returns an empty array when
     /// there is no WHERE clause.</summary>
@@ -994,7 +998,7 @@ internal static partial class QueryPlanBuilder
         var binding = BuildBinding(expr, ctx);
         if (binding != null)
         {
-            binding.HoleIndex = ctx.SlotBindings.Count;
+            binding.ValueOrdinal = ctx.SlotBindings.Count;
             ctx.SlotBindings.Add(binding);
         }
 

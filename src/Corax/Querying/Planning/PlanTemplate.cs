@@ -111,12 +111,12 @@ public sealed class PlanTemplate
     /// is non-negative.</summary>
     public bool SortSeekUseParam2;
 
-    /// <summary>Number of value-bearing holes (literal / query-parameter / deferred-method bindings) discovered
+    /// <summary>Number of value-bearing bindings (literal / query-parameter / deferred-method) discovered
     /// by the canonical left-to-right DFS over the WHERE expression at template-build time. Every query that
     /// shares this template has a byte-identical AST shape, so its per-text slot-binding vector must contain
     /// exactly this many entries; <c>BuildTemplate</c> asserts the match to catch any divergence between the
     /// template walk and the per-query slot-vector walk.</summary>
-    public int HoleCount;
+    public int ValueOrdinalCount;
 
     /// <summary>Pre-computed sort-metadata template. Built once at template-build time by
     /// <c>QueryPlanBuilder.BuildSortMetadataTemplate</c> (in Raven.Server); the runtime
