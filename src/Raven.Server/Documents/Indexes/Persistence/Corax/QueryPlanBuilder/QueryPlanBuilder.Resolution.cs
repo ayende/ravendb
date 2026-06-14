@@ -30,25 +30,33 @@ internal static partial class QueryPlanBuilder
     public static PlanTemplate BuildTemplate(PlanParameters planParams)
     {
         var planCache = planParams.IndexSearcher.PlanCache;
+        var metadata = planParams.Metadata;
 
-        var memo = PlanMemoTarget.For(planParams);
-
-        if (memo.TryGetWarmBucket(planCache.Id, out var memoBucket))
-            return Finalize(memoBucket, memo.ResolveSlotBindings(planParams));
+        // Warm path: this exact QueryMetadata already resolved to a live bucket for this PlanCache. The slot
+        // vector is a pure function of the query AST, so it was memoized alongside and is reused as-is. (A More
+        // Like This sub-expression gets a freshly built QueryMetadata each call, so it never warm-hits here - it
+        // falls straight through to the structural-key lookup, which still shares the compiled plan across runs.)
+        if (metadata.CachedPlanMemo is { } memo
+            && memo.PlanCacheId == planCache.Id
+            && memo.Bucket.TryGetTarget(out var warmBucket))
+        {
+            return Finalize(warmBucket, metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams));
+        }
 
         var structuralKey = ComputeStructuralKey(planParams);
         if (planCache.GetBucket(structuralKey) is { } existing)
         {
-            memo.Store(planCache.Id, existing);
-            return Finalize(existing, memo.ResolveSlotBindings(planParams));
+            metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, existing);
+            return Finalize(existing, metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams));
         }
 
         var template = ParseTemplate(planParams, out var parsedSlotBindings);
         template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams);
         var bucket = planCache.GetOrAddBucket(structuralKey, template, planParams.CacheKey);
-        memo.Store(planCache.Id, bucket);
-        return Finalize(bucket, memo.MemoizeSlotBindings(parsedSlotBindings));
-        
+        metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, bucket);
+        // Cold path reuses the vector ParseTemplate already collected instead of re-walking the WHERE clause.
+        return Finalize(bucket, metadata.CachedSlotBindings ??= parsedSlotBindings);
+
         PlanTemplate Finalize(PlanCache.PerQueryPlans b, ParameterBinding[] bindings)
         {
             planParams.SlotBindings = bindings;
@@ -56,52 +64,6 @@ internal static partial class QueryPlanBuilder
             AssertSlotBindingsMatchTemplate(b.Template, bindings);
             return b.Template;
         }
-    }
-
-    /// <summary>The per-QueryMetadata plan memo as a target the <see cref="BuildTemplate"/> paths can read and
-    /// write uniformly. For a normal query it wraps the query's <see cref="QueryMetadata"/>. For a More Like This
-    /// sub-expression - which borrows the OUTER query's QueryMetadata but compiles a different expression - it is
-    /// the empty target (<see cref="_metadata"/> null): warm lookups miss, stores are dropped, and the slot vector
-    /// is built fresh, so the outer query's memo is never corrupted. This is the single place the MLT-vs-normal
-    /// decision is made.</summary>
-    private readonly struct PlanMemoTarget
-    {
-        private readonly QueryMetadata _metadata;
-
-        private PlanMemoTarget(QueryMetadata metadata) => _metadata = metadata;
-
-        public static PlanMemoTarget For(PlanParameters planParams) =>
-            new(planParams.WhereOverride == null ? planParams.Metadata : null);
-
-        public bool TryGetWarmBucket(long planCacheId, out PlanCache.PerQueryPlans bucket)
-        {
-            if (_metadata?.CachedPlanMemo is { } memo
-                && memo.PlanCacheId == planCacheId
-                && memo.Bucket.TryGetTarget(out bucket))
-                return true;
-
-            bucket = null;
-            return false;
-        }
-
-        public void Store(long planCacheId, PlanCache.PerQueryPlans bucket)
-        {
-            _metadata?.CachedPlanMemo = new QueryMetadata.PlanMemo(planCacheId, bucket);
-        }
-
-        // The slot vector is a pure function of the query text/AST, so the main path memoizes it on the
-        // QueryMetadata; the MLT override builds it fresh and leaves the field untouched.
-        public ParameterBinding[] ResolveSlotBindings(PlanParameters planParams)
-        {
-            if (_metadata != null)
-                return _metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams);
-            
-            return ExtractSlotBindings(planParams);
-        }
-
-        // Same memoization, but reusing the vector ParseTemplate already collected on the cold path.
-        public ParameterBinding[] MemoizeSlotBindings(ParameterBinding[] parsedSlotBindings) =>
-            _metadata?.CachedSlotBindings ??= parsedSlotBindings;
     }
 
     [Conditional("DEBUG")]
@@ -485,14 +447,21 @@ internal static partial class QueryPlanBuilder
     
     public static IQueryMatch BuildQueryForMoreLikeThis(QueryBuilderParameters builderParams, QueryExpression expression)
     {
-        // WhereOverride compiles this base-document sub-expression standalone. The structural key is taken from the
-        // expression itself (ComputeStructuralKey), and every operand is read through the per-query slot vector at
-        // instantiation, so two MLT queries that differ only in a bound value or a parameter name correctly share
-        // one plan and still resolve their own value — exactly as on the main query path.
+        // The base-document sub-expression is compiled as its own standalone query rather than as a special case
+        // grafted onto the outer query. We clone the outer query, swap in just this WHERE and drop ORDER BY (the
+        // result is an unsorted filter), and build a fresh QueryMetadata for it. That keeps the planner on its one
+        // uniform path — its own structural key, its own plan memo — so it can never corrupt the outer query's
+        // memo, and two MLT queries differing only in a bound value or parameter still share one compiled plan via
+        // the structural-key cache.
+        var subQuery = builderParams.Query.Metadata.Query.ShallowCopy();
+        subQuery.Where = expression;
+        subQuery.OrderBy = null;
+        var subMetadata = new QueryMetadata(subQuery, builderParams.QueryParameters, cacheKey: 0, addSpatialProperties: false);
+
         return BuildFilterMatch(new PlanParameters
         {
             IndexSearcher = builderParams.IndexSearcher,
-            Metadata = builderParams.Query.Metadata,
+            Metadata = subMetadata,
             QueryParameters = builderParams.QueryParameters,
             Index = builderParams.Index,
             IndexFieldsMapping = builderParams.IndexFieldsMapping,
@@ -500,7 +469,6 @@ internal static partial class QueryPlanBuilder
             HasDynamics = builderParams.HasDynamics,
             DynamicFields = builderParams.DynamicFields,
             HasBoost = builderParams.HasBoost,
-            WhereOverride = expression,
         }, builderParams, out _, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
     }
 

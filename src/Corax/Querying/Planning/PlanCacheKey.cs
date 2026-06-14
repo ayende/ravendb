@@ -40,6 +40,20 @@ public ref struct PlanCacheKeyBuilder(Span<byte> scratch)
         _bitCount += bits;
     }
 
+    // Append raw bytes (e.g. a string's UTF-16 payload) directly into the buffer. Any partially filled bit
+    // accumulator is first flushed to a byte boundary (the unused high bits pad with zero), then the bytes are
+    // copied verbatim. Callers reuse this to avoid emitting long strings one 16-bit code unit at a time; the
+    // buffer grows from the pool when the bytes exceed the remaining capacity, so this stays allocation-free.
+    public void Append(ReadOnlySpan<byte> bytes)
+    {
+        if (_bitCount > 0)
+            AppendBitsToBuffer((_bitCount + 7) / 8);
+
+        EnsureCapacity(bytes.Length);
+        bytes.CopyTo(_buffer[_bytePosition..]);
+        _bytePosition += bytes.Length;
+    }
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     private void AppendBitsToBuffer(int bytes)
     {

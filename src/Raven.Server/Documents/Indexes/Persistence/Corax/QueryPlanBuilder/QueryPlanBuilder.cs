@@ -55,7 +55,7 @@ internal static partial class QueryPlanBuilder
 
     private static PlanTemplate ParseTemplate(PlanParameters p, out ParameterBinding[] slotBindings)
     {
-        QueryExpression where = p.WhereOverride ?? p.Metadata.Query.Where;
+        QueryExpression where = p.Metadata.Query.Where;
         if (where == null)
         {
             slotBindings = [];
@@ -103,9 +103,7 @@ internal static partial class QueryPlanBuilder
             };
         }
 
-        // The override path compiles an unsorted filter, so the parent ORDER BY must not influence
-        // sort-driven optimizations (and must not leak into the shared sub-expression cache entry).
-        OrderByField[] orderBy = p.WhereOverride != null ? null : p.Metadata.OrderBy;
+        OrderByField[] orderBy = p.Metadata.OrderBy;
         string orderByPrimaryField = orderBy is { Length: > 0 }
             ? orderBy[0].Name?.Value
             : null;
@@ -155,7 +153,7 @@ internal static partial class QueryPlanBuilder
     /// there is no WHERE clause.</summary>
     public static ParameterBinding[] ExtractSlotBindings(PlanParameters p)
     {
-        QueryExpression where = p.WhereOverride ?? p.Metadata.Query.Where;
+        QueryExpression where = p.Metadata.Query.Where;
         if (where == null)
             return [];
 
