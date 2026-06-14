@@ -32,33 +32,31 @@ internal static partial class QueryPlanBuilder
         var planCache = planParams.IndexSearcher.PlanCache;
         var metadata = planParams.Metadata;
 
-        // Warm path: this exact QueryMetadata already resolved to a live bucket for this PlanCache. The slot
-        // vector is a pure function of the query AST, so it was memoized alongside and is reused as-is. (A More
-        // Like This sub-expression gets a freshly built QueryMetadata each call, so it never warm-hits here - it
-        // falls straight through to the structural-key lookup, which still shares the compiled plan across runs.)
         if (metadata.CachedPlanMemo is { } memo
             && memo.PlanCacheId == planCache.Id
             && memo.Bucket.TryGetTarget(out var warmBucket))
         {
-            return Finalize(warmBucket, metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams));
+            return Finalize(warmBucket);
         }
 
         var structuralKey = ComputeStructuralKey(planParams);
         if (planCache.GetBucket(structuralKey) is { } existing)
         {
             metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, existing);
-            return Finalize(existing, metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams));
+            return Finalize(existing);
         }
 
-        var template = ParseTemplate(planParams, out var parsedSlotBindings);
+        var template = ParseTemplate(planParams);
         template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams);
         var bucket = planCache.GetOrAddBucket(structuralKey, template, planParams.CacheKey);
         metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, bucket);
-        // Cold path reuses the vector ParseTemplate already collected instead of re-walking the WHERE clause.
-        return Finalize(bucket, metadata.CachedSlotBindings ??= parsedSlotBindings);
+        return Finalize(bucket);
 
-        PlanTemplate Finalize(PlanCache.PerQueryPlans b, ParameterBinding[] bindings)
+        PlanTemplate Finalize(PlanCache.PerQueryPlans b)
         {
+            // ExtractSlotBindings is only called on fresh metadata instances, that tends to be rare, since 
+            // we cache the metadata instances at the database level
+            var bindings = metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams);
             planParams.SlotBindings = bindings;
             planParams.Bucket = b;
             AssertSlotBindingsMatchTemplate(b.Template, bindings);
@@ -442,26 +440,14 @@ internal static partial class QueryPlanBuilder
 
         return ApplyPostFilters(source: null, spatialMatches, exec, builderParameters, wantTimings);
     }
-
-
     
-    public static IQueryMatch BuildQueryForMoreLikeThis(QueryBuilderParameters builderParams, QueryExpression expression)
+    public static IQueryMatch BuildQueryForMoreLikeThis(QueryBuilderParameters builderParams, MethodExpression mltCall, QueryExpression expression)
     {
-        // The base-document sub-expression is compiled as its own standalone query rather than as a special case
-        // grafted onto the outer query. We clone the outer query, swap in just this WHERE and drop ORDER BY (the
-        // result is an unsorted filter), and build a fresh QueryMetadata for it. That keeps the planner on its one
-        // uniform path — its own structural key, its own plan memo — so it can never corrupt the outer query's
-        // memo, and two MLT queries differing only in a bound value or parameter still share one compiled plan via
-        // the structural-key cache.
-        var subQuery = builderParams.Query.Metadata.Query.ShallowCopy();
-        subQuery.Where = expression;
-        subQuery.OrderBy = null;
-        var subMetadata = new QueryMetadata(subQuery, builderParams.QueryParameters, cacheKey: 0, addSpatialProperties: false);
-
+        mltCall.MoreLikeThisExpression ??= CreateQueryMetadataForMoreLikeThis();
         return BuildFilterMatch(new PlanParameters
         {
             IndexSearcher = builderParams.IndexSearcher,
-            Metadata = subMetadata,
+            Metadata =  mltCall.MoreLikeThisExpression,
             QueryParameters = builderParams.QueryParameters,
             Index = builderParams.Index,
             IndexFieldsMapping = builderParams.IndexFieldsMapping,
@@ -470,6 +456,16 @@ internal static partial class QueryPlanBuilder
             DynamicFields = builderParams.DynamicFields,
             HasBoost = builderParams.HasBoost,
         }, builderParams, out _, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
+
+        QueryMetadata CreateQueryMetadataForMoreLikeThis()
+        {
+            // The base-document sub-expression is compiled as its own standalone query rather than as a special case grafted onto the outer query.
+            // We clone the outer query, swap in just this WHERE and drop ORDER BY (the result is an unsorted filter), and build a fresh QueryMetadata for it.
+            var subQuery = builderParams.Query.Metadata.Query.ShallowCopy();
+            subQuery.Where = expression;
+            subQuery.OrderBy = null;
+            return new QueryMetadata(subQuery, builderParams.QueryParameters, cacheKey: 0, addSpatialProperties: false);
+        }
     }
 
     

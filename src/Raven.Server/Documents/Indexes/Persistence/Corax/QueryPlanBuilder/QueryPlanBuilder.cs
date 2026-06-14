@@ -53,12 +53,11 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static PlanTemplate ParseTemplate(PlanParameters p, out ParameterBinding[] slotBindings)
+    private static PlanTemplate ParseTemplate(PlanParameters p)
     {
         QueryExpression where = p.Metadata.Query.Where;
         if (where == null)
         {
-            slotBindings = [];
             // A bare sort with no WHERE clause is a full index scan, itself a direct-scan candidate, later we'll  validate the sort field is
             // sortable and has no missing entries before this candidacy is actually selecte.
             bool hasBareSort = p.Metadata.OrderBy is { Length: > 0 } && p.Metadata.OrderBy[0].Name?.Value is not null;
@@ -77,11 +76,9 @@ internal static partial class QueryPlanBuilder
         // We surface them to the caller so the cold path reuses this walk instead of re-walking the WHERE clause
         // in ExtractSlotBindings; the count rides along on every template returned past this point so the per-query
         // slot vector can be asserted to match.
-        slotBindings = walkerCtx.SlotBindings.ToArray();
-        int valueOrdinalCount = slotBindings.Length;
 
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
-            return new PlanTemplate { Clauses = [], ValueOrdinalCount = valueOrdinalCount };
+            return new PlanTemplate { Clauses = [], ValueOrdinalCount = walkerCtx.SlotBindings.Count };
 
         Debug.Assert(rootOp != BooleanOp.False,
             "No RQL expression currently reduces to BooleanOp.False at template time. " +
@@ -99,7 +96,7 @@ internal static partial class QueryPlanBuilder
                 Clauses = [],
                 SpatialClauses = walkerCtx.SpatialClauses,
                 VectorClauses = walkerCtx.VectorClauses,
-                ValueOrdinalCount = valueOrdinalCount,
+                ValueOrdinalCount = walkerCtx.SlotBindings.ToArray().Length,
             };
         }
 
@@ -141,7 +138,7 @@ internal static partial class QueryPlanBuilder
             ParameterSlots = parameterSlots,
             SortSeekHintTemplateIdx = sortSeekHintIdx,
             SortSeekUseParam2 = sortSeekUseParam2,
-            ValueOrdinalCount = valueOrdinalCount,
+            ValueOrdinalCount = walkerCtx.SlotBindings.ToArray().Length,
         };
     }
 

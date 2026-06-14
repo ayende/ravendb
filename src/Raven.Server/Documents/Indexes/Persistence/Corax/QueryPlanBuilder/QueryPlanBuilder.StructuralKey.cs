@@ -1,4 +1,5 @@
 using System;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using Corax.Querying.Planning;
@@ -41,9 +42,10 @@ internal static partial class QueryPlanBuilder
     // CacheKeyHash (see BuildResolver) distinguishes them within the bucket. The bit-packing reuses
     // PlanCacheKeyBuilder, the same allocation-free encoder the inner cache key uses, so there is no intermediate
     // string.
+    [SkipLocalsInit]
     private static Vector256<long> ComputeStructuralKey(PlanParameters planParams)
     {
-        Span<byte> scratch = stackalloc byte[128];
+        Span<byte> scratch = stackalloc byte[256];
         var builder = new PlanCacheKeyBuilder(scratch);
 
         AppendCanonicalExpression(ref builder, planParams.Metadata.Query.Where);
@@ -73,6 +75,7 @@ internal static partial class QueryPlanBuilder
     // that assigns value ordinals.
     private static void AppendCanonicalExpression(ref PlanCacheKeyBuilder builder, QueryExpression expr)
     {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
         switch (expr)
         {
             case null:

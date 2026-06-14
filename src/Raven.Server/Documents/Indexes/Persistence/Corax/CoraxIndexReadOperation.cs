@@ -1495,7 +1495,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 {
                     // moreLikeThis(id() = 'datas/4-A', ...) — build a query from just the
                     // inner binary expression (not the full WHERE which wraps it in moreLikeThis).
-                    baseDocumentQuery = QueryPlanBuilder.QueryPlanBuilder.BuildQueryForMoreLikeThis(builderParameters, be);
+                    baseDocumentQuery = QueryPlanBuilder.QueryPlanBuilder.BuildQueryForMoreLikeThis(builderParameters, moreLikeThisExpression, be);
                 }
                 else
                 {
