@@ -1,14 +1,9 @@
 using System;
-using System.Buffers;
 using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
-using System.Security.Cryptography;
-using System.Text;
 using System.Threading;
 using Corax.Mappings;
 using Corax.Querying.Matches;
@@ -36,22 +31,20 @@ internal static partial class QueryPlanBuilder
     {
         var planCache = planParams.IndexSearcher.PlanCache;
 
-        // Fast path: the QueryMetadata may already hold the bucket resolved against THIS cache instance, saving the
-        // structural-key dictionary lookup. We use a weak ref so we don't pin the plan cache and it can be evicted.
-        var metadata = planParams.CacheKeyOverride == null ? planParams.Metadata : null;
+        // The per-QueryMetadata memo is a hot-path shortcut to the bucket already resolved against THIS cache
+        // instance, letting a repeated query skip the structural-key lookup. An MLT sub-expression borrows the
+        // outer query's QueryMetadata but compiles a different expression, so it gets the empty memo target:
+        // reads miss and writes are dropped, leaving the outer query's memo untouched. Every path below treats
+        // the memo uniformly through this target, so there is no MLT-specific branching here.
+        var memo = PlanMemoTarget.For(planParams);
 
-        // The per-query slot-binding vector (indexed by ValueOrdinal) carries this query text's literal values /
-        // parameter names / deferred expressions; SlotBindingFor redirects each template binding to its slot here.
-        // It is a pure function of the query text/AST, so it is memoized on QueryMetadata. We resolve it per-path
-        // rather than up front: the warm/existing-bucket paths build it via ExtractSlotBindings, while the cold
-        // template-parse path reuses the walk ParseTemplate already does instead of walking the WHERE clause twice.
         ParameterBinding[] slotBindings;
 
-        if (metadata?.CachedPlanMemo is { } memo
-            && memo.PlanCacheId == planCache.Id // if we reset the index, we want to re-create the plan
-            && memo.Bucket.TryGetTarget(out var memoBucket))
+        // Fast path: the memo already holds the bucket for this cache instance (weak ref, so it does not pin the
+        // cache and can be evicted). The cache Id check forces a rebuild after an index reset.
+        if (memo.TryGetWarmBucket(planCache.Id, out var memoBucket))
         {
-            slotBindings = ResolveSlotBindings(planParams, metadata);
+            slotBindings = memo.ResolveSlotBindings(planParams);
             planParams.SlotBindings = slotBindings;
             planParams.Bucket = memoBucket;
             AssertSlotBindingsMatchTemplate(memoBucket.Template, slotBindings);
@@ -63,10 +56,10 @@ internal static partial class QueryPlanBuilder
         // Bucket already exists for this structural key: reuse its template (and its compiled plan variants).
         if (planCache.GetBucket(structuralKey) is { } existing)
         {
-            slotBindings = ResolveSlotBindings(planParams, metadata);
+            slotBindings = memo.ResolveSlotBindings(planParams);
             planParams.SlotBindings = slotBindings;
             planParams.Bucket = existing;
-            metadata?.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, existing);
+            memo.Store(planCache.Id, existing);
             AssertSlotBindingsMatchTemplate(existing.Template, slotBindings);
             return existing.Template;
         }
@@ -74,10 +67,10 @@ internal static partial class QueryPlanBuilder
         var template = ParseTemplate(planParams, out var parsedSlotBindings);
         template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams);
 
-        // Reuse the slot bindings ParseTemplate just collected: memoize them on the QueryMetadata (main path) or
-        // use them directly (MLT override). This is the only path that walks the WHERE clause, so there is no
-        // second walk for the slot vector.
-        slotBindings = metadata != null ? (metadata.CachedSlotBindings ??= parsedSlotBindings) : parsedSlotBindings;
+        // This is the only path that walks the WHERE clause, so reuse the slot bindings ParseTemplate just
+        // collected (the memo target memoizes them on the QueryMetadata for the main path, or returns them
+        // unchanged for the MLT override) instead of walking a second time.
+        slotBindings = memo.MemoizeSlotBindings(parsedSlotBindings);
         planParams.SlotBindings = slotBindings;
         AssertSlotBindingsMatchTemplate(template, slotBindings);
 
@@ -85,19 +78,54 @@ internal static partial class QueryPlanBuilder
         // plan into planParams.Bucket; we return the bucket's template so a lost race uses the winner's instance.
         var bucket = planCache.GetOrAddBucket(structuralKey, template, planParams.CacheKey);
         planParams.Bucket = bucket;
-        metadata?.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, bucket);
+        memo.Store(planCache.Id, bucket);
         return bucket.Template;
     }
 
-    /// <summary>Resolve the per-query slot-binding vector. Main path (no cache-key override): memoize on the
-    /// QueryMetadata, since the vector is a pure function of the query text/AST. Override path (e.g. MLT
-    /// sub-expression): build fresh and do not touch the metadata memo.</summary>
-    private static ParameterBinding[] ResolveSlotBindings(PlanParameters planParams, QueryMetadata metadata)
+    /// <summary>The per-QueryMetadata plan memo as a target the <see cref="BuildTemplate"/> paths can read and
+    /// write uniformly. For a normal query it wraps the query's <see cref="QueryMetadata"/>. For an MLT
+    /// sub-expression - which borrows the OUTER query's QueryMetadata but compiles a different expression - it is
+    /// the empty target (<see cref="_metadata"/> null): warm lookups miss, stores are dropped, and the slot vector
+    /// is built fresh, so the outer query's memo is never corrupted. This is the single place the MLT-vs-normal
+    /// decision is made.</summary>
+    private readonly struct PlanMemoTarget
     {
-        if (metadata == null)
-            return ExtractSlotBindings(planParams);
+        private readonly QueryMetadata _metadata;
 
-        return metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams);
+        private PlanMemoTarget(QueryMetadata metadata) => _metadata = metadata;
+
+        public static PlanMemoTarget For(PlanParameters planParams) =>
+            new(planParams.WhereOverride == null ? planParams.Metadata : null);
+
+        public bool TryGetWarmBucket(long planCacheId, out PlanCache.PerQueryPlans bucket)
+        {
+            if (_metadata?.CachedPlanMemo is { } memo
+                && memo.PlanCacheId == planCacheId
+                && memo.Bucket.TryGetTarget(out bucket))
+                return true;
+
+            bucket = null;
+            return false;
+        }
+
+        public void Store(long planCacheId, PlanCache.PerQueryPlans bucket)
+        {
+            if (_metadata != null)
+                _metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCacheId, bucket);
+        }
+
+        // The slot vector is a pure function of the query text/AST, so the main path memoizes it on the
+        // QueryMetadata; the MLT override builds it fresh and leaves the field untouched.
+        public ParameterBinding[] ResolveSlotBindings(PlanParameters planParams) =>
+            _metadata == null
+                ? ExtractSlotBindings(planParams)
+                : _metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams);
+
+        // Same memoization, but reusing the vector ParseTemplate already collected on the cold path.
+        public ParameterBinding[] MemoizeSlotBindings(ParameterBinding[] parsedSlotBindings) =>
+            _metadata == null
+                ? parsedSlotBindings
+                : _metadata.CachedSlotBindings ??= parsedSlotBindings;
     }
 
     [Conditional("DEBUG")]
@@ -107,196 +135,6 @@ internal static partial class QueryPlanBuilder
             $"Slot-binding vector length ({slotBindings.Length}) must equal the template value-ordinal count " +
             $"({template.ValueOrdinalCount}). Both come from the same canonical WHERE walk, so a mismatch means the " +
             "template parse and the per-query slot-vector parse diverged.");
-    }
-
-    // Structural plan key: a SHA256 digest over a canonical serialization of the query's WHERE + ORDER BY AST,
-    // packed into a fixed-size 256-bit value so the per-query bucket can be keyed by Vector256<long>. The
-    // serialization is value- and parameter-name-agnostic for WHERE operands: literal values are reduced to their
-    // type token (Long/Double/String/...) and parameter references are renumbered to first-occurrence ordinals.
-    // That collapses pure value variants (price > 5 vs price > 10) and parameter-name variants (name = $p1 vs
-    // name = $q) onto a single shared bucket, while every structural distinction the template depends on -
-    // operators, field names, IN arity, boolean nesting, negation, method names, literal TYPE, and the full
-    // ORDER BY shape - is preserved. Per-parameter runtime types are deliberately NOT in this key: the per-variant
-    // CacheKeyHash (see BuildResolver) distinguishes them within the bucket. The MLT/sub-expression path keeps its
-    // purpose-built CacheKeyOverride text as the key (it already renders parameters by name, not value).
-    private static Vector256<long> ComputeStructuralKey(PlanParameters planParams)
-    {
-        var sb = new StringBuilder();
-        if (planParams.CacheKeyOverride != null)
-        {
-            sb.Append(planParams.CacheKeyOverride);
-        }
-        else
-        {
-            // Namespace the AST-derived format with a control-char prefix so it can never collide with the
-            // override text branch above (which is plain query text and never starts with this sentinel).
-            sb.Append("\u0001ast\u0001");
-            Dictionary<string, int> paramOrdinals = new(StringComparer.Ordinal);
-            AppendCanonicalExpression(sb, planParams.Metadata.Query.Where, paramOrdinals);
-            AppendCanonicalOrderBy(sb, planParams.Metadata.OrderBy);
-        }
-
-        string canonical = sb.ToString();
-        int maxBytes = Encoding.UTF8.GetByteCount(canonical);
-        byte[] rented = ArrayPool<byte>.Shared.Rent(maxBytes);
-        try
-        {
-            int written = Encoding.UTF8.GetBytes(canonical, rented);
-            Span<byte> digest = stackalloc byte[32];
-            SHA256.HashData(rented.AsSpan(0, written), digest);
-            return Vector256.Create(MemoryMarshal.Cast<byte, long>(digest));
-        }
-        finally
-        {
-            ArrayPool<byte>.Shared.Return(rented);
-        }
-    }
-
-    // Canonical WHERE-clause serialization. Each node emits a tagged, delimited form so structurally distinct
-    // trees can never produce the same byte stream; operands are normalized by AppendCanonicalValue so value- and
-    // parameter-name variants converge. The DFS order matches the parse walk that assigns value ordinals.
-    private static void AppendCanonicalExpression(StringBuilder sb, QueryExpression expr, Dictionary<string, int> paramOrdinals)
-    {
-        switch (expr)
-        {
-            case null:
-                sb.Append("\u2205"); // no WHERE clause - distinct from any concrete node
-                return;
-
-            case BinaryExpression be:
-                // Operator goes first so a > b and a < b diverge before the operands are even read.
-                sb.Append("B(").Append((int)be.Operator).Append(':');
-                AppendCanonicalExpression(sb, be.Left, paramOrdinals);
-                sb.Append(',');
-                AppendCanonicalExpression(sb, be.Right, paramOrdinals);
-                sb.Append(')');
-                return;
-
-            case NegatedExpression ne:
-                sb.Append("N(");
-                AppendCanonicalExpression(sb, ne.Expression, paramOrdinals);
-                sb.Append(')');
-                return;
-
-            case BetweenExpression bw:
-                sb.Append("W(");
-                AppendCanonicalExpression(sb, bw.Source, paramOrdinals);
-                sb.Append(',');
-                AppendCanonicalValue(sb, bw.Min, paramOrdinals);
-                sb.Append(',');
-                AppendCanonicalValue(sb, bw.Max, paramOrdinals);
-                sb.Append(bw.MinInclusive ? '[' : '(').Append(bw.MaxInclusive ? ']' : ')').Append(')');
-                return;
-
-            case InExpression ie:
-                // IN arity is structural: each value is its own binding, so (a,b) and (a,b,c) are different templates.
-                sb.Append("I(").Append(ie.All ? '1' : '0').Append(':');
-                AppendCanonicalExpression(sb, ie.Source, paramOrdinals);
-                sb.Append('[').Append(ie.Values.Count).Append(':');
-                foreach (var v in ie.Values)
-                {
-                    AppendCanonicalExpression(sb, v, paramOrdinals);
-                    sb.Append(',');
-                }
-                sb.Append("])");
-                return;
-
-            case MethodExpression me:
-                // The method name (search/exact/boost/spatial.*/vector.search/...) drives clause shape and the
-                // HasBoost / HasVectorSearch flags, so it must be part of the key.
-                sb.Append("M(").Append(me.Name.Value).Append('[').Append(me.Arguments.Count).Append(':');
-                foreach (var a in me.Arguments)
-                {
-                    AppendCanonicalExpression(sb, a, paramOrdinals);
-                    sb.Append(',');
-                }
-                sb.Append("])");
-                return;
-
-            case FieldExpression fe:
-                sb.Append("F(").Append(fe.FieldValue).Append(')');
-                return;
-
-            case ValueExpression ve:
-                AppendCanonicalValue(sb, ve, paramOrdinals);
-                return;
-
-            case TrueExpression:
-                sb.Append('T');
-                return;
-
-            default:
-                // Unknown node type: fall back to its full text so an unrecognized shape can never silently
-                // collapse with a different one. ExpressionType currently has no member we do not handle above,
-                // so this is a forward-compatibility guard, not a live path.
-                sb.Append("U(").Append(expr.GetType().Name).Append(':').Append(expr).Append(')');
-                return;
-        }
-    }
-
-    // Canonical operand serialization. A parameter reference becomes P{ordinal}, renumbered by first occurrence so
-    // that name-isomorphic queries ($x and $x vs $y and $y) match while genuinely distinct fan-outs ($x and $y) do
-    // not - this mirrors the template's deduplicated ParameterSlots. A literal becomes L{typeCode}: the TYPE is kept
-    // (the per-variant CacheKeyHash does not see literals, so the bucket must already segregate long/double/string/
-    // bool/null), but the value is dropped so value variants collapse.
-    private static void AppendCanonicalValue(StringBuilder sb, ValueExpression ve, Dictionary<string, int> paramOrdinals)
-    {
-        if (ve.Value == ValueTokenType.Parameter)
-        {
-            string name = ve.Token.Value;
-            if (paramOrdinals.TryGetValue(name, out int ordinal) == false)
-            {
-                ordinal = paramOrdinals.Count;
-                paramOrdinals.Add(name, ordinal);
-            }
-            sb.Append('P').Append(ordinal);
-        }
-        else
-        {
-            sb.Append('L').Append((int)ve.Value);
-        }
-    }
-
-    // Canonical ORDER BY serialization. The template bakes the resolved sort shape (field, ordering type,
-    // direction, nulls mode, and any literal random seed / distance coordinates), so the structural key must
-    // preserve all of it. Argument values are kept verbatim - literal seeds/coords are baked into the template's
-    // prebuilt/patch closures and must not be shared across buckets; parameter arguments render by name (the value
-    // is resolved at runtime), so parameter-value variants still collapse. A null ORDER BY is kept distinct from an
-    // empty one.
-    private static void AppendCanonicalOrderBy(StringBuilder sb, OrderByField[] orderBy)
-    {
-        sb.Append("O[");
-        if (orderBy == null)
-        {
-            sb.Append('_').Append(']');
-            return;
-        }
-
-        sb.Append(orderBy.Length).Append(':');
-        foreach (var field in orderBy)
-        {
-            sb.Append(field.Name?.Value)
-                .Append('|').Append((int)field.OrderingType)
-                .Append('|').Append(field.Ascending ? '1' : '0')
-                .Append('|').Append((int)field.NullsOrdering)
-                .Append('|').Append(field.Method.HasValue ? ((int)field.Method.Value).ToString() : "_")
-                .Append('|');
-            if (field.Arguments == null)
-            {
-                sb.Append('_');
-            }
-            else
-            {
-                sb.Append(field.Arguments.Length).Append('(');
-                foreach (var arg in field.Arguments)
-                {
-                    sb.Append((int)arg.Type).Append(':').Append(arg.NameOrValue).Append(',');
-                }
-                sb.Append(')');
-            }
-            sb.Append(';');
-        }
-        sb.Append(']');
     }
 
     /// <summary>
@@ -390,19 +228,6 @@ internal static partial class QueryPlanBuilder
             return;
         full ??= new byte[parameterSlotCount];
         full[binding.ParameterSlot] |= SentinelParamMark;
-    }
-
-    /// <summary>Redirect a template binding to its counterpart in the per-query slot vector via the binding's
-    /// canonical <see cref="ParameterBinding.ValueOrdinal"/>. The slot binding carries this query text's actual
-    /// literal value / parameter name / deferred expression, while the template binding only carries structure.
-    /// Returns the binding unchanged when there is no slot vector or no value ordinal (defensive: any binding not
-    /// produced by <c>CreateBinding</c>), and is idempotent on bindings already drawn from the slot vector.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static ParameterBinding SlotBindingFor(ParameterBinding binding, ParameterBinding[] slotBindings)
-    {
-        if (slotBindings != null && binding.ValueOrdinal >= 0)
-            return slotBindings[binding.ValueOrdinal];
-        return binding;
     }
 
     internal static void PopulateClauseValues(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters,
@@ -514,7 +339,7 @@ internal static partial class QueryPlanBuilder
         // text lives in the per-query slot vector at that ordinal, so value/name/param variants can share one
         // shared template. Redirect to the slot binding before reading any value. (Already-slot bindings are
         // idempotent under this lookup, since slotBindings[b.ValueOrdinal] == b.)
-        binding = SlotBindingFor(binding, slotBindings);
+        binding = slotBindings[binding.ValueOrdinal];
         switch (binding.Source)
         {
             case BindingSource.Literal:
@@ -684,8 +509,10 @@ internal static partial class QueryPlanBuilder
     
     public static IQueryMatch BuildQueryForMoreLikeThis(QueryBuilderParameters builderParams, QueryExpression expression)
     {
-        const string moreLikeThisCacheKeyPrefix = "$mlt$:";
-
+        // WhereOverride compiles this base-document sub-expression standalone. The structural key is taken from the
+        // expression itself (ComputeStructuralKey), and every operand is read through the per-query slot vector at
+        // instantiation, so two MLT queries that differ only in a bound value or a parameter name correctly share
+        // one plan and still resolve their own value — exactly as on the main query path.
         return BuildFilterMatch(new PlanParameters
         {
             IndexSearcher = builderParams.IndexSearcher,
@@ -698,14 +525,6 @@ internal static partial class QueryPlanBuilder
             DynamicFields = builderParams.DynamicFields,
             HasBoost = builderParams.HasBoost,
             WhereOverride = expression,
-            // The cache key must capture the expression STRUCTURE (parameter names like $p0), not the
-            // bound values: the compiled plan reads its operands from QueryParameters by name at
-            // instantiation, so two MLT queries whose base-document expression differs only in the bound
-            // value (e.g. id() = 'users/1' vs id() = 'users/2') legitimately share a plan, while two
-            // queries that resolve to the same value but reference different parameter names (e.g.
-            // id() = $p1 with options vs id() = $p0 without) must NOT share — otherwise the cached plan
-            // reads the wrong parameter slot. GetTextWithAlias(parent: null) renders parameters as $pN.
-            CacheKeyOverride = moreLikeThisCacheKeyPrefix + expression.GetTextWithAlias(parent: null),
         }, builderParams, out _, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
     }
 

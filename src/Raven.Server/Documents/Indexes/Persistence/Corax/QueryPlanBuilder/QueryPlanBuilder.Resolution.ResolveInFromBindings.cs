@@ -18,7 +18,7 @@ internal static partial class QueryPlanBuilder
         {
             // Resolve the per-query slot binding for this leaf; the template binding only carries structure, so
             // the array-valued-parameter pre-check below must inspect the slot binding's name/source too.
-            var it = SlotBindingFor(templateBinding, slotBindings);
+            var it = slotBindings[templateBinding.ValueOrdinal];
             if (it.Source == BindingSource.QueryParameter // handle array-valued query parameters
                 && queryParameters != null
                 && queryParameters.TryGet(it.ParameterName, out object raw)

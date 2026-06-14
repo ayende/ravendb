@@ -134,10 +134,11 @@ public class PlanCache
         private readonly ushort[] _hashLo = new ushort[maxSlots];
         private readonly CompiledPlan[] _plans = new CompiledPlan[maxSlots];
 
-        /// <summary>The query text (or MLT sub-expression override) this bucket was first compiled for.
+        /// <summary>The query text this bucket was first compiled for, kept only as a human-readable label.
         /// Diagnostics only — surfaced by <see cref="Snapshot"/>; never read on any hot path. The structural
-        /// key, not this string, is the dictionary identity, so two texts that collapse to one plan in a later
-        /// phase would share a bucket and only the first-seen text is recorded.</summary>
+        /// key, not this string, is the dictionary identity, so two texts that collapse to one plan (e.g. the
+        /// same query shape with different literal values) share a bucket and only the first-seen text is
+        /// recorded.</summary>
         public readonly string QueryText = queryText;
 
         /// <summary>

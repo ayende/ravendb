@@ -69,7 +69,7 @@ internal static partial class QueryPlanBuilder
     {
         // The template binding only carries structure; the vector value for THIS query text lives in the
         // per-query slot vector at the binding's canonical hole index.
-        binding = SlotBindingFor(binding, slotBindings);
+        binding = slotBindings[binding.ValueOrdinal];
         if (binding.LiteralType != ParamValueType.Parameter)
             return (binding.LiteralValue, binding.LiteralType);
         if (queryParameters.TryGet(binding.ParameterName, out object raw) && raw != null)

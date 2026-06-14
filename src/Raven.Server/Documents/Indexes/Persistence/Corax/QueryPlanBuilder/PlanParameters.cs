@@ -31,13 +31,11 @@ internal class PlanParameters
     public QueryExpression WhereOverride;
 
     /// <summary>
-    /// Plan-cache key to use instead of <c>Metadata.Query.QueryText</c>. Required whenever
-    /// <see cref="WhereOverride"/> is set, since the full query text does not describe the
-    /// sub-expression being compiled.
+    /// Human-readable label recorded on the plan bucket for diagnostics only (never the cache identity — that is
+    /// the structural key from <see cref="QueryPlanBuilder.ComputeStructuralKey"/>). For a <see cref="WhereOverride"/>
+    /// build this is the outer query text, which still names the query the sub-expression came from.
     /// </summary>
-    public string CacheKeyOverride;
-
-    public string CacheKey => CacheKeyOverride ?? Metadata.Query.QueryText;
+    public string CacheKey => Metadata.Query.QueryText;
 
     /// <summary>
     /// The plan bucket this query resolves to, stashed by <see cref="QueryPlanBuilder.BuildTemplate"/> so the
