@@ -635,6 +635,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             while (runQuery)
             {
                 QueryPlanBuilder.CompiledQuery compileResult;
+                // Exact total known from O(1) metadata for single-posting / all-entries plans (see
+                // QueryExecution.KnownExactTotal). When set, we source TotalResults from it and skip the
+                // count-draining loop below. -1 means "must scan to count".
+                long knownExactTotal = -1;
                 var coraxScope = queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false);
                 using (coraxScope?.Start())
                 {
@@ -667,15 +671,20 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                             token: token);
                     }
 
-                    if (compileResult.OrderByFields == null && take > 0 && query.Metadata.IsDistinct == false
-                        && query.SkipStatistics
+                    if (compileResult.OrderByFields == null && query.Metadata.IsDistinct == false
                         && query.Metadata.Query.Filter == null
                         && compileResult.QueryMatch is CompiledQueryMatch compiledMatch)
                     {
-                        // No ORDER BY, no DISTINCT, and the client doesn't need exact total —
-                        // enable limit-aware bitmap accumulation. The bitmap may be truncated,
-                        // so Count is a lower bound (Confidence = Low).
-                        compiledMatch.Limit = (int)Math.Min(take, int.MaxValue);
+                        // Single-posting / all-entries plans know their exact total from O(1) metadata
+                        // (PostingList/index NumberOfEntries) — no full materialization needed to count.
+                        knownExactTotal = compiledMatch.Exec.KnownExactTotal;
+
+                        // No ORDER BY, no DISTINCT, no FILTER — enable limit-aware bitmap accumulation so
+                        // the bitmap is truncated to the page instead of materializing the whole posting
+                        // list. We can do this when the client doesn't need the exact total (SkipStatistics),
+                        // or when we already know it cheaply (knownExactTotal) and supply it below.
+                        if (take > 0 && (query.SkipStatistics || knownExactTotal >= 0))
+                            compiledMatch.Limit = (int)Math.Min(take, int.MaxValue);
                     }
                 }
 
@@ -806,16 +815,26 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 // If we are going to just return count() then we don't care about anything else than memoize the results.
                 if (query.IsCountQuery || query.SkipStatistics == false)
                 {
-                    int read;
-                    do
+                    if (knownExactTotal >= 0)
                     {
-                        // Instead of memoizing, we just continue filling the buffer. First, because we don't need to keep the 
-                        // value or deduplicate at this stage; just to know how many potential matches we have left. Also memoizing
-                        // is not supported for SortingMatch. 
-                        read = compileResult.QueryMatch.Fill(ids);
-                        totalResults.Value += read;
-                    } 
-                    while (read != 0);
+                        // Single-posting / all-entries plan: the exact total is known from O(1) metadata, so
+                        // there is no need to drain the (limit-truncated) bitmap to recount. Overwrites the
+                        // partial count the page loop accumulated above.
+                        totalResults.Value = (int)Math.Min(knownExactTotal, int.MaxValue);
+                    }
+                    else
+                    {
+                        int read;
+                        do
+                        {
+                            // Instead of memoizing, we just continue filling the buffer. First, because we don't need to keep the
+                            // value or deduplicate at this stage; just to know how many potential matches we have left. Also memoizing
+                            // is not supported for SortingMatch.
+                            read = compileResult.QueryMatch.Fill(ids);
+                            totalResults.Value += read;
+                        }
+                        while (read != 0);
+                    }
                 }
                 
                 

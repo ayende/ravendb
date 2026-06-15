@@ -32,6 +32,15 @@ public class QueryExecution
 
     public bool IsAllEntries;
 
+    /// <summary>The exact number of entries this plan resolves to, known from O(1) metadata
+    /// (index / posting-list <c>NumberOfEntries</c>) without materializing the result bitmap.
+    /// Set per-execution by <c>BuildResolver.FinalizePlan</c> for the two shapes whose result
+    /// cardinality is exactly a single counter: an all-entries plan (no WHERE) and a single
+    /// non-negated, non-boosted <c>Equals</c> (one term posting list). -1 when not known cheaply
+    /// — every other shape must materialize/scan to count. Read by <c>CoraxIndexReadOperation</c>
+    /// to source TotalResults and enable limit push-down even when <c>SkipStatistics</c> is false.</summary>
+    public long KnownExactTotal = -1;
+
     public long[] LongValues;
 
     public CompiledPlan Plan;

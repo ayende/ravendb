@@ -97,10 +97,50 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         CardinalityArrayBuilder.Build(_exec.Executions, _exec.IsAllEntries, out var inRange, out var cards);
         _exec.InRangeCounts = inRange;
         _exec.Cardinalities = cards;
+        _exec.KnownExactTotal = ComputeKnownExactTotal();
 
         QueryPlanBuilder.AttachSpatialAndVectorClauses(_exec, template, planParams, builderParameters, _writer);
         _writer.SetValues(_exec);
         return _exec;
+    }
+
+    /// <summary>The exact result count for the two plan shapes whose cardinality is a single O(1)
+    /// counter — so TotalResults can be reported without materializing the bitmap and the page limit
+    /// can be pushed down even when the caller wants statistics. Returns -1 for every other shape.</summary>
+    private long ComputeKnownExactTotal()
+    {
+        // Spatial / vector matches only ever report an approximate (Low-confidence) count.
+        if (_exec.HasSpatialOrVector)
+            return -1;
+
+        // No WHERE clauses at all → the result is every entry in the index.
+        if (_exec.IsAllEntries)
+            return _indexSearcher.NumberOfEntries;
+
+        // A single non-boosted Equals / NotEquals has an exactly-known result count that the cardinality
+        // estimator already computed from O(1) metadata (no sampling):
+        //   Equals    -> the term posting list's NumberOfEntries;
+        //   NotEquals -> index NumberOfEntries minus that exact term count (FillAllEntries AndNot term).
+        // Guards: a resolvable packed value (an unresolved param makes the estimator fall back to a
+        // non-exact whole-index bound) and the canonical clause shape (a negated Equals or a non-negated
+        // NotEquals would not match the value the estimator returned).
+        var execs = _exec.Executions;
+        if (execs is { Count: 1 })
+        {
+            var only = execs[0];
+            bool exactEquals = only.ClauseType == ClauseType.Equals && only.IsNegated == false;
+            bool exactNotEquals = only.ClauseType == ClauseType.NotEquals && only.IsNegated;
+            if (only.IsSentinel == false
+                && only.PackedParamValue.IsNone == false
+                && (exactEquals || exactNotEquals)
+                && only.Clause.HasBoost == false
+                && only.Cardinality >= 0)
+            {
+                return only.Cardinality;
+            }
+        }
+
+        return -1;
     }
 
     private QueryExecution CreateQueryExecution()
