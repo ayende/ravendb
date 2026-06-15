@@ -293,8 +293,13 @@ internal static partial class QueryPlanBuilder
         {
             int opIndex = i < template.Length ? template[i].OpIndex : i;
             var parameters = opNodes[i].Parameters;
+            // Per-op count is ComputeCount() on the slot's bitmap as it stood right after this op ran — i.e. while
+            // it may still hold ArrayUnsorted containers whose stored Cardinality is the RAW count of appended
+            // posting-list entries (cross-batch/bucket duplicates not yet collapsed). It only collapses to the true
+            // distinct count once PrepareForReading sorts+dedups the slot. So this is an "OutputWithDups" upper-bound
+            // count, distinct from the top-level "Output" (compiled.Count), which is read post-finalization and is exact.
             if (resultCounts != null && opIndex >= 0 && opIndex < resultCounts.Length && resultCounts[opIndex] > 0)
-                parameters["Output"] = resultCounts[opIndex].ToString("N0");
+                parameters["OutputWithDups"] = resultCounts[opIndex].ToString("N0");
             if (timings != null && opIndex >= 0 && opIndex < timings.Length && timings[opIndex] > 0)
                 parameters["Ms"] = (timings[opIndex] / tickFreq).ToString("F3");
 
