@@ -117,7 +117,7 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
     public void TimingIsOverlaidOnStructuralPlan_ForCompiledMatch(Options options)
     {
         // A term query runs through CompiledQueryMatch, so OverlayTimings annotates the structural plan
-        // with the run's telemetry: ScannedEntries on the CompiledQuery node, Count/Ms on the executed op.
+        // with the run's telemetry: Output on the CompiledQuery node, and Output/Ms on the executed op.
         using var store = GetDocumentStore(options);
         new Index().Execute(store);
         using var session = store.OpenSession();
@@ -134,10 +134,10 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
         var compiledRoot = CompiledRoot(timings);
         Assert.NotNull(compiledRoot);
         // timing overlay
-        Assert.True(compiledRoot.Parameters.ContainsKey("ScannedEntries"));
+        Assert.True(compiledRoot.Parameters.ContainsKey("Output"));
         var fill = compiledRoot.Children.First(c => c.Operation == "Fill");
         Assert.True(fill.Parameters.ContainsKey("Ms"));
-        Assert.True(fill.Parameters.ContainsKey("Count"));
+        Assert.True(fill.Parameters.ContainsKey("Output"));
         // structural data sits alongside it
         Assert.Equal("Name", fill.Parameters["FieldName"]);
         Assert.Equal("maciej", fill.Parameters["Term"]);
@@ -171,10 +171,10 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
         Assert.Contains(compiledRoot.Children, c => c.Operation == "Fill");
         Assert.Contains(compiledRoot.Children, c => c.Operation.Contains("Spatial"));
         // no timing telemetry overlaid (no CompiledQueryMatch ran)
-        Assert.False(compiledRoot.Parameters.ContainsKey("ScannedEntries"));
+        Assert.False(compiledRoot.Parameters.ContainsKey("Output"));
         var fill = compiledRoot.Children.First(c => c.Operation == "Fill");
         Assert.False(fill.Parameters.ContainsKey("Ms"));
-        Assert.False(fill.Parameters.ContainsKey("Count"));
+        Assert.False(fill.Parameters.ContainsKey("Output"));
     }
 
     [RavenTheory(RavenTestCategory.Corax)]

@@ -27,9 +27,9 @@ public static class CompiledQueryHelper
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void RecordResultCount(CompiledQueryMatch ctx, int opIndex)
+    public static void RecordResultCount(CompiledQueryMatch ctx, int opIndex, int slot)
     {
-        ctx.ResultCounts[opIndex] = ctx.Bitmaps[0].ComputeCount();
+        ctx.ResultCounts[opIndex] = ctx.Bitmaps[slot].ComputeCount();
     }
 
     /// <summary>Check StartsWith/EndsWith against ALL terms for a field (multi-value support).

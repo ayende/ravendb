@@ -264,9 +264,13 @@ internal static partial class QueryPlanBuilder
 
         compiled.GetTelemetry(out var timings, out var resultCounts, out var entryScanAt);
 
-        long scannedEntries = compiled.Count;
-        if (scannedEntries >= 0)
-            compiledRoot.Parameters["ScannedEntries"] = scannedEntries.ToString();
+        // The bitmap pipeline's resolved output: the cardinality of the result bitmap after the compiled
+        // delegate (including the done-label lazy-or repair) ran. For a plain query this is the full result
+        // count; for a limit/early-exit query it is the truncated count the pipeline stopped at — so the name
+        // is "Output" (what the pipeline produced), not "TotalResults" (which it is NOT under a limit).
+        long pipelineOutput = compiled.Count;
+        if (pipelineOutput >= 0)
+            compiledRoot.Parameters["Output"] = pipelineOutput.ToString("N0");
 
         // The template is compacted (control-flow ops dropped), but per-op telemetry is recorded against the FULL
         // PlanOp[] index — so join each template node to its timing slot via the original OpIndex, not the node's
@@ -278,7 +282,7 @@ internal static partial class QueryPlanBuilder
             int opIndex = i < template.Length ? template[i].OpIndex : i;
             var parameters = opNodes[i].Parameters;
             if (resultCounts != null && opIndex >= 0 && opIndex < resultCounts.Length && resultCounts[opIndex] > 0)
-                parameters["Count"] = resultCounts[opIndex].ToString();
+                parameters["Output"] = resultCounts[opIndex].ToString("N0");
             if (timings != null && opIndex >= 0 && opIndex < timings.Length && timings[opIndex] > 0)
                 parameters["Ms"] = (timings[opIndex] / tickFreq).ToString("F3");
 
@@ -287,7 +291,7 @@ internal static partial class QueryPlanBuilder
             // "OR-Range over N terms" the user expects, read from the live InRangeCounts the generated code looped on.
             int rangeIdx = i < template.Length ? template[i].RangeCountIndex : -1;
             if (rangeIdx >= 0 && compiled.InRangeCounts != null && rangeIdx < compiled.InRangeCounts.Length)
-                parameters["Terms"] = compiled.InRangeCounts[rangeIdx].ToString();
+                parameters["Terms"] = compiled.InRangeCounts[rangeIdx].ToString("N0");
         }
 
         // Mark whether the entry-scan branch actually fired this run, on the single EntryScan tail node (the shared
@@ -304,9 +308,9 @@ internal static partial class QueryPlanBuilder
             {
                 p["SwitchedAfterClauses"] = entryScanAt.ToString();
                 if (compiled.EntryScanEntriesScanned > 0)
-                    p["EntriesScanned"] = compiled.EntryScanEntriesScanned.ToString();
+                    p["EntriesScanned"] = compiled.EntryScanEntriesScanned.ToString("N0");
                 if (compiled.EntryScanEntriesPassed > 0)
-                    p["EntriesPassed"] = compiled.EntryScanEntriesPassed.ToString();
+                    p["EntriesPassed"] = compiled.EntryScanEntriesPassed.ToString("N0");
                 if (timings != null && compiled.EntryScanTiming > 0)
                     p["Ms"] = (compiled.EntryScanTiming / tickFreq).ToString("F3");
             }

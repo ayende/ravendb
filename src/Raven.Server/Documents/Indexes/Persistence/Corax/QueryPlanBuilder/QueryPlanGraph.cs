@@ -125,7 +125,7 @@ internal static class QueryPlanGraph
 
         bool hasRuntime = entryScanTailId >= 0
             ? ops[entryScanTailId].Parameters != null && ops[entryScanTailId].Parameters.ContainsKey("Taken")
-            : AnyHasCount(ops);
+            : AnyHasOutput(ops);
 
         bool OpExecuted(int opIndex) => !entryScanTaken || firedGateOp < 0 || opIndex < firedGateOp;
 
@@ -169,6 +169,10 @@ internal static class QueryPlanGraph
 
         Dictionary<string, string> resultData = g.CreateNode("result");
         resultData[OperationKey] = ResultOp;
+        // The pipeline's resolved output count is the final result count, so it is surfaced on the Result node
+        // (the terminal of the dataflow) rather than the query root.
+        if (compiled.Parameters != null && compiled.Parameters.TryGetValue("Output", out string pipelineOutput) && string.IsNullOrEmpty(pipelineOutput) == false)
+            resultData["Output"] = pipelineOutput;
 
         Dictionary<int, int> lastWriter = [];
         HashSet<(int From, int To)> realEdges = [];
@@ -322,7 +326,10 @@ internal static class QueryPlanGraph
         {
             case ResultOp:
                 node.Attributes["shape"] = "ellipse";
-                node.Attributes["label"] = "Result";
+                node.Data.TryGetValue("Output", out string resultOutput);
+                node.Attributes["label"] = string.IsNullOrEmpty(resultOutput)
+                    ? "Result"
+                    : "Result\\noutput=" + GraphvizGraph.Escape(resultOutput);
                 break;
 
             case ResidualNoteOp:
@@ -609,7 +616,7 @@ internal static class QueryPlanGraph
         AddIf(p, parts, "Boost", "boost x");
         AddIf(p, parts, "EstimatedRows", "~");
         AddIf(p, parts, "DestSlot", "→slot ");
-        AddIf(p, parts, "Count", "count=");
+        AddIf(p, parts, "Output", "output=");
         AddIf(p, parts, "SwitchedAfterClauses", "after=");
         AddIf(p, parts, "EntriesScanned", "scanned=");
         AddIf(p, parts, "EntriesPassed", "passed=");
@@ -817,14 +824,14 @@ internal static class QueryPlanGraph
     }
 
     /// <summary>
-    ///     True when any op carries a runtime <c>Count</c> parameter, i.e. OverlayTimings ran and the taken path
+    ///     True when any op carries a runtime <c>Output</c> parameter, i.e. OverlayTimings ran and the taken path
     ///     is knowable. Used for plans with no entry-scan gate, where there is no Taken flag to key off.
     /// </summary>
-    private static bool AnyHasCount(List<QueryInspectionNode> ops)
+    private static bool AnyHasOutput(List<QueryInspectionNode> ops)
     {
         foreach (QueryInspectionNode op in ops)
         {
-            if (op.Parameters != null && op.Parameters.ContainsKey("Count"))
+            if (op.Parameters != null && op.Parameters.ContainsKey("Output"))
             {
                 return true;
             }

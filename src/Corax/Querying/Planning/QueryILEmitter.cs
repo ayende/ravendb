@@ -242,7 +242,7 @@ public static class QueryIlEmitter
 
             // Timing: record elapsed time and result count after each op
             if (emitTimings)
-                EmitTimingEnd(ref d, i, startTickLocal);
+                EmitTimingEnd(ref d, i, op.BitmapLocal, startTickLocal);
         }
 
         // Done label
@@ -302,8 +302,11 @@ public static class QueryIlEmitter
         d.CsLine($"long startTick_{opIndex} = Stopwatch.GetTimestamp();");
     }
 
-    /// <summary>RecordTiming + RecordResultCount</summary>
-    private static void EmitTimingEnd(ref DualEmit d, int opIndex, LocalBuilder startTickLocal)
+    /// <summary>RecordTiming + RecordResultCount. <paramref name="slot"/> is the op's destination
+    /// bitmap (<c>op.BitmapLocal</c>) so the recorded count reflects what THIS op actually produced,
+    /// not the running slot-0 accumulator — an op writing to slot 2 (e.g. a FillAllEntries seed for a
+    /// later AndNot/OR) now reports its own result rather than the unrelated slot-0 total.</summary>
+    private static void EmitTimingEnd(ref DualEmit d, int opIndex, int slot, LocalBuilder startTickLocal)
     {
         d.Il.Emit(OpCodes.Ldarg_0);
         IlEmitterShared.EmitLdcI4(d.Il, opIndex);
@@ -312,10 +315,11 @@ public static class QueryIlEmitter
 
         d.Il.Emit(OpCodes.Ldarg_0);
         IlEmitterShared.EmitLdcI4(d.Il, opIndex);
+        IlEmitterShared.EmitLdcI4(d.Il, slot);
         d.Il.Emit(OpCodes.Call, IlEmitterShared.RecordResultCount);
 
         d.CsLine($"CompiledQueryHelper.RecordTiming(ctx, {opIndex}, startTick_{opIndex});");
-        d.CsLine($"CompiledQueryHelper.RecordResultCount(ctx, {opIndex});");
+        d.CsLine($"CompiledQueryHelper.RecordResultCount(ctx, {opIndex}, {slot});");
         d.CsLine("");
     }
 

@@ -30,7 +30,7 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
 
     [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
-    public async Task SingleClauseWithLimitReportsScannedEntries(Options options)
+    public async Task SingleClauseWithLimitReportsOutput(Options options)
     {
         using var store = GetDocumentStore(options);
         InsertDocuments(store, 500);
@@ -45,12 +45,12 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
 
         Assert.Equal(10, results.Count);
 
-        // Verify ScannedEntries telemetry is present in the query plan
+        // Verify Output telemetry is present in the query plan
         var plan = (QueryInspectionNode)timings.QueryPlan;
         Assert.NotNull(plan);
         Assert.Equal("CompiledQuery", plan.Operation);
-        Assert.True(plan.Parameters.ContainsKey("ScannedEntries"),
-            $"ScannedEntries missing. Parameters: {string.Join(", ", plan.Parameters.Keys)}");
+        Assert.True(plan.Parameters.ContainsKey("Output"),
+            $"Output missing. Parameters: {string.Join(", ", plan.Parameters.Keys)}");
     }
 
     [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
@@ -109,9 +109,9 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
         var plan = (QueryInspectionNode)timings.QueryPlan;
         Assert.NotNull(plan);
         Assert.Equal("CompiledQuery", plan.Operation);
-        var scanned = long.Parse(plan.Parameters["ScannedEntries"]);
-        Assert.True(scanned < 500,
-            $"Expected early exit to scan fewer than 500 entries, but scanned {scanned}");
+        var output = long.Parse(plan.Parameters["Output"]);
+        Assert.True(output < 500,
+            $"Expected early exit to produce fewer than 500 entries, but produced {output}");
     }
 
     [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
@@ -187,7 +187,7 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
 
     [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
-    public async Task SkipAndTakeReportsScannedEntries(Options options)
+    public async Task SkipAndTakeReportsOutput(Options options)
     {
         using var store = GetDocumentStore(options);
         InsertDocuments(store, 500);
@@ -206,8 +206,8 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
         var plan = (QueryInspectionNode)timings.QueryPlan;
         Assert.NotNull(plan);
         Assert.Equal("CompiledQuery", plan.Operation);
-        Assert.True(plan.Parameters.ContainsKey("ScannedEntries"),
-            $"ScannedEntries missing. Parameters: {string.Join(", ", plan.Parameters.Keys)}");
+        Assert.True(plan.Parameters.ContainsKey("Output"),
+            $"Output missing. Parameters: {string.Join(", ", plan.Parameters.Keys)}");
     }
 
     [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
@@ -244,8 +244,8 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
         var plan = (QueryInspectionNode)timings.QueryPlan;
         Assert.NotNull(plan);
         Assert.Equal("CompiledQuery", plan.Operation);
-        var scanned = long.Parse(plan.Parameters["ScannedEntries"]);
-        Assert.Equal(50, scanned);
+        var output = long.Parse(plan.Parameters["Output"]);
+        Assert.Equal(50, output);
     }
 
     private void InsertDocuments(IDocumentStore store, int count)
