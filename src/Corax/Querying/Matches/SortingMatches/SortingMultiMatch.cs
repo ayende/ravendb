@@ -284,6 +284,15 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
             }
         }
         
+        // The sort wrapper sits above the bitmap pipeline, so surface its own in/out (see SortingMatch.Inspect):
+        // Incoming is the full candidate set ranked, Output is what the page receives — capped by _take when set.
+        if (TotalResults >= 0)
+        {
+            parameters["Incoming"] = TotalResults.ToString("N0");
+            long output = _take >= 0 ? Math.Min(_take, TotalResults) : TotalResults;
+            parameters["Output"] = output.ToString("N0");
+        }
+
         return new QueryInspectionNode($"{nameof(SortingMultiMatch)}",
             children: new List<QueryInspectionNode> { _inner.Inspect()},
             parameters: parameters);

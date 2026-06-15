@@ -896,15 +896,22 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             parameters["Strategy"] = strategy.ToString();
         if (SortingTimeInTicks > 0)
             parameters["Ms"] = (SortingTimeInTicks / (Stopwatch.Frequency / 1000.0)).ToString("F3", CultureInfo.InvariantCulture);
-        if (EntriesStreamed > 0)
+
+        // The sort wrapper sits above the bitmap pipeline, so the graph would otherwise show only the
+        // pipeline's "Output" and leave the sort's own in/out invisible. Surface both: Incoming is the full
+        // candidate set the sort had to consider (TotalResults, set after the first Fill); Output is what the
+        // sort actually hands the page — capped by the page limit (_take) when one is set, since a top-N sort
+        // emits at most _take rows even though it had to rank every candidate to find them. This is why an
+        // "order by score() limit 10" over 283K candidates reads Incoming=283,000, Output=10.
+        if (TotalResults >= 0)
         {
-            parameters["EntriesStreamed"] = EntriesStreamed.ToString();
-            // Pair the scan count with the candidate count so the cost ratio is legible. A healthy
-            // IndexOrderStreaming keeps streamed close to candidates; a bailout shows streamed well above
-            // it — the walk read far more sort-index entries than there were candidates, which is exactly
-            // the degenerate case the IndexOrderFallbackToInMemorySort strategy label flags after it fell back to SortInMemory.
-            parameters["Candidates"] = TotalResults.ToString();
+            parameters["Incoming"] = TotalResults.ToString("N0");
+            long output = _take >= 0 ? Math.Min(_take, TotalResults) : TotalResults;
+            parameters["Output"] = output.ToString("N0");
         }
+
+        if (EntriesStreamed > 0)
+            parameters["EntriesStreamed"] = EntriesStreamed.ToString();
 
         return new QueryInspectionNode($"{nameof(SortingMatch)}",
             children: [_inner.Inspect()],
