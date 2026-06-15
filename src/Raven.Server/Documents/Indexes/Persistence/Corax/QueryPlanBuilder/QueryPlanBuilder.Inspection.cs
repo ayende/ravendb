@@ -272,6 +272,18 @@ internal static partial class QueryPlanBuilder
         if (pipelineOutput >= 0)
             compiledRoot.Parameters["Output"] = pipelineOutput.ToString("N0");
 
+        // Limit push-down: when a page limit was pushed into the pipeline (Limit != int.MaxValue "unlimited"),
+        // slot 0 is grown only until it is full and the pipeline stops — it does NOT scan the rest. Surface the
+        // limit, and mark EarlyExit only when the output actually reached it (output < limit means the matches
+        // simply ran out first, so nothing was skipped). This mirrors CompiledQueryMatch.Confidence, where
+        // Low == the count was capped by the limit.
+        if (compiled.Limit != int.MaxValue)
+        {
+            compiledRoot.Parameters["Limit"] = compiled.Limit.ToString("N0");
+            if (pipelineOutput >= compiled.Limit)
+                compiledRoot.Parameters["EarlyExit"] = "true";
+        }
+
         // The template is compacted (control-flow ops dropped), but per-op telemetry is recorded against the FULL
         // PlanOp[] index — so join each template node to its timing slot via the original OpIndex, not the node's
         // position in the compacted list (which drifts the moment any op is filtered out).

@@ -116,6 +116,62 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
 
     [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task OrChainWithLimitMarksEarlyExitInGraph(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 500); // every doc is even or odd → the OR chain matches all 500, but the limit caps it
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncDocumentQuery<Doc, DocIndex>()
+            .WhereEquals("Tag", "even")
+            .OrElse()
+            .WhereEquals("Tag", "odd")
+            .Take(10)
+            .Timings(out QueryTimings timings)
+            .ToListAsync();
+
+        Assert.Equal(10, results.Count);
+
+        var plan = (QueryInspectionNode)timings.QueryPlan;
+        Assert.NotNull(plan);
+        Assert.Equal("CompiledQuery", plan.Operation);
+
+        // The pushed-down page limit (10) capped the pipeline below the 500 actual matches, so the run
+        // early-exited. OverlayTimings records Limit + EarlyExit on the root, and the dataflow graph labels
+        // the slot-0 → result edge so a reader can see we did NOT scan the rest.
+        Assert.Equal("10", plan.Parameters["Limit"]);
+        Assert.Equal("true", plan.Parameters["EarlyExit"]);
+        Assert.Contains("limit=10 (early exit)", plan.Parameters["PlanGraphDot"]);
+    }
+
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task NoLimitDoesNotMarkEarlyExit(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 100);
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncDocumentQuery<Doc, DocIndex>()
+            .WhereEquals("Tag", "even")
+            .Timings(out QueryTimings timings)
+            .ToListAsync();
+
+        Assert.Equal(50, results.Count);
+
+        var plan = (QueryInspectionNode)timings.QueryPlan;
+        Assert.NotNull(plan);
+        Assert.Equal("CompiledQuery", plan.Operation);
+
+        // No limit was pushed down, so nothing was skipped: neither the EarlyExit flag nor the edge label appears.
+        Assert.False(plan.Parameters.ContainsKey("EarlyExit"));
+        Assert.DoesNotContain("early exit", plan.Parameters["PlanGraphDot"]);
+    }
+
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public void AndChainWithLimit(Options options)
     {
         using var store = GetDocumentStore(options);
@@ -246,6 +302,63 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
         Assert.Equal("CompiledQuery", plan.Operation);
         var output = long.Parse(plan.Parameters["Output"]);
         Assert.Equal(50, output);
+    }
+
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public void NegatedEqualsReportsComplementTotal(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 500); // Value 0..499 → exactly one doc has Value == 10
+
+        using var session = store.OpenSession();
+        // Explicit RQL: `not (Value = 10)` parses to ClauseType.Equals + IsNegated (a NegatedExpression
+        // wrapping an Equals), distinct from `Value != 10` (ClauseType.NotEquals) — only this shape stresses
+        // the IsNegated guard.
+        var results = session.Advanced
+            .RawQuery<Doc>("from index 'DocIndex' where true and not (Value = 10)")
+            .Statistics(out var stats)
+            .ToList();
+
+        // not (Value = 10) parses to ClauseType.Equals + IsNegated: the cardinality estimator keys on
+        // ClauseType and stores the term count (1), but the plan executes FillAllEntries AndNot and produces
+        // the complement (499). ComputeKnownExactTotal must reject this shape (the IsNegated guard on the
+        // Equals branch) and fall back to scanning, so the reported total is the true complement — not the
+        // term count. Drop that guard and TotalResults wrongly reports 1.
+        Assert.Equal(499, results.Count);
+        Assert.Equal(499, stats.TotalResults);
+    }
+
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task WhenFalseGuardCollapsesToAllEntriesAndEarlyExits(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 500); // when(false, ...) drops the predicate → the query matches every doc
+
+        using var session = store.OpenAsyncSession();
+        // when($flag = true, Tag = $t) with flag=false: the guard fails, so the Tag predicate is dropped and the
+        // top-level clause statically collapses to a lone MatchAll sentinel. That sentinel already carries its
+        // exact O(1) count (NumberOfEntries) in Cardinality, so ComputeKnownExactTotal must report it directly
+        // instead of draining the full index to count it. With the known total in hand the page limit (10) is
+        // pushed down → the pipeline early-exits and TotalResults is the exact whole-index count.
+        var results = await session.Advanced
+            .AsyncRawQuery<Doc>("from index 'DocIndex' where when($flag = true, Tag = $t) include timings() limit 10")
+            .AddParameter("flag", false)
+            .AddParameter("t", "even")
+            .Statistics(out var stats)
+            .Timings(out QueryTimings timings)
+            .ToListAsync();
+
+        Assert.Equal(10, results.Count);
+        Assert.Equal(500, stats.TotalResults); // the lone sentinel's exact count, not a drained scan
+
+        var plan = (QueryInspectionNode)timings.QueryPlan;
+        Assert.NotNull(plan);
+        Assert.Equal("CompiledQuery", plan.Operation);
+        Assert.Equal("10", plan.Parameters["Limit"]);
+        Assert.Equal("true", plan.Parameters["EarlyExit"]);
+        Assert.Contains("limit=10 (early exit)", plan.Parameters["PlanGraphDot"]);
     }
 
     private void InsertDocuments(IDocumentStore store, int count)

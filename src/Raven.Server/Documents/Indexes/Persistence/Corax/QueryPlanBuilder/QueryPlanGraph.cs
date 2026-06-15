@@ -20,6 +20,7 @@ internal static class QueryPlanGraph
     private const string SlotKey = "Slot";
     private const string VariantKey = "Variant";
     private const string FilterKey = "Filter";
+    private const string LimitKey = "Limit";
 
     // Synthetic node "operations" for the nodes that are not bitmap ops.
     private const string ResultOp = "Result";
@@ -95,6 +96,10 @@ internal static class QueryPlanGraph
 
         string bitmapSink = hasPostChain ? "candidates" : "result";
 
+        // Limit push-down telemetry (set by OverlayTimings on the CompiledQuery root): the pipeline grew slot 0
+        // only to the pushed-down page limit and stopped — so the result edge can say it did NOT scan the rest.
+        bool earlyExit = compiled.Parameters != null && compiled.Parameters.TryGetValue("EarlyExit", out string ee) && ee == "true";
+        string limitValue = compiled.Parameters?.GetValueOrDefault("Limit");
 
         int entryScanTailId = -1;
         List<int> gateOpIds = [];
@@ -231,6 +236,14 @@ internal static class QueryPlanGraph
             {
                 e[VariantKey] = "not-taken";
                 e[FlowKey] = FlowOff;
+            }
+            else if (earlyExit)
+            {
+                // Limit-truncated run: the count was capped by the pushed-down limit, so the pipeline stopped
+                // here instead of scanning the rest. Carry the limit so the edge label can say so.
+                e[VariantKey] = "bitmap-earlyexit";
+                e[LimitKey] = limitValue;
+                e[FlowKey] = hasRuntime ? FlowOn : FlowNone;
             }
             else if (hasRuntime)
             {
@@ -440,6 +453,7 @@ internal static class QueryPlanGraph
             "lookup-result" => "lookup result",
             "entryscan-taken" => "entry-scan TAKEN",
             "entryscan-iftaken" => "if entry-scan taken",
+            "bitmap-earlyexit" => "limit=" + edge.Data.GetValueOrDefault(LimitKey, "") + " (early exit)",
             _ => null // bitmap-final / bitmap-plain carry no label
         };
     }

@@ -117,6 +117,15 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         if (_exec.IsAllEntries)
             return _indexSearcher.NumberOfEntries;
 
+        // A single clause that statically collapsed to a sentinel is the same exactly-known shape as
+        // IsAllEntries, just expressed as a surviving MatchAll/MatchNothing op instead of an empty clause list:
+        // a WHEN(false) guard under AND (MatchAll = the whole index), or an empty IN / contradictory BETWEEN
+        // (MatchNothing = 0). The sentinel already carries its exact O(1) count in Cardinality (NumberOfEntries
+        // / 0), so report it directly — otherwise e.g. `where when(false, ...)` would drain the full index to
+        // count it and skip the limit push-down.
+        if (_exec.Executions is [{ IsSentinel: true } sentinel])
+            return sentinel.Cardinality;
+
         // A single non-boosted Equals / NotEquals has an exactly-known result count that the cardinality
         // estimator already computed from O(1) metadata (no sampling):
         //   Equals    -> the term posting list's NumberOfEntries;
