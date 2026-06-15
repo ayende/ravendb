@@ -71,31 +71,6 @@ namespace Corax.Querying.Matches.TermsProviders
             _iterator.Reset();
         }
 
-        public bool Next(out TermMatch term)
-        {
-            var startWith = _startWith.Decoded();
-            while (_iterator.MoveNext(out var key, out _, out _))
-            {
-                _token.ThrowIfCancellationRequested();
-                var termSlice = key.Decoded();
-                
-                if (termSlice.StartsWith(startWith))
-                {
-                    if (_validatePostfixLen == false || // starts with the prefix, so skip
-                        termSlice[^1] == startWith.Length) // didn't pass the postfix marker validation,see: RavenDB-21131
-                    {
-                        continue;
-                    }
-                }
-
-                term = _searcher.TermQuery(_field, key, _tree);
-                return true;
-            }
-            
-            term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
-            return false;
-        }
-
         public QueryInspectionNode Inspect()
         {
             return new QueryInspectionNode($"{nameof(NotStartsWithTermsProvider<TLookupIterator>)}",

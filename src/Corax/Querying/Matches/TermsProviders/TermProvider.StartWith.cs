@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using System.Threading;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
@@ -84,51 +83,6 @@ namespace Corax.Querying.Matches.TermsProviders
             
             _firstRun = true;
             _iterator.Seek(_startWithLimit);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool Next(out TermMatch term)
-        {
-            ReadOnlySpan<byte> decodedStartsWith = _startWith.Decoded();
-
-            CompactKey compactKey;
-            ReadOnlySpan<byte> key;
-            while (true)
-            {
-                if (_iterator.MoveNext(out compactKey, out _, out _) == false)
-                {
-                    term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
-                    return false;
-                }
-
-                key = compactKey.Decoded();
-                if (_validatePostfixLen == false  || 
-                    key[^1] == decodedStartsWith.Length)
-                {
-                     break;
-                }
-                // otherwise, it isn't a match, see: RavenDB-21131, it just a shared prefix
-                // that we need to skip
-                _token.ThrowIfCancellationRequested();
-            }
-            
-            //For backward iterator we can have two possibilities:
-            //a) we're already on valid last term (when startsWith starts with [255]...[255][...] or our prefix is the last in tree)
-            //b) we're on next term from our initial startsWith (e.g. for prefix 'ab' we have to seek a['b'+1])
-            if (_firstRun && default(TLookupIterator).IsForward == false && key.StartsWith(decodedStartsWith) == false)
-            {
-                _firstRun = false;
-                return Next(out term);
-            }
-
-            if (key.StartsWith(decodedStartsWith) == false)
-            {
-                term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
-                return false;
-            }
-
-            term = _searcher.TermQuery(_field, compactKey, _tree);
-            return true;
         }
 
         public QueryInspectionNode Inspect()

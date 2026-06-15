@@ -87,34 +87,6 @@ public struct RegexTermsProvider<TLookupIterator> : ITermsProvider
         _iterator.Reset();
     }
 
-    public bool Next(out TermMatch term)
-    {
-        // Same allocation-free decode as FillPostingListIds. There is no Dispose hook on ITermsProvider and Next
-        // yields one term per call, so the buffer is rented/returned within the call - this still spares the
-        // per-term string allocation for every non-matching term the loop skips before it finds a hit.
-        char[] buffer = null;
-        try
-        {
-            while (_iterator.MoveNext(out var compactKey, out _, out _))
-            {
-                var key = compactKey.Decoded();
-                if (_regex.IsMatch(ToChars(key, ref buffer)) == false)
-                    continue;
-
-                term = _searcher.TermQuery(_field, compactKey, _tree);
-                return true;
-            }
-        }
-        finally
-        {
-            if (buffer != null)
-                ArrayPool<char>.Shared.Return(buffer);
-        }
-
-        term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
-        return false;
-    }
-
     public QueryInspectionNode Inspect()
     {
         return new QueryInspectionNode($"{nameof(RegexTermsProvider<TLookupIterator>)}",

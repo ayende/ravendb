@@ -13,12 +13,6 @@ namespace Corax.Querying.Matches.Meta
 
         public void Reset() { }
 
-        public bool Next(out TermMatch term)
-        {
-            term = default;
-            return false;
-        }
-
         public QueryInspectionNode Inspect() => new("EmptyTermsProvider");
     }
 }

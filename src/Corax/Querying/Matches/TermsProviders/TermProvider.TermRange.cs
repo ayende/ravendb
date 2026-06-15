@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
-using System.Runtime.CompilerServices;
 using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
@@ -159,29 +158,6 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
             false when _high.Options != SliceOptions.AfterAllKeys => true,
             _ => false
         };
-    }
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public bool Next(out TermMatch term)
-    {
-        if (_isEmpty || _iterator.MoveNext(out var termId) == false)
-            goto ReturnEmpty;
-
-
-        if (termId == _endContainerId)
-        {
-            _isEmpty = true;
-
-            if (_shouldIncludeLastTerm == false)
-                goto ReturnEmpty;
-        }
-
-        term = _indexSearcher.TermQuery(_field, termId, 1D);
-        return true;
-
-        ReturnEmpty:
-        term = TermMatch.CreateEmpty(_indexSearcher, _indexSearcher.Allocator);
-        return false;
     }
 
     public QueryInspectionNode Inspect()

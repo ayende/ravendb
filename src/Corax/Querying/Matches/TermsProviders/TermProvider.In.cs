@@ -41,19 +41,6 @@ namespace Corax.Querying.Matches.TermsProviders
 
         public void Reset() => _termIndex = -1;
 
-        public bool Next(out TermMatch term)
-        {
-            _termIndex++;
-            if (_termIndex >= _terms.Count)
-            {
-                term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
-                return false;
-            }
-
-            term = _searcher.TermQuery(_field, _terms[_termIndex]);
-            return true;
-        }
-
         public QueryInspectionNode Inspect()
         {
             return new QueryInspectionNode(nameof(InTermsProvider),

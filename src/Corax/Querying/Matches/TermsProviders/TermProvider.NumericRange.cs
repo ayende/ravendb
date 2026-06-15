@@ -149,34 +149,6 @@ namespace Corax.Querying.Matches.TermsProviders
             _iterator.Seek(_iterator.IsForward ? _low : _high);
         }
         
-        public bool Next(out TermMatch term)
-        {
-            if (_isEmpty)
-            {
-                term = default;
-                return false;
-            }
-            bool hasNext = _iterator.MoveNext(out var termId);
-            if (hasNext == false)
-                goto Empty;
-
-
-            if (termId == _lastTermId)
-            {
-                _isEmpty = true;
-                if (_includeLastTerm == false)
-                    goto Empty;
-            }
-            
-            // Ratio will be always 1 (sizeof(T)/sizeof(T))
-            term = _searcher.TermQuery(_field, termId, 1);
-            return true;
-
-            Empty:
-            term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
-            return false;
-        }
-
         public QueryInspectionNode Inspect()
         {
             string lowValue;

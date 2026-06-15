@@ -57,25 +57,6 @@ namespace Corax.Querying.Matches.TermsProviders
             _iterator.Reset();
         }
 
-        public bool Next(out TermMatch term)
-        {
-            var contains = _term.Decoded();
-            while (_iterator.MoveNext(out var key, out _, out _))
-            {
-                var termSlice = key.Decoded();
-                if (!termSlice.Contains(contains))
-                {
-                    continue;
-                }
-
-                term = _searcher.TermQuery(_field, key, _tree);
-                return true;
-            }
-
-            term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
-            return false;
-        }
-
         public QueryInspectionNode Inspect()
         {
             return new QueryInspectionNode($"{nameof(ContainsTermsProvider<TLookupIterator>)}",

@@ -73,25 +73,6 @@ namespace Corax.Querying.Matches.TermsProviders
             _iterator.Reset();
         }
         
-        public bool Next(out TermMatch term)
-        {
-            if (_fetchNulls)
-            {
-                _fetchNulls = false;
-                term = _searcher.TermQuery(_field, containerId: _nullPostingListId, 1D);
-                return true;
-            }
-            
-            while (_iterator.MoveNext(out var key, out _, out _))
-            {
-                term = _searcher.TermQuery(_field, key, _tree);
-                return true;
-            }
-
-            term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
-            return false;
-        }
-
         public bool GetNextTerm(out ReadOnlySpan<byte> term)
         {
             if (_fetchNulls)
