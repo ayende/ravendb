@@ -30,7 +30,10 @@ namespace Raven.Server.Documents.Queries
                 var nextProbe = Hashing.Mix(metadataHash) % CacheSize;
                 metadata = _cache[nextProbe];
                 if (metadata == null || metadata.CacheKey != metadataHash)
+                {
+                    metadata = null; // Try-contract: a false return must not leak a non-matching slot through `out metadata`.
                     return false;
+                }
             }
 
             // we don't compare the query parameters because they don't matter
@@ -42,6 +45,12 @@ namespace Raven.Server.Documents.Queries
             if (shouldUseCachedItem)
             {
                 metadata.LastQueriedAt = DateTime.UtcNow;
+            }
+            else
+            {
+                // Hash collision (same slot, different query text): drop the colliding entry so callers that only
+                // null-check `out metadata` can't execute against another query's metadata. See IndexQueryServerSide.Create.
+                metadata = null;
             }
             return shouldUseCachedItem;
         }

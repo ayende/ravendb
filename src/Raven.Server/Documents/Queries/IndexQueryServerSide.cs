@@ -289,9 +289,13 @@ namespace Raven.Server.Documents.Queries
 
                 ulong metadataHash = 0;
                 QueryMetadata metadata = null;
-                cache?.TryGetMetadata(result, addSpatialProperties, out metadataHash, out metadata);
+                // TryGetMetadata leaves `out metadata` pointing at a colliding cache entry (same hash slot, different
+                // query text) when it returns false, so the bool must be honored — a `metadata != null` check alone
+                // would execute this query against another query's cached metadata. See the sibling path above.
+                if (cache == null || cache.TryGetMetadata(result, addSpatialProperties, out metadataHash, out metadata) == false)
+                    metadata = new QueryMetadata(result.Query, result.QueryParameters, metadataHash, addSpatialProperties);
 
-                result.Metadata = metadata ?? new QueryMetadata(result.Query, result.QueryParameters, metadataHash, addSpatialProperties);
+                result.Metadata = metadata;
 
                 SetupTimings(result);
                 SetupPagingFromQueryMetadata();
