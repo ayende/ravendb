@@ -2,7 +2,6 @@ using System;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Text.RegularExpressions;
 using System.Threading;
 using Corax.Indexing;
 using Corax.Querying.Matches.Meta;
@@ -210,7 +209,7 @@ public static class QueryPrimitives
             Planning.ClauseType.Exists => searcher.ExistsQuery(info.FieldMeta),
             Planning.ClauseType.StartsWith => searcher.StartWithQuery(info.FieldMeta, exec.StringValues[info.Packed.Param1]),
             Planning.ClauseType.EndsWith => searcher.EndsWithQuery(info.FieldMeta, exec.StringValues[info.Packed.Param1]),
-            Planning.ClauseType.Regex => searcher.RegexQuery(info.FieldMeta, new Regex(exec.StringValues[info.Packed.Param1])),
+            Planning.ClauseType.Regex => searcher.RegexQuery(info.FieldMeta, exec.RegexFactory(exec.StringValues[info.Packed.Param1])),
             Planning.ClauseType.GreaterThan or Planning.ClauseType.GreaterThanOrEqual
                 or Planning.ClauseType.LessThan or Planning.ClauseType.LessThanOrEqual
                 => info.Packed.RangeQuery(info.ClauseType, info.FieldMeta, searcher, exec),

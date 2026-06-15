@@ -1,5 +1,4 @@
 using System;
-using System.Text.RegularExpressions;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
@@ -65,7 +64,7 @@ internal static partial class QueryPlanBuilder
                 return HandleSearch();
 
             case ClauseType.Regex:
-                return indexSearcher.RegexQuery(fieldMeta, new Regex(root.StringValues[packed.Param1]));
+                return indexSearcher.RegexQuery(fieldMeta, builderParams.Factories.GetRegexFactory(root.StringValues[packed.Param1]));
 
             case ClauseType.Spatial:
                 return HandleSpatial(clause.SpatialMethodType);

@@ -101,6 +101,10 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
         QueryPlanBuilder.AttachSpatialAndVectorClauses(_exec, template, planParams, builderParameters, _writer);
         _writer.SetValues(_exec);
+        // A regex tree-scan leaf is materialized lazily inside the Corax engine, which cannot reach the server's
+        // QueryBuilderFactories; hand it the index's cached regex factory (compiled + match-timeout protected)
+        // so it never falls back to a bare new Regex per query. Mirrors the spatial factory used at resolve-time.
+        _exec.RegexFactory = builderParameters.Factories.GetRegexFactory;
         return _exec;
     }
 

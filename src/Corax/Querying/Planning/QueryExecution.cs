@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using Corax.Mappings;
 using Voron;
 
@@ -72,6 +73,12 @@ public class QueryExecution
     public SpatialFilterOp[] SpatialFilters;
     
     public string[] StringValues;
+
+    /// <summary>Builds a <see cref="Regex"/> from a pattern string for a regex tree-scan leaf. Set by the server
+    /// (<c>BuildResolver.FinalizePlan</c>) to the index's cached regex factory so a tree-scan leaf reuses the
+    /// compiled-and-cached regex with its match timeout, rather than constructing a bare <c>new Regex</c> per query.
+    /// Mirrors the way spatial leaves carry their server-resolved <see cref="Mappings.FieldMetadata"/>/field objects.</summary>
+    public Func<string, Regex> RegexFactory;
 
     public VectorSearchOp[] VectorSelects;
 
