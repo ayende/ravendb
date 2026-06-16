@@ -12,6 +12,7 @@ using Voron.Data.CompactTrees;
 using Voron.Data.Graphs;
 using Voron.Data.Lookups;
 using Voron.Data.PostingLists;
+using Voron.Util;
 
 namespace Corax.Querying.Matches.TermsProviders
 {
@@ -195,11 +196,49 @@ namespace Corax.Querying.Matches.TermsProviders
             throw new NotSupportedException($"{nameof(ExistsTermsProvider<TLookupIterator>)} supports only terms aggregation.");
         }
 
-        public bool SupportsPostingCount => false;
-
         public RangePostingStats CountPostingsInRange(int maxTerms)
         {
-            throw new NotSupportedException($"{nameof(ExistsTermsProvider<TLookupIterator>)} supports only terms aggregation.");
+            // An exists scan walks every term in the field, so "all in range" is the whole field. We reuse the shared
+            // header-only bucket scan (no posting ids decoded) and add the field's synthetic null group, which the
+            // matching path emits but which is not a term in the tree. The summed posting count overcounts multi-valued
+            // documents, but the only caller (DirectScan known-total) already excludes multi-valued fields upstream, so
+            // here the total equals the document count exactly.
+            var stats = new RangePostingStats();
+            var allocator = _searcher.Allocator;
+            var llt = _searcher._transaction.LowLevelTransaction;
+
+            Span<NativeList<long>> buckets = stackalloc NativeList<long>[RangePostingBuckets.Count];
+            RangePostingBuckets.Initialize(buckets, allocator);
+
+            try
+            {
+                while (_iterator.MoveNext(out _, out long termId, out _))
+                {
+                    buckets[(int)(termId & (long)TermIdMask.EnsureIsSingleMask)].Add(allocator, termId);
+                    stats.Terms++;
+
+                    if (maxTerms > 0 && stats.Terms >= maxTerms)
+                        break;
+                }
+
+                RangePostingBuckets.Summarize(buckets, allocator, llt, ref stats);
+
+                if (_nullExists)
+                {
+                    using var nullPostingList = _searcher.GetPostingList(_nullPostingListId);
+                    var nullCount = nullPostingList.State.NumberOfEntries;
+                    stats.Larges++;
+                    stats.LargePostings += nullCount;
+                    stats.Postings += nullCount;
+                    stats.Terms++;
+                }
+
+                return stats;
+            }
+            finally
+            {
+                RangePostingBuckets.Release(buckets, allocator);
+            }
         }
 
         public long EstimateTermCountInRange()

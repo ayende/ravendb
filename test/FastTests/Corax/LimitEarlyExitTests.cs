@@ -422,6 +422,48 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
         Assert.True(plan.Parameters.TryGetValue("PlanGraphDot", out var dot) && dot.Contains("data_knownexacttotal=\"399\""), dot);
     }
 
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task FullScanOrderByStringWithNullsReportsExactTotalIncludingNulls(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        new DocIndex().Execute(store);
+
+        const int withTag = 300;
+        const int nullTag = 200;
+        using (var bulk = store.BulkInsert())
+        {
+            for (int i = 0; i < withTag; i++)
+                bulk.Store(new Doc { Value = i, Tag = "t" + (i % 50) });
+            for (int i = 0; i < nullTag; i++)
+                bulk.Store(new Doc { Value = withTag + i, Tag = null });
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        using var session = store.OpenAsyncSession();
+        // Full scan ORDER BY a string field drives off the exists provider, which is built skipNulls because
+        // SortedDrivingMatch emits the field's null (and non-existing) groups itself. The exact TotalResults must
+        // therefore include those null docs: it is the index entry count (500), NOT the exists provider's
+        // null-excluded posting sum (300). Asserting the known-total plan value pins the count to the
+        // page-bounded fast path rather than a Fill drain (which would also read 500 and hide a regression).
+        var results = await session.Advanced
+            .AsyncDocumentQuery<Doc, DocIndex>()
+            .OrderBy(x => x.Tag)
+            .Take(10)
+            .Statistics(out var stats)
+            .Timings(out QueryTimings timings)
+            .ToListAsync();
+
+        Assert.Equal(10, results.Count);
+        Assert.Equal(withTag + nullTag, stats.TotalResults);
+
+        var plan = (QueryInspectionNode)timings.QueryPlan;
+        Assert.NotNull(plan);
+        Assert.True(plan.Parameters.TryGetValue("PlanGraphDot", out var dot) &&
+                    dot.Contains($"data_knownexacttotal=\"{withTag + nullTag}\""), dot);
+    }
+
     private void InsertDocuments(IDocumentStore store, int count)
     {
         new DocIndex().Execute(store);

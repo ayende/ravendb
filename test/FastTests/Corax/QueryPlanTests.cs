@@ -117,7 +117,7 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
     public void TimingIsOverlaidOnStructuralPlan_ForCompiledMatch(Options options)
     {
         // A term query runs through CompiledQueryMatch, so OverlayTimings annotates the structural plan
-        // with the run's telemetry: Output on the CompiledQuery node, and Output/Ms on the executed op.
+        // with the run's telemetry: Output on the CompiledQuery node, and OutputWithDups/Ms on the executed op.
         using var store = GetDocumentStore(options);
         new Index().Execute(store);
         using var session = store.OpenSession();
@@ -137,7 +137,7 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
         Assert.True(compiledRoot.Parameters.ContainsKey("Output"));
         var fill = compiledRoot.Children.First(c => c.Operation == "Fill");
         Assert.True(fill.Parameters.ContainsKey("Ms"));
-        Assert.True(fill.Parameters.ContainsKey("Output"));
+        Assert.True(fill.Parameters.ContainsKey("OutputWithDups"));
         // structural data sits alongside it
         Assert.Equal("Name", fill.Parameters["FieldName"]);
         Assert.Equal("maciej", fill.Parameters["Term"]);

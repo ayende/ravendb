@@ -137,6 +137,15 @@ internal static partial class QueryPlanBuilder
             if (builderParams.Metadata?.Query?.Filter != null)
                 return -1;
 
+            // A full index-only scan (no WHERE) emits every document exactly once — DirectScanSimpleMatch dedups,
+            // and SortedDrivingMatch adds the field's null and non-existing groups on top of the driving provider's
+            // postings. The exact total is therefore the index entry count. Summing the driving exists provider's
+            // postings instead would undercount by those null/non-existing groups (the provider is built skipNulls),
+            // so we read the O(1) entry count directly — also correct for multi-valued fields and matching the
+            // compiled-plan IsAllEntries known-total.
+            if (isFullScan)
+                return ctx.PlanParams.IndexSearcher.NumberOfEntries;
+
             // Multi-valued fields place a document under several terms; DirectScanSimpleMatch dedups those via
             // EmittedBitmap, so the summed posting count would overcount documents. Single-valued fields only.
             if (ctx.PlanParams.IndexSearcher.HasMultipleTermsInField(ctx.OrderByFields[0].Field))
@@ -145,15 +154,13 @@ internal static partial class QueryPlanBuilder
             // CountPostingsInRange advances (and exhausts) a provider's iterator, so it must run on a throwaway
             // provider resolved with the same bounds — never the one feeding the SortedDrivingMatch above, which
             // would leave that scan with nothing to read.
-            var (countMatch, _) = isFullScan
-                ? ResolveFullScanDrivingProvider(ref ctx, forward)
-                : ResolveDrivingProvider(ref ctx, walkerCtx, drivingClause, forward);
+            var (countMatch, _) = ResolveDrivingProvider(ref ctx, walkerCtx, drivingClause, forward);
             try
             {
-                // Not every driving provider can tally its postings without decoding them. An exists-scan
-                // (full scan over a string field) walks entries rather than terms and cannot supply a posting
-                // count — SupportsPostingCount is false there, so fall back to the drain instead of throwing.
-                if (countMatch is TermsProviderMatch countTpm && countTpm.Provider is IAggregationProvider { SupportsPostingCount: true } agg)
+                // The range / numeric driving providers tally their postings from posting-list headers alone, without
+                // decoding any ids. The multi-valued overcount is excluded above, so the summed posting count is the
+                // exact document total.
+                if (countMatch is TermsProviderMatch countTpm && countTpm.Provider is IAggregationProvider agg)
                     return agg.CountPostingsInRange(0).Postings;
                 return -1;
             }
