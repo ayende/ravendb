@@ -29,6 +29,9 @@ internal static partial class QueryPlanBuilder
         if (analyzedPrefix.HasValue == false || analyzedPrefix.Size > byte.MaxValue) // if too long, cannot be used for compound
             return null; // fall back to bitmap
 
+        // Records which seek CreateDrivingMatch actually built, so the introspection below reports the real bound
+        // (a field2 composite range vs. the field1-only prefix fallback) instead of a hard-coded prefix string.
+        bool usedCompositeRange = false;
         IQueryMatch drivingMatch = CreateDrivingMatch(ref ctx);
         DirectScanMatchBase directScan;
         if (ctx.Exec.Plan.CompoundFieldResidualSet is { HasPredicates: true })
@@ -54,6 +57,7 @@ internal static partial class QueryPlanBuilder
                 TryBuildCompositeRangeKeys(ref context, analyzedPrefix, fieldName, field2Range, out var lowSlice, out var highSlice))
             {
                 bool forward = context.OrderByFields[0].Ascending;
+                usedCompositeRange = true;
                 // The composite key's field2 suffix encodes the bound value exactly, so the clause's
                 // strict/inclusive semantics map straight onto the range markers on the compound key:
                 // a strict bound (>, <) must exclude the term equal to the boundary, otherwise the
@@ -77,7 +81,9 @@ internal static partial class QueryPlanBuilder
         {
             directScan.DrivingTreeName = compoundFieldName;
             directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
-            directScan.SeekBound = $"'{field1ValueStr}' (prefix, validatePostfixLen)";
+            directScan.SeekBound = usedCompositeRange
+                ? $"'{field1ValueStr}' + {field2Range.Clause.FieldName} {field2Range.Clause.ClauseType} (composite range)"
+                : $"'{field1ValueStr}' (prefix, validatePostfixLen)";
             directScan.Direction = context.OrderByFields[0].Ascending ? "Forward" : "Backward";
             directScan.ResidualDescription = context.Exec.Plan.CompoundFieldResidualSet?.Predicates is { } cfr ? string.Join(", ", Array.ConvertAll(cfr, p => $"{p.FieldName} {p.CompareOp}")) : null;
             directScan.Reason = $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} < bitmap_cost({bitmapCost})";
