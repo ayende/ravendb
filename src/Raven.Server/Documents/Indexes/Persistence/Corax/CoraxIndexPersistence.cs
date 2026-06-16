@@ -44,9 +44,9 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
     private const int MaxFieldsWithMultipleTermsToCache = 512;
 
     private Dictionary<Slice, HnswIndexCache> _hnswCaches;
-    // Long-lived, monotonic snapshot of field names recorded as multi-valued (or null when over the cap).
-    // Rebuilt only when the underlying tree grew. Shared by reference into each IndexTransactionCache.
-    private HashSet<string> _fieldsWithMultipleTerms;
+    // The single source of truth for both the vector caches and the multi-valued field snapshot we publish.
+    // The snapshot itself lives in _currentCache.FieldsWithMultipleTerms (no separate field), so there is one
+    // instance to reason about; "previous" for the monotonic rebuild is read back from it.
     private IndexTransactionCache _currentCache;
     private StorageEnvironment _environment;
     private Action<LowLevelTransaction> _newTransactionCreatedHandler;
@@ -225,12 +225,13 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
 
     public override void Initialize(StorageEnvironment environment)
     {
+        HashSet<string> fieldsWithMultipleTerms = null;
         using (var roTx = environment.ReadTransaction())
         {
             WarmInitialCaches(roTx);
-            _fieldsWithMultipleTerms = ReadFieldsWithMultipleTerms(roTx, _fieldsWithMultipleTerms);
+            fieldsWithMultipleTerms = ReadFieldsWithMultipleTerms(roTx, previous: null);
         }
-        _currentCache = BuildCurrentCache();
+        _currentCache = BuildCurrentCache(fieldsWithMultipleTerms);
 
         _environment = environment;
         _newTransactionCreatedHandler = tx => tx.ImmutableExternalState = Volatile.Read(ref _currentCache);
@@ -247,8 +248,8 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
         // Runs at the last point a committing write tx can read its own just-written trees. Refresh the
         // multi-valued field snapshot (rebuilt only if the tree actually grew) and hand it - together with the
         // current vector caches - to the cache that PublishIndexCacheToNewTransactions promotes for new readers.
-        _fieldsWithMultipleTerms = ReadFieldsWithMultipleTerms(tx, _fieldsWithMultipleTerms);
-        return BuildCurrentCache();
+        var fields = ReadFieldsWithMultipleTerms(tx, _currentCache?.FieldsWithMultipleTerms);
+        return BuildCurrentCache(fields);
     }
 
     // Reads the MultipleTermsInField tree into a string set. The set is monotonic (write side only ever adds),
@@ -283,16 +284,17 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
     }
 
     // Single construction point for the per-tx cache so the vector caches and the multi-valued field snapshot
-    // never clobber one another: every writer of _currentCache routes through here.
-    private IndexTransactionCache BuildCurrentCache()
+    // never clobber one another: every writer of _currentCache routes through here. The snapshot is passed in
+    // (callers preserving it read the current value back from _currentCache.FieldsWithMultipleTerms).
+    private IndexTransactionCache BuildCurrentCache(HashSet<string> fieldsWithMultipleTerms)
     {
-        if (_hnswCaches is null && _fieldsWithMultipleTerms is null)
+        if (_hnswCaches is null && fieldsWithMultipleTerms is null)
             return null;
 
         return new IndexTransactionCache
         {
             VectorNodeCaches = _hnswCaches,
-            FieldsWithMultipleTerms = _fieldsWithMultipleTerms
+            FieldsWithMultipleTerms = fieldsWithMultipleTerms
         };
     }
 
@@ -315,7 +317,7 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
             {
                 Volatile.Write(ref _hnswCaches, null);
                 // Drop only the vector caches; keep publishing the multi-valued field snapshot if we have one.
-                Volatile.Write(ref _currentCache, BuildCurrentCache());
+                Volatile.Write(ref _currentCache, BuildCurrentCache(_currentCache?.FieldsWithMultipleTerms));
             }
             return;
         }
@@ -349,7 +351,7 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
             grown[kv.Key] = kv.Value;
 
         Volatile.Write(ref _hnswCaches, grown);
-        Volatile.Write(ref _currentCache, BuildCurrentCache());
+        Volatile.Write(ref _currentCache, BuildCurrentCache(_currentCache?.FieldsWithMultipleTerms));
     }
 
     private void WarmInitialCaches(Transaction tx)
