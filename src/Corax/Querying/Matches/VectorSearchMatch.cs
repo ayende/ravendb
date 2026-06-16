@@ -354,10 +354,10 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
                 { "SearchMode", searchMode },
                 { "IsExact", _isExact.ToString() },
                 { "IsScanning", _scanningQuery.ToString() },
-                { "Minimum match", _minimumMatch.ToString(CultureInfo.InvariantCulture) },
-                { "Number of candidates", _numberOfCandidates.ToString() },
-                { "Filter entries", _filterEntriesCount.ToString("N0") },
-                { "Number of candidates scanned", (_vectorSearchRetriever.CandidatesProcessed).ToString()},
+                { "MinimumMatch", _minimumMatch.ToString(CultureInfo.InvariantCulture) },
+                { "NumberOfCandidates", _numberOfCandidates.ToString() },
+                { "FilterEntries", _filterEntriesCount.ToString("N0") },
+                { "NumberOfCandidatesScanned", (_vectorSearchRetriever.CandidatesProcessed).ToString()},
                 { "InitMs", _initDurationMs.ToString("F3", CultureInfo.InvariantCulture) }
             })
         {

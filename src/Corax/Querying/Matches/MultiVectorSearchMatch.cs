@@ -285,8 +285,8 @@ public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
                 { nameof(Hnsw.SimilarityMethod), _firstRetriever.SimilarityMethod?.ToString() ?? "Query not initialized." },
                 { "IsExact", _isExact.ToString() },
                 { "IsScanning", _scanningQuery.ToString() },
-                { "Minimum match", _minimumMatch.ToString(CultureInfo.InvariantCulture) },
-                { "Number of candidates", _numberOfCandidates.ToString() },
+                { "MinimumMatch", _minimumMatch.ToString(CultureInfo.InvariantCulture) },
+                { "NumberOfCandidates", _numberOfCandidates.ToString() },
             })
         {
             // Reflects the lifting decision recorded on this match, not the type: a vector leaf inside an OR is
