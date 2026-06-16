@@ -206,27 +206,46 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         private Lookup<Int64LookupKey> _lookup;
         private UnmanagedSpan<long> _batchResults;
         private int _comparerId;
-        private TermsReader _termsReader;
         private int _nullResult;
         private long _nullTermContainerId;
         private long _nonExistingTermContainerId;
-        
+        // When used as a tie-break (comparerId != 0), the term blob for every batch entry is resolved once up front
+        // (see Init) via the same GetFor + Container.GetAll pipeline the primary key uses, so Compare(int,int) is a
+        // single CompactKeyComparer call over the pre-loaded blobs instead of two TermsReader.GetTerm container reads.
+        private UnmanagedSpan* _resolvedTerms;
+
         public Slice GetSortFieldName(SortingMultiMatch<TInner> match) => match._orderMetadata[_comparerId].Field.FieldName;
 
-        
+
         public void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
         {
             _comparerId = comparerId;
             var fieldName = match._orderMetadata[_comparerId].Field.FieldName;
             _lookup = match._searcher.EntriesToTermsReader(fieldName);
             _batchResults = batchResults;
-            _termsReader = match._searcher.TermsReaderFor(fieldName);
             _nullResult = match.NullIsSmallest(_comparerId) ? 1 : -1;
-            
+
             if (match._searcher.TryGetPostingListForNull(fieldName, out _, out _nullTermContainerId) == false)
                 _nullTermContainerId = -1;
             if (match._searcher.TryGetPostingListForNonExisting(fieldName, out _, out _nonExistingTermContainerId) == false)
                 _nonExistingTermContainerId = -1;
+
+            // comparerId == 0 is the primary key: it sorts via SortBatch (which resolves the term blobs itself),
+            // never through Compare(int,int), and Init gets a default (empty) batch — so nothing to pre-resolve.
+            if (comparerId != 0 && _lookup != null)
+            {
+                var llt = match._searcher.Transaction.LowLevelTransaction;
+                var termsScope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(UnmanagedSpan), out var termsBuffer);
+                match.TrackSecondaryResolveScope(termsScope);
+                _resolvedTerms = (UnmanagedSpan*)termsBuffer.Ptr;
+
+                // Transient term-id scratch: only needed to drive Container.GetAll, freed once the blobs are loaded.
+                using var idScope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var idBuffer);
+                var termIds = new Span<long>(idBuffer.Ptr, batchResults.Length);
+                _lookup.GetFor(batchResults, termIds, SortingHelpers.MissingTermId);
+                SortingHelpers.ReplaceNullAndNonExistingTermIds(termIds, _nonExistingTermContainerId, _nullTermContainerId, SortingHelpers.MissingTermId);
+                Container.GetAll(llt, termIds, new Span<UnmanagedSpan>(_resolvedTerms, batchResults.Length), SortingHelpers.MissingTermId, llt.PageLocator);
+            }
         }
 
         public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
@@ -266,10 +285,7 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
 
         public int Compare(int x, int y)
         {
-            var termX = _termsReader.GetTerm(_batchResults[x], nullTermId: _nullTermContainerId, nonExistingTermId: _nonExistingTermContainerId);
-            var termY = _termsReader.GetTerm(_batchResults[y], nullTermId: _nullTermContainerId, nonExistingTermId: _nonExistingTermContainerId);
-            
-            return CompactKeyComparer.Compare(termX, termY, _nullResult);
+            return CompactKeyComparer.Compare(_resolvedTerms[x], _resolvedTerms[y], _nullResult);
         }
     }
 
@@ -279,7 +295,10 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         private UnmanagedSpan<long> _batchResults;
         private int _comparerId;
         private long _missingValue;
-        
+        // When used as a tie-break (comparerId != 0), the field's value for every batch entry is resolved once
+        // up front (see Init) so Compare(int,int) is an O(1) array read instead of two B-tree lookups per call.
+        private long* _resolved;
+
         public Slice GetSortFieldName(SortingMultiMatch<TInner> match)
         {
             IndexFieldsMappingBuilder.GetFieldNameForLongs(match._searcher.Allocator, match._orderMetadata[_comparerId].Field.FieldName, out var lngName);
@@ -292,6 +311,17 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             _lookup = match._searcher.EntriesToTermsReader(GetSortFieldName(match));
             _batchResults = batchResults;
             _missingValue = match.NullIsSmallest(_comparerId) ? long.MinValue : long.MaxValue;
+
+            // comparerId == 0 is the primary key: it sorts via SortBatch (the heap's primary comparison reads the
+            // pre-loaded terms array), never through Compare(int,int), and Init gets a default (empty) batch — so
+            // there is nothing to pre-resolve. For a tie-break, resolve the whole batch in one sequential pass.
+            if (comparerId != 0 && _lookup != null)
+            {
+                var scope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var buffer);
+                match.TrackSecondaryResolveScope(scope);
+                _resolved = (long*)buffer.Ptr;
+                _lookup.GetFor(batchResults, new Span<long>(_resolved, batchResults.Length), _missingValue);
+            }
         }
 
         public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
@@ -332,16 +362,7 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             if (_lookup == null) // field does not exist, so arbitrary sort order, whatever query said goes
                 return 0;
 
-            Span<long> buffer = stackalloc long[4] {_batchResults[x], _batchResults[y], -1, -1};
-            var swap = buffer[0] > buffer[1];
-            if (swap)
-                buffer[..2].Reverse();
-            
-            _lookup.GetFor(buffer[..2], buffer[2..], _missingValue);
-            if (swap) // In the case when we swapped the keys (since the lookup requires a sorted list as input), we have to swap the values before comparison to maintain the original order.
-                buffer[2..].Reverse();
-            
-            return buffer[2].CompareTo(buffer[3]);
+            return _resolved[x].CompareTo(_resolved[y]);
         }
     }
 
@@ -384,6 +405,9 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         private int _comparerId;
         private Lookup<Int64LookupKey> _lookup;
         private UnmanagedSpan<long> _batchResults;
+        // When used as a tie-break (comparerId != 0), every batch entry's value (as raw double bits) is resolved
+        // once up front (see Init) so Compare(int,int) is an O(1) array read instead of two B-tree lookups per call.
+        private long* _resolved;
 
         public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
             UnmanagedSpan<long> batchResults, Span<long> batchTermIds,
@@ -426,6 +450,17 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             _lookup = match._searcher.EntriesToTermsReader(GetSortFieldName(match));
             _batchResults = batchResults;
             _missingValue = BitConverter.DoubleToInt64Bits(match.NullIsSmallest(_comparerId) ? double.MinValue : double.MaxValue);
+
+            // comparerId == 0 is the primary key: it sorts via SortBatch, never through Compare(int,int), and Init
+            // gets a default (empty) batch — so nothing to pre-resolve. For a tie-break, resolve the whole batch in
+            // one sequential pass (raw double bits) so the per-pair comparison below needs no lookup.
+            if (comparerId != 0 && _lookup != null)
+            {
+                var scope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var buffer);
+                match.TrackSecondaryResolveScope(scope);
+                _resolved = (long*)buffer.Ptr;
+                _lookup.GetFor(batchResults, new Span<long>(_resolved, batchResults.Length), _missingValue);
+            }
         }
 
         public int Compare(UnmanagedSpan x, UnmanagedSpan y)
@@ -438,20 +473,7 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             if (_lookup == null) // field does not exist, so arbitrary sort order, whatever query said goes
                 return 0;
 
-            var bufferPtr = stackalloc long[4] {_batchResults[x], _batchResults[y], -1, -1};
-            var buffer = new Span<long>(bufferPtr, 4);
-            var swap = buffer[0] > buffer[1];
-            if (swap)
-                buffer.Slice(0, 2).Reverse();
-            
-            _lookup.GetFor(buffer[..2], buffer[2..], _missingValue);
-            
-            // In the case when we swapped the keys (since the lookup requires a sorted list as input), we have to swap the values before comparison to maintain the original order.
-            if (swap)
-                buffer.Slice(2,2).Reverse();
-            
-            var bufferPtrAsDouble = (double*)bufferPtr;
-            return BitConverter.Int64BitsToDouble(buffer[2]).CompareTo(BitConverter.Int64BitsToDouble(buffer[3]));
+            return BitConverter.Int64BitsToDouble(_resolved[x]).CompareTo(BitConverter.Int64BitsToDouble(_resolved[y]));
         }
     }
 

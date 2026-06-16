@@ -40,8 +40,20 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
     // This is data persisted for holding score from secondary comparer.
     private UnmanagedSpan<float> _secondaryScoreBuffer;
     private IDisposable _scoreBufferHandler;
-    
+
+    // Secondary/tertiary lookup comparers pre-resolve their per-entry sort values once over the whole batch
+    // (amortized, sequential), instead of doing two B-tree lookups per pairwise Compare. Those buffers must
+    // outlive Init (they back the heap's tie-break comparisons inside SortBatch), so their allocation scopes
+    // are parked here and released with the match.
+    private List<IDisposable> _secondaryResolveScopes;
+
     private int _alreadyReadIdx;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void TrackSecondaryResolveScope(IDisposable scope)
+    {
+        (_secondaryResolveScopes ??= new List<IDisposable>()).Add(scope);
+    }
 
 
 
@@ -325,6 +337,11 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         _scoresResults.Dispose();
         _distancesResults.Dispose();
         _scoreBufferHandler?.Dispose();
+        if (_secondaryResolveScopes != null)
+        {
+            foreach (var scope in _secondaryResolveScopes)
+                scope.Dispose();
+        }
         (_inner as IDisposable)?.Dispose();
     }
 
