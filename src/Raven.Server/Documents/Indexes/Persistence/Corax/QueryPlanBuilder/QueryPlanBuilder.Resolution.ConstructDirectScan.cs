@@ -41,9 +41,7 @@ internal static partial class QueryPlanBuilder
         long knownTotal = hasResidual ? -1 : TryResolveDirectScanKnownTotal(ref ctx, walkerCtx, drivingClause, isFullScan, forward);
         // The take threaded into the driving match. When knownTotal resolves, the scan is page-bounded even
         // under statistics, so the inner SortedDrivingWithTieBreakMatch can bound its per-group top-K heap.
-        int take = knownTotal >= 0
-            ? (ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll)
-            : ResolveSortedScanTake(ctx.BuilderParams);
+        int take = knownTotal >= 0 ? ctx.BuilderParams.Take : ResolveSortedScanTake(ctx.BuilderParams);
 
         IQueryMatch drivingMatch = hasTieBreak
             ? BuildSortedDrivingWithTieBreakMatch(ctx, tpm.Provider, tpm.Llt, ctx.BuilderParams.Index.Configuration.NullsSortMode, indexSearcher, nullFirst, take)

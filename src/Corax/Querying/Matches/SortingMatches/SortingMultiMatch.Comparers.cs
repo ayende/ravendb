@@ -232,20 +232,19 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
 
             // comparerId == 0 is the primary key: it sorts via SortBatch (which resolves the term blobs itself),
             // never through Compare(int,int), and Init gets a default (empty) batch — so nothing to pre-resolve.
-            if (comparerId != 0 && _lookup != null)
-            {
-                var llt = match._searcher.Transaction.LowLevelTransaction;
-                var termsScope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(UnmanagedSpan), out var termsBuffer);
-                match.TrackSecondaryResolveScope(termsScope);
-                _resolvedTerms = (UnmanagedSpan*)termsBuffer.Ptr;
+            if (comparerId == 0 || _lookup == null) return;
+            
+            var llt = match._searcher.Transaction.LowLevelTransaction;
+            var termsScope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(UnmanagedSpan), out var termsBuffer);
+            match.TrackSecondaryResolveScope(termsScope);
+            _resolvedTerms = (UnmanagedSpan*)termsBuffer.Ptr;
 
-                // Transient term-id scratch: only needed to drive Container.GetAll, freed once the blobs are loaded.
-                using var idScope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var idBuffer);
-                var termIds = new Span<long>(idBuffer.Ptr, batchResults.Length);
-                _lookup.GetFor(batchResults, termIds, SortingHelpers.MissingTermId);
-                SortingHelpers.ReplaceNullAndNonExistingTermIds(termIds, _nonExistingTermContainerId, _nullTermContainerId, SortingHelpers.MissingTermId);
-                Container.GetAll(llt, termIds, new Span<UnmanagedSpan>(_resolvedTerms, batchResults.Length), SortingHelpers.MissingTermId, llt.PageLocator);
-            }
+            // Transient term-id scratch: only needed to drive Container.GetAll, freed once the blobs are loaded.
+            using var idScope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var idBuffer);
+            var termIds = new Span<long>(idBuffer.Ptr, batchResults.Length);
+            _lookup.GetFor(batchResults, termIds, SortingHelpers.MissingTermId);
+            SortingHelpers.ReplaceNullAndNonExistingTermIds(termIds, _nonExistingTermContainerId, _nullTermContainerId, SortingHelpers.MissingTermId);
+            Container.GetAll(llt, termIds, new Span<UnmanagedSpan>(_resolvedTerms, batchResults.Length), SortingHelpers.MissingTermId, llt.PageLocator);
         }
 
         public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
@@ -315,13 +314,11 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             // comparerId == 0 is the primary key: it sorts via SortBatch (the heap's primary comparison reads the
             // pre-loaded terms array), never through Compare(int,int), and Init gets a default (empty) batch — so
             // there is nothing to pre-resolve. For a tie-break, resolve the whole batch in one sequential pass.
-            if (comparerId != 0 && _lookup != null)
-            {
-                var scope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var buffer);
-                match.TrackSecondaryResolveScope(scope);
-                _resolved = (long*)buffer.Ptr;
-                _lookup.GetFor(batchResults, new Span<long>(_resolved, batchResults.Length), _missingValue);
-            }
+            if (comparerId == 0 || _lookup == null) return;
+            var scope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var buffer);
+            match.TrackSecondaryResolveScope(scope);
+            _resolved = (long*)buffer.Ptr;
+            _lookup.GetFor(batchResults, new Span<long>(_resolved, batchResults.Length), _missingValue);
         }
 
         public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
@@ -454,13 +451,11 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             // comparerId == 0 is the primary key: it sorts via SortBatch, never through Compare(int,int), and Init
             // gets a default (empty) batch — so nothing to pre-resolve. For a tie-break, resolve the whole batch in
             // one sequential pass (raw double bits) so the per-pair comparison below needs no lookup.
-            if (comparerId != 0 && _lookup != null)
-            {
-                var scope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var buffer);
-                match.TrackSecondaryResolveScope(scope);
-                _resolved = (long*)buffer.Ptr;
-                _lookup.GetFor(batchResults, new Span<long>(_resolved, batchResults.Length), _missingValue);
-            }
+            if (comparerId == 0 || _lookup == null) return;
+            var scope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var buffer);
+            match.TrackSecondaryResolveScope(scope);
+            _resolved = (long*)buffer.Ptr;
+            _lookup.GetFor(batchResults, new Span<long>(_resolved, batchResults.Length), _missingValue);
         }
 
         public int Compare(UnmanagedSpan x, UnmanagedSpan y)

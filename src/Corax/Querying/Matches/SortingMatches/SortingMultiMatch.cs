@@ -50,7 +50,7 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
     private int _alreadyReadIdx;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void TrackSecondaryResolveScope(IDisposable scope)
+    private void TrackSecondaryResolveScope(IDisposable scope)
     {
         (_secondaryResolveScopes ??= new List<IDisposable>()).Add(scope);
     }
@@ -132,7 +132,7 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         where TComparer3 : struct, IEntryComparer, IComparer<int>, IComparer<UnmanagedSpan>  
     
     {
-        // This method should also be re-entrant for the case where we have already pre-sorted everything and
+        // This method should also be re-entrant for the case where we have already pre-sorted everything, and
         // we will just need to acquire via pages the totality of the results.
         if (match.TotalResults == NotStarted)
         {
@@ -140,53 +140,26 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
 
             if (match._inner is IBitmapQueryMatch bitmapMatch)
             {
-                // First access to Count runs the inner compiled pipeline (the AND/OR/scan that builds the
-                // candidate bitmap). Deliberately left outside the sort timer below: that execution is timed
-                // onto the inner CompiledQuery node's per-op telemetry, so charging it to the sort too would
-                // double-count the query. Everything after this line is sort-specific work.
                 match.TotalResults = bitmapMatch.Count;
                 if (match.TotalResults == 0)
                     return 0;
 
-                long sortStart = Stopwatch.GetTimestamp();
-                int total = (int)match.TotalResults;
-                var scope = match._searcher.Allocator.Allocate(total * sizeof(long), out var bs);
-                var allMatches = new Span<long>(bs.Ptr, total);
+                using var _ = match._searcher.Allocator.Allocate((int)match.TotalResults, out Span<long> allMatches);
                 int filled = bitmapMatch.Fill(allMatches);
+                
+                long sortStart = Stopwatch.GetTimestamp();
                 SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
-                scope.Dispose();
                 match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
             }
             else
             {
-                // Non-bitmap path: drain via Fill to preserve match-specific state (scores, etc.).
-                // Draining the inner match (Count + the Fill loop) is the inner query's execution, not sort
-                // work, so it is deliberately left untimed — only the SortResults call below is charged to the sort.
-                var count = match._inner.Count;
-                int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
-                var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
-                var allMatches = new Span<long>(bs.Ptr, bufferSize);
-                int filled = 0;
-                int r;
-                while ((r = match._inner.Fill(allMatches[filled..])) > 0)
-                {
-                    filled += r;
-                    if (filled >= allMatches.Length)
-                    {
-                        match._searcher.Allocator.GrowAllocation(ref bs, ref scope, allMatches.Length * sizeof(long));
-                        allMatches = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
-                    }
-                }
-                match.TotalResults = filled;
+                using var scope = DrainInnerMatch(out Span<long> allMatches);
                 if (match.TotalResults == 0)
-                {
-                    scope.Dispose();
                     return 0;
-                }
+
                 long sortStart = Stopwatch.GetTimestamp();
-                SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
+                SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches);
                 match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
-                scope.Dispose();
             }
         }
 
@@ -208,6 +181,28 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         match._entriesBufferScope.Dispose();
         
         return 0;
+
+        ByteStringContext<ByteStringMemoryCache>.InternalScope DrainInnerMatch(out Span<long> allMatches)
+        {
+            var count = match._inner.Count;
+            int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
+            var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
+            var buffer = new Span<long>(bs.Ptr, bufferSize);
+            var filled = 0;
+            int r;
+            while ((r = match._inner.Fill(buffer[filled..])) > 0)
+            {
+                filled += r;
+                if (filled >= buffer.Length)
+                {
+                    match._searcher.Allocator.GrowAllocation(ref bs, ref scope, buffer.Length * sizeof(long));
+                    buffer = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
+                }
+            }
+            match.TotalResults = filled;
+            allMatches = buffer[..filled];
+            return scope;
+        }
     }
     
     private static void SortResults<TComparer1, TComparer2, TComparer3>(SortingMultiMatch<TInner> match, Span<long> matches) 
@@ -337,11 +332,8 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         _scoresResults.Dispose();
         _distancesResults.Dispose();
         _scoreBufferHandler?.Dispose();
-        if (_secondaryResolveScopes != null)
-        {
-            foreach (var scope in _secondaryResolveScopes)
-                scope.Dispose();
-        }
+        foreach (var scope in _secondaryResolveScopes ?? [])
+            scope.Dispose();
         (_inner as IDisposable)?.Dispose();
     }
 
