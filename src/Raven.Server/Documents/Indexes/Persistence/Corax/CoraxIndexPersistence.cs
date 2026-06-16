@@ -242,7 +242,12 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
         // Runs at the last point a committing write tx can read its own just-written trees. Refresh the
         // multi-valued field snapshot (rebuilt only if the tree actually grew) and hand it - together with the
         // current vector caches - to the cache that PublishIndexCacheToNewTransactions promotes for new readers.
-        var fields = ReadFieldsWithMultipleTerms(tx, _currentCache?.FieldsWithMultipleTerms);
+        var previous = _currentCache?.FieldsWithMultipleTerms;
+        var fields = ReadFieldsWithMultipleTerms(tx, previous);
+        if (fields == previous)
+        {
+            ((CoraxIndexPersistence)_index.IndexPersistence).SharedPlanCache.TouchGeneration();
+        }
         return BuildCurrentCache(fields);
     }
 
@@ -263,7 +268,7 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
             return null;
 
         var set = new HashSet<string>((int)count, StringComparer.Ordinal);
-        using (var it = tree.Iterate(prefetch: false))
+        using (var it = tree!.Iterate(prefetch: false))
         {
             if (it.Seek(Slices.BeforeAllKeys))
             {
@@ -363,7 +368,7 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
         var llt = tx.LowLevelTransaction;
         foreach (var fieldName in vectorFieldNames)
         {
-            Debug.Assert(fieldName.HasValue && fieldName.Size > 0,
+            Debug.Assert(fieldName is { HasValue: true, Size: > 0 },
                 "Vector field name must be allocated and non-empty for cache keying");
             var cache = HnswIndexCache.WarmFromScratch(llt, fieldName, maxNodes);
             if (cache is null)

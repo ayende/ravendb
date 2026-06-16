@@ -12,7 +12,7 @@ namespace Corax.Querying.Planning;
 /// Caches compiled query plans per index instance.
 /// Lives on IndexSearcher — GC'd when the index is replaced.
 ///
-/// Two-generation structure: a single atomic <see cref="CacheGeneration"/> reference
+/// Two-generation structure: a single atomic <see cref="CacheRecord"/> reference
 /// holds both the current and previous ConcurrentDictionaries. Rotation swaps the
 /// entire generation atomically — no intermediate state where current and previous
 /// point to the same dict.
@@ -28,94 +28,37 @@ public class PlanCache
     private int MaxPlansPerQuery { get; }
     private int HalfOfMaxDistinctQueries { get; }
 
-    private static long _generationGen;
+    private static long GlobalGenerationIndex;
 
-    /// <summary>
-    /// Backing for <see cref="Generation"/>. Every value it ever holds — the one stamped at construction and every
-    /// one assigned by <see cref="ReconcileIndexState"/> — is drawn from the single process-wide <see cref="_generationGen"/>
-    /// counter, so no two assignments anywhere in the process can alias. That is what keeps a bumped generation from
-    /// colliding with a later instance's birth value (a local "++" would have: instance born at 5, bumped to 6, a
-    /// reset instance also born at 6 → false memo hit). Guarded together with <see cref="_multipleTermsCount"/> by
-    /// <see cref="_stateLock"/> on the write side.
-    /// </summary>
-    private long _generation = Interlocked.Increment(ref _generationGen);
+    private long _generationIdx = Interlocked.Increment(ref GlobalGenerationIndex);
 
-    /// <summary>
-    /// Highest count of multi-valued fields any searcher has reported to <see cref="ReconcileIndexState"/>. Monotonic:
-    /// a field never reverts to single-valued, so this only grows for a given index instance. It is the trigger input
-    /// for a generation bump, not the generation itself.
-    /// </summary>
-    private long _multipleTermsCount;
+    public long GenerationIdx => _generationIdx;
 
-    private readonly object _stateLock = new();
-
-    /// <summary>
-    /// Validity token for plan resolutions memoized outside this cache (e.g. on a QueryMetadata instance). A memo is
-    /// valid only while the value it recorded still equals this; any change forces a re-resolution. Two independent
-    /// events assign a fresh value:
-    /// <list type="bullet">
-    /// <item>construction — detects an index-instance swap (the PlanCache is replaced with the index);</item>
-    /// <item><see cref="ReconcileIndexState"/> — an index-state input that can change which plan a query resolves to
-    /// has changed (today: a field flipping to multi-valued).</item>
-    /// </list>
-    /// Because every value comes from one process-wide counter, a bumped generation can never alias a later instance's
-    /// birth value. Reading it detects both kinds of change with a single equality compare and no pinning.
-    /// </summary>
-    public long Generation => Volatile.Read(ref _generation);
-
-    /// <summary>
-    /// Fold the index-state inputs a searcher currently observes into the generation, called on the resolution path
-    /// before the memo is validated. Today the only such input is <paramref name="multipleTermsCount"/> (the number of
-    /// multi-valued fields in the searcher's transaction snapshot), which is monotonic per index instance. When it
-    /// advances past what the generation last reflected, a fresh generation is assigned, invalidating every memo.
-    ///
-    /// The dangerous direction — a multi-valued snapshot reusing a single-valued (sort-elided) plan — is impossible:
-    /// any snapshot whose count is higher than the elided plan's bumps the generation here before the caller reads it,
-    /// and generation values never repeat, so the elided memo can never re-match. The reverse — an older, smaller
-    /// snapshot landing on a plan built for a larger count — only ever yields a correct-but-pessimistic plan (a sort
-    /// applied where it could have been elided), so it is safe to leave as over-invalidation.
-    ///
-    /// Cheap monotonic fast path; the lock is taken only on the rare advance. As more index state begins to affect
-    /// plan choice, add it as further parameters/fields here so all such inputs flow through the one generation.
-    /// </summary>
-    public void ReconcileIndexState(long multipleTermsCount)
+    public void TouchGeneration()
     {
-        if (Volatile.Read(ref _multipleTermsCount) >= multipleTermsCount)
-            return;
-
-        lock (_stateLock)
-        {
-            if (_multipleTermsCount >= multipleTermsCount)
-                return;
-
-            // Bump the generation, then publish the count. A reader on the fast path that observes the new count is
-            // then guaranteed (release write of the count happens-after the release write of the generation) to also
-            // observe the new generation, so it can never validate a memo against a generation that predates this
-            // state change while believing the count is already up to date.
-            Volatile.Write(ref _generation, Interlocked.Increment(ref _generationGen));
-            Volatile.Write(ref _multipleTermsCount, multipleTermsCount);
-        }
+        // used to invalidate PlanMemo when FieldsWithMultipleTerms changes, so we'll recompute the plans for those queries
+        Volatile.Write(ref _generationIdx, Interlocked.Increment(ref GlobalGenerationIndex));
     }
 
-    private sealed record CacheGeneration(
+    private sealed record CacheRecord(
         ConcurrentDictionary<Vector256<long>, PerQueryPlans> Current,
         ConcurrentDictionary<Vector256<long>, PerQueryPlans> Previous);
 
-    private CacheGeneration _cacheGeneration;
+    private CacheRecord _cache;
 
     public PlanCache(int maxPlansPerQuery = 32, int halfOfMaxDistinctQueries = 2048)
     {
         maxPlansPerQuery = (maxPlansPerQuery + 15) & ~15; // 16 aligned - Vector256<ushort> loop can never read past the end of the array
         MaxPlansPerQuery = maxPlansPerQuery;
         HalfOfMaxDistinctQueries = Math.Max(16, halfOfMaxDistinctQueries / 2);
-        _cacheGeneration = new CacheGeneration([], []);
+        _cache = new CacheRecord([], []);
     }
 
     /// <summary>Locate the per-query bucket for a structural plan key, or null if no plan has been compiled
     /// for it yet. Stale reads are harmless — a miss just falls through to ParseTemplate + GetOrAddBucket.</summary>
     public PerQueryPlans GetBucket(in Vector256<long> structuralKey)
     {
-        var gen = _cacheGeneration;
+        var gen = _cache;
         if (gen.Current.TryGetValue(structuralKey, out var per) is false)
             gen.Previous.TryGetValue(structuralKey, out per);
 
@@ -127,16 +70,16 @@ public class PlanCache
     /// (on distinct-query count), so bucket creation is the single place the two-generation swap can trigger.</summary>
     public PerQueryPlans GetOrAddBucket(in Vector256<long> structuralKey, PlanTemplate template, string queryText)
     {
-        var gen = _cacheGeneration;
+        var gen = _cache;
 
         // When the current generation exceeds half the max, rotate.
         if (gen.Current.Count > HalfOfMaxDistinctQueries)
         {
-            var newGen = new CacheGeneration([], gen.Current);
+            var newGen = new CacheRecord([], gen.Current);
             // CompareExchange returns the previous value. If it equals gen, we won
             // the race and newGen is now installed. If another thread beat us, the
             // returned value is the generation they installed — use that instead.
-            var prev = Interlocked.CompareExchange(ref _cacheGeneration, newGen, gen);
+            var prev = Interlocked.CompareExchange(ref _cache, newGen, gen);
             gen = prev == gen ? newGen : prev!;
         }
 
@@ -160,7 +103,7 @@ public class PlanCache
     /// </summary>
     public IReadOnlyList<PlanCacheEntry> Snapshot()
     {
-        var gen = _cacheGeneration;
+        var gen = _cache;
         var result = new List<PlanCacheEntry>();
         var seen = new HashSet<Vector256<long>>();
 

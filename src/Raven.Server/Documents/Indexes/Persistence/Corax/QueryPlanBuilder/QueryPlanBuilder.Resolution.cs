@@ -32,12 +32,7 @@ internal static partial class QueryPlanBuilder
         var planCache = planParams.IndexSearcher.PlanCache;
         var metadata = planParams.Metadata;
 
-        // Fold the searcher's current index-state inputs into the cache generation before validating the memo. Today
-        // the only such input is the multi-valued field count: monotonic per index instance, and the sole index-state
-        // input to the structural key. A field flipping single→multi advances the count, which bumps the generation
-        // here, so the memo below can never survive a state change that would alter which plan this query resolves to.
-        planCache.ReconcileIndexState(planParams.IndexSearcher.MultipleTermsInFieldCount);
-        var generation = planCache.Generation;
+        var generation = planCache.GenerationIdx;
 
         if (metadata.CachedPlanMemo is { } memo
             && memo.PlanCacheGeneration == generation

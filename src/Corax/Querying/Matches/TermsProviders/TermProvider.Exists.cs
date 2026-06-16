@@ -212,6 +212,7 @@ namespace Corax.Querying.Matches.TermsProviders
 
             try
             {
+                buckets[(int)(TermIdMask.PostingList)].Add(allocator, _nullPostingListId);
                 while (_iterator.MoveNext(out _, out long termId, out _))
                 {
                     buckets[(int)(termId & (long)TermIdMask.EnsureIsSingleMask)].Add(allocator, termId);
@@ -222,16 +223,6 @@ namespace Corax.Querying.Matches.TermsProviders
                 }
 
                 RangePostingBuckets.Summarize(buckets, allocator, llt, ref stats);
-
-                if (_nullExists)
-                {
-                    using var nullPostingList = _searcher.GetPostingList(_nullPostingListId);
-                    var nullCount = nullPostingList.State.NumberOfEntries;
-                    stats.Larges++;
-                    stats.LargePostings += nullCount;
-                    stats.Postings += nullCount;
-                    stats.Terms++;
-                }
 
                 return stats;
             }

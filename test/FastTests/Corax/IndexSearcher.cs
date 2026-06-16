@@ -1487,7 +1487,7 @@ namespace FastTests.Corax
             var metadata = BuildPlanForCacheTest(searcher, fields, ctx, rql, new() { ["p0"] = "Alpha" });
             var memo = metadata.CachedPlanMemo;
             Assert.NotNull(memo);
-            Assert.Equal(searcher.PlanCache.Generation, memo.PlanCacheGeneration);
+            Assert.Equal(searcher.PlanCache.GenerationIdx, memo.PlanCacheGeneration);
             Assert.True(memo.Bucket.TryGetTarget(out _));
 
             // Reuse the same QueryMetadata: the memo fast path is taken, so the memo object is not replaced.
@@ -1515,17 +1515,17 @@ namespace FastTests.Corax
             using (var searcherA = new IndexSearcher(Env, fields))
             {
                 metadata = BuildPlanForCacheTest(searcherA, fields, ctx, rql, new() { ["p0"] = "Alpha" });
-                oldCacheId = searcherA.PlanCache.Generation;
+                oldCacheId = searcherA.PlanCache.GenerationIdx;
                 Assert.Equal(oldCacheId, metadata.CachedPlanMemo.PlanCacheGeneration);
             }
 
             // Simulate the index swap: a new searcher with its own PlanCache (distinct Generation), reusing the metadata.
             using var searcherB = new IndexSearcher(Env, fields);
-            Assert.NotEqual(oldCacheId, searcherB.PlanCache.Generation);
+            Assert.NotEqual(oldCacheId, searcherB.PlanCache.GenerationIdx);
 
             BuildPlanForCacheTest(searcherB, fields, ctx, rql, new() { ["p0"] = "Beta" }, metadata);
 
-            Assert.Equal(searcherB.PlanCache.Generation, metadata.CachedPlanMemo.PlanCacheGeneration); // re-stamped against the new cache
+            Assert.Equal(searcherB.PlanCache.GenerationIdx, metadata.CachedPlanMemo.PlanCacheGeneration); // re-stamped against the new cache
             Assert.Single(searcherB.PlanCache.Snapshot()); // the new cache compiled its own bucket
         }
 

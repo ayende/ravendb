@@ -37,6 +37,7 @@ using Circle = Raven.Server.Documents.Indexes.Spatial.Circle;
 using System.Diagnostics.CodeAnalysis;
 using Acornima;
 using Acornima.Ast;
+using Corax.Querying.Planning;
 using Raven.Client.Documents.Indexes.Vector;
 using Raven.Server.Documents.Indexes;
 using Enum = System.Enum;
@@ -71,7 +72,7 @@ namespace Raven.Server.Documents.Queries
         public sealed class PlanMemo(long planCacheGeneration, Corax.Querying.Planning.PlanCache.PerQueryPlans bucket)
         {
             /// <summary>
-            /// The <see cref="Corax.Querying.Planning.PlanCache.Generation"/> observed when this bucket was resolved.
+            /// The <see cref="PlanCache.GenerationIdx"/> observed when this bucket was resolved.
             /// The memo is valid only while the live cache's generation still equals it: a different value means
             /// either the index instance was swapped or an index-state input that can change plan selection (e.g. a
             /// field flipping to multi-valued) has changed, so the memoized bucket can no longer be trusted and the
