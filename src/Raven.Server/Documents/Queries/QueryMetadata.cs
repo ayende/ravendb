@@ -68,18 +68,16 @@ namespace Raven.Server.Documents.Queries
         /// </summary>
         public Corax.Querying.Planning.ParameterBinding[] CachedSlotBindings { get; set; }
 
-        public sealed class PlanMemo(long planCacheId, long multipleTermsGeneration, Corax.Querying.Planning.PlanCache.PerQueryPlans bucket)
+        public sealed class PlanMemo(long planCacheGeneration, Corax.Querying.Planning.PlanCache.PerQueryPlans bucket)
         {
-            public readonly long PlanCacheId = planCacheId;
-
             /// <summary>
-            /// The index-wide multi-valued field generation (<see cref="Corax.Querying.IndexSearcher.MultipleTermsInFieldGeneration"/>)
-            /// observed when this bucket was resolved. The multi-valued bit is the only index-state input to the
-            /// structural plan key, so the memo is only valid while this generation is unchanged: a field flipping
-            /// single→multi bumps it, invalidating the memo so the structural key is recomputed and a fresh bucket
-            /// (with the sort/residual single-valued optimizations dropped) is selected.
+            /// The <see cref="Corax.Querying.Planning.PlanCache.Generation"/> observed when this bucket was resolved.
+            /// The memo is valid only while the live cache's generation still equals it: a different value means
+            /// either the index instance was swapped or an index-state input that can change plan selection (e.g. a
+            /// field flipping to multi-valued) has changed, so the memoized bucket can no longer be trusted and the
+            /// plan must be re-resolved against the structural key.
             /// </summary>
-            public readonly long MultipleTermsGeneration = multipleTermsGeneration;
+            public readonly long PlanCacheGeneration = planCacheGeneration;
             public readonly WeakReference<Corax.Querying.Planning.PlanCache.PerQueryPlans> Bucket = new(bucket);
         }
 

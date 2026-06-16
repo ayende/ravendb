@@ -583,14 +583,15 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     public Slice GetFirstIndexedFiledName() => _fieldMapping.GetFirstField().FieldName;
 
     /// <summary>
-    /// Monotonic generation of the index-wide multi-valued field set: the number of fields recorded in the
-    /// <see cref="Constants.IndexWriter.MultipleTermsInField"/> tree (O(1), zero when the tree is absent). The set
-    /// only ever grows (a field never reverts to single-valued), so an unchanged count proves every field's
+    /// Number of fields recorded in the <see cref="Constants.IndexWriter.MultipleTermsInField"/> tree for this
+    /// transaction's snapshot (O(1), zero when the tree is absent). The set only ever grows (a field never reverts to
+    /// single-valued), so this count is monotonic per index instance and an unchanged value proves every field's
     /// single/multi bit is unchanged. It is the sole index-state input to the structural plan key
-    /// (<c>HasMultipleTermsInField</c> via <c>AppendFieldName</c>); callers memoizing a resolved plan bucket record
-    /// this alongside the cache Id so a single→multi flip invalidates the memo and forces a re-plan.
+    /// (<c>HasMultipleTermsInField</c> via <c>AppendFieldName</c>); the resolution path feeds it to
+    /// <see cref="Planning.PlanCache.ReconcileIndexState"/>, which turns any advance into a fresh cache generation so
+    /// a single→multi flip invalidates every memoized plan and forces a re-plan.
     /// </summary>
-    public long MultipleTermsInFieldGeneration => _multipleTermsInField?.State.Header.NumberOfEntries ?? 0;
+    public long MultipleTermsInFieldCount => _multipleTermsInField?.State.Header.NumberOfEntries ?? 0;
 
     public bool HasMultipleTermsInField(string fieldName)
     {

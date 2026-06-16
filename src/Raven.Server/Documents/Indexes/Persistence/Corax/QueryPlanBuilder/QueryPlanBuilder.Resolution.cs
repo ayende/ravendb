@@ -32,14 +32,15 @@ internal static partial class QueryPlanBuilder
         var planCache = planParams.IndexSearcher.PlanCache;
         var metadata = planParams.Metadata;
 
-        // The multi-valued field set is the only index-state input to the structural key, and it is monotonic, so an
-        // unchanged generation guarantees every field's single/multi bit is unchanged and the memoized bucket is still
-        // the one the structural key would select. A flip bumps the generation and falls through to recompute it.
-        var multipleTermsGeneration = planParams.IndexSearcher.MultipleTermsInFieldGeneration;
+        // Fold the searcher's current index-state inputs into the cache generation before validating the memo. Today
+        // the only such input is the multi-valued field count: monotonic per index instance, and the sole index-state
+        // input to the structural key. A field flipping single→multi advances the count, which bumps the generation
+        // here, so the memo below can never survive a state change that would alter which plan this query resolves to.
+        planCache.ReconcileIndexState(planParams.IndexSearcher.MultipleTermsInFieldCount);
+        var generation = planCache.Generation;
 
         if (metadata.CachedPlanMemo is { } memo
-            && memo.PlanCacheId == planCache.Id
-            && memo.MultipleTermsGeneration == multipleTermsGeneration
+            && memo.PlanCacheGeneration == generation
             && memo.Bucket.TryGetTarget(out var warmBucket))
         {
             return Finalize(warmBucket);
@@ -48,14 +49,14 @@ internal static partial class QueryPlanBuilder
         var structuralKey = ComputeStructuralKey(planParams);
         if (planCache.GetBucket(structuralKey) is { } existing)
         {
-            metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, multipleTermsGeneration, existing);
+            metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(generation, existing);
             return Finalize(existing);
         }
 
         var template = ParseTemplate(planParams);
         template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams, template);
         var bucket = planCache.GetOrAddBucket(structuralKey, template, planParams.CacheKey);
-        metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, multipleTermsGeneration, bucket);
+        metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(generation, bucket);
         return Finalize(bucket);
 
         PlanTemplate Finalize(PlanCache.PerQueryPlans b)

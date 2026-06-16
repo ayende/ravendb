@@ -1470,8 +1470,8 @@ namespace FastTests.Corax
         }
 
         // The QueryMetadata plan memo lets the hot path skip the dictionary entirely. After the first build it is
-        // stamped with the live cache's Id and weakly holds the resolved bucket; a second build that reuses the
-        // SAME QueryMetadata takes the fast path and never reallocates the memo (object identity preserved).
+        // stamped with the live cache's Generation and weakly holds the resolved bucket; a second build that reuses
+        // the SAME QueryMetadata takes the fast path and never reallocates the memo (object identity preserved).
         [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
         public void PlanCache_Memo_ReusedAcrossBuilds_AndStampedWithCacheId()
         {
@@ -1487,7 +1487,7 @@ namespace FastTests.Corax
             var metadata = BuildPlanForCacheTest(searcher, fields, ctx, rql, new() { ["p0"] = "Alpha" });
             var memo = metadata.CachedPlanMemo;
             Assert.NotNull(memo);
-            Assert.Equal(searcher.PlanCache.Id, memo.PlanCacheId);
+            Assert.Equal(searcher.PlanCache.Generation, memo.PlanCacheGeneration);
             Assert.True(memo.Bucket.TryGetTarget(out _));
 
             // Reuse the same QueryMetadata: the memo fast path is taken, so the memo object is not replaced.
@@ -1495,9 +1495,10 @@ namespace FastTests.Corax
             Assert.Same(memo, metadata.CachedPlanMemo);
         }
 
-        // An index swap replaces the IndexSearcher (and its PlanCache, which carries a fresh Id). A QueryMetadata
-        // memo stamped against the OLD cache must be rejected by the Id compare and re-resolved against the new
-        // cache, re-stamping the memo with the new Id — otherwise a stale bucket from a replaced index would be used.
+        // An index swap replaces the IndexSearcher (and its PlanCache, which carries a fresh Generation). A
+        // QueryMetadata memo stamped against the OLD cache must be rejected by the generation compare and re-resolved
+        // against the new cache, re-stamping the memo with the new generation — otherwise a stale bucket from a
+        // replaced index would be used.
         [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
         public void PlanCache_IndexSwap_InvalidatesMemo_AndRebuilds()
         {
@@ -1514,17 +1515,17 @@ namespace FastTests.Corax
             using (var searcherA = new IndexSearcher(Env, fields))
             {
                 metadata = BuildPlanForCacheTest(searcherA, fields, ctx, rql, new() { ["p0"] = "Alpha" });
-                oldCacheId = searcherA.PlanCache.Id;
-                Assert.Equal(oldCacheId, metadata.CachedPlanMemo.PlanCacheId);
+                oldCacheId = searcherA.PlanCache.Generation;
+                Assert.Equal(oldCacheId, metadata.CachedPlanMemo.PlanCacheGeneration);
             }
 
-            // Simulate the index swap: a new searcher with its own PlanCache (distinct Id), reusing the metadata.
+            // Simulate the index swap: a new searcher with its own PlanCache (distinct Generation), reusing the metadata.
             using var searcherB = new IndexSearcher(Env, fields);
-            Assert.NotEqual(oldCacheId, searcherB.PlanCache.Id);
+            Assert.NotEqual(oldCacheId, searcherB.PlanCache.Generation);
 
             BuildPlanForCacheTest(searcherB, fields, ctx, rql, new() { ["p0"] = "Beta" }, metadata);
 
-            Assert.Equal(searcherB.PlanCache.Id, metadata.CachedPlanMemo.PlanCacheId); // re-stamped against the new cache
+            Assert.Equal(searcherB.PlanCache.Generation, metadata.CachedPlanMemo.PlanCacheGeneration); // re-stamped against the new cache
             Assert.Single(searcherB.PlanCache.Snapshot()); // the new cache compiled its own bucket
         }
 
