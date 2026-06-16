@@ -204,7 +204,6 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
     private struct EntryComparerByTerm : IEntryComparer, IComparer<UnmanagedSpan>, IComparer<int>
     {
         private Lookup<Int64LookupKey> _lookup;
-        private UnmanagedSpan<long> _batchResults;
         private int _comparerId;
         private int _nullResult;
         private long _nullTermContainerId;
@@ -222,7 +221,6 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             _comparerId = comparerId;
             var fieldName = match._orderMetadata[_comparerId].Field.FieldName;
             _lookup = match._searcher.EntriesToTermsReader(fieldName);
-            _batchResults = batchResults;
             _nullResult = match.NullIsSmallest(_comparerId) ? 1 : -1;
 
             if (match._searcher.TryGetPostingListForNull(fieldName, out _, out _nullTermContainerId) == false)
@@ -291,7 +289,6 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
     private struct EntryComparerByLong : IEntryComparer, IComparer<UnmanagedSpan>, IComparer<int>
     {
         private Lookup<Int64LookupKey> _lookup;
-        private UnmanagedSpan<long> _batchResults;
         private int _comparerId;
         private long _missingValue;
         // When used as a tie-break (comparerId != 0), the field's value for every batch entry is resolved once
@@ -308,7 +305,6 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         {
             _comparerId = comparerId;
             _lookup = match._searcher.EntriesToTermsReader(GetSortFieldName(match));
-            _batchResults = batchResults;
             _missingValue = match.NullIsSmallest(_comparerId) ? long.MinValue : long.MaxValue;
 
             // comparerId == 0 is the primary key: it sorts via SortBatch (the heap's primary comparison reads the
@@ -401,7 +397,6 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         private long _missingValue;
         private int _comparerId;
         private Lookup<Int64LookupKey> _lookup;
-        private UnmanagedSpan<long> _batchResults;
         // When used as a tie-break (comparerId != 0), every batch entry's value (as raw double bits) is resolved
         // once up front (see Init) so Compare(int,int) is an O(1) array read instead of two B-tree lookups per call.
         private long* _resolved;
@@ -445,7 +440,6 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         {
             _comparerId = comparerId;
             _lookup = match._searcher.EntriesToTermsReader(GetSortFieldName(match));
-            _batchResults = batchResults;
             _missingValue = BitConverter.DoubleToInt64Bits(match.NullIsSmallest(_comparerId) ? double.MinValue : double.MaxValue);
 
             // comparerId == 0 is the primary key: it sorts via SortBatch, never through Compare(int,int), and Init
