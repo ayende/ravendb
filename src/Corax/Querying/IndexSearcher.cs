@@ -582,6 +582,16 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     // this is meant for debugging / tests only
     public Slice GetFirstIndexedFiledName() => _fieldMapping.GetFirstField().FieldName;
 
+    /// <summary>
+    /// Monotonic generation of the index-wide multi-valued field set: the number of fields recorded in the
+    /// <see cref="Constants.IndexWriter.MultipleTermsInField"/> tree (O(1), zero when the tree is absent). The set
+    /// only ever grows (a field never reverts to single-valued), so an unchanged count proves every field's
+    /// single/multi bit is unchanged. It is the sole index-state input to the structural plan key
+    /// (<c>HasMultipleTermsInField</c> via <c>AppendFieldName</c>); callers memoizing a resolved plan bucket record
+    /// this alongside the cache Id so a single→multi flip invalidates the memo and forces a re-plan.
+    /// </summary>
+    public long MultipleTermsInFieldGeneration => _multipleTermsInField?.State.Header.NumberOfEntries ?? 0;
+
     public bool HasMultipleTermsInField(string fieldName)
     {
         // When the write-time snapshot is attached, answer straight from it: a string hash lookup with no

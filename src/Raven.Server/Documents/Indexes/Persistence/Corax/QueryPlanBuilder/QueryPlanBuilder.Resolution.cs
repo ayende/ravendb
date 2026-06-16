@@ -32,8 +32,14 @@ internal static partial class QueryPlanBuilder
         var planCache = planParams.IndexSearcher.PlanCache;
         var metadata = planParams.Metadata;
 
+        // The multi-valued field set is the only index-state input to the structural key, and it is monotonic, so an
+        // unchanged generation guarantees every field's single/multi bit is unchanged and the memoized bucket is still
+        // the one the structural key would select. A flip bumps the generation and falls through to recompute it.
+        var multipleTermsGeneration = planParams.IndexSearcher.MultipleTermsInFieldGeneration;
+
         if (metadata.CachedPlanMemo is { } memo
             && memo.PlanCacheId == planCache.Id
+            && memo.MultipleTermsGeneration == multipleTermsGeneration
             && memo.Bucket.TryGetTarget(out var warmBucket))
         {
             return Finalize(warmBucket);
@@ -42,14 +48,14 @@ internal static partial class QueryPlanBuilder
         var structuralKey = ComputeStructuralKey(planParams);
         if (planCache.GetBucket(structuralKey) is { } existing)
         {
-            metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, existing);
+            metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, multipleTermsGeneration, existing);
             return Finalize(existing);
         }
 
         var template = ParseTemplate(planParams);
         template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams, template);
         var bucket = planCache.GetOrAddBucket(structuralKey, template, planParams.CacheKey);
-        metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, bucket);
+        metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, multipleTermsGeneration, bucket);
         return Finalize(bucket);
 
         PlanTemplate Finalize(PlanCache.PerQueryPlans b)
