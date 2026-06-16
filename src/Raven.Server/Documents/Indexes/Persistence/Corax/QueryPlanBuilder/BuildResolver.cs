@@ -103,7 +103,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         // A regex tree-scan leaf is materialized lazily inside the Corax engine, which cannot reach the server's
         // QueryBuilderFactories; hand it the index's cached regex factory (compiled + match-timeout protected)
         // so it never falls back to a bare new Regex per query. Mirrors the spatial factory used at resolve-time.
-        _exec.RegexFactory = builderParameters.Factories.GetRegexFactory;
+        // Factories is null on the direct-planner test path (the QueryBuilderParameters test ctor leaves
+        // production-only fields unset); regex leaves are not exercised there, so leave RegexFactory null.
+        _exec.RegexFactory = builderParameters.Factories?.GetRegexFactory;
         return _exec;
     }
 
