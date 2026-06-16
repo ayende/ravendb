@@ -702,7 +702,7 @@ internal static class QueryPlanGraph
     ///     Builds the label for a per-entry post-filter node. The underlying match (stashed as MatchOperation)
     ///     decides the facts shown: a spatial match surfaces its relation (Within / Intersects), field, and tested
     ///     shape; a vector match surfaces its search mode + similarity method, field, request shape (min match,
-    ///     candidates requested), and runtime cost (filter set size, candidates scanned, init time). The "[And]" /
+    ///     candidates requested), and runtime cost (filter set size, candidates scanned, init + search time). The "[And]" /
     ///     "Multi" variant names flow through verbatim so the heading reflects exactly which match ran.
     /// </summary>
     private static string PostFilterLabel(Dictionary<string, string> p)
@@ -729,6 +729,7 @@ internal static class QueryPlanGraph
             AddIf(p, parts, "FilterEntries", "filter ");
             AddIf(p, parts, "NumberOfCandidatesScanned", "scanned ");
             AddIf(p, parts, "InitMs", "init ", "ms");
+            AddIf(p, parts, "SearchMs", "search ", "ms");
         }
         else
         {

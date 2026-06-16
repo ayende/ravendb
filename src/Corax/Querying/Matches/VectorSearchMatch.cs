@@ -72,6 +72,11 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
     private long _filterEntriesCount;
     private double _initDurationMs;
 
+    // Wall-clock spent inside the HNSW retriever's Fill calls — the graph traversal / exact scan that
+    // CandidatesProcessed counts — accumulated across streamed batches. This is the search work proper,
+    // distinct from the one-time InitMs setup (filter materialization + seed sampling + retriever construction).
+    private double _searchDurationMs;
+
     private bool CanStreamResults => IsBoosting == false && _singleVectorSearchDoNotSort;
 
     public VectorSearchMatch(IndexSearcher searcher, 
@@ -220,9 +225,11 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
             CreateDistanceBuffer(matches.Length);
 
         var distancesBuffer = _distances.GetSpace();
-        
+
+        var searchStart = Stopwatch.GetTimestamp();
         var read = _hasFilterResults ? _vectorSearchRetriever.Fill(matches, distancesBuffer, ref _filterResults) : _vectorSearchRetriever.Fill(matches, distancesBuffer);
-        
+        _searchDurationMs += Stopwatch.GetElapsedTime(searchStart).TotalMilliseconds;
+
         if (read == 0)
         {
             _returnedAllResults = true;
@@ -260,10 +267,12 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
             var dBuf = distances.GetSpace();
             Debug.Assert(mBuf.Length == dBuf.Length, "mBuf.Length == dBuf.Length");
 
+            var searchStart = Stopwatch.GetTimestamp();
             currentRead = _hasFilterResults
                 ? _vectorSearchRetriever.Fill(mBuf, dBuf, ref _filterResults)
                 : _vectorSearchRetriever.Fill(mBuf, dBuf);
-            
+            _searchDurationMs += Stopwatch.GetElapsedTime(searchStart).TotalMilliseconds;
+
             matches.AddUsage(currentRead);
             distances.AddUsage(currentRead);
 
@@ -358,7 +367,8 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
                 { "NumberOfCandidates", _numberOfCandidates.ToString() },
                 { "FilterEntries", _filterEntriesCount.ToString("N0") },
                 { "NumberOfCandidatesScanned", (_vectorSearchRetriever.CandidatesProcessed).ToString()},
-                { "InitMs", _initDurationMs.ToString("F3", CultureInfo.InvariantCulture) }
+                { "InitMs", _initDurationMs.ToString("F3", CultureInfo.InvariantCulture) },
+                { "SearchMs", _searchDurationMs.ToString("F3", CultureInfo.InvariantCulture) }
             })
         {
             // Reflects the lifting decision recorded on this match, not the type: a vector leaf inside an OR is
