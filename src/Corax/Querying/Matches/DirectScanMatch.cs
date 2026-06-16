@@ -92,6 +92,10 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
         if (EntryScanTicks > 0) parameters["EntryScans_ms"] = (EntryScanTicks / tickFreq).ToString("F3");
 
         parameters["TreeEntriesScanned"] = TreeEntriesScanned.ToString();
+        // Entries this scan actually emitted (after dedup/residual-filter, capped by _take). This is the terminal
+        // output of the FieldSortedScan dataflow, surfaced so the graph's Result node can show output=N — the
+        // streaming/early-exit scan never builds a CompiledQueryMatch, so OverlayTimings cannot supply it.
+        parameters["Output"] = TotalMatched.ToString("N0");
         if (StoppedReason != null) parameters["StoppedAt"] = StoppedReason;
         if (KnownExactTotal >= 0) parameters["KnownExactTotal"] = KnownExactTotal.ToString();
         return new QueryInspectionNode("DirectScan", parameters: parameters);

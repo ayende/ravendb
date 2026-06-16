@@ -178,6 +178,13 @@ internal static class QueryPlanGraph
         // (the terminal of the dataflow) rather than the query root.
         if (compiled.Parameters != null && compiled.Parameters.TryGetValue("Output", out string pipelineOutput) && string.IsNullOrEmpty(pipelineOutput) == false)
             resultData["Output"] = pipelineOutput;
+        // A FieldSortedScan/CompoundKeyLookup producer streams results straight to the Result node without a
+        // CompiledQueryMatch, so OverlayTimings leaves the root "Output" unset. Fall back to the producer's own
+        // emitted count (DirectScan "Output", lookup "Count") so the Result node still shows output=N.
+        else if (producerNode?.Parameters != null
+                 && (producerNode.Parameters.TryGetValue("Output", out string producerOutput) || producerNode.Parameters.TryGetValue("Count", out producerOutput))
+                 && string.IsNullOrEmpty(producerOutput) == false)
+            resultData["Output"] = producerOutput;
 
         Dictionary<int, int> lastWriter = [];
         HashSet<(int From, int To)> realEdges = [];
