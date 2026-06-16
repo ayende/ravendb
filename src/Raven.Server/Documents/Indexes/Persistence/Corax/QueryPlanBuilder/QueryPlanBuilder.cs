@@ -100,13 +100,16 @@ internal static partial class QueryPlanBuilder
             };
         }
 
-        OrderByField[] orderBy = p.Metadata.OrderBy;
+        // Partial sort elision: drop ORDER BY keys pinned to a constant by a top-level equality and single-valued.
+        // We select the driving clause / strategy below against this reduced shape, and BuildSortMetadataTemplate
+        // reduces identically (same structural inputs), so the cached plan and prebuilt sort metadata agree.
+        OrderByField[] orderBy = ComputeEffectiveOrderBy(p.Metadata.OrderBy, walkerCtx.Clauses, walkerCtx.IsOr, p.IndexSearcher);
         string orderByPrimaryField = orderBy is { Length: > 0 }
             ? orderBy[0].Name?.Value
             : null;
         bool orderByPrimaryAscending = orderBy is { Length: > 0 } && orderBy[0].Ascending;
 
-        PlanOptimizationFlags optFlags = ComputeTemplateOptimizations(walkerCtx, p, orderByPrimaryField, orderByPrimaryAscending,
+        PlanOptimizationFlags optFlags = ComputeTemplateOptimizations(walkerCtx, p, orderBy, orderByPrimaryField, orderByPrimaryAscending,
             out int sortDrivingIdx, out int sortSeekHintIdx, out bool sortSeekUseParam2);
         HashSet<string> seen = [];
         CollectParameterNames(walkerCtx.Clauses, seen);
@@ -194,7 +197,7 @@ internal static partial class QueryPlanBuilder
 
     [SkipLocalsInit]
     private static PlanOptimizationFlags ComputeTemplateOptimizations(
-        ResolutionContext walkerCtx, PlanParameters p, string orderByPrimaryField, bool orderByPrimaryAscending,
+        ResolutionContext walkerCtx, PlanParameters p, OrderByField[] orderBy, string orderByPrimaryField, bool orderByPrimaryAscending,
         out int sortDrivingIdx, out int sortSeekHintIdx, out bool sortSeekUseParam2)
     {
         sortDrivingIdx = -1;
@@ -284,8 +287,10 @@ internal static partial class QueryPlanBuilder
             flags |= PlanOptimizationFlags.CompoundExactCandidate;
         }
 
-        // Compound-field candidate: Equals clause + ORDER BY field forming a compound field.
-        switch (p.Metadata.OrderBy)
+        // Compound-field candidate: Equals clause + ORDER BY field forming a compound field. Uses the
+        // partial-elision-reduced ORDER BY (orderBy), so a pinned single-valued leading key is already gone —
+        // a two-key compound on a pinned field1 reduces to a one-key sort, which falls into Case 2 below.
+        switch (orderBy)
         {
             // Case 1: OrderBy has exactly 2 elements with non-null names
             case [{ Name.Value: { } f1 }, { Name.Value: { } f2 }] when p.Index.HasCompoundField(p.Allocator, f1, f2):

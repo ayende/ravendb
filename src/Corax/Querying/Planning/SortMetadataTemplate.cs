@@ -18,17 +18,6 @@ public sealed class SortMetadataTemplate
     /// If we need to update the slot's <see cref="OrderMetadata"/> per query, this is stored here
     /// </summary>
     public SortSlotPatch[] Patches { get; init; }
-
-    /// <summary>
-    /// Per-position flag (aligned to <see cref="Prebuilt"/>): true when this ORDER BY key is a field sort
-    /// pinned to a constant by a top-level, unguarded, non-negated equality clause on the same field (with
-    /// an AND root, not OR). Every result then shares one value for that key, so it contributes nothing to
-    /// the order. When EVERY position is pinned AND each pinned field is single-valued at query time, the
-    /// whole sort is a no-op and is elided (<c>MaterializeSortMetadata</c> returns null, dropping the
-    /// SortingMatch wrapper). Single-valuedness is baked into the plan cache key, so a field that later
-    /// becomes multi-valued re-plans rather than reusing this elision. Null when no position is pinnable.
-    /// </summary>
-    public bool[] PinnedByEquality { get; init; }
 }
 
 public delegate OrderMetadata SortDistanceMetadataBuilder(object runtimeContext, FieldMetadata fieldMeta);

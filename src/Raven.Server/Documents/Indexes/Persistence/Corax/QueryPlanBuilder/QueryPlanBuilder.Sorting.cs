@@ -82,7 +82,10 @@ internal static partial class QueryPlanBuilder
 
     private static SortMetadataTemplate BuildSortMetadataTemplate(PlanParameters p, PlanTemplate planTemplate)
     {
-        var orderByFields = p.Metadata.OrderBy;
+        // Partial sort elision: drop ORDER BY keys pinned to a constant by a top-level equality and single-valued
+        // (see ComputeEffectiveOrderBy). The reduced shape must match the one ParseTemplate fed into strategy
+        // selection — both call ComputeEffectiveOrderBy over the same structural inputs, so they agree.
+        var orderByFields = ComputeEffectiveOrderBy(p.Metadata.OrderBy, planTemplate.Clauses, planTemplate.IsOr, p.IndexSearcher);
 
         if (orderByFields is null)
         {
@@ -111,14 +114,6 @@ internal static partial class QueryPlanBuilder
         var prebuilt = new OrderMetadata[orderByFields.Length];
         var patches = new SortSlotPatch[orderByFields.Length];
         bool anyPatch = false;
-
-        // A top-level, unguarded, non-negated Equals clause (AND root) pins its field to one value, so
-        // an ORDER BY on that field contributes nothing to the order. Collect those field names once;
-        // a field sort whose name is pinned is flagged below, and when single-valued at query time the
-        // whole sort can be elided (see SortMetadataTemplate.PinnedByEquality / MaterializeSortMetadata).
-        var equalityPinnedFields = CollectEqualityPinnedFields(planTemplate);
-        bool[] pinnedByEquality = equalityPinnedFields is null ? null : new bool[orderByFields.Length];
-        bool anyPinned = false;
 
         for (int i = 0; i < orderByFields.Length; i++)
         {
@@ -176,19 +171,12 @@ internal static partial class QueryPlanBuilder
             patches[i].Kind = SortSlotPatchKind.FieldRuntimeResolve;
             patches[i].FieldName = field.Name;
             anyPatch = true;
-
-            if (equalityPinnedFields != null && field.Name?.Value is { } orderByName && equalityPinnedFields.Contains(orderByName))
-            {
-                pinnedByEquality[i] = true;
-                anyPinned = true;
-            }
         }
 
         return new SortMetadataTemplate
         {
             Prebuilt = prebuilt,
             Patches = anyPatch ? patches : null,
-            PinnedByEquality = anyPinned ? pinnedByEquality : null,
         };
         
         SortDistanceMetadataBuilder GetDistanceBuilder(OrderByField field) => // side effect for this method, we aren't accidently capturing the wrong instance in a loop
@@ -213,13 +201,13 @@ internal static partial class QueryPlanBuilder
     /// is constant. Returns null when the root is OR (no clause is mandatory) or when no clause qualifies.
     /// Only direct top-level clauses are considered — a clause nested inside a group is not a guaranteed
     /// pin, so groups are skipped (their ClauseType is AndGroup/OrGroup, never Equals).</summary>
-    private static HashSet<string> CollectEqualityPinnedFields(PlanTemplate template)
+    private static HashSet<string> CollectEqualityPinnedFields(List<ClauseInfo> clauses, bool isOr)
     {
-        if (template.IsOr)
+        if (isOr)
             return null;
 
         HashSet<string> pinned = null;
-        foreach (var clause in template.Clauses)
+        foreach (var clause in clauses)
         {
             if (clause.ClauseType != ClauseType.Equals || clause.IsNegated || clause.WhenCondition != null)
                 continue;
@@ -229,6 +217,76 @@ internal static partial class QueryPlanBuilder
         }
 
         return pinned;
+    }
+
+    /// <summary>
+    /// Partial sort elision, decided once at template-build time. Drops every ORDER BY key that is both
+    /// pinned to a single value by a top-level equality (see <see cref="CollectEqualityPinnedFields"/>) and
+    /// single-valued in the index: such a key is constant across all results, so it contributes nothing to
+    /// the order at any position and can be removed while the remaining keys keep their relative precedence.
+    /// (e.g. <c>WHERE status = 'Released' ORDER BY status, vote DESC</c> reduces to <c>ORDER BY vote DESC</c>,
+    /// turning a two-key sort into a one-key streaming scan.) The reduced array feeds both driving-clause /
+    /// strategy selection (<see cref="ComputeTemplateOptimizations"/>) and the prebuilt sort metadata
+    /// (<see cref="BuildSortMetadataTemplate"/>), so the cached plan stays internally consistent. An all-elided
+    /// result is an empty array, which both callers treat as "no sort".
+    ///
+    /// Deciding once here (rather than per execution) is safe because both inputs are folded into the structural
+    /// plan-cache key: the WHERE shape fixes the pinned set, and each ORDER BY field's single/multi-valued bit is
+    /// appended (see <c>ComputeStructuralKey</c>). A field that turns multi-valued selects a different bucket and
+    /// re-plans with the key intact, rather than reusing a template built under the single-valued assumption.
+    /// Returns the input array unchanged (same reference) when nothing is elided.
+    /// </summary>
+    private static OrderByField[] ComputeEffectiveOrderBy(OrderByField[] orderBy, List<ClauseInfo> clauses, bool isOr,
+        global::Corax.Querying.IndexSearcher indexSearcher)
+    {
+        if (orderBy is not { Length: > 0 })
+            return orderBy;
+
+        var pinned = CollectEqualityPinnedFields(clauses, isOr);
+        if (pinned is null)
+            return orderBy;
+
+        List<OrderByField> kept = null;
+        for (int i = 0; i < orderBy.Length; i++)
+        {
+            if (IsElidableSortKey(orderBy[i], pinned, indexSearcher))
+            {
+                // First drop: snapshot the keys accepted so far, then skip this one.
+                if (kept is null)
+                {
+                    kept = new List<OrderByField>(orderBy.Length);
+                    for (int j = 0; j < i; j++)
+                        kept.Add(orderBy[j]);
+                }
+
+                continue;
+            }
+
+            kept?.Add(orderBy[i]);
+        }
+
+        return kept is null ? orderBy : kept.ToArray();
+    }
+
+    /// <summary>True when an ORDER BY key is constant across all results and so can be dropped: a plain
+    /// value-field sort (Random / Score / Distance carry no field equality and are never pinned) whose field is
+    /// pinned by a top-level equality and is single-valued. A multi-valued field still orders documents by their
+    /// other values, so it is kept even when pinned.</summary>
+    private static bool IsElidableSortKey(OrderByField field, HashSet<string> pinnedFields,
+        global::Corax.Querying.IndexSearcher indexSearcher)
+    {
+        switch (field.OrderingType)
+        {
+            case OrderByFieldType.Random:
+            case OrderByFieldType.Score:
+            case OrderByFieldType.Distance:
+                return false;
+        }
+
+        if (field.Name?.Value is not { } name || pinnedFields.Contains(name) == false)
+            return false;
+
+        return indexSearcher.HasMultipleTermsInField(name) == false;
     }
 
     private static NullsSortMode? GetNullsSortMode(OrderByField field)
@@ -273,15 +331,9 @@ internal static partial class QueryPlanBuilder
 
         var indexSearcher = builderParameters.IndexSearcher;
 
-        // Full sort elision: when EVERY ORDER BY key is pinned to a single value by a top-level equality
-        // (PinnedByEquality) AND each pinned field is single-valued, the whole sort is a no-op. Drop it so
-        // the query runs as a plain (sortless) bitmap match — a null orderByFields makes Instantiate skip
-        // the SortingMatch wrapper and never enter the DirectScan strategies. Single-valuedness is folded
-        // into the plan cache key, so a field that later becomes multi-valued misses the cache and re-plans
-        // with the sort intact rather than reusing this elision.
-        if (template.PinnedByEquality is { } pinned && AllPinnedSingleValued(pinned, template.Patches, indexSearcher))
-            return null;
-
+        // Sort elision (both partial and full) is decided at template-build time in ComputeEffectiveOrderBy, which
+        // already removed every pinned single-valued key from the prebuilt array (a fully-elided sort produced a
+        // NoSort template handled above). So here we only apply per-slot runtime patches to the surviving keys.
         var result = new OrderMetadata[template.Prebuilt.Length];
 
         for (int i = 0; i < template.Prebuilt.Length; i++)
@@ -334,22 +386,6 @@ internal static partial class QueryPlanBuilder
         }
 
         return result;
-    }
-
-    /// <summary>True only when every ORDER BY position is pinned by a top-level equality (<paramref name="pinned"/>)
-    /// AND each pinned field is single-valued. A single non-pinned or multi-valued key means the sort still does
-    /// real work, so it must not be elided.</summary>
-    private static bool AllPinnedSingleValued(bool[] pinned, SortSlotPatch[] patches, global::Corax.Querying.IndexSearcher indexSearcher)
-    {
-        for (int i = 0; i < pinned.Length; i++)
-        {
-            if (pinned[i] == false)
-                return false;
-            if (indexSearcher.HasMultipleTermsInField(patches[i].FieldName))
-                return false;
-        }
-
-        return true;
     }
 
     private static FieldMetadata ResolveSortFieldMeta(QueryBuilderParameters builderParameters, string fieldName)
