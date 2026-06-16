@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
-using Corax.Mappings;
 using Corax.Querying.Planning;
 using Corax.Querying.Primitives;
 using Sparrow;
@@ -273,9 +272,14 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         return (new ResidualScanSet { Predicates = scanList?.ToArray(), ClauseIndices = clauseIndices?.ToArray() }, perClause);
     }
 
-    private static ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType)
+    private ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType)
     {
         var clause = exec.Clause;
+        // Single-valued ⟺ the field holds at most one term per entry. The straight-line residual IL
+        // (DirectScan/CompoundScan/entry-scan) reads exactly one term instead of walking the term list.
+        // Folded into the structural plan key (ComputeStructuralKey) so a later single→multi flip selects
+        // a different bucket and re-plans rather than reusing this template built under the single-valued assumption.
+        bool singleValued = clause.FieldName is { } fieldName && _indexSearcher.HasMultipleTermsInField(fieldName) == false;
         switch (exec.ClauseType)
         {
             // x ∧ ALL = x: a MatchAll sentinel is always true, so it filters nothing. Emit an
@@ -318,7 +322,8 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                     },
                     CompareOp = exec.ClauseType == ClauseType.In ? ScanCompareOp.In : ScanCompareOp.AllIn,
                     ParamIndex = 0,
-                    Negated = exec.IsNegated
+                    Negated = exec.IsNegated,
+                    IsSingleValued = singleValued
                 };
             }
 
@@ -330,7 +335,8 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                     FieldName = clause.FieldName,
                     ValueType = ScanValueType.Slice,
                     CompareOp = ScanCompareOp.StartsWith,
-                    ParamIndex = exec.PackedParamValue.Param1
+                    ParamIndex = exec.PackedParamValue.Param1,
+                    IsSingleValued = singleValued
                 };
             case ClauseType.EndsWith:
                 if (termType != ParamValueType.String)
@@ -340,13 +346,15 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                     FieldName = clause.FieldName,
                     ValueType = ScanValueType.Slice,
                     CompareOp = ScanCompareOp.EndsWith,
-                    ParamIndex = exec.PackedParamValue.Param1
+                    ParamIndex = exec.PackedParamValue.Param1,
+                    IsSingleValued = singleValued
                 };
             case ClauseType.Exists:
                 return new ScanPredicateInfo
                 {
                     FieldName = clause.FieldName,
                     CompareOp = ScanCompareOp.Exists,
+                    IsSingleValued = singleValued
                 };
 
             case ClauseType.AndGroup:
@@ -397,7 +405,8 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                 _ => ScanCompareOp.Equal
             },
             ParamIndex = exec.PackedParamValue.Param1,
-            ParamIndex2 = exec.PackedParamValue.Param2 != PackedParam.NoParamValue ? exec.PackedParamValue.Param2 : -1
+            ParamIndex2 = exec.PackedParamValue.Param2 != PackedParam.NoParamValue ? exec.PackedParamValue.Param2 : -1,
+            IsSingleValued = singleValued
         };
     }
 

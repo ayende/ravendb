@@ -37,6 +37,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private readonly IndexFieldsMapping _fieldMapping;
     private Dictionary<Slice, Hnsw.SearchState> _vectorSearchStateCache;
     private Dictionary<Slice, HnswIndexCache> _vectorNodeCaches;
+    private HashSet<string> _fieldsWithMultipleTerms;
     private HashSet<long> _nullTermsMarkers;
     private HashSet<long> _nonExistingTermsMarkers;
     private long[] _vectorFieldsMarkers;
@@ -553,6 +554,17 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         _vectorNodeCaches = caches;
     }
 
+    /// <summary>
+    /// Attach the write-time snapshot of field names that have multiple terms (see
+    /// <c>IndexTransactionCache.FieldsWithMultipleTerms</c>). When attached, <see cref="HasMultipleTermsInField(string)"/>
+    /// answers from this set instead of reading the Voron tree per call. A <c>null</c> set leaves the
+    /// live tree-read path in place (used when the cache is disabled because the field count exceeded the cap).
+    /// </summary>
+    public void AttachFieldsWithMultipleTerms(HashSet<string> fields)
+    {
+        _fieldsWithMultipleTerms = fields;
+    }
+
     public void Dispose()
     {
         if (_sharedEntryReaderKey != null)
@@ -577,6 +589,17 @@ public sealed unsafe partial class IndexSearcher : IDisposable
 
     public bool HasMultipleTermsInField(string fieldName)
     {
+        // When the write-time snapshot is attached, answer straight from it: a string hash lookup with no
+        // slice allocation and no Voron read. This is the hot path for the structural plan key.
+        if (_fieldsWithMultipleTerms is { } snapshot)
+            return snapshot.Contains(fieldName);
+
+        // No snapshot (disabled by the field-count cap, or a standalone searcher): prefer the interned slice
+        // from the field mapping (a string-keyed dictionary lookup, no allocation) over allocating a temporary
+        // slice. Dynamic fields not present in the mapping fall back to the allocating path.
+        if (_fieldMapping.TryGetByFieldName(fieldName, out var binding))
+            return HasMultipleTermsInField(binding.Metadata.FieldName);
+
         using var _ = Slice.From(Allocator, fieldName, out var slice);
         return HasMultipleTermsInField(slice);
     }

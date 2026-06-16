@@ -5,6 +5,7 @@ using System.Runtime.Intrinsics;
 using Corax.Querying.Planning;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
+using IndexSearcher = Corax.Querying.IndexSearcher;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
@@ -59,15 +60,30 @@ internal static partial class QueryPlanBuilder
     // CacheKeyHash (see BuildResolver) distinguishes them within the bucket. The bit-packing reuses
     // PlanCacheKeyBuilder, the same allocation-free encoder the inner cache key uses, so there is no intermediate
     // string.
+    //
+    // Besides the pure AST shape, every field name also folds in the field's index-wide single/multi-valued state
+    // (HasMultipleTermsInField). The template bakes single-valued optimizations - the straight-line residual IL and
+    // sort-key elision - so the cardinality state is a structural input: a field that goes single->multi must select
+    // a different bucket and re-plan rather than reuse a template built under the single-valued assumption. The bit is
+    // index-wide and monotonic, so it only ever flips one way.
     [SkipLocalsInit]
     private static Vector256<long> ComputeStructuralKey(PlanParameters planParams)
     {
         var builder = new PlanCacheKeyBuilder();
 
-        AppendCanonicalExpression(ref builder, planParams.Metadata.Query.Where);
-        AppendCanonicalOrderBy(ref builder, planParams.Metadata.OrderBy);
+        AppendCanonicalExpression(ref builder, planParams.Metadata.Query.Where, planParams.IndexSearcher);
+        AppendCanonicalOrderBy(ref builder, planParams.Metadata.OrderBy, planParams.IndexSearcher);
 
         return builder.ToHash();
+    }
+
+    // Append a field name plus the field's single/multi-valued bit (see ComputeStructuralKey). The clause walk only
+    // reaches this for genuine field references and quoted reserved-word field names, never for parameters or
+    // literals, so the name here is always the indexed field name and matches the write-time MultipleTermsInField key.
+    private static void AppendFieldName(ref PlanCacheKeyBuilder builder, string name, IndexSearcher searcher)
+    {
+        AppendString(ref builder, name);
+        builder.Append(name != null && searcher.HasMultipleTermsInField(name) ? 1 : 0, 1);
     }
 
     // Append a string as a presence bit, a length prefix, then its UTF-16 bytes copied directly into the buffer.
@@ -89,7 +105,7 @@ internal static partial class QueryPlanBuilder
     // structurally distinct trees can never produce the same bit stream; operands are normalized by
     // AppendCanonicalValue so value- and parameter variants converge. The DFS order matches the parse walk
     // that assigns value ordinals.
-    private static void AppendCanonicalExpression(ref PlanCacheKeyBuilder builder, QueryExpression expr)
+    private static void AppendCanonicalExpression(ref PlanCacheKeyBuilder builder, QueryExpression expr, IndexSearcher searcher)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         switch (expr)
@@ -105,27 +121,27 @@ internal static partial class QueryPlanBuilder
                 if (be.Operator is OperatorType.And or OperatorType.Or)
                 {
                     // Boolean connective: both operands are sub-expressions.
-                    AppendCanonicalExpression(ref builder, be.Left);
-                    AppendCanonicalExpression(ref builder, be.Right);
+                    AppendCanonicalExpression(ref builder, be.Left, searcher);
+                    AppendCanonicalExpression(ref builder, be.Right, searcher);
                 }
                 else
                 {
                     // Comparison: ParseComparison/ParseRangeComparison resolve the left operand as the field
                     // (via TryGetFieldName); the right operand is the value.
-                    AppendCanonicalField(ref builder, be.Left);
-                    AppendCanonicalExpression(ref builder, be.Right);
+                    AppendCanonicalField(ref builder, be.Left, searcher);
+                    AppendCanonicalExpression(ref builder, be.Right, searcher);
                 }
 
                 return;
 
             case NegatedExpression ne:
                 AppendTag(ref builder, AstTag.Negated);
-                AppendCanonicalExpression(ref builder, ne.Expression);
+                AppendCanonicalExpression(ref builder, ne.Expression, searcher);
                 return;
 
             case BetweenExpression bw:
                 AppendTag(ref builder, AstTag.Between);
-                AppendCanonicalField(ref builder, bw.Source);
+                AppendCanonicalField(ref builder, bw.Source, searcher);
                 AppendCanonicalValue(ref builder, bw.Min);
                 AppendCanonicalValue(ref builder, bw.Max);
                 builder.Append(bw.MinInclusive ? 1 : 0, 1);
@@ -136,10 +152,10 @@ internal static partial class QueryPlanBuilder
                 // IN arity is structural: each value is its own binding, so (a,b) and (a,b,c) are different templates.
                 AppendTag(ref builder, AstTag.In);
                 builder.Append(ie.All ? 1 : 0, 1);
-                AppendCanonicalField(ref builder, ie.Source);
+                AppendCanonicalField(ref builder, ie.Source, searcher);
                 builder.Append(ie.Values.Count, 31);
                 foreach (var v in ie.Values)
-                    AppendCanonicalExpression(ref builder, v);
+                    AppendCanonicalExpression(ref builder, v, searcher);
                 return;
 
             case MethodExpression me:
@@ -157,19 +173,19 @@ internal static partial class QueryPlanBuilder
                 int firstOperand = 0;
                 if (me.Arguments.Count > 0 && MethodTakesFieldAsFirstArgument(me.Name.Value))
                 {
-                    AppendCanonicalField(ref builder, me.Arguments[0]);
+                    AppendCanonicalField(ref builder, me.Arguments[0], searcher);
                     firstOperand = 1;
                 }
 
                 for (int i = firstOperand; i < me.Arguments.Count; i++)
-                    AppendCanonicalExpression(ref builder, me.Arguments[i]);
+                    AppendCanonicalExpression(ref builder, me.Arguments[i], searcher);
 
                 return;
             }
 
             case FieldExpression fe:
                 AppendTag(ref builder, AstTag.Field);
-                AppendString(ref builder, fe.FieldValue);
+                AppendFieldName(ref builder, fe.FieldValue, searcher);
                 return;
 
             case ValueExpression ve:
@@ -214,22 +230,22 @@ internal static partial class QueryPlanBuilder
     //     against the wrong field; the separate tag also keeps it from colliding with a same-typed search term;
     //   - a wrapper that names the field itself (spatial.point(...) / embedding.*(...) / id())
     //     -> recurse into the normal walk, which encodes that MethodExpression's own identity.
-    private static void AppendCanonicalField(ref PlanCacheKeyBuilder builder, QueryExpression expr)
+    private static void AppendCanonicalField(ref PlanCacheKeyBuilder builder, QueryExpression expr, IndexSearcher searcher)
     {
         switch (expr)
         {
             case FieldExpression fe:
                 AppendTag(ref builder, AstTag.Field);
-                AppendString(ref builder, fe.FieldValue);
+                AppendFieldName(ref builder, fe.FieldValue, searcher);
                 return;
 
             case ValueExpression { Value: ValueTokenType.String } ve:
                 AppendTag(ref builder, AstTag.QuotedField);
-                AppendString(ref builder, ve.Token.Value);
+                AppendFieldName(ref builder, ve.Token.Value, searcher);
                 return;
 
             default:
-                AppendCanonicalExpression(ref builder, expr);
+                AppendCanonicalExpression(ref builder, expr, searcher);
                 return;
         }
     }
@@ -260,7 +276,7 @@ internal static partial class QueryPlanBuilder
     // prebuilt/patch closures and must not be shared across buckets; parameter arguments render by name (the value
     // is resolved at runtime), so parameter-value variants still collapse. A null ORDER BY is kept distinct from an
     // empty one.
-    private static void AppendCanonicalOrderBy(ref PlanCacheKeyBuilder builder, OrderByField[] orderBy)
+    private static void AppendCanonicalOrderBy(ref PlanCacheKeyBuilder builder, OrderByField[] orderBy, IndexSearcher searcher)
     {
         if (orderBy == null)
         {
@@ -272,7 +288,7 @@ internal static partial class QueryPlanBuilder
         builder.Append(orderBy.Length, 31);
         foreach (var field in orderBy)
         {
-            AppendString(ref builder, field.Name?.Value);
+            AppendFieldName(ref builder, field.Name?.Value, searcher);
             builder.Append((int)field.OrderingType, OrderingTypeBits);
             builder.Append(field.Ascending ? 1 : 0, 1);
             builder.Append((int)field.NullsOrdering, NullsOrderingBits);

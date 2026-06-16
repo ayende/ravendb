@@ -92,10 +92,15 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             // to this transaction's ImmutableExternalState at creation time. The transaction
             // holds the only reference the IndexSearcher needs; once the transaction disposes
             // and no other transaction is still keeping the cache alive, GC reclaims it.
-            if (readTransaction.LowLevelTransaction.ImmutableExternalState is IndexTransactionCache txCache
-                && txCache.VectorNodeCaches is { Count: > 0 } vectorCaches)
+            if (readTransaction.LowLevelTransaction.ImmutableExternalState is IndexTransactionCache txCache)
             {
-                IndexSearcher.AttachVectorNodeCaches(vectorCaches);
+                if (txCache.VectorNodeCaches is { Count: > 0 } vectorCaches)
+                    IndexSearcher.AttachVectorNodeCaches(vectorCaches);
+
+                // The write-time snapshot of multi-valued field names (null when over the cap, leaving the
+                // live tree-read path in place). Consumed by the structural plan key via HasMultipleTermsInField.
+                if (txCache.FieldsWithMultipleTerms is { } multiValuedFields)
+                    IndexSearcher.AttachFieldsWithMultipleTerms(multiValuedFields);
             }
 
             if (index is {_forTestingPurposes: {CoraxConfiguration: not null}})

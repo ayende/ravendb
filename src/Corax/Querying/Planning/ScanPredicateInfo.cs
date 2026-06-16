@@ -31,4 +31,10 @@ public struct ScanPredicateInfo
     /// <c>NOT ALL IN</c>). A missing/null field then satisfies the predicate, matching the bitmap
     /// <c>AndNot</c> complement. Boosted clauses are never scan-eligible, so this never combines with scoring.</summary>
     public bool Negated;
+    /// <summary>True when the field holds at most one term per entry (index-wide
+    /// <c>HasMultipleTermsInField == false</c>). The IL emitter then collapses the per-entry term
+    /// walk to a single read + single compare (no backward branch, no per-iteration null skip).
+    /// The single-valuedness is baked into the plan cache key, so a field that later becomes
+    /// multi-valued re-plans on a cache miss rather than re-using this straight-line leaf.</summary>
+    public bool IsSingleValued;
 }

@@ -369,6 +369,31 @@ public static class ResidualScanIlEmitter
 
         if (pred.CompareOp == ScanCompareOp.NotEqual)
         {
+            if (pred.IsSingleValued)
+            {
+                // Single-valued field: at most one term per entry, so the term-walk loop collapses to a
+                // single read + single compare (no backward branch). The entry FAILS iff its one term
+                // equals the target; an absent field or a null term has no equal term, so it PASSES.
+                //   if (!reader.FindNext(rootPage)) goto pass; if (reader.IsNull) goto pass;
+                //   if (term == target) goto fail;   // else fall through → pass
+                var singlePass = d.DefineLabelPair("notEqualPass");
+
+                EmitFindNext(ref d, readerRefLocal, rootIdx);
+                EmitBranchFalse(ref d, singlePass.Il, singlePass.Name);   // no term → pass
+
+                d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+                d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
+                d.Il.Emit(OpCodes.Brtrue, singlePass.Il);
+                d.CsLine(JumpIf("reader.IsNull", singlePass.Name));       // null term → pass
+
+                EmitTypedComparison(ref d, in pred, readerRefLocal);
+                EmitBranchTrue(ref d, failIl, failName);                  // term equals → fail
+
+                d.Il.MarkLabel(singlePass.Il);
+                d.CsLine($"{singlePass.Name}:");
+                return;
+            }
+
             // NotEqual: the entry FAILS if ANY term equals the target; it PASSES when no term equals
             // (including an absent field).
             //   while (reader.FindNext(rootPage)) { if (reader.IsNull) continue; if (term == target) goto fail; }
@@ -406,6 +431,27 @@ public static class ResidualScanIlEmitter
         // comparison; it FAILS if none do (including an absent field).
         //   while (reader.FindNext(rootPage)) { if (reader.IsNull) continue; if (<cmp>) goto pass; }  goto fail;
         {
+            if (pred.IsSingleValued)
+            {
+                // Single-valued field: at most one term per entry, so the term-walk loop collapses to a
+                // single read + single compare (no backward branch, no per-iteration null skip). The entry
+                // PASSES iff its one term satisfies the comparison; an absent field or a null term fails it.
+                //   if (!reader.FindNext(rootPage)) goto fail; if (reader.IsNull) goto fail;
+                //   if (!<cmp>) goto fail;   // else fall through → pass
+                EmitFindNext(ref d, readerRefLocal, rootIdx);
+                EmitBranchFalse(ref d, failIl, failName);     // no term → fail
+
+                d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+                d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
+                d.Il.Emit(OpCodes.Brtrue, failIl);
+                d.CsLine(JumpIf("reader.IsNull", failName));  // null term → fail
+
+                EmitTypedComparison(ref d, in pred, readerRefLocal);
+                EmitBranchFalse(ref d, failIl, failName);     // comparison false → fail
+                // fall through → pass
+                return;
+            }
+
             var loopHead = d.DefineLabelPair("matchNext");
             var pass = d.DefineLabelPair("matchPass");
 

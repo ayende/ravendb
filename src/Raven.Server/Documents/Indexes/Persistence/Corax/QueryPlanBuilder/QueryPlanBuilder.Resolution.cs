@@ -47,7 +47,7 @@ internal static partial class QueryPlanBuilder
         }
 
         var template = ParseTemplate(planParams);
-        template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams);
+        template.SortMetadataTemplate = BuildSortMetadataTemplate(planParams, template);
         var bucket = planCache.GetOrAddBucket(structuralKey, template, planParams.CacheKey);
         metadata.CachedPlanMemo = new QueryMetadata.PlanMemo(planCache.Id, bucket);
         return Finalize(bucket);

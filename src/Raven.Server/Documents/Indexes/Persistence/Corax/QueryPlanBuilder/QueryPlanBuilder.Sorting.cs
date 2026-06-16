@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using Corax.Mappings;
 using Corax.Querying.Matches;
@@ -79,7 +80,7 @@ internal static partial class QueryPlanBuilder
         return orderByFields is { Length: 1 } && orderByFields[0].FieldType == MatchCompareFieldType.Score;
     }
 
-    private static SortMetadataTemplate BuildSortMetadataTemplate(PlanParameters p)
+    private static SortMetadataTemplate BuildSortMetadataTemplate(PlanParameters p, PlanTemplate planTemplate)
     {
         var orderByFields = p.Metadata.OrderBy;
 
@@ -110,6 +111,14 @@ internal static partial class QueryPlanBuilder
         var prebuilt = new OrderMetadata[orderByFields.Length];
         var patches = new SortSlotPatch[orderByFields.Length];
         bool anyPatch = false;
+
+        // A top-level, unguarded, non-negated Equals clause (AND root) pins its field to one value, so
+        // an ORDER BY on that field contributes nothing to the order. Collect those field names once;
+        // a field sort whose name is pinned is flagged below, and when single-valued at query time the
+        // whole sort can be elided (see SortMetadataTemplate.PinnedByEquality / MaterializeSortMetadata).
+        var equalityPinnedFields = CollectEqualityPinnedFields(planTemplate);
+        bool[] pinnedByEquality = equalityPinnedFields is null ? null : new bool[orderByFields.Length];
+        bool anyPinned = false;
 
         for (int i = 0; i < orderByFields.Length; i++)
         {
@@ -167,12 +176,19 @@ internal static partial class QueryPlanBuilder
             patches[i].Kind = SortSlotPatchKind.FieldRuntimeResolve;
             patches[i].FieldName = field.Name;
             anyPatch = true;
+
+            if (equalityPinnedFields != null && field.Name?.Value is { } orderByName && equalityPinnedFields.Contains(orderByName))
+            {
+                pinnedByEquality[i] = true;
+                anyPinned = true;
+            }
         }
 
         return new SortMetadataTemplate
         {
             Prebuilt = prebuilt,
             Patches = anyPatch ? patches : null,
+            PinnedByEquality = anyPinned ? pinnedByEquality : null,
         };
         
         SortDistanceMetadataBuilder GetDistanceBuilder(OrderByField field) => // side effect for this method, we aren't accidently capturing the wrong instance in a loop
@@ -191,7 +207,30 @@ internal static partial class QueryPlanBuilder
             return compareType;
         }
     }
-    
+
+    /// <summary>Field names pinned to a single value by a top-level, unguarded, non-negated <c>Equals</c>
+    /// clause under an AND root. Every result then shares one value for that field, so an ORDER BY on it
+    /// is constant. Returns null when the root is OR (no clause is mandatory) or when no clause qualifies.
+    /// Only direct top-level clauses are considered — a clause nested inside a group is not a guaranteed
+    /// pin, so groups are skipped (their ClauseType is AndGroup/OrGroup, never Equals).</summary>
+    private static HashSet<string> CollectEqualityPinnedFields(PlanTemplate template)
+    {
+        if (template.IsOr)
+            return null;
+
+        HashSet<string> pinned = null;
+        foreach (var clause in template.Clauses)
+        {
+            if (clause.ClauseType != ClauseType.Equals || clause.IsNegated || clause.WhenCondition != null)
+                continue;
+            if (clause.FieldName is not { } fieldName)
+                continue;
+            (pinned ??= new HashSet<string>(StringComparer.Ordinal)).Add(fieldName);
+        }
+
+        return pinned;
+    }
+
     private static NullsSortMode? GetNullsSortMode(OrderByField field)
     {
         var nullsSortMode = (field.NullsOrdering, field.Ascending) switch
@@ -233,6 +272,15 @@ internal static partial class QueryPlanBuilder
             return template.Prebuilt;
 
         var indexSearcher = builderParameters.IndexSearcher;
+
+        // Full sort elision: when EVERY ORDER BY key is pinned to a single value by a top-level equality
+        // (PinnedByEquality) AND each pinned field is single-valued, the whole sort is a no-op. Drop it so
+        // the query runs as a plain (sortless) bitmap match — a null orderByFields makes Instantiate skip
+        // the SortingMatch wrapper and never enter the DirectScan strategies. Single-valuedness is folded
+        // into the plan cache key, so a field that later becomes multi-valued misses the cache and re-plans
+        // with the sort intact rather than reusing this elision.
+        if (template.PinnedByEquality is { } pinned && AllPinnedSingleValued(pinned, template.Patches, indexSearcher))
+            return null;
 
         var result = new OrderMetadata[template.Prebuilt.Length];
 
@@ -286,6 +334,22 @@ internal static partial class QueryPlanBuilder
         }
 
         return result;
+    }
+
+    /// <summary>True only when every ORDER BY position is pinned by a top-level equality (<paramref name="pinned"/>)
+    /// AND each pinned field is single-valued. A single non-pinned or multi-valued key means the sort still does
+    /// real work, so it must not be elided.</summary>
+    private static bool AllPinnedSingleValued(bool[] pinned, SortSlotPatch[] patches, global::Corax.Querying.IndexSearcher indexSearcher)
+    {
+        for (int i = 0; i < pinned.Length; i++)
+        {
+            if (pinned[i] == false)
+                return false;
+            if (indexSearcher.HasMultipleTermsInField(patches[i].FieldName))
+                return false;
+        }
+
+        return true;
     }
 
     private static FieldMetadata ResolveSortFieldMeta(QueryBuilderParameters builderParameters, string fieldName)
