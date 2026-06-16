@@ -33,18 +33,25 @@ internal static partial class QueryPlanBuilder
             ? BuildSortedDrivingWithTieBreakMatch(ctx, tpm.Provider, tpm.Llt, ctx.BuilderParams.Index.Configuration.NullsSortMode, indexSearcher, nullFirst)
             : new SortedDrivingMatch(tpm.Provider, tpm.Llt, ctx.PlanParams.Allocator, indexSearcher, ctx.OrderByFields[0].Field, nullFirst);
 
-        int take = ResolveSortedScanTake(ctx.BuilderParams);
-
         DirectScanMatchBase ds;
         if (ctx.Exec.Plan.DirectScanResidualSet is { HasPredicates: true })
         {
             // Filter every clause EXCEPT the sort-driving clause (walked by the tree).
             ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx, ctx.Exec.Plan.DirectScanResidualSet);
+            int take = ResolveSortedScanTake(ctx.BuilderParams);
             ds = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: take, precompiledDelegate: ctx.Plan.DirectScanResidualSet.Compiled);
         }
         else
-        {   // Nothing to filter, just match...
-            ds = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: take);
+        {   // Nothing to filter, just match. The emitted set is exactly the driving provider's posting set,
+            // so for a single-valued field the exact TotalResults equals that provider's posting count.
+            // Resolving it up front (O(distinct terms)) lets the read operation skip the count drain AND
+            // page-bound the scan even when statistics are requested, since the drain is no longer the count
+            // source. ResolveSortedScanTake would otherwise force TakeAll to feed that drain.
+            long knownTotal = TryResolveDirectScanKnownTotal(ref ctx, walkerCtx, drivingClause, isFullScan, forward);
+            int take = knownTotal >= 0
+                ? (ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll)
+                : ResolveSortedScanTake(ctx.BuilderParams);
+            ds = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: take) { KnownExactTotal = knownTotal };
         }
 
         if (ctx.WantTimings)
@@ -108,6 +115,47 @@ internal static partial class QueryPlanBuilder
             return (match, ctx.WantTimings ? $"{fieldMeta.FieldName} [all]" : null);
         }
         
+        // For a no-residual DirectScanSimpleMatch the exact TotalResults is the driving provider's posting
+        // count, readable without draining Fill. Returns -1 (fall back to the drain) unless every condition
+        // that keeps "postings == documents" holds.
+        static long TryResolveDirectScanKnownTotal(ref InstCtx ctx, ResolutionContext walkerCtx, ClauseExecution drivingClause, bool isFullScan, bool forward)
+        {
+            var builderParams = ctx.BuilderParams;
+
+            // The total is only consumed when the read operation reports statistics or answers a count query.
+            // Otherwise the scan is already page-bounded and never drained, so computing it would be wasted work.
+            if (builderParams?.Query is not ({ IsCountQuery: true } or { SkipStatistics: false }))
+                return -1;
+
+            // A server-side filter rejects index candidates after the fact, so the posting count would
+            // overcount the surviving results.
+            if (builderParams.Metadata?.Query?.Filter != null)
+                return -1;
+
+            // Multi-valued fields place a document under several terms; DirectScanSimpleMatch dedups those via
+            // EmittedBitmap, so the summed posting count would overcount documents. Single-valued fields only.
+            if (ctx.PlanParams.IndexSearcher.HasMultipleTermsInField(ctx.OrderByFields[0].Field))
+                return -1;
+
+            // CountPostingsInRange advances (and exhausts) a provider's iterator, so it must run on a throwaway
+            // provider resolved with the same bounds — never the one feeding the SortedDrivingMatch above, which
+            // would leave that scan with nothing to read.
+            var (countMatch, _) = isFullScan
+                ? ResolveFullScanDrivingProvider(ref ctx, forward)
+                : ResolveDrivingProvider(ref ctx, walkerCtx, drivingClause, forward);
+            try
+            {
+                // Not every driving provider can tally its postings without decoding them.
+                if (countMatch is TermsProviderMatch countTpm && countTpm.Provider is IAggregationProvider agg)
+                    return agg.CountPostingsInRange(0).Postings;
+                return -1;
+            }
+            finally
+            {
+                (countMatch as IDisposable)?.Dispose();
+            }
+        }
+
         static void PopulateDirectScanInspection(DirectScanMatchBase ds, string sortFieldName, string drivingClauseDescription, bool forward,
             ScanPredicateInfo[] residualArray, string reason)
         {

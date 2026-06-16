@@ -361,6 +361,67 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
         Assert.Contains("limit=10 (early exit)", plan.Parameters["PlanGraphDot"]);
     }
 
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task FullScanOrderByReportsExactTotalFromPostingCount(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 500); // Value 0..499, single-valued
+
+        using var session = store.OpenAsyncSession();
+        // No WHERE: the sorted scan drives off the full Value range (DirectScanSimpleMatch). For a single-valued
+        // field the exact TotalResults equals the driving provider's posting count (500), resolved up front from
+        // CountPostingsInRange instead of draining Fill to recount — see DirectScanMatchBase.KnownExactTotal.
+        var results = await session.Advanced
+            .AsyncDocumentQuery<Doc, DocIndex>()
+            .OrderBy(x => x.Value)
+            .Take(10)
+            .Statistics(out var stats)
+            .Timings(out QueryTimings timings)
+            .ToListAsync();
+
+        Assert.Equal(10, results.Count);
+        for (int i = 1; i < results.Count; i++)
+            Assert.True(results[i].Value >= results[i - 1].Value);
+        Assert.Equal(0, results[0].Value); // smallest Value first
+        Assert.Equal(500, stats.TotalResults);
+
+        var plan = (QueryInspectionNode)timings.QueryPlan;
+        Assert.NotNull(plan);
+        Assert.True(plan.Parameters.TryGetValue("PlanGraphDot", out var dot) && dot.Contains("data_knownexacttotal=\"500\""), dot);
+    }
+
+    [RavenTheory(RavenTestCategory.Querying | RavenTestCategory.Corax)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task RangeDrivingOrderByReportsExactTotalFromPostingCount(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        InsertDocuments(store, 500); // Value 0..499 → 399 docs have Value > 100
+
+        using var session = store.OpenAsyncSession();
+        // where Value > 100 order by Value: the range clause drives the sort with no residual (DirectScanSimpleMatch).
+        // Single-valued, so the exact TotalResults is the in-range posting count (399), read from the provider
+        // rather than draining Fill — the page (10) is returned without walking the remaining 389 matches to count.
+        var results = await session.Advanced
+            .AsyncDocumentQuery<Doc, DocIndex>()
+            .WhereGreaterThan(x => x.Value, 100)
+            .OrderBy(x => x.Value)
+            .Take(10)
+            .Statistics(out var stats)
+            .Timings(out QueryTimings timings)
+            .ToListAsync();
+
+        Assert.Equal(10, results.Count);
+        for (int i = 1; i < results.Count; i++)
+            Assert.True(results[i].Value >= results[i - 1].Value);
+        Assert.Equal(101, results[0].Value); // smallest Value strictly greater than 100
+        Assert.Equal(399, stats.TotalResults);
+
+        var plan = (QueryInspectionNode)timings.QueryPlan;
+        Assert.NotNull(plan);
+        Assert.True(plan.Parameters.TryGetValue("PlanGraphDot", out var dot) && dot.Contains("data_knownexacttotal=\"399\""), dot);
+    }
+
     private void InsertDocuments(IDocumentStore store, int count)
     {
         new DocIndex().Execute(store);

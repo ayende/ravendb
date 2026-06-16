@@ -46,6 +46,14 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
     public string ResidualDescription;
     public string Reason;
 
+    /// <summary>
+    /// Exact TotalResults resolved up front from the driving provider's posting count (O(distinct terms)),
+    /// or -1 when it cannot be derived cheaply. When non-negative the read operation reports this instead
+    /// of draining Fill to exhaustion to recount. Only set on a no-residual scan over a single-valued field,
+    /// where the emitted set is exactly the provider's postings with no per-document dedup.
+    /// </summary>
+    public long KnownExactTotal = -1;
+
     protected DirectScanMatchBase(IndexSearcher searcher, IQueryMatch drivingMatch, int take)
     {
         Searcher = searcher;
@@ -85,6 +93,7 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
 
         parameters["TreeEntriesScanned"] = TreeEntriesScanned.ToString();
         if (StoppedReason != null) parameters["StoppedAt"] = StoppedReason;
+        if (KnownExactTotal >= 0) parameters["KnownExactTotal"] = KnownExactTotal.ToString();
         return new QueryInspectionNode("DirectScan", parameters: parameters);
     }
 

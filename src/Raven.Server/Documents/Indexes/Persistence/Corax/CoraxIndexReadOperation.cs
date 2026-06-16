@@ -686,6 +686,13 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         if (take > 0 && (query.SkipStatistics || knownExactTotal >= 0))
                             compiledMatch.Limit = (int)Math.Min(take, int.MaxValue);
                     }
+                    else if (compileResult.QueryMatch is DirectScanMatchBase { KnownExactTotal: >= 0 } directScan)
+                    {
+                        // No-residual sorted scan over a single-valued field: the exact total equals the
+                        // driving provider's posting count, resolved up front (O(distinct terms)) at plan
+                        // build instead of draining the page-bounded Fill to recount below.
+                        knownExactTotal = directScan.KnownExactTotal;
+                    }
                 }
 
                 using var ___ = compileResult;
