@@ -205,6 +205,8 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
     /// breakdown (total postings plus the single / small / large split and their sub-totals) is the raw material the
     /// two-ended range-cardinality probe extrapolates from.
     /// </summary>
+    public bool SupportsPostingCount => true;
+
     public unsafe RangePostingStats CountPostingsInRange(int maxTerms)
     {
         var stats = new RangePostingStats();

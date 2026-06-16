@@ -195,6 +195,8 @@ namespace Corax.Querying.Matches.TermsProviders
             return CountPostingsInRange(maxTerms: 0).Postings;
         }
 
+        public bool SupportsPostingCount => true;
+
         public unsafe RangePostingStats CountPostingsInRange(int maxTerms)
         {
             var stats = new RangePostingStats();

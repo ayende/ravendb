@@ -9,6 +9,13 @@ public interface IAggregationProvider
     public long AggregateByRange();
 
     /// <summary>
+    /// Whether <see cref="CountPostingsInRange"/> is supported. An exists-scan provider walks entries rather than
+    /// terms, so it cannot produce a per-term posting breakdown and returns <c>false</c>; range/numeric providers
+    /// return <c>true</c>. Callers must check this before calling <see cref="CountPostingsInRange"/>.
+    /// </summary>
+    public bool SupportsPostingCount { get; }
+
+    /// <summary>
     /// Header-only scan over up to <paramref name="maxTerms"/> in-range terms (0 = all), returning the posting-count
     /// breakdown without decoding any posting ids. The two-ended range-cardinality probe samples the bottom and top
     /// of the range with this and extrapolates the unscanned middle.

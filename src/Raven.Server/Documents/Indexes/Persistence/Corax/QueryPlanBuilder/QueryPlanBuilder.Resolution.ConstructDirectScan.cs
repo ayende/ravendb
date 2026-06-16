@@ -150,8 +150,10 @@ internal static partial class QueryPlanBuilder
                 : ResolveDrivingProvider(ref ctx, walkerCtx, drivingClause, forward);
             try
             {
-                // Not every driving provider can tally its postings without decoding them.
-                if (countMatch is TermsProviderMatch countTpm && countTpm.Provider is IAggregationProvider agg)
+                // Not every driving provider can tally its postings without decoding them. An exists-scan
+                // (full scan over a string field) walks entries rather than terms and cannot supply a posting
+                // count — SupportsPostingCount is false there, so fall back to the drain instead of throwing.
+                if (countMatch is TermsProviderMatch countTpm && countTpm.Provider is IAggregationProvider { SupportsPostingCount: true } agg)
                     return agg.CountPostingsInRange(0).Postings;
                 return -1;
             }
