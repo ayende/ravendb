@@ -128,20 +128,28 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
 
             if (match._inner is IBitmapQueryMatch bitmapMatch)
             {
+                // First access to Count runs the inner compiled pipeline (the AND/OR/scan that builds the
+                // candidate bitmap). Deliberately left outside the sort timer below: that execution is timed
+                // onto the inner CompiledQuery node's per-op telemetry, so charging it to the sort too would
+                // double-count the query. Everything after this line is sort-specific work.
                 match.TotalResults = bitmapMatch.Count;
                 if (match.TotalResults == 0)
                     return 0;
 
+                long sortStart = Stopwatch.GetTimestamp();
                 int total = (int)match.TotalResults;
                 var scope = match._searcher.Allocator.Allocate(total * sizeof(long), out var bs);
                 var allMatches = new Span<long>(bs.Ptr, total);
                 int filled = bitmapMatch.Fill(allMatches);
                 SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
                 scope.Dispose();
+                match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
             }
             else
             {
-                // Non-bitmap path: drain via Fill to preserve match-specific state (scores, etc.)
+                // Non-bitmap path: drain via Fill to preserve match-specific state (scores, etc.).
+                // Draining the inner match (Count + the Fill loop) is the inner query's execution, not sort
+                // work, so it is deliberately left untimed — only the SortResults call below is charged to the sort.
                 var count = match._inner.Count;
                 int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
                 var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
@@ -163,7 +171,9 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
                     scope.Dispose();
                     return 0;
                 }
+                long sortStart = Stopwatch.GetTimestamp();
                 SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
+                match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
                 scope.Dispose();
             }
         }
@@ -284,6 +294,16 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
             }
         }
         
+        // Surface the sort's own runtime cost. The inner bitmap pipeline times its ops onto the child
+        // CompiledQuery node; the multi-comparer sort runs above it and is otherwise absent from include
+        // timings(). SortingMultiMatch always materializes the candidate set and heap-sorts it (no
+        // index-order streaming variant exists for multi-key sorts), so the strategy is constant.
+        if (SortingTimeInTicks > 0)
+        {
+            parameters["Strategy"] = CoraxSortingStrategy.InMemorySort.ToString();
+            parameters["Ms"] = (SortingTimeInTicks / (Stopwatch.Frequency / 1000.0)).ToString("F3", CultureInfo.InvariantCulture);
+        }
+
         // The sort wrapper sits above the bitmap pipeline, so surface its own in/out (see SortingMatch.Inspect):
         // Incoming is the full candidate set ranked, Output is what the page receives — capped by _take when set.
         if (TotalResults >= 0)

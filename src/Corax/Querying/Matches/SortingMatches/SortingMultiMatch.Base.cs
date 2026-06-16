@@ -14,6 +14,12 @@ public abstract class SortingMultiMatch : IQueryMatch, IDisposable, IRequireSort
     /// <summary>Total number of matching entries (set after the first Fill call).</summary>
     public long TotalResults;
 
+    /// <summary>Wall-clock ticks spent on sort-specific work (the multi-comparer heap sort). Excludes the inner
+    /// match's execution, which is timed onto the child CompiledQuery node's per-op telemetry; counting it here
+    /// too would double-count the query. <see cref="SortingMultiMatch{TInner}.Inspect"/> emits this as the sort
+    /// node's "Ms" so include timings() can attribute the sort cost that sits above the bitmap pipeline.</summary>
+    public long SortingTimeInTicks;
+
     public abstract bool IsBoosting { get; }
     public abstract DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
     public abstract long Count { get; }
