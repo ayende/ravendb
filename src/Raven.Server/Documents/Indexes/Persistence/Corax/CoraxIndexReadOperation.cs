@@ -716,8 +716,14 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 // unmeasured. Time the Fill calls only — not the surrounding yield loop, which would
                 // also count document retrieval/serialization the consumer does between MoveNext calls.
                 // Resuming coraxScope folds the search time back into the Corax total; the Execute child
-                // isolates it from the Optimizer (plan build) span.
+                // isolates it from the Optimizer (plan build) span. Sorting is not a separate stage here:
+                // the SortingMatch wrapper sorts inside QueryMatch.Fill, so its cost lives under Execute.
+                // Document retrieval/projection is timed by the retriever's own Retriever/Storage scopes.
+                // Score (per-batch BM25 when produced during Fill) and Paging (RegisterDuplicates dedup +
+                // pagination reshuffle) are the remaining CPU stages, broken out as their own Corax children.
                 var executeScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Execute), start: false);
+                var scoreScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Score), start: false);
+                var pagingScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Paging), start: false);
                 while (query.IsCountQuery == false || typeof(TDistinct) == typeof(HasDistinct))
                 {
                     token.ThrowIfCancellationRequested();
@@ -737,12 +743,17 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     {
                         var scoresForBatch = sortingData.ScoresBuffer.AsSpan(0, read);
                         scoresForBatch.Fill(Bm25Relevance.InitialScoreValue);
-                        compileResult.QueryMatch.Score(ids.AsSpan(0, read), scoresForBatch, 1f);
+                        using (coraxScope?.Start())
+                        using (scoreScope?.Start())
+                            compileResult.QueryMatch.Score(ids.AsSpan(0, read), scoresForBatch, 1f);
                     }
 
                     // If we are going to skip, we've better do it knowing how many we have passed.
                     // After this call the order of ids from 0 to `i` may be changed, and we cannot rely on it (a sorting case).
-                    long i = identityTracker.RegisterDuplicates(ref hasProjections, totalResults.Value, ids.AsSpan(0, read), token);
+                    long i;
+                    using (coraxScope?.Start())
+                    using (pagingScope?.Start())
+                        i = identityTracker.RegisterDuplicates(ref hasProjections, totalResults.Value, ids.AsSpan(0, read), token);
                     totalResults.Value += read; // important that this is *after* RegisterDuplicates
 
                     // Now for every document that was selected. document it. 
