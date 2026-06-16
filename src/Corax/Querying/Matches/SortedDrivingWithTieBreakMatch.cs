@@ -52,6 +52,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private readonly Lookup<Int64LookupKey> _secondaryLookup;
     private readonly MatchCompareFieldType _secondaryType;
     private readonly bool _secondaryDescending;
+    private readonly bool _nullIsSmallest;
     private readonly long _missingSecondaryValue;
     private readonly int _take;
     private readonly int _maxGroupSize;
@@ -76,6 +77,10 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private NativeList<int> _groupSortedIndexes;
     // String tie-break scratch: resolved CompactKey blobs per group entry.
     private NativeList<UnmanagedSpan> _groupTerms;
+    // Parallel term buffers (sized to _take) for the bounded top-K heap in TruncateGroupToTopTake; only
+    // one is allocated, picked by the secondary type. Unused when the take is unbounded (no truncation).
+    private NativeList<long> _groupHeapTerms;
+    private NativeList<UnmanagedSpan> _groupHeapTermsSeq;
     private int _groupEmitIdx;
 
     // Non-existing entries (docs where the primary sort field was absent) are treated as null-adjacent:
@@ -116,6 +121,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _nullFirst = nullFirst;
         _secondaryType = secondaryType;
         _secondaryDescending = secondaryDescending;
+        _nullIsSmallest = nullIsSmallest;
         // When take is unbounded (TakeAll = -1) or very large, disable the group truncation
         // by setting _maxGroupSize to int.MaxValue — the group grows as needed without truncation.
         if (take is Constants.IndexSearcher.TakeAll || take > int.MaxValue / 4)
@@ -172,6 +178,16 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _groupSortedIndexes.Initialize(allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
         if (secondaryType == MatchCompareFieldType.Sequence)
             _groupTerms.Initialize(allocator, QueryPrimitives.TieBreakGroupInitialCapacity);
+
+        // Bounded-take path only: scratch term buffer the shared heap sorter keeps parallel to its
+        // surviving indices (capacity _take). TakeAll never truncates, so it needs none.
+        if (_maxGroupSize != int.MaxValue)
+        {
+            if (secondaryType == MatchCompareFieldType.Sequence)
+                _groupHeapTermsSeq.Initialize(allocator, _take);
+            else
+                _groupHeapTerms.Initialize(allocator, _take);
+        }
     }
 
     public long Count => -1;
@@ -419,99 +435,50 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
         ResolveGroupSecondary();
 
-        // Max-heap (keyed by CmpKeepRank, root = worst-to-keep) of group-entry indices, capacity _take.
-        // _groupSortedIndexes capacity tracks the group capacity, so it always has room for _take indices.
-        var heap = _groupSortedIndexes.RawItems;
-        int heapSize = 0;
-        for (int i = 0; i < n; i++)
-        {
-            if (heapSize < _take)
-            {
-                heap[heapSize] = i;
-                HeapSiftUp(heap, heapSize);
-                heapSize++;
-            }
-            else if (CmpKeepRank(i, heap[0]) < 0)
-            {
-                // i ranks before the current worst survivor — replace it.
-                heap[0] = i;
-                HeapSiftDown(heap, heapSize);
-            }
-        }
-
-        // Compact survivors to the front of _groupEntries. _groupSecondary is free to use as scratch
-        // here: its resolved values were already consumed while building the heap above.
-        var entries = _groupEntries.RawItems;
-        var scratch = _groupSecondary.RawItems;
-        for (int i = 0; i < heapSize; i++)
-            scratch[i] = entries[heap[i]];
-        new Span<long>(scratch, heapSize).CopyTo(new Span<long>(entries, heapSize));
-
-        _groupSortedIndexes.Count = _groupSecondary.Count = _groupEntries.Count = heapSize;
-    }
-
-    /// <summary>Comparison in "keep rank" order: returns &gt;0 when entry <paramref name="a"/> should be
-    /// emitted AFTER entry <paramref name="b"/> (i.e. is worse to keep). Mirrors the ascending-sort +
-    /// descending-on-read emit order of <see cref="SortGroupBySecondary"/>/<see cref="EmitFromSortedGroup"/>:
-    /// ascending keeps the smallest values, descending keeps the largest. Both arguments are indices into
-    /// the resolved secondary buffers (<see cref="_groupSecondary"/> / <see cref="_groupTerms"/>).</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private int CmpKeepRank(int a, int b)
-    {
+        // Bounded top-K via the shared Corax max-heap (HeapSorterBuilder / NumericalMaxHeapSorter) — the same
+        // primitive every SortingMatch comparer uses. The sorter keeps the surviving group-entry indices in the
+        // `documents` span (here _groupSortedIndexes, keyed by the resolved secondary value); descending keeps the
+        // largest values, ascending the smallest, and ties stabilize by group index. We then compact _groupEntries
+        // down to those survivors; the final per-group order is still produced by SortGroupBySecondary, so the heap
+        // only selects the top-_take set.
+        var docs = new Span<int>(_groupSortedIndexes.RawItems, _take);
         switch (_secondaryType)
         {
             case MatchCompareFieldType.Integer:
             {
-                long va = _groupSecondary.RawItems[a];
-                long vb = _groupSecondary.RawItems[b];
-                return _secondaryDescending ? vb.CompareTo(va) : va.CompareTo(vb);
+                var terms = new Span<long>(_groupHeapTerms.RawItems, _take);
+                var sorter = HeapSorterBuilder.BuildSingleNumericalSorter<long>(docs, terms, _secondaryDescending, _nullIsSmallest);
+                for (int i = 0; i < n; i++)
+                    sorter.Insert(i, _groupSecondary.RawItems[i]);
+                break;
             }
             case MatchCompareFieldType.Floating:
             {
-                double va = BitConverter.Int64BitsToDouble(_groupSecondary.RawItems[a]);
-                double vb = BitConverter.Int64BitsToDouble(_groupSecondary.RawItems[b]);
-                return _secondaryDescending ? vb.CompareTo(va) : va.CompareTo(vb);
+                var terms = new Span<double>((double*)_groupHeapTerms.RawItems, _take);
+                var sorter = HeapSorterBuilder.BuildSingleNumericalSorter<double>(docs, terms, _secondaryDescending, _nullIsSmallest);
+                for (int i = 0; i < n; i++)
+                    sorter.Insert(i, BitConverter.Int64BitsToDouble(_groupSecondary.RawItems[i]));
+                break;
             }
-            default: // Sequence — null sorts first (ascending), matching SortBySlice's SliceComparer.
+            default: // Sequence
             {
-                var ta = _groupTerms.RawItems[a];
-                var tb = _groupTerms.RawItems[b];
-                return _secondaryDescending
-                    ? CompactKeyComparer.Compare(tb, ta, 1)
-                    : CompactKeyComparer.Compare(ta, tb, 1);
+                var terms = new Span<UnmanagedSpan>(_groupHeapTermsSeq.RawItems, _take);
+                var sorter = HeapSorterBuilder.BuildSingleCompactKeySorter(docs, terms, _secondaryDescending, _nullIsSmallest);
+                for (int i = 0; i < n; i++)
+                    sorter.Insert(i, _groupTerms.RawItems[i]);
+                break;
             }
         }
-    }
 
-    private void HeapSiftUp(int* heap, int i)
-    {
-        while (i > 0)
-        {
-            int parent = (i - 1) / 2;
-            if (CmpKeepRank(heap[parent], heap[i]) >= 0)
-                break;
-            (heap[parent], heap[i]) = (heap[i], heap[parent]);
-            i = parent;
-        }
-    }
+        // Compact survivors (docs[0.._take]) to the front of _groupEntries. _groupSecondary is free to use as
+        // scratch here: its resolved values were already consumed while building the heap above.
+        var entries = _groupEntries.RawItems;
+        var scratch = _groupSecondary.RawItems;
+        for (int i = 0; i < _take; i++)
+            scratch[i] = entries[docs[i]];
+        new Span<long>(scratch, _take).CopyTo(new Span<long>(entries, _take));
 
-    private void HeapSiftDown(int* heap, int size)
-    {
-        int i = 0;
-        while (true)
-        {
-            int left = i * 2 + 1;
-            int right = i * 2 + 2;
-            int largest = i;
-            if (left < size && CmpKeepRank(heap[left], heap[largest]) > 0)
-                largest = left;
-            if (right < size && CmpKeepRank(heap[right], heap[largest]) > 0)
-                largest = right;
-            if (largest == i)
-                break;
-            (heap[largest], heap[i]) = (heap[i], heap[largest]);
-            i = largest;
-        }
+        _groupSortedIndexes.Count = _groupSecondary.Count = _groupEntries.Count = _take;
     }
 
     /// <summary>Resolve the secondary values for the current group into <see cref="_groupSecondary"/>
@@ -640,5 +607,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _groupSecondary.Dispose(_allocator);
         _groupSortedIndexes.Dispose(_allocator);
         _groupTerms.Dispose(_allocator);
+        _groupHeapTerms.Dispose(_allocator);
+        _groupHeapTermsSeq.Dispose(_allocator);
     }
 }
