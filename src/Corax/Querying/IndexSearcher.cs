@@ -554,18 +554,10 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         _vectorNodeCaches = caches;
     }
 
-    /// <summary>
-    /// Attach everything this searcher needs from the per-transaction index cache in one shot:
-    /// the per-field HNSW node caches (see <see cref="AttachVectorNodeCaches"/>) and the write-time
-    /// snapshot of field names that have multiple terms. When the latter is attached,
-    /// <see cref="HasMultipleTermsInField(string)"/> answers from it instead of reading the Voron tree per
-    /// call; a <c>null</c> set leaves the live tree-read path in place (cache disabled, or field count over the cap).
-    /// </summary>
-    public void AttachTransactionCache(ICoraxTransactionCache cache)
+    public void AttachTransactionCache(Dictionary<Slice, HnswIndexCache> vectorNodeCaches, HashSet<string> fieldsWithMultipleTerms)
     {
-        if (cache.VectorNodeCaches is { Count: > 0 } vectorCaches)
-            _vectorNodeCaches = vectorCaches;
-        _fieldsWithMultipleTerms = cache.FieldsWithMultipleTerms;
+        _vectorNodeCaches = vectorNodeCaches;
+        _fieldsWithMultipleTerms = fieldsWithMultipleTerms;
     }
 
     public void Dispose()

@@ -7,7 +7,7 @@ using Voron.Data.Graphs;
 
 namespace Raven.Server.Indexing
 {
-    public sealed class IndexTransactionCache : ICoraxTransactionCache
+    public sealed class IndexTransactionCache
     {
         public sealed class CollectionEtags
         {

@@ -88,12 +88,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 PlanCache = (index.IndexPersistence as CoraxIndexPersistence)?.SharedPlanCache ?? new PlanCache(),
             };
 
-            // Pick up the per-field HNSW vector node caches that CoraxIndexPersistence attached
-            // to this transaction's ImmutableExternalState at creation time. The transaction
-            // holds the only reference the IndexSearcher needs; once the transaction disposes
-            // and no other transaction is still keeping the cache alive, GC reclaims it.
             if (readTransaction.LowLevelTransaction.ImmutableExternalState is IndexTransactionCache txCache)
-                IndexSearcher.AttachTransactionCache(txCache);
+                IndexSearcher.AttachTransactionCache(txCache.VectorNodeCaches, txCache.FieldsWithMultipleTerms);
 
             if (index is {_forTestingPurposes: {CoraxConfiguration: not null}})
                 IndexSearcher.SetTestingConfiguration(index._forTestingPurposes.CoraxConfiguration);
@@ -850,19 +846,18 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     }
                     else
                     {
-                        int read;
                         using (coraxScope?.Start())
                         using (executeScope?.Start())
                         {
-                            do
+                            while(true)
                             {
                                 // Instead of memoizing, we just continue filling the buffer. First, because we don't need to keep the
                                 // value or deduplicate at this stage; just to know how many potential matches we have left. Also memoizing
                                 // is not supported for SortingMatch.
-                                read = compileResult.QueryMatch.Fill(ids);
+                                int read = compileResult.QueryMatch.Fill(ids);
+                                if (read is 0) break;
                                 totalResults.Value += read;
                             }
-                            while (read != 0);
                         }
                     }
                 }

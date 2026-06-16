@@ -44,13 +44,9 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
     private const int MaxFieldsWithMultipleTermsToCache = 512;
 
     private Dictionary<Slice, HnswIndexCache> _hnswCaches;
-    // The single source of truth for both the vector caches and the multi-valued field snapshot we publish.
-    // The snapshot itself lives in _currentCache.FieldsWithMultipleTerms (no separate field), so there is one
-    // instance to reason about; "previous" for the monotonic rebuild is read back from it.
     private IndexTransactionCache _currentCache;
     private StorageEnvironment _environment;
     private Action<LowLevelTransaction> _newTransactionCreatedHandler;
-    internal IndexWriter ActiveWriter;
     internal Dictionary<Slice, HashSet<long>> PendingDirtyVectorSets;
 
     public CoraxIndexPersistence(Index index, IIndexReadOperationFactory indexReadOperationFactory) : base(index, indexReadOperationFactory)
@@ -225,13 +221,11 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
 
     public override void Initialize(StorageEnvironment environment)
     {
-        HashSet<string> fieldsWithMultipleTerms = null;
         using (var roTx = environment.ReadTransaction())
         {
             WarmInitialCaches(roTx);
-            fieldsWithMultipleTerms = ReadFieldsWithMultipleTerms(roTx, previous: null);
+            _currentCache = BuildCurrentCache(ReadFieldsWithMultipleTerms(roTx, previous: null));
         }
-        _currentCache = BuildCurrentCache(fieldsWithMultipleTerms);
 
         _environment = environment;
         _newTransactionCreatedHandler = tx => tx.ImmutableExternalState = Volatile.Read(ref _currentCache);
