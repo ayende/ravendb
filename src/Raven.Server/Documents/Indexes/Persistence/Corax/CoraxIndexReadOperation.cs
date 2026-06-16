@@ -703,12 +703,23 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                 // We don't need to do any processing for the query beyond counting if we are getting a count.
                 long totalResultsBefore = totalResults.Value;
+
+                // The Corax scope above closed after plan build, so query execution (the actual search,
+                // including any lazily-initialized post-filter such as vector search) was previously
+                // unmeasured. Time the Fill calls only — not the surrounding yield loop, which would
+                // also count document retrieval/serialization the consumer does between MoveNext calls.
+                // Resuming coraxScope folds the search time back into the Corax total; the Execute child
+                // isolates it from the Optimizer (plan build) span.
+                var executeScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Execute), start: false);
                 while (query.IsCountQuery == false || typeof(TDistinct) == typeof(HasDistinct))
                 {
                     token.ThrowIfCancellationRequested();
 
                     // We look for items that hadn't seen before in the case of paging.
-                    int read = compileResult.QueryMatch.Fill(ids);
+                    int read;
+                    using (coraxScope?.Start())
+                    using (executeScope?.Start())
+                        read = compileResult.QueryMatch.Fill(ids);
                     if (read == 0)
                         goto Done;
 
@@ -825,15 +836,19 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     else
                     {
                         int read;
-                        do
+                        using (coraxScope?.Start())
+                        using (executeScope?.Start())
                         {
-                            // Instead of memoizing, we just continue filling the buffer. First, because we don't need to keep the
-                            // value or deduplicate at this stage; just to know how many potential matches we have left. Also memoizing
-                            // is not supported for SortingMatch.
-                            read = compileResult.QueryMatch.Fill(ids);
-                            totalResults.Value += read;
+                            do
+                            {
+                                // Instead of memoizing, we just continue filling the buffer. First, because we don't need to keep the
+                                // value or deduplicate at this stage; just to know how many potential matches we have left. Also memoizing
+                                // is not supported for SortingMatch.
+                                read = compileResult.QueryMatch.Fill(ids);
+                                totalResults.Value += read;
+                            }
+                            while (read != 0);
                         }
-                        while (read != 0);
                     }
                 }
                 

@@ -104,44 +104,42 @@ public partial class IndexSearcher
                 }
 
                 // Sample entry IDs from the filter for HNSW probe seeds. HNSW only
-                // probes up to 512 nodes, so cap the materialization to avoid
-                // allocating a huge array for very large filters.
+                // probes up to 512 nodes, so cap the sample to avoid allocating a
+                // huge array for very large filters.
                 //
-                // RoaringBitmapIterator yields entries in ascending entry-ID order.
-                // Taking the first N would bias the sample to the oldest documents
-                // (lowest entry IDs are assigned earliest at indexing time) and
-                // degrade recall for queries over newer documents. Use Algorithm R
-                // reservoir sampling so every filter entry has equal probability
-                // of being in the final sample, then shuffle the reservoir to make
-                // iteration order independent of insertion order.
+                // We must not bias the sample toward the oldest documents (lowest
+                // entry IDs are assigned earliest at indexing time, and the bitmap
+                // is ordered by entry ID), or recall degrades for queries over newer
+                // documents. Rather than sweep the whole filter (O(filterCount)) with
+                // reservoir sampling, pick random ranks in [0, filterCount) and resolve
+                // them with RoaringBitmap.Select, which walks the container structure
+                // once — O(C + N log N) — using per-container cardinality to map a rank
+                // to its set value. When the filter fits the cap we take every entry
+                // (sequential ranks). Sampling is with replacement; rare duplicate
+                // seeds only cost a redundant probe (HNSW dedups visited nodes), and
+                // the cap is already 16x the probe budget so distinctness is not needed.
                 const int MaxFilterSampleSize = 8192;
                 var sampleSize = (int)Math.Min(filterCount, MaxFilterSampleSize);
                 _entryIds = new long[sampleSize];
-                using var iterator = filterResults.GetIterator();
-                Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-                int seen = 0;
-                int read;
-                while ((read = iterator.Fill(ref filterResults, batch)) > 0)
+                var ranks = new long[sampleSize];
+                if (filterCount <= MaxFilterSampleSize)
                 {
-                    for (int i = 0; i < read; i++)
-                    {
-                        if (seen < sampleSize)
-                        {
-                            _entryIds[seen] = batch[i];
-                        }
-                        else
-                        {
-                            // Standard reservoir step: keep the new entry with probability
-                            // sampleSize / (seen + 1) by drawing j in [0, seen] and accepting
-                            // only when j < sampleSize.
-                            int j = _random.Next(seen + 1);
-                            if (j < sampleSize)
-                                _entryIds[j] = batch[i];
-                        }
-                        seen++;
-                    }
+                    for (int i = 0; i < sampleSize; i++)
+                        ranks[i] = i;
+                }
+                else
+                {
+                    for (int i = 0; i < sampleSize; i++)
+                        ranks[i] = _random.NextInt64(filterCount);
                 }
 
+                // Select sorts ranks in place and scatters results back to input order;
+                // ranks and _entryIds must not alias (they are separate arrays here).
+                filterResults.Select(_indexSearcher.Allocator, ranks, _entryIds);
+
+                // Make probe order independent of entry-ID order (the take-all branch
+                // produced ascending values; the sampled branch is already random but
+                // shuffling is cheap and keeps both paths uniform).
                 _random.Shuffle(_entryIds.AsSpan());
                 _entryIndex = 0;
             }

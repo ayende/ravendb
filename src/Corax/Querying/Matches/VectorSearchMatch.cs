@@ -66,6 +66,12 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
     private IQueryMatch _filterQuery;
     private bool _filterQueryLoaded;
 
+    // Diagnostics surfaced via Inspect() so the query-plan graph can attribute the vector
+    // post-filter's cost: the filter candidate set size, and how long the (lazy) one-time
+    // InitializeVectorSearch took (filter materialization + seed sampling + HNSW retriever setup).
+    private long _filterEntriesCount;
+    private double _initDurationMs;
+
     private bool CanStreamResults => IsBoosting == false && _singleVectorSearchDoNotSort;
 
     public VectorSearchMatch(IndexSearcher searcher, 
@@ -103,55 +109,64 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
         Debug.Assert(_vectorRetrieverInitialized == false, "Vector Retriever should be initialized only once.");
         _vectorRetrieverInitialized = true;
 
-        if (_filterQueryLoaded == false)
+        var initStart = Stopwatch.GetTimestamp();
+        try
         {
-            _filterQueryLoaded = true;
-            // When filterQuery is IBitmapQueryMatch (e.g. CompiledQueryMatch), LoadFilterMatches
-            // borrows the bitmap directly without re-materialization. No separate fast-path
-            // needed here — the optimization lives in VectorSearchUtils.LoadFilterMatches.
-            _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery, out _ownsFilterResults);
-            _hasFilterResults = true;
-
-            // Shortcut for empty filter
-            if (_filterResults.ComputeCount() == 0)
+            if (_filterQueryLoaded == false)
             {
-                _isEmpty = true;
-                return;
-            }
-        }
+                _filterQueryLoaded = true;
+                // When filterQuery is IBitmapQueryMatch (e.g. CompiledQueryMatch), LoadFilterMatches
+                // borrows the bitmap directly without re-materialization. No separate fast-path
+                // needed here — the optimization lives in VectorSearchUtils.LoadFilterMatches.
+                _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery, out _ownsFilterResults);
+                _hasFilterResults = true;
+                _filterEntriesCount = _filterResults.ComputeCount();
 
-        _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterResults.ComputeCount(), _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
-        var vector = _vectorToSearch.GetEmbeddingMemory();
-        var fieldName = _metadata.FieldName;
-
-        ContextBoundNativeList<long> nodesIdsToScan = default;
-        if (_scanningQuery)
-        {
-            var hasNodes = IndexSearcher.VectorSearchUtils.TryConvertDocumentsIdsToNodesIds(_indexSearcher, _metadata, ref _filterResults, out nodesIdsToScan);
-            if (hasNodes == false)
-            {
-                _isEmpty = true;
-                _vectorToSearch.Dispose();
-                if (_hasFilterResults && _ownsFilterResults)
-                    _filterResults.Dispose();
-                return;
+                // Shortcut for empty filter
+                if (_filterEntriesCount == 0)
+                {
+                    _isEmpty = true;
+                    return;
+                }
             }
 
-            _nodesIdsToScan = nodesIdsToScan;
+            _scanningQuery = IndexSearcher.VectorSearchUtils.ShouldScan(_indexSearcher, _filterEntriesCount, _isExact, _filterQuery, _scanningThreshold, _numberOfCandidates);
+            var vector = _vectorToSearch.GetEmbeddingMemory();
+            var fieldName = _metadata.FieldName;
+
+            ContextBoundNativeList<long> nodesIdsToScan = default;
+            if (_scanningQuery)
+            {
+                var hasNodes = IndexSearcher.VectorSearchUtils.TryConvertDocumentsIdsToNodesIds(_indexSearcher, _metadata, ref _filterResults, out nodesIdsToScan);
+                if (hasNodes == false)
+                {
+                    _isEmpty = true;
+                    _vectorToSearch.Dispose();
+                    if (_hasFilterResults && _ownsFilterResults)
+                        _filterResults.Dispose();
+                    return;
+                }
+
+                _nodesIdsToScan = nodesIdsToScan;
+            }
+            var searchState = _indexSearcher.GetOrCreateVectorSearchState(fieldName);
+
+            _vectorSearchRetriever = _isExact switch
+            {
+                _ when _scanningQuery => Hnsw.ExactNearest(searchState, _numberOfCandidates, vector, _minimumMatch, hasFilterMatch: false, nodesIdsToScan),
+                true => Hnsw.ExactNearest(searchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
+                false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(searchState, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults, _random)),
+                    _ => Hnsw.ApproximateNearest(searchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
+            };
+
+            _isEmpty = _scanningQuery
+                ? _filterEntriesCount == 0 || _vectorSearchRetriever.IsEmpty
+                : _vectorSearchRetriever.IsEmpty;
         }
-        var searchState = _indexSearcher.GetOrCreateVectorSearchState(fieldName);
-
-        _vectorSearchRetriever = _isExact switch
+        finally
         {
-            _ when _scanningQuery => Hnsw.ExactNearest(searchState, _numberOfCandidates, vector, _minimumMatch, hasFilterMatch: false, nodesIdsToScan),
-            true => Hnsw.ExactNearest(searchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
-            false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(searchState, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults, _random)),
-                _ => Hnsw.ApproximateNearest(searchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
-        };
-
-        _isEmpty = _scanningQuery
-            ? _filterResults.ComputeCount() == 0 || _vectorSearchRetriever.IsEmpty
-            : _vectorSearchRetriever.IsEmpty;
+            _initDurationMs = Stopwatch.GetElapsedTime(initStart).TotalMilliseconds;
+        }
     }
     
     public int Fill(Span<long> matches)
@@ -323,16 +338,27 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
 
     public QueryInspectionNode Inspect()
     {
+        // Exact: brute-force over the whole/filtered set. ExactScanning: brute-force over filter docs
+        // mapped to nodes. ApproximateFiltered: HNSW ANN seeded from a sample of the filter set.
+        // Approximate: plain HNSW ANN with no filter.
+        var searchMode = _scanningQuery ? "ExactScanning"
+            : _isExact ? "Exact"
+            : _filterQuery != null ? "ApproximateFiltered"
+            : "Approximate";
+
         var vsInspect =  new QueryInspectionNode(nameof(VectorSearchMatch),
             parameters: new Dictionary<string, string>()
             {
                 { Constants.QueryInspectionNode.FieldName, _metadata.FieldName.ToString() },
                 { nameof(Hnsw.SimilarityMethod), _vectorSearchRetriever.SimilarityMethod?.ToString() ?? "Query not initialized." },
+                { "SearchMode", searchMode },
                 { "IsExact", _isExact.ToString() },
                 { "IsScanning", _scanningQuery.ToString() },
                 { "Minimum match", _minimumMatch.ToString(CultureInfo.InvariantCulture) },
                 { "Number of candidates", _numberOfCandidates.ToString() },
-                { "Number of candidates scanned", (_vectorSearchRetriever.CandidatesProcessed).ToString()}
+                { "Filter entries", _filterEntriesCount.ToString("N0") },
+                { "Number of candidates scanned", (_vectorSearchRetriever.CandidatesProcessed).ToString()},
+                { "InitMs", _initDurationMs.ToString("F3", CultureInfo.InvariantCulture) }
             })
         {
             // Reflects the lifting decision recorded on this match, not the type: a vector leaf inside an OR is
