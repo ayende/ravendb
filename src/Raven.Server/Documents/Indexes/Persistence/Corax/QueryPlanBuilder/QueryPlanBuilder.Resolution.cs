@@ -696,10 +696,9 @@ internal static partial class QueryPlanBuilder
     }
 
     private static IQueryMatch BuildSortedDrivingWithTieBreakMatch(InstCtx ctx, ITermsProvider provider, LowLevelTransaction llt, NullsSortMode indexDefaultNullsSortMode,
-        IndexSearcher indexSearcher, bool nullFirst)
+        IndexSearcher indexSearcher, bool nullFirst, int take)
     {
         bool secondaryNullIsSmallest = (ctx.OrderByFields[1].NullsSortMode ?? indexDefaultNullsSortMode) == NullsSortMode.NullsSmallest;
-        int take = ResolveSortedScanTake(ctx.BuilderParams);
         return new SortedDrivingWithTieBreakMatch(
             provider, llt, ctx.PlanParams.Allocator, indexSearcher,
             ctx.OrderByFields[0].Field, ctx.OrderByFields[1].Field,

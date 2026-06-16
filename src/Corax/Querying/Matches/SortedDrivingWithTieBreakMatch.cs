@@ -406,25 +406,134 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _groupEntries.Count += newCount;
     }
 
-    /// <summary>Sort the current group by secondary and keep only the top <see cref="_take"/>
-    /// entries. Uses <see cref="_groupSecondary"/> as scratch for the compaction copy (it will
-    /// be overwritten by the next <see cref="SortGroupBySecondary"/> call anyway).</summary>
+    /// <summary>Keep only the top <see cref="_take"/> entries of the current group by secondary value,
+    /// discarding the rest. Uses a bounded max-heap of size <see cref="_take"/> over the resolved
+    /// secondary values (O(n log take)) instead of a full O(n log n) sort — the survivors are the
+    /// same set, and the final per-group <see cref="SortGroupBySecondary"/> orders them for emission.
+    /// Only ever called on the bounded-take path (TakeAll never reaches <see cref="_maxGroupSize"/>).</summary>
     private void TruncateGroupToTopTake()
     {
-        SortGroupBySecondary();
-        int keep = Math.Min(_take, _groupEntries.Count);
+        int n = _groupEntries.Count;
+        if (n <= _take)
+            return;
+
+        ResolveGroupSecondary();
+
+        // Max-heap (keyed by CmpKeepRank, root = worst-to-keep) of group-entry indices, capacity _take.
+        // _groupSortedIndexes capacity tracks the group capacity, so it always has room for _take indices.
+        var heap = _groupSortedIndexes.RawItems;
+        int heapSize = 0;
+        for (int i = 0; i < n; i++)
+        {
+            if (heapSize < _take)
+            {
+                heap[heapSize] = i;
+                HeapSiftUp(heap, heapSize);
+                heapSize++;
+            }
+            else if (CmpKeepRank(i, heap[0]) < 0)
+            {
+                // i ranks before the current worst survivor — replace it.
+                heap[0] = i;
+                HeapSiftDown(heap, heapSize);
+            }
+        }
+
+        // Compact survivors to the front of _groupEntries. _groupSecondary is free to use as scratch
+        // here: its resolved values were already consumed while building the heap above.
         var entries = _groupEntries.RawItems;
-        var indexes = _groupSortedIndexes.RawItems;
         var scratch = _groupSecondary.RawItems;
+        for (int i = 0; i < heapSize; i++)
+            scratch[i] = entries[heap[i]];
+        new Span<long>(scratch, heapSize).CopyTo(new Span<long>(entries, heapSize));
 
-        // For ascending: indexes[0..keep] are the smallest (emitted first).
-        // For descending: indexes[groupSize-keep..groupSize] are the largest (emitted first).
-        int start = _secondaryDescending ? _groupEntries.Count - keep : 0;
-        for (int i = 0; i < keep; i++)
-            scratch[i] = entries[indexes[start + i]];
-        new Span<long>(scratch, keep).CopyTo(new Span<long>(entries, keep));
+        _groupSortedIndexes.Count = _groupSecondary.Count = _groupEntries.Count = heapSize;
+    }
 
-        _groupSortedIndexes.Count = _groupSecondary.Count = _groupEntries.Count = keep;
+    /// <summary>Comparison in "keep rank" order: returns &gt;0 when entry <paramref name="a"/> should be
+    /// emitted AFTER entry <paramref name="b"/> (i.e. is worse to keep). Mirrors the ascending-sort +
+    /// descending-on-read emit order of <see cref="SortGroupBySecondary"/>/<see cref="EmitFromSortedGroup"/>:
+    /// ascending keeps the smallest values, descending keeps the largest. Both arguments are indices into
+    /// the resolved secondary buffers (<see cref="_groupSecondary"/> / <see cref="_groupTerms"/>).</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private int CmpKeepRank(int a, int b)
+    {
+        switch (_secondaryType)
+        {
+            case MatchCompareFieldType.Integer:
+            {
+                long va = _groupSecondary.RawItems[a];
+                long vb = _groupSecondary.RawItems[b];
+                return _secondaryDescending ? vb.CompareTo(va) : va.CompareTo(vb);
+            }
+            case MatchCompareFieldType.Floating:
+            {
+                double va = BitConverter.Int64BitsToDouble(_groupSecondary.RawItems[a]);
+                double vb = BitConverter.Int64BitsToDouble(_groupSecondary.RawItems[b]);
+                return _secondaryDescending ? vb.CompareTo(va) : va.CompareTo(vb);
+            }
+            default: // Sequence — null sorts first (ascending), matching SortBySlice's SliceComparer.
+            {
+                var ta = _groupTerms.RawItems[a];
+                var tb = _groupTerms.RawItems[b];
+                return _secondaryDescending
+                    ? CompactKeyComparer.Compare(tb, ta, 1)
+                    : CompactKeyComparer.Compare(ta, tb, 1);
+            }
+        }
+    }
+
+    private void HeapSiftUp(int* heap, int i)
+    {
+        while (i > 0)
+        {
+            int parent = (i - 1) / 2;
+            if (CmpKeepRank(heap[parent], heap[i]) >= 0)
+                break;
+            (heap[parent], heap[i]) = (heap[i], heap[parent]);
+            i = parent;
+        }
+    }
+
+    private void HeapSiftDown(int* heap, int size)
+    {
+        int i = 0;
+        while (true)
+        {
+            int left = i * 2 + 1;
+            int right = i * 2 + 2;
+            int largest = i;
+            if (left < size && CmpKeepRank(heap[left], heap[largest]) > 0)
+                largest = left;
+            if (right < size && CmpKeepRank(heap[right], heap[largest]) > 0)
+                largest = right;
+            if (largest == i)
+                break;
+            (heap[largest], heap[i]) = (heap[i], heap[largest]);
+            i = largest;
+        }
+    }
+
+    /// <summary>Resolve the secondary values for the current group into <see cref="_groupSecondary"/>
+    /// (and <see cref="_groupTerms"/> for Sequence), without sorting. Shared by the bounded top-K
+    /// selection in <see cref="TruncateGroupToTopTake"/>.</summary>
+    private void ResolveGroupSecondary()
+    {
+        var entriesSpan = _groupEntries.ToSpan();
+        var secondarySpan = new Span<long>(_groupSecondary.RawItems, _groupSecondary.Capacity);
+        switch (_secondaryType)
+        {
+            case MatchCompareFieldType.Integer:
+            case MatchCompareFieldType.Floating:
+                SortKernels.ResolveLongs(_secondaryLookup, entriesSpan, secondarySpan, _missingSecondaryValue);
+                break;
+            case MatchCompareFieldType.Sequence:
+                var termsSpan = new Span<UnmanagedSpan>(_groupTerms.RawItems, _groupTerms.Capacity);
+                SortKernels.ResolveSlices(_secondaryLookup, _llt, _llt.PageLocator,
+                    entriesSpan, secondarySpan, termsSpan,
+                    _nullTermContainerId, _nonExistingTermContainerId);
+                break;
+        }
     }
 
     private void SortGroupBySecondary()

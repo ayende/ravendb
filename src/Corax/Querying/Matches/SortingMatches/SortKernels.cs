@@ -25,6 +25,54 @@ namespace Corax.Querying.Matches.SortingMatches;
 internal static class SortKernels
 {
     /// <summary>
+    /// Resolve the long (Integer/Floating-bits) secondary values for a group of entries without sorting.
+    /// Used by bounded top-K selection, which picks survivors via a heap instead of a full sort.
+    /// </summary>
+    public static void ResolveLongs(
+        Lookup<Int64LookupKey> lookup,
+        Span<long> entries,
+        Span<long> valuesOut,
+        long missingValue)
+    {
+        int n = entries.Length;
+        Debug.Assert(valuesOut.Length >= n);
+        if (lookup != null)
+            lookup.GetFor(entries, valuesOut, missingValue);
+        else
+            valuesOut.Slice(0, n).Fill(missingValue);
+    }
+
+    /// <summary>
+    /// Resolve the CompactKey term blobs for a group of entries (Sequence secondary field) without sorting.
+    /// Mirrors the resolution half of <see cref="SortBySlice"/>; used by bounded top-K selection.
+    /// </summary>
+    public static unsafe void ResolveSlices(
+        Lookup<Int64LookupKey> lookup,
+        LowLevelTransaction llt,
+        PageLocator pageLocator,
+        Span<long> entries,
+        Span<long> termIdsScratch,
+        Span<UnmanagedSpan> termsOut,
+        long nullTermContainerId,
+        long nonExistingTermContainerId)
+    {
+        int n = entries.Length;
+        Debug.Assert(termIdsScratch.Length >= n);
+        Debug.Assert(termsOut.Length >= n);
+        if (lookup != null)
+        {
+            lookup.GetFor(entries, termIdsScratch, SortingHelpers.MissingTermId);
+            SortingHelpers.ReplaceNullAndNonExistingTermIds(
+                termIdsScratch.Slice(0, n), nonExistingTermContainerId, nullTermContainerId, SortingHelpers.MissingTermId);
+            Container.GetAll(llt, termIdsScratch.Slice(0, n), termsOut.Slice(0, n), SortingHelpers.MissingTermId, pageLocator);
+        }
+        else
+        {
+            termsOut.Slice(0, n).Fill(default);
+        }
+    }
+
+    /// <summary>
     /// Sort a group of entries by a long (Integer) secondary field.
     /// Populates <paramref name="indexesOut"/> with indices into <paramref name="entries"/>
     /// ordered by the secondary long value (ascending).

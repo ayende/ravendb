@@ -29,28 +29,35 @@ internal static partial class QueryPlanBuilder
             return null; // can happen if we have no entries for this field
 
         bool nullFirst = ResolveNullFirst(ctx.OrderByFields[0], ctx.BuilderParams.Index.Configuration.NullsSortMode, forward);
+
+        bool hasResidual = ctx.Exec.Plan.DirectScanResidualSet is { HasPredicates: true };
+
+        // For a no-residual scan the emitted set is exactly the driving provider's posting set, so for a
+        // single-valued field the exact TotalResults equals that provider's posting count. Resolving it up
+        // front (O(distinct terms)) lets the read operation skip the count drain AND page-bound the scan even
+        // when statistics are requested, since the drain is no longer the count source — ResolveSortedScanTake
+        // would otherwise force TakeAll to feed that drain. A residual filter rejects candidates after the
+        // fact, so its count depends on draining post-filter survivors; we cannot bound it (knownTotal = -1).
+        long knownTotal = hasResidual ? -1 : TryResolveDirectScanKnownTotal(ref ctx, walkerCtx, drivingClause, isFullScan, forward);
+        // The take threaded into the driving match. When knownTotal resolves, the scan is page-bounded even
+        // under statistics, so the inner SortedDrivingWithTieBreakMatch can bound its per-group top-K heap.
+        int take = knownTotal >= 0
+            ? (ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll)
+            : ResolveSortedScanTake(ctx.BuilderParams);
+
         IQueryMatch drivingMatch = hasTieBreak
-            ? BuildSortedDrivingWithTieBreakMatch(ctx, tpm.Provider, tpm.Llt, ctx.BuilderParams.Index.Configuration.NullsSortMode, indexSearcher, nullFirst)
+            ? BuildSortedDrivingWithTieBreakMatch(ctx, tpm.Provider, tpm.Llt, ctx.BuilderParams.Index.Configuration.NullsSortMode, indexSearcher, nullFirst, take)
             : new SortedDrivingMatch(tpm.Provider, tpm.Llt, ctx.PlanParams.Allocator, indexSearcher, ctx.OrderByFields[0].Field, nullFirst);
 
         DirectScanMatchBase ds;
-        if (ctx.Exec.Plan.DirectScanResidualSet is { HasPredicates: true })
+        if (hasResidual)
         {
             // Filter every clause EXCEPT the sort-driving clause (walked by the tree).
             ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx, ctx.Exec.Plan.DirectScanResidualSet);
-            int take = ResolveSortedScanTake(ctx.BuilderParams);
             ds = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: take, precompiledDelegate: ctx.Plan.DirectScanResidualSet.Compiled);
         }
         else
-        {   // Nothing to filter, just match. The emitted set is exactly the driving provider's posting set,
-            // so for a single-valued field the exact TotalResults equals that provider's posting count.
-            // Resolving it up front (O(distinct terms)) lets the read operation skip the count drain AND
-            // page-bound the scan even when statistics are requested, since the drain is no longer the count
-            // source. ResolveSortedScanTake would otherwise force TakeAll to feed that drain.
-            long knownTotal = TryResolveDirectScanKnownTotal(ref ctx, walkerCtx, drivingClause, isFullScan, forward);
-            int take = knownTotal >= 0
-                ? (ctx.BuilderParams?.Take ?? Constants.IndexSearcher.TakeAll)
-                : ResolveSortedScanTake(ctx.BuilderParams);
+        {   // Nothing to filter, just match.
             ds = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: take) { KnownExactTotal = knownTotal };
         }
 
