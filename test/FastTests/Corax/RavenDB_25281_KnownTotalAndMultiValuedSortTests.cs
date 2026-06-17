@@ -609,6 +609,61 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         Assert.Equal(199, results[0].UnitsInStock);
     }
 
+    // RavenDB-26831: a compound numeric member must sort negatives correctly. New indexes (built at
+    // OrderPreservingCompoundNumericEncoding or higher) encode signed longs order-preserving, so the
+    // CompoundSortedScan walk/range over a field with negative values is correct. Cross-engine pins it to Lucene.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+    public async Task CompoundSort_NegativeNumericValues_OrderedCorrectly(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new CatDocs_ByCategoryUnits();
+        index.Execute(store);
+
+        var values = new[] { -50, -16, -1, 0, 1, 7, 100 };
+        using (var bulk = store.BulkInsert())
+        {
+            int i = 0;
+            foreach (var u in values)
+                await bulk.StoreAsync(new CatDoc { Category = "categories/1-A", UnitsInStock = u }, $"cat/{i++}");
+        }
+
+        Indexes.WaitForIndexing(store);
+        using var session = store.OpenAsyncSession();
+
+        // Ascending: this pins Category and walks compound(Category, UnitsInStock) ascending — exercises the
+        // order-preserving encoding directly. Negatives must come first.
+        var asc = await session.Advanced
+            .AsyncRawQuery<CatDoc>($"from index '{index.IndexName}' where Category = 'categories/1-A' order by Category, UnitsInStock as long include timings()")
+            .Timings(out var ascTimings)
+            .ToListAsync();
+        Assert.Equal(new[] { -50, -16, -1, 0, 1, 7, 100 }, asc.Select(r => r.UnitsInStock).ToList());
+
+        if (options.SearchEngineMode == RavenSearchEngineMode.Corax)
+        {
+            // Make sure we actually exercised the compound walk (not a plain SortingMatch that would pass regardless).
+            var plan = ascTimings.QueryPlan as QueryInspectionNode;
+            var compiled = FindOperation(plan, "CompiledQuery");
+            compiled?.Parameters.TryGetValue("OptimizationHint", out var hint);
+            Assert.True(compiled?.Parameters.GetValueOrDefault("OptimizationHint") == "CompoundSortedScan",
+                "Expected CompoundSortedScan to exercise the compound numeric encoding. Plan: " + Describe(plan));
+        }
+
+        // Descending.
+        var desc = await session.Advanced
+            .AsyncRawQuery<CatDoc>($"from index '{index.IndexName}' where Category = 'categories/1-A' order by Category, UnitsInStock as long desc")
+            .ToListAsync();
+        Assert.Equal(new[] { 100, 7, 1, 0, -1, -16, -50 }, desc.Select(r => r.UnitsInStock).ToList());
+
+        // Range crossing zero: > -10 must include -1,0,1,… and exclude -16,-50 — both the rows AND the count.
+        var range = await session.Advanced
+            .AsyncRawQuery<CatDoc>($"from index '{index.IndexName}' where Category = 'categories/1-A' and UnitsInStock > -10 order by Category, UnitsInStock as long")
+            .Statistics(out var rangeStats)
+            .ToListAsync();
+        Assert.Equal(new[] { -1, 0, 1, 7, 100 }, range.Select(r => r.UnitsInStock).ToList());
+        Assert.Equal(5, (int)rangeStats.TotalResults);
+    }
+
     private static QueryInspectionNode FindOperation(QueryInspectionNode node, string operation)
     {
         if (node == null)

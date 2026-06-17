@@ -494,8 +494,9 @@ internal static partial class QueryPlanBuilder
 
         ctx.PlanParams.Allocator.Allocate(totalLen, out ByteString keyBuf);
         var keySpan = keyBuf.ToSpan();
-        WriteCompoundFieldEncoding(keySpan.Slice(0, enc1.Size), enc1, ctx.Exec);
-        WriteCompoundFieldEncoding(keySpan.Slice(enc1.Size, enc2.Size), enc2, ctx.Exec);
+        var compoundNumericXorMask = CompoundNumericXorMask(ref ctx);
+        WriteCompoundFieldEncoding(keySpan.Slice(0, enc1.Size), enc1, ctx.Exec, compoundNumericXorMask);
+        WriteCompoundFieldEncoding(keySpan.Slice(enc1.Size, enc2.Size), enc2, ctx.Exec, compoundNumericXorMask);
         keySpan[totalLen - 1] = (byte)enc1.Size;
 
         var compoundFieldMeta = indexSearcher.FieldMetadataBuilder(ctx.Exec.Plan.Template.CompoundExactName, hasBoost: false);
@@ -577,14 +578,14 @@ internal static partial class QueryPlanBuilder
                 // skip the ToString allocation unless this is an inspected query.
                 field1ValueStrForIntrospection = ctx.WantTimings ? ctx.Exec.LongValues[packed.Param1].ToString() : null;
                 ctx.PlanParams.Allocator.Allocate(sizeof(long), out ByteString buf);
-                EncodeNumericValue(buf.ToSpan(), PackedParam.TypeLong, packed.Param1, ctx.Exec);
+                EncodeNumericValue(buf.ToSpan(), PackedParam.TypeLong, packed.Param1, ctx.Exec, CompoundNumericXorMask(ref ctx));
                 return new Slice(buf);
             }
             case PackedParam.TypeDouble:
             {
                 field1ValueStrForIntrospection = ctx.WantTimings ? ctx.Exec.DoubleValues[packed.Param1].ToString(CultureInfo.InvariantCulture) : null;
                 ctx.PlanParams.Allocator.Allocate(sizeof(long), out ByteString buf);
-                EncodeNumericValue(buf.ToSpan(), PackedParam.TypeDouble, packed.Param1, ctx.Exec);
+                EncodeNumericValue(buf.ToSpan(), PackedParam.TypeDouble, packed.Param1, ctx.Exec, CompoundNumericXorMask(ref ctx));
                 return new Slice(buf);
             }
             default:
@@ -856,14 +857,24 @@ internal static partial class QueryPlanBuilder
     private static bool IsClauseBoosted(ClauseExecution exec)
         => exec.Clause.HasBoost || exec.BoostFactor > 0;
 
-    private static void EncodeNumericValue(Span<byte> dest, int valueType, int paramIdx, QueryExecution exec)
+    // RavenDB-26831: order-preserving XOR mask for raw signed-long compound members, keyed off the queried index's
+    // version. Must match CoraxDocumentConverterBase: long.MinValue on fixed indexes, 0 (legacy) on older ones.
+    private static long CompoundNumericXorMask(ref InstCtx ctx)
+        => ctx.BuilderParams.Index.Definition.Version >= IndexDefinitionBaseServerSide.IndexVersion.OrderPreservingCompoundNumericEncoding
+            ? long.MinValue
+            : 0L;
+
+    private static void EncodeNumericValue(Span<byte> dest, int valueType, int paramIdx, QueryExecution exec, long numericXorMask)
     {
+        // The double path is already order-preserving via DoubleToSortableLong; only the raw signed-long path needs
+        // the sign-flip mask (RavenDB-26831). The mask must mirror the indexer (CoraxDocumentConverterBase) for the
+        // queried index so the seek matches the stored compound key byte-for-byte.
         long raw = valueType == PackedParam.TypeDouble
             ? Bits.DoubleToSortableLong(exec.DoubleValues[paramIdx])
-            : exec.LongValues[paramIdx];
-        // Must produce byte-for-byte the same key the indexer wrote for this value. The compound-field
-        // indexer (CoraxDocumentConverterBase.AppendLong) stores `BitConverter.TryWriteBytes(buf, SwapBytes(l))`
-        // — a little-endian write of the byte-swapped value, i.e. the big-endian (sortable) byte order of `l`.
+            : exec.LongValues[paramIdx] ^ numericXorMask;
+        // Must produce byte-for-byte the same key the indexer wrote for this value. The compound-field indexer
+        // (CoraxDocumentConverterBase.AppendLong) stores `BitConverter.TryWriteBytes(buf, SwapBytes(l ^ mask))`
+        // — a little-endian write of the byte-swapped value, i.e. the big-endian (sortable) byte order of `l ^ mask`.
         // Mirror that exactly; a big-endian write here would re-swap the bytes and the seek would never match
         // the indexed key (numeric compound members would silently return zero rows).
         BinaryPrimitives.WriteInt64LittleEndian(dest, Bits.SwapBytes(raw));
@@ -900,14 +911,14 @@ internal static partial class QueryPlanBuilder
         }
     }
     
-    private static void WriteCompoundFieldEncoding(Span<byte> dest, CompoundFieldEncoding encoding, QueryExecution exec)
+    private static void WriteCompoundFieldEncoding(Span<byte> dest, CompoundFieldEncoding encoding, QueryExecution exec, long numericXorMask)
     {
         if (encoding.Packed.ValueType == PackedParam.TypeString)
         {
             encoding.Analyzed.CopyTo(dest);
             return;
         }
-        EncodeNumericValue(dest, encoding.Packed.ValueType, encoding.SourceSlot, exec);
+        EncodeNumericValue(dest, encoding.Packed.ValueType, encoding.SourceSlot, exec, numericXorMask);
     }
 
     /// <summary>TreeScan-eligible: multi-term clauses with a direct ITermsProvider (StartsWith,
