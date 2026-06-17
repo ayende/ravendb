@@ -59,7 +59,7 @@ internal static partial class QueryPlanBuilder
 
             Span<byte> suffix = span.Slice(analyzedPrefix.Size, suffixSize);
             if (suffixEncoding is { } enc)
-                WriteCompoundFieldEncoding(suffix, enc, ctx.Exec, CompoundNumericXorMask(ref ctx));
+                WriteCompoundFieldEncoding(suffix, enc, ctx.Exec, ctx.BuilderParams.CompoundFieldNumericXorMask);
             else
                 suffix.Fill(openFill);
 

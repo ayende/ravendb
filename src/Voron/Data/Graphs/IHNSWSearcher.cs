@@ -19,9 +19,7 @@ public interface IHnswSearcher : IDisposable
     public long CandidatesProcessed { get; }
 
     // Number of vector distance computations (SimilarityCalc calls) performed. Excludes nodes skipped before the
-    // distance is taken (e.g. tombstones) and revisits served from the per-query distance cache. For the HNSW
-    // searcher this equals CandidatesProcessed (every visited node is compared once); for the exact searcher it is
-    // typically lower than CandidatesProcessed, which also counts scanned tombstones.
+    // distance is taken (e.g. tombstones) and revisits served from the per-query distance cache.
     public long VectorComparisons { get; }
 
     public bool ShouldContinueSearch(long filterDocsCount);

@@ -42,10 +42,6 @@ public abstract class CoraxDocumentConverterBase : ConverterBase
     private readonly bool _canContainSourceDocumentId;
     private readonly bool _legacyHandlingOfComplexFields;
 
-    // RavenDB-26831: order-preserving XOR mask for raw signed-long compound-field members. long.MinValue flips the
-    // sign bit so big-endian byte order matches numeric order (negatives below positives); 0 is the legacy no-op
-    // encoding kept for indexes built before the fix. Doubles are unaffected (they use the already order-preserving
-    // Bits.DoubleToSortableLong). Must stay in sync with EncodeNumericValue on the query side.
     private readonly long _compoundFieldNumericXorMask;
     private static ReadOnlySpan<byte> TrueLiteral => "true"u8;
     private static ReadOnlySpan<byte> FalseLiteral => "false"u8;

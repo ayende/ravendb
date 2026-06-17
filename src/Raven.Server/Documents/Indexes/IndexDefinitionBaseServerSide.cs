@@ -33,10 +33,10 @@ namespace Raven.Server.Documents.Indexes
 
         private long? _compoundFieldNumericXorMask;
 
-        // RavenDB-26831: the order-preserving XOR mask for this index's compound numeric members, resolved once
-        // from the (immutable) Version and cached for the life of the index instance. Both the write path and the
-        // read path read this single value, so the encoding can never disagree between them.
-        public long CompoundFieldNumericXorMask => _compoundFieldNumericXorMask ??= IndexVersion.CompoundNumericXorMask(Version);
+        // RavenDB-26831: order-preserving XOR mask for raw signed-long compound-field members. long.MinValue
+        // flips the sign bit so signed longs sort in unsigned byte order (negatives below positives); 0 keeps
+        // the legacy (non-order-preserving) encoding for indexes built before the fix. 
+        public long CompoundFieldNumericXorMask => _compoundFieldNumericXorMask ??= Version >= IndexVersion.OrderPreservingCompoundNumericEncoding ? long.MinValue : 0L;
 
         public HashSet<string> Collections { get; protected set; }
 
@@ -218,15 +218,7 @@ namespace Raven.Server.Documents.Indexes
             /// Remember to bump this
             /// </summary>
             public const long CurrentVersion = OrderPreservingCompoundNumericEncoding;
-
-            // RavenDB-26831: order-preserving XOR mask for raw signed-long compound-field members. long.MinValue
-            // flips the sign bit so signed longs sort in unsigned byte order (negatives below positives); 0 keeps
-            // the legacy (non-order-preserving) encoding for indexes built before the fix. The single source of
-            // this rule — both the write path (CoraxDocumentConverterBase) and the read path (QueryPlanBuilder)
-            // derive their mask from here, so they cannot drift apart.
-            public static long CompoundNumericXorMask(long indexVersion)
-                => indexVersion >= OrderPreservingCompoundNumericEncoding ? long.MinValue : 0L;
-
+            
             public static bool IsLowerCasedReferencesSupported(long indexVersion)
             {
                 if (indexVersion >= Base62Version)

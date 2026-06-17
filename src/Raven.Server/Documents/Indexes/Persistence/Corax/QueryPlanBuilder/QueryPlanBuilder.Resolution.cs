@@ -494,7 +494,7 @@ internal static partial class QueryPlanBuilder
 
         ctx.PlanParams.Allocator.Allocate(totalLen, out ByteString keyBuf);
         var keySpan = keyBuf.ToSpan();
-        var compoundNumericXorMask = CompoundNumericXorMask(ref ctx);
+        var compoundNumericXorMask = ctx.BuilderParams.CompoundFieldNumericXorMask;
         WriteCompoundFieldEncoding(keySpan.Slice(0, enc1.Size), enc1, ctx.Exec, compoundNumericXorMask);
         WriteCompoundFieldEncoding(keySpan.Slice(enc1.Size, enc2.Size), enc2, ctx.Exec, compoundNumericXorMask);
         keySpan[totalLen - 1] = (byte)enc1.Size;
@@ -578,14 +578,14 @@ internal static partial class QueryPlanBuilder
                 // skip the ToString allocation unless this is an inspected query.
                 field1ValueStrForIntrospection = ctx.WantTimings ? ctx.Exec.LongValues[packed.Param1].ToString() : null;
                 ctx.PlanParams.Allocator.Allocate(sizeof(long), out ByteString buf);
-                EncodeNumericValue(buf.ToSpan(), PackedParam.TypeLong, packed.Param1, ctx.Exec, CompoundNumericXorMask(ref ctx));
+                EncodeNumericValue(buf.ToSpan(), PackedParam.TypeLong, packed.Param1, ctx.Exec, ctx.BuilderParams.CompoundFieldNumericXorMask);
                 return new Slice(buf);
             }
             case PackedParam.TypeDouble:
             {
                 field1ValueStrForIntrospection = ctx.WantTimings ? ctx.Exec.DoubleValues[packed.Param1].ToString(CultureInfo.InvariantCulture) : null;
                 ctx.PlanParams.Allocator.Allocate(sizeof(long), out ByteString buf);
-                EncodeNumericValue(buf.ToSpan(), PackedParam.TypeDouble, packed.Param1, ctx.Exec, CompoundNumericXorMask(ref ctx));
+                EncodeNumericValue(buf.ToSpan(), PackedParam.TypeDouble, packed.Param1, ctx.Exec, ctx.BuilderParams.CompoundFieldNumericXorMask);
                 return new Slice(buf);
             }
             default:
@@ -856,12 +856,6 @@ internal static partial class QueryPlanBuilder
 
     private static bool IsClauseBoosted(ClauseExecution exec)
         => exec.Clause.HasBoost || exec.BoostFactor > 0;
-
-    // RavenDB-26831: order-preserving XOR mask for raw signed-long compound members. Resolved once per index
-    // (on the definition) and carried in the builder params, so it matches CoraxDocumentConverterBase by
-    // construction and is not recomputed per query.
-    private static long CompoundNumericXorMask(ref InstCtx ctx)
-        => ctx.BuilderParams.CompoundFieldNumericXorMask;
 
     private static void EncodeNumericValue(Span<byte> dest, int valueType, int paramIdx, QueryExecution exec, long numericXorMask)
     {
