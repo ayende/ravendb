@@ -54,6 +54,16 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
     /// </summary>
     public long KnownExactTotal = -1;
 
+    /// <summary>
+    /// Cost of the up-front header-only count probe (CountPostingsInRange) that resolved
+    /// <see cref="KnownExactTotal"/> at plan build, in Stopwatch ticks, plus the number of in-range terms it
+    /// walked. -1 ticks means no probe ran — the total either came from O(1) metadata (NumberOfEntries / a
+    /// single term's cardinality) or the scan drains to count. Surfaced so the graph can attribute the cost of
+    /// computing the known total to its own node, since this probe is the only count source that is not O(1).
+    /// </summary>
+    public long KnownTotalProbeTicks = -1;
+    public int KnownTotalProbeTerms;
+
     protected DirectScanMatchBase(IndexSearcher searcher, IQueryMatch drivingMatch, int take)
     {
         Searcher = searcher;
@@ -98,6 +108,11 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
         parameters["Output"] = TotalMatched.ToString("N0");
         if (StoppedReason != null) parameters["StoppedAt"] = StoppedReason;
         if (KnownExactTotal >= 0) parameters["KnownExactTotal"] = KnownExactTotal.ToString();
+        if (KnownTotalProbeTicks >= 0)
+        {
+            parameters["KnownTotalProbe_ms"] = (KnownTotalProbeTicks / tickFreq).ToString("F3");
+            parameters["KnownTotalProbeTerms"] = KnownTotalProbeTerms.ToString();
+        }
         return new QueryInspectionNode("DirectScan", parameters: parameters);
     }
 

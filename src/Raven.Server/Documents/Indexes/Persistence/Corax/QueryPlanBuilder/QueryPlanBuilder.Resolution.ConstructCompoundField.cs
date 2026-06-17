@@ -46,6 +46,8 @@ internal static partial class QueryPlanBuilder
         // emitted set is exactly that range's postings. We can read the first page and derive TotalResults from the
         // range's posting headers (CountPostingsInRange) instead of draining the whole scan. A residual filter rejects
         // candidates after the fact, so its surviving count needs the drain (knownTotal = -1).
+        long knownProbeTicks = -1; // Stopwatch ticks the CountPostingsInRange header walk took (-1 = no probe ran).
+        int knownProbeTerms = 0;
         long knownTotal = hasResidual ? -1 : TryResolveCompoundKnownTotal(ref ctx);
 
         // When knownTotal resolves the scan is page-bounded even under statistics (the drain is no longer the count
@@ -64,7 +66,10 @@ internal static partial class QueryPlanBuilder
         }
         else
         {   // nothing to filter, just scan...
-            directScan = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: take) { KnownExactTotal = knownTotal };
+            directScan = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: take)
+            {
+                KnownExactTotal = knownTotal, KnownTotalProbeTicks = knownProbeTicks, KnownTotalProbeTerms = knownProbeTerms
+            };
         }
 
         if (ctx.WantTimings) // only used when we use include timings()
@@ -139,7 +144,13 @@ internal static partial class QueryPlanBuilder
             try
             {
                 if (countMatch is TermsProviderMatch countTpm && countTpm.Provider is IAggregationProvider agg)
-                    return agg.CountPostingsInRange(0).Postings;
+                {
+                    long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                    var stats = agg.CountPostingsInRange(0);
+                    knownProbeTicks = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+                    knownProbeTerms = stats.Terms;
+                    return stats.Postings;
+                }
                 return -1;
             }
             finally

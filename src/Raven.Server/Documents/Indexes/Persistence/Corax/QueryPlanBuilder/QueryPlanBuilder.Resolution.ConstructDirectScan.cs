@@ -38,7 +38,9 @@ internal static partial class QueryPlanBuilder
         // when statistics are requested, since the drain is no longer the count source — ResolveSortedScanTake
         // would otherwise force TakeAll to feed that drain. A residual filter rejects candidates after the
         // fact, so its count depends on draining post-filter survivors; we cannot bound it (knownTotal = -1).
-        long knownTotal = hasResidual ? -1 : TryResolveDirectScanKnownTotal(ref ctx, walkerCtx, drivingClause, isFullScan, forward);
+        long probeTicks = -1; // Stopwatch ticks the CountPostingsInRange header walk took (-1 = no probe ran).
+        int probeTerms = 0;
+        long knownTotal = hasResidual ? -1 : TryResolveDirectScanKnownTotal(ref ctx, walkerCtx, drivingClause, isFullScan, forward, out probeTicks, out probeTerms);
         // The take threaded into the driving match. When knownTotal resolves, the scan is page-bounded even
         // under statistics, so the inner SortedDrivingWithTieBreakMatch can bound its per-group top-K heap.
         int take = knownTotal >= 0 ? ctx.BuilderParams.Take : ResolveSortedScanTake(ctx.BuilderParams);
@@ -56,7 +58,10 @@ internal static partial class QueryPlanBuilder
         }
         else
         {   // Nothing to filter, just match.
-            ds = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: take) { KnownExactTotal = knownTotal };
+            ds = new DirectScanSimpleMatch(indexSearcher, drivingMatch, take: take)
+            {
+                KnownExactTotal = knownTotal, KnownTotalProbeTicks = probeTicks, KnownTotalProbeTerms = probeTerms
+            };
         }
 
         if (ctx.WantTimings)
@@ -123,8 +128,13 @@ internal static partial class QueryPlanBuilder
         // For a no-residual DirectScanSimpleMatch the exact TotalResults is the driving provider's posting
         // count, readable without draining Fill. Returns -1 (fall back to the drain) unless every condition
         // that keeps "postings == documents" holds.
-        static long TryResolveDirectScanKnownTotal(ref InstCtx ctx, ResolutionContext walkerCtx, ClauseExecution drivingClause, bool isFullScan, bool forward)
+        static long TryResolveDirectScanKnownTotal(ref InstCtx ctx, ResolutionContext walkerCtx, ClauseExecution drivingClause, bool isFullScan, bool forward,
+            out long probeTicks, out int probeTerms)
         {
+            // -1 ticks marks the O(1) resolutions (NumberOfEntries below, or no resolution at all); only the
+            // CountPostingsInRange header walk records a real duration + term count.
+            probeTicks = -1;
+            probeTerms = 0;
             var builderParams = ctx.BuilderParams;
 
             // The total is only consumed when the read operation reports statistics or answers a count query.
@@ -161,7 +171,13 @@ internal static partial class QueryPlanBuilder
                 // decoding any ids. The multi-valued overcount is excluded above, so the summed posting count is the
                 // exact document total.
                 if (countMatch is TermsProviderMatch countTpm && countTpm.Provider is IAggregationProvider agg)
-                    return agg.CountPostingsInRange(0).Postings;
+                {
+                    long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
+                    var stats = agg.CountPostingsInRange(0);
+                    probeTicks = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
+                    probeTerms = stats.Terms;
+                    return stats.Postings;
+                }
                 return -1;
             }
             finally

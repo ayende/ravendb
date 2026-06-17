@@ -27,6 +27,7 @@ internal static class QueryPlanGraph
     private const string ResidualNoteOp = "ResidualNote";
     private const string DirectScanOp = "DirectScan";
     private const string CompoundLookupOp = "CompoundKeyLookup";
+    private const string CountProbeOp = "CountPostingsInRange";
     private const string CandidatesOp = "Candidates";
     private const string AllEntriesOp = "AllEntries";
     private const string PostFilterOp = "PostFilter";
@@ -46,6 +47,7 @@ internal static class QueryPlanGraph
     private const string ResidualKind = "residual";
     private const string SequenceKind = "sequence";
     private const string RankKind = "rank";
+    private const string ProbeKind = "probe";
 
     // Edge/node flow (taken) states. Drive the green/grey colouring at style time.
     private const string FlowOn = "on";
@@ -170,6 +172,20 @@ internal static class QueryPlanGraph
             Dictionary<string, string> d = g.CreateNode("producer");
             d[OperationKey] = producerNode.Operation;
             CopyParameters(producerNode, d);
+
+            // The DirectScan resolved its exact TotalResults up front via a header-only CountPostingsInRange
+            // probe (instead of draining the scan). That probe is the only non-O(1) count source, so it gets its
+            // own node showing the terms it walked and the time it cost, feeding the scan its known total.
+            if (producerNode.Parameters != null && producerNode.Parameters.ContainsKey("KnownTotalProbe_ms"))
+            {
+                Dictionary<string, string> probe = g.CreateNode("count_probe");
+                probe[OperationKey] = CountProbeOp;
+                CopyParameters(producerNode, probe);
+
+                Dictionary<string, string> probeEdge = g.CreateEdge("count_probe", "producer");
+                probeEdge[KindKey] = ProbeKind;
+                probeEdge[FlowKey] = FlowOn;
+            }
         }
 
         Dictionary<string, string> resultData = g.CreateNode("result");
@@ -372,6 +388,12 @@ internal static class QueryPlanGraph
                 node.Attributes["label"] = CompoundLookupLabel(node.Data);
                 break;
 
+            case CountProbeOp:
+                node.Attributes["shape"] = "note";
+                node.Attributes["color"] = TakenGreen;
+                node.Attributes["label"] = CountProbeLabel(node.Data);
+                break;
+
             case CandidatesOp:
                 node.Attributes["shape"] = "ellipse";
                 node.Attributes["style"] = "dashed";
@@ -440,6 +462,7 @@ internal static class QueryPlanGraph
             GateKind => "gate slot 0",
             BranchKind => flow == FlowOn ? "switched here" : "candidate switch",
             ResidualKind => "per entry",
+            ProbeKind => "known total",
             RankKind => "sort",
             ResultKind => ResultEdgeLabel(edge),
             _ => null
@@ -702,6 +725,22 @@ internal static class QueryPlanGraph
             parts[i] = GraphvizGraph.Escape(parts[i]);
         }
 
+        return string.Join("\\n", parts);
+    }
+
+    /// <summary>
+    ///     Builds the label for the up-front count-probe node: the header-only CountPostingsInRange walk that
+    ///     resolved the DirectScan's exact total without draining it. Surfaces the number of in-range terms it
+    ///     walked, the resulting posting total, and the wall-clock cost of the probe.
+    /// </summary>
+    private static string CountProbeLabel(Dictionary<string, string> p)
+    {
+        List<string> parts = new() { CountProbeOp };
+        AddIf(p, parts, "KnownTotalProbeTerms", "terms=");
+        AddIf(p, parts, "KnownExactTotal", "postings=");
+        AddIf(p, parts, "KnownTotalProbe_ms", "", " ms");
+        for (int i = 0; i < parts.Count; i++)
+            parts[i] = GraphvizGraph.Escape(parts[i]);
         return string.Join("\\n", parts);
     }
 
