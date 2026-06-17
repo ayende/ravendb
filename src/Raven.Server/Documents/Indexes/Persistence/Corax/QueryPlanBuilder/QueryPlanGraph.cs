@@ -652,6 +652,9 @@ internal static class QueryPlanGraph
         AddIf(p, parts, "Term");
         AddIf(p, parts, "Term2");
         AddIf(p, parts, "Terms");
+        // A search() leaf is a multi-term match: show its tokenized terms + operator, not just the raw string.
+        AddIf(p, parts, "SearchTerms", "search terms: ");
+        AddIf(p, parts, "SearchOperator", "op=");
         if (p.TryGetValue("Negated", out string neg) && neg == "true")
         {
             parts.Add("NEGATED");

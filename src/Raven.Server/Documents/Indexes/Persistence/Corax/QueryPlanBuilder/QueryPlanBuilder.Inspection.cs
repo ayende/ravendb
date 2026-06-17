@@ -2,10 +2,12 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
+using Raven.Server.Documents.Queries;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
@@ -112,6 +114,22 @@ internal static partial class QueryPlanBuilder
                 if (term != null) parameters["Term"] = term;
                 var term2 = FormatValueFromPlan(packed, exec, packed.Param2);
                 if (term2 != null) parameters["Term2"] = term2;
+
+                // search(field, "a b c") compiles to a SINGLE bitmap-pipeline leaf, but it EXECUTES as a match over
+                // multiple analyzer-tokenized terms combined with OR/AND (or a phrase for a quoted group) — not the
+                // one literal string shown in Term. Surface the tokenized query terms and the operator so the plan
+                // reflects the real multi-term match. SplitSearchValue mirrors what HandleSearch feeds SearchQuery:
+                // it splits on whitespace and keeps quoted groups as a single phrase term.
+                if (clauseExec.Clause.ClauseType == ClauseType.Search && term != null)
+                {
+                    var searchTerms = QueryBuilderHelper.SplitSearchValue(term).ToList();
+                    if (searchTerms.Count > 0)
+                    {
+                        parameters["SearchTerms"] = string.Join(", ", searchTerms);
+                        parameters["SearchTermCount"] = searchTerms.Count.ToString(CultureInfo.InvariantCulture);
+                    }
+                    parameters["SearchOperator"] = ((global::Corax.Constants.Search.Operator)clauseExec.Clause.SearchOperator).ToString();
+                }
 
                 if (inTermCount > 0)
                 {
