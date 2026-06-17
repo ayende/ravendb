@@ -537,6 +537,26 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
+        // Null / missing handling guard for the bare shape (equality on field1, ORDER BY field2, NO clause on
+        // field2). The single-field sort wrapper is elided only when there is exactly one ORDER BY field, and the
+        // compound walk then emits field2's null / missing docs wherever their marker sorts in the tree (after the
+        // real values) — which does NOT match NullsSortMode / the SortingMatch fallback (nulls-first by default).
+        // A field2 range clause excludes nulls outright, so the walk is safe there. Otherwise, if the sort field
+        // has any null or non-existing entries, fall back to the bitmap pipeline + SortingMatch (honors NullsSortMode).
+        // (Mirrors the single-field TryCreateSimpleFieldDirectScan MayHaveMissingEntries guard, extended to nulls
+        // because the compound scan skips both the null and non-existing posting-list merges that SortedDrivingMatch
+        // would otherwise apply.)
+        if (field2Range is null && ctx.OrderByFields is { Length: 1 })
+        {
+            var sortField = ctx.OrderByFields[0];
+            if (sortField.MayHaveMissingEntries ||
+                ctx.PlanParams.IndexSearcher.TryGetPostingListForNull(in sortField.Field, out _))
+            {
+                rejectReason = "no field2 range to exclude nulls and the sort field has null/missing entries";
+                return false;
+            }
+        }
+
         rejectReason = null;
         return true;
     }

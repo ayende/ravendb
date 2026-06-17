@@ -6,6 +6,7 @@ using Raven.Client.Documents;
 using Raven.Client.Documents.Conventions;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Queries.Timings;
+using Raven.Client.Documents.Session;
 using Tests.Infrastructure;
 using Xunit;
 
@@ -212,6 +213,232 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         var compiled = FindOperation(plan, "CompiledQuery");
         Assert.True(compiled?.Children?.FirstOrDefault(c => c.Operation == "DirectScan") == null,
             "Expected NO DirectScan node for a multi-valued sort field. Plan: " + Describe(plan));
+    }
+
+    // #5 (companion fix): a query shaped `where f1 = $x order by f2` over a compound(f1, f2) field has NO
+    // WHERE clause on the sort field f2, so historically DirectScanCandidate was never set and the plan fell
+    // back to the bitmap pipeline + SortingMatch — even though the compound tree already stores f1's entries
+    // in f2 order. The fix sets DirectScanCandidate for this shape; with no residual clauses the per-execution
+    // cost gate accepts the scan unconditionally, so the planner walks the compound subtree in f2 order and
+    // skips the SortingMatch heap entirely.
+    private class Film
+    {
+        public string Id { get; set; }
+        public string Category { get; set; }
+        public int Year { get; set; }
+    }
+
+    private class Films_ByCategoryAndYear : AbstractIndexCreationTask<Film>
+    {
+        public Films_ByCategoryAndYear()
+        {
+            Map = films => from f in films
+                select new { f.Category, f.Year };
+            CompoundField("Category", "Year");
+        }
+    }
+
+    // Single-valued Category (equality driver) and Year (sort key), cycled so neither is pre-sorted by
+    // insertion order. 1 in 3 films is "Action" -> well above a 25-row page and below the scan cost cap.
+    private static List<Film> BuildFilms(int count)
+    {
+        string[] categories = { "Action", "Comedy", "Drama" };
+        var films = new List<Film>(count);
+        for (int i = 0; i < count; i++)
+            films.Add(new Film { Id = $"films/{i}", Category = categories[i % categories.Length], Year = 1980 + (i * 7) % 45 });
+
+        return films;
+    }
+
+    // #5 plan guard: equality on the compound leading key + ORDER BY the compound second key (with no filter
+    // on the sort field) must drive the compound tree walk (CompoundSortedScan / DirectScan), NOT the bitmap
+    // pipeline + SortingMatch. Also checks the rows are the right ones, in ascending sort order.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task EqualityDrivenCompoundSort_UsesCompoundSortedScan(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Films_ByCategoryAndYear();
+        index.Execute(store);
+        using (var bulk = store.BulkInsert())
+        {
+            foreach (var f in BuildFilms(300))
+                await bulk.StoreAsync(f, f.Id);
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        using var session = store.OpenAsyncSession();
+
+        // No filter on the sort field: equality on the compound leading key + ORDER BY the compound second key.
+        // Engages DirectScanCandidate (the no-filter optimization) and must walk the compound tree in Year order.
+        await AssertCompoundSortedScanInOrder(session, index.IndexName,
+            $"from index '{index.IndexName}' where Category = 'Action' order by Year as long limit 25 include timings()");
+
+        // Range on the sort field (the existing composite-range path): must ALSO come back in Year order, not
+        // entry-id order. This is the shape that exposed the missing SortedDrivingMatch wrapper.
+        await AssertCompoundSortedScanInOrder(session, index.IndexName,
+            $"from index '{index.IndexName}' where Category = 'Action' and Year > 1990 order by Year as long limit 25 include timings()");
+    }
+
+    private async Task AssertCompoundSortedScanInOrder(IAsyncDocumentSession session, string indexName, string rql)
+    {
+        var results = await session.Advanced
+            .AsyncRawQuery<Film>(rql)
+            .Timings(out var timings)
+            .ToListAsync();
+
+        Assert.Equal(25, results.Count);
+        var plan = timings.QueryPlan as QueryInspectionNode;
+        Assert.NotNull(plan);
+        var compiled = FindOperation(plan, "CompiledQuery");
+        Assert.True(compiled != null, "Expected a CompiledQuery node. Plan: " + Describe(plan));
+        compiled.Parameters.TryGetValue("OptimizationHint", out var hint);
+        Assert.True(hint == "CompoundSortedScan",
+            "Expected the compound tree walk to drive equality+ORDER BY on compound(Category, Year), but " +
+            "OptimizationHint was '" + hint + "' for [" + rql + "]. Plan: " + Describe(plan) + " params: " +
+            string.Join(", ", compiled.Parameters.Select(kv => kv.Key + "=" + kv.Value)));
+        Assert.True(compiled.Children?.FirstOrDefault(c => c.Operation == "DirectScan") != null,
+            "Expected a DirectScan node (compound sorted walk) for [" + rql + "]. Plan: " + Describe(plan));
+
+        int prev = int.MinValue;
+        foreach (var r in results)
+        {
+            Assert.Equal("Action", r.Category);
+            Assert.True(r.Year >= prev, $"Results are not ascending by Year for [{rql}]: saw {prev} then {r.Year}.");
+            prev = r.Year;
+        }
+    }
+
+    // #5 cross-engine: the same shape must return exactly the matching rows in sort order on BOTH engines.
+    // Lucene has no compound/DirectScan, so a match proves the Corax compound-scan path is semantics-preserving.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+    public async Task EqualityDrivenCompoundSort_ReturnsCorrectlyOrderedMatches(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Films_ByCategoryAndYear();
+        index.Execute(store);
+        var films = BuildFilms(300);
+        using (var bulk = store.BulkInsert())
+        {
+            foreach (var f in films)
+                await bulk.StoreAsync(f, f.Id);
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        int expectedActionCount = films.Count(f => f.Category == "Action");
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncRawQuery<Film>($"from index '{index.IndexName}' where Category = 'Action' order by Year as long")
+            .ToListAsync();
+
+        Assert.Equal(expectedActionCount, results.Count);
+        int prev = int.MinValue;
+        foreach (var r in results)
+        {
+            Assert.Equal("Action", r.Category);
+            Assert.True(r.Year >= prev, $"Results are not ascending by Year: saw {prev} then {r.Year}.");
+            prev = r.Year;
+        }
+    }
+
+    private class FilmNullable
+    {
+        public string Id { get; set; }
+        public string Category { get; set; }
+        public int? Year { get; set; }
+    }
+
+    private class FilmsNullable_ByCategoryAndYear : AbstractIndexCreationTask<FilmNullable>
+    {
+        public FilmsNullable_ByCategoryAndYear()
+        {
+            Map = films => from f in films
+                select new { f.Category, f.Year };
+            CompoundField("Category", "Year");
+        }
+    }
+
+    // Every null-Year film is an "Action" film (i % 9 == 0 is a subset of i % 3 == 0), so the "Action"
+    // result set mixes ~1/3 null years with real years — exactly the case where the compound scan's
+    // null handling matters.
+    private static List<FilmNullable> BuildFilmsWithNulls(int count)
+    {
+        string[] categories = { "Action", "Comedy", "Drama" };
+        var films = new List<FilmNullable>(count);
+        for (int i = 0; i < count; i++)
+        {
+            int? year = i % 9 == 0 ? null : 1980 + (i * 7) % 45;
+            films.Add(new FilmNullable { Id = $"films/{i}", Category = categories[i % categories.Length], Year = year });
+        }
+
+        return films;
+    }
+
+    // #5 null behavior (option A guard): `where Category = 'Action' order by Year` with some Action docs having a
+    // NULL sort value. The compound walk would emit nulls at the wrong end (its null marker sorts after the real
+    // values), which contradicts NullsSortMode. So when the bare shape (no field2 filter) has null/missing sort
+    // values, the planner must fall back to the bitmap pipeline + SortingMatch, which honors NullsSortMode. This
+    // test pins (a) Corax matches Lucene's ordered sort sequence exactly — same count, null placement, value order —
+    // and (b) the Corax plan actually fell back (OptimizationHint=BitmapPipeline, not CompoundSortedScan).
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public async Task EqualityDrivenCompoundSort_WithNullSortValues_FallsBackAndMatchesLucene()
+    {
+        var films = BuildFilmsWithNulls(300);
+
+        var (luceneOrder, _) = await RunOrdered(RavenSearchEngineMode.Lucene);
+        var (coraxOrder, coraxHint) = await RunOrdered(RavenSearchEngineMode.Corax);
+
+        Assert.NotEmpty(coraxOrder);
+        Assert.Contains((int?)null, coraxOrder); // the data must actually exercise null sort values
+
+        string Shape(List<int?> o) =>
+            $"count={o.Count}, nulls={o.Count(x => x == null)}, " +
+            $"firstNullAt={o.FindIndex(x => x == null)}, lastNullAt={o.FindLastIndex(x => x == null)}, " +
+            $"nonNullAscending={IsAscending(o.Where(x => x != null).Select(x => x.Value))}";
+
+        Assert.True(luceneOrder.SequenceEqual(coraxOrder),
+            $"Corax order diverges from Lucene.\n  Lucene: {Shape(luceneOrder)}\n  Corax:  {Shape(coraxOrder)}");
+
+        // The guard must have demoted the bare compound shape to the bitmap pipeline (the only path that places
+        // nulls per NullsSortMode). If this ever reports CompoundSortedScan, the null placement above is luck.
+        Assert.Equal("BitmapPipeline", coraxHint);
+
+        static bool IsAscending(IEnumerable<int> xs)
+        {
+            int prev = int.MinValue;
+            foreach (var x in xs) { if (x < prev) return false; prev = x; }
+            return true;
+        }
+
+        async Task<(List<int?> order, string hint)> RunOrdered(RavenSearchEngineMode mode)
+        {
+            using var store = GetDocumentStore(Options.ForSearchEngine(mode));
+            var index = new FilmsNullable_ByCategoryAndYear();
+            await index.ExecuteAsync(store);
+            using (var bulk = store.BulkInsert())
+            {
+                foreach (var f in films)
+                    await bulk.StoreAsync(f, f.Id);
+            }
+
+            Indexes.WaitForIndexing(store);
+
+            using var session = store.OpenAsyncSession();
+            var results = await session.Advanced
+                .AsyncRawQuery<FilmNullable>($"from index '{index.IndexName}' where Category = 'Action' order by Year as long include timings()")
+                .Timings(out var timings)
+                .ToListAsync();
+
+            string hint = null;
+            if (timings.QueryPlan is QueryInspectionNode plan && FindOperation(plan, "CompiledQuery") is { } compiled)
+                compiled.Parameters.TryGetValue("OptimizationHint", out hint);
+
+            return (results.Select(r => r.Year).ToList(), hint);
+        }
     }
 
     private static QueryInspectionNode FindOperation(QueryInspectionNode node, string operation)

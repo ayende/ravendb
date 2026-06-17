@@ -313,6 +313,11 @@ internal static partial class QueryPlanBuilder
                     if (p.Index.HasCompoundField(p.Allocator, ef, sf) == false) continue;
                     walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
                     walkerCtx.CompoundFieldSortName = sf;
+                    // Equality on ef pins the compound(ef, sf) leading-key prefix; the sf subtree is then walked
+                    // in sf order with no residual (residualCount=0 → CompoundFieldCostEffective is unconditionally
+                    // true). The walk is streamed via SortedDrivingMatch (see ConstructCompoundField), so the
+                    // SortingMatch heap is skipped even though there is no WHERE clause on the sort field.
+                    flags |= PlanOptimizationFlags.DirectScanCandidate;
                     break;
                 }
 

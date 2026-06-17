@@ -39,6 +39,15 @@ internal static partial class QueryPlanBuilder
         Slice compositeLow = default, compositeHigh = default;
         IQueryMatch drivingMatch = CreateDrivingMatch(ref ctx);
 
+        // When the sort wrapper is elided, the DirectScan's output IS the final order, so the driving match must
+        // stream in field2 (sort) order. CreateDrivingMatch returns a TermsProviderMatch, which materializes its
+        // postings into a RoaringBitmap (entry-id order) and would silently destroy the sort. Wrap its provider in
+        // SortedDrivingMatch — a term-by-term walk that preserves the compound tree's field2 order within the
+        // pinned field1 prefix — mirroring the single-field ConstructDirectScan. (When NOT eliding, an outer
+        // SortingMatch re-sorts the output, so the cheaper bitmap match is left untouched.)
+        if (canElideCompoundSort && drivingMatch is TermsProviderMatch tpm)
+            drivingMatch = new SortedDrivingMatch(tpm.Provider, tpm.Llt, ctx.PlanParams.Allocator);
+
         bool hasResidual = ctx.Exec.Plan.CompoundFieldResidualSet is { HasPredicates: true };
 
         // Page-bound + exact-total parity with the single-field DirectScan: when the sort wrapper is elided and the

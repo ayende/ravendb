@@ -101,7 +101,30 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
         _nonExistingExhausted = !_hasNonExistingPostingList;
         if (_hasNonExistingPostingList)
             InitPostingList(out _nonExistingPostingList, out _nonExistingIterator, nonExistingPostingListId);
-      
+
+    }
+
+    /// <summary>
+    /// Compound-driven variant: the provider walks a compound(field1, field2) subtree with field1 pinned by an
+    /// equality, so it already yields field2 order within that prefix. Unlike the single-field ctor this does NOT
+    /// merge the field's null / non-existing posting lists. Those lists are scoped to the compound field GLOBALLY
+    /// (across every field1 value), but this scan is scoped to a single field1 prefix — merging them would leak
+    /// rows from other field1 values and double-count. field2's null / missing entries are either excluded by a
+    /// field2 range clause or already covered inline by the compound prefix walk.
+    /// </summary>
+    public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator)
+    {
+        _provider = provider;
+        _llt = llt;
+        _allocator = allocator;
+        _nullFirst = false;
+        _emittedBitmap = new RoaringBitmap(allocator);
+
+        // No global null / non-existing merge for the compound-scoped scan (see summary).
+        _hasNullPostingList = false;
+        _nullExhausted = true;
+        _hasNonExistingPostingList = false;
+        _nonExistingExhausted = true;
     }
 
     public long Count => -1;
