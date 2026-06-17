@@ -57,14 +57,13 @@ internal static partial class QueryPlanBuilder
                     exec.StrategyGateReason = $"entries_to_scan({cfEntriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} {(cfEffective ? "<" : ">=")} bitmap_cost({cfBitmapCost})";
                 if (forced is null && cfEffective == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
-                // The compound walk pins field1 to a single Equals value, so its entries already come out ordered by
-                // field2 - which IS the sole order-by field in this case. A SortingMatch wrapper would re-sort an
-                // already-sorted stream AND block the DirectScan's Take early-exit (forcing a full drain). So when the
-                // order is a single field (== the compound's field2) and no forced sort overrides it, elide the wrapper
-                // and let the scan page-bound itself (and resolve an exact total from the range headers when it can);
-                // otherwise (multi-sort / forced sort) keep the wrapper and drain fully (TakeAll). ConstructCompoundField
-                // derives the actual take from this flag.
-                bool canElideCompoundSort = orderByFields.Length == 1 && forcedSort is null;
+                // When the order is a single field (== the compound's field2), the DirectScan already emits in that
+                // order, so elide the wrapper and push a page-bounded Take into the scan. This is independent of
+                // $rvn_corax_sort: a sorted scan IS the order, so wrapping it in a SortingMatch only re-sorts
+                // already-sorted output (and forces a full TakeAll drain). The sort hint only has meaning where a
+                // real SortingMatch exists — the bitmap pipeline. Mirrors the FieldSortedScan path, which likewise
+                // serves the order from the scan and never applies a forced sort.
+                bool canElideCompoundSort = orderByFields.Length == 1;
                 innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost, canElideCompoundSort);
                 if (innerMatch is null) goto default;
                 exec.ActualStrategy = ExecutionStrategy.CompoundSortedScan;

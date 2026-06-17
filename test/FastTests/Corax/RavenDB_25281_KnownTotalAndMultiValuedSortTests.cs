@@ -363,6 +363,67 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
 
     private static int ParseCount(string n) => int.Parse(n, System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.InvariantCulture);
 
+    // A single-field ORDER BY served by a CompoundSortedScan already emits in that order, so the sort is elided
+    // into the scan REGARDLESS of an $rvn_corax_sort hint. Pinning IndexOrderStreaming must not de-elide the sort:
+    // doing so wrapped the sorted scan in a SortingMatch that drained the whole driving set (TreeExhausted) and
+    // re-sorted already-ordered output. The hint only has meaning where a real SortingMatch exists (bitmap
+    // pipeline); on a sorted scan it is a no-op. Mirrors the FieldSortedScan path.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task EqualityDrivenCompoundSort_WithIndexOrderStreamingHint_StillElidesAndEarlyExits(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Films_ByCategoryAndYear();
+        index.Execute(store);
+        var films = BuildFilms(300);
+        using (var bulk = store.BulkInsert())
+        {
+            foreach (var f in films)
+                await bulk.StoreAsync(f, f.Id);
+        }
+
+        Indexes.WaitForIndexing(store);
+        int actionCount = films.Count(f => f.Category == "Action");
+        Assert.True(actionCount > 25, "Test needs more than a page of Action films.");
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncRawQuery<Film>($"from index '{index.IndexName}' where Category = 'Action' order by Year as long limit 25 include timings()")
+            .AddParameter("rvn_corax_sort", "IndexOrderStreaming")
+            .Timings(out var timings)
+            .ToListAsync();
+
+        Assert.Equal(25, results.Count);
+        int prev = int.MinValue;
+        foreach (var r in results)
+        {
+            Assert.Equal("Action", r.Category);
+            Assert.True(r.Year >= prev, $"Results are not ascending by Year: saw {prev} then {r.Year}.");
+            prev = r.Year;
+        }
+
+        var plan = timings.QueryPlan as QueryInspectionNode;
+        Assert.NotNull(plan);
+
+        var compiled = FindOperation(plan, "CompiledQuery");
+        compiled.Parameters.TryGetValue("OptimizationHint", out var hint);
+        Assert.True(hint == "CompoundSortedScan",
+            "Expected CompoundSortedScan even with the IndexOrderStreaming hint, but OptimizationHint was '" + hint + "'. Plan: " + Describe(plan));
+
+        // The sort must be elided into the scan: no SortingMatch wrapper re-sorting the already-ordered output.
+        Assert.True(FindOperation(plan, "SortingMatch") == null,
+            "The IndexOrderStreaming hint de-elided the sort: a SortingMatch is wrapping the compound sorted scan. Plan: " + Describe(plan));
+
+        // And the scan must stop at the page, not drain the whole 'Action' set.
+        var directScan = FindOperation(plan, "DirectScan");
+        Assert.True(directScan != null, "Expected a DirectScan node. Plan: " + Describe(plan));
+        directScan.Parameters.TryGetValue("StoppedAt", out var stoppedAt);
+        Assert.True(stoppedAt != null && stoppedAt != "TreeExhausted",
+            "Expected the scan to stop at the page (not TreeExhausted), but StoppedAt=" + (stoppedAt ?? "<null>") + ". Plan: " + Describe(plan));
+        Assert.True(directScan.Parameters.TryGetValue("TreeEntriesScanned", out var scanned) && ParseCount(scanned) < actionCount,
+            "Expected fewer than the whole 'Action' set to be scanned, but TreeEntriesScanned=" + (scanned ?? "<null>") + " of " + actionCount);
+    }
+
     // #5 cross-engine: the same shape must return exactly the matching rows in sort order on BOTH engines.
     // Lucene has no compound/DirectScan, so a match proves the Corax compound-scan path is semantics-preserving.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
