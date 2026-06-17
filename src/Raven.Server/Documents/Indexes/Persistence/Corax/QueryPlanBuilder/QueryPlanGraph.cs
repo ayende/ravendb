@@ -693,6 +693,7 @@ internal static class QueryPlanGraph
         AddIf(p, parts, "TreeEntriesScanned", "scanned=");
         AddIf(p, parts, "EntriesPassedFilter", "passed=");
         AddIf(p, parts, "EntriesRejected", "rejected=");
+        AddIf(p, parts, "KnownExactTotal", "knownTotal=");
         AddIf(p, parts, "StoppedAt", "stopped=");
         AddIf(p, parts, "TreeScan_ms", "tree=", " ms");
         AddIf(p, parts, "EntryScans_ms", "entry=", " ms");
