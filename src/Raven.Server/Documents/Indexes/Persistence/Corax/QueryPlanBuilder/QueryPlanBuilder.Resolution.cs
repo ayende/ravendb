@@ -857,12 +857,11 @@ internal static partial class QueryPlanBuilder
     private static bool IsClauseBoosted(ClauseExecution exec)
         => exec.Clause.HasBoost || exec.BoostFactor > 0;
 
-    // RavenDB-26831: order-preserving XOR mask for raw signed-long compound members, keyed off the queried index's
-    // version. Must match CoraxDocumentConverterBase: long.MinValue on fixed indexes, 0 (legacy) on older ones.
+    // RavenDB-26831: order-preserving XOR mask for raw signed-long compound members. Resolved once per index
+    // (on the definition) and carried in the builder params, so it matches CoraxDocumentConverterBase by
+    // construction and is not recomputed per query.
     private static long CompoundNumericXorMask(ref InstCtx ctx)
-        => ctx.BuilderParams.Index.Definition.Version >= IndexDefinitionBaseServerSide.IndexVersion.OrderPreservingCompoundNumericEncoding
-            ? long.MinValue
-            : 0L;
+        => ctx.BuilderParams.CompoundFieldNumericXorMask;
 
     private static void EncodeNumericValue(Span<byte> dest, int valueType, int paramIdx, QueryExecution exec, long numericXorMask)
     {
