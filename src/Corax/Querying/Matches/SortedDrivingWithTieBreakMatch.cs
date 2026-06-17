@@ -479,6 +479,12 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         new Span<long>(scratch, _take).CopyTo(new Span<long>(entries, _take));
 
         _groupSortedIndexes.Count = _groupSecondary.Count = _groupEntries.Count = _take;
+
+        // The heap left the survivors in heap order, NOT entry-id order. The secondary lookup (Lookup.GetFor,
+        // used by ResolveGroupSecondary / SortGroupBySecondary) is cursor-based and REQUIRES its keys sorted
+        // ascending by entry id — fed unsorted keys it returns wrong/missing values. The drain appends id-sorted
+        // batches, so as long as each group starts id-sorted it stays a valid GetFor input; restore that here.
+        new Span<long>(entries, _take).Sort();
     }
 
     /// <summary>Resolve the secondary values for the current group into <see cref="_groupSecondary"/>

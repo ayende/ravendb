@@ -494,6 +494,65 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         }
     }
 
+    private class TieDoc
+    {
+        public string Id { get; set; }
+        public long P { get; set; }
+        public long S { get; set; }
+    }
+
+    private class TieDocs_Index : AbstractIndexCreationTask<TieDoc>
+    {
+        public TieDocs_Index()
+        {
+            Map = docs => from d in docs
+                select new { d.P, d.S };
+        }
+    }
+
+    // #6 two-field sort tie-break: ORDER BY P desc, S desc on a LARGE single primary group must apply the
+    // secondary (S) ordering. The FieldSortedScan tie-break path (SortedDrivingWithTieBreakMatch) drains the
+    // primary group and, when it exceeds the page-derived cap, truncates to the top-`take` by S. With a 2000-doc
+    // group and a 25-row page that truncation fires — and it must keep the 25 LARGEST S (1999..1975), not the
+    // smallest. Cross-engine (Lucene has no tie-break scan) pins the Corax scan to the correct answer.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+    public async Task TwoFieldSort_LargePrimaryGroup_AppliesSecondaryTieBreakDescending(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new TieDocs_Index();
+        index.Execute(store);
+
+        // Mirror the Movies/Showcase shape that exposed the bug: a huge primary group whose secondary is
+        // mostly a common small value (0/1), with a few RARE large values scattered through the group. A
+        // correct top-K truncation must surface those rare large values; a broken one keeps the common small ones.
+        const int n = 40000;
+        var bigS = new Dictionary<int, long>();
+        for (int k = 0; k < 30; k++)
+            bigS[k * 1300] = 1000 - k; // 30 docs with distinct large S (1000..971), scattered across the group
+        using (var bulk = store.BulkInsert())
+        {
+            for (int i = 0; i < n; i++)
+            {
+                long s = bigS.TryGetValue(i, out var big) ? big : i % 2; // everyone else is 0 or 1
+                await bulk.StoreAsync(new TieDoc { P = 1, S = s }, $"tie/{i}");
+            }
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncRawQuery<TieDoc>($"from index '{index.IndexName}' order by P as long desc, S as long desc limit 25")
+            .ToListAsync();
+
+        Assert.Equal(25, results.Count);
+        // P is constant, so this is purely S descending: the 25 largest S = 1000, 999, ..., 976.
+        var actual = results.Select(r => r.S).ToList();
+        var expected = Enumerable.Range(0, 25).Select(i => (long)(1000 - i)).ToList();
+        Assert.Equal(expected, actual);
+    }
+
     private static QueryInspectionNode FindOperation(QueryInspectionNode node, string operation)
     {
         if (node == null)
