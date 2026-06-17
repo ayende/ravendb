@@ -43,6 +43,8 @@ public partial class Hnsw
         public int NumberOfCandidates => _vectorsSearcher.NumberOfCandidates;
 
         public long CandidatesProcessed => _vectorsSearcher?.CandidatesProcessed ?? 0;
+
+        public long VectorComparisons => _vectorsSearcher?.VectorComparisons ?? 0;
         
         public VectorSearchRetriever(SearchState searchState, IHnswSearcher vectorsSearcher, Memory<byte> vector, float minimumSimilarity,
             bool ownsSearchState = true, Sparrow.Server.ByteStringContext<Sparrow.Server.ByteStringMemoryCache>.InternalScope? queryVectorScope = null)

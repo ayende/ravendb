@@ -366,7 +366,11 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
                 { "MinimumMatch", _minimumMatch.ToString(CultureInfo.InvariantCulture) },
                 { "NumberOfCandidates", _numberOfCandidates.ToString() },
                 { "FilterEntries", _filterEntriesCount.ToString("N0") },
-                { "NumberOfCandidatesScanned", (_vectorSearchRetriever.CandidatesProcessed).ToString()},
+                // Vectors scanned: nodes the searcher walked (HNSW: graph nodes visited; Exact: nodes enumerated,
+                // including skipped tombstones). VectorComparisons: actual distance computations (SimilarityCalc),
+                // which for Exact is <= scanned and for HNSW equals it.
+                { "NumberOfCandidatesScanned", (_vectorSearchRetriever.CandidatesProcessed).ToString("N0")},
+                { "VectorComparisons", (_vectorSearchRetriever.VectorComparisons).ToString("N0")},
                 { "InitMs", _initDurationMs.ToString("F3", CultureInfo.InvariantCulture) },
                 { "SearchMs", _searchDurationMs.ToString("F3", CultureInfo.InvariantCulture) }
             })

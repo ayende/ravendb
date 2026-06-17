@@ -735,6 +735,7 @@ internal static class QueryPlanGraph
             AddIf(p, parts, "NumberOfCandidates", "top ");
             AddIf(p, parts, "FilterEntries", "filter ");
             AddIf(p, parts, "NumberOfCandidatesScanned", "scanned ");
+            AddIf(p, parts, "VectorComparisons", "comparisons ");
             AddIf(p, parts, "InitMs", "init ", "ms");
             AddIf(p, parts, "SearchMs", "search ", "ms");
         }
