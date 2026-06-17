@@ -50,11 +50,12 @@ internal static partial class QueryPlanBuilder
 
         bool hasResidual = ctx.Exec.Plan.CompoundFieldResidualSet is { HasPredicates: true };
 
-        // Page-bound + exact-total parity with the single-field DirectScan: when the sort wrapper is elided and the
-        // driving match is the EXACT composite range (field1 pinned, field2 bounded - e.g. the seek ('en', 60)), the
-        // emitted set is exactly that range's postings. We can read the first page and derive TotalResults from the
-        // range's posting headers (CountPostingsInRange) instead of draining the whole scan. A residual filter rejects
-        // candidates after the fact, so its surviving count needs the drain (knownTotal = -1).
+        // Page-bound + exact-total parity with the single-field DirectScan: when the sort wrapper is elided we can
+        // often derive the exact TotalResults up front and let the scan stop at the page instead of draining. Two
+        // shapes qualify: (1) an EXACT composite range (field1 pinned, field2 bounded — e.g. the seek ('en', 60)),
+        // whose emitted set is exactly that range's postings, countable from posting-list headers; and (2) the bare
+        // field1-equality prefix (no field2 filter), whose total is just that equality term's own cardinality. A
+        // residual filter rejects candidates after the fact, so its surviving count needs the drain (knownTotal = -1).
         long knownProbeTicks = -1; // Stopwatch ticks the CountPostingsInRange header walk took (-1 = no probe ran).
         int knownProbeTerms = 0;
         long knownTotal = hasResidual ? -1 : TryResolveCompoundKnownTotal(ref ctx);
@@ -125,26 +126,45 @@ internal static partial class QueryPlanBuilder
         // Returns -1 (drain) unless every precondition that keeps "postings == documents" holds.
         long TryResolveCompoundKnownTotal(ref InstCtx context)
         {
-            // Only the elided single-order path consults KnownExactTotal (a SortingMatch wrapper would drain anyway),
-            // and only the exact composite range is countable: the prefix fallback rejects longer field1 matches via
-            // validatePostfixLen during the walk, but a header-only count would include them and overcount.
-            if (canElideCompoundSort == false || usedCompositeRange == false)
+            // Only the elided single-order path consults KnownExactTotal (a SortingMatch wrapper would drain anyway).
+            if (canElideCompoundSort == false)
                 return -1;
 
             // The total is only worth resolving when the read consumes it (count / statistics) and no server-side
-            // filter would make the header count overcount the survivors.
+            // filter would make the count overcount the survivors.
             if (CanResolveKnownTotal(context.BuilderParams) == false)
                 return -1;
 
-            // A multi-valued compound field places a document under several compound terms; DirectScanSimpleMatch
-            // dedups via EmittedBitmap, so the summed posting count would overcount documents. Single-valued only.
-            if (indexSearcher.HasMultipleTermsInField(compoundFieldMeta))
-                return -1;
+            if (usedCompositeRange)
+            {
+                // Exact composite range: the emitted set is exactly that range's postings, countable from
+                // posting-list headers. A multi-valued compound field places a document under several compound
+                // terms; DirectScanSimpleMatch dedups via EmittedBitmap, so the summed posting count would
+                // overcount documents. Single-valued only.
+                if (indexSearcher.HasMultipleTermsInField(compoundFieldMeta))
+                    return -1;
 
-            // CountPostingsInRange advances (and exhausts) the provider's iterator, so it runs on a throwaway provider
-            // built with the same bounds - never drivingMatch, which still has to feed the scan.
-            var countMatch = BuildCompositeRangeMatch(compositeLow, compositeHigh);
-            return ProbeCountPostingsInRange(countMatch, out knownProbeTicks, out knownProbeTerms);
+                // CountPostingsInRange advances (and exhausts) the provider's iterator, so it runs on a throwaway
+                // provider built with the same bounds - never drivingMatch, which still has to feed the scan.
+                var countMatch = BuildCompositeRangeMatch(compositeLow, compositeHigh);
+                return ProbeCountPostingsInRange(countMatch, out knownProbeTicks, out knownProbeTerms);
+            }
+
+            // Bare field1-equality prefix (no field2 filter): the scan emits exactly the documents whose field1
+            // equals the driving value, so the exact total is that equality term's own cardinality — one posting
+            // per document, already resolved by the cardinality estimator (it is the gate's bitmap cost). The
+            // candidacy guard only admits this shape when the sort field has no null/missing entries, so every
+            // field1 document is present in the compound tree (output == field1 term cardinality). Counting the
+            // field1 term directly (not the compound prefix) sidesteps the prefix overcount (e.g. 'en' vs
+            // 'english') and is dedup-safe for multi-valued fields, since a posting list holds each document once.
+            if (field2Range is null
+                && drivingClause.Clause.ClauseType == ClauseType.Equals
+                && drivingClause.Cardinality > 0)
+            {
+                return drivingClause.Cardinality;
+            }
+
+            return -1;
         }
 
         void SetDirectScanPropertiesForIntrospection(ref InstCtx context)

@@ -310,6 +310,59 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         }
     }
 
+    // #5 known-total / early-exit: the bare compound shape (equality on field1, ORDER BY field2, no field2 filter)
+    // must resolve its exact TotalResults from the driving equality term's cardinality and stop the scan at the page
+    // — NOT drain the whole driving set to count it — even when statistics are requested. Before the fix this shape
+    // drained the entire 'Action' prefix (TreeExhausted) just to report the total.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task EqualityDrivenCompoundSort_ResolvesKnownTotalAndEarlyExitsUnderStatistics(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Films_ByCategoryAndYear();
+        index.Execute(store);
+        var films = BuildFilms(300);
+        using (var bulk = store.BulkInsert())
+        {
+            foreach (var f in films)
+                await bulk.StoreAsync(f, f.Id);
+        }
+
+        Indexes.WaitForIndexing(store);
+        int actionCount = films.Count(f => f.Category == "Action");
+        Assert.True(actionCount > 25, "Test needs more than a page of Action films.");
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncRawQuery<Film>($"from index '{index.IndexName}' where Category = 'Action' order by Year as long limit 25 include timings()")
+            .Statistics(out var stats)
+            .Timings(out var timings)
+            .ToListAsync();
+
+        Assert.Equal(25, results.Count);
+        // The exact total is reported from the term cardinality, not from draining the scan.
+        Assert.Equal(actionCount, (int)stats.TotalResults);
+
+        var plan = timings.QueryPlan as QueryInspectionNode;
+        Assert.NotNull(plan);
+        var directScan = FindOperation(plan, "DirectScan");
+        Assert.True(directScan != null, "Expected a DirectScan node. Plan: " + Describe(plan));
+
+        // Known total resolved up front (equals the driving 'Action' cardinality).
+        Assert.True(directScan.Parameters.TryGetValue("KnownExactTotal", out var knownTotal),
+            "Expected KnownExactTotal on the DirectScan. Params: " + string.Join(", ", directScan.Parameters.Select(kv => kv.Key + "=" + kv.Value)));
+        Assert.Equal(actionCount, ParseCount(knownTotal));
+
+        // The scan stopped at the page instead of draining the whole 'Action' set.
+        directScan.Parameters.TryGetValue("StoppedAt", out var stoppedAt);
+        Assert.True(stoppedAt != null && stoppedAt != "TreeExhausted",
+            "Expected the scan to stop at the page (not TreeExhausted), but StoppedAt=" + (stoppedAt ?? "<null>"));
+        Assert.True(directScan.Parameters.TryGetValue("TreeEntriesScanned", out var scanned) && ParseCount(scanned) < actionCount,
+            "Expected fewer than the whole 'Action' set to be scanned, but TreeEntriesScanned=" + (scanned ?? "<null>") + " of " + actionCount);
+    }
+
+    private static int ParseCount(string n) => int.Parse(n, System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.InvariantCulture);
+
     // #5 cross-engine: the same shape must return exactly the matching rows in sort order on BOTH engines.
     // Lucene has no compound/DirectScan, so a match proves the Corax compound-scan path is semantics-preserving.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
