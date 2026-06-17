@@ -664,6 +664,46 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         Assert.Equal(5, (int)rangeStats.TotalResults);
     }
 
+    // #8 descending sort over ONLY the second compound member (leading member pinned by WHERE but NOT in the
+    // ORDER BY): `where Category = X order by UnitsInStock desc`. Here OrderByFields[0] is UnitsInStock (descending),
+    // so the compound walk's `forward` is false and there is no field2 range — the path that builds a backward
+    // StartsWith provider with a null seek term and crashed with a NullReferenceException. Distinct from
+    // DescendingCompoundSort_DoesNotCrashAndOrdersCorrectly, which keeps Category as the leading ORDER BY key
+    // (forward == true). Must not crash and must return descending UnitsInStock.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+    public async Task DescendingSortOnSecondCompoundMemberOnly_DoesNotCrashAndOrdersCorrectly(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new CatDocs_ByCategoryUnits();
+        index.Execute(store);
+
+        using (var bulk = store.BulkInsert())
+        {
+            for (int i = 0; i < 200; i++)
+                await bulk.StoreAsync(new CatDoc { Category = "categories/1-A", UnitsInStock = i }, $"cat/{i}");
+            for (int i = 0; i < 50; i++)
+                await bulk.StoreAsync(new CatDoc { Category = "categories/2-A", UnitsInStock = 1000 + i }, $"other/{i}");
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncRawQuery<CatDoc>($"from index '{index.IndexName}' where Category = 'categories/1-A' order by UnitsInStock as long desc limit 25")
+            .ToListAsync();
+
+        Assert.Equal(25, results.Count);
+        int prev = int.MaxValue;
+        foreach (var r in results)
+        {
+            Assert.Equal("categories/1-A", r.Category);
+            Assert.True(r.UnitsInStock <= prev, $"Results not descending by UnitsInStock: {prev} then {r.UnitsInStock}");
+            prev = r.UnitsInStock;
+        }
+        Assert.Equal(199, results[0].UnitsInStock);
+    }
+
     private static QueryInspectionNode FindOperation(QueryInspectionNode node, string operation)
     {
         if (node == null)
