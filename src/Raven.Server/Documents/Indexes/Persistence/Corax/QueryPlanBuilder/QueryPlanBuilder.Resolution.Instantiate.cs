@@ -199,7 +199,7 @@ internal static partial class QueryPlanBuilder
         {
             if (isFullScan)
             {
-                directScanReason = "full scan requested";
+                directScanReason = "no filter — walking the whole index in sort order";
                 return true;
             }
 
@@ -216,7 +216,7 @@ internal static partial class QueryPlanBuilder
 
             if (execs.Count <= 1)
             {
-                directScanReason = "sorted walk, no residual filter (no stored-entry reads, sort is free)";
+                directScanReason = "sorted index walk with no extra filters to apply, so sorting is free";
                 return true;
             }
 

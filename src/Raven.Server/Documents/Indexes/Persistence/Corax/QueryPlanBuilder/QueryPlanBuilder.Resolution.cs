@@ -466,7 +466,7 @@ internal static partial class QueryPlanBuilder
         if (ctx.Exec.CompoundExactFirst.PackedParamValue.IsNone || 
             ctx.Exec.CompoundExactSecond.PackedParamValue.IsNone)
         {
-            rejectReason = "a compound-pair value resolved to none and has no composite-key encoding";
+            rejectReason = "the combined-key lookup needs both values, but one is null or missing";
             return false;
         }
 
@@ -507,13 +507,13 @@ internal static partial class QueryPlanBuilder
     {
         if (ctx.Exec.CompoundFieldDrivingClause is null || ctx.Exec.Plan.Template.CompoundFieldSortName is null)
         {
-            rejectReason = "no compound-field candidate identified at template time";
+            rejectReason = "no compound field matches this query's filter-and-sort shape";
             return false;
         }
 
         if (ctx.Exec.Plan.AllNegated)
         {
-            rejectReason = "all clauses are negated";
+            rejectReason = "every filter is a negation (not/!=), so there is no term to drive the scan";
             return false;
         }
 
@@ -526,14 +526,14 @@ internal static partial class QueryPlanBuilder
                 continue;
             if (IsClauseBoosted(execs[i]))
             {
-                rejectReason = "boosted clause found";
+                rejectReason = "a filter uses boosting, which needs scoring this scan can't do";
                 return false;
             }
         }
 
         if (ctx.Exec.Plan.CompoundFieldResidualSet is null)
         {
-            rejectReason = "scan predicate info is null";
+            rejectReason = "a filter can't be checked per-document during the scan";
             return false;
         }
 
@@ -552,7 +552,7 @@ internal static partial class QueryPlanBuilder
             if (sortField.MayHaveMissingEntries ||
                 ctx.PlanParams.IndexSearcher.TryGetPostingListForNull(in sortField.Field, out _))
             {
-                rejectReason = "no field2 range to exclude nulls and the sort field has null/missing entries";
+                rejectReason = "the sort field has null/missing values and no range filter to exclude them, so the scan would order nulls wrong";
                 return false;
             }
         }
@@ -597,13 +597,13 @@ internal static partial class QueryPlanBuilder
     {
         if (ctx.OrderByFields is not { Length: not 0 })
         {
-            rejectReason = "no ORDER BY fields";
+            rejectReason = "the query has no ORDER BY for the scan to follow";
             return false;
         }
 
         if (ctx.OrderByFields.Length > 2)
         {
-            rejectReason = "ORDER BY has too many fields (max 2 for direct scan)";
+            rejectReason = "ORDER BY has more than 2 fields (a direct scan supports at most 2)";
             return false;
         }
 
@@ -613,7 +613,7 @@ internal static partial class QueryPlanBuilder
             var tieBreakType = ctx.OrderByFields[1].FieldType;
             if (tieBreakType is not (MatchCompareFieldType.Integer or MatchCompareFieldType.Floating or MatchCompareFieldType.Sequence))
             {
-                rejectReason = "tie-break field type isn't numeric or string";
+                rejectReason = "the secondary (tie-break) ORDER BY field isn't a number or string";
                 return false;
             }
         }
@@ -625,17 +625,17 @@ internal static partial class QueryPlanBuilder
         {
             if (ctx.Exec.Plan.AllNegated)
             {
-                rejectReason = "all clauses are negated";
+                rejectReason = "every filter is a negation (not/!=), so there is no term to drive the scan";
                 return false;
             }
             if (ctx.OrderByFields[0].MayHaveMissingEntries)
             {
-                rejectReason = "sort field may have missing entries";
+                rejectReason = "some documents have no value for the sort field (a direct scan can't place them in order)";
                 return false;
             }
             if (ctx.OrderByFields[0].FieldType is not (MatchCompareFieldType.Sequence or MatchCompareFieldType.Integer or MatchCompareFieldType.Floating))
             {
-                rejectReason = "full-scan sort field type is not numeric or string";
+                rejectReason = "the sort field isn't a number or string type";
                 return false;
             }
             rejectReason = null;
@@ -644,7 +644,7 @@ internal static partial class QueryPlanBuilder
 
         if (ctx.Exec.SortDrivingClause is null)
         {
-            rejectReason = "no range/equals clause on sort field (or WHEN eliminated the candidate)";
+            rejectReason = "no equals/range filter on the sort field to drive the scan";
             return false;
         }
 
@@ -655,13 +655,13 @@ internal static partial class QueryPlanBuilder
         // back to bitmap + SortingMatch, which applies the clause as a real filter.
         if (ctx.PlanParams.IndexSearcher.HasMultipleTermsInField(ctx.OrderByFields[0].Field))
         {
-            rejectReason = "sort field is multi-valued (driving clause cannot be elided from the residual)";
+            rejectReason = "the sort field holds multiple values per document, so its filter can't be safely skipped during the walk";
             return false;
         }
 
         if (ctx.Exec.Plan.DirectScanResidualSet is null)
         {
-            rejectReason = "non-scannable residual clause";
+            rejectReason = "a filter can't be checked per-document during the scan";
             return false;
         }
 
