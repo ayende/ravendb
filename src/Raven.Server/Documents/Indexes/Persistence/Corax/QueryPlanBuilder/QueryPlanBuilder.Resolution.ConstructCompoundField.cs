@@ -122,15 +122,9 @@ internal static partial class QueryPlanBuilder
             if (canElideCompoundSort == false || usedCompositeRange == false)
                 return -1;
 
-            var bp = context.BuilderParams;
-
-            // The total is only consumed when the read operation reports statistics or answers a count query;
-            // otherwise the scan is already page-bounded and never drained, so computing it would be wasted work.
-            if (bp?.Query is not ({ IsCountQuery: true } or { SkipStatistics: false }))
-                return -1;
-
-            // A server-side filter rejects index candidates after the fact, so the posting count would overcount.
-            if (bp.Metadata?.Query?.Filter != null)
+            // The total is only worth resolving when the read consumes it (count / statistics) and no server-side
+            // filter would make the header count overcount the survivors.
+            if (CanResolveKnownTotal(context.BuilderParams) == false)
                 return -1;
 
             // A multi-valued compound field places a document under several compound terms; DirectScanSimpleMatch
@@ -141,22 +135,7 @@ internal static partial class QueryPlanBuilder
             // CountPostingsInRange advances (and exhausts) the provider's iterator, so it runs on a throwaway provider
             // built with the same bounds - never drivingMatch, which still has to feed the scan.
             var countMatch = BuildCompositeRangeMatch(compositeLow, compositeHigh);
-            try
-            {
-                if (countMatch is TermsProviderMatch countTpm && countTpm.Provider is IAggregationProvider agg)
-                {
-                    long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-                    var stats = agg.CountPostingsInRange(0);
-                    knownProbeTicks = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
-                    knownProbeTerms = stats.Terms;
-                    return stats.Postings;
-                }
-                return -1;
-            }
-            finally
-            {
-                (countMatch as IDisposable)?.Dispose();
-            }
+            return ProbeCountPostingsInRange(countMatch, out knownProbeTicks, out knownProbeTerms);
         }
 
         void SetDirectScanPropertiesForIntrospection(ref InstCtx context)

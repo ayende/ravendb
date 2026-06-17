@@ -135,16 +135,10 @@ internal static partial class QueryPlanBuilder
             // CountPostingsInRange header walk records a real duration + term count.
             probeTicks = -1;
             probeTerms = 0;
-            var builderParams = ctx.BuilderParams;
 
-            // The total is only consumed when the read operation reports statistics or answers a count query.
-            // Otherwise the scan is already page-bounded and never drained, so computing it would be wasted work.
-            if (builderParams?.Query is not ({ IsCountQuery: true } or { SkipStatistics: false }))
-                return -1;
-
-            // A server-side filter rejects index candidates after the fact, so the posting count would
-            // overcount the surviving results.
-            if (builderParams.Metadata?.Query?.Filter != null)
+            // The total is only worth resolving when the read consumes it (count / statistics) and no server-side
+            // filter would make the header count overcount the survivors.
+            if (CanResolveKnownTotal(ctx.BuilderParams) == false)
                 return -1;
 
             // A full index-only scan (no WHERE) emits every document exactly once — DirectScanSimpleMatch dedups,
@@ -163,27 +157,11 @@ internal static partial class QueryPlanBuilder
 
             // CountPostingsInRange advances (and exhausts) a provider's iterator, so it must run on a throwaway
             // provider resolved with the same bounds — never the one feeding the SortedDrivingMatch above, which
-            // would leave that scan with nothing to read.
+            // would leave that scan with nothing to read. The range / numeric driving providers tally their
+            // postings from posting-list headers alone (no id decode); the multi-valued overcount is excluded
+            // above, so the summed posting count is the exact document total.
             var (countMatch, _) = ResolveDrivingProvider(ref ctx, walkerCtx, drivingClause, forward);
-            try
-            {
-                // The range / numeric driving providers tally their postings from posting-list headers alone, without
-                // decoding any ids. The multi-valued overcount is excluded above, so the summed posting count is the
-                // exact document total.
-                if (countMatch is TermsProviderMatch countTpm && countTpm.Provider is IAggregationProvider agg)
-                {
-                    long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
-                    var stats = agg.CountPostingsInRange(0);
-                    probeTicks = System.Diagnostics.Stopwatch.GetTimestamp() - t0;
-                    probeTerms = stats.Terms;
-                    return stats.Postings;
-                }
-                return -1;
-            }
-            finally
-            {
-                (countMatch as IDisposable)?.Dispose();
-            }
+            return ProbeCountPostingsInRange(countMatch, out probeTicks, out probeTerms);
         }
 
         static void PopulateDirectScanInspection(DirectScanMatchBase ds, string sortFieldName, string drivingClauseDescription, bool forward,

@@ -660,13 +660,69 @@ internal static partial class QueryPlanBuilder
     /// </summary>
     private static int ResolveSortedScanTake(QueryBuilderParameters builderParams)
     {
-        if (builderParams?.Metadata?.Query?.Filter != null)
-            return Constants.IndexSearcher.TakeAll;
-
-        if (builderParams?.Query is { IsCountQuery: true } or { SkipStatistics: false })
+        // Early-stopping at the page limit is only safe when nothing forces a full drain: no post-index filter to
+        // satisfy, and no exact total to report. Either one means stream the whole sorted tree.
+        if (HasServerSideFilter(builderParams) || ConsumesExactTotal(builderParams))
             return Constants.IndexSearcher.TakeAll;
 
         return builderParams?.Take ?? Constants.IndexSearcher.TakeAll;
+    }
+
+    /// <summary>
+    /// Whether the up-front known-total optimisation (resolving TotalResults from posting-list headers / O(1)
+    /// metadata instead of draining the scan to count it) is applicable for this read, independent of the plan
+    /// shape. It pays off only when the read actually <see cref="ConsumesExactTotal">consumes the total</see> and
+    /// stays correct only when there is no <see cref="HasServerSideFilter">server-side filter</see> (which would
+    /// make the header count overcount the survivors). When false, the total must come from draining the scan.
+    /// </summary>
+    private static bool CanResolveKnownTotal(QueryBuilderParameters builderParams)
+        => ConsumesExactTotal(builderParams) && HasServerSideFilter(builderParams) == false;
+
+    /// <summary>
+    /// The read operation needs the exact <c>TotalResults</c>: it answers a count query, or it reports statistics
+    /// (<c>SkipStatistics == false</c>, the default). When false the page bound is the only limit that matters, so
+    /// neither does a sorted scan have to drain past it nor is an up-front total worth computing.
+    /// </summary>
+    private static bool ConsumesExactTotal(QueryBuilderParameters builderParams)
+        => builderParams?.Query is { IsCountQuery: true } or { SkipStatistics: false };
+
+    /// <summary>
+    /// A server-side <c>filter</c> clause runs AFTER the index produces results, so an index hit is only a
+    /// candidate until the filter accepts it. That makes any index-side count (e.g. posting-list headers) an
+    /// overcount of the surviving documents, and forces a sorted scan to keep streaming until the filter has
+    /// accepted enough (bounded server-side by FilterLimit).
+    /// </summary>
+    private static bool HasServerSideFilter(QueryBuilderParameters builderParams)
+        => builderParams?.Metadata?.Query?.Filter != null;
+
+    /// <summary>
+    /// Runs the header-only <see cref="IAggregationProvider.CountPostingsInRange"/> probe on a throwaway
+    /// <paramref name="countMatch"/> provider (which it disposes), timing the walk and reporting how many in-range
+    /// terms it visited. Returns the summed posting total, or -1 when the match is not a countable aggregation
+    /// provider. The probe exhausts the provider's iterator, so <paramref name="countMatch"/> must be a fresh
+    /// instance — never the one feeding the scan, which still has to read.
+    /// </summary>
+    private static long ProbeCountPostingsInRange(IQueryMatch countMatch, out long probeTicks, out int probeTerms)
+    {
+        probeTicks = -1; // -1 ticks marks "no probe ran" (the match was not countable).
+        probeTerms = 0;
+        try
+        {
+            if (countMatch is TermsProviderMatch { Provider: IAggregationProvider agg })
+            {
+                long t0 = Stopwatch.GetTimestamp();
+                var stats = agg.CountPostingsInRange(0);
+                probeTicks = Stopwatch.GetTimestamp() - t0;
+                probeTerms = stats.Terms;
+                return stats.Postings;
+            }
+
+            return -1;
+        }
+        finally
+        {
+            (countMatch as IDisposable)?.Dispose();
+        }
     }
 
     /// <summary>
