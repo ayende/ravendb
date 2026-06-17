@@ -38,6 +38,8 @@ internal static partial class QueryPlanBuilder
         bool usedCompositeRange = false;
         Slice compositeLow = default, compositeHigh = default;
         IQueryMatch drivingMatch = CreateDrivingMatch(ref ctx);
+        if (drivingMatch is null)
+            return null; // unsupported shape (e.g. backward prefix scan) — fall back to the bitmap pipeline
 
         // When the sort wrapper is elided, the DirectScan's output IS the final order, so the driving match must
         // stream in field2 (sort) order. CreateDrivingMatch returns a TermsProviderMatch, which materializes its
@@ -99,7 +101,15 @@ internal static partial class QueryPlanBuilder
                 return BuildCompositeRangeMatch(lowSlice, highSlice);
             }
 
-            // No field2 narrowing available: run a prefix scan on field1 only and let entry-scan residuals filter the rest.
+            // No field2 narrowing available: run a prefix scan on field1 only and let entry-scan residuals filter
+            // the rest. This only works forward — the backward StartsWith provider needs a seek upper-bound that
+            // StartWithQuery does not supply (it would seek a null key and crash). For a descending field2 with no
+            // field2 range, bail so the caller falls back to the bitmap pipeline + SortingMatch, which sorts
+            // descending correctly. (A field2 range takes the composite-range branch above, which handles both
+            // directions.)
+            if (forward == false)
+                return null;
+
             return indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
                 isNegated: false, forward: forward,
                 validatePostfixLen: true);

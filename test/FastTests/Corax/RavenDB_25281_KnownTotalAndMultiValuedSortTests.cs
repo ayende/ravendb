@@ -553,6 +553,62 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         Assert.Equal(expected, actual);
     }
 
+    private class CatDoc
+    {
+        public string Id { get; set; }
+        public string Category { get; set; }
+        public int UnitsInStock { get; set; }
+    }
+
+    private class CatDocs_ByCategoryUnits : AbstractIndexCreationTask<CatDoc>
+    {
+        public CatDocs_ByCategoryUnits()
+        {
+            Map = docs => from d in docs
+                select new { d.Category, d.UnitsInStock };
+            CompoundField("Category", "UnitsInStock");
+        }
+    }
+
+    // #7 descending compound-prefix scan: `where Category = X order by Category, UnitsInStock desc` pins Category
+    // and collapses to a single DESCENDING sort over compound(Category, UnitsInStock). The compound walk must run
+    // the prefix BACKWARD — which crashed with a NullReferenceException (StartWithQuery passed a null seek term to
+    // the backward StartsWith provider). Must return the matching docs in descending UnitsInStock order.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
+    public async Task DescendingCompoundSort_DoesNotCrashAndOrdersCorrectly(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new CatDocs_ByCategoryUnits();
+        index.Execute(store);
+
+        using (var bulk = store.BulkInsert())
+        {
+            for (int i = 0; i < 200; i++)
+                await bulk.StoreAsync(new CatDoc { Category = "categories/1-A", UnitsInStock = i }, $"cat/{i}");
+            for (int i = 0; i < 50; i++)
+                await bulk.StoreAsync(new CatDoc { Category = "categories/2-A", UnitsInStock = 1000 + i }, $"other/{i}");
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        using var session = store.OpenAsyncSession();
+        var results = await session.Advanced
+            .AsyncRawQuery<CatDoc>($"from index '{index.IndexName}' where Category = 'categories/1-A' order by Category, UnitsInStock as long desc limit 25")
+            .ToListAsync();
+
+        Assert.Equal(25, results.Count);
+        int prev = int.MaxValue;
+        foreach (var r in results)
+        {
+            Assert.Equal("categories/1-A", r.Category);
+            Assert.True(r.UnitsInStock <= prev, $"Results not descending by UnitsInStock: {prev} then {r.UnitsInStock}");
+            prev = r.UnitsInStock;
+        }
+        // The largest UnitsInStock among the 200 'categories/1-A' docs is 199.
+        Assert.Equal(199, results[0].UnitsInStock);
+    }
+
     private static QueryInspectionNode FindOperation(QueryInspectionNode node, string operation)
     {
         if (node == null)
