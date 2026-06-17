@@ -101,17 +101,17 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
         if (TreeScanTicks > 0) parameters["TreeScan_ms"] = (TreeScanTicks / tickFreq).ToString("F3");
         if (EntryScanTicks > 0) parameters["EntryScans_ms"] = (EntryScanTicks / tickFreq).ToString("F3");
 
-        parameters["TreeEntriesScanned"] = TreeEntriesScanned.ToString();
+        parameters["TreeEntriesScanned"] = TreeEntriesScanned.ToString("N0");
         // Entries this scan actually emitted (after dedup/residual-filter, capped by _take). This is the terminal
         // output of the FieldSortedScan dataflow, surfaced so the graph's Result node can show output=N — the
         // streaming/early-exit scan never builds a CompiledQueryMatch, so OverlayTimings cannot supply it.
         parameters["Output"] = TotalMatched.ToString("N0");
         if (StoppedReason != null) parameters["StoppedAt"] = StoppedReason;
-        if (KnownExactTotal >= 0) parameters["KnownExactTotal"] = KnownExactTotal.ToString();
+        if (KnownExactTotal >= 0) parameters["KnownExactTotal"] = KnownExactTotal.ToString("N0");
         if (KnownTotalProbeTicks >= 0)
         {
             parameters["KnownTotalProbe_ms"] = (KnownTotalProbeTicks / tickFreq).ToString("F3");
-            parameters["KnownTotalProbeTerms"] = KnownTotalProbeTerms.ToString();
+            parameters["KnownTotalProbeTerms"] = KnownTotalProbeTerms.ToString("N0");
         }
         return new QueryInspectionNode("DirectScan", parameters: parameters);
     }
@@ -196,8 +196,8 @@ public sealed class DirectScanFilteredMatch(
     {
         var result = base.Inspect();
         var parameters = result.Parameters;
-        parameters["EntriesPassedFilter"] = EntriesPassedFilter.ToString();
-        parameters["EntriesRejected"] = EntriesRejected.ToString();
+        parameters["EntriesPassedFilter"] = EntriesPassedFilter.ToString("N0");
+        parameters["EntriesRejected"] = EntriesRejected.ToString("N0");
         return result;
     }
 

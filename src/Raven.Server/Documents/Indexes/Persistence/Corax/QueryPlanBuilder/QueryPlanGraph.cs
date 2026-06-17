@@ -55,7 +55,6 @@ internal static class QueryPlanGraph
     private const string FlowCandidate = "candidate";
     private const string FlowDashed = "dashed";
     private const string FlowInvis = "invis";
-    private const string FlowNone = "none";
 
     private const string TakenGreen = "#1a7f37";
 
@@ -146,7 +145,11 @@ internal static class QueryPlanGraph
                 _ => OpExecuted(i)
             };
 
-        string DataEdgeFlow(int to) => !hasRuntime ? FlowNone : OpExecuted(to) ? FlowOn : FlowOff;
+        // The bitmap spine (Fill → AND/OR/ANDNOT → candidates) is the query's default dataflow path; the
+        // entry-scan branch is the conditional alternative (rendered dashed). So the spine reads as the taken
+        // path (green) even with no runtime overlay — matching the always-on post-filter chain it feeds — and
+        // is greyed out only for the runtime-confirmed tail that an entry-scan switch actually cut off.
+        string DataEdgeFlow(int to) => OpExecuted(to) ? FlowOn : FlowOff;
 
         GraphvizGraph g = new()
         {
@@ -266,17 +269,14 @@ internal static class QueryPlanGraph
                 // here instead of scanning the rest. Carry the limit so the edge label can say so.
                 e[VariantKey] = "bitmap-earlyexit";
                 e[LimitKey] = limitValue;
-                e[FlowKey] = hasRuntime ? FlowOn : FlowNone;
-            }
-            else if (hasRuntime)
-            {
-                e[VariantKey] = "bitmap-final";
                 e[FlowKey] = FlowOn;
             }
             else
             {
-                e[VariantKey] = "bitmap-plain";
-                e[FlowKey] = FlowNone;
+                // The bitmap pipeline fed the candidate set: it is the taken path whether or not a runtime overlay
+                // confirmed it (the variant only changes the optional edge label, which both cases leave blank).
+                e[VariantKey] = hasRuntime ? "bitmap-final" : "bitmap-plain";
+                e[FlowKey] = FlowOn;
             }
         }
 
