@@ -10,7 +10,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private static IQueryMatch ConstructCompoundField(ref InstCtx ctx, ResolutionContext walkerCtx, ClauseExecution field2Range, long entriesToScan, long bitmapCost)
+    private static IQueryMatch ConstructCompoundField(ref InstCtx ctx, ResolutionContext walkerCtx, ClauseExecution field2Range, long entriesToScan, long bitmapCost, int take)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         var drivingClause = ctx.Exec.CompoundFieldDrivingClause;
@@ -38,7 +38,7 @@ internal static partial class QueryPlanBuilder
         {
             // Filter every clause EXCEPT {driving, field2Range} (both enforced by the compound key).
             ScanParamExtractor.Extract(ctx.Exec, indexSearcher, walkerCtx, ctx.Exec.Plan.CompoundFieldResidualSet);
-            directScan = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: -1, precompiledDelegate: ctx.Plan.CompoundFieldResidualSet.Compiled);
+            directScan = new DirectScanFilteredMatch(indexSearcher, drivingMatch, ctx.Exec, take: take, precompiledDelegate: ctx.Plan.CompoundFieldResidualSet.Compiled);
         }
         else
         {   // nothing to filter, just scan...

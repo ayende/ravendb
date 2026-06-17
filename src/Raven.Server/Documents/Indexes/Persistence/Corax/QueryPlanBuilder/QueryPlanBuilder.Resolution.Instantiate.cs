@@ -57,9 +57,19 @@ internal static partial class QueryPlanBuilder
                     exec.StrategyGateReason = $"entries_to_scan({cfEntriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} {(cfEffective ? "<" : ">=")} bitmap_cost({cfBitmapCost})";
                 if (forced is null && cfEffective == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
-                innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost);
+                // The compound walk pins field1 to a single Equals value, so its entries already come out ordered by
+                // field2 - which IS the sole order-by field in this case. A SortingMatch wrapper would re-sort an
+                // already-sorted stream AND block the DirectScan's Take early-exit (forcing a full drain). So when the
+                // order is a single field (== the compound's field2) and no forced sort overrides it, elide the wrapper
+                // and push a page-bounded Take into the scan; otherwise (multi-sort / forced sort) keep the wrapper and
+                // drain fully (TakeAll).
+                bool canElideCompoundSort = orderByFields.Length == 1 && forcedSort is null;
+                int cfTake = canElideCompoundSort ? ResolveSortedScanTake(builderParameters) : global::Corax.Constants.IndexSearcher.TakeAll;
+                innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost, cfTake);
                 if (innerMatch is null) goto default;
                 exec.ActualStrategy = ExecutionStrategy.CompoundSortedScan;
+                if (canElideCompoundSort)
+                    return innerMatch; // already in field2 order; DirectScan handles Take itself
                 return ApplyForcedSort(OrderBy(builderParameters, innerMatch, orderByFields), forcedSort);
             case ExecutionStrategy.FieldSortedScan when orderByFields != null:
                 var execs = exec.Executions;
