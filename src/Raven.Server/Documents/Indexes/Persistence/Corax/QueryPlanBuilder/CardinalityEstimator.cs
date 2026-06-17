@@ -34,10 +34,7 @@ internal static class CardinalityEstimator
                     return EstimateRangeClause(e, e.ClauseType);
 
                 case ClauseType.Between:
-                    // A null sentinel bound ("*" / "NULL") rewrites BETWEEN into a half-open range or Exists,
-                    // packing only the surviving bound (see PopulateClauseValues). The estimate must follow that
-                    // rewrite the same way ResolveSentinelRewrittenBetween does: estimating it as a two-bound
-                    // BETWEEN would read a Param2 the rewrite never packed (IndexOutOfRange).
+                    // A null sentinel bound ("*" / "NULL") rewrites BETWEEN into a half-open range or Exists, the estimate must follow that
                     if (e.SentinelRewriteType is { } rewrite)
                         return rewrite == ClauseType.Exists ? indexSearcher.NumberOfEntries : EstimateRangeClause(e, rewrite);
                     return EstimateRangeClause(e, ClauseType.Between);

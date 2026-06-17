@@ -239,17 +239,11 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
 
     internal override IndexTransactionCache BuildStreamCacheAfterTx(Transaction tx)
     {
-        // Runs at the last point a committing write tx can read its own just-written trees. Refresh the
-        // multi-valued field snapshot (rebuilt only if the tree actually grew) and hand it - together with the
-        // current vector caches - to the cache that PublishIndexCacheToNewTransactions promotes for new readers.
+        // Refresh the multi-valued field snapshot (rebuilt only if the tree actually grew) and hand it to the cache
         var previous = _currentCache?.FieldsWithMultipleTerms;
         var fields = ReadFieldsWithMultipleTerms(tx, previous);
-        // ReadFieldsWithMultipleTerms returns the SAME instance when the multi-valued field set is unchanged and a
-        // fresh set only when it grew, so a reference change is exactly the single->multi flip we must invalidate on.
-        if (fields != previous)
-        {
+        if (fields != previous) // if changed, touch the plan cache, to refresh the plans
             ((CoraxIndexPersistence)_index.IndexPersistence).SharedPlanCache.TouchGeneration();
-        }
         return BuildCurrentCache(fields);
     }
 
