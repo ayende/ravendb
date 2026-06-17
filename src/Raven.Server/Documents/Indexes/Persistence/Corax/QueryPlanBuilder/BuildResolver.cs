@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
 using System.Runtime.Intrinsics;
+using Corax.Mappings;
 using Corax.Querying.Planning;
 using Corax.Querying.Primitives;
 using Sparrow;
@@ -151,6 +152,21 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                 && only.Cardinality >= 0)
             {
                 return only.Cardinality;
+            }
+
+            // A single non-boosted exists() has an exactly-known result count the estimator does NOT supply
+            // (CardinalityEstimator returns the whole-index NumberOfEntries upper bound for Exists, so reading
+            // only.Cardinality here would force the full bitmap drain). The exact total is the index entry count
+            // minus the field's non-existing posting list — both O(1) reads, and exact for multi-valued fields
+            // because ExistsQuery deduplicates per document. NOT exists() is excluded (it emits the non-existing
+            // set, the complement; the bare exists clause is non-negated).
+            if (only.IsSentinel == false
+                && only.ClauseType == ClauseType.Exists
+                && only.IsNegated == false
+                && only.Clause.HasBoost == false)
+            {
+                FieldMetadata existsField = QueryPlanBuilder.ResolveFieldMetadata(only.Clause, walkerCtx);
+                return _indexSearcher.NumberOfEntriesForExists(existsField);
             }
         }
 

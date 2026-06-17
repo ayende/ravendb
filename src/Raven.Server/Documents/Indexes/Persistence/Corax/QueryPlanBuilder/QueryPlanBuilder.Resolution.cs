@@ -628,6 +628,17 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
+        // A driving clause on a multi-valued sort field cannot be elided from the residual: the
+        // residual set excludes the driving clause assuming the in-order tree walk enforces it, but
+        // SortedDrivingMatch walks every posting of a multi-valued field, so documents matching the
+        // driving term under one value AND a different value elsewhere are emitted unfiltered. Fall
+        // back to bitmap + SortingMatch, which applies the clause as a real filter.
+        if (ctx.PlanParams.IndexSearcher.HasMultipleTermsInField(ctx.OrderByFields[0].Field))
+        {
+            rejectReason = "sort field is multi-valued (driving clause cannot be elided from the residual)";
+            return false;
+        }
+
         if (ctx.Exec.Plan.DirectScanResidualSet is null)
         {
             rejectReason = "non-scannable residual clause";

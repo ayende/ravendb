@@ -632,6 +632,18 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return NumberOfDocumentsUnderSpecificTerm(postingListId) > 0;
     }
 
+    /// <summary>Exact O(1) count of documents where <paramref name="field"/> exists (is present, including
+    /// explicit nulls) — the index entry count minus the field's non-existing posting list. This matches the
+    /// deduplicated document set <see cref="ExistsQuery"/> produces, so it is exact for multi-valued fields too
+    /// (a document lacking the field is recorded once in the non-existing list regardless of value count).</summary>
+    public long NumberOfEntriesForExists(in FieldMetadata field)
+    {
+        long nonExisting = 0;
+        if (TryGetPostingListForNonExisting(field.FieldName, out long postingListId, out _))
+            nonExisting = NumberOfDocumentsUnderSpecificTerm(postingListId);
+        return NumberOfEntries - nonExisting;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryGetPostingListForNonExisting(in FieldMetadata field, out long postingListId) => TryGetPostingListForNonExisting(field.FieldName, out postingListId, out _);
     
