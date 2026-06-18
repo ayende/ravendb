@@ -293,6 +293,9 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
         Dispose();
     }
     
+    // Vector match results are not entry-id ordered, so there is no sorted fast path; behaves exactly like Score.
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => Score(matches, scores, boostFactor);
+
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         if (_isEmpty || _resultsPersisted == false)
@@ -301,7 +304,7 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
             // side of an AND was empty). In these cases, the call is ignored.
             return;
         }
-        
+
         if (_singleVectorSearchDoNotSort == false)
         {
             ref var matchesRef = ref MemoryMarshal.GetReference(matches);

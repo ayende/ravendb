@@ -65,6 +65,12 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     /// null until then. Surfaced as "Strategy" in the query plan graph.</summary>
     public CoraxSortingStrategy? SortStrategy;
 
+    /// <summary>True when the candidate batch handed to the score comparer is sorted ascending by entry id —
+    /// i.e. it came from the bitmap-backed <c>SortInMemory</c> path (the bitmap iterator yields in order). The
+    /// non-bitmap <c>SortComputedResults</c> drain (vector / post-filter, score-ordered) leaves it false. The score
+    /// comparer uses this to call the sorted-aware <see cref="IQueryMatch.ScoreSorted"/> fast path only when valid.</summary>
+    internal bool CandidatesAreSorted;
+
     /// <summary>Sort strategy pinned by the reserved <c>$rvn_corax_sort</c> query parameter, or null to
     /// let the runtime cost gate choose. Honored only for the InMemorySort vs IndexOrderStreaming choice
     /// on an iterable sort index; forcing IndexOrderStreaming also suppresses the over-scan bailout.</summary>
@@ -83,6 +89,9 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     public abstract int Fill(Span<long> buffer);
     public abstract int AndWith(Span<long> buffer, int matches);
     public abstract void Score(Span<long> matches, Span<float> scores, float boostFactor);
+    // A SortingMatch is never nested inside another match's score chain (it is the top-level sort), so its own
+    // Score is a no-op; ScoreSorted just mirrors it.
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => Score(matches, scores, boostFactor);
     public abstract QueryInspectionNode Inspect();
     public abstract void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer);
     public abstract void Dispose();

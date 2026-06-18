@@ -768,6 +768,8 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         if (filled == 0)
             return;
 
+        // The bitmap iterator yields entry ids ascending, so the score comparer can take the sorted fast path.
+        match.CandidatesAreSorted = true;
         SortResults<TEntryComparer>(match, allMatches[..filled]);
     }
     

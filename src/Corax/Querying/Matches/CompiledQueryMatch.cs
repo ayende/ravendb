@@ -177,6 +177,15 @@ public class CompiledQueryMatch(
         }
     }
 
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
+    {
+        foreach (var it in ResolvedMatches ?? [])
+        {
+            if (it != null)
+                it.ScoreSorted(matches, scores, boostFactor);
+        }
+    }
+
     public void GetTelemetry(out long[] timings, out long[] resultCounts, out int entryScanTakenAtOp)
     {
         timings = Timings;

@@ -51,6 +51,63 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     }
 
 
+    // ScorePresentSorted (the sorted-batch scoring fast path used by the in-memory score sort) must produce exactly
+    // the same scores as the scalar per-entry Contains loop, across all container types (Array / Bitmap / Range) and
+    // including absent containers (whole runs skipped). Also verifies it ACCUMULATES onto existing scores.
+    [RavenFact(RavenTestCategory.Corax)]
+    public void ScorePresentSorted_MatchesScalarContains_AcrossContainerTypes()
+    {
+        using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
+        RoaringBitmap bitmap = new(ctx);
+
+        var present = new SortedSet<long>();
+        // Container 0: sparse -> Array container.
+        foreach (var v in new long[] { 5, 100, 9000, 60000 }) present.Add(v);
+        // Container 1: dense (> 4096) -> Bitmap container.
+        for (long v = (1L << 16); v < (1L << 16) + 5000; v++) present.Add(v);
+        // Container 2: contiguous -> Range container.
+        for (long v = (2L << 16); v < (2L << 16) + 2000; v++) present.Add(v);
+        // Container 4 present too (another array), container 3 & 5 deliberately absent.
+        foreach (var v in new long[] { (4L << 16) + 1, (4L << 16) + 70, (4L << 16) + 65535 }) present.Add(v);
+
+        bitmap.AddRange(present.ToArray());
+        bitmap.PrepareForReading();
+
+        // Candidate span: sorted mix of present + absent ids, including ids in the absent containers 3 and 5.
+        var candidates = new SortedSet<long>();
+        foreach (var v in new long[] { 5, 50, 9000, 9001, 60000, 65535 }) candidates.Add(v);                 // container 0
+        foreach (var v in new long[] { (1L << 16) + 0, (1L << 16) + 2500, (1L << 16) + 4999, (1L << 16) + 6000 }) candidates.Add(v); // container 1
+        foreach (var v in new long[] { (2L << 16) - 1, (2L << 16) + 0, (2L << 16) + 1999, (2L << 16) + 2000 }) candidates.Add(v);    // container 2
+        foreach (var v in new long[] { (3L << 16) + 10, (3L << 16) + 9999 }) candidates.Add(v);              // container 3 (absent)
+        foreach (var v in new long[] { (4L << 16) + 1, (4L << 16) + 2, (4L << 16) + 65535 }) candidates.Add(v); // container 4
+        foreach (var v in new long[] { (5L << 16) + 7 }) candidates.Add(v);                                  // container 5 (absent)
+
+        var matches = candidates.ToArray();
+
+        const float boost = 2.5f;
+
+        // Reference: scalar per-entry Contains, on a pre-seeded score array (to also check accumulation).
+        var expected = new float[matches.Length];
+        var actual = new float[matches.Length];
+        for (int i = 0; i < matches.Length; i++)
+            expected[i] = actual[i] = 1f + i; // arbitrary non-zero seed
+
+        for (int i = 0; i < matches.Length; i++)
+            if (bitmap.Contains(matches[i]))
+                expected[i] += boost;
+
+        bitmap.ScorePresentSorted(matches, actual, boost);
+
+        Assert.Equal(expected, actual);
+
+        // boostFactor 0 is a no-op (scores unchanged).
+        var snapshot = (float[])actual.Clone();
+        bitmap.ScorePresentSorted(matches, actual, 0f);
+        Assert.Equal(snapshot, actual);
+
+        bitmap.Dispose();
+    }
+
     [RavenFact(RavenTestCategory.Corax)]
     public void CanAddAndContainsSingleValue()
     {

@@ -80,6 +80,11 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
         }
     }
 
+    // matches is sorted ascending here (in-memory score sort), so let the bitmap group by container and merge
+    // each sorted Array container with a single forward cursor instead of an independent search per probe.
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
+        => _bitmapState.ScorePresentSorted(matches, scores, boostFactor);
+
 
     public QueryInspectionNode Inspect()
     {

@@ -88,8 +88,12 @@ unsafe sealed partial class SortingMatch<TInner>
             // We have to initialize the score buffer with a positive number to ensure that multiplication (document-boosting) is taken into account when BM25 relevance returns 0 (for example, with AllEntriesMatch).
             readScores.Fill(Bm25Relevance.InitialScoreValue);
 
-            // We perform the scoring process. 
-            match._inner.Score(batchResults, readScores, 1f);
+            // We perform the scoring process. When the candidates were materialized from the bitmap (SortInMemory),
+            // batchResults is sorted ascending, so the bitmap-backed leaves can take the run-grouped sorted fast path.
+            if (match.CandidatesAreSorted)
+                match._inner.ScoreSorted(batchResults, readScores, 1f);
+            else
+                match._inner.Score(batchResults, readScores, 1f);
 
             // If we need to do documents boosting then we need to modify the based on documents stored score. 
             if (match._searcher.DocumentsAreBoosted)

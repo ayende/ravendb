@@ -27,6 +27,8 @@ public abstract class SortingMultiMatch : IQueryMatch, IDisposable, IRequireSort
     public abstract int Fill(Span<long> buffer);
     public abstract int AndWith(Span<long> buffer, int matches);
     public abstract void Score(Span<long> matches, Span<float> scores, float boostFactor);
+    // Top-level sort: its own Score is a no-op, so ScoreSorted just mirrors it.
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => Score(matches, scores, boostFactor);
     public abstract QueryInspectionNode Inspect();
     public abstract void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer);
     public abstract void Dispose();

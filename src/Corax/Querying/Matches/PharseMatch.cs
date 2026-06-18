@@ -190,6 +190,11 @@ public struct PhraseMatch<TInner> : IQueryMatch
         _inner.Score(matches, scores, boostFactor);
     }
 
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
+    {
+        _inner.ScoreSorted(matches, scores, boostFactor);
+    }
+
     public QueryInspectionNode Inspect()
     {
         return new QueryInspectionNode(nameof(PhraseMatch<TInner>),

@@ -328,6 +328,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
     public int AndWith(Span<long> buffer, int matches) => throw new NotSupportedException();
     public void Score(Span<long> matches, Span<float> scores, float boostFactor) { }
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) { }
 
     public QueryInspectionNode Inspect()
     {

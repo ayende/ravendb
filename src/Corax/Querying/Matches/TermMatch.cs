@@ -486,6 +486,9 @@ namespace Corax.Querying.Matches
             return _andWithFunc(ref this, buffer, matches);
         }
 
+        // BM25 scoring reads each match's frequency independently of order, so sorted input offers no advantage here.
+        public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => Score(matches, scores, boostFactor);
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Score(Span<long> matches, Span<float> scores, float boostFactor)
         {

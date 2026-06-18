@@ -812,6 +812,107 @@ public unsafe partial struct RoaringBitmap : IDisposable
         return kept;
     }
 
+    /// <summary>Batch scoring helper: for each entry in <paramref name="matches"/> that is present in this bitmap,
+    /// add <paramref name="boostFactor"/> to <paramref name="scores"/> at the same index. <paramref name="matches"/>
+    /// MUST be sorted ascending (and is, in the in-memory score sort, where it comes straight off the candidate
+    /// bitmap iterator). That lets us group the candidates by container key (one slot resolution per run, absent
+    /// containers skipped wholesale) and, for a sorted Array container, sweep its values with a single forward cursor
+    /// instead of an independent SIMD search per probe — turning N×O(scan) into O(N + cardinality). Mirrors the
+    /// container-group skeleton of <see cref="AndWith"/> / <see cref="DedupAddNew"/>, but adds a score on a hit
+    /// instead of filtering.</summary>
+    public void ScorePresentSorted(Span<long> matches, Span<float> scores, float boostFactor)
+    {
+        AssertNotConsumed();
+        if (boostFactor == 0f)
+            return;
+
+        int count = matches.Length;
+        int* idx = _index.RawItems;
+        int idxLen = _index.Count;
+        ContainerEntry* entries = _entries.RawItems;
+        ContainerType* types = _types.RawItems;
+
+        int i = 0;
+        while (i < count)
+        {
+            long containerKey = matches[i] >> ContainerKeyShift;
+            long containerEnd = (containerKey + 1) << ContainerKeyShift;
+            int groupEnd = GallopRight(matches, i, count, containerEnd);
+
+            // Container absent — nothing in this run is present, skip the whole group.
+            if (containerKey < 0 || containerKey >= idxLen || idx[containerKey] < 0)
+            {
+                i = groupEnd;
+                continue;
+            }
+
+            int slot = idx[containerKey];
+            ref ContainerEntry entry = ref entries[slot];
+            ref ContainerType type = ref types[slot];
+
+            if (type == ContainerType.ArrayUnsorted)
+            {
+                // Normalize once: sort + upgrade so this and later probes of this container can merge/binary-search.
+                new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
+                type = ContainerType.Array;
+            }
+
+            switch (type)
+            {
+                case ContainerType.Bitmap:
+                {
+                    ulong* bmp = (ulong*)entry.Data;
+                    for (int gi = i; gi < groupEnd; gi++)
+                    {
+                        ushort low = (ushort)(matches[gi] & ContainerValueMask);
+                        if (BitmapContains(bmp, low))
+                            scores[gi] += boostFactor;
+                    }
+                    break;
+                }
+
+                case ContainerType.Range:
+                {
+                    int rangeStart = entry.RangeStart;
+                    int rangeEnd = rangeStart + entry.Cardinality;
+                    for (int gi = i; gi < groupEnd; gi++)
+                    {
+                        ushort low = (ushort)(matches[gi] & ContainerValueMask);
+                        if (low >= rangeStart && low < rangeEnd)
+                            scores[gi] += boostFactor;
+                    }
+                    break;
+                }
+
+                case ContainerType.Array:
+                {
+                    // Both sides ascending (matches sorted, Array container sorted): one forward sweep.
+                    ushort* arr = entry.ArrayData;
+                    int arrLen = entry.Cardinality;
+                    int ai = 0;
+                    for (int gi = i; gi < groupEnd; gi++)
+                    {
+                        ushort low = (ushort)(matches[gi] & ContainerValueMask);
+                        while (ai < arrLen && arr[ai] < low) ai++;
+                        if (ai >= arrLen)
+                            break; // container exhausted; no further match in this run can be present
+                        if (arr[ai] == low)
+                        {
+                            scores[gi] += boostFactor;
+                            ai++;
+                        }
+                    }
+                    break;
+                }
+
+                default:
+                    throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in ScorePresentSorted");
+            }
+
+            i = groupEnd;
+        }
+    }
+
     /// <summary>Dedup + add in a single pass: for each entry in <paramref name="buffer"/>,
     /// if it is NOT already in the bitmap, keep it in the buffer and add it to the bitmap.
     /// If it IS already present, discard it. Returns the count of new (non-duplicate) entries.

@@ -229,6 +229,9 @@ public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
         return MergeHelper.And(buffer[..matches], buffer[..matches], results);
     }
 
+    // Vector match results are not entry-id ordered, so there is no sorted fast path; behaves exactly like Score.
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => Score(matches, scores, boostFactor);
+
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         if (_isEmpty || _resultsPersisted == false)
@@ -237,7 +240,7 @@ public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
             // side of an AND was empty). In these cases, the call is ignored.
             return;
         }
-        
+
         if (_singleVectorSearchDoNotSort == false)
         {
             if (_filterQuery != null)

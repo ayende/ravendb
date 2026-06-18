@@ -40,8 +40,15 @@ public interface IQueryMatch
     int AndWith(Span<long> buffer, int matches);
 
     // Guarantees: The output of this for unscored sequences should be a no-op.
-    // Requirements: The upmost call 
+    // Requirements: The upmost call
     void Score(Span<long> matches, Span<float> scores, float boostFactor);
+
+    // Same contract and result as Score, but the caller GUARANTEES `matches` is sorted ascending (and, as Fill
+    // produces, deduplicated). The in-memory score sort feeds matches straight off the candidate bitmap iterator,
+    // so this holds on that path; the vector / post-filter score-order paths do NOT sort, and keep calling Score.
+    // Bitmap-backed leaves exploit the ordering (run-grouped, container-merge membership); everyone else just
+    // delegates to Score. The result MUST be identical to Score for the same input.
+    void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor);
 
     QueryInspectionNode Inspect();
 

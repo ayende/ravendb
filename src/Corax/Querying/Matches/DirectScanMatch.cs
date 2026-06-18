@@ -85,6 +85,8 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor) { }
 
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) { }
+
 
     public virtual QueryInspectionNode Inspect()
     {

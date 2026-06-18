@@ -51,6 +51,12 @@ namespace Corax.Querying.Matches
             //there is no sense to add anything here because this would add same value to all items in collection.
         }
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
+        {
+            //no-op, same as Score: a constant added to every entry does not change ordering.
+        }
+
         public QueryInspectionNode Inspect()
         {
             return new QueryInspectionNode(nameof(AllEntriesMatch),

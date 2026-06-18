@@ -88,6 +88,14 @@ public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, I
         }
     }
 
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
+    {
+        if (boostFactor == 0f)
+            return;
+        Initialize();
+        _bitmap.ScorePresentSorted(matches, scores, boostFactor);
+    }
+
     public QueryInspectionNode Inspect()
     {
         return new QueryInspectionNode($"{nameof(LazyOrMatch)} [Or]",

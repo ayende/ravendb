@@ -84,6 +84,14 @@ public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransact
         return _bitmap.AndWith(buffer, matches);
     }
 
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
+    {
+        if (boostFactor == 0f)
+            return;
+        Initialize();
+        _bitmap.ScorePresentSorted(matches, scores, boostFactor);
+    }
+
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         if (boostFactor == 0f)

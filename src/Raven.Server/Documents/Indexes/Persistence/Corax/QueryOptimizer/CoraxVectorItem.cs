@@ -106,6 +106,8 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor) => throw new NotSupportedException(IQueryMatchUsageException);
 
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => throw new NotSupportedException(IQueryMatchUsageException);
+
     public QueryInspectionNode Inspect() => throw new NotSupportedException(IQueryMatchUsageException);
 
     public DuplicatesOccurrence DuplicatesOccurrenceStatus { get => throw new NotSupportedException(IQueryMatchUsageException); }

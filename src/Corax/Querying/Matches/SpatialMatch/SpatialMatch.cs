@@ -184,11 +184,14 @@ public sealed class SpatialMatch<TBoosting> : IQueryMatch, IPostFilterMatch
         return currentIdx;
     }
 
+    // Spatial scoring is distance-based per entry, independent of order; no sorted fast path.
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => Score(matches, scores, boostFactor);
+
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         if (typeof(TBoosting) != typeof(HasBoosting))
             ThrowPrimitiveHasNoBoostingData();
-     
+
         _spatialScore.CalculateScore(matches, scores, boostFactor, _spatialRelation);
         _spatialScore.Dispose();
     }

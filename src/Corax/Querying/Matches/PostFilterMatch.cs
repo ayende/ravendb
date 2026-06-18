@@ -114,6 +114,13 @@ public sealed class PostFilterMatch : IQueryMatch
             _postFilters[i].Score(matches, scores, boostFactor);
     }
 
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
+    {
+        _inner.ScoreSorted(matches, scores, boostFactor);
+        for (int i = 0; i < _postFilters.Length; i++)
+            _postFilters[i].ScoreSorted(matches, scores, boostFactor);
+    }
+
     public QueryInspectionNode Inspect()
     {
         var parameters = new Dictionary<string, string>();

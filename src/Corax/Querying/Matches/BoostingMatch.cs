@@ -42,6 +42,9 @@ namespace Corax.Querying.Matches
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Score(Span<long> matches, Span<float> scores, float boostFactor) => _inner.Score(matches, scores, boostFactor * BoostFactor);
 
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => _inner.ScoreSorted(matches, scores, boostFactor * BoostFactor);
+
         public QueryInspectionNode Inspect()
         {
             var inner = _inner.Inspect();
