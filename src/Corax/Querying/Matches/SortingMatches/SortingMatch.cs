@@ -47,12 +47,15 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// the cost weight in the <see cref="ShouldUseIndexOrderStreaming"/> gate. A streamed entry is a sequential
     /// FastPFor posting decode + an O(1) candidate-bitmap test; a sorted candidate pays a random entries→terms
     /// lookup (GetFor), a random term-blob fetch (GetAll), and its share of an N log N comparison sort.
-    /// Measured per-unit ratio ≈ 38× on a clustered multi-valued sort (uninstrumented include timings():
-    /// InMemorySort 32.5 ms over 263,528 candidates vs IndexOrderStreaming 2.06 ms over 638,976 scanned entries,
-    /// RavenDB-25281). Held below the measurement so streaming is chosen only on a clear win; pending broader
-    /// calibration across distributions. IMPORTANT: deliberately NOT 1 — do not simplify the gate back to
+    /// Calibrated by <c>CoraxCostModelCalibration</c> (RavenData-driven, uninstrumented include timings(), 200K
+    /// docs, multi-valued clustered sort field): streaming beat InMemorySort in EVERY swept case with
+    /// take &lt; candidates — 9.2× at 40% selectivity, 6.x at 8%, and still 2.2× at 0.5% with a 16× over-scan —
+    /// because early termination caps the scan at 1–2 batches. The only loss was take ≥ candidates, already
+    /// short-circuited above. The cost asymmetry equalizes around 32–38× over-scan, so 32 captures essentially
+    /// all wins while the StreamScanInflation EWMA and the take ≥ candidates guard backstop the clustered
+    /// pathological case. IMPORTANT: deliberately NOT 1 — do not simplify the gate back to
     /// <c>estimatedScan &lt; candidates</c>, which ignores the per-entry cost asymmetry and over-picks InMemorySort.</summary>
-    internal const double IndexStreamingVsInMemorySortCostRatio = 16;
+    internal const double IndexStreamingVsInMemorySortCostRatio = 32;
     private ByteStringContext<ByteStringMemoryCache>.InternalScope _entriesBufferScope;
 
     private ContextBoundNativeList<long> _results;
