@@ -1089,12 +1089,20 @@ namespace Voron.Impl
             }
         }
 
-        private static readonly ObjectPool<CompactKey> _sharedCompactKeyPool = new ( () => new CompactKey() );
+        // The factory rents each pooled key's storage buffers once (Initialize(null) only rents; it doesn't touch the tx). AcquireCompactKey then
+        // Rebinds the pooled key to the current transaction and ReleaseCompactKey only Unbinds it, so the rented buffers stay attached to
+        // the pooled object across acquire/release instead of being churned through the ArrayPool on every call.
+        private static readonly ObjectPool<CompactKey> SharedCompactKeyPool = new(static () =>
+        {
+            var key = new CompactKey();
+            key.Initialize(null);
+            return key;
+        }, ProcessorInfo.ProcessorCount * 8);
 
         public CompactKey AcquireCompactKey()
         {
-            var key = _sharedCompactKeyPool.Allocate();
-            key.Initialize(this);
+            var key = SharedCompactKeyPool.Allocate();
+            key.Rebind(this);
             return key;
         }
 
@@ -1102,13 +1110,13 @@ namespace Voron.Impl
         {
             if (key == null)
                 return;
-            
-            // The reason why we reset the key, which in turn will null the storage is to avoid cases of reused keys
-            // been used by multiple operations. Eventually someone wil restore
             if (ReferenceEquals(key, CompactKey.NullInstance) == false)
             {
-                key.Reset();
-                _sharedCompactKeyPool.Free(key);
+                // Unbind drops the transaction reference but keeps the rented buffers, so the next
+                // AcquireCompactKey reuses them. A released key still carries stale storage, but its
+                // owner is null, so any decode use after release fails fast on the null owner.
+                key.Unbind();
+                SharedCompactKeyPool.Free(key);
             }
             key = null;
         }
