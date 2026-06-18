@@ -142,6 +142,8 @@ public class RavenDB_25410(ITestOutputHelper output) : StorageTest(output)
             }
         }
 
+        public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => Score(matches, scores, boostFactor);
+
         public QueryInspectionNode Inspect() => throw new NotImplementedException();
 
         public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
