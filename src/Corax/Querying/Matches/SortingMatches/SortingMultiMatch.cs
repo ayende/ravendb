@@ -146,7 +146,9 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
 
                 using var _ = match._searcher.Allocator.Allocate((int)match.TotalResults, out Span<long> allMatches);
                 int filled = bitmapMatch.Fill(allMatches);
-                
+
+                // The bitmap iterator yields entry ids ascending, so the score comparer can take the sorted fast path.
+                match.CandidatesAreSorted = true;
                 long sortStart = Stopwatch.GetTimestamp();
                 SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
                 match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;

@@ -14,6 +14,11 @@ public abstract class SortingMultiMatch : IQueryMatch, IDisposable, IRequireSort
     /// <summary>Total number of matching entries (set after the first Fill call).</summary>
     public long TotalResults;
 
+    /// <summary>True when the candidate batch is sorted ascending by entry id — i.e. it came from the
+    /// bitmap-backed materialization (the bitmap iterator yields in order) rather than the non-bitmap drain.
+    /// The score comparer uses this to take the sorted-aware <see cref="IQueryMatch.ScoreSorted"/> fast path.</summary>
+    internal bool CandidatesAreSorted;
+
     /// <summary>Wall-clock ticks spent on sort-specific work (the multi-comparer heap sort). Excludes the inner
     /// match's execution, which is timed onto the child CompiledQuery node's per-op telemetry; counting it here
     /// too would double-count the query. <see cref="SortingMultiMatch{TInner}.Inspect"/> emits this as the sort
