@@ -64,7 +64,7 @@ internal static class SortKernels
             lookup.GetFor(entries, termIdsScratch, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(
                 termIdsScratch.Slice(0, n), nonExistingTermContainerId, nullTermContainerId, SortingHelpers.MissingTermId);
-            Container.GetAll(llt, termIdsScratch.Slice(0, n), termsOut.Slice(0, n), SortingHelpers.MissingTermId, pageLocator);
+            Container.GetAllSortedByPage(llt, termIdsScratch.Slice(0, n), termsOut.Slice(0, n), SortingHelpers.MissingTermId, pageLocator);
         }
         else
         {
@@ -169,7 +169,7 @@ internal static class SortKernels
             lookup.GetFor(entries, termIdsScratch, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(
                 termIdsScratch.Slice(0, n), nonExistingTermContainerId, nullTermContainerId, SortingHelpers.MissingTermId);
-            Container.GetAll(llt, termIdsScratch.Slice(0, n), termsScratch.Slice(0, n), SortingHelpers.MissingTermId, pageLocator);
+            Container.GetAllSortedByPage(llt, termIdsScratch.Slice(0, n), termsScratch.Slice(0, n), SortingHelpers.MissingTermId, pageLocator);
         }
         else
         {

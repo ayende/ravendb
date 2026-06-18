@@ -249,7 +249,9 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             var termIds = new Span<long>(idBuffer.Ptr, batchResults.Length);
             _lookup.GetFor(batchResults, termIds, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(termIds, _nonExistingTermContainerId, _nullTermContainerId, SortingHelpers.MissingTermId);
-            Container.GetAll(llt, termIds, new Span<UnmanagedSpan>(_resolvedTerms, batchResults.Length), SortingHelpers.MissingTermId, llt.PageLocator);
+            // Page-group the container reads; scatters back so _resolvedTerms[i] stays paired with batchResults[i]
+            // (secondary comparers index it by position, so we can't co-permute the way single-field sort does).
+            Container.GetAllSortedByPage(llt, termIds, new Span<UnmanagedSpan>(_resolvedTerms, batchResults.Length), SortingHelpers.MissingTermId, llt.PageLocator);
         }
 
         public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
@@ -266,7 +268,7 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             
             _lookup.GetFor(batchResults, batchTermIds, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(batchTermIds, _nonExistingTermContainerId, _nullTermContainerId, SortingHelpers.MissingTermId);
-            Container.GetAll(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), SortingHelpers.MissingTermId, pageLocator);
+            Container.GetAllSortedByPage(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), SortingHelpers.MissingTermId, pageLocator);
             match._token.ThrowIfCancellationRequested();
 
             var heapSize = Math.Min(match._take, batchResults.Length);
@@ -517,7 +519,7 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
 
             _lookup.GetFor(batchResults, batchTermIds, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(batchTermIds, _nonExistingTermContainerId, _nullTermContainerId, SortingHelpers.MissingTermId);
-            Container.GetAll(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), SortingHelpers.MissingTermId, pageLocator);
+            Container.GetAllSortedByPage(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), SortingHelpers.MissingTermId, pageLocator);
             var documents = MemoryMarshal.Cast<long, int>(batchTermIds)[..(batchTermIds.Length)];
             for (int i = 0; i < batchTermIds.Length; i++)
                 documents[i] = i;

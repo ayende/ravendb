@@ -483,7 +483,7 @@ unsafe sealed partial class SortingMatch<TInner>
             match._cancellationToken.ThrowIfCancellationRequested();
             _lookup.GetFor(batchResults, batchTermIds, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(batchTermIds, NonExistingTermContainerId, NullTermContainerId, SortingHelpers.MissingTermId);
-            Container.GetAll(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), SortingHelpers.MissingTermId, pageLocator);
+            Container.GetAllSortedByPage(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), SortingHelpers.MissingTermId, pageLocator);
 
             var heapCapacity = _take == -1 ? batchResults.Length : Math.Min(_take, batchResults.Length);
             var documents = MemoryMarshal.Cast<long, int>(batchTermIds)[..(heapCapacity)];

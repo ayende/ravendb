@@ -1521,6 +1521,61 @@ namespace Voron.Data.Containers
             }
         }
 
+        /// <summary>
+        /// Like <see cref="GetAll"/>, but fetches in container-id (≈ page) order for locality and scatters each
+        /// item back to its caller slot, so spans[i] stays paired with ids[i]. Use for large, page-scattered
+        /// batches (sort-key fetches); small / already-page-local callers should use GetAll, which avoids the
+        /// argsort + scratch this pays. ids is not mutated.
+        /// </summary>
+        public static void GetAllSortedByPage(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, long missingValue, PageLocator pageCache)
+        {
+            int n = ids.Length;
+            if (n == 0)
+                return;
+
+            using var keysScope = llt.Allocator.Allocate(n * sizeof(long), out ByteString keysBuffer);
+            using var idxScope = llt.Allocator.Allocate(n * sizeof(int), out ByteString idxBuffer);
+            var keys = new Span<long>(keysBuffer.Ptr, n);
+            var idx = new Span<int>(idxBuffer.Ptr, n);
+            ids.CopyTo(keys);
+            for (int i = 0; i < n; i++)
+                idx[i] = i;
+
+            // keys ascending (page order); idx[k] is the caller slot for keys[k].
+            keys.Sort(idx);
+
+            for (int k = 0; k < n; k++)
+            {
+                long id = keys[k];
+                int orig = idx[k];
+                if (id == missingValue)
+                {
+                    spans[orig] = default;
+                    continue;
+                }
+
+                var (pageNum, offset) = Math.DivRem(id, Constants.Storage.PageSize);
+                if (pageCache.TryGetReadOnlyPage(pageNum, out var page) == false)
+                {
+                    page = llt.GetPage(pageNum);
+                    pageCache.SetReadable(page);
+                }
+
+                if (page.IsOverflow)
+                {
+                    spans[orig] = new(page.DataPointer, page.OverflowSize);
+                    continue;
+                }
+
+                var container = new Container(page);
+                var metadata = container.MetadataFor(OffsetToIndex(offset));
+                Debug.Assert(metadata.IsFree == false);
+                var p = page.Pointer;
+                int size = metadata.Get(ref p);
+                spans[orig] = new(p, size);
+            }
+        }
+
         public static (Lookup<Int64LookupKey> AllPages, Lookup<Int64LookupKey> FreePages) GetPagesFor(LowLevelTransaction tx, ContainerId containerId)
         {
             var state = tx.Transaction.GetContainerState(containerId);
