@@ -228,6 +228,89 @@ public class CoraxCostModelCalibration : RavenTestBase
     }
 
     /// <summary>
+    /// DirectScan scan-size cap (EntryScanCountThreshold=32K): a selective residual (Score &lt; $r, ~0.2%) drives
+    /// entriesToScan = take/passRate past 32K, and the pin forces FieldSortedScan past the cap so we can time the
+    /// over-scan. Where the forced scan stops beating Bitmap is the real ceiling — validate 32K sits below it.
+    /// (Note: on a 200K index the cap never *flips a cost decision* — that needs bitmap_cost > 32K*64 ≈ 2M — but
+    /// this measures whether the ceiling itself is in the right place, which is the cap's actual job.)
+    /// </summary>
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task Calibrate_DirectScanCap_ScanCeiling(Options options)
+    {
+        if (Enabled == false)
+        {
+            _output.WriteLine("Skipped: set RAVEN_CALIBRATE=1 to run the DirectScan scan-cap calibration.");
+            return;
+        }
+
+        const int totalDocs = 200_000;
+        using var store = await BuildItemsStore(options, totalDocs, distinctTags: 24, tagsPerDoc: 3, clustered: true);
+
+        _output.WriteLine($"# DirectScan scan-cap calibration (docs={totalDocs:N0}, reps={Repetitions}, MIN ms; Score<200 residual ~0.4%)");
+        _output.WriteLine("take | scanEntries | >32K cap? | gatePick | DirectMs | BitmapMs | speedup | actualWin");
+        _output.WriteLine(new string('-', 100));
+
+        // Category < 900 drives the sorted walk (90% of docs); Score < 200 (~0.4%) is the selective residual that
+        // inflates entriesToScan = take/passRate. Sweeping take walks entriesToScan through the 32K boundary.
+        foreach (var take in new[] { 10, 40, 80, 160, 320 })
+        {
+            var (scanEntries, capExceeded, gatePick) = await ReadCapGate(store, take);
+            var direct = await MeasureCap(store, take, ExecutionStrategy.FieldSortedScan);
+            var bitmap = await MeasureCap(store, take, ExecutionStrategy.BitmapPipeline);
+            double speedup = bitmap.Ms / Math.Max(0.0001, direct.Ms);
+            string win = direct.Ms < bitmap.Ms ? "Direct" : "Bitmap";
+            _output.WriteLine($"{take,4} | {scanEntries,11:N0} | {(capExceeded ? "yes" : "no"),-9} | {gatePick,-8} | " +
+                              $"{direct.Ms,8:F3} | {bitmap.Ms,8:F3} | {speedup,6:F1}x | {win}");
+        }
+
+        _output.WriteLine("");
+        _output.WriteLine("If gatePick=scan where actualWin=Bitmap, the gate picks the slower plan: bitmapCost=Sum(cardinalities)");
+        _output.WriteLine("over-values the bitmap when one clause is tiny (it leads with the small clause).");
+    }
+
+    private string CapRql(int take) =>
+        $"from index '{new ItemsIndex().IndexName}' where Category < 900 and Score < $r order by Category as long include timings() limit {take}";
+
+    private async Task<(long scanEntries, bool capExceeded, string gatePick)> ReadCapGate(DocumentStore store, int take)
+    {
+        using var session = store.OpenAsyncSession();
+        var q = session.Advanced.AsyncRawQuery<ItemDoc>(CapRql(take))
+            .AddParameter("r", 200).NoCaching();
+        await q.Timings(out var timings).ToListAsync();
+
+        var trail = FindNode((QueryInspectionNode)timings.QueryPlan, "DecisionTrail");
+        var fieldScan = trail?.Children?.FirstOrDefault(c => c.Operation == "FieldSortedScan");
+        if (fieldScan == null || fieldScan.Parameters.TryGetValue("PerExecution", out var per) == false)
+            return (-1, false, "n/a");
+        long scan = ExtractParen(per, "entries_to_scan");
+        string pick = per.Contains("→ scan", StringComparison.Ordinal) ? "scan" : "bitmap";
+        return (scan, per.Contains("> cap(", StringComparison.Ordinal), pick);
+    }
+
+    private async Task<ScanMeasurement> MeasureCap(DocumentStore store, int take, ExecutionStrategy strategy)
+    {
+        double best = double.MaxValue;
+        string hint = null;
+        for (int i = 0; i < Repetitions; i++)
+        {
+            using var session = store.OpenAsyncSession();
+            var q = session.Advanced.AsyncRawQuery<ItemDoc>(CapRql(take))
+                .AddParameter("r", 200)
+                .AddParameter("rvn_corax_strategy", strategy.ToString())
+                .NoCaching();
+            var sw = Stopwatch.StartNew();
+            await q.Timings(out var timings).ToListAsync();
+            sw.Stop();
+            best = Math.Min(best, sw.Elapsed.TotalMilliseconds);
+            var root = (QueryInspectionNode)timings.QueryPlan;
+            hint = root.Parameters.TryGetValue("OptimizationHint", out var h) ? h : root.Operation;
+        }
+
+        return new ScanMeasurement(best, hint);
+    }
+
+    /// <summary>
     /// DirectScan residual-filtered cost gate (EntryScanCostMultiplier=64, EntryScanCountThreshold=32K): for a
     /// range-on-sort-field + residual query, read the gate's own entriesToScan / bitmapCost / verdict from the
     /// DecisionTrail's PerExecution string (unpinned run), then time FieldSortedScan and BitmapPipeline forced.
@@ -353,6 +436,79 @@ public class CoraxCostModelCalibration : RavenTestBase
         _output.WriteLine("");
         _output.WriteLine("err = estimate/actual (1.0 = perfect). The triangular rows stress middle-extrapolation;");
         _output.WriteLine("if its err is far worse than uniform, the CalibrationBeta shrinkage / sample sizes need tuning.");
+    }
+
+    /// <summary>
+    /// Range-estimate self-correction: the per-clause calibration EWMA only updates on an UNBOUNDED fill
+    /// (QueryPrimitives.CtxFillFromTreeScan observes the tally only when OpLimit == long.MaxValue). The earlier
+    /// accuracy probe used `limit 1` (bounded driving fill) so the EWMA never saw feedback — the 1.6x it showed
+    /// is the COLD-START (beta=1) estimate. Here the skewed range runs as an AND clause (unbounded scratch fill)
+    /// so the EWMA is fed; repeating the query should drag the estimate toward actual if self-correction works.
+    /// </summary>
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task Calibrate_RangeEstimate_Convergence(Options options)
+    {
+        if (Enabled == false)
+        {
+            _output.WriteLine("Skipped: set RAVEN_CALIBRATE=1 to run the range-estimate convergence calibration.");
+            return;
+        }
+
+        const int totalDocs = 200_000;
+        using var store = await BuildItemsStore(options, totalDocs, distinctTags: 24, tagsPerDoc: 3, clustered: true);
+
+        _output.WriteLine($"# Range-estimate self-correction (SkewScore < 10000, fed via AND so the EWMA observes)");
+
+        // Actual cardinality of the skewed clause alone (the quantity the clause estimate should converge toward).
+        long actual;
+        using (var s = store.OpenAsyncSession())
+        {
+            await s.Advanced.AsyncRawQuery<ItemDoc>(
+                    $"from index '{new ItemsIndex().IndexName}' where SkewScore < 10000 limit 1")
+                .Statistics(out var st).NoCaching().ToListAsync();
+            actual = st.TotalResults;
+        }
+        _output.WriteLine($"actual(SkewScore<10000) = {actual:N0}");
+        _output.WriteLine("iter | clauseEstimate | err");
+        _output.WriteLine(new string('-', 40));
+
+        // AND with Bucket=$b so the SkewScore range is an unbounded scratch fill -> ObserveTreeScanTally fires.
+        for (int iter = 1; iter <= 8; iter++)
+        {
+            using var session = store.OpenAsyncSession();
+            var q = session.Advanced.AsyncRawQuery<ItemDoc>(
+                    $"from index '{new ItemsIndex().IndexName}' where SkewScore < $hi and Bucket = $b include timings()")
+                .AddParameter("hi", 10000).AddParameter("b", 3).NoCaching();
+            await q.Timings(out var timings).ToListAsync();
+
+            var clause = FindClauseByField((QueryInspectionNode)timings.QueryPlan, "SkewScore");
+            long est = clause != null && clause.Parameters.TryGetValue("EstimatedRows", out var e) ? ExtractFormatted(e) : -1;
+            double err = actual > 0 ? (double)est / actual : -1;
+            _output.WriteLine($"{iter,4} | {est,14:N0} | {err,5:F2}");
+        }
+
+        _output.WriteLine("");
+        _output.WriteLine("If err moves from ~1.6 toward 1.0 the EWMA self-corrects (no static Beta change needed);");
+        _output.WriteLine("if it stays pinned, the cold-start estimate / Beta clamp / sample sizes are the lever.");
+    }
+
+    private static QueryInspectionNode FindClauseByField(QueryInspectionNode node, string fieldName)
+    {
+        if (node.Parameters != null
+            && node.Parameters.TryGetValue("FieldName", out var f) && f == fieldName
+            && node.Parameters.ContainsKey("EstimatedRows"))
+            return node;
+        if (node.Children == null)
+            return null;
+        foreach (var child in node.Children)
+        {
+            var found = FindClauseByField(child, fieldName);
+            if (found != null)
+                return found;
+        }
+
+        return null;
     }
 
     private static QueryInspectionNode FindWithParam(QueryInspectionNode node, string paramKey)
