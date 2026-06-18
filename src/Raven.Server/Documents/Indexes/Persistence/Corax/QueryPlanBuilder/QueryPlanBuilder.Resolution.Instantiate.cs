@@ -189,6 +189,7 @@ internal static partial class QueryPlanBuilder
             // stream to fill the page because only a fraction of scanned entries survive. Estimate that
             // over-scan and let the gate decide whether it still beats the bitmap pipeline.
             entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
+            bitmapCost += SurvivorSortCost(EstimateSurvivors(execs, indexSearcher)); // add the bitmap's survivor-sort cost
             return IsDirectScanCostEffective(entriesToScan, bitmapCost);
         }
         
@@ -223,6 +224,11 @@ internal static partial class QueryPlanBuilder
                 bitmapCost += it.GetEffectiveCardinality(indexSearcher);
             }
 
+            // The bitmap path doesn't just decode the posting lists (Σ above) — it SORTS the surviving
+            // intersection. Add that sort cost, else few-survivor queries look expensive (Σ dominated by a broad
+            // clause) and the gate wrongly picks a scan that over-reads stored fields. See EntryScanSurvivorSortFactor.
+            bitmapCost += SurvivorSortCost(EstimateSurvivors(execs, indexSearcher));
+
             // Residual present: the scan reads each scanned entry's stored fields to test the residual and
             // over-scans the sorted stream to fill the page. Estimate the over-scan and let the gate compare
             // it to the cost of building and sorting the bitmap instead.
@@ -245,10 +251,30 @@ internal static partial class QueryPlanBuilder
         static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)
         {
             long directCost = CalculateDirectCost(entriesToScan);
-    
+
             // check what will be more costly, and set a hard limit (32K) to how many entries we may scan
             return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
         }
+
+        // Independence (product) estimate of the AND intersection: N * Π(card_i / N), clamped to [0, N]. This is
+        // the number of documents the bitmap pipeline must SORT, the cost a pure Σ-cardinalities bitmapCost omits.
+        static long EstimateSurvivors(List<ClauseExecution> execs, IndexSearcher indexSearcher)
+        {
+            double n = indexSearcher.NumberOfEntries;
+            if (n <= 0)
+                return 0;
+
+            double survivors = n;
+            foreach (var it in execs)
+                survivors *= it.GetEffectiveCardinality(indexSearcher) / n;
+
+            return (long)Math.Clamp(survivors, 0, n);
+        }
+
+        static long SurvivorSortCost(long survivors)
+            => survivors > long.MaxValue / QueryPrimitives.EntryScanSurvivorSortFactor
+                ? long.MaxValue // avoid overflow
+                : survivors * QueryPrimitives.EntryScanSurvivorSortFactor;
 
         static string FormatGateReason(long entriesToScan, long bitmapCost, string unboundedReason)
         {
