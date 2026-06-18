@@ -124,6 +124,7 @@ public partial class IndexSearcher
             breakdown.IsExact = true;
             breakdown.SampledTerms = bottom.Terms;
             breakdown.SampledPostings = bottom.Postings;
+            breakdown.RawEstimate = exact;
             breakdown.Estimate = exact;
             return exact;
         }
@@ -136,6 +137,7 @@ public partial class IndexSearcher
             breakdown.IsExact = true;
             breakdown.SampledTerms = bottom.Terms;
             breakdown.SampledPostings = bottom.Postings;
+            breakdown.RawEstimate = exact;
             breakdown.Estimate = exact;
             return exact;
         }
@@ -179,11 +181,21 @@ public partial class IndexSearcher
         //     beta = 1:    middleAvg = (1536 + 732*10)/(768+732)   = 5.9  -> 5855  (== coverage blend)
         //     beta = 4:    middleAvg = (1536 + 2928*10)/(768+2928) = 8.34 -> 7641  (leans toward globalAvg)
         //     beta -> inf: middle snaps to globalAvg = 10                 -> 8856
-        double beta = calibrationFactor <= 0 ? 1.0 : Math.Clamp(calibrationFactor, CalibrationBetaMin, CalibrationBetaMax);
+        // Cold-start blend at beta = 1 (whale-cautious coverage blend toward globalAvg). The per-clause EWMA does
+        // NOT feed in here as beta any more: scaling the shrinkage strength corrects the estimate only sublinearly,
+        // so a repeated clause that we have actually counted would pin at a wrong ratio instead of converging.
+        const double beta = 1.0;
         double k = beta * middleTerms;
         double middleAvg = (sampledPostings + k * globalAvg) / (sampledTerms + k);
 
-        long estimate = Math.Min(sampledPostings + (long)(middleTerms * middleAvg), NumberOfEntries);
+        long rawEstimate = Math.Min(sampledPostings + (long)(middleTerms * middleAvg), NumberOfEntries);
+
+        // Apply the learned calibration as a DIRECT multiplier: the EWMA Factor is actual/RawEstimate (it observes
+        // RawEstimate as "predicted"), so estimate = RawEstimate * Factor converges to the measured actual in a
+        // single observation (InflationEwma seeds on the first sample). 0 = no history -> neutral 1.0. Clamped so a
+        // single pathological run can't blow the estimate up or collapse it.
+        double mult = calibrationFactor <= 0 ? 1.0 : Math.Clamp(calibrationFactor, CalibrationBetaMin, CalibrationBetaMax);
+        long estimate = Math.Min((long)(rawEstimate * mult), NumberOfEntries);
 
         breakdown.SampledTerms = sampledTerms;
         breakdown.SampledPostings = sampledPostings;
@@ -193,6 +205,7 @@ public partial class IndexSearcher
         breakdown.Beta = beta;
         breakdown.K = k;
         breakdown.MiddleAvg = middleAvg;
+        breakdown.RawEstimate = rawEstimate;
         breakdown.Estimate = estimate;
         return estimate;
     }

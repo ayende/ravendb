@@ -130,7 +130,10 @@ internal static partial class QueryPlanBuilder
                         Packed = clauseExec.PackedParamValue,
                         FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx),
                         RangeCalibration = calibrated ? clauseExec.Clause.RangeEstimateCalibration : null,
-                        RangeEstimate = calibrated ? clauseExec.Cardinality : 0
+                        // Feed the PRE-calibration estimate as "predicted" so the EWMA learns actual/RawEstimate -
+                        // the exact multiplier that makes next run's (RawEstimate * multiplier) converge to actual.
+                        // (Feeding the post-multiplier Cardinality would only sqrt-converge.)
+                        RangeEstimate = calibrated ? (clauseExec.RangeEstimate?.RawEstimate ?? clauseExec.Cardinality) : 0
                     });
                     break;
                 default:

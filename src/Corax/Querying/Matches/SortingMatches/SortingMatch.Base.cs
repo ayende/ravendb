@@ -37,8 +37,13 @@ public enum CoraxSortingStrategy : byte
 /// introspection so <c>include timings()</c> can show WHY a sort strategy was picked, not just the outcome.</summary>
 public enum SortStrategyDecision : byte
 {
-    /// <summary>The gate never ran: forced strategy, random order, or a non-iterable sort (score/spatial/alphanumeric/missing).</summary>
+    /// <summary>The gate never ran: forced strategy or random order.</summary>
     NotEvaluated,
+
+    /// <summary>The sort axis has no in-order index to walk (computed score(), spatial distance, alphanumeric, or a
+    /// field some documents lack), so IndexOrderStreaming is structurally impossible and the gate is skipped — always
+    /// InMemorySort. Surfaced so `order by score()` etc. shows WHY it can't stream instead of an empty reason.</summary>
+    NotIterableSortField,
 
     /// <summary>No usable LIMIT (take &lt; 0, or take &gt;= candidates): streaming can't terminate early, so it would walk the
     /// whole index. Chose InMemorySort.</summary>

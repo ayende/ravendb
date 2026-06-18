@@ -191,6 +191,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                     // bitmap and uses the comparer's missing-value sentinel. Guards correctness, not cost,
                     // so a $rvn_corax_sort pin can't override it.
                     match.SortStrategy = CoraxSortingStrategy.InMemorySort;
+                    match.GateDecision = SortStrategyDecision.NotIterableSortField;
                     SortInMemory<TEntryComparer>(match, bitmapMatch);
                 }
                 else if (ShouldUseIndexOrderStreaming(match, bitmapMatch))

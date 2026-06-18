@@ -6,8 +6,14 @@ namespace Corax.Querying.Planning;
 /// so these values must be carried on the per-execution <see cref="ClauseExecution"/>, never on the cached plan.</summary>
 public struct RangeEstimateBreakdown
 {
-    /// <summary>The final estimate this run produced (already capped at NumberOfEntries).</summary>
+    /// <summary>The final estimate this run produced (already capped at NumberOfEntries) = <see cref="RawEstimate"/>
+    /// times the learned calibration multiplier. This is what cost gates consume.</summary>
     public long Estimate;
+
+    /// <summary>The pre-calibration estimate (the cold-start beta=1 shrinkage blend, capped). This is the
+    /// quantity fed to the calibration EWMA as "predicted" — the multiplier is EWMA(actual / RawEstimate), so
+    /// the next run's Estimate = RawEstimate * multiplier converges to the observed actual.</summary>
+    public long RawEstimate;
 
     /// <summary>Total in-range term count from the term-count descent (the population the sampling extrapolates over).</summary>
     public long RangeTerms;
