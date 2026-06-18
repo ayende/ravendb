@@ -674,6 +674,81 @@ namespace FastTests.Corax
         }
 
 
+        // RavenDB-25281: a backward StartsWith whose prefix has no finite successor — here {0xFF}, where dropping the
+        // trailing 0xFF leaves nothing — must seek to the END of the tree and walk down, because the prefix block is
+        // the tail of the tree. Previously the backward provider got a null seek limit and crashed; now Reset()
+        // positions the backward iterator at the tree end. Terms are written as raw bytes (the test fields use no
+        // analyzer, so terms are stored verbatim) to construct the all-0xFF prefix that UTF-8 strings cannot produce.
+        [RavenFact(RavenTestCategory.Corax)]
+        public void BackwardStartsWith_PrefixWithNoFiniteSuccessor_WalksFromTreeEnd()
+        {
+            // Tree (ascending byte order): {0x10}, {0x20}, {0xFF,0x01}, {0xFF,0x02}, {0xFF,0xFF}.
+            // The {0xFF} prefix matches the last three; the first two must be excluded.
+            var entries = new (string Id, byte[] Term)[]
+            {
+                ("e/low1",  new byte[] { 0x10 }),
+                ("e/low2",  new byte[] { 0x20 }),
+                ("e/ff1",   new byte[] { 0xFF, 0x01 }),
+                ("e/ff2",   new byte[] { 0xFF, 0x02 }),
+                ("e/ffmax", new byte[] { 0xFF, 0xFF }),
+            };
+
+            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
+            var idToTerm = new Dictionary<long, byte[]>();
+            using (var indexWriter = new IndexWriter(Env, CreateKnownFields(bsc), SupportedFeatures.All))
+            {
+                foreach (var (id, term) in entries)
+                {
+                    using var builder = indexWriter.Index(id);
+                    builder.Write(IdIndex, PrepareString(id));
+                    builder.Write(ContentIndex, term);
+                    idToTerm[(long)builder.EntryId] = term;
+                    builder.EndWriting();
+                }
+
+                indexWriter.Commit();
+            }
+
+            static int Compare(byte[] a, byte[] b) => a.AsSpan().SequenceCompareTo(b);
+
+            using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
+            var contentMeta = searcher.FieldMetadataBuilder("Content", ContentIndex);
+            Slice.From(Allocator, new byte[] { 0xFF }, out var prefix);
+
+            // Backward provider, wrapped in SortedDrivingMatch (as the planner does) so it yields in term order:
+            // exactly the three 0xFF-prefixed entries, in DESCENDING order, having walked from the tree end.
+            {
+                var match = searcher.StartWithQuery(contentMeta, prefix, forward: false);
+                var tpm = Assert.IsType<TermsProviderMatch>(match);
+                using var sorted = new SortedDrivingMatch(tpm.Provider, tpm.Llt, Allocator);
+
+                Span<long> ids = stackalloc long[16];
+                int n = sorted.Fill(ids);
+                Assert.Equal(3, n);
+                var got = ids[..n].ToArray().Select(id => idToTerm[id]).ToList();
+                Assert.All(got, t => Assert.Equal(0xFF, t[0])); // the {0x10}/{0x20} entries must not leak in
+                for (int i = 1; i < got.Count; i++)
+                    Assert.True(Compare(got[i - 1], got[i]) > 0, "Backward StartsWith must yield terms in descending order");
+                Assert.Equal(0, sorted.Fill(ids));
+            }
+
+            // Forward provider over the same prefix: the seek-limit change must leave the forward path intact —
+            // same three entries, ASCENDING.
+            {
+                var match = searcher.StartWithQuery(contentMeta, prefix, forward: true);
+                var tpm = Assert.IsType<TermsProviderMatch>(match);
+                using var sorted = new SortedDrivingMatch(tpm.Provider, tpm.Llt, Allocator);
+
+                Span<long> ids = stackalloc long[16];
+                int n = sorted.Fill(ids);
+                Assert.Equal(3, n);
+                var got = ids[..n].ToArray().Select(id => idToTerm[id]).ToList();
+                Assert.All(got, t => Assert.Equal(0xFF, t[0]));
+                for (int i = 1; i < got.Count; i++)
+                    Assert.True(Compare(got[i - 1], got[i]) < 0, "Forward StartsWith must yield terms in ascending order");
+            }
+        }
+
         [RavenFact(RavenTestCategory.Corax)]
         public void SimpleStartWithStatement()
         {
