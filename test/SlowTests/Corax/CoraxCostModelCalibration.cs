@@ -293,6 +293,82 @@ public class CoraxCostModelCalibration : RavenTestBase
         return (scan, bitmap, pick);
     }
 
+    /// <summary>
+    /// Range-estimate gate (EstimateMatchesInRange, CalibrationBeta clamp [0.25, 4]): for wide ranges over a
+    /// high-cardinality field (so the estimator samples edges + extrapolates the middle), compare its EstimatedRows
+    /// against the actual TotalResults. Repeating the same query shows the per-clause calibration EWMA converging;
+    /// if the estimate stays badly biased the Beta clamp / sample sizes are off.
+    /// </summary>
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task Calibrate_RangeEstimate_Accuracy(Options options)
+    {
+        if (Enabled == false)
+        {
+            _output.WriteLine("Skipped: set RAVEN_CALIBRATE=1 to run the range-estimate accuracy calibration.");
+            return;
+        }
+
+        const int totalDocs = 200_000;
+        using var store = await BuildItemsStore(options, totalDocs, distinctTags: 24, tagsPerDoc: 3, clustered: true);
+
+        _output.WriteLine($"# Range-estimate accuracy calibration (docs={totalDocs:N0}, Score 0..50000 uniform)");
+        _output.WriteLine("hi | actual | iter1_est | err1 | iter5_est | err5 | sampled? (rangeTerms/sampledTerms)");
+        _output.WriteLine(new string('-', 100));
+
+        // Score spans 50K distinct values; "Score < hi" covers ~hi distinct terms, far past the 768 edge samples.
+        foreach (var hi in new[] { 2000, 10000, 30000 })
+        {
+            string sampling = null;
+            long actual = 0, est1 = 0, est5 = 0;
+            for (int iter = 1; iter <= 5; iter++)
+            {
+                using var session = store.OpenAsyncSession();
+                var q = session.Advanced.AsyncRawQuery<ItemDoc>(
+                        $"from index '{new ItemsIndex().IndexName}' where Score < $hi include timings() limit 1")
+                    .AddParameter("hi", hi).Statistics(out var stats).NoCaching();
+                await q.Timings(out var timings).ToListAsync();
+
+                actual = stats.TotalResults;
+                var clause = FindWithParam((QueryInspectionNode)timings.QueryPlan, "EstimatedRows");
+                long est = clause != null ? ExtractFormatted(clause.Parameters["EstimatedRows"]) : -1;
+                if (iter == 1)
+                {
+                    est1 = est;
+                    if (clause != null && clause.Parameters.TryGetValue("EstRangeTerms", out var rt))
+                        sampling = $"{rt}/{(clause.Parameters.TryGetValue("EstSampledTerms", out var st) ? st : "?")}";
+                }
+                if (iter == 5) est5 = est;
+            }
+
+            double err1 = actual > 0 ? (double)est1 / actual : -1;
+            double err5 = actual > 0 ? (double)est5 / actual : -1;
+            _output.WriteLine($"{hi,6} | {actual,8:N0} | {est1,10:N0} | {err1,5:F2} | {est5,10:N0} | {err5,5:F2} | {sampling}");
+        }
+
+        _output.WriteLine("");
+        _output.WriteLine("err = estimate/actual (1.0 = perfect). If err stays far from 1.0, tune CalibrationBeta / sample sizes.");
+    }
+
+    private static QueryInspectionNode FindWithParam(QueryInspectionNode node, string paramKey)
+    {
+        if (node.Parameters != null && node.Parameters.ContainsKey(paramKey))
+            return node;
+        if (node.Children == null)
+            return null;
+        foreach (var child in node.Children)
+        {
+            var found = FindWithParam(child, paramKey);
+            if (found != null)
+                return found;
+        }
+
+        return null;
+    }
+
+    private static long ExtractFormatted(string n) =>
+        long.Parse(n, NumberStyles.AllowThousands, CultureInfo.InvariantCulture);
+
     private static long ExtractParen(string s, string marker)
     {
         int i = s.IndexOf(marker + "(", StringComparison.Ordinal);
@@ -399,7 +475,11 @@ public class CoraxCostModelCalibration : RavenTestBase
                     // Single-valued numeric fields for the DirectScan-vs-Bitmap gate: Category (0..999, uniform)
                     // is the range-driving + sort field, Bucket (0..9) is the residual filter (~10% selectivity).
                     Category = i % 1000,
-                    Bucket = rng.Next(10)
+                    Bucket = rng.Next(10),
+                    // High-cardinality (50K distinct, uniform) so partial ranges span far more than the
+                    // RangeBottomSample(512)+RangeTopSample(256) edge samples and the estimator must sample+extrapolate
+                    // the middle — the path the CalibrationBeta clamp governs.
+                    Score = rng.Next(50_000)
                 });
             }
         }
@@ -414,6 +494,7 @@ public class CoraxCostModelCalibration : RavenTestBase
         public string[] Tags { get; set; }
         public int Category { get; set; }
         public int Bucket { get; set; }
+        public int Score { get; set; }
     }
 
     private class ItemsIndex : AbstractIndexCreationTask<ItemDoc>
@@ -421,7 +502,7 @@ public class CoraxCostModelCalibration : RavenTestBase
         public ItemsIndex()
         {
             Map = docs => from doc in docs
-                select new { doc.Tags, doc.Category, doc.Bucket };
+                select new { doc.Tags, doc.Category, doc.Bucket, doc.Score };
         }
     }
 }
