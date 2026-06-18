@@ -1,9 +1,11 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Threading.Tasks;
 using Corax.Querying.Matches.SortingMatches;
+using Corax.Querying.Planning;
 using FastTests;
 using Raven.Client.Documents;
 using Raven.Client.Documents.Indexes;
@@ -146,6 +148,111 @@ public class CoraxCostModelCalibration : RavenTestBase
         return null;
     }
 
+    /// <summary>
+    /// Streaming bailout gate (<c>maxScanCandidateMultiplier</c>): force IndexOrderStreaming across a range of
+    /// candidate selectivities so the over-scan ratio (EntriesStreamed / candidates) spans a wide range, and
+    /// measure where streaming stops beating InMemorySort. The bailout multiplier should sit just below that
+    /// crossover so the walk is abandoned only once it is genuinely losing.
+    /// </summary>
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task Calibrate_StreamingBailout_OverScan(Options options)
+    {
+        if (Enabled == false)
+        {
+            _output.WriteLine("Skipped: set RAVEN_CALIBRATE=1 to run the streaming-bailout calibration.");
+            return;
+        }
+
+        const int totalDocs = 200_000;
+        using var store = await BuildItemsStore(options, totalDocs, distinctTags: 24, tagsPerDoc: 3, clustered: true);
+
+        _output.WriteLine($"# Streaming-bailout calibration (docs={totalDocs:N0}, reps={Repetitions}, MIN ms)");
+        _output.WriteLine("tagFreq% | candidates | take | InMemMs | StreamMs | EntriesStreamed | over-scan | speedup");
+        _output.WriteLine(new string('-', 90));
+
+        // take is half the candidate count so streaming cannot trivially early-terminate, forcing a deep walk
+        // whose over-scan ratio grows as the candidate set gets rarer/more clustered.
+        foreach (var tag in new[] { "tag_dense", "tag_mid", "tag_rare" })
+        {
+            var inMem = await MeasureSort(store, tag, take: 5, CoraxSortingStrategy.InMemorySort);
+            int take = Math.Max(1, (int)(inMem.Candidates / 2));
+            var inMemDeep = await MeasureSort(store, tag, take, CoraxSortingStrategy.InMemorySort);
+            var stream = await MeasureSort(store, tag, take, CoraxSortingStrategy.IndexOrderStreaming);
+
+            double overScan = stream.EntriesStreamed / (double)Math.Max(1, inMemDeep.Candidates);
+            double speedup = inMemDeep.SortMs / Math.Max(0.0001, stream.SortMs);
+            double freqPct = 100.0 * inMemDeep.Candidates / totalDocs;
+            _output.WriteLine($"{freqPct,7:F2} | {inMemDeep.Candidates,10:N0} | {take,6} | {inMemDeep.SortMs,7:F2} | " +
+                              $"{stream.SortMs,8:F3} | {stream.EntriesStreamed,15:N0} | {overScan,9:F1} | {speedup,6:F1}x");
+        }
+
+        _output.WriteLine("");
+        _output.WriteLine("Set maxScanCandidateMultiplier just below the over-scan where speedup crosses 1.0.");
+    }
+
+    /// <summary>
+    /// DirectScan-vs-Bitmap plan gate: force FieldSortedScan and BitmapPipeline for a top-N-by-single-valued-field
+    /// query and measure end-to-end. FieldSortedScan walks the sort field's term tree and early-terminates at the
+    /// limit; BitmapPipeline materializes every entry then heap-sorts. This validates (and quantifies) the gate's
+    /// preference for the sorted walk. (The residual-filtered 64×/32K cost constants need gate-internal
+    /// entriesToScan/bitmapCost introspection — a follow-up, like the sort gate's StreamScanEstimate.)
+    /// </summary>
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task Calibrate_DirectScan_VsBitmap(Options options)
+    {
+        if (Enabled == false)
+        {
+            _output.WriteLine("Skipped: set RAVEN_CALIBRATE=1 to run the DirectScan-vs-Bitmap calibration.");
+            return;
+        }
+
+        const int totalDocs = 200_000;
+        using var store = await BuildItemsStore(options, totalDocs, distinctTags: 24, tagsPerDoc: 3, clustered: true);
+
+        _output.WriteLine($"# DirectScan-vs-Bitmap calibration (docs={totalDocs:N0}, reps={Repetitions}, MIN ms end-to-end)");
+        _output.WriteLine("take | DirectMs | BitmapMs | speedup | directHint | bitmapHint");
+        _output.WriteLine(new string('-', 80));
+
+        foreach (var take in new[] { 10, 25, 100, 1000, 10000 })
+        {
+            var direct = await MeasureScan(store, take, ExecutionStrategy.FieldSortedScan);
+            var bitmap = await MeasureScan(store, take, ExecutionStrategy.BitmapPipeline);
+            double speedup = bitmap.Ms / Math.Max(0.0001, direct.Ms);
+            _output.WriteLine($"{take,4} | {direct.Ms,8:F3} | {bitmap.Ms,8:F3} | {speedup,6:F1}x | {direct.Hint,-16} | {bitmap.Hint}");
+        }
+
+        _output.WriteLine("");
+        _output.WriteLine("DirectScan should win for small take (early termination) and converge to Bitmap as take -> indexSize.");
+    }
+
+    private sealed record ScanMeasurement(double Ms, string Hint);
+
+    private async Task<ScanMeasurement> MeasureScan(DocumentStore store, int take, ExecutionStrategy strategy)
+    {
+        // Full-scan top-N by a single-valued numeric field — the shape that makes FieldSortedScan a candidate.
+        var rql = $"from index '{new ItemsIndex().IndexName}' order by Category as long include timings() limit {take}";
+
+        double best = double.MaxValue;
+        string hint = null;
+        for (int i = 0; i < Repetitions; i++)
+        {
+            using var session = store.OpenAsyncSession();
+            var q = session.Advanced.AsyncRawQuery<ItemDoc>(rql)
+                .AddParameter("rvn_corax_strategy", strategy.ToString())
+                .NoCaching();
+            var sw = Stopwatch.StartNew();
+            await q.Timings(out var timings).ToListAsync();
+            sw.Stop();
+            best = Math.Min(best, sw.Elapsed.TotalMilliseconds);
+            var root = (QueryInspectionNode)timings.QueryPlan;
+            hint = root.Parameters.TryGetValue("OptimizationHint", out var h) ? h : root.Operation;
+        }
+
+        return new ScanMeasurement(best, hint);
+    }
+
     private async Task<DocumentStore> BuildItemsStore(Options options, int totalDocs, int distinctTags, int tagsPerDoc, bool clustered)
     {
         var store = GetDocumentStore(options);
@@ -173,7 +280,14 @@ public class CoraxCostModelCalibration : RavenTestBase
                 for (int t = 0; t < tagsPerDoc; t++)
                     tags.Add(fillerTags[rng.Next(fillerTags.Length)]);
 
-                await bulk.StoreAsync(new ItemDoc { Tags = tags.Distinct().ToArray() });
+                await bulk.StoreAsync(new ItemDoc
+                {
+                    Tags = tags.Distinct().ToArray(),
+                    // Single-valued numeric fields for the DirectScan-vs-Bitmap gate: Category (0..999, uniform)
+                    // is the range-driving + sort field, Bucket (0..9) is the residual filter (~10% selectivity).
+                    Category = i % 1000,
+                    Bucket = rng.Next(10)
+                });
             }
         }
 
@@ -185,6 +299,8 @@ public class CoraxCostModelCalibration : RavenTestBase
     {
         public string Id { get; set; }
         public string[] Tags { get; set; }
+        public int Category { get; set; }
+        public int Bucket { get; set; }
     }
 
     private class ItemsIndex : AbstractIndexCreationTask<ItemDoc>
@@ -192,7 +308,7 @@ public class CoraxCostModelCalibration : RavenTestBase
         public ItemsIndex()
         {
             Map = docs => from doc in docs
-                select new { doc.Tags };
+                select new { doc.Tags, doc.Category, doc.Bucket };
         }
     }
 }

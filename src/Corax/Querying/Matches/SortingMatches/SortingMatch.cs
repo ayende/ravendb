@@ -627,7 +627,13 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // Runtime escape hatch: the gate assumed uniform candidate spread; if they cluster far from the
         // scan start the walk reads far more entries without hitting the limit. Past this multiple of the
         // candidate count, abandon the walk and materialize+sort instead, capping the cost.
-        const int maxScanCandidateMultiplier = 2;
+        //
+        // Calibrated (CoraxCostModelCalibration, RavenDB-25281): streaming still beat InMemorySort at a 16x
+        // over-scan (2.2x faster) and the crossover where it stops winning interpolates to ~35x. Bailing at 2x
+        // abandoned clearly-profitable streaming; 16 keeps it through the winning range while still capping the
+        // pathological case (~344x over-scan was ~10x slower). Erring late is cheap (extra sequential posting
+        // reads ~3ns each) vs erring early (forfeiting up to a ~9x win).
+        const int maxScanCandidateMultiplier = 16;
         long scanBailoutThreshold = match.TotalResults * maxScanCandidateMultiplier;
         bool forceUsingOnlyIndex = match.ForcedStrategy == CoraxSortingStrategy.IndexOrderStreaming;
 
