@@ -33,7 +33,8 @@ public partial class IndexSearcher
             termKey = null;
         }
 
-        ITermsProvider provider = GetMultiTermMatchProvider<TTermsProvider>(field, terms, termKey, seekTerm: null, validatePostfixLen, token);
+        CompactKey seekTerm = BuildBackwardStartsWithSeekLimit<TTermsProvider>(terms, term.AsReadOnlySpan());
+        ITermsProvider provider = GetMultiTermMatchProvider<TTermsProvider>(field, terms, termKey, seekTerm, validatePostfixLen, token);
         return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator, token);
     }
 
@@ -48,8 +49,32 @@ public partial class IndexSearcher
         var termKey = _fieldsTree.Llt.AcquireCompactKey();
         termKey.Set(slicedTerm.AsReadOnlySpan());
 
-        ITermsProvider provider = GetMultiTermMatchProvider<TTermsProvider>(field, terms, termKey, seekTerm: null, validatePostfixLen: false, token: token);
+        CompactKey seekTerm = BuildBackwardStartsWithSeekLimit<TTermsProvider>(terms, slicedTerm.AsReadOnlySpan());
+        ITermsProvider provider = GetMultiTermMatchProvider<TTermsProvider>(field, terms, termKey, seekTerm, validatePostfixLen: false, token: token);
         return new TermsProviderMatch(provider, _transaction.LowLevelTransaction, _transaction.Allocator, token);
+    }
+
+    // A backward StartsWith scan must seek to the END of the prefix block and walk down. The seek upper bound is
+    // successor(prefix) (the first key past the block); the backward iterator then positions at the last in-prefix
+    // key (the provider's _firstRun skip discards the overshoot). Returns null when the prefix has no finite
+    // successor (empty / all-0xFF) — the block then runs to the tree end and the provider starts via a Reset. For
+    // every other provider (forward StartsWith ignores the limit; Not/Ends/Contains/Exists don't take one) returns
+    // null, preserving the previous seekTerm: null behavior.
+    private CompactKey BuildBackwardStartsWithSeekLimit<TTermsProvider>(CompactTree terms, ReadOnlySpan<byte> prefix)
+        where TTermsProvider : struct, ITermsProvider
+    {
+        if (typeof(TTermsProvider) != typeof(StartsWithTermsProvider<Lookup<CompactKeyLookup>.BackwardIterator>) || prefix.Length == 0)
+            return null;
+
+        using var _ = _transaction.Allocator.Allocate(prefix.Length, out Span<byte> successor);
+        int len = TryWritePrefixSuccessor(prefix, successor);
+        if (len == 0)
+            return null; // no finite successor → backward scan starts at the tree end (provider Resets)
+
+        var seekKey = _fieldsTree.Llt.AcquireCompactKey();
+        seekKey.Set(successor.Slice(0, len));
+        seekKey.ChangeDictionary(terms.DictionaryId);
+        return seekKey;
     }
 
     private TTermsProvider GetMultiTermMatchProvider<TTermsProvider>(in FieldMetadata field, CompactTree termTree, CompactKey term, CompactKey seekTerm, bool validatePostfixLen, CancellationToken token)

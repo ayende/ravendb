@@ -102,14 +102,10 @@ internal static partial class QueryPlanBuilder
             }
 
             // No field2 narrowing available: run a prefix scan on field1 only and let entry-scan residuals filter
-            // the rest. This only works forward — the backward StartsWith provider needs a seek upper-bound that
-            // StartWithQuery does not supply (it would seek a null key and crash). For a descending field2 with no
-            // field2 range, bail so the caller falls back to the bitmap pipeline + SortingMatch, which sorts
-            // descending correctly. (A field2 range takes the composite-range branch above, which handles both
-            // directions.)
-            if (forward == false)
-                return null;
-
+            // the rest. Works in both directions — the backward StartsWith provider seeks to successor(prefix) (the
+            // end of the field1 block) and walks down in descending field2 order, so a descending field2 with no
+            // field2 range streams here instead of falling back to the bitmap pipeline + SortingMatch. (A field2
+            // range takes the composite-range branch above, which also handles both directions.)
             return indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
                 isNegated: false, forward: forward,
                 validatePostfixLen: true);

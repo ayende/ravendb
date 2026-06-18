@@ -310,6 +310,79 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         }
     }
 
+    // #77 descending plan guard: equality on the compound leading key + ORDER BY the compound second key DESC with
+    // NO filter on the sort field must stream via the compound tree walk in DESCENDING order (CompoundSortedScan /
+    // DirectScan, TreeDirection=Backward) — NOT fall back to the bitmap pipeline + SortingMatch. Historically the
+    // backward StartsWith provider got a null seek limit and the planner bailed to the bitmap path; now it seeks to
+    // successor(prefix) (the end of the field1 block) and walks down. Verifies plan, descending order, and paging.
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task DescendingEqualityDrivenCompoundSort_UsesBackwardCompoundSortedScan(Options options)
+    {
+        using var store = GetDocumentStore(options);
+        var index = new Films_ByCategoryAndYear();
+        index.Execute(store);
+        using (var bulk = store.BulkInsert())
+        {
+            foreach (var f in BuildFilms(300))
+                await bulk.StoreAsync(f, f.Id);
+        }
+
+        Indexes.WaitForIndexing(store);
+
+        using var session = store.OpenAsyncSession();
+
+        var page1 = await session.Advanced
+            .AsyncRawQuery<Film>($"from index '{index.IndexName}' where Category = 'Action' order by Year as long desc limit 25 include timings()")
+            .Timings(out var timings)
+            .ToListAsync();
+
+        Assert.Equal(25, page1.Count);
+
+        var plan = timings.QueryPlan as QueryInspectionNode;
+        Assert.NotNull(plan);
+        var compiled = FindOperation(plan, "CompiledQuery");
+        Assert.True(compiled != null, "Expected a CompiledQuery node. Plan: " + Describe(plan));
+        compiled.Parameters.TryGetValue("OptimizationHint", out var hint);
+        Assert.True(hint == "CompoundSortedScan",
+            "Descending equality+ORDER BY on compound(Category, Year) must stream via the compound tree walk, but " +
+            "OptimizationHint was '" + hint + "'. Plan: " + Describe(plan));
+        var directScan = FindOperation(plan, "DirectScan");
+        Assert.True(directScan != null, "Expected a DirectScan node (compound sorted walk). Plan: " + Describe(plan));
+        directScan.Parameters.TryGetValue("TreeDirection", out var direction);
+        Assert.True(direction == "Backward",
+            "Expected the compound scan to walk Backward for a descending ORDER BY, but TreeDirection was '" + direction +
+            "'. Params: " + string.Join(", ", directScan.Parameters.Select(kv => kv.Key + "=" + kv.Value)));
+
+        // Page 1 is descending by Year and all rows are the driving 'Action' value.
+        int prev = int.MaxValue;
+        foreach (var r in page1)
+        {
+            Assert.Equal("Action", r.Category);
+            Assert.True(r.Year <= prev, $"Results are not descending by Year: saw {prev} then {r.Year}.");
+            prev = r.Year;
+        }
+
+        // Paging: the second page continues the same descending stream (no overlap/gap at the boundary).
+        var page2 = await session.Advanced
+            .AsyncRawQuery<Film>($"from index '{index.IndexName}' where Category = 'Action' order by Year as long desc limit 25, 25")
+            .ToListAsync();
+
+        Assert.Equal(25, page2.Count);
+        Assert.True(page2[0].Year <= page1[^1].Year,
+            $"Page 2 must continue the descending order: page1 ended at {page1[^1].Year}, page2 started at {page2[0].Year}.");
+        foreach (var r in page2)
+        {
+            Assert.Equal("Action", r.Category);
+            Assert.True(r.Year <= prev, $"Results are not descending across pages by Year: saw {prev} then {r.Year}.");
+            prev = r.Year;
+        }
+
+        // The descending stream must start at the largest Year among the 'Action' films.
+        var maxActionYear = BuildFilms(300).Where(f => f.Category == "Action").Max(f => f.Year);
+        Assert.Equal(maxActionYear, page1[0].Year);
+    }
+
     // #5 known-total / early-exit: the bare compound shape (equality on field1, ORDER BY field2, no field2 filter)
     // must resolve its exact TotalResults from the driving equality term's cardinality and stop the scan at the page
     // — NOT drain the whole driving set to count it — even when statistics are requested. Before the fix this shape

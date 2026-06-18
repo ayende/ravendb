@@ -225,24 +225,41 @@ public partial class IndexSearcher
         Slice encodedPrefix = EncodeAndApplyAnalyzer(field, prefix);
         ReadOnlySpan<byte> prefixBytes = encodedPrefix.AsReadOnlySpan();
 
-        int len = prefixBytes.Length;
-        while (len > 0 && prefixBytes[len - 1] == 0xFF)
+        if (prefixBytes.Length > 0)
+        {
+            using var _ = Allocator.Allocate(prefixBytes.Length, out Span<byte> successor);
+            int len = TryWritePrefixSuccessor(prefixBytes, successor);
+            if (len > 0)
+            {
+                using var __ = Slice.From(Allocator, successor.Slice(0, len), out Slice high);
+                return EstimateMatchesInRange(field, encodedPrefix, high, out breakdown,
+                    UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan, calibrationFactor);
+            }
+        }
+
+        // empty prefix or all-0xFF carry: no finite successor, so the match set runs to the end of the tree
+        return EstimateMatchesInRange(field, encodedPrefix, Slices.AfterAllKeys, out breakdown,
+            UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, calibrationFactor);
+    }
+
+    // Writes successor(prefix) — the exclusive upper bound of a StartsWith(prefix) scan — into dest and returns its
+    // length. The successor drops trailing 0xFF bytes and increments the last remaining byte; every key with the
+    // prefix sorts in [prefix, successor). Returns 0 when the prefix is empty or all 0xFF: no finite successor exists,
+    // so the prefix's match block runs to the end of the tree (callers use AfterAllKeys / a backward Reset instead).
+    // dest must be at least prefix.Length bytes. Shared by the range estimator and the backward StartsWith seek limit
+    // so the two stay consistent.
+    internal static int TryWritePrefixSuccessor(ReadOnlySpan<byte> prefix, Span<byte> dest)
+    {
+        int len = prefix.Length;
+        while (len > 0 && prefix[len - 1] == 0xFF)
             len--;
 
         if (len == 0)
-        {
-            // empty prefix or all-0xFF carry: no finite successor, so the match set runs to the end of the tree
-            return EstimateMatchesInRange(field, encodedPrefix, Slices.AfterAllKeys, out breakdown,
-                UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, calibrationFactor);
-        }
+            return 0;
 
-        using var _ = Allocator.Allocate(len, out Span<byte> successor);
-        prefixBytes.Slice(0, len).CopyTo(successor);
-        successor[len - 1]++;
-
-        using var __ = Slice.From(Allocator, successor, out Slice high);
-        return EstimateMatchesInRange(field, encodedPrefix, high, out breakdown,
-            UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan, calibrationFactor);
+        prefix.Slice(0, len).CopyTo(dest);
+        dest[len - 1]++;
+        return len;
     }
 
     private IAggregationProvider AggregationRangeBuilder<TLow, THigh>(in FieldMetadata field, Slice low, Slice high, bool forward)

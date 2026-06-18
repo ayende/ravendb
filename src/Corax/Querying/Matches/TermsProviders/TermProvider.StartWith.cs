@@ -80,9 +80,18 @@ namespace Corax.Querying.Matches.TermsProviders
                 _iterator.Seek(_startWith);
                 return;
             }
-            
+
             _firstRun = true;
-            _iterator.Seek(_startWithLimit);
+
+            // Backward scan: seek to the END of the prefix block (successor of the prefix) and walk down. When the
+            // prefix has no finite successor (empty / all-0xFF), the block runs to the very end of the tree, so there
+            // is no key to seek — Reset positions the backward iterator at the last entry instead. The first MoveNext
+            // then yields the largest in-prefix key (or the _firstRun skip discards the overshoot when the successor
+            // happened to be a stored key).
+            if (_startWithLimit is null)
+                _iterator.Reset();
+            else
+                _iterator.Seek(_startWithLimit);
         }
 
         public QueryInspectionNode Inspect()
