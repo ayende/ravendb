@@ -874,8 +874,7 @@ public unsafe partial class Hnsw
                indexesOfIds = indexesOfIds[..idsToLoadIdx];
            
                _nodeIdToLocations.GetFor(idsToLoad, idsToLoad, -1);
-               idsToLoad.Sort(indexesOfIds);
-               Container.GetAll(Llt, idsToLoad, spans, -1, Llt.PageLocator);
+               Container.GetAllSortedByPage(Llt, idsToLoad, spans, -1, Llt.PageLocator);
                for (int i = 0; i < indexesOfIds.Length; i++)
                {
                    var buf = spans[i].ToSpan();
@@ -892,8 +891,7 @@ public unsafe partial class Hnsw
 
            vectorIdsToLoad = vectorIdsToLoad[..vectorsToLoadIdx];
            nodeIndexes = nodeIndexes[..vectorsToLoadIdx];
-           vectorIdsToLoad.Sort(nodeIndexes);
-           Container.GetAll(Llt, vectorIdsToLoad, spans, -1, Llt.PageLocator);
+           Container.GetAllSortedByPage(Llt, vectorIdsToLoad, spans, -1, Llt.PageLocator);
            for (int i = 0; i < vectorIdsToLoad.Length; i++)
            {
                // note, small vectors (where multiple can fit in a single page), will be 
