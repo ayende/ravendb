@@ -116,12 +116,15 @@ namespace Raven.Server.Documents.Indexes
     internal sealed class ConcurrentLruRegexCacheNode
     {
         public long Timestamp;
-        public Lazy<Regex> RegexLazy { get; }
+        public ThreadLocal<Regex> RegexLazy { get; }
 
         public ConcurrentLruRegexCacheNode(string pattern, TimeSpan regexTimeout, RegexOptions options = RegexOptions.None)
         {
             var flags = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant | options;
-            RegexLazy = new Lazy<Regex>(()=>new Regex(pattern, flags, 
+            // https://github.com/dotnet/runtime/issues/129445 - concurrent use of a shared Regex allocates and
+            // contends on its internal runner pool; this is evaluated per term (potentially millions), so give
+            // each thread its own compiled Regex instance for the pattern.
+            RegexLazy = new ThreadLocal<Regex>(()=>new Regex(pattern, flags,
                 // we use 50 ms as the max timeout because this is going to be evaluated
                 // on _each_ term in the results, potentially millions, so we specify a very
                 // short value to avoid very long queries
