@@ -156,17 +156,25 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
             // A single non-boosted exists() has an exactly-known result count the estimator does NOT supply
             // (CardinalityEstimator returns the whole-index NumberOfEntries upper bound for Exists, so reading
-            // only.Cardinality here would force the full bitmap drain). The exact total is the index entry count
-            // minus the field's non-existing posting list — both O(1) reads, and exact for multi-valued fields
-            // because ExistsQuery deduplicates per document. NOT exists() is excluded (it emits the non-existing
-            // set, the complement; the bare exists clause is non-negated).
+            // only.Cardinality here would force the full bitmap drain). The candidate exact total is the index
+            // entry count minus the field's non-existing posting list — both O(1) reads. NOT exists() is excluded
+            // (it emits the non-existing set, the complement; the bare exists clause is non-negated).
+            //
+            // This identity is only valid for a SINGLE-VALUED field. A multi-valued (array) field can have a
+            // document with an EMPTY array: the field is present (so the document is NOT in the non-existing
+            // list), yet it contributes no term and is not in the null postings — so exists() excludes it while
+            // (entries - non-existing) counts it, overcounting by the number of empty-array documents
+            // (RavenDB-26832 / Tests.Linq.Any.CanCountWithAny). HasMultipleTermsInField is set for any array
+            // (even single-element), so when it is false we know no empty-array documents can exist and the
+            // O(1) total is exact; otherwise fall through (-1) to the drained count.
             if (only.IsSentinel == false
                 && only.ClauseType == ClauseType.Exists
                 && only.IsNegated == false
                 && only.Clause.HasBoost == false)
             {
                 FieldMetadata existsField = QueryPlanBuilder.ResolveFieldMetadata(only.Clause, walkerCtx);
-                return _indexSearcher.NumberOfEntriesForExists(existsField);
+                if (_indexSearcher.HasMultipleTermsInField(existsField) == false)
+                    return _indexSearcher.NumberOfEntriesForExists(existsField);
             }
         }
 
