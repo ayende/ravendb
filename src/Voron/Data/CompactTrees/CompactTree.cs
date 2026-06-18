@@ -102,8 +102,9 @@ public sealed partial class CompactTree : IPrepareForCommit
                 GetEncodedKey(llt, ContainerId, out keyLenInBits, out keyPtr);
             }
             
+            // AcquireCompactKey already returns a pooled, Rebind-ed key with its buffers rented (RavenDB-26835);
+            // calling Initialize again would re-rent and orphan those buffers. Just Set into it.
             Key = llt.AcquireCompactKey();
-            Key.Initialize(llt);
             Key.Set(keyLenInBits, keyPtr, parent.State.DictionaryId);
             return Key;
         }

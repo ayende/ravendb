@@ -76,6 +76,36 @@ public sealed unsafe class CompactKey : IDisposable
         _keyMappingCache = KeyMappingPool.Rent(2 * MappingTableMask);
     }
 
+    /// <summary>Re-arm an already-initialized key for a new transaction without renting fresh pool
+    /// buffers. <see cref="Set"/> restarts the arena on every key, so the existing storage/mapping
+    /// buffers can be reused across transactions indefinitely — only the owner and arena cursors need
+    /// resetting. Lets long-lived key caches (e.g. the entry-scan loop) pay the pool rent once instead
+    /// of once per query.</summary>
+    public void Rebind(LowLevelTransaction tx)
+    {
+        Debug.Assert(_storage is not null && _keyMappingCache is not null, "Rebind requires an initialized key; call Initialize first.");
+
+        _owner = tx;
+
+        Dictionary = Invalid;
+        _currentKeyIdx = Invalid;
+        _decodedKeyIdx = Invalid;
+        _lastKeyMappingItem = Invalid;
+
+        _currentIdx = 0;
+        MaxLength = 0;
+    }
+
+    /// <summary>Drop the transaction reference taken by <see cref="Rebind"/>/<see cref="Initialize"/>
+    /// without returning the rented buffers. A long-lived key cache must call this once a query finishes
+    /// so the <see cref="LowLevelTransaction"/> (and the pages/scratch it roots) can be collected while
+    /// the thread idles, instead of being pinned until the next query rebinds. The buffers stay rented
+    /// for reuse; call <see cref="Rebind"/> before the next use.</summary>
+    public void Unbind()
+    {
+        _owner = null;
+    }
+
     public void Reset()
     {
         if (_storage is null || _keyMappingCache is null)
@@ -253,10 +283,10 @@ public sealed unsafe class CompactKey : IDisposable
 
         Debug.Assert(_storage.Length >= maxLength);
 
-        // We write the size and the key. 
+        // We write the size and the key.
         Unsafe.WriteUnaligned<int>(ref _storage[0], key.Length);
 
-        // PERF: Between pinning the pointer and just execute the Unsafe.CopyBlock unintuitively it is faster to just copy. 
+        // PERF: Between pinning the pointer and just execute the Unsafe.CopyBlock unintuitively it is faster to just copy.
         ref readonly byte kPtr = ref key[0];
         Unsafe.CopyBlock(ref _storage[sizeof(int)],  in kPtr, (uint)key.Length);
 
