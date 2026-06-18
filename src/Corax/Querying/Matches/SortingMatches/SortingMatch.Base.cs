@@ -33,6 +33,25 @@ public enum CoraxSortingStrategy : byte
     ComputedResultsSort,
 }
 
+/// <summary>Why the runtime cost gate (<c>ShouldUseIndexOrderStreaming</c>) reached its verdict, captured for
+/// introspection so <c>include timings()</c> can show WHY a sort strategy was picked, not just the outcome.</summary>
+public enum SortStrategyDecision : byte
+{
+    /// <summary>The gate never ran: forced strategy, random order, or a non-iterable sort (score/spatial/alphanumeric/missing).</summary>
+    NotEvaluated,
+
+    /// <summary>No usable LIMIT (take &lt; 0, or take &gt;= candidates): streaming can't terminate early, so it would walk the
+    /// whole index. Chose InMemorySort.</summary>
+    NoLimitFullScan,
+
+    /// <summary>Estimated streamed entries &lt; candidates x cost ratio: streaming is the cheaper plan. Chose IndexOrderStreaming.</summary>
+    StreamCheaper,
+
+    /// <summary>Estimated streamed entries &gt;= candidates x cost ratio: the index walk would read more (cost-weighted) than
+    /// materialize-and-sort. Chose InMemorySort.</summary>
+    SortCheaper,
+}
+
 /// <summary>
 /// Non-generic abstract base for sorting matches (single-field and multi-field).
 /// Lets callers in <c>CoraxIndexReadOperation</c> pattern-match on <c>SortingMatch</c>
@@ -79,6 +98,20 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     /// candidate set. A value far larger than the result count signals a degenerate stream-and-intersect
     /// (tiny/scattered candidates forcing a near-full scan).</summary>
     public long EntriesStreamed;
+
+    /// <summary>Cost-gate telemetry, captured by <c>ShouldUseIndexOrderStreaming</c> and surfaced by
+    /// <see cref="Inspect"/> so the InMemorySort-vs-IndexOrderStreaming choice is auditable (not just its
+    /// outcome). <see cref="GateDecision"/> is the verdict; the rest are the numbers it weighed:
+    /// <see cref="StreamScanEstimateRaw"/> = uniform-distribution scan prediction (take x indexSize / candidates),
+    /// <see cref="StreamScanEstimateInflated"/> = that prediction after the StreamScanInflation EWMA,
+    /// <see cref="StreamScanInflationFactor"/> = the EWMA factor applied (1 = no history),
+    /// <see cref="GateThreshold"/> = candidates x the streamed/sorted cost ratio (the RHS of the comparison).
+    /// All default/zero when <see cref="GateDecision"/> is <see cref="SortStrategyDecision.NotEvaluated"/>.</summary>
+    public SortStrategyDecision GateDecision;
+    public double StreamScanEstimateRaw;
+    public double StreamScanEstimateInflated;
+    public double StreamScanInflationFactor;
+    public double GateThreshold;
 
     public abstract bool IsBoosting { get; }
     public abstract DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }

@@ -42,6 +42,17 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// <summary>UTF-8 byte buffer size for stackalloc encode/compare in sort-hint seek and SliceEqualsUtf8.
     /// Strings longer than this fall back to heap allocation.</summary>
     private const int Utf8StackAllocThreshold = 256;
+
+    /// <summary>How many streamed sort-index entries cost as much as one materialized-and-sorted candidate —
+    /// the cost weight in the <see cref="ShouldUseIndexOrderStreaming"/> gate. A streamed entry is a sequential
+    /// FastPFor posting decode + an O(1) candidate-bitmap test; a sorted candidate pays a random entries→terms
+    /// lookup (GetFor), a random term-blob fetch (GetAll), and its share of an N log N comparison sort.
+    /// Measured per-unit ratio ≈ 38× on a clustered multi-valued sort (uninstrumented include timings():
+    /// InMemorySort 32.5 ms over 263,528 candidates vs IndexOrderStreaming 2.06 ms over 638,976 scanned entries,
+    /// RavenDB-25281). Held below the measurement so streaming is chosen only on a clear win; pending broader
+    /// calibration across distributions. IMPORTANT: deliberately NOT 1 — do not simplify the gate back to
+    /// <c>estimatedScan &lt; candidates</c>, which ignores the per-entry cost asymmetry and over-picks InMemorySort.</summary>
+    internal const double IndexStreamingVsInMemorySortCostRatio = 16;
     private ByteStringContext<ByteStringMemoryCache>.InternalScope _entriesBufferScope;
 
     private ContextBoundNativeList<long> _results;
@@ -251,9 +262,13 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// LIMIT since it can't stop early. InMemorySort materializes the candidates (cost ∝ <c>candidates</c>)
     /// and heap-sorts.</para>
     ///
-    /// <para>Streaming only wins when the estimated scan is smaller than the candidate set: candidates
-    /// dense in the index and a small limit. A selective WHERE with a large/absent LIMIT degenerates into
-    /// a near-full index walk — this guard steers that to InMemorySort. <see cref="IndexSearcher.NumberOfEntries"/>
+    /// <para>Streaming wins when the estimated scan is cheaper than materialize-and-sort. The two sides are
+    /// NOT measured in the same unit: one streamed entry is a sequential FastPFor posting decode plus an O(1)
+    /// candidate-bitmap test, while one sorted candidate pays a random entries→terms lookup (GetFor), a random
+    /// term-blob fetch (GetAll), and its share of an N log N comparison sort. We therefore compare the scan
+    /// estimate against <c>candidates × <see cref="IndexStreamingVsInMemorySortCostRatio"/></c> rather than
+    /// against <c>candidates</c> directly. A selective WHERE with a large/absent LIMIT degenerates into a
+    /// near-full index walk — the no-LIMIT guard steers that to InMemorySort. <see cref="IndexSearcher.NumberOfEntries"/>
     /// proxies the reader's full-scan size; it slightly overestimates for sparse sort fields, biasing
     /// toward the always-bounded InMemorySort.</para>
     /// </summary>
@@ -266,13 +281,18 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // early, so it walks the entire index. InMemorySort touches only the candidates (a subset of the
         // index), so it is never worse here.
         if (match._take < 0 || match._take >= candidates)
+        {
+            match.GateDecision = SortStrategyDecision.NoLimitFullScan;
             return false;
+        }
 
         // Expected entries scanned to collect `take` matches, assuming candidates are spread uniformly
         // across the index. Computed in double to avoid overflow on the multiply.
         double estimatedScan = (double)match._take * indexSize / candidates;
         match._rawStreamScanEstimate = estimatedScan; // retained for the EWMA update on completion/bailout
+        match.StreamScanEstimateRaw = estimatedScan;
 
+        double inflationFactor = 1;
         if (bitmapMatch is CompiledQueryMatch { CompiledPlan.StreamScanInflation: { } scanInflation })
         {
             // Correct the uniform-distribution estimate by what this plan has actually scanned in past
@@ -280,11 +300,26 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             // kept over-scanning (and bailing) inflates the estimate here and stops choosing streaming. The
             // factor is 0 until the plan has streamed at least once (no history -> trust the raw estimate).
             var inflation = scanInflation.Factor;
-            if(inflation > 0)
+            if (inflation > 0)
+            {
+                inflationFactor = inflation;
                 estimatedScan *= inflation;
+            }
         }
 
-        return estimatedScan < candidates;
+        match.StreamScanInflationFactor = inflationFactor;
+        match.StreamScanEstimateInflated = estimatedScan;
+
+        // Cost-weighted comparison: a streamed entry is far cheaper than a materialized-and-sorted candidate,
+        // so streaming stays the better plan even when it scans several times the candidate count. Comparing
+        // 1:1 (estimatedScan < candidates) wrongly rejected streaming for high-candidate / small-LIMIT queries
+        // that streaming finishes in milliseconds (RavenDB-25281).
+        double threshold = candidates * IndexStreamingVsInMemorySortCostRatio;
+        match.GateThreshold = threshold;
+
+        bool stream = estimatedScan < threshold;
+        match.GateDecision = stream ? SortStrategyDecision.StreamCheaper : SortStrategyDecision.SortCheaper;
+        return stream;
     }
 
     private static void SampleRandomOrder(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
@@ -891,6 +926,25 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // EntriesStreamed >> result count flags a degenerate IndexOrderStreaming.
         if (SortStrategy is { } strategy)
             parameters["Strategy"] = strategy.ToString();
+
+        // Why that strategy was chosen, not just which one. GateDecision is the cost gate's verdict; for the
+        // cost-weighted branches we also surface the numbers it weighed so the choice is auditable (and a
+        // Strategy that disagrees with GateDecision flags a $rvn_corax_sort pin override).
+        if (GateDecision != SortStrategyDecision.NotEvaluated)
+        {
+            parameters["StrategyReason"] = GateDecision.ToString();
+            if (GateDecision is SortStrategyDecision.StreamCheaper or SortStrategyDecision.SortCheaper)
+            {
+                parameters["StreamScanEstimate"] = StreamScanEstimateInflated.ToString("N0", CultureInfo.InvariantCulture);
+                if (Math.Abs(StreamScanInflationFactor - 1) > 0.0001)
+                {
+                    parameters["StreamScanRaw"] = StreamScanEstimateRaw.ToString("N0", CultureInfo.InvariantCulture);
+                    parameters["StreamScanInflation"] = StreamScanInflationFactor.ToString("F2", CultureInfo.InvariantCulture);
+                }
+                parameters["StreamGateThreshold"] = GateThreshold.ToString("N0", CultureInfo.InvariantCulture);
+            }
+        }
+
         if (SortingTimeInTicks > 0)
             parameters["Ms"] = (SortingTimeInTicks / (Stopwatch.Frequency / 1000.0)).ToString("F3", CultureInfo.InvariantCulture);
 
