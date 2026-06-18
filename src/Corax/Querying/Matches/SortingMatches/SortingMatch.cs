@@ -172,10 +172,10 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 {
                     // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort.
                     // Also taken when MayHaveMissingEntries is set (e.g. dynamic CreateField sort fields):
-                    // IndexOrderStreaming only walks tree terms + null/nonExisting posting lists, so
-                    // docs that didn't emit the field would be silently dropped. InMemorySort drains
-                    // the entire bitmap and uses the comparer's missing-value sentinel for those docs.
-                    // A $rvn_corax_sort pin can't override this branch: it guards correctness, not cost.
+                    // IndexOrderStreaming only walks tree terms + null/nonExisting posting lists, so docs
+                    // that didn't emit the field would be silently dropped; InMemorySort drains the whole
+                    // bitmap and uses the comparer's missing-value sentinel. Guards correctness, not cost,
+                    // so a $rvn_corax_sort pin can't override it.
                     match.SortStrategy = CoraxSortingStrategy.InMemorySort;
                     SortInMemory<TEntryComparer>(match, bitmapMatch);
                 }
@@ -242,23 +242,20 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     }
 
     /// <summary>
-    /// Cost-based choice between the two indexed-sort strategies once a real iterable index exists
-    /// (score/spatial/alphanumeric and MayHaveMissingEntries are already excluded by the caller).
+    /// Cost-based choice between the two indexed-sort strategies (score/spatial/alphanumeric and
+    /// MayHaveMissingEntries already excluded by the caller).
     ///
-    /// <para><b>IndexOrderStreaming</b> walks the whole sort index in order, intersecting each batch
-    /// against the candidate bitmap and stopping as soon as <c>take</c> results are collected. Its
-    /// cost is the number of index entries scanned before that happens — roughly
-    /// <c>take · indexSize / candidates</c> under a uniform-distribution assumption (and the FULL index
-    /// when there is no LIMIT, since it can never stop early). <b>InMemorySort</b> instead materializes
-    /// the candidate set (cost ∝ <c>candidates</c>) and heap-sorts it.</para>
+    /// <para>IndexOrderStreaming walks the sort index in order, intersecting each batch against the
+    /// candidate bitmap, stopping once <c>take</c> results are collected — cost ≈
+    /// <c>take · indexSize / candidates</c> (uniform-distribution assumption), or the FULL index with no
+    /// LIMIT since it can't stop early. InMemorySort materializes the candidates (cost ∝ <c>candidates</c>)
+    /// and heap-sorts.</para>
     ///
-    /// <para>So streaming only wins when the estimated scan is smaller than the candidate set itself,
-    /// i.e. the candidates are dense in the index and the limit is small. For a selective WHERE with a
-    /// large/absent LIMIT the streaming scan degenerates into a near-full index walk to surface a handful
-    /// of matches — the case this guard steers to InMemorySort. <see cref="IndexSearcher.NumberOfEntries"/>
-    /// is the cheap proxy for the reader's full-scan size (terms + null/non-existing posting lists ≈ the
-    /// whole index); it slightly overestimates for sparse sort fields, which only biases toward the
-    /// always-bounded InMemorySort.</para>
+    /// <para>Streaming only wins when the estimated scan is smaller than the candidate set: candidates
+    /// dense in the index and a small limit. A selective WHERE with a large/absent LIMIT degenerates into
+    /// a near-full index walk — this guard steers that to InMemorySort. <see cref="IndexSearcher.NumberOfEntries"/>
+    /// proxies the reader's full-scan size; it slightly overestimates for sparse sort fields, biasing
+    /// toward the always-bounded InMemorySort.</para>
     /// </summary>
     private static bool ShouldUseIndexOrderStreaming(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
     {
@@ -589,10 +586,9 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
         int maxResults = match._take == -1 ? int.MaxValue : match._take;
 
-        // Runtime escape hatch. ShouldUseIndexOrderStreaming assumed candidates spread uniformly across the index);
-        // if they are actually clustered far from the scan's start the walk reads far more index entries without hitting the limit.
-        // Once we have scanned past this multiple of the candidate count we abandon the walk and materialize+sort the
-        // candidates instead, limiting the max cost we spend
+        // Runtime escape hatch: the gate assumed uniform candidate spread; if they cluster far from the
+        // scan start the walk reads far more entries without hitting the limit. Past this multiple of the
+        // candidate count, abandon the walk and materialize+sort instead, capping the cost.
         const int maxScanCandidateMultiplier = 2;
         long scanBailoutThreshold = match.TotalResults * maxScanCandidateMultiplier;
         bool forceUsingOnlyIndex = match.ForcedStrategy == CoraxSortingStrategy.IndexOrderStreaming;
@@ -890,21 +886,18 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 break;
         }
 
-        // Surface the sort's own runtime cost. The compiled bitmap pipeline times its ops into
-        // CompiledQueryMatch's telemetry array, but the sort wrapper runs above it and is otherwise
-        // absent from include timings(). EntriesStreamed >> result count flags a degenerate
-        // IndexOrderStreaming (scattered/tiny candidate set scanning most of the sort index).
+        // Surface the sort wrapper's own cost — it runs above the bitmap pipeline (which times its ops
+        // into CompiledQueryMatch's telemetry) and is otherwise absent from include timings().
+        // EntriesStreamed >> result count flags a degenerate IndexOrderStreaming.
         if (SortStrategy is { } strategy)
             parameters["Strategy"] = strategy.ToString();
         if (SortingTimeInTicks > 0)
             parameters["Ms"] = (SortingTimeInTicks / (Stopwatch.Frequency / 1000.0)).ToString("F3", CultureInfo.InvariantCulture);
 
-        // The sort wrapper sits above the bitmap pipeline, so the graph would otherwise show only the
-        // pipeline's "Output" and leave the sort's own in/out invisible. Surface both: Incoming is the full
-        // candidate set the sort had to consider (TotalResults, set after the first Fill); Output is what the
-        // sort actually hands the page — capped by the page limit (_take) when one is set, since a top-N sort
-        // emits at most _take rows even though it had to rank every candidate to find them. This is why an
-        // "order by score() limit 10" over 283K candidates reads Incoming=283,000, Output=10.
+        // Surface the sort's in/out, otherwise invisible above the pipeline. Incoming = full candidate set
+        // considered (TotalResults); Output = rows handed to the page, capped by _take since a top-N sort
+        // ranks every candidate but emits at most _take (e.g. "order by score() limit 10" over 283K reads
+        // Incoming=283,000, Output=10).
         if (TotalResults >= 0)
         {
             parameters["Incoming"] = TotalResults.ToString("N0");

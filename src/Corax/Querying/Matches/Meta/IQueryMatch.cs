@@ -43,11 +43,9 @@ public interface IQueryMatch
     // Requirements: The upmost call
     void Score(Span<long> matches, Span<float> scores, float boostFactor);
 
-    // Same contract and result as Score, but the caller GUARANTEES `matches` is sorted ascending (and, as Fill
-    // produces, deduplicated). The in-memory score sort feeds matches straight off the candidate bitmap iterator,
-    // so this holds on that path; the vector / post-filter score-order paths do NOT sort, and keep calling Score.
-    // Bitmap-backed leaves exploit the ordering (run-grouped, container-merge membership); everyone else just
-    // delegates to Score. The result MUST be identical to Score for the same input.
+    // Same contract/result as Score, but the caller GUARANTEES `matches` is sorted ascending and deduplicated
+    // (holds on the in-memory-score-sort path off the bitmap iterator; vector/post-filter paths keep calling
+    // Score). Bitmap-backed leaves exploit the ordering; everyone else delegates to Score.
     void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor);
 
     QueryInspectionNode Inspect();
@@ -83,11 +81,10 @@ public enum DuplicatesOccurrence
 }
 
 /// <summary>
-/// Implemented by the per-entry post-filter match families (spatial / vector). The flag is NOT intrinsic to the
-/// match type: the same match is a top-level post-filter when the planner lifted it out of an AND, but an ordinary
-/// pipeline leaf when it sits inside an OR branch (the planner only lifts in an AND context — see
-/// <c>PlanWalker.GroupCollapse</c>). The locus that actually applies post-filters (<c>QueryPlanBuilder.ApplyPostFilters</c>)
-/// sets the flag on the matches it wraps, so inspection reads the recorded role instead of re-deriving it from the type.
+/// Implemented by per-entry post-filter match families (spatial / vector). The flag is NOT intrinsic to the
+/// type: the same match is a top-level post-filter when the planner lifts it out of an AND, but a pipeline leaf
+/// inside an OR branch. <c>QueryPlanBuilder.ApplyPostFilters</c> sets it on the matches it wraps, so inspection
+/// reads the recorded role rather than re-deriving from the type.
 /// </summary>
 public interface IPostFilterMatch
 {

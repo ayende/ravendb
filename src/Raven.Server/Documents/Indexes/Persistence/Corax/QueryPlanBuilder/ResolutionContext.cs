@@ -59,7 +59,6 @@ internal sealed class ResolutionContext
 
     public void RecordPendingBoost(ClauseInfo[] innerClauses, ParameterBinding factor)
     {
-        // record boosted clauses, so later we'll have an easier time to propogate the boosted value.
         PendingBoosts ??= [];
         PendingBoosts.Add(new PendingBoost(innerClauses, factor));
     }

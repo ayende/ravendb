@@ -13,10 +13,8 @@ namespace Corax.Querying.Matches;
 /// but the construct itself is just an AndWith-chain — nothing here is
 /// spatial-specific.
 ///
-/// When timing capture is enabled (introspection JSON requested by the caller),
-/// records per-call wall time for the inner Fill and for each post-filter
-/// AndWith step, plus per-step survivor counts. When disabled, the per-call
-/// rdtsc + counter writes are skipped entirely.
+/// When timing capture is enabled, records per-call wall time and survivor counts for the inner Fill
+/// and each post-filter AndWith; when disabled, those writes are skipped.
 /// </summary>
 public sealed class PostFilterMatch : IQueryMatch
 {
@@ -31,15 +29,10 @@ public sealed class PostFilterMatch : IQueryMatch
     // Cumulative number of entries the inner returned across all calls.
     private long _innerEmitted;
 
-    // Per-post-filter cumulative ticks spent inside that filter's AndWith.
-    // Null when timing capture is disabled.
-    private readonly long[] _filterTicks;
-    // Per-post-filter cumulative survivor count (after that filter ran).
-    // Null when timing capture is disabled.
-    private readonly long[] _filterSurvivors;
-    // Per-post-filter cumulative rejection count: input - survivors aggregated across calls.
-    // Null when timing capture is disabled.
-    private readonly long[] _filterRejected;
+    // Per-post-filter cumulative metrics; null when timing capture is disabled.
+    private readonly long[] _filterTicks;       // ticks inside that filter's AndWith
+    private readonly long[] _filterSurvivors;   // survivors after that filter ran
+    private readonly long[] _filterRejected;    // rejections (input - survivors)
 
     public PostFilterMatch(IQueryMatch inner, IQueryMatch[] postFilters, bool wantTimings)
     {

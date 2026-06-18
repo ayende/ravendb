@@ -113,11 +113,8 @@ namespace Corax.Querying.Matches.TermsProviders
         }
         
         /// <summary>
-        /// Created for simple facet(FieldName) purposes. This is faster than normal since we're gathering all statistics in bulks.
+        /// For simple facet(FieldName): faster than normal since statistics are gathered in bulk.
         /// </summary>
-        /// <param name="terms"></param>
-        /// <param name="counts"></param>
-        /// <returns></returns>
         public unsafe IDisposable AggregateByTerms(out List<string> terms, out Span<long> counts)
         {
             terms = new List<string>(NumberOfTerms);

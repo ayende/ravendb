@@ -12,7 +12,7 @@ using PlanCache = Corax.Querying.Planning.PlanCache;
 namespace FastTests.Corax;
 
 /// <summary>
-/// Stage C (RavenDB-25281): the plan-cache structural key is a SHA over a canonical serialization of the query's
+/// RavenDB-25281: the plan-cache structural key is a SHA over a canonical serialization of the query's
 /// WHERE + ORDER BY AST, with WHERE literal VALUES blanked (type kept) and parameter NAMES renumbered to
 /// first-occurrence ordinals. Two queries therefore share ONE bucket iff they are structurally identical up to
 /// literal values and parameter names. These tests pin that contract from the outside by counting the distinct

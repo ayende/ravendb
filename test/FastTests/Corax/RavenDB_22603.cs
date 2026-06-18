@@ -309,8 +309,7 @@ public class RavenDB_22603_Primitive : StorageTest
         // Expected: entries where Name == "apple" AND Color != "red"
         var expected = _entries.Where(e => e.Name == "apple" && e.Color != "red").Select(e => e.Id).ToList();
 
-        // In the new architecture both paths (And+AndNot vs. direct AndNot) are compiled
-        // to the same CompiledQueryMatch. Verify the correct results via RQL.
+        // Both paths (And+AndNot vs. direct AndNot) compile to the same CompiledQueryMatch; verify results via RQL.
         var results = ExecuteRQLQuery("FROM TestIndex WHERE Name = 'apple' AND NOT Color = 'red'");
         results.Sort();
         expected.Sort();
@@ -414,8 +413,7 @@ public class RavenDB_22603_Primitive : StorageTest
         // Setup: entries/1 (apple,red), entries/2 (apple,green), entries/7 (apple,red), entries/8 (apple,green)
         // Query: Name == "apple" AND Color != "red"
         // Expected: entries/2, entries/8 (green apples only)
-        // In the new architecture, both the old MultiUnaryMatch path and the AndNot path
-        // are compiled to the same CompiledQueryMatch — verify the correct results via RQL.
+        // Both the MultiUnaryMatch path and the AndNot path compile to the same CompiledQueryMatch; verify results via RQL.
         var results = ExecuteRQLQuery("FROM TestIndex WHERE Name = 'apple' AND NOT Color = 'red'");
         results.Sort();
 

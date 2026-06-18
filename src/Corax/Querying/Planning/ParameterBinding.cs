@@ -18,7 +18,6 @@ public enum BindingSource : byte
 /// name for blittable lookup. Leaf type with no nesting.</summary>
 public sealed class ParameterBinding
 {
-    /// <summary>How this binding resolves.</summary>
     public BindingSource Source;
     /// <summary>Cached native value for literals (long/double/string). Null for parameters
     /// and for literal nulls. Only valid when LiteralType != Parameter.</summary>

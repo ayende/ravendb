@@ -75,12 +75,10 @@ public class CompiledQueryMatch(
 
     public int Limit = int.MaxValue;
 
-    /// <summary>Per-op truncation budget for fill/OR/AND primitives. Defaults to "unlimited" and is armed
-    /// (set to <see cref="Limit"/>) by the compiled delegate only on ops that grow slot 0 monotonically to
-    /// the result — i.e. no later op narrows slot 0 (AND/ANDNOT or an entry-scan residual filter). A fill or
-    /// AND that feeds a downstream narrowing op must read the full posting list, not a limit-truncated prefix,
-    /// or the narrowing/scan could leave fewer than Limit survivors. The entry scan's own survivor early-exit
-    /// reads <see cref="Limit"/> directly, not this.</summary>
+    /// <summary>Per-op truncation budget for fill/OR/AND primitives, "unlimited" by default. Armed (to
+    /// <see cref="Limit"/>) only on ops that grow slot 0 monotonically to the result with no later narrowing
+    /// op — a fill/AND feeding a downstream narrowing op must read the full posting list or it could leave
+    /// fewer than Limit survivors. The entry scan's survivor early-exit reads <see cref="Limit"/> directly.</summary>
     public long OpLimit = long.MaxValue;
 
     /// <summary>Diagnostic override for the entry-scan gate, set from the reserved $rvn_corax_entry_scan
@@ -258,8 +256,8 @@ public class CompiledQueryMatch(
 
         // The two runtime exits leave the result in different slots: the bitmap pipeline lands in slot 0,
         // the entry-scan tail writes survivors to slot 1 (RunEntryScan source 0 -> target 1) without
-        // swapping back. Read the result from whichever slot the taken exit used. Stays 0 on exception so
-        // the disposal below matches the original "keep slot 0, dispose the rest" behavior.
+        // swapping back. Read from whichever slot the taken exit used. Stays 0 on exception so the disposal
+        // below keeps slot 0 and disposes the rest.
         try
         {
             _compiledDelegate(this);

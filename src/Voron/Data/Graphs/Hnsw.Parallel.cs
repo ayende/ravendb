@@ -151,13 +151,11 @@ public partial class Hnsw
             private readonly List<int> _requiresEdgeFiltering = [];
             private readonly List<UnmanagedSpan> _vectors = [];
 
-            // Per-task, point-in-time copy of the current (node, level) edge indexes. Filled on the
-            // LLT thread in PrepareEdgesOnLLT and read by the worker in PopulateWorkListsOnWorker.
-            // This decouples the worker from the shared, growable EdgesIndexesPerLevel native buffer,
-            // whose backing store the LLT thread can free/realloc in a later dispatch round while the
-            // worker still runs (the PopulateWorkListsOnWorker use-after-free, RavenDB-26809). One
-            // WorkItem per task is in flight at a time (WorkItem.Execute re-enqueues the iterator only
-            // after the worker finishes), so this buffer is safe to clear+refill on every dispatch.
+            // Per-task, point-in-time copy of the current (node, level) edge indexes: filled on the LLT
+            // thread in PrepareEdgesOnLLT, read by the worker in PopulateWorkListsOnWorker. Decouples the
+            // worker from the shared, growable EdgesIndexesPerLevel native buffer, whose backing store the
+            // LLT thread can free/realloc in a later dispatch round while the worker still runs (RavenDB-26809).
+            // Only one WorkItem per task is in flight, so this buffer is safe to clear+refill each dispatch.
             private readonly List<int> _edgeIndexSnapshot = [];
             private readonly PriorityQueue<int, float> _candidatesQ = new();
             private readonly PriorityQueue<int, float> _nearestEdgesQ = new();
@@ -657,11 +655,9 @@ public partial class Hnsw
                     }
                 }
 
-                // Snapshot the now-in-sync edge indexes into the per-task buffer ON THE LLT THREAD.
-                // The worker reads this private copy in PopulateWorkListsOnWorker instead of the shared
-                // EdgesIndexesPerLevel native buffer, so the LLT thread is free to grow/realloc that
-                // buffer in later rounds without racing the worker (RavenDB-26809). The copy is a
-                // consistent point-in-time view, so the worker never observes a torn read.
+                // Snapshot the now-in-sync edge indexes into the per-task buffer on the LLT thread (see
+                // _edgeIndexSnapshot): a consistent point-in-time copy the worker reads without racing
+                // a later grow/realloc of EdgesIndexesPerLevel (RavenDB-26809).
                 _edgeIndexSnapshot.Clear();
                 _edgeIndexSnapshot.AddRange(edgesIndexes.ToSpan());
 
@@ -694,10 +690,8 @@ public partial class Hnsw
                 }
 
                 parent._forTestingPurposes?.OnWorkerCapturedEdgeListRef(_searchState, currentNodeIndex, level);
-                // Read the per-task snapshot captured on the LLT thread in PrepareEdgesOnLLT, NOT the
-                // shared EdgesIndexesPerLevel native buffer: that buffer's storage can be freed and
-                // reallocated by the LLT thread in a later round while this worker is still running
-                // (use-after-free, RavenDB-26809).
+                // Iterate the per-task snapshot, not the shared EdgesIndexesPerLevel buffer (see
+                // _edgeIndexSnapshot): avoids the RavenDB-26809 use-after-free.
                 foreach (var idx in _edgeIndexSnapshot)
                 {
                     if (MarkVisited(idx) is false)

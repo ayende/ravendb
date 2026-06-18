@@ -704,16 +704,13 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 // We don't need to do any processing for the query beyond counting if we are getting a count.
                 long totalResultsBefore = totalResults.Value;
 
-                // The Corax scope above closed after plan build, so query execution (the actual search,
-                // including any lazily-initialized post-filter such as vector search) was previously
-                // unmeasured. Time the Fill calls only — not the surrounding yield loop, which would
-                // also count document retrieval/serialization the consumer does between MoveNext calls.
-                // Resuming coraxScope folds the search time back into the Corax total; the Execute child
-                // isolates it from the Optimizer (plan build) span. Sorting is not a separate stage here:
-                // the SortingMatch wrapper sorts inside QueryMatch.Fill, so its cost lives under Execute.
-                // Document retrieval/projection is timed by the retriever's own Retriever/Storage scopes.
-                // Score (per-batch BM25 when produced during Fill) and Paging (RegisterDuplicates dedup +
-                // pagination reshuffle) are the remaining CPU stages, broken out as their own Corax children.
+                // Time the Fill calls only — not the surrounding yield loop, which would also count document
+                // retrieval/serialization the consumer does between MoveNext calls. Resuming coraxScope folds
+                // search time into the Corax total; the Execute child isolates it from Optimizer (plan build).
+                // Sorting is not a separate stage: the SortingMatch wrapper sorts inside QueryMatch.Fill, under
+                // Execute. Retrieval/projection is timed by the retriever's own scopes. Score (per-batch BM25
+                // during Fill) and Paging (RegisterDuplicates dedup + pagination reshuffle) are the remaining
+                // CPU stages, broken out as their own Corax children.
                 var executeScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Execute), start: false);
                 var scoreScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Score), start: false);
                 var pagingScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Paging), start: false);

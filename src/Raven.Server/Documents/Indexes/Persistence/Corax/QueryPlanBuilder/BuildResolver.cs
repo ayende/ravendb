@@ -25,9 +25,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         _exec = CreateQueryExecution();
         var cacheKeyHash = ComputeCacheKeyHash();
 
-        // BuildTemplate already resolved (or created) the per-query bucket for this structural key and stashed it
-        // // on planParams; we only probe/publish the runtime variant (inner 256-bit key) within that bucket here.
-        return planParams.Bucket.TryLookup(cacheKeyHash) is { } cachedPlan ? FinalizePlan(cachedPlan) : BuildOnCacheMiss(cacheKeyHash);// Cache miss — full exec emission
+        // BuildTemplate already resolved the per-query bucket for this structural key; we only probe/publish the
+        // runtime variant (inner 256-bit key) within that bucket here.
+        return planParams.Bucket.TryLookup(cacheKeyHash) is { } cachedPlan ? FinalizePlan(cachedPlan) : BuildOnCacheMiss(cacheKeyHash);
     }
 
     private QueryExecution BuildOnCacheMiss(in Vector256<long> cacheKeyHash)
@@ -154,18 +154,14 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                 return only.Cardinality;
             }
 
-            // A single non-boosted exists() has an exactly-known result count the estimator does NOT supply
-            // (CardinalityEstimator returns the whole-index NumberOfEntries upper bound for Exists, so reading
-            // only.Cardinality here would force the full bitmap drain). The candidate exact total is the index
-            // entry count minus the field's non-existing posting list — both O(1) reads. NOT exists() is excluded
-            // (it emits the non-existing set, the complement; the bare exists clause is non-negated).
+            // A single non-boosted exists() has an exactly-known total the estimator does NOT supply (it returns
+            // the whole-index upper bound for Exists). The candidate exact total is index entries minus the field's
+            // non-existing posting list — both O(1). NOT exists() is excluded (it emits the complement).
             //
-            // This identity is only valid for a SINGLE-VALUED field. A multi-valued (array) field can have a
-            // document with an EMPTY array: the field is present (so the document is NOT in the non-existing
-            // list), yet it contributes no term and is not in the null postings — so exists() excludes it while
-            // (entries - non-existing) counts it, overcounting by the number of empty-array documents
-            // (RavenDB-26832 / Tests.Linq.Any.CanCountWithAny). HasMultipleTermsInField is set for any array
-            // (even single-element), so when it is false we know no empty-array documents can exist and the
+            // Only valid for a SINGLE-VALUED field: a multi-valued field can hold an EMPTY array — present (not in
+            // the non-existing list) yet contributing no term, so exists() excludes it while (entries - non-existing)
+            // counts it, overcounting by the empty-array docs (RavenDB-26832 / Tests.Linq.Any.CanCountWithAny).
+            // HasMultipleTermsInField is set for any array, so when false no empty-array docs can exist and the
             // O(1) total is exact; otherwise fall through (-1) to the drained count.
             if (only.IsSentinel == false
                 && only.ClauseType == ClauseType.Exists
@@ -464,11 +460,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
     private readonly bool CheckAllNegated() => _exec.Executions is [{ IsNegated: true }, ..]; // negated clauses are always sorted first, so we can just check the first
 
-    // Single canonical serialization of every plan-disambiguating dimension, digested to a
-    // 256-bit cache key. Used for BOTH the cache probe and the on-miss store, so the Append
-    // sequence here is the one source of truth — adding a new dimension is one more Append.
-    // Unlike the former packed-int fields, nothing is truncated: all clauses and all
-    // parameters contribute, so the old 10-clause / 16-param ceilings are gone.
+    // Single canonical serialization of every plan-disambiguating dimension, digested to a 256-bit cache key.
+    // Used for BOTH the cache probe and the on-miss store, so this Append sequence is the one source of truth —
+    // adding a dimension is one more Append. Nothing is truncated: all clauses and all parameters contribute.
     private Vector256<long> ComputeCacheKeyHash()
     {
         var execs = _exec.Executions;

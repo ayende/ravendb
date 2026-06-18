@@ -109,11 +109,10 @@ internal static partial class QueryPlanBuilder
 
         var exec = Build(template, planParams, builderParameters, walkerCtx);
         var orderByFields = GetSortMetadata(builderParameters, exec.Plan.Template);
-        // A single vector-search post-filter already streams its HNSW output in similarity-score order. When that
-        // score order is exactly what the query asks for (no ORDER BY auto-promoted to score, or an explicit
-        // ORDER BY score()), the implicit SortingMatch wrapper is pure overhead — record that here so the vector
-        // match streams score order (ApplyPostFilters) and the wrapper is skipped (Instantiate). The order-agnostic
-        // BuildFilterMatch path never reaches this, so facets / MLT keep the entry-id-sorted vector output.
+        // A single vector-search post-filter already streams its HNSW output in score order. When that matches what
+        // the query asks for, skip the redundant SortingMatch wrapper: stream score order in ApplyPostFilters, skip
+        // the wrapper in Instantiate. The order-agnostic BuildFilterMatch path never reaches here (facets / MLT keep
+        // entry-id-sorted vector output).
         exec.VectorPostFilterProvidesScoreOrder = VectorPostFilterProvidesResultOrder(exec, builderParameters, orderByFields);
         var queryMatch = Instantiate(exec, orderByFields,
             planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
@@ -262,10 +261,9 @@ internal static partial class QueryPlanBuilder
 
     private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
     {
-        // The template binding supplies only structure plus its canonical ValueOrdinal. The value for THIS query's
-        // text lives in the per-query slot vector at that ordinal, so value/name/param variants can share one
-        // shared template. Redirect to the slot binding before reading any value. (Already-slot bindings are
-        // idempotent under this lookup, since slotBindings[b.ValueOrdinal] == b.)
+        // The template binding supplies only structure plus its canonical ValueOrdinal; the value for THIS query
+        // lives in the per-query slot vector at that ordinal (so value/name/param variants share one template).
+        // Redirect to the slot binding before reading any value. (Idempotent: slotBindings[b.ValueOrdinal] == b.)
         binding = slotBindings[binding.ValueOrdinal];
         switch (binding.Source)
         {
@@ -538,15 +536,12 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
-        // Null / missing handling guard for the bare shape (equality on field1, ORDER BY field2, NO clause on
-        // field2). The single-field sort wrapper is elided only when there is exactly one ORDER BY field, and the
-        // compound walk then emits field2's null / missing docs wherever their marker sorts in the tree (after the
-        // real values) — which does NOT match NullsSortMode / the SortingMatch fallback (nulls-first by default).
-        // A field2 range clause excludes nulls outright, so the walk is safe there. Otherwise, if the sort field
-        // has any null or non-existing entries, fall back to the bitmap pipeline + SortingMatch (honors NullsSortMode).
-        // (Mirrors the single-field TryCreateSimpleFieldDirectScan MayHaveMissingEntries guard, extended to nulls
-        // because the compound scan skips both the null and non-existing posting-list merges that SortedDrivingMatch
-        // would otherwise apply.)
+        // Null / missing guard for the bare shape (equality on field1, ORDER BY field2, no clause on field2). The
+        // compound walk emits field2's null/missing docs where their marker sorts in the tree (after real values),
+        // which does NOT match NullsSortMode / the SortingMatch fallback (nulls-first by default). A field2 range
+        // clause excludes nulls, so the walk is safe; otherwise fall back to bitmap + SortingMatch. (Mirrors the
+        // single-field MayHaveMissingEntries guard, extended to nulls since the compound scan skips both the null
+        // and non-existing posting-list merges SortedDrivingMatch would apply.)
         if (field2Range is null && ctx.OrderByFields is { Length: 1 })
         {
             var sortField = ctx.OrderByFields[0];
@@ -859,17 +854,14 @@ internal static partial class QueryPlanBuilder
 
     private static void EncodeNumericValue(Span<byte> dest, int valueType, int paramIdx, QueryExecution exec, long numericXorMask)
     {
-        // The double path is already order-preserving via DoubleToSortableLong; only the raw signed-long path needs
-        // the sign-flip mask (RavenDB-26831). The mask must mirror the indexer (CoraxDocumentConverterBase) for the
-        // queried index so the seek matches the stored compound key byte-for-byte.
+        // The double path is order-preserving via DoubleToSortableLong; only the raw signed-long path needs the
+        // sign-flip mask, which must mirror the indexer (CoraxDocumentConverterBase) for the queried index.
         long raw = valueType == PackedParam.TypeDouble
             ? Bits.DoubleToSortableLong(exec.DoubleValues[paramIdx])
             : exec.LongValues[paramIdx] ^ numericXorMask;
-        // Must produce byte-for-byte the same key the indexer wrote for this value. The compound-field indexer
-        // (CoraxDocumentConverterBase.AppendLong) stores `BitConverter.TryWriteBytes(buf, SwapBytes(l ^ mask))`
-        // — a little-endian write of the byte-swapped value, i.e. the big-endian (sortable) byte order of `l ^ mask`.
-        // Mirror that exactly; a big-endian write here would re-swap the bytes and the seek would never match
-        // the indexed key (numeric compound members would silently return zero rows).
+        // Must produce byte-for-byte the key the indexer wrote. CoraxDocumentConverterBase.AppendLong stores
+        // `SwapBytes(l ^ mask)` little-endian (i.e. big-endian/sortable order of `l ^ mask`); mirror it exactly —
+        // a big-endian write here would re-swap the bytes and the seek would never match (zero rows).
         BinaryPrimitives.WriteInt64LittleEndian(dest, Bits.SwapBytes(raw));
     }
 

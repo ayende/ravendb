@@ -57,12 +57,10 @@ internal static partial class QueryPlanBuilder
                     exec.StrategyGateReason = $"entries_to_scan({cfEntriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} {(cfEffective ? "<" : ">=")} bitmap_cost({cfBitmapCost})";
                 if (forced is null && cfEffective == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
-                // When the order is a single field (== the compound's field2), the DirectScan already emits in that
-                // order, so elide the wrapper and push a page-bounded Take into the scan. This is independent of
-                // $rvn_corax_sort: a sorted scan IS the order, so wrapping it in a SortingMatch only re-sorts
-                // already-sorted output (and forces a full TakeAll drain). The sort hint only has meaning where a
-                // real SortingMatch exists — the bitmap pipeline. Mirrors the FieldSortedScan path, which likewise
-                // serves the order from the scan and never applies a forced sort.
+                // Single-field order (== the compound's field2): the DirectScan already emits in that order, so
+                // elide the wrapper and push a page-bounded Take into the scan. Independent of $rvn_corax_sort —
+                // a sorted scan IS the order, so a SortingMatch would only re-sort and force a TakeAll drain (the
+                // sort hint only applies in the bitmap pipeline). Mirrors the FieldSortedScan path.
                 bool canElideCompoundSort = orderByFields.Length == 1;
                 innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost, canElideCompoundSort);
                 if (innerMatch is null) goto default;

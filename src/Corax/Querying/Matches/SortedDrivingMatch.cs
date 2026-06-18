@@ -25,24 +25,15 @@ namespace Corax.Querying.Matches;
 /// entry IDs directly. Unlike TermsProviderMatch (which materializes into a RoaringBitmap,
 /// losing sort order), this yields entries grouped by term — preserving field-value order.
 ///
-/// The ITermsProvider enforces range bounds (TermsRangeProvider only yields terms in range).
-/// No separate bitmap phase needed.
-///
-/// Handles single-field ORDER BY queries where the sort field drives the scan, e.g.:
+/// The ITermsProvider enforces range bounds (TermsRangeProvider only yields terms in range), so a WHERE
+/// on the sort field both filters and sorts in one pass with no bitmap intermediate. Single-field
+/// ORDER BY, e.g.:
 ///   FROM Users ORDER BY LastName
 ///   FROM Orders WHERE CreatedAt &gt; '2024-01-01' ORDER BY CreatedAt
 ///
-/// When the WHERE predicate targets the same field as ORDER BY, the planner creates
-/// a TermsRangeProvider that only yields terms within the predicate's range — so the
-/// range provider both filters and sorts in a single pass, with no bitmap intermediate.
-///
-/// This match does not apply WHERE predicates itself — it only yields entry IDs in
-/// term order. Additional WHERE predicates on other fields are applied by the wrapping
-/// <see cref="DirectScanMatch"/>, which runs the compiled ResidualScanPredicate delegate
-/// against each yielded entry's stored fields and rejects non-matching entries.
-/// The planner gates this path on estimated selectivity — it is efficient when the
-/// sort-driving field is selective (few entries per term) but degrades when the
-/// residual rejects most entries.
+/// Applies no WHERE predicates itself. Residual predicates on other fields are run by the wrapping
+/// <see cref="DirectScanMatch"/> against each entry's stored fields. The planner gates on selectivity:
+/// efficient when the driving field is selective, degrades when the residual rejects most entries.
 /// </summary>
 public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 {

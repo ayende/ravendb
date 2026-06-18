@@ -69,7 +69,6 @@ public enum PlanOpKind : byte
     AndRangeFromMatch,
 
     // ── Source-agnostic ops ─────────────────────────────────────────
-    /// <summary>Clear a bitmap slot.</summary>
     ClearBitmap,
 
     /// <summary>Intersect two bitmap slots. BitmapLocal = target, ParamIndex2 = source.</summary>

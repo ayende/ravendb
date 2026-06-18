@@ -8,7 +8,7 @@ namespace FastTests.Corax;
 
 /// <summary>
 /// Quantifies how much of a Corax query's wall-clock is the SORT stage, to size the headroom
-/// of a hypothetical compiled-IL sort path (RavenDB-25281 review #8). The single-field sort is
+/// of a hypothetical compiled-IL sort path (RavenDB-25281). The single-field sort is
 /// already JIT-monomorphized via the <c>SortBy&lt;TEntryComparer,TFwdIt,TBackIt&gt;</c> function-pointer
 /// dispatch (SortingMatch.cs) and the multi-field path is generic up to 3 comparers
 /// (SortingMultiMatch.SortBatch&lt;TComparer2,TComparer3&gt;), so there is no per-row interpreter to compile

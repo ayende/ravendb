@@ -49,23 +49,17 @@ internal static partial class QueryPlanBuilder
     private static void AppendTag(ref PlanCacheKeyBuilder builder, AstTag tag) => builder.Append((int)tag, AstTagBits);
 
     // Structural plan key: a SHA256 digest over a canonical, bit-packed serialization of the query's WHERE +
-    // ORDER BY AST, producing a fixed-size 256-bit value so the per-query bucket can be keyed by Vector256<long>.
-    // The serialization is value- and parameter-agnostic for WHERE operands: literal values are reduced to their
-    // type token (Long/Double/String/...) and parameter references collapse to a single "is a parameter" marker.
-    // That collapses pure value variants (price > 5 vs price > 10) and parameter variants (name = $p1 vs name = $q,
-    // and even aliased reuse like a = $x and b = $x vs a = $x and b = $y, since the template never deduplicates
-    // bindings - each value leaf is its own slot), while every structural distinction the template depends on -
-    // operators, field names, IN arity, boolean nesting, negation, method names, literal TYPE, and the full
-    // ORDER BY shape - is preserved. Per-parameter runtime types are deliberately NOT in this key: the per-variant
-    // CacheKeyHash (see BuildResolver) distinguishes them within the bucket. The bit-packing reuses
-    // PlanCacheKeyBuilder, the same allocation-free encoder the inner cache key uses, so there is no intermediate
-    // string.
+    // ORDER BY AST, as a 256-bit value so the per-query bucket is keyed by Vector256<long>. WHERE operands are
+    // value- and parameter-agnostic: literals reduce to their type token, parameter references collapse to one
+    // "is a parameter" marker. That collapses value variants (price > 5 vs > 10) and parameter variants (incl.
+    // aliased reuse, since each value leaf is its own slot), while every structural distinction the template
+    // depends on (operators, field names, IN arity, boolean nesting, negation, method names, literal TYPE, full
+    // ORDER BY shape) is preserved. Per-parameter runtime types are NOT in this key — the per-variant CacheKeyHash
+    // (BuildResolver) distinguishes them within the bucket. Encoding reuses the allocation-free PlanCacheKeyBuilder.
     //
-    // Besides the pure AST shape, every field name also folds in the field's index-wide single/multi-valued state
-    // (HasMultipleTermsInField). The template bakes single-valued optimizations - the straight-line residual IL and
-    // sort-key elision - so the cardinality state is a structural input: a field that goes single->multi must select
-    // a different bucket and re-plan rather than reuse a template built under the single-valued assumption. The bit is
-    // index-wide and monotonic, so it only ever flips one way.
+    // Every field name also folds in the field's index-wide single/multi-valued state (HasMultipleTermsInField).
+    // The template bakes single-valued optimizations (straight-line residual IL, sort-key elision), so a field that
+    // goes single->multi must select a different bucket and re-plan. The bit is index-wide and monotonic.
     [SkipLocalsInit]
     private static Vector256<long> ComputeStructuralKey(PlanParameters planParams)
     {

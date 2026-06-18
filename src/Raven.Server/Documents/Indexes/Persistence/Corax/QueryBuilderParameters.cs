@@ -31,8 +31,8 @@ public sealed class QueryBuilderParameters
     public readonly Lazy<List<string>> DynamicFields;
     public readonly ByteStringContext Allocator;
     public readonly bool HasBoost;
-    // RavenDB-26831: per-index compound numeric encoding mask, resolved once on the index definition (not
-    // recomputed per query). The planner XORs query-side numeric values with this to match the write path.
+    // Per-index compound numeric encoding mask, resolved once on the index definition (not recomputed per
+    // query). The planner XORs query-side numeric values with this to match the write path.
     public readonly long CompoundFieldNumericXorMask;
     public readonly IndexReadOperationBase IndexReadOperation;
     public readonly bool IsVectorSingleClause;

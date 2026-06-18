@@ -15,19 +15,16 @@ public unsafe partial struct RoaringBitmap
     /// aligned x1.091 geometric ladder spanning <see cref="InitialArrayContainerSizeInBytes"/> (64)
     /// .. <see cref="BitmapContainerSizeInBytes"/> (8192). Allocations round their requested byte
     /// count up to the enclosing class size, so every block in a class is exactly
-    /// <see cref="ClassSize"/>[c] bytes — a recycled block always fits any request mapping to its
-    /// class, and its class is recovered on free directly from its Length. Rounding up keeps every
-    /// Length a multiple of <see cref="SimdAlignment"/> (32), which the array-container SIMD set ops
-    /// rely on. Worst-case internal fragmentation is the x1.091 step (~9%); measured waste on real
-    /// query traffic is ~4%.
+    /// <see cref="ClassSize"/>[c] bytes: a recycled block always fits any request mapping to its class,
+    /// the class is recovered on free from its Length, and every Length stays a multiple of
+    /// <see cref="SimdAlignment"/> (32) as the array-container SIMD set ops require. Worst-case internal
+    /// fragmentation is the x1.091 step (~9%); measured waste is ~4%.
     ///
-    /// The first <c>sizeof(ByteString)</c> bytes of each free block hold the next
-    /// <see cref="ByteString"/> in its class chain; a default (zero) head means that class is empty.
-    /// <see cref="_classMask"/> has bit <c>c</c> set iff class <c>c</c>'s list is non-empty, so
-    /// <see cref="Allocate"/> locates the smallest sufficient non-empty class in O(1) via
-    /// <see cref="BitOperations.TrailingZeroCount(ulong)"/> instead of walking the list for a best
-    /// fit. The whole struct lives inline in <see cref="RoaringBitmap"/> (no extra allocation) and is
-    /// swapped wholesale by <see cref="SwapContents"/>, a cold per-set-op path.
+    /// Each free block's first <c>sizeof(ByteString)</c> bytes hold the next <see cref="ByteString"/> in
+    /// its class chain (a default head means the class is empty). <see cref="_classMask"/> bit <c>c</c> is
+    /// set iff class <c>c</c> is non-empty, so <see cref="Allocate"/> finds the smallest sufficient class
+    /// in O(1) via <see cref="BitOperations.TrailingZeroCount(ulong)"/> rather than a best-fit walk. The
+    /// struct lives inline in <see cref="RoaringBitmap"/> and is swapped wholesale by <see cref="SwapContents"/>.
     /// </summary>
     internal unsafe struct FreeListHeads
     {

@@ -42,11 +42,10 @@ internal static partial class QueryPlanBuilder
             return null; // unsupported shape (e.g. backward prefix scan) — fall back to the bitmap pipeline
 
         // When the sort wrapper is elided, the DirectScan's output IS the final order, so the driving match must
-        // stream in field2 (sort) order. CreateDrivingMatch returns a TermsProviderMatch, which materializes its
-        // postings into a RoaringBitmap (entry-id order) and would silently destroy the sort. Wrap its provider in
-        // SortedDrivingMatch — a term-by-term walk that preserves the compound tree's field2 order within the
-        // pinned field1 prefix — mirroring the single-field ConstructDirectScan. (When NOT eliding, an outer
-        // SortingMatch re-sorts the output, so the cheaper bitmap match is left untouched.)
+        // stream in field2 (sort) order. A TermsProviderMatch materializes postings into a RoaringBitmap (entry-id
+        // order) and would destroy the sort; wrap its provider in SortedDrivingMatch — a term-by-term walk that
+        // preserves field2 order within the pinned field1 prefix. (When NOT eliding, an outer SortingMatch re-sorts,
+        // so the cheaper bitmap match is left untouched.)
         if (canElideCompoundSort && drivingMatch is TermsProviderMatch tpm)
             drivingMatch = new SortedDrivingMatch(tpm.Provider, tpm.Llt, ctx.PlanParams.Allocator);
 
@@ -156,13 +155,11 @@ internal static partial class QueryPlanBuilder
                 return ProbeCountPostingsInRange(countMatch, out knownProbeTicks, out knownProbeTerms);
             }
 
-            // Bare field1-equality prefix (no field2 filter): the scan emits exactly the documents whose field1
-            // equals the driving value, so the exact total is that equality term's own cardinality — one posting
-            // per document, already resolved by the cardinality estimator (it is the gate's bitmap cost). The
-            // candidacy guard only admits this shape when the sort field has no null/missing entries, so every
-            // field1 document is present in the compound tree (output == field1 term cardinality). Counting the
-            // field1 term directly (not the compound prefix) sidesteps the prefix overcount (e.g. 'en' vs
-            // 'english') and is dedup-safe for multi-valued fields, since a posting list holds each document once.
+            // Bare field1-equality prefix (no field2 filter): the scan emits exactly the docs whose field1 equals
+            // the driving value, so the exact total is that equality term's cardinality (already resolved by the
+            // estimator). The candidacy guard only admits this when the sort field has no null/missing entries, so
+            // every field1 doc is in the compound tree. Counting the field1 term directly (not the compound prefix)
+            // sidesteps the prefix overcount ('en' vs 'english') and is dedup-safe for multi-valued fields.
             if (field2Range is null
                 && drivingClause.Clause.ClauseType == ClauseType.Equals
                 && drivingClause.Cardinality > 0)

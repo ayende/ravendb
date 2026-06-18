@@ -7,11 +7,9 @@ using BenchmarkDotNet.Engines;
 namespace Micro.Benchmark.Benchmarks
 {
     /// <summary>
-    /// Isolates the plan-template lookup on the Corax query hot path. BuildTemplate used to always probe a
-    /// string-keyed ConcurrentDictionary (PlanCache.TryGetTemplate); the QueryMetadata memo replaces that with a
-    /// long Id compare plus a WeakReference.TryGetTarget. This models exactly those two operations — the payload
-    /// type is irrelevant to the lookup cost, so a plain object stands in for the real PlanTemplate.
-    /// "Before" = the dictionary probe; "After" = the memo fast path.
+    /// Isolates the plan-template lookup on the Corax query hot path: a string-keyed ConcurrentDictionary probe
+    /// vs the QueryMetadata memo (long Id compare plus WeakReference.TryGetTarget). A plain object stands in for
+    /// the real PlanTemplate since the payload type is irrelevant to lookup cost.
     /// </summary>
     [DisassemblyDiagnoser]
     [SimpleJob(RunStrategy.Throughput, RuntimeMoniker.Net10_0, warmupCount: 5, iterationCount: 10)]
@@ -49,7 +47,7 @@ namespace Micro.Benchmark.Benchmarks
             _memoTemplate = new WeakReference<object>(_template);
         }
 
-        // Before: BuildTemplate's original path — TryGetValue on current, falling back to previous on a miss.
+        // Dictionary path: TryGetValue on current, falling back to previous on a miss.
         [Benchmark(Baseline = true)]
         public object DictionaryLookup()
         {
@@ -58,7 +56,7 @@ namespace Micro.Benchmark.Benchmarks
             return per;
         }
 
-        // After: the QueryMetadata memo fast path — Id compare (rejects a stale index instance) then a weak deref.
+        // Memo fast path: Id compare (rejects a stale index instance) then a weak deref.
         [Benchmark]
         public object MemoLookup()
         {

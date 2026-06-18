@@ -54,7 +54,8 @@ public unsafe partial class Hnsw
             _ => throw new InvalidOperationException($"Unexpected value of {nameof(VectorEmbeddingType)}: {embeddingType}")
         };
 
-        // VectorEmbeddingType.Single is stored in the NormalizedTensor layout: unit vector followed by a trailing float L2 norm. Callers pass the raw payload size (dims * sizeof(float)); the trailing-norm bytes are added here so callers do not need to know about the layout.
+        // Single uses the NormalizedTensor layout (unit vector + trailing float L2 norm). Callers pass the
+        // raw payload size; the trailing-norm bytes are added here so callers stay unaware of the layout.
         if (embeddingType == VectorEmbeddingType.Single)
             vectorSizeBytes += MagnitudeSizeInBytes;
 
@@ -171,10 +172,10 @@ public unsafe partial class Hnsw
             return (nint)_nodes.RawItems != before;
         }
 
-        // Test-only: grow the node array, then claim a buffer of the vacated capacity and fill it with a
-        // poison pattern. If the grow freed the old buffer (the RavenDB-26809 bug) the allocator reuses
-        // that same memory and a dangling reader sees poison; if it was retained (the fix) the reader is
-        // unaffected. The poison buffer is retained so it occupies the region past the reader's resume.
+        // Test-only: grow the node array, then fill a buffer of the vacated capacity with a poison pattern.
+        // If the grow freed the old buffer (the RavenDB-26809 bug), the allocator reuses that memory and a
+        // dangling reader sees poison; if it was retained (the fix), the reader is unaffected. The poison
+        // buffer is retained so it occupies the vacated region.
         internal bool GrowNodesAndPoisonVacatedForTesting()
         {
             var before = (nint)_nodes.RawItems;
@@ -977,11 +978,10 @@ public unsafe partial class Hnsw
 
         internal TestingStuff ForTestingPurposesOnly() => _forTestingPurposes ??= new TestingStuff();
 
-        // Deterministically reproduces the RavenDB-26809 interleaving for tests: parks a placement worker
-        // while it holds a reference into a node's edges, then has the LLT thread move both that edge
-        // buffer and the node array before the worker resumes. With the fix in place the worker reads a
-        // private edge snapshot and the grown-from node buffer is retained, so the build completes and the
-        // graph stays queryable; reverting either guard turns this into a use-after-free.
+        // Deterministically reproduces the RavenDB-26809 interleaving: parks a placement worker holding a
+        // reference into a node's edges, then has the LLT thread move both that edge buffer and the node
+        // array before the worker resumes. With the fix (private edge snapshot + retained node buffer) the
+        // build completes and stays queryable; reverting either guard turns this into a use-after-free.
         internal sealed class TestingStuff
         {
             internal bool SimulateConcurrentRealloc;

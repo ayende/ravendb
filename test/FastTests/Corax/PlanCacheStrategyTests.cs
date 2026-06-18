@@ -11,15 +11,13 @@ using Xunit;
 namespace FastTests.Corax;
 
 /// <summary>
-/// Guards the plan-cache cardinality hazard (RavenDB-25281 #4852). The bitmap-vs-direct-scan choice
-/// must NOT be frozen into the cached plan: <c>CompiledPlan.Strategy</c> records only the parameter-
-/// independent <em>structural</em> candidacy (decided once at cache-miss), while the actual strategy is
-/// re-decided on every execution by the per-execution cost gate (<c>DirectScanCostEffective</c> /
-/// <c>CompoundFieldCostEffective</c>) against the current bound parameters, falling back to the bitmap
-/// pipeline when a scan would not pay off. The instance-time choice is surfaced as <c>OptimizationHint</c>
-/// and the cached structural candidacy is always surfaced alongside it as <c>StrategyCandidate</c>, so a
-/// cost-gate flip (the two diverging) is observable. Correctness is checked against brute force and across engines (Lucene never direct-scans,
-/// so a match proves the rewrite is semantics-preserving).
+/// Guards the plan-cache cardinality hazard (RavenDB-25281). The bitmap-vs-direct-scan choice must NOT be
+/// frozen into the cached plan: <c>CompiledPlan.Strategy</c> records only the parameter-independent
+/// <em>structural</em> candidacy, while the actual strategy is re-decided on every execution by the cost gate
+/// (<c>DirectScanCostEffective</c> / <c>CompoundFieldCostEffective</c>) against the current parameters, falling
+/// back to the bitmap pipeline when a scan would not pay off. The instance-time choice is surfaced as
+/// <c>OptimizationHint</c> and the cached candidacy as <c>StrategyCandidate</c>, so a cost-gate flip is observable.
+/// Correctness is checked against brute force and across engines (Lucene never direct-scans).
 /// </summary>
 public class PlanCacheStrategyTests : RavenTestBase
 {

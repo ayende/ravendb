@@ -55,10 +55,9 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     /// <summary>Total number of matching entries (set after the first Fill call).</summary>
     public long TotalResults;
 
-    /// <summary>Wall-clock ticks spent on sort-specific work — heap-sorting the candidates or walking the
-    /// sort index in order. Excludes the inner match's execution (the compiled bitmap pipeline), which is
-    /// timed onto the child CompiledQuery node's per-op telemetry; counting it here too would double-count
-    /// the query as sort time. <see cref="Inspect"/> emits this as the sort node's "Ms" so include timings().</summary>
+    /// <summary>Ticks spent on sort-specific work (heap-sort / index-order walk). Excludes the inner match's
+    /// execution, timed onto the child CompiledQuery node — counting it here too would double-count.
+    /// <see cref="Inspect"/> emits this as the sort node's "Ms".</summary>
     public long SortingTimeInTicks;
 
     /// <summary>The sort strategy that actually ran this query. Set lazily on the first Fill;
@@ -76,10 +75,9 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     /// on an iterable sort index; forcing IndexOrderStreaming also suppresses the over-scan bailout.</summary>
     public CoraxSortingStrategy? ForcedStrategy;
 
-    /// <summary>For the streaming strategy only: how many entry IDs were read from the sort index and
-    /// intersected against the candidate set. A value far larger than the result count is the signature
-    /// of a degenerate stream-and-intersect — a tiny/scattered candidate set forces a near-full scan of
-    /// the sort index, which is exactly the cost the streaming strategy is supposed to avoid.</summary>
+    /// <summary>Streaming strategy only: entry IDs read from the sort index and intersected against the
+    /// candidate set. A value far larger than the result count signals a degenerate stream-and-intersect
+    /// (tiny/scattered candidates forcing a near-full scan).</summary>
     public long EntriesStreamed;
 
     public abstract bool IsBoosting { get; }

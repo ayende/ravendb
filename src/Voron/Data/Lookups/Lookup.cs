@@ -432,11 +432,9 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
     }
 
     /// <summary>
-    /// Counts how many entries have a key in <c>[low, high]</c> (both bounds inclusive). Exact: walks the
-    /// in-range terms via a forward iterator, so the cost is O(#in-range entries). This is the small/medium-range
-    /// answer and the oracle the sampling estimator (<see cref="GetNumberOfEntriesInRangeEstimate"/>) is validated
-    /// against. <paramref name="low"/> must not be greater than <paramref name="high"/>; an empty/inverted range
-    /// returns 0.
+    /// Exact count of entries with a key in <c>[low, high]</c> (inclusive), walking in-range terms via a
+    /// forward iterator (O(#in-range)). The small/medium-range answer and the oracle the sampling estimator
+    /// (<see cref="GetNumberOfEntriesInRangeEstimate"/>) is validated against. An inverted range returns 0.
     /// </summary>
     public long GetNumberOfEntriesInRange(TLookupKey low, TLookupKey high)
     {
@@ -449,10 +447,9 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
         long count = 0;
         while (it.MoveNext<TLookupKey>(out var key, out _, out _))
         {
-            // Compare via the (parent, keyData) overload rather than key.CompareTo(high): the iterator
-            // materializes each key from its long form with no decoded payload (CompactKeyLookup.Key is null),
-            // so a key-to-key compare would NRE for string trees. The parent overload lazily resolves the
-            // stored key and works for every TLookupKey. high < key => key is past the inclusive high bound.
+            // Compare via the (parent, keyData) overload, not key.CompareTo(high): the iterator materializes
+            // keys with no decoded payload (CompactKeyLookup.Key is null), so a key-to-key compare would NRE
+            // for string trees. The parent overload lazily resolves the stored key for every TLookupKey.
             if (high.CompareTo(this, key.ToLong()) < 0)
                 break;
             count++;
@@ -478,12 +475,12 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
     /// <item>the low edge — within child <c>a</c>, the right-siblings along the low path plus the exact leaf tail;</item>
     /// <item>the high edge — within child <c>b</c>, the left-siblings along the high path plus the exact leaf head.</item>
     /// </list>
-    /// Fully-enclosed sibling groups are estimated by sampling one representative subtree (<see cref="EstimateSubtreeEntries"/>)
-    /// and multiplying by the sibling count (groups up to <see cref="ExactChildSampleThreshold"/> are sampled per-child).
-    /// Because the band is counted directly rather than as <c>rank(high) − rank(low)</c>, the error scales with the
-    /// answer instead of with the tree size, so small ranges stay accurate. The leaf-fill assumption introduces a
-    /// systematic bias that the caller's EWMA is expected to correct. Cost is O(height²) page reads. An empty or
-    /// inverted range (<paramref name="low"/> &gt; <paramref name="high"/>) returns 0.
+    /// Fully-enclosed sibling groups are estimated by sampling one representative subtree
+    /// (<see cref="EstimateSubtreeEntries"/>) times the sibling count; groups up to
+    /// <see cref="ExactChildSampleThreshold"/> are sampled per-child. Counting the band directly (rather than
+    /// <c>rank(high) − rank(low)</c>) makes the error scale with the answer, not the tree size, so small ranges
+    /// stay accurate. The leaf-fill assumption adds a systematic bias the caller's EWMA corrects. Cost is
+    /// O(height²) page reads; an inverted range returns 0.
     /// </summary>
     public long GetNumberOfEntriesInRangeEstimate(TLookupKey low, TLookupKey high, bool highToEnd, bool lowToStart)
     {
@@ -519,7 +516,7 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
 
         if (lowestCommonAncestor == -1)
         {
-            // Shared prefix all the way down: both paths land on the same leaf (which forces equal depth). The answer is exact, no sampling involved.
+            // Shared prefix all the way down: both paths land on the same leaf (equal depth), so the answer is exact.
             ref var leaf = ref lowCursor._stk[lowDepth];
             int loStart = LowerBoundIndex(ref leaf);
             int hiEnd = UpperBoundIndex(ref highCursor._stk[lowDepth]);
@@ -1488,10 +1485,9 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
         FindPageFor(ref cstate, ref state, ref key);
     }
 
-    // Descends taking the last child at every branch, landing on the rightmost leaf - the page FindPageFor's branch
-    // clamp (Math.Min(NumberOfEntries - 1, ...)) reaches for a key greater than every stored key. The leaf is marked
-    // as an exact hit on its final slot so UpperBoundIndex reports the whole leaf, letting an open high bound be
-    // estimated as "everything from low to the end of the tree".
+    // Descends to the rightmost leaf (last child at every branch), as if seeking a key greater than every stored
+    // key. The leaf is marked an exact hit on its final slot so UpperBoundIndex reports the whole leaf, letting an
+    // open high bound be estimated as "everything from low to the end of the tree".
     private void DescendToRightmostLeaf(ref IteratorCursorState cstate)
     {
         cstate._pos = -1;

@@ -14,9 +14,7 @@ public sealed class SortMetadataTemplate
 
     public OrderMetadata[] Prebuilt { get; init; }
 
-    /// <summary>
-    /// If we need to update the slot's <see cref="OrderMetadata"/> per query, this is stored here
-    /// </summary>
+    /// <summary>Per-query patches for slots whose <see cref="OrderMetadata"/> must be re-resolved each query.</summary>
     public SortSlotPatch[] Patches { get; init; }
 }
 

@@ -76,7 +76,7 @@ public class IndexSearcherTest : StorageTest
     {
     }
 
-    // And/AndNot were removed from IndexSearcher — build equivalents via bitmap primitives.
+    // IndexSearcher has no And/AndNot — build equivalents via bitmap primitives.
     private static BitmapMatch AndNot(IndexSearcher searcher, IQueryMatch left, IQueryMatch right)
     {
         var bitmap = new BitmapMatch(searcher.Allocator);
@@ -122,9 +122,8 @@ public class IndexSearcherTest : StorageTest
 
         using var searcher = new IndexSearcher(Env, CreateKnownFields(Allocator));
 
-        // Memoize was deleted with the old IQueryMatch streaming pipeline. AllEntries() is
-        // cheap (it just iterates the entry index), so we call it fresh each time we need a
-        // new source for a multi-consumer expression.
+        // No Memoize available; AllEntries() is cheap (just iterates the entry index), so call it
+        // fresh each time a multi-consumer expression needs a new source.
 
         {
             var andNotMatch = AndNot(searcher,searcher.AllEntries(), searcher.AllEntries());

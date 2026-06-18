@@ -56,10 +56,8 @@ public sealed class Items_Index : AbstractIndexCreationTask<Item>
     }
 }
 
-/// <summary>Same map as <see cref="Items_Index"/> but with a Corax compound field on (City, Age). The
-/// compound field is what lets <c>CompoundKeyLookup</c> (two-equality collapse) and <c>CompoundSortedScan</c>
-/// (equality + ordered second member) actually fire — on the plain index those optimizations are always
-/// rejected because there is no compound field to drive them.</summary>
+/// <summary>Like <see cref="Items_Index"/> but with a compound field on (City, Age) so
+/// <c>CompoundKeyLookup</c> and <c>CompoundSortedScan</c> can fire.</summary>
 public sealed class Items_Compound : AbstractIndexCreationTask<Item>
 {
     public Items_Compound()
@@ -70,14 +68,10 @@ public sealed class Items_Compound : AbstractIndexCreationTask<Item>
     }
 }
 
-/// <summary>Same documents as <see cref="Items_Index"/> but with a Corax spatial field (<c>Coordinates</c>,
-/// from lat/lon) and a vector field (<c>Embedding</c>, from a stored <c>float[]</c>). These are what let the
-/// catalog exercise <c>spatial.within(...)</c> and <c>vector.search(...)</c> — both standalone and combined
-/// with an ordinary term filter (the "vegan restaurants in this area" shape: a category equality AND a
-/// spatial circle). Spatial and vector clauses are not part of the bitmap term pipeline: spatial resolves
-/// through <c>PostFilterMatch</c> (a per-entry geometry test layered over the term match, or over all entries
-/// when it is the only clause) and vector resolves through the vector match (an approximate nearest-neighbour
-/// scan re-ranked by similarity), so their plans look different from the term-leaf entries above.</summary>
+/// <summary>Like <see cref="Items_Index"/> plus a spatial field (<c>Coordinates</c>) and a vector field
+/// (<c>Embedding</c>) so the catalog can exercise <c>spatial.within(...)</c> and <c>vector.search(...)</c>.
+/// Spatial resolves through <c>PostFilterMatch</c> and vector through the vector match (approximate NN scan),
+/// so their plans differ from the term-leaf entries above.</summary>
 public sealed class Items_Geo : AbstractIndexCreationTask<Item>
 {
     public Items_Geo()
@@ -96,14 +90,10 @@ public sealed class Items_Geo : AbstractIndexCreationTask<Item>
 }
 
 /// <summary>
-/// Regenerates <c>corax-query-catalog.md</c> directly against the live engine on this branch.
-/// For each catalog query it runs the RQL with <c>include timings()</c> over several parameter
-/// sets, captures <see cref="QueryTimings.QueryPlan"/> for the structural plan, and dumps every
-/// compiled plan variant the plan cache produced (strategy, decision trail, generated C#).
-///
-/// The compiled variants are read from the index's internal <c>SharedPlanCache</c> via reflection
-/// (the field is internal to Raven.Server), then enumerated through the public
-/// <see cref="PlanCache.Snapshot"/> API.
+/// Regenerates <c>corax-query-catalog.md</c> against the live engine. For each catalog query it runs the
+/// RQL with <c>include timings()</c> over several parameter sets, captures <see cref="QueryTimings.QueryPlan"/>,
+/// and dumps every compiled plan variant (strategy, decision trail, generated C#). Compiled variants are read
+/// from the index's internal <c>SharedPlanCache</c> via reflection, then enumerated through <see cref="PlanCache.Snapshot"/>.
 /// </summary>
 public sealed class CoraxCatalogGenerator : RavenTestBase
 {
@@ -130,9 +120,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         var queries = BuildCatalog();
 
         // Rendered plan PNGs live in a sibling `corax-plans` directory next to the output .md; the markdown
-        // embeds reference them by that relative name. Renders are produced inline below by shelling out to
-        // Graphviz `dot`, so a single run yields the fully-stitched catalog (image embeds + collapsed DOT
-        // source) with no separate post-processing step.
+        // embeds reference them by that relative name. Renders are produced inline below via Graphviz `dot`.
         string plansDir = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(outPath)) ?? ".", "corax-plans");
         Directory.CreateDirectory(plansDir);
         string plansDirName = Path.GetFileName(plansDir);
@@ -180,10 +168,8 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
             // the plan tree. That same text is the plan-cache key, so we match variants on it.
             string timedRql = q.Rql + " include timings()";
 
-            // One collapsible block per parameter set, in order. Each holds (top to bottom): the rendered
-            // dataflow graph image + its collapsed DOT source (both produced inline below), the generated C#,
-            // the executed strategy, the decision trail (when present), the structural plan JSON, and the raw
-            // timings.
+            // One collapsible block per parameter set: rendered dataflow graph + DOT source, generated C#,
+            // executed strategy, decision trail (when present), structural plan JSON, and raw timings.
             foreach (ParamSet p in q.Params)
             {
                 QueryInspectionNode plan = RunForPlan(store, timedRql, p, out QueryTimings timings);
@@ -193,13 +179,10 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 sb.Append("<summary><b>params: ").Append(p.Label).Append("</b> — ").Append(p.Description).AppendLine("</summary>");
                 sb.AppendLine();
 
-                // 1 + 2. Physical dataflow graph (rendered server-side by QueryPlanGraph and shipped on the plan
-                // node as PlanGraphDot). Render the DOT to a PNG via Graphviz and embed the image, then keep the
-                // original DOT source in a collapsed <details> — done inline so one run produces the final catalog.
-                // PlanGraphDot is attached to the OUTER plan root (BuildInspectionGraph): for a sort-wrapped query
-                // that root is the SortingMatch node, not the inner CompiledQuery — so read it from `plan`, not
-                // `compiled`, otherwise every sorted / vector / boosted query (whose root is a sort wrapper) would
-                // silently lose its graph. Reading the root also renders the full dataflow including the sort tail.
+                // 1 + 2. Physical dataflow graph (PlanGraphDot, shipped on the plan node). Render to PNG and embed,
+                // keeping the DOT source in a collapsed <details>. PlanGraphDot is on the OUTER plan root, so read it
+                // from `plan` not `compiled` — otherwise sort-wrapped queries (whose root is a sort wrapper) lose
+                // their graph and the rendered dataflow drops the sort tail.
                 if (TryGetParam(plan, "PlanGraphDot", out string dot))
                 {
                     string dotSrc = dot.TrimEnd('\n');
@@ -220,12 +203,9 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                     sb.AppendLine();
                 }
 
-                // 3. Generated C#. The compiler ALWAYS emits the bitmap-pipeline IL from the plan template; it is
-                // only the executed path when the runtime strategy is the bitmap pipeline. When the planner took a
-                // non-bitmap strategy (a compound-key seek, a sorted tree scan), this IL is the FALLBACK shape that
-                // did NOT run — so we say so, otherwise a reader sees "Executed strategy: CompoundKeyLookup" sitting
-                // above a Fill+AND bitmap listing and reasonably concludes that listing is what executed. The graph's
-                // per-op telemetry is the tell: a fallback IL whose ops never ran carries no count=/ms= on its nodes.
+                // 3. Generated C#. The compiler ALWAYS emits the bitmap-pipeline IL; it is only the executed path
+                // when the runtime strategy is the bitmap pipeline. For a non-bitmap strategy this IL is the
+                // fallback shape that did NOT run, so we label it as such.
                 bool ranBitmap = TryGetParam(compiled, "OptimizationHint", out string executed) == false
                     || executed == "BitmapPipeline";
                 if (TryGetParam(compiled, "CSharpSourceFormatted", out string csharp))
@@ -240,8 +220,8 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                     sb.AppendLine();
                 }
 
-                // 4. Strategy that ACTUALLY ran (the runtime cost gate may have fallen back from the cached
-                // candidacy), with the cached candidate alongside when they differ.
+                // 4. Strategy that actually ran (runtime cost gate may differ from cached candidacy), with the
+                // cached candidate alongside when they differ.
                 if (executed != null)
                 {
                     sb.Append("Executed strategy: `").Append(executed).Append('`');
@@ -251,8 +231,7 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                     sb.AppendLine();
                 }
 
-                // 5. Decision trail — the accept/reject record of each optimization the planner considered. Only
-                // emitted when the planner recorded one.
+                // 5. Decision trail — accept/reject record per optimization considered. Emitted only when recorded.
                 QueryInspectionNode trail = FindNode(plan, "DecisionTrail");
                 if (trail?.Children is { Count: > 0 })
                 {
@@ -279,8 +258,8 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 sb.AppendLine("</details>");
                 sb.AppendLine();
 
-                // 7. Raw `include timings()` durations. Wall-clock numbers are illustrative (they vary run to
-                // run); the value is seeing WHICH stages the engine timed. The transform renders this as a tree.
+                // 7. Raw `include timings()` durations. Wall-clock numbers are illustrative; the value is seeing
+                // WHICH stages the engine timed.
                 sb.AppendLine("Query timings (wall-clock, illustrative):");
                 sb.AppendLine();
                 sb.AppendLine("```");
@@ -306,9 +285,8 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         Console.WriteLine($"Rendered {planNumber} plan PNGs -> {plansDir}");
     }
 
-    /// <summary>Renders a Graphviz DOT document to a PNG by piping it to the <c>dot</c> CLI. Throws with the full
-    /// <c>dot</c> stderr on any failure (missing binary, malformed DOT) rather than producing a silently broken
-    /// catalog — the rendered images are the published artifact, so a render failure must abort the whole run.</summary>
+    /// <summary>Renders a Graphviz DOT document to a PNG via the <c>dot</c> CLI. Throws with the full <c>dot</c>
+    /// stderr on any failure so a broken render aborts the run rather than producing a silently broken catalog.</summary>
     private static void RenderDotToPng(string dot, string pngPath)
     {
         var psi = new ProcessStartInfo
@@ -344,9 +322,8 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
                 $"Graphviz 'dot' exited with code {process.ExitCode} while rendering '{pngPath}'. stderr: {stderr}");
     }
 
-    /// <summary>Serializes <paramref name="djv"/> via the blittable writer (compact), then re-emits it indented so
-    /// the catalog's JSON view is human-readable. The blittable round-trip stays the single source of truth for the
-    /// shape; System.Text.Json only re-flows whitespace.</summary>
+    /// <summary>Serializes <paramref name="djv"/> via the blittable writer, then re-emits it indented for a
+    /// human-readable JSON view. The blittable round-trip is the source of truth; System.Text.Json only re-flows whitespace.</summary>
     private static void AppendIndentedJson(StringBuilder sb, JsonOperationContext ctx, DynamicJsonValue djv)
     {
         string compact;
@@ -362,9 +339,8 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         sb.Append(JsonSerializer.Serialize(doc.RootElement, new JsonSerializerOptions { WriteIndented = true }));
     }
 
-    /// <summary>Projects the query plan node tree into a DynamicJsonValue for the JSON view of the plan. This is
-    /// the same QueryInspectionNode tree the Graphviz renderer consumes — JSON and DOT are two views of one
-    /// structure. The bulky generated-C# parameters are dropped here (shown in their own ```csharp block).</summary>
+    /// <summary>Projects the query plan node tree (same QueryInspectionNode tree the Graphviz renderer consumes)
+    /// into a DynamicJsonValue. The bulky generated-C# parameters are dropped (shown in their own ```csharp block).</summary>
     private static DynamicJsonValue PlanToJson(QueryInspectionNode node)
     {
         var json = new DynamicJsonValue { ["Operation"] = node.Operation };
@@ -401,9 +377,8 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         return (QueryInspectionNode)timings.QueryPlan;
     }
 
-    /// <summary>Depth-first search for the first node whose <c>Operation</c> matches. Used to reach the
-    /// CompiledQuery node (which carries the generated C#, the DOT graph, and the executed strategy) and the
-    /// DecisionTrail node beneath the outer sort wrapper.</summary>
+    /// <summary>Depth-first search for the first node whose <c>Operation</c> matches (e.g. the CompiledQuery node
+    /// or the DecisionTrail node beneath the outer sort wrapper).</summary>
     private static QueryInspectionNode FindNode(QueryInspectionNode node, string operation)
     {
         if (node == null)
@@ -740,10 +715,8 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
     private static void Seed(IDocumentStore store)
     {
         var cities = new[] { "London", "Paris", "Berlin", "Madrid", "Rome" };
-        // A deliberately rare sixth city: the first `rareCityDocs` documents go to Vatican (~200)
-        // versus ~10K for each of the other five. That selectivity is what lets the per-execution
-        // cost gate flip CompoundSortedScan from a bitmap fallback to an actual sorted compound-tree
-        // scan (see the "compound-sorted" catalog entry). Total document count is unchanged.
+        // A deliberately rare sixth city (~200 docs vs ~10K each for the others). That selectivity lets the
+        // cost gate flip CompoundSortedScan from a bitmap fallback to a sorted compound-tree scan.
         const string rareCity = "Vatican";
         const int rareCityDocs = 200;
         var names = new[] { "alice", "bob", "carol", "dave", "erin" };
@@ -752,15 +725,13 @@ public sealed class CoraxCatalogGenerator : RavenTestBase
         using Raven.Client.Documents.BulkInsert.BulkInsertOperation bulk = store.BulkInsert();
         for (int i = 0; i < DocCount; i++)
         {
-            // Spatial: scatter documents over a 100°×100° lat/lon box centred on (0,0). At ~5 docs per
-            // square degree a 60-mile circle (≈0.87° radius) selects a small, geometry-dependent subset —
-            // enough to make spatial.within selective and its result count move with the radius/centre.
+            // Spatial: scatter over a 100°×100° lat/lon box centred on (0,0) so spatial.within is selective
+            // and its result count moves with the radius/centre.
             double lat = rng.NextDouble() * 100 - 50;
             double lon = rng.NextDouble() * 100 - 50;
 
-            // Vector: a 2-D unit vector at a random angle. Cosine similarity to a query vector is then just
-            // the angle between them, so vector.search against e.g. [1,0] (due "east") ranks the documents
-            // whose angle is closest to 0 first — a deterministic, model-free embedding the catalog can rank.
+            // Vector: a 2-D unit vector at a random angle, so cosine similarity is just the angle between
+            // vectors — a deterministic, model-free embedding the catalog can rank.
             double angle = rng.NextDouble() * 2 * Math.PI;
 
             bulk.Store(new Item

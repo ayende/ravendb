@@ -15,9 +15,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     {
     }
 
-    // Set op helpers for testing: deep-clone left bitmap, then mutate in-place.
-    // Preserves the original bitmap's container structure for subsequent assertions.
-    // Returns RoaringBitmap; caller must dispose it.
+    // Set-op helpers: deep-clone left bitmap, mutate in-place, preserving the original for later assertions.
+    // Caller must dispose the result.
     private static RoaringBitmap And(ByteStringContext ctx, RoaringBitmap a, RoaringBitmap b)
     {
         RoaringBitmap result = a.Clone();
@@ -166,10 +165,8 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
         RoaringBitmap bitmap = new(ctx);
 
-        // Corax entry IDs are 54-bit values, so a large or long-lived dataset legitimately
-        // crosses the 32-bit boundary. The bitmap must accept such values. These stay within a
-        // realistic entry-ID range (the container key value >> 16 remains modest) rather than
-        // testing pathological sparsity.
+        // Corax entry IDs are 54-bit, so a large dataset crosses the 32-bit boundary. The bitmap must
+        // accept such values; these stay within a realistic entry-ID range.
         var values = new long[]
         {
             5,                       // small, low container

@@ -161,7 +161,7 @@ public class RavenDB_26749 : RavenTestBase
         return line + Environment.NewLine + string.Join(Environment.NewLine, node.Children.Select(c => Describe(c, depth + 1)));
     }
 
-    // ---- #1 residual IL leaf scan: single-valued straight-line path ----
+    // ---- residual IL leaf scan: single-valued straight-line path ----
 
     // A driving ORDER BY Score range plus a residual equality on the single-valued Status field. The
     // residual predicate compiles to the straight-line single-read/single-compare IL.
@@ -210,7 +210,7 @@ public class RavenDB_26749 : RavenTestBase
         Assert.Equal(expected, actual);
     }
 
-    // ---- #1 residual IL leaf scan: multi-valued looping path ----
+    // ---- residual IL leaf scan: multi-valued looping path ----
 
     // The residual equality on the multi-valued Tags field must walk every term per entry (the loop IL),
     // matching when ANY term equals the value.
@@ -236,7 +236,7 @@ public class RavenDB_26749 : RavenTestBase
         Assert.Equal(expected, actual);
     }
 
-    // ---- #2 sort-key elision ----
+    // ---- sort-key elision ----
 
     // WHERE Status = 'active' ORDER BY Status: the equality pins Status to one value, and Status is
     // single-valued, so the whole sort is a no-op and the SortingMatch wrapper is dropped.
@@ -379,13 +379,11 @@ public class RavenDB_26749 : RavenTestBase
         }
     }
 
-    // The single->multi flip for the residual straight-line IL (#51). The index starts with a single
-    // term per entry for Code; a residual Code='common' scan compiles to a single read + single compare.
-    // We then add a doc whose Code is two terms ["aaa","common"] (now multi-valued). 'aaa' sorts before
-    // 'common', so a STALE single-read plan would read only the first term and wrongly drop this doc.
-    // The cache-key fold forces a re-plan to the looping IL, which walks both terms and matches via
-    // 'common' — so the doc is correctly returned. This is the most dangerous flip: a wrong plan here
-    // silently returns incomplete results rather than throwing.
+    // The single->multi flip for the residual straight-line IL. Code starts single-valued (a Code='common'
+    // residual compiles to a single read + compare). Adding a doc whose Code is ["aaa","common"] makes the
+    // field multi-valued; since 'aaa' < 'common', a stale single-read plan would read only the first term and
+    // drop the doc. The cache-key fold forces a re-plan to the looping IL, which walks both terms and matches.
+    // The dangerous case: a wrong plan here silently returns incomplete results rather than throwing.
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     public async Task ResidualScan_FieldFlipsToMultiValued_StillMatchesViaSecondTerm()
     {

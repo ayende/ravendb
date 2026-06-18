@@ -181,8 +181,7 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public void PlanBuildSpanSurfacedUnderCoraxScope(Options options)
     {
-        // The plan-build / IL-compile work used to be invisible; it now composes as an "Optimizer"
-        // span under the "Corax" timing scope.
+        // The plan-build / IL-compile work composes as an "Optimizer" span under the "Corax" timing scope.
         using var store = GetDocumentStore(options);
         new Index().Execute(store);
         using var session = store.OpenSession();

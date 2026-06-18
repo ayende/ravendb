@@ -103,21 +103,13 @@ public partial class IndexSearcher
                     return;
                 }
 
-                // Sample entry IDs from the filter for HNSW probe seeds. HNSW only
-                // probes up to 512 nodes, so cap the sample to avoid allocating a
-                // huge array for very large filters.
-                //
-                // We must not bias the sample toward the oldest documents (lowest
-                // entry IDs are assigned earliest at indexing time, and the bitmap
-                // is ordered by entry ID), or recall degrades for queries over newer
-                // documents. Rather than sweep the whole filter (O(filterCount)) with
-                // reservoir sampling, pick random ranks in [0, filterCount) and resolve
-                // them with RoaringBitmap.Select, which walks the container structure
-                // once — O(C + N log N) — using per-container cardinality to map a rank
-                // to its set value. When the filter fits the cap we take every entry
-                // (sequential ranks). Sampling is with replacement; rare duplicate
-                // seeds only cost a redundant probe (HNSW dedups visited nodes), and
-                // the cap is already 16x the probe budget so distinctness is not needed.
+                // Sample entry IDs for HNSW probe seeds, capped (HNSW probes <= 512 nodes) to avoid a huge
+                // array for large filters. Must not bias toward old documents (low entry IDs index first, and
+                // the bitmap is entry-ID ordered) or recall degrades for newer docs. Instead of an
+                // O(filterCount) reservoir sweep, pick random ranks in [0, filterCount) and resolve via
+                // RoaringBitmap.Select (one container walk, O(C + N log N)); the cap branch takes every entry.
+                // Sampling is with replacement — duplicate seeds only cost a redundant probe (HNSW dedups), and
+                // the cap is 16x the probe budget so distinctness isn't needed.
                 const int MaxFilterSampleSize = 8192;
                 var sampleSize = (int)Math.Min(filterCount, MaxFilterSampleSize);
                 _entryIds = new long[sampleSize];

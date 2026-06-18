@@ -303,10 +303,9 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
             }
         }
         
-        // Surface the sort's own runtime cost. The inner bitmap pipeline times its ops onto the child
-        // CompiledQuery node; the multi-comparer sort runs above it and is otherwise absent from include
-        // timings(). SortingMultiMatch always materializes the candidate set and heap-sorts it (no
-        // index-order streaming variant exists for multi-key sorts), so the strategy is constant.
+        // Surface the sort's own cost — it runs above the bitmap pipeline (timed onto the child CompiledQuery
+        // node) and is otherwise absent from include timings(). Strategy is constant: multi-key sorts always
+        // materialize and heap-sort (no index-order streaming variant exists).
         if (SortingTimeInTicks > 0)
         {
             parameters["Strategy"] = CoraxSortingStrategy.InMemorySort.ToString();

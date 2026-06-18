@@ -745,8 +745,8 @@ public static class QueryPrimitives
         // (O(containers), repairs lazy popcounts) is skipped via short-circuit — the AND/ANDNOT and
         // TermsProviderMatch callers pass limit = long.MaxValue and therefore never pay for it. The
         // exact count is consulted only once upperBound says the limit might have been reached.
-        // We no longer clip each batch to the exact remaining room: overshooting by at most a batch
-        // (or one large posting list, as before) is harmless — the caller pages to its real limit and
+        // Batches are not clipped to the exact remaining room: overshooting by at most a batch
+        // (or one large posting list) is harmless — the caller pages to its real limit and
         // for an AND seed an over-full bitmap only feeds the narrowing clause more candidates.
         // It is also returned as the over-counting postings tally the range estimator calibrates against
         // (see the <returns> note), which is why the large bucket below adds NumberOfEntries to it rather

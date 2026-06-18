@@ -39,12 +39,10 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>Author the structural plan from the cached <see cref="CompiledPlan.InspectionTemplate"/>,
-    /// decision trail, live clause values, and post-filter/sort wrappers — with no timing (overlaid
-    /// separately by <see cref="OverlayTimings"/>, so the plan is fully formed even on the spatial/vector-only
-    /// path whose match is not a <see cref="CompiledQueryMatch"/>). Returns the outer root (sort wrapper when
-    /// sorting, else the CompiledQuery node), the CompiledQuery node via <paramref name="compiledRoot"/>, and
-    /// the per-template-op nodes in template order via <paramref name="opNodes"/> (joined to timings by op
-    /// index). Null only when there is no structural template to render.</summary>
+    /// decision trail, live clause values, and post-filter/sort wrappers — no timing (overlaid separately by
+    /// <see cref="OverlayTimings"/>, so the plan is fully formed even on the spatial/vector-only path). Returns
+    /// the outer root (sort wrapper when sorting, else the CompiledQuery node), plus the CompiledQuery node and
+    /// per-template-op nodes (joined to timings by op index) via out params. Null when no template to render.</summary>
     private static QueryInspectionNode BuildPlan(CompiledQuery result, out QueryInspectionNode compiledRoot, out List<QueryInspectionNode> opNodes, out QueryInspectionNode entryScanNode)
     {
         compiledRoot = null;
@@ -115,11 +113,10 @@ internal static partial class QueryPlanBuilder
                 var term2 = FormatValueFromPlan(packed, exec, packed.Param2);
                 if (term2 != null) parameters["Term2"] = term2;
 
-                // search(field, "a b c") compiles to a SINGLE bitmap-pipeline leaf, but it EXECUTES as a match over
-                // multiple analyzer-tokenized terms combined with OR/AND (or a phrase for a quoted group) — not the
-                // one literal string shown in Term. Surface the tokenized query terms and the operator so the plan
-                // reflects the real multi-term match. SplitSearchValue mirrors what HandleSearch feeds SearchQuery:
-                // it splits on whitespace and keeps quoted groups as a single phrase term.
+                // search(field, "a b c") is one bitmap-pipeline leaf but executes as a match over multiple
+                // analyzer-tokenized terms OR/AND-combined (a quoted group is one phrase term) — not the literal
+                // string in Term. Surface the tokenized terms + operator. SplitSearchValue mirrors what HandleSearch
+                // feeds SearchQuery (split on whitespace, quoted groups kept as one phrase).
                 if (clauseExec.Clause.ClauseType == ClauseType.Search && term != null)
                 {
                     var searchTerms = QueryBuilderHelper.SplitSearchValue(term).ToList();
@@ -144,11 +141,10 @@ internal static partial class QueryPlanBuilder
                     parameters["Terms"] = string.Join(", ", displayTerms) + (inTermCount > 5 ? $" ... ({inTermCount} total)" : "");
                 }
 
-                // Per-execution estimate (the live ClauseExecution.Cardinality for THIS run's bound parameters),
-                // not the cached plan-emit-time value: plans are reused across parameter sets, so the cached number
-                // would be stale. For range/StartsWith clauses also surface the raw estimator inputs so the reader
-                // can see HOW the number was reached (sampled edges, the unscanned-middle shrinkage blend), not just
-                // the final count. See IndexSearcher.EstimateMatchesInRange / RangeEstimateBreakdown.
+                // Per-execution estimate (live Cardinality for THIS run's bound parameters), not the cached
+                // plan-emit-time value (stale across parameter sets). For range/StartsWith clauses also surface the
+                // raw estimator inputs so the reader can see HOW the number was reached. See
+                // IndexSearcher.EstimateMatchesInRange / RangeEstimateBreakdown.
                 if (clauseExec.Cardinality is > 0 and < long.MaxValue)
                     parameters["EstimatedRows"] = clauseExec.Cardinality.ToString("N0");
 
@@ -184,13 +180,12 @@ internal static partial class QueryPlanBuilder
                 hasEntryScanGate = true;
         }
 
-        // Entry-scan tail: a SINGLE node modelling the shared scan body that every EntryScanCheck gate branches
-        // to. The gates above are read-only cost checks on the slot-0 accumulator (Slot=0); the actual slot 0 ->
-        // slot 1 move and the per-entry residual evaluation happen HERE, once, regardless of which gate fired.
-        // Modelling it as one tail (rather than hanging the body off a specific check) is the accurate physical
-        // picture and avoids mis-attributing "Taken" to a gate that did not fire (OverlayTimings sets the runtime
-        // Taken flag + scanned/passed counts on this node). The Residual children are what the scan evaluates per
-        // surviving entry. Rendered whenever the plan has an entry-scan path, independent of whether THIS run took it.
+        // Entry-scan tail: a SINGLE node for the shared scan body every EntryScanCheck gate branches to. The gates
+        // are read-only cost checks on the slot-0 accumulator; the slot 0 -> slot 1 move and per-entry residual
+        // evaluation happen HERE, once, regardless of which gate fired. One tail (vs. hanging the body off a
+        // specific check) is the accurate physical picture and avoids mis-attributing "Taken" to a gate that did
+        // not fire. Residual children are what the scan evaluates per surviving entry. Rendered whenever the plan
+        // has an entry-scan path, independent of whether THIS run took it.
         if (hasEntryScanGate)
         {
             var entryScanParams = new Dictionary<string, string> { ["DestSlot"] = "1", ["SourceSlot"] = "0" };
@@ -221,19 +216,17 @@ internal static partial class QueryPlanBuilder
             root.Children.Add(trailNode);
         }
 
-        // Surface clauses the resolution pass statically collapsed for this run. A sentinel emits no match
-        // leaf — it resolves to a bitmap fill/clear and is algebraically simplified out of the op stream — so
-        // these clauses are otherwise invisible in the executed tree above. Listing them closes the gap between
-        // what the query TEXT asked for and what actually ran: the reader sees that e.g. a WHEN(false) clause or
-        // a contradictory BETWEEN was answered without scanning, rather than wondering why a clause vanished.
+        // Surface clauses the resolution pass statically collapsed. A sentinel emits no match leaf (it resolves
+        // to a bitmap fill/clear, simplified out of the op stream), so these clauses are otherwise invisible in
+        // the executed tree. Listing them closes the gap between what the query TEXT asked for and what ran (e.g.
+        // a WHEN(false) clause or a contradictory BETWEEN answered without scanning).
         AppendResolvedClauses(exec, root);
 
-        // When a tree-scan strategy (FieldSortedScan / CompoundSortedScan) actually executed, the op template rendered
-        // above describes only the candidate predicates that fed cost estimation — the bitmap pipeline never
-        // ran. Surface the executed scan's OWN structure (driving tree, seek bound, residual predicates, scan
-        // counts) so the plan reflects what truly happened instead of hiding it behind the unused bitmap
-        // fallback. DirectScanMatchBase.Inspect() carries no vector/spatial children, so AppendPostFilterNodes
-        // would drop it — it must be attached explicitly.
+        // When a tree-scan strategy (FieldSortedScan / CompoundSortedScan) ran, the op template above describes
+        // only the candidate predicates that fed cost estimation — the bitmap pipeline never ran. Surface the
+        // executed scan's OWN structure (driving tree, seek bound, residual predicates, scan counts).
+        // DirectScanMatchBase.Inspect() carries no vector/spatial children, so AppendPostFilterNodes would drop
+        // it — attach explicitly.
         if (result.ExecutedMatch is DirectScanMatchBase directScan)
         {
             var directScanNode = directScan.Inspect();
@@ -282,19 +275,16 @@ internal static partial class QueryPlanBuilder
 
         compiled.GetTelemetry(out var timings, out var resultCounts, out var entryScanAt);
 
-        // The bitmap pipeline's resolved output: the cardinality of the result bitmap after the compiled
-        // delegate (including the done-label lazy-or repair) ran. For a plain query this is the full result
-        // count; for a limit/early-exit query it is the truncated count the pipeline stopped at — so the name
-        // is "Output" (what the pipeline produced), not "TotalResults" (which it is NOT under a limit).
+        // The bitmap pipeline's resolved output: result-bitmap cardinality after the compiled delegate ran. Full
+        // count for a plain query; the truncated count for a limit/early-exit query — hence "Output" (what the
+        // pipeline produced), not "TotalResults" (which it is NOT under a limit).
         long pipelineOutput = compiled.Count;
         if (pipelineOutput >= 0)
             compiledRoot.Parameters["Output"] = pipelineOutput.ToString("N0");
 
-        // Limit push-down: when a page limit was pushed into the pipeline (Limit != int.MaxValue "unlimited"),
-        // slot 0 is grown only until it is full and the pipeline stops — it does NOT scan the rest. Surface the
-        // limit, and mark EarlyExit only when the output actually reached it (output < limit means the matches
-        // simply ran out first, so nothing was skipped). This mirrors CompiledQueryMatch.Confidence, where
-        // Low == the count was capped by the limit.
+        // Limit push-down: with a page limit (Limit != int.MaxValue), slot 0 grows only until full, then stops —
+        // it does NOT scan the rest. Mark EarlyExit only when output actually reached the limit (output < limit
+        // means matches ran out first, nothing skipped). Mirrors CompiledQueryMatch.Confidence (Low == capped).
         if (compiled.Limit != int.MaxValue)
         {
             compiledRoot.Parameters["Limit"] = compiled.Limit.ToString("N0");
@@ -311,30 +301,26 @@ internal static partial class QueryPlanBuilder
         {
             int opIndex = i < template.Length ? template[i].OpIndex : i;
             var parameters = opNodes[i].Parameters;
-            // Per-op count is ComputeCount() on the slot's bitmap as it stood right after this op ran — i.e. while
-            // it may still hold ArrayUnsorted containers whose stored Cardinality is the RAW count of appended
-            // posting-list entries (cross-batch/bucket duplicates not yet collapsed). It only collapses to the true
-            // distinct count once PrepareForReading sorts+dedups the slot. So this is an "OutputWithDups" upper-bound
-            // count, distinct from the top-level "Output" (compiled.Count), which is read post-finalization and is exact.
+            // Per-op count is ComputeCount() on the slot's bitmap right after this op ran, while it may still hold
+            // ArrayUnsorted containers whose Cardinality is the RAW appended-entry count (duplicates not yet
+            // collapsed; only PrepareForReading sorts+dedups). So this is an upper-bound "OutputWithDups", distinct
+            // from the top-level "Output" (compiled.Count) read post-finalization and exact.
             if (resultCounts != null && opIndex >= 0 && opIndex < resultCounts.Length && resultCounts[opIndex] > 0)
                 parameters["OutputWithDups"] = resultCounts[opIndex].ToString("N0");
             if (timings != null && opIndex >= 0 && opIndex < timings.Length && timings[opIndex] > 0)
                 parameters["Ms"] = (timings[opIndex] / tickFreq).ToString("F3");
 
-            // For an IN/range-expansion op, surface the ACTUAL number of expanded term slots it unioned/intersected
-            // this run (a runtime value the template could not bake — the name is count-free by design). This is the
-            // "OR-Range over N terms" the user expects, read from the live InRangeCounts the generated code looped on.
+            // For an IN/range-expansion op, surface the ACTUAL expanded term-slot count this run (a runtime value
+            // the template could not bake), read from the live InRangeCounts the generated code looped on.
             int rangeIdx = i < template.Length ? template[i].RangeCountIndex : -1;
             if (rangeIdx >= 0 && compiled.InRangeCounts != null && rangeIdx < compiled.InRangeCounts.Length)
                 parameters["Terms"] = compiled.InRangeCounts[rangeIdx].ToString("N0");
         }
 
-        // Mark whether the entry-scan branch actually fired this run, on the single EntryScan tail node (the shared
-        // scan body, not a specific gate; BuildPlan hands it back so we need no name lookup). EntryScanTakenAtOp >= 0
-        // means the cost gate switched off the bitmap pipeline at runtime; its value is the leaf-cursor position at
-        // the switch, i.e. how many leaf clauses had been merged into the slot-0 accumulator before the scan took
-        // over (SwitchedAfterClauses). Surfacing the scanned/passed counts here is "where it skipped to the entry
-        // scan, and how much it scanned" in one place.
+        // Mark whether the entry-scan branch fired this run, on the single EntryScan tail node. entryScanAt >= 0
+        // means the cost gate switched off the bitmap pipeline at runtime; its value is the leaf-cursor position
+        // at the switch — how many leaf clauses had merged into the slot-0 accumulator first (SwitchedAfterClauses).
+        // The scanned/passed counts go here too.
         if (entryScanNode != null)
         {
             var p = entryScanNode.Parameters;
@@ -379,12 +365,10 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
-    /// Builds the producer node for a CompoundKeyLookup. The two Equals clauses were folded into a single
-    /// composite-key TermQuery on the synthetic compound field, so neither component appears in the op stream;
-    /// this node surfaces the compound field name, the two component field=value pairs the key encodes, and the
-    /// executed match's result count — mirroring how the DirectScan node stands in for the unused bitmap pipeline.
-    /// The component ordering follows <see cref="PlanTemplate.CompoundExactAFirst"/>, the same order
-    /// <c>ConstructCompoundExact</c> uses to build the key.
+    /// Producer node for a CompoundKeyLookup. The two Equals clauses were folded into one composite-key TermQuery
+    /// on the synthetic compound field, so neither component appears in the op stream; this node surfaces the
+    /// compound field name, the two component field=value pairs, and the result count. Component ordering follows
+    /// <see cref="PlanTemplate.CompoundExactAFirst"/>, the same order <c>ConstructCompoundExact</c> builds the key.
     /// </summary>
     private static QueryInspectionNode BuildCompoundKeyLookupNode(CompiledQuery result, QueryExecution exec, CompiledPlan compiledPlan)
     {
@@ -505,13 +489,12 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
-    /// Projects the flat <see cref="PlanOp"/> stream into the inspection-op template. The op stream is linear by
-    /// design — the bitmap pipeline combines clauses by applying operations in sequence — so boolean grouping is
-    /// rendered as that execution order rather than as synthetic OrGroup/AndGroup wrapper nodes (which would
-    /// misrepresent how the engine actually evaluated the query). Each op's name carries its combinator
-    /// (Fill / AND / OR / ANDNOT), and the AND-Bitmaps / ANDNOT-Bitmaps nodes mark the points where two bitmap
-    /// sub-results merge — i.e. a parenthesised sub-group boundary. A reader reconstructs the grouping from the
-    /// sequence: Fill(A), OR(B), AND(C) == (A OR B) AND C.
+    /// Projects the flat <see cref="PlanOp"/> stream into the inspection-op template. The op stream is linear (the
+    /// bitmap pipeline combines clauses in sequence), so boolean grouping is rendered as execution order rather
+    /// than synthetic OrGroup/AndGroup nodes (which would misrepresent how the engine evaluated). Each op's name
+    /// carries its combinator (Fill / AND / OR / ANDNOT); AND-Bitmaps / ANDNOT-Bitmaps mark where two bitmap
+    /// sub-results merge (a parenthesised sub-group boundary). Reconstruct grouping from the sequence:
+    /// Fill(A), OR(B), AND(C) == (A OR B) AND C.
     /// </summary>
     internal static InspectionOp[] BuildInspectionTemplate(PlanOp[] ops, List<ClauseExecution> executions)
     {

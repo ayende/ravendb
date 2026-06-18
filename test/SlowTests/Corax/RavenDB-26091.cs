@@ -289,7 +289,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
         var queryResults = await CreateQuery(out var timings)
             .ToListAsync();
 
-        // Post-#4826: non-existing entries are treated as null-adjacent in ORDER BY.
+        // non-existing entries are treated as null-adjacent in ORDER BY.
         // When the field has non-existing entries the planner routes through SortingMatch
         // (InMemorySort) rather than the streaming path, so all 4 docs are surfaced.
         if (options.DatabaseMode != RavenDatabaseMode.Sharded)
@@ -362,7 +362,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
         var queryResults = await CreateQuery(out var timings)
             .ToListAsync();
 
-        // Post-#4826: non-existing entries are treated as null-adjacent in ORDER BY.
+        // non-existing entries are treated as null-adjacent in ORDER BY.
         // The planner routes through SortingMatch when the field has non-existing entries.
         if (options.DatabaseMode != RavenDatabaseMode.Sharded)
         {
@@ -434,7 +434,7 @@ public class RavenDB_26091(ITestOutputHelper output) : RavenTestBase(output)
         var queryResults = await CreateQuery(out var timings)
             .ToListAsync();
 
-        // Post-#4826: non-existing entries are treated as null-adjacent in ORDER BY.
+        // non-existing entries are treated as null-adjacent in ORDER BY.
         // The planner routes through SortingMatch when the field has non-existing entries.
         if (options.DatabaseMode != RavenDatabaseMode.Sharded)
         {

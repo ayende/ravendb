@@ -678,7 +678,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertStreamingPlan(Options options, QueryTimings timings)
     {
-        // Post-#4826: when the sort field has non-existing entries, the planner routes through
+        // when the sort field has non-existing entries, the planner routes through
         // SortingMatch (InMemorySort) so that the missing rows surface as null-adjacent in
         // the final ordering.
         if (options.DatabaseMode == RavenDatabaseMode.Sharded)
@@ -721,7 +721,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertStringNullsOrderingExcludingMissing(List<Document> results, bool isAscending, bool nullsFirst)
     {
-        // Post-#4826: non-existing entries are treated as null-adjacent, so the 4th doc
+        // non-existing entries are treated as null-adjacent, so the 4th doc
         // (with all fields deleted) appears in the result set alongside the explicit-null doc.
         AssertStringNullsOrdering(results, isAscending, nullsFirst);
     }
@@ -760,7 +760,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertIntNullsOrderingExcludingMissing(List<Document> results, bool isAscending, bool nullsFirst)
     {
-        // Post-#4826: non-existing entries are treated as null-adjacent — see AssertStreamingPlan.
+        // non-existing entries are treated as null-adjacent — see AssertStreamingPlan.
         AssertIntNullsOrdering(results, isAscending, nullsFirst);
     }
 
@@ -798,7 +798,7 @@ public class RavenDB_26236(ITestOutputHelper output) : RavenTestBase(output)
 
     private static void AssertDoubleNullsOrderingExcludingMissing(List<Document> results, bool isAscending, bool nullsFirst)
     {
-        // Post-#4826: non-existing entries are treated as null-adjacent — see AssertStreamingPlan.
+        // non-existing entries are treated as null-adjacent — see AssertStreamingPlan.
         AssertDoubleNullsOrdering(results, isAscending, nullsFirst);
     }
 

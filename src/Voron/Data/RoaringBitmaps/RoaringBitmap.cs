@@ -26,16 +26,11 @@ namespace Voron.Data.RoaringBitmaps;
 /// - Bitmap: 8KB fixed bitmap (1024 longs) for dense data (&gt; 4096 values)
 ///
 /// Threading and consumption model:
-/// - Single-threaded by design. Concurrent access from multiple threads is not supported;
-///   no internal locking, no atomic state. Callers are responsible for not sharing a bitmap
-///   across threads simultaneously.
-/// - Set operations (<see cref="AndWith"/>, <see cref="AndNotWith"/>, <see cref="LazyOrWith"/>)
-///   are intentionally destructive on their right-hand argument. The right side may have its
-///   containers stolen, sorted in place, or otherwise mutated. This is a deliberate trade —
-///   it lets the implementation skip a copy in hot paths. After being passed as the right side
-///   of a set op, a bitmap is considered consumed and must not be used for further reads or
-///   set ops on its own. Pair this with <see cref="Clear"/>'s storage recycling: a consumed
-///   bitmap can be Clear()'d and reused as a scratch buffer with no allocator round-trip.
+/// - Single-threaded by design: no locking, no atomic state. Callers must not share a bitmap across threads.
+/// - Set operations (<see cref="AndWith"/>, <see cref="AndNotWith"/>, <see cref="LazyOrWith"/>) are
+///   intentionally destructive on their right-hand argument (containers stolen/sorted/mutated in place) to
+///   skip a copy in hot paths. After being passed as the right side, a bitmap is consumed and must not be
+///   read or used again until <see cref="Clear"/>'d — which also recycles its storage for reuse as scratch.
 /// </summary>
 [StructLayout(LayoutKind.Auto)]
 public unsafe partial struct RoaringBitmap : IDisposable
@@ -124,10 +119,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     public readonly int ContainerCount => _containerCount;
 
-    /// <summary>Total cardinality across all containers. This is real work, not a cached field:
-    /// O(container count), and it repairs any lazy bitmap popcounts (Cardinality == -1) it finds
-    /// along the way. Named as a method (not a property) so callers see the cost at the call site —
-    /// prefer caching the result or gating on a cheaper upper bound in hot loops.</summary>
+    /// <summary>Total cardinality across all containers. Not cached: O(container count) and repairs any
+    /// lazy bitmap popcounts (Cardinality == -1) found along the way. A method, not a property, so the
+    /// cost is visible at the call site — cache the result or gate on a cheaper bound in hot loops.</summary>
     public long ComputeCount()
     {
         AssertNotConsumed();
@@ -278,16 +272,11 @@ public unsafe partial struct RoaringBitmap : IDisposable
         (other, this) = (this, other);
     }
 
-    /// <summary>Batch-add strictly sorted (no duplicates) values. Groups values by container
-    /// key and adds them in bulk per container. For large runs within a single container (>4096),
-    /// switches directly to bitmap. For contiguous runs, extends/creates Range containers.
-    ///
-    /// Input contract: values must be strictly increased The <c>Array</c>-type append fast-path
-    /// and the bitmap creation path both rely on input length equaling the unique-value count.
-    ///
-    /// Bitmap-container updates are *lazy*: cardinality is left as LazyCardinality and
-    /// must be repaired before reading <see cref="Count"/>. <see cref="PrepareForReading"/>
-    /// calls <see cref="RepairAfterLazy"/> as part of its normal pre-read fixup.</summary>
+    /// <summary>Batch-add strictly sorted, unique values, grouped by container key. Large per-container
+    /// runs (&gt;4096) go straight to bitmap; contiguous runs extend/create Range containers. The Array
+    /// append fast-path and bitmap creation rely on input length equaling the unique-value count.
+    /// Bitmap updates are lazy (cardinality left as LazyCardinality); <see cref="PrepareForReading"/>
+    /// repairs it via <see cref="RepairAfterLazy"/> before reads.</summary>
     public void AddRange(ReadOnlySpan<long> sortedValues)
     {
         AssertNotConsumed();
@@ -380,10 +369,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// OR sorted values into a bitmap, accumulating per word and writing once per word boundary.
-    /// Sorted input means consecutive values often share the same word, collapsing N bit-sets
-    /// into ~N/64 word writes. Idempotent on already-zero words, so safe for fresh and existing bitmaps.
-    /// Cardinality tracking is the caller's responsibility.
+    /// OR sorted values into a bitmap, accumulating per word and writing once per word boundary so
+    /// consecutive values sharing a word collapse into ~N/64 writes. Idempotent, so safe for fresh and
+    /// existing bitmaps. Caller tracks cardinality.
     /// </summary>
     private static void OrSortedIntoBitmap(ulong* bitmapPtr, ReadOnlySpan<long> sortedValues)
     {
@@ -513,16 +501,12 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Lazy OR skips per-container cardinality tracking.
-    /// Bitmap containers get Cardinality = -1 (dirty). Call RepairAfterLazy() once
-    /// after all lazy OR operations to recompute cardinality in a single popcount pass.
+    /// Lazy OR skips per-container cardinality tracking: bitmap containers get Cardinality = -1 (dirty).
+    /// Call RepairAfterLazy() once afterwards to recompute cardinality in a single popcount pass.
     ///
-    /// [1] Bitmap→Array conversion after set ops: we intentionally skip this.
-    /// Standard roaring bitmaps convert sparse bitmap results back to array containers
-    /// to save memory and speed up later operations. But in Corax, these bitmaps
-    /// are temporarily - built during query evaluation and discarded immediately after.
-    /// The 8KB bitmap is already allocated; converting to Array allocates another buffer
-    /// and scans 1024 words, costing more than it saves for short-lived data.
+    /// Unlike standard roaring bitmaps, we deliberately skip Bitmap→Array conversion of sparse results:
+    /// Corax bitmaps are built during query evaluation and discarded immediately, so re-allocating an
+    /// array buffer and scanning 1024 words costs more than the memory it would save.
     /// </summary>
     public void LazyOrWith(scoped ref RoaringBitmap other)
     {
@@ -556,12 +540,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
             ContainerType otherType = other._types.RawItems[otherSlot];
             ContainerEntry stolen = otherEntry;
             otherEntry = default; // Clear the entry
-            // Detach the stolen slot from `other` so subsequent Contains/AndWith calls on
-            // `other` don't dereference the now-empty ContainerEntry. Without this the
-            // slot is still indexed (GetSlotForKey returns it) and ContainsAtSlot would
-            // NRE on entry.Data. Hit by SortingMatch.SortInMemory → Score paths that
-            // need to read membership from a bitmap whose containers were absorbed by
-            // a prior OrWith.
+            // Detach the stolen slot from `other`: otherwise it stays indexed and a later
+            // Contains/AndWith on `other` would NRE on the now-empty entry.Data. Hit by
+            // SortingMatch.SortInMemory → Score reading a bitmap absorbed by a prior OrWith.
             other._types.RawItems[otherSlot] = ContainerType.Free;
             other._index.RawItems[key] = IndexAbsent;
             other._containerCount--;
@@ -610,10 +591,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
             }
             case (ContainerType.Array or ContainerType.ArrayUnsorted, ContainerType.Range):
             {
-                // Convert the array to a heap-allocated bitmap first. We cannot materialize
-                // the range into a stack buffer and recurse because the (Array, Bitmap) case
-                // steals the right-hand bitmap buffer — a stack pointer that becomes dangling
-                // once this frame returns.
+                // Convert to a heap bitmap first: we can't materialize the range into a stack
+                // buffer and recurse, because the (Array, Bitmap) case steals the right-hand
+                // buffer — a stack pointer that dangles once this frame returns.
                 ConvertArrayToBitmap(ref left, ref leftType);
                 LazyOrContainerInPlace(ref left, ref leftType, ref right, rightType);
                 break;
@@ -1480,16 +1460,13 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Streaming AND helper for the limit-aware posting-list path. Intersects, in place, only this
-    /// bitmap's containers whose key is in [<paramref name="fromKeyInclusive"/>,
-    /// <paramref name="toKeyExclusive"/>) against <paramref name="other"/>, and returns the surviving
-    /// cardinality within that key range. Containers outside the range are left untouched.
-    ///
-    /// Unlike <see cref="AndWith"/> this does NOT consume <paramref name="other"/>: the caller feeds
-    /// an ever-growing <paramref name="other"/> across posting-list batches and, on each call, processes
-    /// only the key range it has already fully covered (the "settled" prefix — every term entry for
-    /// those containers has been read, because the posting list is scanned in ascending order). The
-    /// still-growing tail is processed by a later call once it too settles, or after the scan ends.
+    /// Streaming AND for the limit-aware posting-list path: intersects in place only this bitmap's
+    /// containers with key in [<paramref name="fromKeyInclusive"/>, <paramref name="toKeyExclusive"/>)
+    /// against <paramref name="other"/>, returning the surviving cardinality in that range; containers
+    /// outside it are untouched. Unlike <see cref="AndWith"/> it does NOT consume <paramref name="other"/>:
+    /// the caller grows <paramref name="other"/> across batches and processes only the "settled" key
+    /// prefix (all term entries read, since the posting list is scanned ascending), leaving the growing
+    /// tail for a later call.
     /// </summary>
     public long AndWithRange(scoped ref RoaringBitmap other, int fromKeyInclusive, int toKeyExclusive)
     {
@@ -1811,9 +1788,8 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Create a temporary bitmap on the stack from a Range container.
-    /// Returns a ContainerEntry pointing to the stackalloc buffer (no ByteStringContext allocation).
-    /// The returned entry has Storage=default - the caller must NOT release it.
+    /// Materialize a Range container into the given stackalloc bitmap buffer. The returned entry points
+    /// at that buffer with Storage=default, so the caller must NOT release it.
     /// </summary>
     [SkipLocalsInit]
     private static ContainerEntry MaterializeRangeIntoBuffer(ref ContainerEntry entry, ulong* stackBitmap)
@@ -1912,10 +1888,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
         _containerCount--;
     }
 
-    /// <summary>
-    /// Add a container entry during result-building (set operations). Used when building
-    /// a new bitmap from scratch where keys are added in order.
-    /// </summary>
+    /// <summary>Add a container entry while building a result bitmap from scratch (keys added in order).</summary>
     private void AddContainer(long key, ContainerType type, in ContainerEntry entry)
     {
         if (entry.Cardinality == 0)
@@ -1928,10 +1901,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     #region Container Management
 
-    /// <summary>
-    /// Round up to SIMD-aligned size. Ensures all array allocations
-    /// are multiples of 32 bytes so Vector256 operations don't need bounds checking.
-    /// </summary>
+    /// <summary>Round allocation size up to a multiple of 32 bytes so Vector256 ops need no bounds checking.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int AlignForSimd(int bytes)
     {
@@ -1939,10 +1909,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
     }
 
     /// <summary>
-    /// Append all values from <paramref name="right"/> into <paramref name="left"/>, which together
-    /// hold <paramref name="totalCount"/> entries. Steals an existing buffer when possible to avoid allocation:
-    /// uses left's buffer if it already has room, right's buffer (swapping ownership) if it fits, otherwise
-    /// allocates a new one. Result is always <see cref="ContainerType.ArrayUnsorted"/>.
+    /// Append <paramref name="right"/>'s values into <paramref name="left"/> (<paramref name="totalCount"/>
+    /// entries total). Reuses left's buffer if it has room, else steals right's (swapping ownership) if it
+    /// fits, else allocates. Result is always <see cref="ContainerType.ArrayUnsorted"/>.
     /// </summary>
     private void AppendArrayContainers(ref ContainerEntry left, ref ContainerEntry right, int totalCount)
     {

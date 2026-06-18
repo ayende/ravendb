@@ -6,10 +6,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 /// <summary>
 ///     Renders a compiled-query <see cref="QueryInspectionNode" /> plan as a Graphviz (DOT) dataflow graph.
 ///     The op stream is linear, but the bitmap SLOTS turn it into a graph: every op writes its <c>DestSlot</c>;
-///     a non-Fill op that targets a slot consumes whatever last wrote that slot (the running accumulator); the
-///     slot-to-slot merges (AND/ANDNOT/OR-Bitmaps) additionally consume their <c>SourceSlot</c>; and the
-///     EntryScanCheck branches slot 0 into the entry-scan tail (slot 1). Walking the ops while tracking the last
-///     writer per slot reconstructs the edges.
+///     a non-Fill op consumes whatever last wrote its target slot (the running accumulator); slot-to-slot merges
+///     (AND/ANDNOT/OR-Bitmaps) additionally consume their <c>SourceSlot</c>; EntryScanCheck branches slot 0 into
+///     the entry-scan tail (slot 1). Tracking the last writer per slot while walking the ops reconstructs the edges.
 /// </summary>
 internal static class QueryPlanGraph
 {
@@ -631,9 +630,8 @@ internal static class QueryPlanGraph
     }
 
     /// <summary>
-    ///     Builds the readable, multi-line label for a bitmap op node from its facts. The taken-state is NOT
-    ///     rendered into the label — it is surfaced as data_taken and via the edge colouring — so the label stays the
-    ///     structural picture (dispatch, field, term, slot, cardinality, count, timing).
+    ///     Multi-line label for a bitmap op node (dispatch, field, term, slot, cardinality, count, timing). The
+    ///     taken-state is surfaced via data_taken and edge colouring, not the label.
     /// </summary>
     private static string OpLabel(string operation, Dictionary<string, string> p)
     {
@@ -681,8 +679,8 @@ internal static class QueryPlanGraph
     }
 
     /// <summary>
-    ///     Builds the readable label for the executed-tree-scan node from its facts: the driving tree / clause /
-    ///     seek bound / direction, the per-entry residual predicates, the scan counts, and the per-phase timing.
+    ///     Label for the executed-tree-scan node: driving tree / clause / seek bound / direction, per-entry residual
+    ///     predicates, scan counts, per-phase timing.
     /// </summary>
     private static string DirectScanLabel(Dictionary<string, string> p)
     {
@@ -709,8 +707,8 @@ internal static class QueryPlanGraph
     }
 
     /// <summary>
-    ///     Builds the readable label for a CompoundKeyLookup producer node from its facts: the synthetic
-    ///     compound field, the two component field=value pairs the composite key encodes, and the result count.
+    ///     Label for a CompoundKeyLookup producer node: the synthetic compound field, the two component field=value
+    ///     pairs the composite key encodes, and the result count.
     /// </summary>
     private static string CompoundLookupLabel(Dictionary<string, string> p)
     {
@@ -733,9 +731,8 @@ internal static class QueryPlanGraph
     }
 
     /// <summary>
-    ///     Builds the label for the up-front count-probe node: the header-only CountPostingsInRange walk that
-    ///     resolved the DirectScan's exact total without draining it. Surfaces the number of in-range terms it
-    ///     walked, the resulting posting total, and the wall-clock cost of the probe.
+    ///     Label for the up-front count-probe node (header-only CountPostingsInRange walk that resolved the
+    ///     DirectScan's exact total without draining it): in-range terms walked, posting total, probe cost.
     /// </summary>
     private static string CountProbeLabel(Dictionary<string, string> p)
     {
@@ -749,11 +746,9 @@ internal static class QueryPlanGraph
     }
 
     /// <summary>
-    ///     Builds the label for a per-entry post-filter node. The underlying match (stashed as MatchOperation)
-    ///     decides the facts shown: a spatial match surfaces its relation (Within / Intersects), field, and tested
-    ///     shape; a vector match surfaces its search mode + similarity method, field, request shape (min match,
-    ///     candidates requested), and runtime cost (filter set size, candidates scanned, init + search time). The "[And]" /
-    ///     "Multi" variant names flow through verbatim so the heading reflects exactly which match ran.
+    ///     Label for a per-entry post-filter node. The underlying match (MatchOperation) decides the facts shown:
+    ///     spatial → relation/field/shape; vector → mode + similarity, field, request shape, runtime cost. Variant
+    ///     names ("[And]" / "Multi") flow through verbatim so the heading reflects which match ran.
     /// </summary>
     private static string PostFilterLabel(Dictionary<string, string> p)
     {
@@ -797,11 +792,10 @@ internal static class QueryPlanGraph
     }
 
     /// <summary>
-    ///     Builds the label for a sort wrapper node, naming the exact strategy and the sort key(s). A single-field
-    ///     <c>SortingMatch</c> renders the materialize-then-sort heap with its field / direction / compare type
-    ///     (score and spatial-distance sorts are called out explicitly); a <c>SortingMultiMatch</c> lists every
-    ///     ORDER BY field in priority order. (The streaming sorted-scan strategy is NOT a wrapper — it shows up as
-    ///     the DirectScan producer node, since the scan itself yields entries already in order.)
+    ///     Label for a sort wrapper node: strategy + sort key(s). Single-field <c>SortingMatch</c> shows field /
+    ///     direction / compare type (score and spatial-distance sorts called out explicitly); <c>SortingMultiMatch</c>
+    ///     lists every ORDER BY field in priority order. (The streaming sorted-scan is NOT a wrapper — it shows up as
+    ///     the DirectScan producer node, since the scan yields entries already in order.)
     /// </summary>
     private static string SortLabel(Dictionary<string, string> p)
     {

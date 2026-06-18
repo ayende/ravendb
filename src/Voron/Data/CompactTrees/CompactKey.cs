@@ -76,11 +76,10 @@ public sealed unsafe class CompactKey : IDisposable
         _keyMappingCache = KeyMappingPool.Rent(2 * MappingTableMask);
     }
 
-    /// <summary>Re-arm an already-initialized key for a new transaction without renting fresh pool
-    /// buffers. <see cref="Set"/> restarts the arena on every key, so the existing storage/mapping
-    /// buffers can be reused across transactions indefinitely — only the owner and arena cursors need
-    /// resetting. Lets long-lived key caches (e.g. the entry-scan loop) pay the pool rent once instead
-    /// of once per query.</summary>
+    /// <summary>Re-arm an already-initialized key for a new transaction without renting fresh pool buffers:
+    /// <see cref="Set"/> restarts the arena per key, so storage/mapping buffers are reusable across
+    /// transactions and only the owner and arena cursors need resetting. Lets long-lived key caches (e.g.
+    /// the entry-scan loop) pay the pool rent once rather than per query.</summary>
     public void Rebind(LowLevelTransaction tx)
     {
         Debug.Assert(_storage is not null && _keyMappingCache is not null, "Rebind requires an initialized key; call Initialize first.");
@@ -96,11 +95,10 @@ public sealed unsafe class CompactKey : IDisposable
         MaxLength = 0;
     }
 
-    /// <summary>Drop the transaction reference taken by <see cref="Rebind"/>/<see cref="Initialize"/>
-    /// without returning the rented buffers. A long-lived key cache must call this once a query finishes
-    /// so the <see cref="LowLevelTransaction"/> (and the pages/scratch it roots) can be collected while
-    /// the thread idles, instead of being pinned until the next query rebinds. The buffers stay rented
-    /// for reuse; call <see cref="Rebind"/> before the next use.</summary>
+    /// <summary>Drop the transaction reference (from <see cref="Rebind"/>/<see cref="Initialize"/>) without
+    /// returning the rented buffers. A long-lived key cache calls this when a query finishes so the
+    /// <see cref="LowLevelTransaction"/> (and the pages/scratch it roots) can be collected while the thread
+    /// idles. Buffers stay rented; call <see cref="Rebind"/> before the next use.</summary>
     public void Unbind()
     {
         _owner = null;
@@ -286,12 +284,11 @@ public sealed unsafe class CompactKey : IDisposable
         // We write the size and the key.
         Unsafe.WriteUnaligned<int>(ref _storage[0], key.Length);
 
-        // An empty key is a valid "before all keys" sentinel (e.g. open-ended range estimation): there is nothing
-        // to copy, and dereferencing key[0] on an empty span would throw. The Set(int, ...) overload handles the
-        // zero-length case the same way.
+        // An empty key is a valid "before all keys" sentinel (e.g. open-ended range estimation): nothing to
+        // copy, and dereferencing key[0] on an empty span would throw. Set(int, ...) handles this the same way.
         if (key.Length > 0)
         {
-            // PERF: Between pinning the pointer and just execute the Unsafe.CopyBlock unintuitively it is faster to just copy.
+            // PERF: counterintuitively, plain Unsafe.CopyBlock here beats pinning the pointer first.
             ref readonly byte kPtr = ref key[0];
             Unsafe.CopyBlock(ref _storage[sizeof(int)],  in kPtr, (uint)key.Length);
         }

@@ -10,12 +10,8 @@ using Sparrow.Server.Utils.VxSort;
 namespace Voron.Data.RoaringBitmaps;
 
 /// <summary>
-/// Forward iterator for RoaringBitmap supporting Fill(Span&lt;long&gt;) streaming.
-/// On construction, builds a sorted array of packed (key, slot) ulongs for deterministic traversal.
-/// Each ulong packs: key in upper 32 bits, slot in lower 32 bits.
-/// _positionInContainer is shared: Array uses it as array index, Range as offset from RangeStart,
-/// Bitmap as the current ulong word index (0..1023). _bitmapCurrentWord stores remaining
-/// bits in the current word for bitmap iteration only.
+/// Forward iterator for RoaringBitmap supporting Fill(Span&lt;long&gt;) streaming. On construction it builds
+/// a sorted array of packed (key in upper 32 bits, slot in lower 32 bits) ulongs for deterministic traversal.
 /// </summary>
 public unsafe struct RoaringBitmapIterator : IDisposable
 {
@@ -56,7 +52,6 @@ public unsafe struct RoaringBitmapIterator : IDisposable
         {
             if (types[i] != ContainerType.Free)
             {
-                // Pack: upper 32 bits = key, lower 32 bits = slot
                 packedPtr[_entryCount] = ((ulong)entries[i].Key << 32) | (uint)i;
                 _entryCount++;
             }
@@ -77,8 +72,8 @@ public unsafe struct RoaringBitmapIterator : IDisposable
         while (written < buffer.Length && _containerIndex < _entryCount)
         {
             ulong packed = packedPtr[_containerIndex];
-            int slot = (int)(packed & 0xFFFFFFFF);          // Lower 32 bits = slot
-            uint key = (uint)(packed >> 32);                 // Upper 32 bits = key
+            int slot = (int)(packed & 0xFFFFFFFF);
+            uint key = (uint)(packed >> 32);
 
             ref ContainerEntry entry = ref data._entries[slot];
             ContainerType type = data._types.RawItems[slot];

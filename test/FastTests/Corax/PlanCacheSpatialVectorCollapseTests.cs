@@ -12,7 +12,7 @@ using PlanCache = Corax.Querying.Planning.PlanCache;
 namespace FastTests.Corax;
 
 /// <summary>
-/// Stage C (RavenDB-25281) collapse coverage for the post-filter clause families — spatial and vector — that
+/// RavenDB-25281 collapse coverage for the post-filter clause families — spatial and vector — that
 /// resolve their operands through a dedicated binding array rather than the ordinary scalar term path. The
 /// structural key blanks WHERE literal VALUES (keeping type) and renumbers parameter NAMES, so a spatial
 /// <c>spatial.circle(R, lat, lon, 'miles')</c> with different numeric R/lat/lon, or a parameterized

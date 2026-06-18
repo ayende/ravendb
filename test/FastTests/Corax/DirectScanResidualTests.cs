@@ -11,16 +11,15 @@ using Xunit;
 namespace FastTests.Corax;
 
 /// <summary>
-/// Regression guards for the direct-scan residual path (RavenDB-25281 #4872). A direct-scan plan is
-/// driven by an ORDER BY field that also carries a range/equals WHERE clause; the remaining WHERE
-/// clauses become per-entry residuals evaluated by <c>CompiledEntryPredicate</c>. Two historical bugs:
+/// Regression guards for the direct-scan residual path (RavenDB-25281). A direct-scan plan is driven by an
+/// ORDER BY field that also carries a range/equals WHERE clause; the remaining WHERE clauses become per-entry
+/// residuals evaluated by <c>CompiledEntryPredicate</c>. Two historical bugs:
 ///   1. residual string-equality terms were not analyzer-encoded, so a mixed-case value (e.g. <c>Name = 'BOB'</c>)
 ///      never matched the stored, lower-cased term <c>bob</c>;
 ///   2. an <c>(A or B)</c> group residual was not handled recursively, throwing/returning wrong rows.
-/// Both are fixed by the recursive-unification refactor (ScanParamExtractor.ExtractFromPredicate is the
-/// single recursive core for entry-scan and direct-scan, always analyzing via GetAnalyzedSlice). These
-/// tests pin the behaviour: results are checked against a brute-force expectation and across engines
-/// (Corax vs Lucene — Lucene has no direct scan, so a match proves the rewrite is semantics-preserving).
+/// Both are fixed by routing entry-scan and direct-scan through one recursive core (ScanParamExtractor.
+/// ExtractFromPredicate, always analyzing via GetAnalyzedSlice). Results are checked against brute force and
+/// across engines (Lucene has no direct scan, so a match proves the rewrite is semantics-preserving).
 /// </summary>
 public class DirectScanResidualTests : RavenTestBase
 {
@@ -163,13 +162,10 @@ public class DirectScanResidualTests : RavenTestBase
         Assert.True(compiled.Parameters.TryGetValue("OptimizationHint", out var hint) && hint == "FieldSortedScan",
             "Expected the plan to use the FieldSortedScan strategy, but OptimizationHint was '" + (hint ?? "<missing>") + "'. Plan: " + Describe(plan));
 
-        // The executed scan match's OWN structure must be surfaced under the plan. The bitmap op
-        // template never ran for this query, so the introspection previously dropped the scan node entirely
-        // (RavenDB-25281 review #15). The node carries the driving tree, the residual predicates, and the
-        // per-run scan counts. It is attached as a DIRECT child of the CompiledQuery node and keeps the
-        // match's own name "DirectScan" — distinct from the DecisionTrail's "FieldSortedScan" candidacy entry
-        // (Accepted/Reason), which the FieldSortedScan strategy records. Target the structural node by its
-        // direct-child position.
+        // The executed scan match's own structure must be surfaced under the plan (the bitmap op template never
+        // ran for this query). The node carries the driving tree, residual predicates, and per-run scan counts,
+        // attached as a DIRECT child of CompiledQuery, keeping the match's own name "DirectScan" — distinct from
+        // the DecisionTrail's "FieldSortedScan" candidacy entry. Target the structural node by its child position.
         var directScan = compiled.Children?.FirstOrDefault(c => c.Operation == "DirectScan");
         Assert.True(directScan != null, "Expected a DirectScan node as a direct child of CompiledQuery. Plan: " + Describe(plan));
         Assert.True(directScan.Parameters.ContainsKey("DrivingTree"),

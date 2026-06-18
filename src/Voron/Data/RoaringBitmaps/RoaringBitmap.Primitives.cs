@@ -36,7 +36,7 @@ public unsafe partial struct RoaringBitmap
                 acc = AdvSimd.Add(acc, AdvSimd.Add(lower, upper));
             }
 
-            // we scan 8KB, which is 65,536 bits, which fits in 16 bits and can't overflow the ushort accumulator.
+            // 65,536 bits max fits in 16 bits, so the ushort accumulator can't overflow.
             return Vector128.Sum(acc);
         }
 
@@ -165,17 +165,15 @@ public unsafe partial struct RoaringBitmap
         public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => Vector512.AndNot(a, b);
     }
 
-    /// <summary>
-    /// Narrow long values to ushort (extract low 16 bits) using SIMD when available.
-    /// </summary>
+    /// <summary>Narrow long values to ushort (low 16 bits), using SIMD when available.</summary>
     internal static void CopyDenseBottom16BitsToUshortArray(ReadOnlySpan<long> source, ushort* destination)
     {
         int j = 0;
         int count = source.Length;
         ref long src = ref MemoryMarshal.GetReference(source);
 
-        // Vector load + chained Narrow (ulong→uint→ushort) — truncation is equivalent to masking with 0xFFFF
-        // for non-negative values, so no explicit AND with ContainerValueMask is needed.
+        // Chained Narrow (ulong→uint→ushort): truncation == masking 0xFFFF for non-negative values,
+        // so no explicit AND with ContainerValueMask.
         if (Vector256.IsHardwareAccelerated && count >= 16)
         {
             for (; j <= count - 16; j += 16)
@@ -309,7 +307,7 @@ public unsafe partial struct RoaringBitmap
     {
         return AdvInstructionSet.IsAcceleratedVector128 switch
         {
-            // if we don't have a lot of data, we can do a linear scan using SIMD more efficiently 
+            // small arrays: SIMD linear scan is more efficient than the quad search
             true when cardinality <= SimdLinearScanThreshold => SimdLinearContains(data, cardinality, value),
             true => SimdQuadContains(data, cardinality, value),
             _ => ArrayContainerFind(data, cardinality, value) >= 0
@@ -317,10 +315,8 @@ public unsafe partial struct RoaringBitmap
     }
 
     /// <summary>
-    /// SIMD linear scan for small arrays (less than 64 values). Works on both sorted and unsorted data.
-    /// Uses Vector256 (16 shorts) when available, Vector128 (8 shorts) otherwise.
-    /// Iterates in full-vector chunks (ceiling division); the last chunk may over-read into zeroed
-    /// padding. <c>found greater than cardinality</c> excludes any false-positive from a zero padding match.
+    /// SIMD linear scan for small arrays (&lt; 64 values), sorted or not. The last chunk may over-read into
+    /// zeroed padding; the found &lt; cardinality check excludes a false match from that padding.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool SimdLinearContains(ushort* arr, int cardinality, ushort value)
@@ -370,9 +366,8 @@ public unsafe partial struct RoaringBitmap
     }
 
     /// <summary>
-    /// SIMD Quad search for larger sorted arrays (&gt; 64 values): quaternary interpolation + SIMD block check.
-    /// Divides sorted ushort[] into 8-element blocks (Vector128), narrows via quaternary
-    /// search on block boundaries, then checks the final block with a single SIMD compare.
+    /// Search for larger sorted arrays (&gt; 64 values): quaternary search over 8-element (Vector128)
+    /// block boundaries, then a single SIMD compare on the final block.
     /// Based on Daniel Lemire's algorithm (https://lemire.me/blog/2026/04/27/you-can-beat-the-binary-search/)
     /// </summary>
     internal static bool SimdQuadContains(ushort* arr, int cardinality, ushort value)
@@ -402,10 +397,9 @@ public unsafe partial struct RoaringBitmap
 
         int lo = arr[(@base + 1) * gap - 1] < value ? @base + 1 : @base;
 
-        // lo is in [0, numBlocks]: either the candidate full block, or one past the last block
-        // (value exceeds all block maxima), in which case lo * gap is the tail start anyway.
-        // The buffer is SIMD-aligned with zeroed padding, so the over-read is safe.
-        // A match in the padding (beyond cardinality) is excluded by: lo * gap + found < cardinality.
+        // lo in [0, numBlocks]: candidate block, or one past the last (value exceeds all maxima) where
+        // lo*gap is the tail start. Over-read into zeroed padding is safe; the cardinality check below
+        // excludes a padding match.
         int startIdx = lo * gap;
         var tailMatch = Vector128.Equals(Vector128.Load(arr + startIdx), Vector128.Create(value)).ExtractMostSignificantBits();
         return tailMatch is not 0 && startIdx + BitOperations.TrailingZeroCount(tailMatch) < cardinality;
@@ -434,9 +428,8 @@ public unsafe partial struct RoaringBitmap
     }
 
     /// <summary>
-    /// SIMD cross-compare AND: for each element in A, check if it exists anywhere in B.
-    /// Broadcasts each A[i] across Vector256, compares against all chunks of B simultaneously.
-    /// Works on unsorted data. Both arrays must be ≤ SimdLinearScanThreshold and buffers % 64 bytes.
+    /// Cross-compare AND on unsorted data: broadcast each A[i] across Vector256 and compare against all chunks of B.
+    /// Both arrays must be ≤ SimdLinearScanThreshold with buffers padded to 64 bytes.
     /// </summary>
     private static int SimdCrossAnd(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
     {
@@ -461,9 +454,7 @@ public unsafe partial struct RoaringBitmap
                 break;
             }
 
-            // Keep the element if found within [0, bLen) -- AND semantics.
-            // found == int.MaxValue means no match anywhere;
-            // found >= bLen means the match was in the over-allocated padding past the live count.
+            // found >= bLen: either no match (int.MaxValue) or a match in padding past the live count.
             if (found >= bLen)
                 continue;
             dst[di++] = a[i];
@@ -500,9 +491,7 @@ public unsafe partial struct RoaringBitmap
                 break;
             }
 
-            // Keep the element if found within [0, bLen) -- AND semantics.
-            // found == int.MaxValue means no match anywhere;
-            // found >= bLen means the match was in the over-allocated padding past the live count.
+            // found >= bLen: no match in B (int.MaxValue or padding), so keep for ANDNOT.
             if (found >= bLen)
                 dst[di++] = a[i];
         }
@@ -511,8 +500,7 @@ public unsafe partial struct RoaringBitmap
     }
 
     /// <summary>
-    /// Strategy interface for generic array match operations (AND / ANDNOT).
-    /// Both share the same SIMD galloping structure; only the keep/discard logic differs.
+    /// AND / ANDNOT share the same SIMD galloping structure; only the keep/discard logic differs.
     /// </summary>
     private interface IArrayMatchStrategy
     {
@@ -535,17 +523,11 @@ public unsafe partial struct RoaringBitmap
         public static bool KeepOnMissInSmaller => true;
     }
 
-    /// <summary>
-    /// Compute the intersection of two array containers, writing the result to dst.
-    /// Uses SIMD galloping when Vector256 is available, scalar merge otherwise.
-    /// </summary>
+    /// <summary>Intersection of two array containers into dst (SIMD galloping, scalar merge fallback).</summary>
     internal static int ArrayContainerAnd(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
         => ArrayContainerMatch<AndStrategy>(a, aLen, b, bLen, dst);
 
-    /// <summary>
-    /// Compute A AND NOT B for two array containers.
-    /// Uses SIMD galloping when Vector256 is available, scalar merge otherwise.
-    /// </summary>
+    /// <summary>A AND NOT B for two array containers (SIMD galloping, scalar merge fallback).</summary>
     internal static int ArrayContainerAndNot(ushort* a, int aLen, ushort* b, int bLen, ushort* dst)
         => ArrayContainerMatch<AndNotStrategy>(a, aLen, b, bLen, dst);
 

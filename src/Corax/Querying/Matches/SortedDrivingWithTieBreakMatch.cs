@@ -25,24 +25,17 @@ using Voron.Util.PFor;
 namespace Corax.Querying.Matches;
 
 /// <summary>
-/// Like SortedDrivingMatch but resolves ties within each primary term by a secondary
-/// field. Walks the ITermsProvider in primary-term order; for each term, drains the
-/// entire posting list into a per-term buffer, fetches secondary values via
-/// Lookup&lt;Int64LookupKey&gt;.GetFor, sorts the buffer, then emits in sorted order.
-///
-/// Supports Integer, Floating, and Sequence (string/Slice) tie-break fields.
-/// The planner must gate by per-term group size — this class caps groups at MaxGroupSize
-/// and throws if exceeded.
-///
-/// Handles two-field ORDER BY queries where the first field drives the term walk
-/// and the second field resolves ties within each primary term group, e.g.:
+/// Two-field ORDER BY: like SortedDrivingMatch, but resolves ties within each primary term by a
+/// secondary field (Integer, Floating, or Sequence). Walks the ITermsProvider in primary-term order;
+/// per term, drains the posting list into a buffer, fetches secondary values via
+/// Lookup&lt;Int64LookupKey&gt;.GetFor, sorts, and emits. E.g.:
 ///   FROM Orders ORDER BY Status, CreatedAt DESC
 ///   FROM Users WHERE Age &gt; 18 ORDER BY Age, LastName
 ///
-/// Same-field optimization applies as in SortedDrivingMatch: a WHERE on the primary
-/// sort field narrows the TermsRangeProvider. Additional predicates on other fields
-/// are not applied here — the wrapping <see cref="DirectScanMatch"/> handles residual
-/// predicate evaluation on each yielded entry.
+/// The planner gates by per-term group size — this class caps groups at MaxGroupSize and throws if
+/// exceeded. Same-field optimization as SortedDrivingMatch: a WHERE on the primary sort field narrows
+/// the TermsRangeProvider. Residual predicates on other fields are evaluated by the wrapping
+/// <see cref="DirectScanMatch"/>.
 /// </summary>
 public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDisposable
 {
@@ -95,8 +88,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private readonly bool _hasNonExistingPostingList;
     private bool _nonExistingExhausted;
 
-    // Tracks whether the null/non-existing primary group has been loaded and secondary-sorted.
-    // These docs require the same per-group secondary sort as regular terms.
+    // Null/non-existing docs get the same per-group secondary sort as regular terms; tracks that load.
     private bool _nullGroupPrepared;
 
     public SortedDrivingWithTieBreakMatch(
@@ -435,12 +427,9 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
         ResolveGroupSecondary();
 
-        // Bounded top-K via the shared Corax max-heap (HeapSorterBuilder / NumericalMaxHeapSorter) — the same
-        // primitive every SortingMatch comparer uses. The sorter keeps the surviving group-entry indices in the
-        // `documents` span (here _groupSortedIndexes, keyed by the resolved secondary value); descending keeps the
-        // largest values, ascending the smallest, and ties stabilize by group index. We then compact _groupEntries
-        // down to those survivors; the final per-group order is still produced by SortGroupBySecondary, so the heap
-        // only selects the top-_take set.
+        // Bounded top-K via the shared Corax max-heap (HeapSorterBuilder), keeping surviving group-entry
+        // indices in `documents` (_groupSortedIndexes) keyed by the secondary value; ties stabilize by group
+        // index. The heap only selects the top-_take set — SortGroupBySecondary still produces the final order.
         var docs = new Span<int>(_groupSortedIndexes.RawItems, _take);
         switch (_secondaryType)
         {

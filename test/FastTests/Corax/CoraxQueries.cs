@@ -57,8 +57,7 @@ namespace FastTests.Corax
             IndexEntries();
             using var searcher = new IndexSearcher(Env, _knownFields);
             // String greater-than comparison: entries where the stored LongItem term > "3" lexicographically.
-            // GreaterThanQuery(fieldMeta, "3") performs a CompactTree range scan with the same semantics
-            // as the old CreateMultiUnaryMatch sequential scan.
+            // GreaterThanQuery(fieldMeta, "3") performs a CompactTree range scan.
             var match1 = searcher.GreaterThanQuery(_longItemFieldMetadata, "3");
             var expectedList = GetExpectedResult("3");
             expectedList.Sort();

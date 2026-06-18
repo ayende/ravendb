@@ -45,7 +45,6 @@ public class LimitEarlyExitTests(ITestOutputHelper output) : RavenTestBase(outpu
 
         Assert.Equal(10, results.Count);
 
-        // Verify Output telemetry is present in the query plan
         var plan = (QueryInspectionNode)timings.QueryPlan;
         Assert.NotNull(plan);
         Assert.Equal("CompiledQuery", plan.Operation);

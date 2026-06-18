@@ -24,12 +24,11 @@ public class CompiledQueryBenchmark : RavenTestBase
         const int warmup = 3;
         const int iterations = 50;
 
-        // Setup store
         var optionsOld = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
         using var storeOld = GetDocumentStore(optionsOld);
         await SeedData(storeOld, docCount);
 
-        // Setup store (same configuration; both use the bitmap pipeline)
+        // Same configuration; both use the bitmap pipeline.
         var optionsNew = Options.ForSearchEngine(RavenSearchEngineMode.Corax);
 
         using var storeNew = GetDocumentStore(optionsNew);
@@ -58,21 +57,18 @@ public class CompiledQueryBenchmark : RavenTestBase
             double ratio = ms1 / Math.Max(ms2, 0.001);
             Output.WriteLine($"{name,-35} {ms1,8:F2}ms {ms2,8:F2}ms {ratio,8:F2}x {count1,8}");
 
-            // Results should match
             Assert.Equal(count1, count2);
         }
     }
 
     private async Task<(double avgMs, int resultCount)> BenchQuery(IDocumentStore store, string rql, int warmup, int iterations)
     {
-        // Warmup
         for (int w = 0; w < warmup; w++)
         {
             using var session = store.OpenAsyncSession();
             await session.Advanced.AsyncRawQuery<dynamic>(rql).ToListAsync();
         }
 
-        // Measure
         var times = new double[iterations];
         int count = 0;
         for (int i = 0; i < iterations; i++)

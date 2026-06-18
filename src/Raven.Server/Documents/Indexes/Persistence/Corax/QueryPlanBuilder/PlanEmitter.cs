@@ -292,12 +292,11 @@ internal sealed class PlanEmitter
             return;
         }
 
-        // De Morgan in an AND context: an all-negated OR sub-group is ¬(A ∧ B ∧ …). When it is
-        // combined with an existing accumulator via AND / ANDNOT the universe complement collapses
-        // out — acc AND ¬X = acc \ X, acc ANDNOT ¬X = acc ∩ X — so we only build the (typically
-        // selective) positive intersection X and never touch FillAllEntries. Without this the nested
-        // group would emit one FillAllEntries + complement per member (the #4867 N-fill problem) and
-        // then AND the near-universe result into the accumulator.
+        // De Morgan in an AND context: an all-negated OR sub-group is ¬(A ∧ B ∧ …). When combined with an
+        // existing accumulator via AND / ANDNOT the universe complement collapses out — acc AND ¬X = acc \ X,
+        // acc ANDNOT ¬X = acc ∩ X — so we only build the (typically selective) positive intersection X and never
+        // touch FillAllEntries. Without this the nested group emits one FillAllEntries + complement per member,
+        // then ANDs the near-universe result into the accumulator.
         if (exec.ClauseType == ClauseType.OrGroup && merge is MergeKind.AndInto or MergeKind.AndNotInto && CanFoldNegatedOr(subExecs))
         {
             EmitFoldedNegatedOrGroupIntoAccumulator(subExecs, merge, destSlot);
@@ -325,19 +324,14 @@ internal sealed class PlanEmitter
         }
     }
 
-    /// <summary>Fold an all-negated OR sub-group (<c>¬A ∨ ¬B ∨ … = ¬(A ∧ B ∧ …)</c>) directly into the
-    /// slot-0 accumulator without materializing the universe. The accumulator parks in a scratch slot
-    /// while the positive intersection X = A ∧ B ∧ … is built in slot 0 (Fill + AndInto, early-exit
-    /// suppressed so a partial/empty intersection can't short-circuit), then the accumulator returns to
-    /// slot 0 and X is combined: <see cref="MergeKind.AndInto"/> ⇒ <c>acc \ X</c> (AndNot),
-    /// <see cref="MergeKind.AndNotInto"/> ⇒ <c>acc ∩ X</c> (And). Null/missing-field semantics are
-    /// identical to the per-member FillAllEntries + AndNot path: a doc missing any field is absent from
-    /// X, so AndNot keeps it and And drops it — same as taking the complement against the universe.</summary>
+    /// <summary>Fold an all-negated OR sub-group (<c>¬A ∨ ¬B ∨ … = ¬(A ∧ B ∧ …)</c>) into the accumulator without
+    /// materializing the universe: build the positive intersection X = A ∧ B ∧ … in a scratch slot (Fill + AndInto,
+    /// early-exit suppressed so a partial/empty intersection can't short-circuit), then combine into destSlot —
+    /// <see cref="MergeKind.AndInto"/> ⇒ <c>acc \ X</c> (AndNot), <see cref="MergeKind.AndNotInto"/> ⇒ <c>acc ∩ X</c>
+    /// (And). Null/missing semantics match the per-member FillAllEntries + AndNot path: a doc missing any field is
+    /// absent from X, so AndNot keeps it and And drops it.</summary>
     private void EmitFoldedNegatedOrGroupIntoAccumulator(List<ClauseExecution> subExecs, MergeKind merge, int destSlot)
     {
-        // Build the positive intersection X = A ∧ B ∧ … in a scratch slot (Fill + AndInto, early-exit
-        // suppressed so a partial/empty intersection can't short-circuit), then combine it into destSlot:
-        // the accumulator never leaves destSlot, so no parking swap is needed.
         using var _ = AllocateScratchSlot(out int xSlot);
 
         EmitPositiveForm(subExecs[0], MergeKind.Fill, suppressEarlyExit: true, xSlot);

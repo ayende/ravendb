@@ -872,24 +872,8 @@ public class CompiledQueryTests : RavenTestBase
                 "from TestDocs where (Category = 'cat-0' or Category = 'cat-1') and (Tag = 'tag-0' or Tag = 'tag-5')")
                 .ToListAsync();
 
-            // cat-0∪cat-1: 40 docs, tag-0∪tag-5: 20 docs
-            // Intersection: cat-0 or cat-1 AND tag-0 or tag-5
-            // cat-0 indices: 0,5,10,15,20,25,30,35,40,45,50,55,60,65,70,75,80,85,90,95
-            // cat-1 indices: 1,6,11,16,21,26,31,36,41,46,51,56,61,66,71,76,81,86,91,96
-            // tag-0: i%10==0: 0,10,20,30,40,50,60,70,80,90
-            // tag-5: i%10==5: 5,15,25,35,45,55,65,75,85,95
-            // (cat-0∪cat-1) ∩ (tag-0∪tag-5):
-            //   cat-0 ∩ tag-0: 0,10,20,30,40,50,60,70,80,90 (all i%10==0 are cat-0 since 0%5==0) → 10
-            //   cat-0 ∩ tag-5: 5,15,25,35,45,55,65,75,85,95 (all i%10==5 are cat-0 since 5%5==0) → 10
-            //   cat-1 ∩ tag-0: none (cat-1 indices end in 1,6 — none mod 10 == 0)
-            //   cat-1 ∩ tag-5: none
-            // Wait — cat-1 is i%5==1: 1,6,11,16,21,26,...
-            // tag-0 is i%10==0: 0,10,20,30,...
-            // cat-1 ∩ tag-0: i%5==1 AND i%10==0 → no solution (i%10==0 means i%5==0)
-            // cat-1 ∩ tag-5: i%5==1 AND i%10==5 → i%10==5 means i%5==0 (5%5=0) → no
-            // Actually i%5==1 gives 1,6,11,16,... and i%10==5 gives 5,15,25,...
-            // 1,6,11,16,21,26,31,36,41,46 ∩ 5,15,25,35,45 = empty
-            // So total = 10 + 10 = 20
+            // (cat-0∪cat-1) ∩ (tag-0∪tag-5): cat-1 (i%5==1) never overlaps tag-0/tag-5 (i%10==0 or 5, i.e. i%5==0),
+            // so only cat-0 ∩ tag-0 (10) and cat-0 ∩ tag-5 (10) survive → 20.
             Assert.Equal(20, results.Count);
         }
     }

@@ -58,8 +58,8 @@ internal static partial class QueryPlanBuilder
         QueryExpression where = p.Metadata.Query.Where;
         if (where == null)
         {
-            // A bare sort with no WHERE clause is a full index scan, itself a direct-scan candidate, later we'll  validate the sort field is
-            // sortable and has no missing entries before this candidacy is actually selecte.
+            // A bare sort with no WHERE clause is a full index scan, itself a direct-scan candidate; the sort
+            // field's sortability / missing-entry check happens later before the candidacy is selected.
             bool hasBareSort = p.Metadata.OrderBy is { Length: > 0 } && p.Metadata.OrderBy[0].Name?.Value is not null;
             return new PlanTemplate
             {
@@ -72,11 +72,8 @@ internal static partial class QueryPlanBuilder
         BooleanOp rootOp = ParseExpression(where, walkerCtx);
         PlanWalker.ThrowIfErrors(walkerCtx);
 
-        // The slot bindings come from the canonical parse walk above (RewriteClauses below never adds bindings).
-        // We surface them to the caller so the cold path reuses this walk instead of re-walking the WHERE clause
-        // in ExtractSlotBindings; the count rides along on every template returned past this point so the per-query
-        // slot vector can be asserted to match.
-
+        // Slot bindings come from the canonical parse walk above (RewriteClauses never adds bindings). The count
+        // rides along on every template returned past here so the per-query slot vector can be asserted to match.
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
             return new PlanTemplate { Clauses = [], ValueOrdinalCount = walkerCtx.SlotBindings.Count };
 
@@ -274,11 +271,10 @@ internal static partial class QueryPlanBuilder
         // Compound-exact pair: two Equals clauses whose fields form a compound field.
         if (eqCount >= 2) TryFindCompoundFieldEqualMatches(eqBuf);
 
-        // CompoundKeyLookup collapses the pair into a single composite-key TermQuery whose key encodes ONLY the
-        // two compound fields. That is sound only when the pair IS the entire query (no other clause to drop
-        // as a residual) and neither member is WHEN-guarded — a guard can drop a member at bind time, leaving
-        // a single-clause query this strategy cannot represent. Both are structural facts, so decide candidacy
-        // here once; the instantiate-time path is then left with only the value-dependent key encoding to check.
+        // CompoundKeyLookup collapses the pair into a single composite-key TermQuery encoding ONLY the two
+        // compound fields. Sound only when the pair IS the entire query (no residual clause) and neither member
+        // is WHEN-guarded (a guard can drop a member at bind time, leaving a single-clause query this strategy
+        // can't represent). Both structural, so decide candidacy here; instantiate-time only checks the key encoding.
         if (walkerCtx.CompoundExact.First >= 0 &&
             clauses.Count == 2 &&
             clauses[walkerCtx.CompoundExact.First].WhenCondition is null &&
@@ -329,9 +325,8 @@ internal static partial class QueryPlanBuilder
         // bake the template-position index here instead of recomputing on every Construct call.
         if (walkerCtx.CompoundFieldDrivingClause != -1)
         {
-            // Field names are template-stable, so bake the compound tree name once here instead of
-            // interpolating it on every execution in ConstructCompoundField. Mirror that method's
-            // use of FieldName (not ResolvedFieldName) so the baked name matches exactly.
+            // Bake the compound tree name once (template-stable) instead of interpolating per execution in
+            // ConstructCompoundField. Mirror that method's use of FieldName (not ResolvedFieldName) so they match.
             walkerCtx.CompoundFieldName =
                 $"compound({clauses[walkerCtx.CompoundFieldDrivingClause].FieldName},{walkerCtx.CompoundFieldSortName})";
 

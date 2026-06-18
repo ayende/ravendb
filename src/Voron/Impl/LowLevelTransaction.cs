@@ -1089,9 +1089,9 @@ namespace Voron.Impl
             }
         }
 
-        // The factory rents each pooled key's storage buffers once (Initialize(null) only rents; it doesn't touch the tx). AcquireCompactKey then
-        // Rebinds the pooled key to the current transaction and ReleaseCompactKey only Unbinds it, so the rented buffers stay attached to
-        // the pooled object across acquire/release instead of being churned through the ArrayPool on every call.
+        // The factory rents each pooled key's buffers once (Initialize(null) rents without touching the tx);
+        // AcquireCompactKey then Rebinds to the current transaction and ReleaseCompactKey only Unbinds, so the
+        // rented buffers stay attached to the pooled object instead of churning through the ArrayPool per call.
         private static readonly ObjectPool<CompactKey> SharedCompactKeyPool = new(static () =>
         {
             var key = new CompactKey();

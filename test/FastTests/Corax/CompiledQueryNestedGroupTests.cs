@@ -7,15 +7,10 @@ using Xunit;
 namespace FastTests.Corax;
 
 /// <summary>
-/// Regression suite for nested boolean groups in the Corax query planner.
-///
-/// These shapes exercise queries where a sub-clause of an OrGroup or AndGroup is
-/// itself a group with non-leaf children — the path that today falls through to
-/// <c>ResolveClause</c>'s recursive bitmap-collapse (lines 1503-1541) instead of
-/// staying in the IL slot pipeline.
-///
-/// Each test asserts result correctness only. Inspect/EXPLAIN structure assertions
-/// are added in a separate verification step once the IL pipeline owns the full tree.
+/// Regression suite for nested boolean groups in the Corax query planner: queries where a sub-clause of an
+/// OrGroup or AndGroup is itself a group with non-leaf children — the path that falls through to
+/// <c>ResolveClause</c>'s recursive bitmap-collapse instead of staying in the IL slot pipeline.
+/// Each test asserts result correctness only.
 /// </summary>
 public class CompiledQueryNestedGroupTests : RavenTestBase
 {

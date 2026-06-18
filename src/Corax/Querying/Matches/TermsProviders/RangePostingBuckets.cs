@@ -12,14 +12,12 @@ using Voron.Util;
 namespace Corax.Querying.Matches.TermsProviders;
 
 /// <summary>
-/// Shared posting-count machinery for the textual and numeric range providers. Both partition the in-range term ids
-/// branchlessly into per-type buckets keyed by the low two bits of the id (0=Single, 1=SmallPostingList,
-/// 2=PostingList; slot 3 is unused and asserted empty) and then read posting-list headers uniformly: singles count as
-/// one apiece (no container), small/large lists are sorted by container id for page locality and have just their
-/// header read — a small list's varint length prefix or a large list's <see cref="PostingListState.NumberOfEntries"/>.
-/// No posting ids are decoded. Only the iteration that fills the buckets differs between providers (compact-key term
-/// walk vs. numeric lookup walk), so that loop stays in each provider while the bucket lifecycle and the header read
-/// live here.
+/// Shared posting-count machinery for the textual and numeric range providers. In-range term ids are
+/// partitioned branchlessly into per-type buckets by the low two bits, then headers are read uniformly:
+/// singles count as one (no container); small/large lists are sorted by container id for page locality and
+/// only their header is read (varint length prefix or <see cref="PostingListState.NumberOfEntries"/>). No
+/// posting ids decoded. Only the bucket-filling iteration differs per provider, so it stays in each provider;
+/// the bucket lifecycle and header read live here.
 /// </summary>
 internal static class RangePostingBuckets
 {

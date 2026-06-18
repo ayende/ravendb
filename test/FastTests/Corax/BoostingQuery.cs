@@ -330,10 +330,8 @@ namespace FastTests.Corax
             return list;
         }
 
-        // Inlined replacement for the (now removed) QueryPlanBuilder.ApplyScoreOrdering test-only
-        // shim. Production OrderBy(QueryBuilderParameters, ...) needs the full server-side query
-        // pipeline which these direct-IndexSearcher tests bypass, so we wrap the searcher's
-        // score-ordering primitive directly here.
+        // Wraps the searcher's score-ordering primitive directly. Production OrderBy(QueryBuilderParameters, ...)
+        // needs the full server-side query pipeline that these direct-IndexSearcher tests bypass.
         private static global::Corax.Querying.Matches.Meta.IQueryMatch ApplyScoreOrderingIfRequested(IndexSearcher searcher, QueryMetadata queryMetadata, global::Corax.Querying.Matches.Meta.IQueryMatch match, long take)
         {
             var orderByFields = queryMetadata.OrderBy;

@@ -10,20 +10,11 @@ using Voron.Data.RoaringBitmaps;
 namespace Micro.Benchmark.Benchmarks
 {
     /// <summary>
-    /// Proves whether RoaringBitmap.AndWith(buffer, count)'s current "sort buffer to entry-ID order,
-    /// walk container groups, restore order" design beats a plain order-preserving per-element Contains
-    /// loop, on the SortingMatch.StreamInIndexOrder hot path.
-    ///
-    /// The sort+walk was a deliberate replacement of a per-element Contains loop (#4766). Its cost model:
-    /// two Span.Sort calls (count elements, then kept) plus an amortised container walk; it wins when many
-    /// buffer entries fall in the same dense container (Bitmap/Array group hits amortise the slot lookup).
-    /// The per-element loop pays one slot lookup + type dispatch per entry but no sort and no index array.
-    /// The crossover depends on (a) buffer ordering — StreamInIndexOrder feeds entries in sort-field order,
-    /// i.e. scattered w.r.t. entry ID, so the sort is not free — (b) container shape of the candidate set,
-    /// and (c) selectivity (fraction of buffer entries that survive).
-    ///
-    /// "SortWalk" = current AndWith. "PerElement" = order-preserving Contains loop. Both copy the pristine
-    /// buffer into a working span first (AndWith filters in place), so the copy cost is charged equally.
+    /// Compares RoaringBitmap.AndWith's "sort buffer to entry-ID order, walk container groups, restore order"
+    /// design against a plain order-preserving per-element Contains loop, on the SortingMatch.StreamInIndexOrder
+    /// hot path. The sort+walk wins when many buffer entries fall in the same dense container; the per-element
+    /// loop avoids the sort and index array. The crossover depends on buffer ordering, candidate container shape,
+    /// and selectivity. Both benchmarks copy the pristine buffer into a working span first, so the copy is charged equally.
     /// </summary>
     [SimpleJob(RunStrategy.Throughput, RuntimeMoniker.Net10_0, warmupCount: 3, iterationCount: 6)]
     public unsafe class RoaringBitmapAndWithBenchmark

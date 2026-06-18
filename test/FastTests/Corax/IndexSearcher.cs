@@ -250,8 +250,6 @@ namespace FastTests.Corax
             IndexEntries(bsc, new[] {entry1, entry2}, CreateKnownFields(bsc));
 
             {
-                // RQL migration: AND query via QueryPlanBuilder
-                // WHERE Id = 'entry/1' AND Content = 'mountain'
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/1' AND Content = 'mountain'");
 
                 Assert.Equal(1, results.Count);
@@ -269,7 +267,6 @@ namespace FastTests.Corax
             IndexEntries(bsc, new[] {entry1, entry2}, CreateKnownFields(bsc));
 
             {
-                // RQL: WHERE Id = 'entry/1' AND Content = 'mountain'
                 var results = ExecuteRQLQuery("FROM TestIndex WHERE Id = 'entry/1' AND Content = 'mountain'");
 
                 Assert.Equal(2, results.Count);
@@ -674,11 +671,9 @@ namespace FastTests.Corax
         }
 
 
-        // RavenDB-25281: a backward StartsWith whose prefix has no finite successor — here {0xFF}, where dropping the
-        // trailing 0xFF leaves nothing — must seek to the END of the tree and walk down, because the prefix block is
-        // the tail of the tree. Previously the backward provider got a null seek limit and crashed; now Reset()
-        // positions the backward iterator at the tree end. Terms are written as raw bytes (the test fields use no
-        // analyzer, so terms are stored verbatim) to construct the all-0xFF prefix that UTF-8 strings cannot produce.
+        // RavenDB-25281: a backward StartsWith whose prefix has no finite successor (here {0xFF}) must seek to the
+        // END of the tree and walk down, since the prefix block is the tail. Reset() positions the backward
+        // iterator at the tree end. Terms are raw bytes (no analyzer) to build an all-0xFF prefix UTF-8 cannot produce.
         [RavenFact(RavenTestCategory.Corax)]
         public void BackwardStartsWith_PrefixWithNoFiniteSuccessor_WalksFromTreeEnd()
         {
@@ -1402,12 +1397,9 @@ namespace FastTests.Corax
         [RavenFact(RavenTestCategory.Corax)]
         public void EmptyInDoesNotPoisonCacheInOrChain()
         {
-            // Regression test: an empty IN parameter ($p=[]) in an OR chain must not
-            // cache a plan that subsequent non-empty executions ($p=['x']) would reuse,
-            // producing wrong results because the IN clause was compacted out at plan time.
-            // The cache key (queryText, operandOrdering, typeSignature, fullKinds, whenFlags)
-            // does not encode IN-array size, so plan-time decisions based on parameter shape
-            // would corrupt the cache. The runtime handles empty-IN via InRangeCounts[i]=0.
+            // Regression: an empty IN parameter ($p=[]) in an OR chain must not cache a plan that subsequent
+            // non-empty executions ($p=['x']) would reuse with the IN clause compacted out. The cache key does
+            // not encode IN-array size, so the runtime must handle empty-IN via InRangeCounts[i]=0.
             var list = new[]
             {
                 new IndexSingleEntry { Id = "entry/1", Content = "Alpha" },
@@ -1478,9 +1470,9 @@ namespace FastTests.Corax
             new IndexSingleEntry { Id = "entry/2", Content = "Beta" },
         ];
 
-        // Phase 1 plan-cache bucketing: the per-query bucket is keyed by a fixed-size structural key (a SHA256 of
-        // the query text), not a string. Two executions of the SAME query text (only the bound parameter value
-        // differs — values are never part of the key) resolve to ONE bucket holding ONE compiled plan variant.
+        // Plan-cache bucketing: the per-query bucket is keyed by a structural key (SHA256 of the query text),
+        // not a string. Two executions of the SAME query text (values are never part of the key) resolve to ONE
+        // bucket holding ONE compiled plan variant.
         [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
         public void PlanCache_SameQueryText_SharesSingleBucketAndPlan()
         {
@@ -1836,8 +1828,7 @@ namespace FastTests.Corax
         }
 
         /// <summary>
-        /// Executes an RQL query through QueryPlanBuilder and returns matching entry IDs.
-        /// This properly uses the new query execution pipeline: RQL → AST → QueryExecution → IL compilation → execution.
+        /// Executes an RQL query through QueryPlanBuilder (RQL → AST → IL compilation → execution) and returns matching entry IDs.
         /// </summary>
         private List<long> ExecuteRQLQuery(string rqlQuery)
         {
@@ -2052,12 +2043,8 @@ namespace FastTests.Corax
         [RavenFact(RavenTestCategory.Corax)]
         public void RandomOrderOnBitmapMatchProducesActualRandomOrder()
         {
-            // Regression: the bitmap path for ORDER BY random() was calling
-            // SortInMemory<EntryComparerByTerm>, which sorted by term name instead
-            // of shuffling. SampleRandomOrder must be called instead.
-            //
-            // We use BitmapMatch directly (rather than going through RQL / CompiledQueryMatch)
-            // so the test is independent of the QueryILEmitter.
+            // Regression: the bitmap path for ORDER BY random() sorted by term name (SortInMemory<EntryComparerByTerm>)
+            // instead of shuffling via SampleRandomOrder. Uses BitmapMatch directly to stay independent of QueryILEmitter.
 
             const int N = 32;
             var entries = Enumerable.Range(1, N)

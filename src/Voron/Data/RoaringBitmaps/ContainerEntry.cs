@@ -6,14 +6,10 @@ namespace Voron.Data.RoaringBitmaps;
 public unsafe struct ContainerEntry
 {
     /// <summary>
-    /// Direct pointer to container data for Array, ArrayUnsorted, and Bitmap containers.
-    /// For Range containers, this stores RangeStart encoded as (RangeStart + 1), avoiding
-    /// per-entry size growth while keeping Range as allocation-free.
-    /// We pay 8 bytes per entry to cache this instead of going through Storage.Ptr,
-    /// which is a double-dereference (ByteString._pointer->Ptr). Every Contains, Add,
-    /// and iterator step accesses this pointer. The 8 bytes per container is negligible
-    /// compared to container data (64B–8KB each), and it also avoids a null check on
-    /// Storage for Range containers which have Storage=default.
+    /// Direct pointer to container data for Array, ArrayUnsorted, and Bitmap containers; for Range
+    /// containers it stores RangeStart encoded as (RangeStart + 1), keeping Range allocation-free.
+    /// Cached here (8 bytes/entry, negligible vs 64B–8KB of container data) to avoid the double
+    /// dereference through Storage.Ptr on every Contains/Add/iterator step, and a Range null check.
     /// </summary>
     public byte* Data;
 
@@ -23,8 +19,8 @@ public unsafe struct ContainerEntry
     public int Cardinality;
 
     /// <summary>
-    /// Container key (value >> 16). Allows walking entries without index indirection.
-    /// The key allows us to have ~140 T entries in the bitmap (2^47), big enough
+    /// Container key (value >> 16); lets us walk entries without index indirection.
+    /// Supports up to ~140T entries (2^47).
     /// </summary>
     public uint Key;
 

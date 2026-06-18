@@ -19,10 +19,9 @@ public abstract class SortingMultiMatch : IQueryMatch, IDisposable, IRequireSort
     /// The score comparer uses this to take the sorted-aware <see cref="IQueryMatch.ScoreSorted"/> fast path.</summary>
     internal bool CandidatesAreSorted;
 
-    /// <summary>Wall-clock ticks spent on sort-specific work (the multi-comparer heap sort). Excludes the inner
-    /// match's execution, which is timed onto the child CompiledQuery node's per-op telemetry; counting it here
-    /// too would double-count the query. <see cref="SortingMultiMatch{TInner}.Inspect"/> emits this as the sort
-    /// node's "Ms" so include timings() can attribute the sort cost that sits above the bitmap pipeline.</summary>
+    /// <summary>Ticks spent on sort-specific work (the multi-comparer heap sort). Excludes the inner match's
+    /// execution, timed onto the child CompiledQuery node — counting it here too would double-count.
+    /// <see cref="SortingMultiMatch{TInner}.Inspect"/> emits this as the sort node's "Ms".</summary>
     public long SortingTimeInTicks;
 
     public abstract bool IsBoosting { get; }

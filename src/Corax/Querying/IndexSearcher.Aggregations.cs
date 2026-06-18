@@ -63,9 +63,8 @@ public partial class IndexSearcher
     {
         Debug.Assert(low is double or long or string or Slice, "value is double, long, string or Slice");
 
-        // Map the (low, high) inclusivity pair to the compile-time range markers once. The value-type
-        // fan-out (double / long / string / Slice) lives in the generic builder this dispatches to, so the
-        // marker mapping is no longer duplicated per value type.
+        // Map the (low, high) inclusivity pair to compile-time range markers; the value-type fan-out
+        // (double / long / string / Slice) lives in the generic builder this dispatches to.
         return (leftSide, rightSide) switch
         {
             // (x, y)
@@ -158,44 +157,28 @@ public partial class IndexSearcher
 
         // === Unscanned-middle extrapolation: Bayesian shrinkage toward the global density ===
         //
-        // We have measured the per-term posting density on the sampled edges (sampledAvg) and we know the
-        // field-wide density (globalAvg). The unscanned middle of the range (middleTerms terms) is unknown, so we
-        // must guess its density. Two naive choices bound the spectrum:
-        //   * Trust sampledAvg blindly  -> a whale in the middle is missed, we UNDER-estimate a genuinely dense range.
-        //   * Snap the middle to globalAvg (i.e. max(sampledAvg, globalAvg)) -> on a skewed field a legitimately sparse
-        //     range gets its whole middle filled at the global rate, OVER-estimating it badly; any below-average range
-        //     is treated as average, with no leeway.
-        // Instead we shrink the middle density toward globalAvg with a strength proportional to how much of the range
-        // we actually sampled:
+        // We know the edge density (sampledAvg) and the field-wide density (globalAvg) but not the middle's.
+        // Naive bounds: trust sampledAvg blindly UNDER-estimates a dense range (a "whale" hidden in the
+        // middle is missed); snapping to globalAvg OVER-estimates a genuinely sparse range. Instead shrink
+        // the middle density toward globalAvg, strength proportional to sampled coverage:
         //
-        //     middleAvg = (sampledPostings + k*globalAvg) / (sampledTerms + k)        // k pseudo-observations at globalAvg
-        //               = (sampledTerms*sampledAvg + k*globalAvg) / (sampledTerms + k) // since sampledPostings = sampledTerms*sampledAvg
+        //     middleAvg = (sampledPostings + k*globalAvg) / (sampledTerms + k)   // k pseudo-obs at globalAvg
         //
-        // with k = beta * middleTerms — beta pseudo-observations per unscanned term, each carrying the global rate. At
-        // beta = 1 (the cold-start default; calibrationFactor 0 -> "no history") this is exactly the coverage-weighted
-        // blend  coverage*sampledAvg + (1-coverage)*globalAvg  with  coverage = sampledTerms / (sampledTerms +
-        // middleTerms): a well-sampled range (coverage -> 1) mostly trusts its own edges, a barely-sampled one
-        // (coverage -> 0) defers to the global rate. beta is the single leeway dial: beta < 1 trusts the local sample
-        // faster (less whale protection, less over-count on sparse ranges); beta > 1 leans back toward globalAvg (more
-        // whale-cautious). As beta -> inf, k -> inf and the middle snaps entirely to globalAvg (the over-estimating
-        // extreme above).
+        // with k = beta * middleTerms. At beta = 1 (cold-start; calibrationFactor 0 = no history) this is the
+        // coverage blend coverage*sampledAvg + (1-coverage)*globalAvg, coverage = sampledTerms/(sampledTerms+
+        // middleTerms): well-sampled trusts its edges, barely-sampled defers to global. beta is the leeway
+        // dial: <1 trusts the local sample, >1 leans whale-cautious toward globalAvg; beta->inf snaps to it.
         //
-        // How beta adapts over time: calibrationFactor is a per-clause EWMA of (docs the clause actually matched) /
-        // (the estimate this method produced) — see ClauseInfo.RangeEstimateCalibration / InflationEwma. If a clause
-        // systematically UNDER-estimates (whales keep hiding in its middles), the ratio climbs above 1, beta climbs,
-        // k grows, the middle is pulled toward globalAvg and the estimate rises — self-correcting. Systematic
-        // OVER-estimates pull beta below 1, trusting the sparse local sample. With no history the EWMA reports 0 and we
-        // fall back to the neutral blend. beta is clamped to [CalibrationBetaMin, CalibrationBetaMax] so one bad run
-        // can't run away.
+        // beta adapts via calibrationFactor: a per-clause EWMA of actual-matched / prior-estimate (see
+        // ClauseInfo.RangeEstimateCalibration / InflationEwma). Systematic under-estimates push it above 1
+        // (estimate rises, self-correcting); over-estimates push below 1. Clamped to
+        // [CalibrationBetaMin, CalibrationBetaMax] so one bad run can't run away.
         //
-        // Worked example: field of 1,000,000 docs over 100,000 terms -> globalAvg = 10 docs/term. A sparse range with
-        // 1500 terms total, of which we sample sampledTerms = 768 (sampledAvg = 2 docs/term, so sampledPostings = 1536),
-        // leaving middleTerms = 732:
-        //     beta = 1:    k = 1*732 = 732.   middleAvg = (1536 + 732*10)  / (768+732)  = 5.9  -> 1536 + 732*5.9  = 5855
-        //                  (== coverage blend: 0.512*2 + 0.488*10; trusts the sparse edges)
-        //     beta = 4:    k = 4*732 = 2928.  middleAvg = (1536 + 2928*10) / (768+2928) = 8.34 -> 1536 + 732*8.34 = 7641
-        //                  (leans back toward globalAvg once the clause has shown it under-estimates)
-        //     beta -> inf: middle snaps to globalAvg = 10            -> 1536 + 732*10   = 8856 (the whole unseen middle treated as average)
+        // Worked example: 1,000,000 docs over 100,000 terms -> globalAvg = 10. Sparse range of 1500 terms,
+        // sampledTerms = 768 (sampledAvg = 2, sampledPostings = 1536), middleTerms = 732:
+        //     beta = 1:    middleAvg = (1536 + 732*10)/(768+732)   = 5.9  -> 5855  (== coverage blend)
+        //     beta = 4:    middleAvg = (1536 + 2928*10)/(768+2928) = 8.34 -> 7641  (leans toward globalAvg)
+        //     beta -> inf: middle snaps to globalAvg = 10                 -> 8856
         double beta = calibrationFactor <= 0 ? 1.0 : Math.Clamp(calibrationFactor, CalibrationBetaMin, CalibrationBetaMax);
         double k = beta * middleTerms;
         double middleAvg = (sampledPostings + k * globalAvg) / (sampledTerms + k);
@@ -214,12 +197,10 @@ public partial class IndexSearcher
         return estimate;
     }
 
-    // StartsWith(prefix) matches exactly the contiguous byte-range [encodedPrefix, successor(encodedPrefix)). The prefix
-    // is analyzer-encoded the same way stored terms are, and the CompactTree sorts lexicographically on those bytes, so
-    // every prefix match is one block. The exclusive upper bound is the encoded prefix with its last non-0xFF byte
-    // incremented and trailing 0xFF bytes dropped; if every byte is 0xFF (or the prefix is empty) no finite successor
-    // exists and the range runs to the end of the tree. Reuses the range estimator so StartsWith costs the same two
-    // descents as a bounded range instead of falling back to the whole-index size.
+    // StartsWith(prefix) is the contiguous byte-range [encodedPrefix, successor(encodedPrefix)) — the prefix is
+    // analyzer-encoded like stored terms and the CompactTree sorts lexicographically, so every prefix match is one
+    // block. Reuses the range estimator (TryWritePrefixSuccessor computes the upper bound) so StartsWith costs two
+    // descents instead of falling back to the whole-index size.
     public long EstimateStartsWith(in FieldMetadata field, string prefix, out RangeEstimateBreakdown breakdown, double calibrationFactor = 0)
     {
         Slice encodedPrefix = EncodeAndApplyAnalyzer(field, prefix);

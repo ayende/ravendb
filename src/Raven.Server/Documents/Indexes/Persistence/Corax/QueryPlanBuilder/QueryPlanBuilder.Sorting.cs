@@ -46,13 +46,11 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
-    /// True when a single vector-search post-filter is the sole scoring source AND the only ordering the query
-    /// needs is similarity-score order — which the vector's HNSW output already streams. In that case the
-    /// implicit (or explicit <c>ORDER BY score()</c>) SortingMatch wrapper is redundant: the match can stream
-    /// its score-ordered results directly and the wrapper is skipped. Covers both the bare
-    /// <c>WHERE vector.search(...)</c> case and the AND-filtered <c>WHERE x = $v AND vector.search(...)</c> case
-    /// (both lift the vector to a top-level post-filter, so it appears in <see cref="QueryExecution.VectorSelects"/>;
-    /// OR-branch vectors are leaves, never post-filters, so they never qualify and keep their sort).
+    /// True when a single vector-search post-filter is the sole scoring source AND the query needs only
+    /// similarity-score order — which the vector's HNSW output already streams, making the SortingMatch wrapper
+    /// redundant. Covers the bare <c>WHERE vector.search(...)</c> and AND-filtered cases (both lift the vector to a
+    /// top-level post-filter in <see cref="QueryExecution.VectorSelects"/>); OR-branch vectors are leaves, never
+    /// post-filters, so they keep their sort.
     /// </summary>
     private static bool VectorPostFilterProvidesResultOrder(QueryExecution exec, QueryBuilderParameters bp, OrderMetadata[] orderByFields)
     {
@@ -220,21 +218,18 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
-    /// Partial sort elision, decided once at template-build time. Drops every ORDER BY key that is both
-    /// pinned to a single value by a top-level equality (see <see cref="CollectEqualityPinnedFields"/>) and
-    /// single-valued in the index: such a key is constant across all results, so it contributes nothing to
-    /// the order at any position and can be removed while the remaining keys keep their relative precedence.
-    /// (e.g. <c>WHERE status = 'Released' ORDER BY status, vote DESC</c> reduces to <c>ORDER BY vote DESC</c>,
-    /// turning a two-key sort into a one-key streaming scan.) The reduced array feeds both driving-clause /
-    /// strategy selection (<see cref="ComputeTemplateOptimizations"/>) and the prebuilt sort metadata
-    /// (<see cref="BuildSortMetadataTemplate"/>), so the cached plan stays internally consistent. An all-elided
-    /// result is an empty array, which both callers treat as "no sort".
+    /// Partial sort elision, decided once at template-build time. Drops every ORDER BY key that is both pinned to
+    /// a single value by a top-level equality (<see cref="CollectEqualityPinnedFields"/>) and single-valued: such
+    /// a key is constant across results, so it contributes nothing to the order and can be removed while the rest
+    /// keep their precedence (e.g. <c>WHERE status = 'Released' ORDER BY status, vote DESC</c> → <c>ORDER BY vote
+    /// DESC</c>). The reduced array feeds both strategy selection (<see cref="ComputeTemplateOptimizations"/>) and
+    /// the prebuilt sort metadata (<see cref="BuildSortMetadataTemplate"/>), keeping the cached plan consistent;
+    /// an all-elided result is an empty array (treated as "no sort").
     ///
-    /// Deciding once here (rather than per execution) is safe because both inputs are folded into the structural
-    /// plan-cache key: the WHERE shape fixes the pinned set, and each ORDER BY field's single/multi-valued bit is
-    /// appended (see <c>ComputeStructuralKey</c>). A field that turns multi-valued selects a different bucket and
-    /// re-plans with the key intact, rather than reusing a template built under the single-valued assumption.
-    /// Returns the input array unchanged (same reference) when nothing is elided.
+    /// Safe to decide once because both inputs are folded into the structural plan-cache key: the WHERE shape fixes
+    /// the pinned set, and each ORDER BY field's single/multi-valued bit is appended (<c>ComputeStructuralKey</c>),
+    /// so a field that turns multi-valued re-plans in a different bucket. Returns the input unchanged when nothing
+    /// is elided.
     /// </summary>
     private static OrderByField[] ComputeEffectiveOrderBy(OrderByField[] orderBy, List<ClauseInfo> clauses, bool isOr,
         global::Corax.Querying.IndexSearcher indexSearcher)

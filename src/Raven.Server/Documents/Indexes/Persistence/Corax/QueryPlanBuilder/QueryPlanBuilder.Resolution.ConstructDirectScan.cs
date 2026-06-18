@@ -32,12 +32,10 @@ internal static partial class QueryPlanBuilder
 
         bool hasResidual = ctx.Exec.Plan.DirectScanResidualSet is { HasPredicates: true };
 
-        // For a no-residual scan the emitted set is exactly the driving provider's posting set, so for a
-        // single-valued field the exact TotalResults equals that provider's posting count. Resolving it up
-        // front (O(distinct terms)) lets the read operation skip the count drain AND page-bound the scan even
-        // when statistics are requested, since the drain is no longer the count source — ResolveSortedScanTake
-        // would otherwise force TakeAll to feed that drain. A residual filter rejects candidates after the
-        // fact, so its count depends on draining post-filter survivors; we cannot bound it (knownTotal = -1).
+        // For a no-residual single-valued scan the exact TotalResults equals the driving provider's posting count.
+        // Resolving it up front (O(distinct terms)) lets the read skip the count drain AND page-bound the scan even
+        // under statistics (the drain is no longer the count source; ResolveSortedScanTake would otherwise force
+        // TakeAll). A residual filter's count depends on draining survivors, so it can't be bounded (knownTotal = -1).
         long probeTicks = -1; // Stopwatch ticks the CountPostingsInRange header walk took (-1 = no probe ran).
         int probeTerms = 0;
         long knownTotal = hasResidual ? -1 : TryResolveDirectScanKnownTotal(ref ctx, walkerCtx, drivingClause, isFullScan, forward, out probeTicks, out probeTerms);
@@ -141,12 +139,10 @@ internal static partial class QueryPlanBuilder
             if (CanResolveKnownTotal(ctx.BuilderParams) == false)
                 return -1;
 
-            // A full index-only scan (no WHERE) emits every document exactly once — DirectScanSimpleMatch dedups,
-            // and SortedDrivingMatch adds the field's null and non-existing groups on top of the driving provider's
-            // postings. The exact total is therefore the index entry count. Summing the driving exists provider's
-            // postings instead would undercount by those null/non-existing groups (the provider is built skipNulls),
-            // so we read the O(1) entry count directly — also correct for multi-valued fields and matching the
-            // compiled-plan IsAllEntries known-total.
+            // A full index-only scan (no WHERE) emits every document once, so the exact total is the index entry
+            // count. Summing the driving exists provider's postings would undercount by the null/non-existing
+            // groups (it is built skipNulls), so read the O(1) entry count directly — also correct for multi-valued
+            // fields and matching the compiled-plan IsAllEntries known-total.
             if (isFullScan)
                 return ctx.PlanParams.IndexSearcher.NumberOfEntries;
 

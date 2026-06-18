@@ -14,16 +14,13 @@ namespace FastTests.Corax;
 
 /// <summary>
 /// RavenDB-25281 regression guards for two query-planner fixes:
-///   #3 exists() known-total: a single non-boosted exists() reports its exact TotalResults from O(1)
-///      metadata (index entry count minus the field's non-existing posting list) instead of draining
-///      the whole posting set to count it — so the read stays page-bounded (EarlyExit) even when the
-///      caller asks for statistics.
-///   #4 multi-valued sort guard: an equals/range clause on a MULTI-VALUED sort field must not drive a
-///      DirectScan. The direct-scan residual excludes the driving clause assuming the in-order tree walk
-///      enforces it, but SortedDrivingMatch walks every posting of a multi-valued field, so documents
-///      matching the term under one value AND a different value elsewhere leaked through unfiltered. The
-///      guard falls the plan back to the bitmap pipeline + SortingMatch, which applies the clause as a
-///      real filter.
+///   - exists() known-total: a single non-boosted exists() reports its exact TotalResults from O(1) metadata
+///     (entry count minus the field's non-existing posting list) instead of draining the posting set, so the
+///     read stays page-bounded (EarlyExit) even under statistics.
+///   - multi-valued sort guard: an equals/range clause on a MULTI-VALUED sort field must not drive a DirectScan.
+///     SortedDrivingMatch walks every posting of a multi-valued field, so docs matching the term under one value
+///     but a different value elsewhere leaked through unfiltered. The guard falls back to the bitmap pipeline +
+///     SortingMatch, which applies the clause as a real filter.
 /// </summary>
 public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
 {
@@ -56,8 +53,8 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         }
     }
 
-    // #3: exists(Tagline) reports the exact total from metadata and the read early-exits at the page even
-    // though statistics are requested (which would otherwise force a full count-draining scan).
+    // exists(Tagline) reports the exact total from metadata and early-exits at the page even under
+    // statistics (which would otherwise force a full count-draining scan).
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public async Task Exists_KnownTotal_ReportsExactTotalAndEarlyExitsWithStatistics(Options options)
@@ -148,9 +145,9 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         return movies;
     }
 
-    // #4: a Genres='Drama' filter that also drives ORDER BY Genres must return ONLY documents that actually
-    // contain "Drama". Cross-engine: Lucene has no DirectScan, so a match proves the Corax fallback is
-    // semantics-preserving. Before the guard, Corax leaked non-matching documents (inflated, wrong rows).
+    // A Genres='Drama' filter that also drives ORDER BY Genres must return ONLY docs containing "Drama".
+    // Cross-engine: Lucene has no DirectScan, so a match proves the Corax fallback is semantics-preserving
+    // (the bug leaked non-matching documents).
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
     public async Task MultiValuedSortField_EqualsDriven_ReturnsOnlyMatchingDocs(Options options)
@@ -180,8 +177,8 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         }
     }
 
-    // #4 plan guard: the same query must NOT pick the FieldSortedScan (DirectScan) strategy on Corax — the
-    // multi-valued sort field forces the bitmap pipeline + SortingMatch fallback.
+    // Plan guard: the same query must NOT pick FieldSortedScan (DirectScan) on Corax — the multi-valued
+    // sort field forces the bitmap pipeline + SortingMatch fallback.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public async Task MultiValuedSortField_EqualsDriven_DoesNotUseDirectScan(Options options)
@@ -215,12 +212,9 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
             "Expected NO DirectScan node for a multi-valued sort field. Plan: " + Describe(plan));
     }
 
-    // #5 (companion fix): a query shaped `where f1 = $x order by f2` over a compound(f1, f2) field has NO
-    // WHERE clause on the sort field f2, so historically DirectScanCandidate was never set and the plan fell
-    // back to the bitmap pipeline + SortingMatch — even though the compound tree already stores f1's entries
-    // in f2 order. The fix sets DirectScanCandidate for this shape; with no residual clauses the per-execution
-    // cost gate accepts the scan unconditionally, so the planner walks the compound subtree in f2 order and
-    // skips the SortingMatch heap entirely.
+    // A query shaped `where f1 = $x order by f2` over a compound(f1, f2) field has no WHERE clause on the sort
+    // field f2, yet the compound tree already stores f1's entries in f2 order. DirectScanCandidate is set for
+    // this shape so the planner walks the compound subtree in f2 order and skips the SortingMatch heap.
     private class Film
     {
         public string Id { get; set; }
@@ -250,9 +244,9 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         return films;
     }
 
-    // #5 plan guard: equality on the compound leading key + ORDER BY the compound second key (with no filter
-    // on the sort field) must drive the compound tree walk (CompoundSortedScan / DirectScan), NOT the bitmap
-    // pipeline + SortingMatch. Also checks the rows are the right ones, in ascending sort order.
+    // Plan guard: equality on the compound leading key + ORDER BY the second key (no filter on the sort field)
+    // must drive the compound tree walk (CompoundSortedScan / DirectScan), NOT bitmap pipeline + SortingMatch.
+    // Also checks the rows are correct, in ascending sort order.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public async Task EqualityDrivenCompoundSort_UsesCompoundSortedScan(Options options)
@@ -310,11 +304,10 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         }
     }
 
-    // #77 descending plan guard: equality on the compound leading key + ORDER BY the compound second key DESC with
-    // NO filter on the sort field must stream via the compound tree walk in DESCENDING order (CompoundSortedScan /
-    // DirectScan, TreeDirection=Backward) — NOT fall back to the bitmap pipeline + SortingMatch. Historically the
-    // backward StartsWith provider got a null seek limit and the planner bailed to the bitmap path; now it seeks to
-    // successor(prefix) (the end of the field1 block) and walks down. Verifies plan, descending order, and paging.
+    // Descending plan guard: equality on the compound leading key + ORDER BY the second key DESC with no filter
+    // on the sort field must stream via the compound tree walk DESCENDING (CompoundSortedScan, TreeDirection=
+    // Backward), not the bitmap pipeline. The backward StartsWith provider seeks to successor(prefix) (end of the
+    // field1 block) and walks down. Verifies plan, descending order, and paging.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public async Task DescendingEqualityDrivenCompoundSort_UsesBackwardCompoundSortedScan(Options options)
@@ -383,10 +376,9 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         Assert.Equal(maxActionYear, page1[0].Year);
     }
 
-    // #5 known-total / early-exit: the bare compound shape (equality on field1, ORDER BY field2, no field2 filter)
-    // must resolve its exact TotalResults from the driving equality term's cardinality and stop the scan at the page
-    // — NOT drain the whole driving set to count it — even when statistics are requested. Before the fix this shape
-    // drained the entire 'Action' prefix (TreeExhausted) just to report the total.
+    // Known-total / early-exit: the bare compound shape (equality on field1, ORDER BY field2, no field2 filter)
+    // must resolve TotalResults from the driving term's cardinality and stop at the page, not drain the whole
+    // driving set to count it, even under statistics.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public async Task EqualityDrivenCompoundSort_ResolvesKnownTotalAndEarlyExitsUnderStatistics(Options options)
@@ -436,11 +428,10 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
 
     private static int ParseCount(string n) => int.Parse(n, System.Globalization.NumberStyles.AllowThousands, System.Globalization.CultureInfo.InvariantCulture);
 
-    // A single-field ORDER BY served by a CompoundSortedScan already emits in that order, so the sort is elided
-    // into the scan REGARDLESS of an $rvn_corax_sort hint. Pinning IndexOrderStreaming must not de-elide the sort:
-    // doing so wrapped the sorted scan in a SortingMatch that drained the whole driving set (TreeExhausted) and
-    // re-sorted already-ordered output. The hint only has meaning where a real SortingMatch exists (bitmap
-    // pipeline); on a sorted scan it is a no-op. Mirrors the FieldSortedScan path.
+    // A single-field ORDER BY served by a CompoundSortedScan already emits in order, so the sort is elided into
+    // the scan regardless of an $rvn_corax_sort hint. Pinning IndexOrderStreaming must not de-elide it (which
+    // would wrap the scan in a SortingMatch that drains and re-sorts already-ordered output). On a sorted scan
+    // the hint is a no-op; it only matters where a real SortingMatch exists (bitmap pipeline).
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
     public async Task EqualityDrivenCompoundSort_WithIndexOrderStreamingHint_StillElidesAndEarlyExits(Options options)
@@ -497,7 +488,7 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
             "Expected fewer than the whole 'Action' set to be scanned, but TreeEntriesScanned=" + (scanned ?? "<null>") + " of " + actionCount);
     }
 
-    // #5 cross-engine: the same shape must return exactly the matching rows in sort order on BOTH engines.
+    // Cross-engine: the same shape must return exactly the matching rows in sort order on both engines.
     // Lucene has no compound/DirectScan, so a match proves the Corax compound-scan path is semantics-preserving.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
@@ -565,12 +556,10 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         return films;
     }
 
-    // #5 null behavior (option A guard): `where Category = 'Action' order by Year` with some Action docs having a
-    // NULL sort value. The compound walk would emit nulls at the wrong end (its null marker sorts after the real
-    // values), which contradicts NullsSortMode. So when the bare shape (no field2 filter) has null/missing sort
-    // values, the planner must fall back to the bitmap pipeline + SortingMatch, which honors NullsSortMode. This
-    // test pins (a) Corax matches Lucene's ordered sort sequence exactly — same count, null placement, value order —
-    // and (b) the Corax plan actually fell back (OptimizationHint=BitmapPipeline, not CompoundSortedScan).
+    // Null behavior: `where Category = 'Action' order by Year` with some Action docs having a NULL sort value.
+    // The compound walk would emit nulls at the wrong end (its null marker sorts after the real values),
+    // contradicting NullsSortMode, so the bare shape with null sort values must fall back to the bitmap pipeline.
+    // Pins (a) Corax matches Lucene's ordered sequence exactly, and (b) the plan fell back (OptimizationHint=BitmapPipeline).
     [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     public async Task EqualityDrivenCompoundSort_WithNullSortValues_FallsBackAndMatchesLucene()
     {
@@ -644,11 +633,9 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         }
     }
 
-    // #6 two-field sort tie-break: ORDER BY P desc, S desc on a LARGE single primary group must apply the
-    // secondary (S) ordering. The FieldSortedScan tie-break path (SortedDrivingWithTieBreakMatch) drains the
-    // primary group and, when it exceeds the page-derived cap, truncates to the top-`take` by S. With a 2000-doc
-    // group and a 25-row page that truncation fires — and it must keep the 25 LARGEST S (1999..1975), not the
-    // smallest. Cross-engine (Lucene has no tie-break scan) pins the Corax scan to the correct answer.
+    // Two-field sort tie-break: ORDER BY P desc, S desc on a large single primary group must apply the secondary
+    // (S) ordering. The tie-break path truncates to the top-`take` by S when the group exceeds the page cap, so a
+    // 2000-doc group with a 25-row page must keep the 25 LARGEST S, not the smallest. Cross-engine pins the answer.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
     public async Task TwoFieldSort_LargePrimaryGroup_AppliesSecondaryTieBreakDescending(Options options)
@@ -704,10 +691,10 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         }
     }
 
-    // #7 descending compound-prefix scan: `where Category = X order by Category, UnitsInStock desc` pins Category
-    // and collapses to a single DESCENDING sort over compound(Category, UnitsInStock). The compound walk must run
-    // the prefix BACKWARD — which crashed with a NullReferenceException (StartWithQuery passed a null seek term to
-    // the backward StartsWith provider). Must return the matching docs in descending UnitsInStock order.
+    // Descending compound-prefix scan: `where Category = X order by Category, UnitsInStock desc` collapses to a
+    // single DESCENDING sort over compound(Category, UnitsInStock). The compound walk must run the prefix BACKWARD
+    // (a null seek term to the backward StartsWith provider crashed with NullReferenceException). Must return the
+    // matching docs in descending UnitsInStock order.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
     public async Task DescendingCompoundSort_DoesNotCrashAndOrdersCorrectly(Options options)
@@ -798,12 +785,10 @@ public class RavenDB_25281_KnownTotalAndMultiValuedSortTests : RavenTestBase
         Assert.Equal(5, (int)rangeStats.TotalResults);
     }
 
-    // #8 descending sort over ONLY the second compound member (leading member pinned by WHERE but NOT in the
-    // ORDER BY): `where Category = X order by UnitsInStock desc`. Here OrderByFields[0] is UnitsInStock (descending),
-    // so the compound walk's `forward` is false and there is no field2 range — the path that builds a backward
-    // StartsWith provider with a null seek term and crashed with a NullReferenceException. Distinct from
-    // DescendingCompoundSort_DoesNotCrashAndOrdersCorrectly, which keeps Category as the leading ORDER BY key
-    // (forward == true). Must not crash and must return descending UnitsInStock.
+    // Descending sort over ONLY the second compound member (leading member pinned by WHERE but not in the ORDER
+    // BY): `where Category = X order by UnitsInStock desc`. The compound walk's `forward` is false with no field2
+    // range — the path that built a backward StartsWith provider with a null seek term and crashed. Must not
+    // crash and must return descending UnitsInStock.
     [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
     [RavenData(SearchEngineMode = RavenSearchEngineMode.All)]
     public async Task DescendingSortOnSecondCompoundMemberOnly_DoesNotCrashAndOrdersCorrectly(Options options)
