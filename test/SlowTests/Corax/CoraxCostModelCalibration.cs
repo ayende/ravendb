@@ -227,6 +227,119 @@ public class CoraxCostModelCalibration : RavenTestBase
         _output.WriteLine("DirectScan should win for small take (early termination) and converge to Bitmap as take -> indexSize.");
     }
 
+    /// <summary>
+    /// DirectScan residual-filtered cost gate (EntryScanCostMultiplier=64, EntryScanCountThreshold=32K): for a
+    /// range-on-sort-field + residual query, read the gate's own entriesToScan / bitmapCost / verdict from the
+    /// DecisionTrail's PerExecution string (unpinned run), then time FieldSortedScan and BitmapPipeline forced.
+    /// Where the gate's pick disagrees with the actually-faster branch, the 64x multiplier (or 32K cap) is off;
+    /// the real multiplier is bitmapCost/entriesToScan at the timing crossover.
+    /// </summary>
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    [RavenData(SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public async Task Calibrate_DirectScanResidual_Multiplier(Options options)
+    {
+        if (Enabled == false)
+        {
+            _output.WriteLine("Skipped: set RAVEN_CALIBRATE=1 to run the DirectScan residual-multiplier calibration.");
+            return;
+        }
+
+        const int totalDocs = 200_000;
+        using var store = await BuildItemsStore(options, totalDocs, distinctTags: 24, tagsPerDoc: 3, clustered: true);
+
+        _output.WriteLine($"# DirectScan residual-multiplier calibration (docs={totalDocs:N0}, reps={Repetitions}, MIN ms)");
+        _output.WriteLine("hi | take | scanEntries | bitmapCost | gate(N*64 vs M) | gatePick | DirectMs | BitmapMs | actualWin | M_real(bitmap/scan)");
+        _output.WriteLine(new string('-', 120));
+
+        foreach (var hi in new[] { 50, 200, 1000 })
+        {
+            foreach (var take in new[] { 10, 100, 1000 })
+            {
+                var (scanEntries, bitmapCost, gatePick) = await ReadResidualGate(store, hi, take);
+                var direct = await MeasureResidual(store, hi, take, ExecutionStrategy.FieldSortedScan);
+                var bitmap = await MeasureResidual(store, hi, take, ExecutionStrategy.BitmapPipeline);
+                string actualWin = direct.Ms < bitmap.Ms ? "Direct" : "Bitmap";
+                double mReal = scanEntries > 0 ? bitmapCost / (double)scanEntries : -1;
+                _output.WriteLine($"{hi,4} | {take,4} | {scanEntries,11:N0} | {bitmapCost,10:N0} | {gatePick,-10} | " +
+                                  $"{direct.Ms,8:F3} | {bitmap.Ms,8:F3} | {actualWin,-9} | {mReal,8:F1}");
+            }
+        }
+
+        _output.WriteLine("");
+        _output.WriteLine("EntryScanCostMultiplier should approximate M_real on the rows where actualWin flips Direct<->Bitmap.");
+    }
+
+    // Residual-filtered shape: range on the single-valued sort field (Category) drives the scan, Bucket=$b is the
+    // per-document residual. order by Category makes FieldSortedScan the structural candidate.
+    private string ResidualRql(int take) =>
+        $"from index '{new ItemsIndex().IndexName}' where Category < $hi and Bucket = $b order by Category as long include timings() limit {take}";
+
+    private async Task<(long scanEntries, long bitmapCost, string gatePick)> ReadResidualGate(DocumentStore store, int hi, int take)
+    {
+        using var session = store.OpenAsyncSession();
+        // Unpinned: let the gate decide so PerExecution carries the entries_to_scan/bitmap_cost numbers + verdict.
+        var q = session.Advanced.AsyncRawQuery<ItemDoc>(ResidualRql(take))
+            .AddParameter("hi", hi).AddParameter("b", 3).NoCaching();
+        await q.Timings(out var timings).ToListAsync();
+
+        var trail = FindNode((QueryInspectionNode)timings.QueryPlan, "DecisionTrail");
+        var fieldScan = trail?.Children?.FirstOrDefault(c => c.Operation == "FieldSortedScan");
+        if (fieldScan == null || fieldScan.Parameters.TryGetValue("PerExecution", out var per) == false)
+            return (-1, -1, "n/a");
+
+        long scan = ExtractParen(per, "entries_to_scan");
+        long bitmap = ExtractParen(per, "bitmap_cost");
+        string pick = per.Contains("→ scan") ? "scan" : "bitmap";
+        return (scan, bitmap, pick);
+    }
+
+    private static long ExtractParen(string s, string marker)
+    {
+        int i = s.IndexOf(marker + "(", StringComparison.Ordinal);
+        if (i < 0) return -1;
+        int start = i + marker.Length + 1;
+        int end = s.IndexOf(')', start);
+        return end < 0 ? -1 : long.Parse(s.AsSpan(start, end - start), provider: CultureInfo.InvariantCulture);
+    }
+
+    private async Task<ScanMeasurement> MeasureResidual(DocumentStore store, int hi, int take, ExecutionStrategy strategy)
+    {
+        double best = double.MaxValue;
+        string hint = null;
+        for (int i = 0; i < Repetitions; i++)
+        {
+            using var session = store.OpenAsyncSession();
+            var q = session.Advanced.AsyncRawQuery<ItemDoc>(ResidualRql(take))
+                .AddParameter("hi", hi).AddParameter("b", 3)
+                .AddParameter("rvn_corax_strategy", strategy.ToString())
+                .NoCaching();
+            var sw = Stopwatch.StartNew();
+            await q.Timings(out var timings).ToListAsync();
+            sw.Stop();
+            best = Math.Min(best, sw.Elapsed.TotalMilliseconds);
+            var root = (QueryInspectionNode)timings.QueryPlan;
+            hint = root.Parameters.TryGetValue("OptimizationHint", out var h) ? h : root.Operation;
+        }
+
+        return new ScanMeasurement(best, hint);
+    }
+
+    private static QueryInspectionNode FindNode(QueryInspectionNode node, string operation)
+    {
+        if (node.Operation == operation)
+            return node;
+        if (node.Children == null)
+            return null;
+        foreach (var child in node.Children)
+        {
+            var found = FindNode(child, operation);
+            if (found != null)
+                return found;
+        }
+
+        return null;
+    }
+
     private sealed record ScanMeasurement(double Ms, string Hint);
 
     private async Task<ScanMeasurement> MeasureScan(DocumentStore store, int take, ExecutionStrategy strategy)
