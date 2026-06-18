@@ -108,6 +108,34 @@ internal sealed class GraphvizGraph
                 continue;
             first = AppendRawAttr(sb, first, "data_" + SanitizeKey(kv.Key), EscapeAttr(kv.Value));
         }
+
+        // Surface every data_* fact as a single-line hover tooltip (original key names, not the sanitized
+        // attribute keys), so the full machine-readable detail is reachable on hover without bloating the
+        // visible label. A styler that set its own tooltip wins.
+        if (e.Attributes.ContainsKey("tooltip") == false)
+        {
+            string tooltip = BuildDataTooltip(e.Data);
+            if (string.IsNullOrEmpty(tooltip) == false)
+                AppendRawAttr(sb, first, "tooltip", EscapeAttr(tooltip));
+        }
+    }
+
+    /// <summary>Join all non-empty data facts into one line as <c>Key: Value  |  Key: Value</c>, for use as a
+    /// Graphviz tooltip. Uses the original (un-sanitized) keys for readability.</summary>
+    private static string BuildDataTooltip(Dictionary<string, string> data)
+    {
+        StringBuilder tip = null;
+        foreach (KeyValuePair<string, string> kv in data)
+        {
+            if (string.IsNullOrEmpty(kv.Value))
+                continue;
+            tip ??= new StringBuilder();
+            if (tip.Length != 0)
+                tip.Append("  |  ");
+            tip.Append(kv.Key).Append(": ").Append(kv.Value);
+        }
+
+        return tip?.ToString();
     }
 
     private readonly Dictionary<string, string> _sanitizedKeyCache = [];
