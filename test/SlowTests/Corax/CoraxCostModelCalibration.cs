@@ -312,42 +312,47 @@ public class CoraxCostModelCalibration : RavenTestBase
         const int totalDocs = 200_000;
         using var store = await BuildItemsStore(options, totalDocs, distinctTags: 24, tagsPerDoc: 3, clustered: true);
 
-        _output.WriteLine($"# Range-estimate accuracy calibration (docs={totalDocs:N0}, Score 0..50000 uniform)");
-        _output.WriteLine("hi | actual | iter1_est | err1 | iter5_est | err5 | sampled? (rangeTerms/sampledTerms)");
-        _output.WriteLine(new string('-', 100));
+        _output.WriteLine($"# Range-estimate accuracy calibration (docs={totalDocs:N0})");
+        _output.WriteLine("field    | dist     | hi | actual | iter1_est | err1 | iter5_est | err5 | sampled (rangeTerms/sampledTerms)");
+        _output.WriteLine(new string('-', 110));
 
-        // Score spans 50K distinct values; "Score < hi" covers ~hi distinct terms, far past the 768 edge samples.
-        foreach (var hi in new[] { 2000, 10000, 30000 })
+        // Score = uniform 0..50K; SkewScore = triangular peaked at 25K (sparse edges, dense middle).
+        // Both span far past the 512+256 edge samples, so the middle must be extrapolated (Beta's domain).
+        foreach (var (field, dist) in new[] { ("Score", "uniform"), ("SkewScore", "triangular") })
         {
-            string sampling = null;
-            long actual = 0, est1 = 0, est5 = 0;
-            for (int iter = 1; iter <= 5; iter++)
+            foreach (var hi in new[] { 2000, 10000, 25000, 40000 })
             {
-                using var session = store.OpenAsyncSession();
-                var q = session.Advanced.AsyncRawQuery<ItemDoc>(
-                        $"from index '{new ItemsIndex().IndexName}' where Score < $hi include timings() limit 1")
-                    .AddParameter("hi", hi).Statistics(out var stats).NoCaching();
-                await q.Timings(out var timings).ToListAsync();
-
-                actual = stats.TotalResults;
-                var clause = FindWithParam((QueryInspectionNode)timings.QueryPlan, "EstimatedRows");
-                long est = clause != null ? ExtractFormatted(clause.Parameters["EstimatedRows"]) : -1;
-                if (iter == 1)
+                string sampling = null;
+                long actual = 0, est1 = 0, est5 = 0;
+                for (int iter = 1; iter <= 5; iter++)
                 {
-                    est1 = est;
-                    if (clause != null && clause.Parameters.TryGetValue("EstRangeTerms", out var rt))
-                        sampling = $"{rt}/{(clause.Parameters.TryGetValue("EstSampledTerms", out var st) ? st : "?")}";
-                }
-                if (iter == 5) est5 = est;
-            }
+                    using var session = store.OpenAsyncSession();
+                    var q = session.Advanced.AsyncRawQuery<ItemDoc>(
+                            $"from index '{new ItemsIndex().IndexName}' where {field} < $hi include timings() limit 1")
+                        .AddParameter("hi", hi).Statistics(out var stats).NoCaching();
+                    await q.Timings(out var timings).ToListAsync();
 
-            double err1 = actual > 0 ? (double)est1 / actual : -1;
-            double err5 = actual > 0 ? (double)est5 / actual : -1;
-            _output.WriteLine($"{hi,6} | {actual,8:N0} | {est1,10:N0} | {err1,5:F2} | {est5,10:N0} | {err5,5:F2} | {sampling}");
+                    actual = stats.TotalResults;
+                    var clause = FindWithParam((QueryInspectionNode)timings.QueryPlan, "EstimatedRows");
+                    long est = clause != null ? ExtractFormatted(clause.Parameters["EstimatedRows"]) : -1;
+                    if (iter == 1)
+                    {
+                        est1 = est;
+                        if (clause != null && clause.Parameters.TryGetValue("EstRangeTerms", out var rt))
+                            sampling = $"{rt}/{(clause.Parameters.TryGetValue("EstSampledTerms", out var st) ? st : "?")}";
+                    }
+                    if (iter == 5) est5 = est;
+                }
+
+                double err1 = actual > 0 ? (double)est1 / actual : -1;
+                double err5 = actual > 0 ? (double)est5 / actual : -1;
+                _output.WriteLine($"{field,-9}| {dist,-9}| {hi,6} | {actual,8:N0} | {est1,10:N0} | {err1,5:F2} | {est5,10:N0} | {err5,5:F2} | {sampling}");
+            }
         }
 
         _output.WriteLine("");
-        _output.WriteLine("err = estimate/actual (1.0 = perfect). If err stays far from 1.0, tune CalibrationBeta / sample sizes.");
+        _output.WriteLine("err = estimate/actual (1.0 = perfect). The triangular rows stress middle-extrapolation;");
+        _output.WriteLine("if its err is far worse than uniform, the CalibrationBeta shrinkage / sample sizes need tuning.");
     }
 
     private static QueryInspectionNode FindWithParam(QueryInspectionNode node, string paramKey)
@@ -479,7 +484,11 @@ public class CoraxCostModelCalibration : RavenTestBase
                     // High-cardinality (50K distinct, uniform) so partial ranges span far more than the
                     // RangeBottomSample(512)+RangeTopSample(256) edge samples and the estimator must sample+extrapolate
                     // the middle — the path the CalibrationBeta clamp governs.
-                    Score = rng.Next(50_000)
+                    Score = rng.Next(50_000),
+                    // SKEWED variant: triangular, peaked at 25K — low/high values (the EDGE samples) are sparse while
+                    // the middle is dense, so uniform middle-extrapolation from the edge samples under-counts unless
+                    // Beta's shrinkage toward the global average corrects it. This is where Beta actually matters.
+                    SkewScore = (rng.Next(50_000) + rng.Next(50_000)) / 2
                 });
             }
         }
@@ -495,6 +504,7 @@ public class CoraxCostModelCalibration : RavenTestBase
         public int Category { get; set; }
         public int Bucket { get; set; }
         public int Score { get; set; }
+        public int SkewScore { get; set; }
     }
 
     private class ItemsIndex : AbstractIndexCreationTask<ItemDoc>
@@ -502,7 +512,7 @@ public class CoraxCostModelCalibration : RavenTestBase
         public ItemsIndex()
         {
             Map = docs => from doc in docs
-                select new { doc.Tags, doc.Category, doc.Bucket, doc.Score };
+                select new { doc.Tags, doc.Category, doc.Bucket, doc.Score, doc.SkewScore };
         }
     }
 }
