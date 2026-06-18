@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -45,18 +46,45 @@ public struct RegexTermProvider<TLookupIterator> : ITermProvider
 
     public bool Next(out TermMatch term)
     {
-        while (_iterator.MoveNext(out var compactKey, out _, out _))
+        // RavenDB-26811: decode each term's UTF-8 bytes into a reusable pooled char buffer and match the regex
+        // against the span directly, instead of allocating a fresh string per scanned term via
+        // Encoding.UTF8.GetString. The buffer is rented once per Next() (which scans many non-matching terms
+        // internally), grown only if a later term needs more room, and returned before returning.
+        char[] buffer = null;
+        try
         {
-            var key = compactKey.Decoded();
-            if (_regex.IsMatch(Encoding.UTF8.GetString(key)) == false)
-                continue;
+            while (_iterator.MoveNext(out var compactKey, out _, out _))
+            {
+                var key = compactKey.Decoded();
+                if (_regex.IsMatch(ToChars(key, ref buffer)) == false)
+                    continue;
 
-            term = _searcher.TermQuery(_field, compactKey, _tree);
-            return true;
+                term = _searcher.TermQuery(_field, compactKey, _tree);
+                return true;
+            }
+
+            term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
+            return false;
+        }
+        finally
+        {
+            if (buffer != null)
+                ArrayPool<char>.Shared.Return(buffer);
+        }
+    }
+
+    private static ReadOnlySpan<char> ToChars(ReadOnlySpan<byte> utf8, ref char[] buffer)
+    {
+        int max = Encoding.UTF8.GetMaxCharCount(utf8.Length);
+        if (buffer == null || buffer.Length < max)
+        {
+            if (buffer != null)
+                ArrayPool<char>.Shared.Return(buffer);
+            buffer = ArrayPool<char>.Shared.Rent(max);
         }
 
-        term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
-        return false;
+        int written = Encoding.UTF8.GetChars(utf8, buffer);
+        return buffer.AsSpan(0, written);
     }
 
     public QueryInspectionNode Inspect()
