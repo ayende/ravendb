@@ -200,7 +200,13 @@ unsafe sealed partial class SortingMatch<TInner>
             match._cancellationToken.ThrowIfCancellationRequested();
             _lookup.GetFor(batchResults, batchTermIds, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(batchTermIds, NonExistingTermContainerId, NullTermContainerId, SortingHelpers.MissingTermId);
-            
+
+            // Page-group the container reads: sort the term ids ascending (≈ container/page order) and co-permute
+            // the entry ids so term[i] stays paired with batchResults[i]. GetAll then walks pages in order instead
+            // of re-locating a page per item. The value-sort below reorders everything anyway, so we never restore
+            // the original order — only the term↔entry pairing matters.
+            batchTermIds.Sort(batchResults);
+
             var terms = new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length);
             Container.GetAll(llt, batchTermIds, terms, SortingHelpers.MissingTermId, pageLocator);
 
