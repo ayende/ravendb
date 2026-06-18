@@ -1724,10 +1724,11 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
             SearchInCurrentPageWithGallop(ref lookupKey, ref state, from);
             if (state.LastMatch == 0) // found the value
             {
-                terms[i] = GetValue(ref state,
-                    // limit the search on the _next_ call on this page
-                    state.LastSearchPosition);
-                
+                terms[i] = GetValue(ref state, state.LastSearchPosition);
+                // The next key is strictly greater, so its match is strictly past this entry: advance the cursor
+                // by one. A dense run then becomes a forward merge - the gallop's first probe lands on the answer,
+                // one decode per key, instead of re-probing the entry we just consumed.
+                state.LastSearchPosition++;
                 continue;
             }
 
