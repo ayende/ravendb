@@ -1653,7 +1653,10 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
         for (int i = 0; i < keys.Length; i++)
         {
             lookupKey = TLookupKey.FromLong<TLookupKey>(keys[i]);
-            SearchInCurrentPage(ref lookupKey, ref state);
+            // Keys are sorted ascending, so this key sits at or after the previous key's position on the page.
+            // Narrow the binary search to [from, end) instead of rescanning the whole page on every key.
+            int from = state.LastSearchPosition >= 0 ? state.LastSearchPosition : ~state.LastSearchPosition;
+            SearchInCurrentPage(ref lookupKey, ref state, from, state.Header->NumberOfEntries - from);
             if (state.LastMatch == 0) // found the value
             {
                 terms[i] = GetValue(ref state,
