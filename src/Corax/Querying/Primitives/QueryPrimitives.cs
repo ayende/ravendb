@@ -233,11 +233,20 @@ public static class QueryPrimitives
     // The threshold is the bitmap count below which we consider entry scan.
     public const long EntryScanCountThreshold = 32 * 1024;
 
-    // The multiplier approximates the cost ratio: one entry blob read costs roughly
-    // 64x a single posting list decode. Entry scan wins when
-    // bitmapCount * 64 < postingListSize, i.e. the posting list is much larger
-    // than the candidate set.
-    public const long EntryScanCostMultiplier = 64;
+    // The multiplier approximates the cost ratio: one entry blob read (EntryTermsReader stored-field
+    // fetch + residual check) vs a single posting-list decode. Entry scan wins when
+    // entriesToScan * multiplier < bitmapCost.
+    //
+    // Recalibrated 64 -> 128 (CoraxCostModelCalibration, RavenDB-25281). This is a ROBUSTNESS STOPGAP, not a
+    // clean fit: the calibration proved no single multiplier is correct, because bitmapCost (= Σ cardinalities)
+    // omits the bitmap pipeline's survivor-SORT cost. With FEW survivors the bitmap is cheap, so the original 64
+    // picked the 8-9x SLOWER scan (entries_to_scan 2,493, below the 32K cap, yet Bitmap 9x faster); with MANY
+    // survivors the bitmap is dominated by sorting them, so a higher multiplier wrongly rejects a scan that wins.
+    // 128 trades the common, severe 9x small-limit/selective-residual pathology for a rare, mild ~1.4x regression
+    // on high-survivor queries — a net robustness win. The PROPER fix is a survivor-aware bitmap cost
+    // (Σ cardinalities + survivors × sortFactor, survivors ≈ the product/independence intersection estimate),
+    // which needs its own calibration; tracked as a follow-up.
+    public const long EntryScanCostMultiplier = 128;
 
     // Sentinels for the $rvn_corax_entry_scan override carried on ForcedEntryScanGate.
     // Unset leaves the cost gate in charge; Disabled is below any real gate cursor (>= 0),

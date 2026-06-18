@@ -51,11 +51,15 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// docs, multi-valued clustered sort field): streaming beat InMemorySort in EVERY swept case with
     /// take &lt; candidates — 9.2× at 40% selectivity, 6.x at 8%, and still 2.2× at 0.5% with a 16× over-scan —
     /// because early termination caps the scan at 1–2 batches. The only loss was take ≥ candidates, already
-    /// short-circuited above. The cost asymmetry equalizes around 32–38× over-scan, so 32 captures essentially
-    /// all wins while the StreamScanInflation EWMA and the take ≥ candidates guard backstop the clustered
-    /// pathological case. IMPORTANT: deliberately NOT 1 — do not simplify the gate back to
-    /// <c>estimatedScan &lt; candidates</c>, which ignores the per-entry cost asymmetry and over-picks InMemorySort.</summary>
-    internal const double IndexStreamingVsInMemorySortCostRatio = 32;
+    /// short-circuited above. Since the comparison is <c>estimatedScan &lt; candidates × ratio</c>, the ratio IS
+    /// the maximum over-scan multiple the gate will accept; it is set to match <c>maxScanCandidateMultiplier</c>
+    /// (the streaming bail-out, also 16) so the gate never starts a walk the bail-out would abandon, and to sit
+    /// at the clear-win edge (streaming wins through ~16× over-scan, marginal/losing beyond). Lowered 32 -> 16:
+    /// 32 let the gate pick streaming up to a 32× walk that the 16× bail-out then aborted (wasted scan), and was
+    /// over-permissive once StreamScanInflation had already learned a query over-scans badly. IMPORTANT:
+    /// deliberately NOT 1 — do not simplify the gate to <c>estimatedScan &lt; candidates</c>, which ignores the
+    /// per-entry cost asymmetry and over-picks InMemorySort.</summary>
+    internal const double IndexStreamingVsInMemorySortCostRatio = 16;
     private ByteStringContext<ByteStringMemoryCache>.InternalScope _entriesBufferScope;
 
     private ContextBoundNativeList<long> _results;
