@@ -1625,8 +1625,72 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
         state.LastMatch = match > 0 ? 1 : -1;
         // Negation gives information we didn't find the key in the page
         // In this case, if last compared value is smaller than seeked key, we may suspect it will be the next element of the tree.
-        // It points to the smallest element that is bigger than seeked key. 
+        // It points to the smallest element that is bigger than seeked key.
         state.LastSearchPosition = ~(bot + (match > 0).ToInt32());
+    }
+
+    /// <summary>
+    /// Locate <paramref name="key"/> within [<paramref name="from"/>, NumberOfEntries) using an exponential
+    /// gallop from the cursor instead of a binary search over the whole tail. Produces the exact same
+    /// <see cref="CursorState.LastMatch"/> / <see cref="CursorState.LastSearchPosition"/> contract as
+    /// <see cref="SearchInCurrentPage(ref TLookupKey, ref CursorState, int, int)"/>, so callers are unchanged.
+    ///
+    /// Used by the batched <see cref="GetFor"/> path where keys are sorted ascending and successive lookups
+    /// land at or just after the previous position. Probing entry[from] first makes the common dense case
+    /// (the next key sits at/near the cursor) cost ~1 decode; the gallop then brackets a sparse jump in
+    /// O(log delta) and hands the small bracket to the binary search, versus O(log NumberOfEntries) per key.
+    /// </summary>
+    private void SearchInCurrentPageWithGallop(ref TLookupKey key, ref CursorState state, int from)
+    {
+        var header = state.Header;
+        int n = header->NumberOfEntries;
+        if (n - from <= 0)
+        {
+            // Cursor is at/after the page end: mirror SearchInCurrentPage's empty-range result so the
+            // GetFor loop sees the key as belonging after this page and walks to the next one.
+            state.LastMatch = -1;
+            state.LastSearchPosition = ~from;
+            return;
+        }
+
+        ushort* @base = state.EntriesOffsetsPtr;
+        byte* pagePtr = state.Page.Pointer;
+
+        // Dense fast path: entry[from] is already >= key, so `from` is the answer (no advance, 1 decode).
+        long curKey = GetKeyData(header, pagePtr + @base[from]);
+        int match = key.CompareTo(this, curKey);
+        if (match <= 0)
+        {
+            state.LastMatch = match == 0 ? 0 : -1;
+            state.LastSearchPosition = match == 0 ? from : ~from;
+            return;
+        }
+
+        // entry[from] < key: gallop forward (step 1, 2, 4, ...) until we bracket the key, then binary-search
+        // the (lo, hi] window. `lo` always points at an entry strictly less than key.
+        int lo = from;
+        int step = 1;
+        while (true)
+        {
+            int probe = from + step;
+            if (probe >= n)
+                break; // overshot the page; resolve the tail bracket below
+
+            curKey = GetKeyData(header, pagePtr + @base[probe]);
+            match = key.CompareTo(this, curKey);
+            if (match <= 0)
+            {
+                // entry[probe] >= key -> first match is within (lo, probe]: search [lo+1, probe].
+                SearchInCurrentPage(ref key, ref state, lo + 1, probe - lo);
+                return;
+            }
+
+            lo = probe;
+            step <<= 1;
+        }
+
+        // Galloped past the end: the match (or the after-page insertion point) is within (lo, n).
+        SearchInCurrentPage(ref key, ref state, lo + 1, n - lo - 1);
     }
 
     [Conditional("DEBUG")]
@@ -1654,9 +1718,10 @@ public sealed unsafe partial class Lookup<TLookupKey> : IPrepareForCommit
         {
             lookupKey = TLookupKey.FromLong<TLookupKey>(keys[i]);
             // Keys are sorted ascending, so this key sits at or after the previous key's position on the page.
-            // Narrow the binary search to [from, end) instead of rescanning the whole page on every key.
+            // Gallop forward from that position instead of rescanning the whole page: dense runs cost ~1 decode
+            // per key, sparse jumps cost O(log delta) rather than O(log NumberOfEntries).
             int from = state.LastSearchPosition >= 0 ? state.LastSearchPosition : ~state.LastSearchPosition;
-            SearchInCurrentPage(ref lookupKey, ref state, from, state.Header->NumberOfEntries - from);
+            SearchInCurrentPageWithGallop(ref lookupKey, ref state, from);
             if (state.LastMatch == 0) // found the value
             {
                 terms[i] = GetValue(ref state,
