@@ -42,17 +42,17 @@ public class PlanCacheStrategyTests : RavenTestBase
         }
     }
 
-    // Seq == index (so ORDER BY Seq == document order). Name is skewed 3:1 Bob:Alice, so Name='Bob' is
-    // NON-selective (~75%, ~3000 of 4000 — direct-scan wins for top-N) while Name='Alice' is selective
-    // (~25%, ~1000 — below the cost-gate boundary, so direct-scan loses to a cheap bitmap). Names are
-    // capitalised so a residual must analyzer-lowercase to match the stored term.
+    // Seq == index (so ORDER BY Seq == document order). Name is 1-in-10 Alice, rest Bob, so Name='Bob' is
+    // NON-selective (~90%, ~3600 of 4000 — direct-scan wins for top-N) while Name='Alice' is selective
+    // (~10%, ~400 — below the survivor-aware cost gate's ~565-survivor crossover for a 25-row page, so
+    // direct-scan over-scans the sorted stream and loses to a cheaper bitmap sort). Names are capitalised
+    // so a residual must analyzer-lowercase to match the stored term.
     private static List<Item> BuildSeed(int count)
     {
-        string[] names = { "Bob", "Bob", "Bob", "Alice" };
         string[] cats = { "red", "green", "blue" };
         var items = new List<Item>(count);
         for (int i = 0; i < count; i++)
-            items.Add(new Item { Id = $"items/{i}", Name = names[i % names.Length], Category = cats[i % cats.Length], Seq = i });
+            items.Add(new Item { Id = $"items/{i}", Name = (i % 10 == 0) ? "Alice" : "Bob", Category = cats[i % cats.Length], Seq = i });
         return items;
     }
 
@@ -126,7 +126,7 @@ public class PlanCacheStrategyTests : RavenTestBase
 
         using var session = store.OpenAsyncSession();
 
-        // Non-selective residual (Name='BOB' matches ~75%) over a wide range, top-25 -> FieldSortedScan wins.
+        // Non-selective residual (Name='BOB' matches ~90%) over a wide range, top-25 -> FieldSortedScan wins.
         await session.Advanced
             .AsyncRawQuery<Item>($"from index '{index.IndexName}' where Seq between 0 and 3999 and Name = 'BOB' order by Seq as long limit 25 include timings()")
             .Timings(out var directScanTimings)
