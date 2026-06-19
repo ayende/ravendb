@@ -10,6 +10,7 @@ using System.Text;
 using Sparrow;
 using Sparrow.Server;
 using Voron.Data.Lookups;
+using Voron.Data.RoaringBitmaps;
 using Voron.Exceptions;
 using Voron.Global;
 using Voron.Impl;
@@ -1226,7 +1227,8 @@ namespace Voron.Data.Containers
 
         public static void Delete(LowLevelTransaction llt, ContainerId containerId, ContainerEntryId id)
         {
-            var (pageNum, offset) = Math.DivRem((long)id, Constants.Storage.PageSize);
+            var pageNum = (long)id >> Constants.Storage.PageSizeShift;
+            var offset = (long)id & Constants.Storage.PageSizeMask;
             var page = llt.ModifyPage(pageNum);
             Container rootContainer = new Container(llt.ModifyPage((long)containerId));
             rootContainer.UpdateNumberOfEntries(-1);
@@ -1336,7 +1338,8 @@ namespace Voron.Data.Containers
             if ((long)id <= 0)
                 throw new InvalidOperationException("Got an invalid container id: " + id);
 
-            var (pageNum, offset) = Math.DivRem((long)id, Constants.Storage.PageSize);
+            var pageNum = (long)id >> Constants.Storage.PageSizeShift;
+            var offset = (long)id & Constants.Storage.PageSizeMask;
             var page = llt.ModifyPage(pageNum);
 
             if (page.IsOverflow)
@@ -1359,7 +1362,8 @@ namespace Voron.Data.Containers
             if ((long)id <= 0)
                 throw new InvalidOperationException("Got an invalid container id: " + id);
 
-            var (pageNum, offset) = Math.DivRem((long)id, Constants.Storage.PageSize);
+            var pageNum = (long)id >> Constants.Storage.PageSizeShift;
+            var offset = (long)id & Constants.Storage.PageSizeMask;
             var page = llt.ModifyPage(pageNum);
 
             if (page.IsOverflow)
@@ -1381,7 +1385,8 @@ namespace Voron.Data.Containers
             if ((long)id <= 0)
                 throw new InvalidOperationException("Got an invalid container id: " + id);
 
-            var (pageNum, offset) = Math.DivRem((long)id, Constants.Storage.PageSize);
+            var pageNum = (long)id >> Constants.Storage.PageSizeShift;
+            var offset = (long)id & Constants.Storage.PageSizeMask;
             var page = llt.GetPage(pageNum);
             if (page.IsOverflow)
             {
@@ -1403,7 +1408,8 @@ namespace Voron.Data.Containers
             if ((long)id <= 0)
                 throw new InvalidOperationException("Got an invalid container id: " + id);
 
-            var (pageNum, offset) = Math.DivRem((long)id, Constants.Storage.PageSize);
+            var pageNum = (long)id >> Constants.Storage.PageSizeShift;
+            var offset = (long)id & Constants.Storage.PageSizeMask;
             var page = llt.GetPage(pageNum);
             if (page.IsOverflow)
             {
@@ -1424,7 +1430,8 @@ namespace Voron.Data.Containers
             if ((long)id <= 0)
                 throw new InvalidOperationException("Got an invalid container id: " + id);
 
-            var (pageNum, offset) = Math.DivRem((long)id, Constants.Storage.PageSize);
+            var pageNum = (long)id >> Constants.Storage.PageSizeShift;
+            var offset = (long)id & Constants.Storage.PageSizeMask;
             if(!page.IsValid || pageNum != page.PageNumber)
                 page = llt.GetPage(pageNum);
 
@@ -1497,7 +1504,8 @@ namespace Voron.Data.Containers
                     spans[i] = default;
                     continue;
                 }
-                var (pageNum, offset) = Math.DivRem(ids[i], Constants.Storage.PageSize);
+                var pageNum = ids[i] >> Constants.Storage.PageSizeShift;
+                var offset = ids[i] & Constants.Storage.PageSizeMask;
 
                 if (pageCache.TryGetReadOnlyPage(pageNum, out var page) == false)
                 {
@@ -1533,17 +1541,22 @@ namespace Voron.Data.Containers
             if (n == 0)
                 return;
 
+            // idx is padded to the Vector256 width so InitializeIndices can SIMD-store it without a scalar tail.
+            int idxLen = RoaringBitmap.PadToVector256Width(n);
             using var keysScope = llt.Allocator.Allocate(n * sizeof(long), out ByteString keysBuffer);
-            using var idxScope = llt.Allocator.Allocate(n * sizeof(int), out ByteString idxBuffer);
+            using var idxScope = llt.Allocator.Allocate(idxLen * sizeof(int), out ByteString idxBuffer);
             var keys = new Span<long>(keysBuffer.Ptr, n);
-            var idx = new Span<int>(idxBuffer.Ptr, n);
+            var idx = new Span<int>(idxBuffer.Ptr, idxLen);
             ids.CopyTo(keys);
-            for (int i = 0; i < n; i++)
-                idx[i] = i;
+            RoaringBitmap.InitializeIndices(idx, n);
 
             // keys ascending (page order); idx[k] is the caller slot for keys[k].
-            keys.Sort(idx);
+            keys.Sort(idx[..n]);
 
+            // Sorted by id == sorted by page, so a run of ids on the same page is contiguous: resolve the page
+            // once per run and reuse it instead of going through the page cache for every entry.
+            long lastPageNum = -1;
+            Page page = default;
             for (int k = 0; k < n; k++)
             {
                 long id = keys[k];
@@ -1554,11 +1567,16 @@ namespace Voron.Data.Containers
                     continue;
                 }
 
-                var (pageNum, offset) = Math.DivRem(id, Constants.Storage.PageSize);
-                if (pageCache.TryGetReadOnlyPage(pageNum, out var page) == false)
+                long pageNum = id >> Constants.Storage.PageSizeShift;
+                long offset = id & Constants.Storage.PageSizeMask;
+                if (pageNum != lastPageNum)
                 {
-                    page = llt.GetPage(pageNum);
-                    pageCache.SetReadable(page);
+                    if (pageCache.TryGetReadOnlyPage(pageNum, out page) == false)
+                    {
+                        page = llt.GetPage(pageNum);
+                        pageCache.SetReadable(page);
+                    }
+                    lastPageNum = pageNum;
                 }
 
                 if (page.IsOverflow)

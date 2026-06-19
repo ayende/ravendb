@@ -795,33 +795,56 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// <summary>Batch scoring helper: for each entry in <paramref name="matches"/> that is present in this bitmap,
     /// add <paramref name="boostFactor"/> to <paramref name="scores"/> at the same index. <paramref name="matches"/>
     /// MUST be sorted ascending (and is, in the in-memory score sort, where it comes straight off the candidate
-    /// bitmap iterator). That lets us group the candidates by container key (one slot resolution per run, absent
-    /// containers skipped wholesale) and, for a sorted Array container, sweep its values with a single forward cursor
-    /// instead of an independent SIMD search per probe — turning N×O(scan) into O(N + cardinality). Mirrors the
-    /// container-group skeleton of <see cref="AndWith"/> / <see cref="DedupAddNew"/>, but adds a score on a hit
-    /// instead of filtering.</summary>
+    /// bitmap iterator) — see <see cref="VisitPresentSorted{TVisitor}"/> for the container-group sweep this shares
+    /// with <see cref="DedupAddNew"/>.</summary>
     public void ScorePresentSorted(Span<long> matches, Span<float> scores, float boostFactor)
     {
         AssertNotConsumed();
         if (boostFactor == 0f)
             return;
 
-        int count = matches.Length;
+        var visitor = new ScoreVisitor(scores, boostFactor);
+        VisitPresentSorted(matches, matches.Length, ref visitor);
+    }
+
+    /// <summary>What to do with each element of a sorted batch as the container-group sweep classifies it as
+    /// present (<see cref="OnHit"/>) or absent (<see cref="OnMiss"/> / <see cref="OnAbsentRun"/>). A struct type
+    /// parameter so <see cref="VisitPresentSorted{TVisitor}"/> specializes and inlines every callback (same idiom
+    /// as the sort comparers).</summary>
+    private interface IPresenceVisitor
+    {
+        /// <summary>When false, the Array forward-sweep may stop the moment the container is exhausted, since every
+        /// remaining element in the run is a guaranteed miss the visitor doesn't care about.</summary>
+        bool VisitsMisses { get; }
+        void OnHit(int index);
+        void OnMiss(int index);
+        /// <summary>An entire run <c>[from, to)</c> whose container is absent or tombstoned: no element is present.</summary>
+        void OnAbsentRun(int from, int to);
+    }
+
+    /// <summary>Walk a sorted batch grouped by container key. <paramref name="values"/> MUST be sorted ascending,
+    /// so each container's run is contiguous: one slot resolution per run, absent containers skipped wholesale, and
+    /// a sorted Array container swept with a single forward cursor instead of an independent search per probe —
+    /// turning N×O(scan) into O(N + cardinality). The <typeparamref name="TVisitor"/> decides what a hit/miss does
+    /// (score it, keep it, ...). Shared by <see cref="ScorePresentSorted"/> and <see cref="DedupAddNew"/>.</summary>
+    private void VisitPresentSorted<TVisitor>(Span<long> values, int count, scoped ref TVisitor visitor)
+        where TVisitor : struct, IPresenceVisitor, allows ref struct
+    {
         int* idx = _index.RawItems;
         int idxLen = _index.Count;
         ContainerEntry* entries = _entries.RawItems;
         ContainerType* types = _types.RawItems;
+        bool visitsMisses = visitor.VisitsMisses;
 
         int i = 0;
         while (i < count)
         {
-            long containerKey = matches[i] >> ContainerKeyShift;
-            long containerEnd = (containerKey + 1) << ContainerKeyShift;
-            int groupEnd = GallopRight(matches, i, count, containerEnd);
+            long containerKey = values[i] >> ContainerKeyShift;
+            int groupEnd = GallopRight(values, i, count, (containerKey + 1) << ContainerKeyShift);
 
-            // Container absent — nothing in this run is present, skip the whole group.
             if (containerKey < 0 || containerKey >= idxLen || idx[containerKey] < 0)
             {
+                visitor.OnAbsentRun(i, groupEnd);
                 i = groupEnd;
                 continue;
             }
@@ -830,13 +853,6 @@ public unsafe partial struct RoaringBitmap : IDisposable
             ref ContainerEntry entry = ref entries[slot];
             ref ContainerType type = ref types[slot];
 
-            if (type == ContainerType.ArrayUnsorted)
-            {
-                // Normalize once: sort + upgrade so this and later probes of this container can merge/binary-search.
-                new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
-                type = ContainerType.Array;
-            }
-
             switch (type)
             {
                 case ContainerType.Bitmap:
@@ -844,9 +860,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
                     ulong* bmp = (ulong*)entry.Data;
                     for (int gi = i; gi < groupEnd; gi++)
                     {
-                        ushort low = (ushort)(matches[gi] & ContainerValueMask);
-                        if (BitmapContains(bmp, low))
-                            scores[gi] += boostFactor;
+                        ushort low = (ushort)(values[gi] & ContainerValueMask);
+                        if (BitmapContains(bmp, low)) visitor.OnHit(gi);
+                        else visitor.OnMiss(gi);
                     }
                     break;
                 }
@@ -857,39 +873,108 @@ public unsafe partial struct RoaringBitmap : IDisposable
                     int rangeEnd = rangeStart + entry.Cardinality;
                     for (int gi = i; gi < groupEnd; gi++)
                     {
-                        ushort low = (ushort)(matches[gi] & ContainerValueMask);
-                        if (low >= rangeStart && low < rangeEnd)
-                            scores[gi] += boostFactor;
+                        ushort low = (ushort)(values[gi] & ContainerValueMask);
+                        if (low >= rangeStart && low < rangeEnd) visitor.OnHit(gi);
+                        else visitor.OnMiss(gi);
                     }
                     break;
                 }
 
                 case ContainerType.Array:
                 {
-                    // Both sides ascending (matches sorted, Array container sorted): one forward sweep.
+                    // Both sides ascending (values sorted, Array container sorted): one forward sweep.
                     ushort* arr = entry.ArrayData;
                     int arrLen = entry.Cardinality;
                     int ai = 0;
                     for (int gi = i; gi < groupEnd; gi++)
                     {
-                        ushort low = (ushort)(matches[gi] & ContainerValueMask);
+                        ushort low = (ushort)(values[gi] & ContainerValueMask);
                         while (ai < arrLen && arr[ai] < low) ai++;
                         if (ai >= arrLen)
-                            break; // container exhausted; no further match in this run can be present
-                        if (arr[ai] == low)
                         {
-                            scores[gi] += boostFactor;
-                            ai++;
+                            // Container exhausted: every remaining element in this run is a miss.
+                            if (visitsMisses == false)
+                                break;
+                            visitor.OnMiss(gi);
+                            continue;
                         }
+                        if (arr[ai] == low) { visitor.OnHit(gi); ai++; }
+                        else visitor.OnMiss(gi);
                     }
                     break;
                 }
 
+                case ContainerType.ArrayUnsorted:
+                {
+                    if (groupEnd - i == 1)
+                    {
+                        // Single probe: a SIMD linear scan is cheaper than sorting the whole container for it.
+                        ushort low = (ushort)(values[i] & ContainerValueMask);
+                        if (SimdLinearContains(entry.ArrayData, entry.Cardinality, low)) visitor.OnHit(i);
+                        else visitor.OnMiss(i);
+                    }
+                    else
+                    {
+                        // Normalize once: sort + upgrade so this and later probes of this container merge/binary-search.
+                        new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
+                        type = ContainerType.Array;
+                        goto case ContainerType.Array;
+                    }
+                    break;
+                }
+
+                case ContainerType.Free:
+                    // Tombstone — nothing present here.
+                    visitor.OnAbsentRun(i, groupEnd);
+                    break;
+
                 default:
-                    throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in ScorePresentSorted");
+                    throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in VisitPresentSorted");
             }
 
             i = groupEnd;
+        }
+    }
+
+    /// <summary>Adds <see cref="_boost"/> to the score slot of every present entry; ignores misses.</summary>
+    private readonly ref struct ScoreVisitor(Span<float> scores, float boost) : IPresenceVisitor
+    {
+        private readonly Span<float> _scores = scores;
+        private readonly float _boost = boost;
+
+        public bool VisitsMisses => false;
+        public void OnHit(int index) => _scores[index] += _boost;
+        public void OnMiss(int index) { }
+        public void OnAbsentRun(int from, int to) { }
+    }
+
+    /// <summary>The dedup half of <see cref="DedupAddNew"/>: KEEPS entries that are ABSENT from the bitmap
+    /// (compacting <see cref="_buffer"/> + <see cref="_indices"/> in place) and discards present ones. The kept
+    /// prefix never overtakes the sweep's read cursor, so the in-place compaction is safe.</summary>
+    private ref struct DedupVisitor(Span<long> buffer, Span<int> indices) : IPresenceVisitor
+    {
+        private readonly Span<long> _buffer = buffer;
+        private readonly Span<int> _indices = indices;
+        public int Kept;
+
+        public bool VisitsMisses => true;
+        public void OnHit(int index) { } // present — discard
+
+        public void OnMiss(int index)
+        {
+            _buffer[Kept] = _buffer[index];
+            _indices[Kept] = _indices[index];
+            Kept++;
+        }
+
+        public void OnAbsentRun(int from, int to)
+        {
+            for (int gi = from; gi < to; gi++)
+            {
+                _buffer[Kept] = _buffer[gi];
+                _indices[Kept] = _indices[gi];
+                Kept++;
+            }
         }
     }
 
@@ -909,135 +994,11 @@ public unsafe partial struct RoaringBitmap : IDisposable
         buffer[..count].Sort(indices[..count]);
         count = RemoveDuplicates(buffer, indices, count);
 
-        int kept = 0;
-        int i = 0;
-        int* idx = _index.RawItems;
-        int idxLen = _index.Count;
-        ContainerEntry* entries = _entries.RawItems;
-        ContainerType* types = _types.RawItems;
-
-        while (i < count)
-        {
-            long containerKey = buffer[i] >> ContainerKeyShift;
-
-            // Container absent — all entries in this group are new, keep them all.
-            if (containerKey < 0 || containerKey >= idxLen || idx[containerKey] < 0)
-            {
-                int groupEnd = GallopRight(buffer, i, count, (containerKey + 1) << ContainerKeyShift);
-                for (int gi = i; gi < groupEnd; gi++)
-                {
-                    buffer[kept] = buffer[gi];
-                    indices[kept] = indices[gi];
-                    kept++;
-                }
-                i = groupEnd;
-                continue;
-            }
-
-            int slot = idx[containerKey];
-            ref ContainerEntry entry = ref entries[slot];
-            ref ContainerType type = ref types[slot];
-            long containerEnd = (containerKey + 1) << ContainerKeyShift;
-            int groupEnd2 = GallopRight(buffer, i, count, containerEnd);
-
-            switch (type)
-            {
-                case ContainerType.Bitmap:
-                {
-                    ulong* bmp = (ulong*)entry.Data;
-                    for (int gi = i; gi < groupEnd2; gi++)
-                    {
-                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
-                        if (BitmapContains(bmp, low) == false)
-                        {
-                            buffer[kept] = buffer[gi];
-                            indices[kept] = indices[gi];
-                            kept++;
-                        }
-                    }
-                    break;
-                }
-
-                case ContainerType.Range:
-                {
-                    int rangeStart = entry.RangeStart;
-                    int rangeEnd = rangeStart + entry.Cardinality;
-                    for (int gi = i; gi < groupEnd2; gi++)
-                    {
-                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
-                        if (low < rangeStart || low >= rangeEnd)
-                        {
-                            buffer[kept] = buffer[gi];
-                            indices[kept] = indices[gi];
-                            kept++;
-                        }
-                    }
-                    break;
-                }
-
-                case ContainerType.Array:
-                {
-                    ushort* arr = entry.ArrayData;
-                    int arrLen = entry.Cardinality;
-                    int ai = 0;
-                    for (int gi = i; gi < groupEnd2; gi++)
-                    {
-                        ushort low = (ushort)(buffer[gi] & ContainerValueMask);
-                        while (ai < arrLen && arr[ai] < low) ai++;
-                        if (ai < arrLen && arr[ai] == low)
-                        {
-                            ai++; // present — discard
-                        }
-                        else
-                        {
-                            buffer[kept] = buffer[gi];
-                            indices[kept] = indices[gi];
-                            kept++;
-                        }
-                    }
-                    break;
-                }
-
-                case ContainerType.ArrayUnsorted:
-                {
-                    int groupLen = groupEnd2 - i;
-                    if (groupLen == 1)
-                    {
-                        ushort low = (ushort)(buffer[i] & ContainerValueMask);
-                        if (SimdLinearContains(entry.ArrayData, entry.Cardinality, low) == false)
-                        {
-                            buffer[kept] = buffer[i];
-                            indices[kept] = indices[i];
-                            kept++;
-                        }
-                    }
-                    else
-                    {
-                        new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
-                        type = ContainerType.Array;
-                        goto case ContainerType.Array;
-                    }
-                    break;
-                }
-
-                case ContainerType.Free:
-                {
-                    // Tombstone — all entries are new, keep them all.
-                    for (int gi = i; gi < groupEnd2; gi++)
-                    {
-                        buffer[kept] = buffer[gi];
-                        indices[kept] = indices[gi];
-                        kept++;
-                    }
-                    break;
-                }
-
-                default:
-                    throw new ArgumentOutOfRangeException(nameof(type), type, "Unexpected container type in DedupAddNew");
-            }
-
-            i = groupEnd2;
-        }
+        // Same sorted-container sweep as ScorePresentSorted, but the visitor KEEPS absent entries (compacting
+        // buffer + indices in place) and discards present ones.
+        var visitor = new DedupVisitor(buffer, indices);
+        VisitPresentSorted(buffer, count, ref visitor);
+        int kept = visitor.Kept;
 
         // Add the new entries to the bitmap while they're still sorted.
         AddRange(buffer[..kept]);
