@@ -46,11 +46,6 @@ public struct PhraseMatch<TInner> : IQueryMatch
     
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
 
-    public SkipSortingResult AttemptToSkipSorting()
-    {
-        //Filter only, not changing order.
-        return _inner.AttemptToSkipSorting();
-    }
 
     public QueryCountConfidence Confidence => QueryCountConfidence.Normal;
     public bool IsBoosting => _inner.IsBoosting;
@@ -193,6 +188,11 @@ public struct PhraseMatch<TInner> : IQueryMatch
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         _inner.Score(matches, scores, boostFactor);
+    }
+
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
+    {
+        _inner.ScoreSorted(matches, scores, boostFactor);
     }
 
     public QueryInspectionNode Inspect()

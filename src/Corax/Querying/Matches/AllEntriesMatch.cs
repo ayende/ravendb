@@ -14,11 +14,6 @@ namespace Corax.Querying.Matches
         private readonly long _count;
         private Lookup<Int64LookupKey>.ForwardIterator _entriesPagesIt;
 
-        public SkipSortingResult AttemptToSkipSorting()
-        {
-            //we are already returning in sorted order
-            return SkipSortingResult.ResultsNativelySorted;
-        }
 
         public AllEntriesMatch(IndexSearcher searcher, Transaction tx)
         {
@@ -54,6 +49,12 @@ namespace Corax.Querying.Matches
         public void Score(Span<long> matches, Span<float> scores, float boostFactor)
         {
             //there is no sense to add anything here because this would add same value to all items in collection.
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
+        {
+            //no-op, same as Score: a constant added to every entry does not change ordering.
         }
 
         public QueryInspectionNode Inspect()

@@ -33,6 +33,8 @@ namespace Corax.Analyzers
 
         public bool IsExactAnalyzer;
 
+        public bool IsCompoundFieldCompatible;
+
         public static ArrayPool<Token> TokensPool
         {
             get
@@ -75,15 +77,26 @@ namespace Corax.Analyzers
             float sourceBufferMultiplier = 1;
             float tokenBufferMultiplier = 1;
             IsExactAnalyzer = transformers.Length > 0;
+            // Compound fields rely on a stable single-token-per-value output. KeywordTokenizer is the only
+            // tokenizer that guarantees this; Exact/LowerCase transformers are byte-for-byte stable wrappers.
+            // When wrapped via With<>(), the actual tokenizer lives on the inner analyzer.
+            bool tokenizerOk = inner != null ? inner.IsCompoundFieldCompatible : tokenizer is KeywordTokenizer;
+            bool isCompoundFieldCompatible = tokenizerOk;
             foreach( var transformer in transformers)
             {
                 IsExactAnalyzer &= transformer is ExactTransformer;
-                
+
+                // NullTransformer is a placeholder slot used by Create<...> when fewer than 3 transformers
+                // are supplied; it has no effect on the pipeline so skip the compatibility check for it.
+                if (transformer is not NullTransformer)
+                    isCompoundFieldCompatible &= transformer is ExactTransformer || transformer is LowerCaseTransformer;
+
                 if (transformer.BufferSpaceMultiplier > 1)
                     sourceBufferMultiplier *= transformer.BufferSpaceMultiplier;
                 if (transformer.TokenSpaceMultiplier > 1)
                     tokenBufferMultiplier *= transformer.TokenSpaceMultiplier;
             }
+            IsCompoundFieldCompatible = isCompoundFieldCompatible;
 
             // If we have an inner analyzer block, we need to account for it's own multiplier effect. 
             if (inner != null)

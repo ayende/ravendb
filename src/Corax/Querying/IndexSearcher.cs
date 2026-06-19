@@ -9,7 +9,7 @@ using Corax.Mappings;
 using Corax.Pipeline;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
-using Corax.Querying.Matches.TermProviders;
+using Corax.Querying.Matches.TermsProviders;
 using Corax.Utils;
 using Sparrow;
 using Sparrow.Server;
@@ -37,9 +37,13 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private readonly IndexFieldsMapping _fieldMapping;
     private Dictionary<Slice, Hnsw.SearchState> _vectorSearchStateCache;
     private Dictionary<Slice, HnswIndexCache> _vectorNodeCaches;
+    private HashSet<string> _fieldsWithMultipleTerms;
     private HashSet<long> _nullTermsMarkers;
     private HashSet<long> _nonExistingTermsMarkers;
     private long[] _vectorFieldsMarkers;
+    // Searcher-lifetime scratch key handed to EntryTermsReaders created via GetEntryTermsReader
+    // without an explicit key. Acquired lazily from the pool on first use and released in Dispose.
+    private CompactKey _sharedEntryReaderKey;
     private Tree _persistedDynamicTreeAnalyzer;
     private long? _numberOfEntries;
     private bool _nullTermsMarkersLoaded;
@@ -108,10 +112,21 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private long _dictionaryId;
     private Lookup<Int64LookupKey> _entryIdToLocation;
     public FieldsCache FieldCache;
+    /// <summary>Query plan cache. Lazily initialized to a new instance on first use.
+    /// Set externally to share compiled plans across IndexSearcher instances
+    /// (e.g., per-index-instance lifetime via CoraxIndexPersistence).</summary>
+    private Planning.PlanCache _planCache;
+    public Planning.PlanCache PlanCache { get => _planCache ??= new(); set => _planCache = value; }
     private bool _nullPostingListsTreeLoaded;
     private bool _nonExistingPostingListsTreeLoaded;
 
-    public long MaxMemoizationSizeInBytes = 128 * 1024 * 1024;
+    public long MaxFacetQueryFilterSizeInBytes = 128 * 1024 * 1024;
+    [Obsolete("Use MaxFacetQueryFilterSizeInBytes instead")]
+    public long MaxMemoizationSizeInBytes
+    {
+        get => MaxFacetQueryFilterSizeInBytes;
+        set => MaxFacetQueryFilterSizeInBytes = value;
+    }
 
     public bool DocumentsAreBoosted => GetDocumentBoostTree().NumberOfEntries > 0;
 
@@ -158,6 +173,18 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         FieldCache = new FieldsCache(_transaction, _fieldsTree);
     }
     
+    public HashSet<long> NullTermsMarkers { get { InitializeSpecialTermsMarkers(); return _nullTermsMarkers; } }
+    public HashSet<long> NonExistingTermsMarkers { get { InitializeSpecialTermsMarkers(); return _nonExistingTermsMarkers; } }
+    public long[] VectorFieldsMarkers { get { InitializeSpecialTermsMarkers(); return _vectorFieldsMarkers; } }
+    public long DictionaryId => _dictionaryId;
+
+    /// <summary>Batch-resolve entry IDs to container locations. Entry IDs should be sorted
+    /// for best B-tree page locality. Unresolvable entries get -1.</summary>
+    public void ResolveEntryLocations(ReadOnlySpan<long> entryIds, Span<long> containerLocations)
+    {
+        _entryIdToLocation.GetFor(entryIds, containerLocations, -1);
+    }
+
     public EntryTermsReader GetEntryTermsReader(long id, ref Page p, CompactKey key = null)
     {
         if (_entryIdToLocation.TryGetValue(id, out var locLong) == false)
@@ -166,6 +193,11 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         InitializeSpecialTermsMarkers();
         ContainerEntryId loc = (ContainerEntryId)locLong;
         var item = Container.MaybeGetFromSamePage(_transaction.LowLevelTransaction, ref p, loc);
+        // EntryTermsReader requires a caller-owned key. When the caller doesn't supply one, fall back
+        // to the searcher's scratch key (acquired once, released in Dispose). This is safe because
+        // these callers consume one reader at a time; callers that need two readers' decoded terms
+        // live simultaneously must pass their own keys.
+        key ??= _sharedEntryReaderKey ??= _transaction.LowLevelTransaction.AcquireCompactKey();
         return new EntryTermsReader(_transaction.LowLevelTransaction, _nullTermsMarkers, _nonExistingTermsMarkers, item.Address, item.Length, _dictionaryId, _vectorFieldsMarkers, key);
     }
 
@@ -267,8 +299,9 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         if (term == Constants.NullValue)
             return Constants.NullValueSlice;
 
-        ApplyAnalyzer(binding, binding.Analyzer, Encodings.Utf8.GetBytes(term), out var encodedTerm);
-        return encodedTerm;
+        // Delegate to the span overload, which encodes into the transaction allocator instead of allocating a
+        // managed byte[] via Encodings.Utf8.GetBytes(term). AsSpan() is allocation-free.
+        return EncodeAndApplyAnalyzer(binding, binding.Analyzer, term.AsSpan());
     }
 
 
@@ -328,41 +361,45 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return terms?.DictionaryId ?? -1;
     }
    
-    public long GetTermAmountInField(in FieldMetadata field)
+    /// <summary>Number of distinct terms recorded under <paramref name="field"/>'s compact tree,
+    /// plus an entry for the null-posting-list bucket if one exists. This is a *term-dictionary*
+    /// count, not a matching-document count — use <see cref="NumberOfEntries"/> or
+    /// <see cref="NumberOfDocumentsUnderSpecificTerm"/> for document-count metrics.</summary>
+    public long GetDistinctTermCountInField(in FieldMetadata field)
     {
-        long termAmount = 0;
-        
+        long termCount = 0;
+
         var fieldTree = _fieldsTree?.CompactTreeFor(field.FieldName);
 
-        termAmount += fieldTree?.NumberOfEntries ?? 0;
+        termCount += fieldTree?.NumberOfEntries ?? 0;
 
         if (TryGetPostingListForNull(field, out var nullPostingListId))
         {
             var nullPostingList = GetPostingList(nullPostingListId);
 
-            termAmount += nullPostingList?.State.NumberOfEntries ?? 0;
+            termCount += nullPostingList?.State.NumberOfEntries ?? 0;
         }
-        
-        return termAmount;
+
+        return termCount;
     }
 
-    public bool TryGetTermsOfField(in FieldMetadata field, out ExistsTermProvider<Lookup<CompactKeyLookup>.ForwardIterator> existsTermProvider)
+    public bool TryGetTermsOfField(in FieldMetadata field, out ExistsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator> existsTermsProvider)
     {
-        return TryGetTermsOfField<Lookup<CompactKeyLookup>.ForwardIterator>(field, out existsTermProvider);
+        return TryGetTermsOfField<Lookup<CompactKeyLookup>.ForwardIterator>(field, out existsTermsProvider);
     }
 
-    public bool TryGetTermsOfField<TLookupIterator>(in FieldMetadata field, out ExistsTermProvider<TLookupIterator> existsTermProvider)
+    public bool TryGetTermsOfField<TLookupIterator>(in FieldMetadata field, out ExistsTermsProvider<TLookupIterator> existsTermsProvider)
         where TLookupIterator : struct, ILookupIterator
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
 
         if (terms == null)
         {
-            existsTermProvider = default;
+            existsTermsProvider = default;
             return false;
         }
 
-        existsTermProvider = new ExistsTermProvider<TLookupIterator>(this, terms, field);
+        existsTermsProvider = new ExistsTermsProvider<TLookupIterator>(this, terms, field);
         return true;
     }
 
@@ -517,8 +554,17 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         _vectorNodeCaches = caches;
     }
 
+    public void AttachTransactionCache(Dictionary<Slice, HnswIndexCache> vectorNodeCaches, HashSet<string> fieldsWithMultipleTerms)
+    {
+        _vectorNodeCaches = vectorNodeCaches;
+        _fieldsWithMultipleTerms = fieldsWithMultipleTerms;
+    }
+
     public void Dispose()
     {
+        if (_sharedEntryReaderKey != null)
+            _transaction.LowLevelTransaction.ReleaseCompactKey(ref _sharedEntryReaderKey);
+
         if (_vectorSearchStateCache != null)
         {
             foreach (var kvp in _vectorSearchStateCache)
@@ -538,6 +584,17 @@ public sealed unsafe partial class IndexSearcher : IDisposable
 
     public bool HasMultipleTermsInField(string fieldName)
     {
+        // When the write-time snapshot is attached, answer straight from it: a string hash lookup with no
+        // slice allocation and no Voron read. This is the hot path for the structural plan key.
+        if (_fieldsWithMultipleTerms is { } snapshot)
+            return snapshot.Contains(fieldName);
+
+        // No snapshot (disabled by the field-count cap, or a standalone searcher): prefer the interned slice
+        // from the field mapping (a string-keyed dictionary lookup, no allocation) over allocating a temporary
+        // slice. Dynamic fields not present in the mapping fall back to the allocating path.
+        if (_fieldMapping.TryGetByFieldName(fieldName, out var binding))
+            return HasMultipleTermsInField(binding.Metadata.FieldName);
+
         using var _ = Slice.From(Allocator, fieldName, out var slice);
         return HasMultipleTermsInField(slice);
     }
@@ -568,6 +625,25 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return exists;
     }
     
+    public bool HasAnyNonExistingEntries(in FieldMetadata field)
+    {
+        if (TryGetPostingListForNonExisting(field.FieldName, out long postingListId, out _) == false)
+            return false;
+        return NumberOfDocumentsUnderSpecificTerm(postingListId) > 0;
+    }
+
+    /// <summary>Exact O(1) count of documents where <paramref name="field"/> exists (is present, including
+    /// explicit nulls) — the index entry count minus the field's non-existing posting list. This matches the
+    /// deduplicated document set <see cref="ExistsQuery"/> produces, so it is exact for multi-valued fields too
+    /// (a document lacking the field is recorded once in the non-existing list regardless of value count).</summary>
+    public long NumberOfEntriesForExists(in FieldMetadata field)
+    {
+        long nonExisting = 0;
+        if (TryGetPostingListForNonExisting(field.FieldName, out long postingListId, out _))
+            nonExisting = NumberOfDocumentsUnderSpecificTerm(postingListId);
+        return NumberOfEntries - nonExisting;
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal bool TryGetPostingListForNonExisting(in FieldMetadata field, out long postingListId) => TryGetPostingListForNonExisting(field.FieldName, out postingListId, out _);
     
@@ -596,7 +672,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal bool TryGetPostingListForNull(in FieldMetadata field, out long postingListId) => TryGetPostingListForNull(field.FieldName, out postingListId, out _);
+    public bool TryGetPostingListForNull(in FieldMetadata field, out long postingListId) => TryGetPostingListForNull(field.FieldName, out postingListId, out _);
     
     internal bool TryGetPostingListForNull(Slice name, out long postingListId, out long termContainerId)
     {
@@ -623,25 +699,8 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         }
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IncludeNullMatch<TInner> IncludeNullMatch<TInner>(in FieldMetadata field, in TInner inner, bool forward, bool nullIsSmallest)
-        where TInner : IQueryMatch
-    {
-        return new IncludeNullMatch<TInner>(this, inner, field, forward, nullIsSmallest);
-    }
-    
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IncludeNonExistingMatch<TInner> IncludeNonExistingMatch<TInner>(in FieldMetadata field, in TInner inner, bool forward, bool nullIsSmallest)
-        where TInner : IQueryMatch
-    {
-        return new IncludeNonExistingMatch<TInner>(this, inner, field, forward, nullIsSmallest);
-    }
 
-    public DeduplicationMatch<TInner> DeduplicationMatch<TInner>(in TInner inner, bool forceHashset = false) 
-        where TInner : IQueryMatch 
-        => new(this, inner, forceHashset);
-    
-    private void InitializeSpecialTermsMarkers()
+    public void InitializeSpecialTermsMarkers()
     {
         if (_nullTermsMarkersLoaded == false)
         {

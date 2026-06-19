@@ -6,9 +6,10 @@ using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Primitives;
 using Corax.Utils;
+using Voron.Data.RoaringBitmaps;
 using Sparrow;
-using Sparrow.Server.Collections;
 using Sparrow.Server.Utils;
 using Voron;
 using Voron.Data.CompactTrees;
@@ -31,78 +32,120 @@ public partial class IndexSearcher
             return shouldScan;
         }
 
-        public static GrowableBitArray LoadFilterMatches(IndexSearcher indexSearcher, ref IQueryMatch query)
+        public static RoaringBitmap LoadFilterMatches(IndexSearcher indexSearcher, ref IQueryMatch query, out bool owned)
         {
-            using var _ = indexSearcher.Allocator.Allocate(1024, out Span<long> workingBuffer);
-
-            var totalCount = 0;
-            GrowableBitArray filter = new(indexSearcher.Allocator, indexSearcher.LastEntryId);
-            while (query.Fill(workingBuffer) is var read and > 0)
+            // Fast path: the upstream pipeline (CompiledQueryMatch / BitmapMatch / PostFilterMatch
+            // wrapping a bitmap) already has the bitmap built. Borrow the data directly — we only
+            // read, and the source query keeps the storage alive for our entire scope. Skipping
+            // re-materialization avoids one full Fill loop and one bitmap construction per query.
+            if (query is IBitmapQueryMatch bitmapMatch)
             {
-                for (int i = 0; i < read; ++i)
-                {
-                    totalCount += filter.Add(workingBuffer[i]).ToInt32();
-                }
+                owned = false;
+                ref RoaringBitmap borrowed = ref bitmapMatch.BitmapState;
+                borrowed.PrepareForReading();
+                return borrowed;
             }
 
-            filter.Count = totalCount;
+            owned = true;
+            RoaringBitmap filter = new(indexSearcher.Allocator);
+
+            using var _ = indexSearcher.Allocator.Allocate(4096, out Span<long> workingBuffer);
+            int read;
+            while ((read = query.Fill(workingBuffer)) > 0)
+            {
+                for (int i = 0; i < read; i++)
+                    filter.Add(workingBuffer[i]);
+            }
+
+            filter.PrepareForReading();
             return filter;
         }
 
         /// <summary>
-        /// To save memory, this enumerator modifies the source during iteration to avoid materialization of the bitmap.
-        /// It restores the original state on disposal. However, it is designed in a way to not be evaluated to the end and rather for probing random nodes from document sets.
-        /// Otherwise, it's better to evaluate and perform Shuffle on the list.
+        /// Materializes all entry IDs from a RoaringBitmap filter, shuffles them for random access,
+        /// and converts each entry to its corresponding HNSW node ID(s) on demand.
+        /// Designed for probing random starting nodes during approximate filtered nearest neighbor search.
         /// </summary>
+        [System.Runtime.CompilerServices.SkipLocalsInit]
         public struct RandomNodesFromFilterEnumerator : IEnumerator<long>
         {
             private List<long> _results;
             private long _current;
             private readonly IndexSearcher _indexSearcher;
-            private GrowableBitArray _filterResults;
+            private long[] _entryIds;
+            private int _entryIndex;
             private readonly Random _random;
             private bool _isDone;
-            private readonly HashSet<long> _returnedDocuments = new();
             private Page p = default;
             private CompactKey _key;
-            private long _start = 1;
-            private long _end = 0;
             private readonly CompactTree _vectorsByHash;
             private readonly Lookup<Int64LookupKey> _nodesByVectorId;
             private readonly long _vectorRootPage;
 
-            public RandomNodesFromFilterEnumerator(IndexSearcher indexSearcher, FieldMetadata metadata, GrowableBitArray filterResults, Random random = null)
+            public RandomNodesFromFilterEnumerator(IndexSearcher indexSearcher, FieldMetadata metadata, RoaringBitmap filterResults, Random random = null)
             {
                 _indexSearcher = indexSearcher;
-                _filterResults = filterResults;
                 _random = random ?? Random.Shared;
-                _key = new();
-                _key.Initialize(indexSearcher._transaction.LowLevelTransaction);
+                _key = indexSearcher._transaction.LowLevelTransaction.AcquireCompactKey();
                 var searchState = new Hnsw.SearchState(indexSearcher.Transaction.LowLevelTransaction, metadata.FieldName);
                 _vectorsByHash = indexSearcher._transaction.CompactTreeFor(Hnsw.VectorsIdByHashSlice);
                 _nodesByVectorId = searchState.NodeIdsByVectorId;
-                _current = 1L;
+                _current = -1L;
 
-                _start = 1L;
-                _end = indexSearcher.LastEntryId;
-                
-                _isDone = 
-                    indexSearcher.TryGetRootPageByFieldName(metadata.FieldName, out _vectorRootPage) == false 
-                    || _filterResults.Count == 0;
+                var filterCount = filterResults.ComputeCount();
+                _isDone =
+                    indexSearcher.TryGetRootPageByFieldName(metadata.FieldName, out _vectorRootPage) == false
+                    || filterCount == 0;
+
+                if (_isDone)
+                {
+                    _entryIds = Array.Empty<long>();
+                    return;
+                }
+
+                // Sample entry IDs for HNSW probe seeds, capped (HNSW probes <= 512 nodes) to avoid a huge
+                // array for large filters. Must not bias toward old documents (low entry IDs index first, and
+                // the bitmap is entry-ID ordered) or recall degrades for newer docs. Instead of an
+                // O(filterCount) reservoir sweep, pick random ranks in [0, filterCount) and resolve via
+                // RoaringBitmap.Select (one container walk, O(C + N log N)); the cap branch takes every entry.
+                // Sampling is with replacement — duplicate seeds only cost a redundant probe (HNSW dedups), and
+                // the cap is 16x the probe budget so distinctness isn't needed.
+                const int MaxFilterSampleSize = 8192;
+                var sampleSize = (int)Math.Min(filterCount, MaxFilterSampleSize);
+                _entryIds = new long[sampleSize];
+                var ranks = new long[sampleSize];
+                if (filterCount <= MaxFilterSampleSize)
+                {
+                    for (int i = 0; i < sampleSize; i++)
+                        ranks[i] = i;
+                }
+                else
+                {
+                    for (int i = 0; i < sampleSize; i++)
+                        ranks[i] = _random.NextInt64(filterCount);
+                }
+
+                // Select sorts ranks in place and scatters results back to input order;
+                // ranks and _entryIds must not alias (they are separate arrays here).
+                filterResults.Select(_indexSearcher.Allocator, ranks, _entryIds);
+
+                // Make probe order independent of entry-ID order (the take-all branch
+                // produced ascending values; the sampled branch is already random but
+                // shuffling is cheap and keeps both paths uniform).
+                _random.Shuffle(_entryIds.AsSpan());
+                _entryIndex = 0;
             }
-            
+
             public RandomNodesFromFilterEnumerator()
             {
                 throw new NotSupportedException($"Default constructor is not supported for {nameof(RandomNodesFromFilterEnumerator)}");
             }
-            
+
             public void Dispose()
             {
-                foreach (var idX in _returnedDocuments)
-                    _filterResults.Add(idX);
                 _current = -1;
                 _isDone = true;
-                _key.Dispose();
+                _indexSearcher._transaction.LowLevelTransaction.ReleaseCompactKey(ref _key);
             }
 
             public bool MoveNext()
@@ -118,20 +161,11 @@ public partial class IndexSearcher
                 }
 
                 _current = -1L;
-                do
+                while (_entryIndex < _entryIds.Length)
                 {
-                    var randomStart = _random.NextInt64(_start, _end);
-                    var it = _filterResults.GetIterator(randomStart);
-                    var anythingExists = it.MoveNext();
-                    if (anythingExists == false)
-                    {
-                        _end = randomStart;
-                        continue;
-                    }
+                    var entryId = _entryIds[_entryIndex++];
 
-                    _returnedDocuments.Add(it.Current);
-                    _filterResults.Remove(it.Current);
-                    var entryTermsReader = _indexSearcher.GetEntryTermsReader(it.Current, ref p, _key);
+                    var entryTermsReader = _indexSearcher.GetEntryTermsReader(entryId, ref p, _key);
                     bool found = false;
                     while (entryTermsReader.FindNextStored(_vectorRootPage))
                     {
@@ -147,17 +181,14 @@ public partial class IndexSearcher
                         }
                         else
                         {
-                            if (_results is null or { Count: 0 })
-                                _results ??= new();
-
+                            _results ??= new();
                             _results.Add(nodeId);
                         }
                     }
 
                     if (found)
                         return true;
-
-                } while (_start < _end && _filterResults.Count > _returnedDocuments.Count);
+                }
 
                 _isDone = true;
                 return false;
@@ -176,7 +207,7 @@ public partial class IndexSearcher
             }
         }
 
-        public static bool TryConvertDocumentsIdsToNodesIds(IndexSearcher indexSearcher, in FieldMetadata metadata, GrowableBitArray filterResults, out ContextBoundNativeList<long> nodesIdsToScan)
+        public static bool TryConvertDocumentsIdsToNodesIds(IndexSearcher indexSearcher, in FieldMetadata metadata, ref RoaringBitmap filterResults, out ContextBoundNativeList<long> nodesIdsToScan)
         {
             var searchState = new Hnsw.SearchState(indexSearcher.Transaction.LowLevelTransaction, metadata.FieldName);
             var vectorsByHash = indexSearcher._transaction.CompactTreeFor(Hnsw.VectorsIdByHashSlice);
@@ -196,20 +227,26 @@ public partial class IndexSearcher
             // and then filter the documents stored in the posting list of each node individually.
             // Ideally, each node represents only a single document.
             Page p = default;
-            var it = filterResults.GetIterator(0);
-            while (it.MoveNext())
+            var iterator = filterResults.GetIterator();
+            Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+            int read;
+            while ((read = iterator.Fill(ref filterResults, batch)) > 0)
             {
-                var entryTermsReader = indexSearcher.GetEntryTermsReader(it.Current, ref p);
-                while (entryTermsReader.FindNextStored(vectorRootPage))
+                for (int i = 0; i < read; i++)
                 {
-                    var vectorHash = entryTermsReader.StoredField.Value;
-                    if (vectorsByHash.TryGetValue(vectorHash, out var vectorId))
+                    var entryTermsReader = indexSearcher.GetEntryTermsReader(batch[i], ref p);
+                    while (entryTermsReader.FindNextStored(vectorRootPage))
                     {
-                        if (nodesByVectorId.TryGetValue(vectorId, out var nodeId))
-                            nodesIdsToScan.Add(nodeId);
+                        var vectorHash = entryTermsReader.StoredField.Value;
+                        if (vectorsByHash.TryGetValue(vectorHash, out var vectorId))
+                        {
+                            if (nodesByVectorId.TryGetValue(vectorId, out var nodeId))
+                                nodesIdsToScan.Add(nodeId);
+                        }
                     }
                 }
             }
+            iterator.Dispose();
 
             var uniqueCount = Sorting.SortAndRemoveDuplicates(nodesIdsToScan.ToSpan());
             nodesIdsToScan.Count = uniqueCount;
@@ -220,7 +257,7 @@ public partial class IndexSearcher
                 nodesIdsToScan = default;
                 return false;
             }
-            
+
             return nodesIdsToScan.Count > 0;
         }
     }
