@@ -157,7 +157,8 @@ internal static class VectorHelpers
         {
             VectorEmbeddingType.Single => (numberOfDimensions / sizeof(float), transformedEmbedding.Length / sizeof(float)),
             VectorEmbeddingType.Int8 => (numberOfDimensions - sizeof(float), transformedEmbedding.Length - sizeof(float)),
-            VectorEmbeddingType.Binary => (numberOfDimensions, transformedEmbedding.Length),
+            // Binary is bit-packed: the stored/byte lengths are ceil(dims/8), so report bits to express dimensions.
+            VectorEmbeddingType.Binary => (numberOfDimensions * 8, transformedEmbedding.Length * 8),
             _ => throw new InvalidDataException($"Unexpected embedding type - {numberOfDimensions}.")
         };
 
