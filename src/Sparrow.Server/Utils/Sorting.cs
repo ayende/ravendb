@@ -73,6 +73,40 @@ namespace Sparrow.Server.Utils
                 return SortAndRemoveDuplicates(basePtr, values.Length);
         }
 
+        /// <summary>
+        /// First index in <c>[from, to)</c> of the ascending span <paramref name="sorted"/> whose element is
+        /// &gt;= <paramref name="target"/> (the lower bound), located by an exponential gallop from
+        /// <paramref name="from"/> followed by a binary search of the bracketed window — O(log d) in the gap d
+        /// from the cursor, versus O(log n) over the whole range. Returns <paramref name="to"/> when every
+        /// element in range is &lt; <paramref name="target"/>. Intended for forward-cursor merges of two
+        /// ascending sequences, where successive lookups start at/just after the previous position.
+        /// </summary>
+        public static int GallopLowerBound<T>(ReadOnlySpan<T> sorted, int from, int to, T target)
+            where T : unmanaged, INumber<T>
+        {
+            int lo = from;
+            int probe = from;
+            int step = 1;
+            while (probe < to && sorted[probe] < target)
+            {
+                lo = probe + 1;
+                probe = lo + step;
+                step <<= 1;
+            }
+
+            int limit = probe < to ? probe : to;
+            while (lo < limit)
+            {
+                int mid = lo + ((limit - lo) >> 1);
+                if (sorted[mid] < target)
+                    lo = mid + 1;
+                else
+                    limit = mid;
+            }
+
+            return lo;
+        }
+
         public static unsafe int SortAndRemoveDuplicates<T>(T* bufferBasePtr, int count)
             where T : unmanaged, IBinaryNumber<T>
         {
