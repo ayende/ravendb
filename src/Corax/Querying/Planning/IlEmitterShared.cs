@@ -123,6 +123,8 @@ public static class IlEmitterShared
         typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.Current));
     public static readonly FieldInfo ReaderIsNull =
         typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.IsNull));
+    public static readonly FieldInfo ReaderIsNonExisting =
+        typeof(EntryTermsReader).GetField(nameof(EntryTermsReader.IsNonExisting));
 
     public static readonly MethodInfo SpanLongLength =
         typeof(Span<long>).GetMethod("get_Length")!;

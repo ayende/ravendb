@@ -385,6 +385,10 @@ public static class ResidualScanIlEmitter
                 d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
                 d.Il.Emit(OpCodes.Brtrue, singlePass.Il);
                 d.CsLine(JumpIf("reader.IsNull", singlePass.Name));       // null term → pass
+                d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+                d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNonExisting);
+                d.Il.Emit(OpCodes.Brtrue, singlePass.Il);
+                d.CsLine(JumpIf("reader.IsNonExisting", singlePass.Name)); // non-existing term (stale Current) → pass
 
                 EmitTypedComparison(ref d, in pred, readerRefLocal);
                 EmitBranchTrue(ref d, failIl, failName);                  // term equals → fail
@@ -413,6 +417,10 @@ public static class ResidualScanIlEmitter
             d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
             d.Il.Emit(OpCodes.Brtrue, loopHead.Il);
             d.CsLine("if (reader.IsNull) continue;");
+            d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+            d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNonExisting);
+            d.Il.Emit(OpCodes.Brtrue, loopHead.Il);
+            d.CsLine("if (reader.IsNonExisting) continue;"); // stale Current for non-existing markers
 
             // if (term == target) goto fail;  — this reject sits INSIDE the term-scan while, so a bare
             // `continue;` would wrongly advance to the next term rather than reject the entry. When the
@@ -445,6 +453,10 @@ public static class ResidualScanIlEmitter
                 d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
                 d.Il.Emit(OpCodes.Brtrue, failIl);
                 d.CsLine(JumpIf("reader.IsNull", failName));  // null term → fail
+                d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+                d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNonExisting);
+                d.Il.Emit(OpCodes.Brtrue, failIl);
+                d.CsLine(JumpIf("reader.IsNonExisting", failName));  // non-existing term (stale Current) → fail
 
                 EmitTypedComparison(ref d, in pred, readerRefLocal);
                 EmitBranchFalse(ref d, failIl, failName);     // comparison false → fail
@@ -468,6 +480,10 @@ public static class ResidualScanIlEmitter
             d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
             d.Il.Emit(OpCodes.Brtrue, loopHead.Il);
             d.CsLine("if (reader.IsNull) continue;");
+            d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+            d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNonExisting);
+            d.Il.Emit(OpCodes.Brtrue, loopHead.Il);
+            d.CsLine("if (reader.IsNonExisting) continue;"); // stale Current for non-existing markers
 
             // if (<cmp>) goto pass;
             EmitTypedComparison(ref d, in pred, readerRefLocal);
