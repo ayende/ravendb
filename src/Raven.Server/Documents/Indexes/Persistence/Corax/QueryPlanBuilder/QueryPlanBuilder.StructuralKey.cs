@@ -99,7 +99,7 @@ internal static partial class QueryPlanBuilder
     // structurally distinct trees can never produce the same bit stream; operands are normalized by
     // AppendCanonicalValue so value- and parameter variants converge. The DFS order matches the parse walk
     // that assigns value ordinals.
-    private static void AppendCanonicalExpression(ref PlanCacheKeyBuilder builder, QueryExpression expr, IndexSearcher searcher)
+    private static void AppendCanonicalExpression(ref PlanCacheKeyBuilder builder, QueryExpression expr, IndexSearcher searcher, bool exactValues = false)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         switch (expr)
@@ -115,29 +115,29 @@ internal static partial class QueryPlanBuilder
                 if (be.Operator is OperatorType.And or OperatorType.Or)
                 {
                     // Boolean connective: both operands are sub-expressions.
-                    AppendCanonicalExpression(ref builder, be.Left, searcher);
-                    AppendCanonicalExpression(ref builder, be.Right, searcher);
+                    AppendCanonicalExpression(ref builder, be.Left, searcher, exactValues);
+                    AppendCanonicalExpression(ref builder, be.Right, searcher, exactValues);
                 }
                 else
                 {
                     // Comparison: ParseComparison/ParseRangeComparison resolve the left operand as the field
                     // (via TryGetFieldName); the right operand is the value.
-                    AppendCanonicalField(ref builder, be.Left, searcher);
-                    AppendCanonicalExpression(ref builder, be.Right, searcher);
+                    AppendCanonicalField(ref builder, be.Left, searcher, exactValues);
+                    AppendCanonicalExpression(ref builder, be.Right, searcher, exactValues);
                 }
 
                 return;
 
             case NegatedExpression ne:
                 AppendTag(ref builder, AstTag.Negated);
-                AppendCanonicalExpression(ref builder, ne.Expression, searcher);
+                AppendCanonicalExpression(ref builder, ne.Expression, searcher, exactValues);
                 return;
 
             case BetweenExpression bw:
                 AppendTag(ref builder, AstTag.Between);
-                AppendCanonicalField(ref builder, bw.Source, searcher);
-                AppendCanonicalValue(ref builder, bw.Min);
-                AppendCanonicalValue(ref builder, bw.Max);
+                AppendCanonicalField(ref builder, bw.Source, searcher, exactValues);
+                AppendCanonicalValue(ref builder, bw.Min, exactValues);
+                AppendCanonicalValue(ref builder, bw.Max, exactValues);
                 builder.Append(bw.MinInclusive ? 1 : 0, 1);
                 builder.Append(bw.MaxInclusive ? 1 : 0, 1);
                 return;
@@ -146,10 +146,10 @@ internal static partial class QueryPlanBuilder
                 // IN arity is structural: each value is its own binding, so (a,b) and (a,b,c) are different templates.
                 AppendTag(ref builder, AstTag.In);
                 builder.Append(ie.All ? 1 : 0, 1);
-                AppendCanonicalField(ref builder, ie.Source, searcher);
+                AppendCanonicalField(ref builder, ie.Source, searcher, exactValues);
                 builder.Append(ie.Values.Count, 31);
                 foreach (var v in ie.Values)
-                    AppendCanonicalExpression(ref builder, v, searcher);
+                    AppendCanonicalExpression(ref builder, v, searcher, exactValues);
                 return;
 
             case MethodExpression me:
@@ -160,6 +160,14 @@ internal static partial class QueryPlanBuilder
                 AppendString(ref builder, me.Name.Value);
                 builder.Append(me.Arguments.Count, 31);
 
+                // when(condition, inner): the condition is constant-folded into the plan at build time and baked
+                // into the clause's WhenCondition delegate, so its LITERAL operands are structural — they pick the
+                // branch (apply the inner predicate vs collapse to identity). They must split the cache bucket, or
+                // when($p == 1.5, X) and when($p == 2.0, X) would share a template and the second would evaluate
+                // the first's frozen literal. So the condition (arg[0]) is walked with exact literal values; the
+                // inner predicate (arg[1]) keeps normal value collapsing since it is matched per-variant at runtime.
+                bool isWhen = QueryMethod.GetMethodType(me.Name.Value, throwIfNoMatch: false) == MethodType.When;
+
                 // Field-first methods resolve arg[0] as their field via TryGetFieldName, so it must go through
                 // AppendCanonicalField to preserve a quoted reserved-word field's NAME. Every other argument -
                 // and all arguments of the remaining methods (wrappers exact/boost/when, moreLikeThis) - is a
@@ -167,12 +175,12 @@ internal static partial class QueryPlanBuilder
                 int firstOperand = 0;
                 if (me.Arguments.Count > 0 && MethodTakesFieldAsFirstArgument(me.Name.Value))
                 {
-                    AppendCanonicalField(ref builder, me.Arguments[0], searcher);
+                    AppendCanonicalField(ref builder, me.Arguments[0], searcher, exactValues);
                     firstOperand = 1;
                 }
 
                 for (int i = firstOperand; i < me.Arguments.Count; i++)
-                    AppendCanonicalExpression(ref builder, me.Arguments[i], searcher);
+                    AppendCanonicalExpression(ref builder, me.Arguments[i], searcher, exactValues || (isWhen && i == 0));
 
                 return;
             }
@@ -184,7 +192,7 @@ internal static partial class QueryPlanBuilder
 
             case ValueExpression ve:
                 AppendTag(ref builder, AstTag.Value);
-                AppendCanonicalValue(ref builder, ve);
+                AppendCanonicalValue(ref builder, ve, exactValues);
                 return;
 
             case TrueExpression:
@@ -202,7 +210,7 @@ internal static partial class QueryPlanBuilder
     // the per-query slot vector at runtime, so it must not split buckets. A literal becomes L{typeCode}: the TYPE
     // is kept (the per-variant CacheKeyHash does not see literals, so the bucket must already segregate
     // long/double/string/bool/null), but the value is dropped so value variants collapse.
-    private static void AppendCanonicalValue(ref PlanCacheKeyBuilder builder, ValueExpression ve)
+    private static void AppendCanonicalValue(ref PlanCacheKeyBuilder builder, ValueExpression ve, bool exactValues = false)
     {
         if (ve.Value == ValueTokenType.Parameter)
         {
@@ -212,6 +220,10 @@ internal static partial class QueryPlanBuilder
         {
             builder.Append(1, 1); // 1 = literal operand
             builder.Append((int)ve.Value, ValueTokenBits);
+            // Inside a constant-folded when() condition the literal VALUE (not just its type) selects the plan
+            // branch, so it must be part of the key. Everywhere else the value is dropped so value variants collapse.
+            if (exactValues)
+                AppendString(ref builder, ve.Token.Value);
         }
     }
 
@@ -224,7 +236,7 @@ internal static partial class QueryPlanBuilder
     //     against the wrong field; the separate tag also keeps it from colliding with a same-typed search term;
     //   - a wrapper that names the field itself (spatial.point(...) / embedding.*(...) / id())
     //     -> recurse into the normal walk, which encodes that MethodExpression's own identity.
-    private static void AppendCanonicalField(ref PlanCacheKeyBuilder builder, QueryExpression expr, IndexSearcher searcher)
+    private static void AppendCanonicalField(ref PlanCacheKeyBuilder builder, QueryExpression expr, IndexSearcher searcher, bool exactValues = false)
     {
         switch (expr)
         {
@@ -239,7 +251,7 @@ internal static partial class QueryPlanBuilder
                 return;
 
             default:
-                AppendCanonicalExpression(ref builder, expr, searcher);
+                AppendCanonicalExpression(ref builder, expr, searcher, exactValues);
                 return;
         }
     }
