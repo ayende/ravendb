@@ -330,7 +330,7 @@ internal static partial class QueryPlanBuilder
 
         if(Enum.TryParse(value, out ExecutionStrategy result) is false)
             throw new InvalidQueryException(
-                $"The reserved query parameter '${ForceStrategyParameterName}' has an unrecognized value '{value}'. Expected on of: {string.Join(", ", Enum.GetNames<ExecutionStrategy>())}");
+                $"The reserved query parameter '${ForceStrategyParameterName}' has an unrecognized value '{value}'. Expected one of: {string.Join(", ", Enum.GetNames<ExecutionStrategy>())}");
         return result;
 
     }

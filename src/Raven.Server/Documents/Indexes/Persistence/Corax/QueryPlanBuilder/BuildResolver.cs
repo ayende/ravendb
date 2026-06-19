@@ -487,7 +487,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         {
             int kind = (int)QueryPlanBuilder.ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0b11;
             if (_sentinelFull != null)
-                kind |= _sentinelFull[i] << 2;
+                kind |= _sentinelFull[i]; // SentinelParamMark is already (1 << 2), i.e. bit 2 — OR it in directly; a further << 2 would push it out of the 3-bit payload
             _builder.Append(kind, 3);
         }
 
