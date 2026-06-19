@@ -1208,8 +1208,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             {
                 Span<long> docsIds = stackalloc long[16];
 
-                // BaseDocumentQuery can be a CompiledQueryMatch (IDisposable) used only for this single Fill;
-                // dispose it promptly (and exception-safely, even on the no-documents throw below).
                 var baseDocQuery = moreLikeThisQuery.BaseDocumentQuery;
                 using (baseDocQuery as IDisposable)
                 {

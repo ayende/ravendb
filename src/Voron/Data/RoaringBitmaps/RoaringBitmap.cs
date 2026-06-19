@@ -51,6 +51,11 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     private readonly ByteStringContext _ctx;
 
+    // Guards Dispose so it is idempotent — the same bitmap can be reached through two owners (e.g. a sorted
+    // CompiledQuery stores the top SortingMatch under both QueryMatch and SortingWrapper), so Dispose may be
+    // called more than once and must not double-release its storage.
+    private bool _disposed;
+
 #if DEBUG
     /// <summary>Set after this bitmap is passed as the right-hand side of a destructive
     /// set operation (OrWith, AndWith, AndNotWith). Any subsequent access asserts.
@@ -784,9 +789,6 @@ public unsafe partial struct RoaringBitmap : IDisposable
                     break;
 
                 case ContainerType.ArrayUnsorted:
-                    // Normalize once: sort + dedup + upgrade so later probes of this container binary-search.
-                    // Dedup is required because append-only writes can leave duplicates, and the Array
-                    // container invariant is sorted AND unique (bare .Sort() would make dups permanent).
                     SortAndDedupSmallArray(ref entry, out type);
                     if (ArrayContainerContains(entry.ArrayData, entry.Cardinality, low) == false) continue;
                     break;
@@ -924,9 +926,6 @@ public unsafe partial struct RoaringBitmap : IDisposable
                     }
                     else
                     {
-                        // Normalize once: sort + dedup + upgrade so this and later probes of this container
-                        // merge/binary-search. Dedup keeps the Array invariant (sorted AND unique) — without it,
-                        // duplicates left by append-only writes would survive the type flip permanently.
                         SortAndDedupSmallArray(ref entry, out type);
                         goto case ContainerType.Array;
                     }
@@ -1123,10 +1122,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
             int card = ResolveCardinality(ref entry);
 
             if (type == ContainerType.ArrayUnsorted)
-            {   // Sort + dedup on first select; the Array invariant is sorted AND unique. Dedup can shrink
-                // the container, so refresh card afterward to keep containerEnd / SelectInContainer correct.
+            {
                 SortAndDedupSmallArray(ref entry, out type);
-                card = entry.Cardinality;
+                card = entry.Cardinality; // dedup may have shrunk the container
+
             }
 
             long containerEnd = accCard + card;
@@ -2039,6 +2038,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
 
     public void Dispose()
     {
+        if (_disposed)
+            return;
+        _disposed = true;
+
         if (_entries.IsValid)
         {
             ContainerEntry* entries = _entries.RawItems;

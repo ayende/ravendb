@@ -133,9 +133,9 @@ public partial class IndexSearcher
 
         var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
         tempPhraseBitmapData.Dispose();
-        // PhraseQuery captured a copy of phraseBitmap (BitmapMatch is a struct over the same RoaringBitmap
-        // storage), so phraseMatch must be fully consumed by AccumulateIntoSearchBitmap before phraseBitmap is
-        // disposed — disposing it earlier frees the storage out from under the Or/And accumulation (use-after-free).
+        // PhraseQuery does NOT copy phraseBitmap — phraseMatch holds the same BitmapMatch (a struct over the same
+        // RoaringBitmap storage). So phraseMatch must be fully consumed by AccumulateIntoSearchBitmap before
+        // phraseBitmap is disposed; disposing it earlier frees the storage out from under the Or/And accumulation.
         AccumulateIntoSearchBitmap(phraseMatch, ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
         phraseBitmap.Dispose();
     }

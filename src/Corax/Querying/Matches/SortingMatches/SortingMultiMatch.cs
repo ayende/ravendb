@@ -10,6 +10,7 @@ using Corax.Utils;
 using Corax.Utils.Spatial;
 using Sparrow;
 using Sparrow.Server;
+using Sparrow.Server.Utils;
 using Voron.Util;
 
 namespace Corax.Querying.Matches.SortingMatches;
@@ -160,9 +161,11 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
                     return 0;
 
                 // The secondary comparers resolve sort keys via Lookup.GetFor, which gallops from the previous
-                // cursor position and requires ascending entry ids. A drained non-bitmap inner yields them in
-                // arbitrary order, so sort ascending (matching the bitmap path) before SortResults.
-                allMatches.Sort();
+                // cursor position and requires ascending, unique entry ids. A drained non-bitmap inner can yield
+                // them out of order and with duplicates, so sort + dedup with the shared helper before SortResults.
+                int unique = Sorting.SortAndRemoveDuplicates(allMatches);
+                allMatches = allMatches[..unique];
+                match.TotalResults = unique;
                 match.CandidatesAreSorted = true;
 
                 long sortStart = Stopwatch.GetTimestamp();
