@@ -784,9 +784,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
                     break;
 
                 case ContainerType.ArrayUnsorted:
-                    // Normalize once: sort + upgrade so later probes of this container binary-search.
-                    new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
-                    type = ContainerType.Array;
+                    // Normalize once: sort + dedup + upgrade so later probes of this container binary-search.
+                    // Dedup is required because append-only writes can leave duplicates, and the Array
+                    // container invariant is sorted AND unique (bare .Sort() would make dups permanent).
+                    SortAndDedupSmallArray(ref entry, out type);
                     if (ArrayContainerContains(entry.ArrayData, entry.Cardinality, low) == false) continue;
                     break;
 
@@ -923,9 +924,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
                     }
                     else
                     {
-                        // Normalize once: sort + upgrade so this and later probes of this container merge/binary-search.
-                        new Span<ushort>(entry.ArrayData, entry.Cardinality).Sort();
-                        type = ContainerType.Array;
+                        // Normalize once: sort + dedup + upgrade so this and later probes of this container
+                        // merge/binary-search. Dedup keeps the Array invariant (sorted AND unique) — without it,
+                        // duplicates left by append-only writes would survive the type flip permanently.
+                        SortAndDedupSmallArray(ref entry, out type);
                         goto case ContainerType.Array;
                     }
                     break;
@@ -1121,9 +1123,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
             int card = ResolveCardinality(ref entry);
 
             if (type == ContainerType.ArrayUnsorted)
-            {   // Sort-on-first-select for ArrayUnsorted
-                new Span<ushort>(entry.ArrayData, card).Sort();
-                type = ContainerType.Array;
+            {   // Sort + dedup on first select; the Array invariant is sorted AND unique. Dedup can shrink
+                // the container, so refresh card afterward to keep containerEnd / SelectInContainer correct.
+                SortAndDedupSmallArray(ref entry, out type);
+                card = entry.Cardinality;
             }
 
             long containerEnd = accCard + card;
