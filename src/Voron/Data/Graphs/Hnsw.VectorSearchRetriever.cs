@@ -148,22 +148,26 @@ public partial class Hnsw
                         matches[index++] = rawPostingListId;
                         continue;
                     case Constants.Graphs.VectorId.SmallPostingList: // small posting list
-                        if (_alreadySeen.Contains(rawPostingListId))
+                        // _alreadySeen mixes entry ids (Single / FilterDuplicates) with posting-list CONTAINER ids
+                        // here, and both spaces are aligned (bits 0-1 cleared), so a container id can numerically
+                        // equal a real entry id and silently drop a result. Tag the container id with bit 0 (unused
+                        // by either space) so the two domains can't collide; the raw id is still used for the read.
+                        if (_alreadySeen.Contains(rawPostingListId | 1))
                         {
                             _currentNode++;
                             continue;
                         }
-                        _alreadySeen.Add(rawPostingListId);
+                        _alreadySeen.Add(rawPostingListId | 1);
                         Debug.Assert(_postingListResults.Count is 0 && _currentMatchesIndex is 0);
                         _searchState.ReadPostingList(new ContainerEntryId(rawPostingListId), ref _postingListResults, ref _pforDecoder, out _);
                         continue;
                     case Constants.Graphs.VectorId.PostingList: // large posting list
-                        if (_alreadySeen.Contains(rawPostingListId))
+                        if (_alreadySeen.Contains(rawPostingListId | 1)) // bit-0 tag: see SmallPostingList above
                         {
                             _currentNode++;
                             continue;
                         }
-                        _alreadySeen.Add(rawPostingListId);
+                        _alreadySeen.Add(rawPostingListId | 1);
                         var setStateSpan = Container.GetReadOnly(_searchState.Llt, new(rawPostingListId));
                         ref readonly var setState = ref MemoryMarshal.AsRef<PostingListState>(setStateSpan);
                         _postingList = new PostingList(_searchState.Llt, Slices.Empty, setState);
@@ -203,6 +207,9 @@ public partial class Hnsw
             long newVectorCount = 0;
             int index = 0;
             float distance = float.NaN;
+            // The filter is not mutated during this Fill, so its count is invariant — compute it once
+            // (ComputeCount is O(container count) and may repair lazy popcounts) and reuse across batches.
+            long filterCount = filter.ComputeCount();
             while (index < matches.Length && _returnedCandidates < _vectorsSearcher.NumberOfCandidates)
             {
                 if (_currentNode >= indexes.Count)
@@ -210,7 +217,7 @@ public partial class Hnsw
                     // Double the difference between accepted and searched number of candidates.
                     _vectorsSearcher.IncreaseNumberOfCandidates(_vectorsSearcher.NumberOfCandidates - _returnedCandidates);
 
-                    if (_vectorsSearcher.ShouldContinueSearch(filter.ComputeCount()) == false)
+                    if (_vectorsSearcher.ShouldContinueSearch(filterCount) == false)
                     {
                         break;
                     }

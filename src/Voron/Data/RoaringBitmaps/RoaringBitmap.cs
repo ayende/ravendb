@@ -269,6 +269,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public void SwapContents(ref RoaringBitmap other)
     {
+        // Both bitmaps must share an allocator — swapping the whole struct also swaps the _ctx reference, which
+        // would only be safe (and only happens) when both were created from the same ByteStringContext.
+        Debug.Assert(ReferenceEquals(_ctx, other._ctx), "SwapContents requires both bitmaps to share an allocator");
         (other, this) = (this, other);
     }
 
@@ -1558,7 +1561,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
             }
             case (ContainerType.Bitmap, ContainerType.Bitmap):
             {
-                // Lazy: bitwise AND only; PreparForReading will popcount + free if empty.
+                // Lazy: bitwise AND only; PrepareForReading will popcount + free if empty.
                 BitmapAndNoPop(left.BitmapPtr, right.BitmapPtr, left.BitmapPtr);
                 left.Cardinality = LazyCardinality;
                 break;
