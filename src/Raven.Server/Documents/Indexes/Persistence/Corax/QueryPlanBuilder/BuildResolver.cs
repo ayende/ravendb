@@ -302,6 +302,16 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         // Folded into the structural plan key (ComputeStructuralKey) so a later single→multi flip selects
         // a different bucket and re-plans rather than reusing this template built under the single-valued assumption.
         bool singleValued = clause.FieldName is { } fieldName && _indexSearcher.HasMultipleTermsInField(fieldName) == false;
+
+        // The residual-scan IL only encodes negation for IN / ALL IN (via ScanPredicateInfo.Negated, which the
+        // emitter inverts) and for NotEquals (the NotEqual compare op is inherently the negation). Any other
+        // negated clause (negated Equals, ranges, StartsWith/EndsWith/Exists, groups) would be emitted as its
+        // POSITIVE predicate and filter incorrectly — so disqualify the scan and let the bitmap pipeline, which
+        // builds the correct complement, handle it.
+        if (exec.IsNegated
+            && exec.ClauseType is not (ClauseType.In or ClauseType.AllIn or ClauseType.NotEquals))
+            return null;
+
         switch (exec.ClauseType)
         {
             // x ∧ ALL = x: a MatchAll sentinel is always true, so it filters nothing. Emit an

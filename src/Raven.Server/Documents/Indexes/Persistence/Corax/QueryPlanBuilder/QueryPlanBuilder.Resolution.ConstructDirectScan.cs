@@ -103,7 +103,7 @@ internal static partial class QueryPlanBuilder
                 ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual or ClauseType.LessThan or ClauseType.LessThanOrEqual
                     => packed.RangeQuery(drivingExec.ClauseType, fieldMeta, indexSearcher, queryExec, forward),
                 ClauseType.Between when drivingExec.SentinelRewriteType != null =>
-                    ResolveSentinelRewrittenBetween(drivingExec, fieldMeta, indexSearcher, queryExec),
+                    ResolveSentinelRewrittenBetween(drivingExec, fieldMeta, indexSearcher, queryExec, forward),
                 ClauseType.Between => packed.BetweenQuery(fieldMeta, indexSearcher, queryExec, forward),
                 _ => ResolveClause(drivingExec, queryExec, walkerCtx) // fallback
             };

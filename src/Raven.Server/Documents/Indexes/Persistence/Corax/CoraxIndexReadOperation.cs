@@ -391,7 +391,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 _documentIdReader = documentIdReader;
 
                 QueryStart = _query.Start;
-                index.Type.IsMap();
 
                 _canPerformPaginationBasedOnEntriesIds = searcher.EntryIdPaginationSupportStatus == EntryIdPaginationSupportStatus.Supported;
 
@@ -1208,13 +1207,19 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             if (moreLikeThisQuery.BaseDocument == null)
             {
                 Span<long> docsIds = stackalloc long[16];
-                
-                // get the current Lucene docid for the given RavenDB doc ID
-                if (moreLikeThisQuery.BaseDocumentQuery.Fill(docsIds) == 0)
-                    throw new InvalidOperationException("Given filtering expression did not yield any documents that could be used as a base of comparison");
 
-                //What if we've got multiple items?
-                baseDocId = docsIds[0];
+                // BaseDocumentQuery can be a CompiledQueryMatch (IDisposable) used only for this single Fill;
+                // dispose it promptly (and exception-safely, even on the no-documents throw below).
+                var baseDocQuery = moreLikeThisQuery.BaseDocumentQuery;
+                using (baseDocQuery as IDisposable)
+                {
+                    // get the current Lucene docid for the given RavenDB doc ID
+                    if (baseDocQuery.Fill(docsIds) == 0)
+                        throw new InvalidOperationException("Given filtering expression did not yield any documents that could be used as a base of comparison");
+
+                    //What if we've got multiple items?
+                    baseDocId = docsIds[0];
+                }
             }
 
             if (stopWords != null)
@@ -1276,10 +1281,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 // AND with filter query if present
                 if (moreLikeThisQuery.FilterQuery != null && moreLikeThisQuery.FilterQuery is AllEntriesMatch == false)
                 {
+                    var filterMatch = moreLikeThisQuery.FilterQuery;
                     Voron.Data.RoaringBitmaps.RoaringBitmap filterBitmapData = new(_allocator);
                     try
                     {
-                        var filterMatch = moreLikeThisQuery.FilterQuery;
                         int filterRead;
                         while ((filterRead = filterMatch.Fill(fillBuf)) > 0)
                             filterBitmapData.AddRange(fillBuf.AsSpan(0, filterRead));
@@ -1288,6 +1293,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     finally
                     {
                         filterBitmapData.Dispose();
+                        // FilterQuery can be a CompiledQueryMatch (IDisposable), fully materialized above and unused
+                        // afterward — release its bitmap/iterator allocations promptly.
+                        (filterMatch as IDisposable)?.Dispose();
                     }
                 }
 

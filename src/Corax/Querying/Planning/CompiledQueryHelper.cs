@@ -101,6 +101,8 @@ public static class CompiledQueryHelper
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
         {
+            if (reader.IsNonExisting)
+                continue; // no value at all — CurrentLong is not populated; never matches an IN value
             if (reader.IsNull)
             {
                 if (includeNull)
@@ -123,6 +125,8 @@ public static class CompiledQueryHelper
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
         {
+            if (reader.IsNonExisting)
+                continue; // no value at all — CurrentDouble is not populated; never matches an IN value
             if (reader.IsNull)
             {
                 if (includeNull)
@@ -155,7 +159,7 @@ public static class CompiledQueryHelper
             reader.Reset();
             while (reader.FindNext(fieldRootPage))
             {
-                if (reader.IsNull == false && reader.Current.Decoded().SequenceEqual(needle))
+                if (reader.IsNonExisting == false && reader.IsNull == false && reader.Current.Decoded().SequenceEqual(needle))
                 {
                     found = true;
                     break;
@@ -178,7 +182,7 @@ public static class CompiledQueryHelper
             reader.Reset();
             while (reader.FindNext(fieldRootPage))
             {
-                if (reader.IsNull == false && reader.CurrentLong == needle)
+                if (reader.IsNonExisting == false && reader.IsNull == false && reader.CurrentLong == needle)
                 {
                     found = true;
                     break;
@@ -201,7 +205,7 @@ public static class CompiledQueryHelper
             reader.Reset();
             while (reader.FindNext(fieldRootPage))
             {
-                if (reader.IsNull == false && reader.CurrentDouble == needle)
+                if (reader.IsNonExisting == false && reader.IsNull == false && reader.CurrentDouble == needle)
                 {
                     found = true;
                     break;

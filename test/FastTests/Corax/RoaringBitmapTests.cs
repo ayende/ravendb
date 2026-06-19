@@ -20,8 +20,16 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     private static RoaringBitmap And(ByteStringContext ctx, RoaringBitmap a, RoaringBitmap b)
     {
         RoaringBitmap result = a.Clone();
-        result.AndWith(ref b);
-        result.PrepareForReading();
+        RoaringBitmap bClone = b.Clone();
+        try
+        {
+            result.AndWith(ref bClone); // AndWith consumes the RHS — clone so the caller's b survives for later set-ops
+            result.PrepareForReading();
+        }
+        finally
+        {
+            bClone.Dispose();
+        }
         return result;
     }
 
@@ -44,8 +52,16 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     private static RoaringBitmap AndNot(ByteStringContext ctx, RoaringBitmap a, RoaringBitmap b)
     {
         RoaringBitmap result = a.Clone();
-        result.AndNotWith(ref b);
-        result.PrepareForReading();
+        RoaringBitmap bClone = b.Clone();
+        try
+        {
+            result.AndNotWith(ref bClone); // AndNotWith consumes the RHS — clone so the caller's b survives
+            result.PrepareForReading();
+        }
+        finally
+        {
+            bClone.Dispose();
+        }
         return result;
     }
 

@@ -33,10 +33,18 @@ public class RavenDB_25410(ITestOutputHelper output) : StorageTest(output)
         IQueryMatch dummyMatch = new DummyMatch();
 
         var bitmap = new BitmapMatch(searcher.Allocator);
+        // temp is passed by ref into AndWithMatch, so it can't be a `using var` (CS1657); a try/finally keeps
+        // disposal exception-safe.
         RoaringBitmap temp = new(searcher.Allocator);
-        QueryPrimitives.OrWithMatch(startsWith, ref bitmap.BitmapState);
-        QueryPrimitives.AndWithMatch(dummyMatch, ref bitmap.BitmapState, ref temp);
-        temp.Dispose();
+        try
+        {
+            QueryPrimitives.OrWithMatch(startsWith, ref bitmap.BitmapState);
+            QueryPrimitives.AndWithMatch(dummyMatch, ref bitmap.BitmapState, ref temp);
+        }
+        finally
+        {
+            temp.Dispose();
+        }
 
         Span<long> ids = stackalloc long[32];
         Span<float> scores = stackalloc float[32];

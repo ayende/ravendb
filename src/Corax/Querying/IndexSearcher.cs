@@ -178,8 +178,9 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     public long[] VectorFieldsMarkers { get { InitializeSpecialTermsMarkers(); return _vectorFieldsMarkers; } }
     public long DictionaryId => _dictionaryId;
 
-    /// <summary>Batch-resolve entry IDs to container locations. Entry IDs should be sorted
-    /// for best B-tree page locality. Unresolvable entries get -1.</summary>
+    /// <summary>Batch-resolve entry IDs to container locations. Entry IDs MUST be sorted ascending —
+    /// the underlying <see cref="Lookup{TKey}.GetFor"/> is cursor/gallop based and assumes ascending
+    /// keys (it is not merely a locality optimization). Unresolvable entries get -1.</summary>
     public void ResolveEntryLocations(ReadOnlySpan<long> entryIds, Span<long> containerLocations)
     {
         _entryIdToLocation.GetFor(entryIds, containerLocations, -1);

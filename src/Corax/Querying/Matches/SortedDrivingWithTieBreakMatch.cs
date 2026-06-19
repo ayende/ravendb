@@ -567,6 +567,11 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         }
 
         if ( _groupEntries.Count <= 0) return;
+
+        // Non-existing and null posting lists are each internally ascending, but concatenating them is not
+        // globally ascending. The secondary lookup (SortGroupBySecondary -> SortKernels -> Lookup.GetFor) is
+        // cursor-based and REQUIRES ascending keys (see TruncateGroupToTopTake), so restore id order first.
+        _groupEntries.ToSpan().Sort();
         SortGroupBySecondary();
     }
 
