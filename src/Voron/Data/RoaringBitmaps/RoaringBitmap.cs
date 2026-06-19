@@ -513,6 +513,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// </summary>
     public void LazyOrWith(scoped ref RoaringBitmap other)
     {
+        AssertNotConsumed();
         if (other.IsEmpty)
             return;
 
@@ -551,6 +552,10 @@ public unsafe partial struct RoaringBitmap : IDisposable
             other._containerCount--;
             AddNewContainer(key, otherType, stolen);
         }
+
+        // Destructive on `other` (containers stolen) — mark it consumed so a later use is caught in DEBUG,
+        // matching OrWith/AndWith/AndNotWith. (OrWith also marks it; MarkConsumed is idempotent.)
+        MarkConsumed(ref other);
     }
 
     /// <summary>
@@ -1889,7 +1894,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
             left.Cardinality = totalCount;
             return;
         }
-        // Right buffer fits both — prepend left's values into right, then take ownership.
+        // Right buffer fits both — append left's values after right, then take ownership (order is irrelevant for ArrayUnsorted).
         Unsafe.CopyBlockUnaligned(right.ArrayData + right.Cardinality, left.ArrayData, (uint)(leftCardinality * sizeof(ushort)));
         if (left.Storage.HasValue)
             _ctx.Release(ref left.Storage);

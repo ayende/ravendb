@@ -605,6 +605,8 @@ namespace Corax.Indexing
             HashSet<long> nullTermMarkers, HashSet<long> nonExistingTermMarkers, long dicId, DocumentEntryId entryToDelete, int termsPerEntryIndex)
         {
             var entryReaderKey = llt.AcquireCompactKey();
+            try
+            {
             var reader = new EntryTermsReader(llt, nullTermMarkers, nonExistingTermMarkers, entryTerms.Address, entryTerms.Length, dicId, _persistedVectorRootPages, entryReaderKey);
 
             reader.Reset();
@@ -700,7 +702,12 @@ namespace Corax.Indexing
                 term.Removal(_entriesAllocator, entryToDelete, termsPerEntryIndex, freq: 1, InserterMode.Numerical);
             }
 
-            llt.ReleaseCompactKey(ref entryReaderKey);
+            }
+            finally
+            {
+                // Always return the key to the transaction pool, even if a deletion loop throws.
+                llt.ReleaseCompactKey(ref entryReaderKey);
+            }
         }
 
         private void RemoveMarkerTerm(IndexedField field, EntryTermsReader reader, Slice termSlice, DocumentEntryId entryToDelete, int termsPerEntryIndex)

@@ -23,6 +23,9 @@ internal readonly record struct CompiledQuery(
     public void Dispose()
     {
         (QueryMatch as IDisposable)?.Dispose();
-        (SortingWrapper as IDisposable)?.Dispose();
+        // When the query is sorted, SortingWrapper is the SAME instance as QueryMatch (the top SortingMatch is
+        // stored under both so inspection can find the sort node). Guard against disposing it twice.
+        if (ReferenceEquals(SortingWrapper, QueryMatch) == false)
+            (SortingWrapper as IDisposable)?.Dispose();
     }
 }
