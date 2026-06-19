@@ -812,16 +812,18 @@ internal static partial class QueryPlanBuilder
         return (matchList.ToArray(), leafList.ToArray());
     }
 
+    // forward defaults to true for the bitmap/unsorted resolve path; the sorted direct-scan path passes the
+    // ORDER BY direction so a sentinel-rewritten BETWEEN (>= / <=) drives its provider in the right direction.
     private static IQueryMatch ResolveSentinelRewrittenBetween(ClauseExecution exec, FieldMetadata fieldMeta,
-        IndexSearcher indexSearcher, QueryExecution queryExec)
+        IndexSearcher indexSearcher, QueryExecution queryExec, bool forward = true)
     {
         if (exec.SentinelRewriteType == ClauseType.Exists)
             return indexSearcher.AllEntries();
         if (exec.SentinelRewriteType == ClauseType.LessThanOrEqual)
-            return exec.PackedParamValue.RangeQuery(ClauseType.LessThanOrEqual, fieldMeta, indexSearcher, queryExec);
+            return exec.PackedParamValue.RangeQuery(ClauseType.LessThanOrEqual, fieldMeta, indexSearcher, queryExec, forward);
 
         Debug.Assert(exec.SentinelRewriteType == ClauseType.GreaterThanOrEqual);
-        IQueryMatch rangeMatch = exec.PackedParamValue.RangeQuery(ClauseType.GreaterThanOrEqual, fieldMeta, indexSearcher, queryExec);
+        IQueryMatch rangeMatch = exec.PackedParamValue.RangeQuery(ClauseType.GreaterThanOrEqual, fieldMeta, indexSearcher, queryExec, forward);
         if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _) is false) 
             return rangeMatch;
         
