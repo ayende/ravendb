@@ -713,7 +713,7 @@ public unsafe partial struct RoaringBitmap
     {
         Debug.Assert(type == ContainerType.Range);
 
-        _freeList.Allocate(_ctx, BitmapContainerSizeInBytes, out ByteString storage);
+        _buffersFrreListHeads.Allocate(_ctx, BitmapContainerSizeInBytes, out ByteString storage);
         ulong* bitmap = (ulong*)storage.Ptr;
         ClearBitmap(bitmap);
         FillBitmapFromRange(bitmap, entry.RangeStart, entry.Cardinality);
@@ -730,7 +730,7 @@ public unsafe partial struct RoaringBitmap
     {
         int totalCount = rangeCount + sortedValues.Length;
         int neededBytes = totalCount * sizeof(ushort);
-        _freeList.Allocate(_ctx, neededBytes, out ByteString storage);
+        _buffersFrreListHeads.Allocate(_ctx, neededBytes, out ByteString storage);
         ushort* arr = (ushort*)storage.Ptr;
 
         FillSequentialUInt16(arr, rangeStart, rangeCount);

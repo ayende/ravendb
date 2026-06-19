@@ -7,9 +7,7 @@ public unsafe struct ContainerEntry
 {
     /// <summary>
     /// Direct pointer to container data for Array, ArrayUnsorted, and Bitmap containers; for Range
-    /// containers it stores RangeStart encoded as (RangeStart + 1), keeping Range allocation-free.
-    /// Cached here (8 bytes/entry, negligible vs 64B–8KB of container data) to avoid the double
-    /// dereference through Storage.Ptr on every Contains/Add/iterator step, and a Range null check.
+    /// containers it stores RangeStart encoded as (RangeStart + 1) to avoid an allocation.
     /// </summary>
     public byte* Data;
 
