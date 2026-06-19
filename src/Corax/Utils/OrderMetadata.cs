@@ -69,7 +69,7 @@ public readonly struct OrderMetadata
 
     public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, NullsSortMode? nullsSortMode = null, bool mayHaveMissingEntries = false)
     {
-        Unsafe.SkipInit(out HasBoost);
+        HasBoost = false; // field/spatial sort is not score-driven; must be deterministic (SortingMatch reads HasBoost to pick the scoring sorter)
         Unsafe.SkipInit(out Point);
         Unsafe.SkipInit(out Round);
         Unsafe.SkipInit(out Units);
@@ -84,7 +84,7 @@ public readonly struct OrderMetadata
 
     public OrderMetadata(in FieldMetadata field, bool ascending, MatchCompareFieldType fieldType, IPoint point, double round, SpatialUnits units, NullsSortMode? nullsSortMode = null)
     {
-        Unsafe.SkipInit(out HasBoost);
+        HasBoost = false; // field/spatial sort is not score-driven; must be deterministic (SortingMatch reads HasBoost to pick the scoring sorter)
         Unsafe.SkipInit(out RandomSeed);
 
         Field = field;

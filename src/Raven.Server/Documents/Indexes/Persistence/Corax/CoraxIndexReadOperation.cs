@@ -868,8 +868,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     queryTimings.SetQueryPlan(inspectionNode);
                 }
 
-                compileResult.Dispose();
-
                 ReturnQueryResources(ids, sortingData);
 
 

@@ -114,7 +114,6 @@ public unsafe struct EntryTermsReader
         _nullTermsMarkers = nullTermsMarkers;
         _nonExistingTermsMarkers = nonExistingTermsMarkers;
         _vectorFieldsMarkers = vectorFieldsMarkers;
-        _start = _cur;
         _cur = cur;
         _start = cur;
         _dicId = dicId;

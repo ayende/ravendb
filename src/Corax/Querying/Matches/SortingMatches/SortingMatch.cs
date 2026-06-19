@@ -833,6 +833,14 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             return;
         }
 
+        // The term comparers in SortResults resolve sort keys via Lookup.GetFor, which gallops from the
+        // previous key's cursor position and therefore requires the entry ids to be ascending. The bitmap path
+        // gets that for free (its iterator yields ascending ids); a drained non-bitmap inner (vector search /
+        // post-filter) yields ids in arbitrary order, so sort them here. This only sets tie-break order among
+        // equal sort-key values (to ascending entry id, matching the bitmap path) — the final order is the sort.
+        allMatches[..filled].Sort();
+        match.CandidatesAreSorted = true;
+
         long sortStart = Stopwatch.GetTimestamp();
         SortResults<TEntryComparer>(match, allMatches[..filled]);
         match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
