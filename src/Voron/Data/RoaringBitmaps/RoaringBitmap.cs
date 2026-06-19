@@ -957,10 +957,14 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
 
             long containerEnd = accCard + card;
             long baseValue = (long)key << ContainerKeyShift;
+            // Forward popcount cursor reused across every rank landing in this container. ranks is sorted, so
+            // localRank is monotonically increasing and the bitmap scan resumes instead of restarting from word 0.
+            int selWord = 0;
+            int selPopBefore = 0;
             while (rankIdx < n && ranks[rankIdx] < containerEnd)
             {
                 int localRank = (int)(ranks[rankIdx] - accCard);
-                results[indexes[rankIdx]] = baseValue + SelectInContainer(ref entry, type, localRank);
+                results[indexes[rankIdx]] = baseValue + SelectInContainer(ref entry, type, localRank, ref selWord, ref selPopBefore);
                 rankIdx++;
             }
             accCard = containerEnd;
@@ -1004,7 +1008,11 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
     }
 
     /// <summary>Find the nth set value inside a single container (0-based). Caller is responsible for upgrading ArrayUnsorted to Array first.</summary>
-    private static int SelectInContainer(ref ContainerEntry entry, ContainerType type, int rank)
+    // word/popBefore carry a forward cursor across repeated calls on the SAME bitmap container: Select passes
+    // monotonically increasing ranks, so the popcount scan resumes from the cursor instead of restarting from
+    // word 0 each time. popBefore is the popcount of bmp[0..word); both only ever advance. They are reset per
+    // container by the caller and are ignored for Array/Range (which select in O(1)).
+    private static int SelectInContainer(ref ContainerEntry entry, ContainerType type, int rank, ref int word, ref int popBefore)
     {
         switch (type)
         {
@@ -1017,7 +1025,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
             case ContainerType.Bitmap:
             {
                 ulong* bmp = (ulong*)entry.Data;
-                int word = 0;
+                int remaining = rank - popBefore; // index of the target among the set bits in bmp[word..)
 
                 // scan 8 ulongs at a time. popcnt is a 1-cycle instruction with four-way ILP on modern x86, so an unrolled batch of 8 retires in ~3 cycles.
                 // The JIT may also fuse this into AVX-512 VPOPCNTQ when supported.
@@ -1032,9 +1040,10 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
                                     + BitOperations.PopCount(bmp[word + 5])
                                     + BitOperations.PopCount(bmp[word + 6])
                                     + BitOperations.PopCount(bmp[word + 7]);
-                    if (rank < blockBits)
+                    if (remaining < blockBits)
                         break;
-                    rank -= blockBits;
+                    remaining -= blockBits;
+                    popBefore += blockBits;
                     word += unroll;
                 }
 
@@ -1042,24 +1051,26 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
                 {
                     ulong w = bmp[word];
                     int bits = BitOperations.PopCount(w);
-                    if (rank < bits)
+                    if (remaining < bits)
                     {
-                        // BMI2 PDEP deposits a single 1-bit at the rank-th set position in w; trailing-zeros gives its bit index. One instruction.
+                        // BMI2 PDEP deposits a single 1-bit at the remaining-th set position in w; trailing-zeros gives its bit index. One instruction.
+                        // Note: word/popBefore are left at this word (not advanced) so the next, larger rank resumes here.
                         if (Bmi2.X64.IsSupported)
                         {
-                            ulong target = Bmi2.X64.ParallelBitDeposit(1UL << rank, w);
+                            ulong target = Bmi2.X64.ParallelBitDeposit(1UL << remaining, w);
                             return word * 64 + BitOperations.TrailingZeroCount(target);
                         }
 
-                        // Fallback: clear the lowest set bit `rank` times.
-                        while (rank > 0)
+                        // Fallback: clear the lowest set bit `remaining` times.
+                        while (remaining > 0)
                         {
                             w &= w - 1;
-                            rank--;
+                            remaining--;
                         }
                         return word * 64 + BitOperations.TrailingZeroCount(w);
                     }
-                    rank -= bits;
+                    remaining -= bits;
+                    popBefore += bits;
                 }
                 return -1; // shouldn't reach here if rank was valid
             }
