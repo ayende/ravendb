@@ -595,7 +595,10 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
         public void Dispose()
         {
-            _smallListReader.Dispose();
+            // _smallListReader is lazily created only when a SmallPostingList is encountered; a default
+            // instance has a null allocator and would throw inside FastPForDecoder.Dispose (RavenDB-25281).
+            if (_smallListReader.WasInitialized)
+                _smallListReader.Dispose();
             _smallPostListIds.Dispose();
             _containerItemsScope.Dispose();
             _itBufferScope.Dispose();
