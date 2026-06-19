@@ -36,7 +36,6 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
     {
         _fieldMappings = fieldsMapping;
         _allocator = readTransaction.Allocator;
-        _fieldMappings = fieldsMapping;
         _indexSearcher = new IndexSearcher(readTransaction, _fieldMappings)
         {
             MaxFacetQueryFilterSizeInBytes = index.Configuration.MaxFacetQueryFilterSize.GetValue(SizeUnit.Bytes),
