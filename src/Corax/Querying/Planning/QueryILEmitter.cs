@@ -453,7 +453,8 @@ public static class QueryIlEmitter
             ref var op = ref ops[i];
             var curSlot = Math.Max(op.Kind switch
             {
-                PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.LazyOrBitmaps => op.BitmapLocal,
+                // For bitmap-to-bitmap ops ParamIndex2 is a source slot, so it counts toward the max.
+                PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.LazyOrBitmaps => Math.Max(op.BitmapLocal, op.ParamIndex2),
                 PlanOpKind.MaybeEntryScan => 1,
                 _ => -1
             }, op.BitmapLocal);
