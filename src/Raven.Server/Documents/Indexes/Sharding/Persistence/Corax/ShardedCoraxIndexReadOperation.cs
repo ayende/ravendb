@@ -58,6 +58,14 @@ public sealed class ShardedCoraxIndexReadOperation : CoraxIndexReadOperation
     private ShardedQueryResultDocument AddOrderByFields(Document queryResult, IndexQueryServerSide query, ref EntryTermsReader reader, OrderMetadata[] orderByFields)
     {
         var result = ShardedQueryResultDocument.From(queryResult);
+
+        // The loop below cross-walks the RQL order-by (query.Metadata.OrderBy) against the Corax order metadata
+        // (orderByFields). Either can be absent here — e.g. a projection query whose ordering is resolved
+        // elsewhere, or a result with no materialized Corax order fields — in which case there is nothing to ship
+        // to the coordinator. Bail out instead of dereferencing a null array.
+        if (query.Metadata.OrderBy is null || orderByFields is null)
+            return result;
+
         var currentCoraxOrderIndex = 0;
 
         // Number of order by fields in Corax index can be smaller than in query metadata
