@@ -713,13 +713,13 @@ public unsafe partial struct RoaringBitmap
     {
         Debug.Assert(type == ContainerType.Range);
 
-        _buffersFrreListHeads.Allocate(_ctx, BitmapContainerSizeInBytes, out ByteString storage);
+        _buffersFreeListHeads.Allocate(ctx, BitmapContainerSizeInBytes, out ByteString storage);
         ulong* bitmap = (ulong*)storage.Ptr;
         ClearBitmap(bitmap);
         FillBitmapFromRange(bitmap, entry.RangeStart, entry.Cardinality);
 
         if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
+            ctx.Release(ref entry.Storage);
 
         entry.Storage = storage;
         entry.Data = storage.Ptr;
@@ -730,7 +730,7 @@ public unsafe partial struct RoaringBitmap
     {
         int totalCount = rangeCount + sortedValues.Length;
         int neededBytes = totalCount * sizeof(ushort);
-        _buffersFrreListHeads.Allocate(_ctx, neededBytes, out ByteString storage);
+        _buffersFreeListHeads.Allocate(ctx, neededBytes, out ByteString storage);
         ushort* arr = (ushort*)storage.Ptr;
 
         FillSequentialUInt16(arr, rangeStart, rangeCount);
@@ -763,23 +763,22 @@ public unsafe partial struct RoaringBitmap
         int totalCount = leftCount + rightCount;
         if (totalCount > ArrayContainerMaxCardinality)
             return false;
+        Span<long> buffer = stackalloc long[ArrayContainerMaxCardinality];
 
         if (left.RangeStart < right.RangeStart)
         {
-            long* rightValues = stackalloc long[rightCount];
-            long rightCurrent = right.RangeStart;
+           long rightCurrent = right.RangeStart;
             for (int i = 0; i < rightCount; i++, rightCurrent++)
-                rightValues[i] = rightCurrent;
+                buffer[i] = rightCurrent;
 
-            return MaybeConvertRangeToArray(ref left, ref leftType, left.RangeStart, leftCount, new ReadOnlySpan<long>(rightValues, rightCount));
+            return MaybeConvertRangeToArray(ref left, ref leftType, left.RangeStart, leftCount, buffer[..rightCount]);
         }
 
-        long* leftValues = stackalloc long[leftCount];
         long leftCurrent = left.RangeStart;
         for (int i = 0; i < leftCount; i++, leftCurrent++)
-            leftValues[i] = leftCurrent;
+            buffer[i] = leftCurrent;
 
-        return MaybeConvertRangeToArray(ref left, ref leftType, right.RangeStart, rightCount, new ReadOnlySpan<long>(leftValues, leftCount));
+        return MaybeConvertRangeToArray(ref left, ref leftType, right.RangeStart, rightCount, buffer[..leftCount]);
     }
 
     #endregion

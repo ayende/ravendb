@@ -240,7 +240,7 @@ public sealed class DirectScanFilteredMatch(
 
                 var sorted = sortedIds[..read];
                 batch[..read].CopyTo(sorted);
-                Voron.Data.RoaringBitmaps.RoaringBitmap.InitializeIndices(indices, read);
+                RoaringBitmap.InitializeIndices(indices, read);
                 sorted.Sort(indices[..read]);
 
                 passed[..read].Clear();

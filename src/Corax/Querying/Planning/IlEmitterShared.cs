@@ -31,8 +31,6 @@ public static class IlEmitterShared
     public static readonly MethodInfo RunEntryScanMethod =
         typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RunEntryScan))!;
 
-    public static readonly MethodInfo MatchCountGetter = typeof(IQueryMatch).GetProperty(nameof(IQueryMatch.Count))!.GetGetMethod()!;
-
     public static readonly MethodInfo AndWith =
         typeof(RoaringBitmap).GetMethod(nameof(RoaringBitmap.AndWith),
             [typeof(RoaringBitmap).MakeByRefType()])!;

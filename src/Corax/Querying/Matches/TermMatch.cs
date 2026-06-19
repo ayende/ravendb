@@ -486,9 +486,6 @@ namespace Corax.Querying.Matches
             return _andWithFunc(ref this, buffer, matches);
         }
 
-        // When the caller guarantees sorted matches (the 'order by score()' path), route to Bm25Relevance's
-        // sorted merge instead of the per-match BinarySearch in Score. Mirrors the _scoreFunc locals, which all
-        // do `using (bm25) bm25.Score(...)`; here we dispose the same instance after the sorted scoring.
         public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
         {
             if (_scoreFunc == null)
