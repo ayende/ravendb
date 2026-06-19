@@ -468,7 +468,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         return new ResidualScanSet { Predicates = residuals.ToArray(), ClauseIndices = indices.ToArray() };
     }
 
-    private readonly bool CheckAllNegated() => _exec.Executions is [{ IsNegated: true }, ..]; // negated clauses are always sorted first, so we can just check the first
+    // ClauseExecution.CompareTo sorts negated clauses LAST, so if even the FIRST clause is negated then every
+    // clause must be — checking the head is enough to decide "all negated".
+    private readonly bool CheckAllNegated() => _exec.Executions is [{ IsNegated: true }, ..];
 
     // Single canonical serialization of every plan-disambiguating dimension, digested to a 256-bit cache key.
     // Used for BOTH the cache probe and the on-miss store, so this Append sequence is the one source of truth —
