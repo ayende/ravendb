@@ -37,6 +37,7 @@ using Circle = Raven.Server.Documents.Indexes.Spatial.Circle;
 using System.Diagnostics.CodeAnalysis;
 using Acornima;
 using Acornima.Ast;
+using Corax.Querying.Planning;
 using Raven.Client.Documents.Indexes.Vector;
 using Raven.Server.Documents.Indexes;
 using Enum = System.Enum;
@@ -47,9 +48,39 @@ namespace Raven.Server.Documents.Queries
     {
         internal static string SelectOutput = "__selectOutput";
 
-        private readonly Dictionary<string, QueryFieldName> _aliasToName = new Dictionary<string, QueryFieldName>();
+        private readonly Dictionary<string, QueryFieldName> _aliasToName = [];
 
-        public readonly Dictionary<StringSegment, (string PropertyPath, bool Array, bool Parameter, bool Quoted, string LoadFromAlias)> RootAliasPaths = new Dictionary<StringSegment, (string, bool, bool, bool, string)>();
+        public readonly Dictionary<StringSegment, (string PropertyPath, bool Array, bool Parameter, bool Quoted, string LoadFromAlias)> RootAliasPaths = [];
+
+
+        /// <summary>
+        /// Holds the resolved Corax plan bucket for this query so we skip the structural-key dictionary lookup on
+        /// the hot path. The bucket carries the parse template plus every compiled plan variant for this query.
+        /// </summary>
+        public PlanMemo CachedPlanMemo { get; set; }
+
+        /// <summary>
+        /// Memoized per-query slot-binding vector — the value-bearing bindings collected by the canonical WHERE
+        /// walk (<see cref="QueryPlanBuilder.ExtractSlotBindings"/>), indexed by
+        /// <see cref="ParameterBinding.ValueOrdinal"/>. It is a pure function of the query text/AST (independent of
+        /// parameter values and of the target index), so it is safe to cache here for the lifetime of this
+        /// QueryMetadata and never needs invalidation. Only set for the main WHERE path; an MLT sub-expression
+        /// override builds its own vector fresh and does not touch this field.
+        /// </summary>
+        public Corax.Querying.Planning.ParameterBinding[] CachedSlotBindings { get; set; }
+
+        public sealed class PlanMemo(long planCacheGeneration, Corax.Querying.Planning.PlanCache.PerQueryPlans bucket)
+        {
+            /// <summary>
+            /// The <see cref="PlanCache.GenerationIdx"/> observed when this bucket was resolved.
+            /// The memo is valid only while the live cache's generation still equals it: a different value means
+            /// either the index instance was swapped or an index-state input that can change plan selection (e.g. a
+            /// field flipping to multi-valued) has changed, so the memoized bucket can no longer be trusted and the
+            /// plan must be re-resolved against the structural key.
+            /// </summary>
+            public readonly long PlanCacheGeneration = planCacheGeneration;
+            public readonly WeakReference<Corax.Querying.Planning.PlanCache.PerQueryPlans> Bucket = new(bucket);
+        }
 
         public QueryMetadata(string query, BlittableJsonReaderObject parameters, ulong cacheKey, bool addSpatialProperties = false, QueryType queryType = QueryType.Select)
             : this(ParseQuery(query, queryType), parameters, cacheKey, addSpatialProperties)
@@ -1195,7 +1226,7 @@ function execute(doc, args){
                     null,
                     new[]
                     {
-                        new OrderByField.Argument(token.Token.Value, ValueTokenType.String)
+                        new OrderByField.Argument(token.Token.Value, token.Value)
                     },
                     nullsOrdering);
             }
@@ -2322,6 +2353,30 @@ function execute(doc, args){
 
                         if (QueryBuilderHelper.AreValueTokenTypesValid(previousValue.Value, value.Value) == false)
                             ThrowIncompatibleTypesOfVariables(fieldName, QueryText, parameters, values.ToArray());
+                    }
+
+                    // When the binding is a parameter that resolves to an array, walk every
+                    // array element pair-wise — peeking array[0] (the unwrapArrays:true path
+                    // below) hides mixed-type arrays like $p = [1L, "Shalom"]. This is the
+                    // centralised IN type check; engine-side IN walkers (Lucene's GetValues,
+                    // Corax v2's TryEmitInTermValue) no longer re-validate.
+                    if (value.Value == ValueTokenType.Parameter
+                        && parameters != null
+                        && parameters.TryGetMember(value.Token, out var paramValue)
+                        && paramValue is BlittableJsonReaderArray arr)
+                    {
+                        foreach (var item in arr)
+                        {
+                            var elemType = QueryBuilderHelper.GetValueTokenType(item, QueryText, parameters);
+                            if (previousType != ValueTokenType.Null
+                                && QueryBuilderHelper.AreValueTokenTypesValid(previousType, elemType) == false)
+                            {
+                                QueryBuilderHelper.ThrowInvalidParameterType(previousType, (item, elemType), QueryText, parameters);
+                            }
+                            if (elemType != ValueTokenType.Null)
+                                previousType = elemType;
+                        }
+                        continue;
                     }
 
                     var valueType = GetValueTokenType(parameters, value, unwrapArrays: true);

@@ -234,7 +234,7 @@ namespace Raven.Server.Documents.Queries
             }
         }
 
-        public static IndexQueryServerSide Create(HttpContext httpContext, long start, long pageSize, JsonOperationContext context, RequestTimeTracker tracker, bool addSpatialProperties = false, string clientQueryId = null, string overrideQuery = null)
+        public static IndexQueryServerSide Create(HttpContext httpContext, long start, long pageSize, JsonOperationContext context, RequestTimeTracker tracker, bool addSpatialProperties = false, string clientQueryId = null, string overrideQuery = null, QueryMetadataCache cache = null)
         {
             IndexQueryServerSide result = null;
             try
@@ -287,7 +287,15 @@ namespace Raven.Server.Documents.Queries
                     }
                 }
 
-                result.Metadata = new QueryMetadata(result.Query, result.QueryParameters, 0, addSpatialProperties);
+                ulong metadataHash = 0;
+                QueryMetadata metadata = null;
+                // TryGetMetadata leaves `out metadata` pointing at a colliding cache entry (same hash slot, different
+                // query text) when it returns false, so the bool must be honored — a `metadata != null` check alone
+                // would execute this query against another query's cached metadata. See the sibling path above.
+                if (cache == null || cache.TryGetMetadata(result, addSpatialProperties, out metadataHash, out metadata) == false)
+                    metadata = new QueryMetadata(result.Query, result.QueryParameters, metadataHash, addSpatialProperties);
+
+                result.Metadata = metadata;
 
                 SetupTimings(result);
                 SetupPagingFromQueryMetadata();
