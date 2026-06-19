@@ -10,7 +10,7 @@ using Voron.Impl;
 
 namespace Corax.Querying.Matches;
 
-/// <summary>Sort seek hint — value to seek to in the sort field, plus whether the bound is inclusive.</summary>
+/// <summary>Sort seek hint — the sort field and the value to seek to in it.</summary>
 public sealed record SortHint(string FieldName, object Value);
 
 public class CompiledQueryMatch(
