@@ -30,9 +30,17 @@ public partial class IndexSearcher
             var allEntries = AllEntries();
             Primitives.QueryPrimitives.OrWithMatch(allEntries, ref allEntriesBitmap.BitmapState, token: token);
 
+            // tempBitmapData is passed by ref into AndNotWithMatch, so it can't be a `using var` (CS1657);
+            // try/finally keeps disposal exception-safe (e.g. on cancellation inside AndNotWithMatch).
             var tempBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
-            Primitives.QueryPrimitives.AndNotWithMatch(match, ref allEntriesBitmap.BitmapState, ref tempBitmapData, token);
-            tempBitmapData.Dispose();
+            try
+            {
+                Primitives.QueryPrimitives.AndNotWithMatch(match, ref allEntriesBitmap.BitmapState, ref tempBitmapData, token);
+            }
+            finally
+            {
+                tempBitmapData.Dispose();
+            }
 
             return allEntriesBitmap;
         }
