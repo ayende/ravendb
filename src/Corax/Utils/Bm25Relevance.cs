@@ -3,6 +3,7 @@ using System.Buffers;
 using System.Diagnostics.CodeAnalysis;
 using Sparrow.Extensions;
 using Sparrow.Server;
+using Sparrow.Server.Utils;
 using Voron.Data.PostingLists;
 
 namespace Corax.Utils;
@@ -187,30 +188,10 @@ public sealed unsafe class Bm25Relevance : IDisposable
         {
             long target = matches[m];
 
-            if (innerItems[n] < target)
-            {
-                // Exponential (galloping) search for the first term id >= target, anchored at the current cursor.
-                int lo = n;
-                int step = 1;
-                while (lo + step < innerLen && innerItems[lo + step] < target)
-                {
-                    lo += step;
-                    step <<= 1;
-                }
-                int hi = Math.Min(lo + step + 1, innerLen);
-                lo += 1;
-                while (lo < hi)
-                {
-                    int mid = lo + ((hi - lo) >> 1);
-                    if (innerItems[mid] < target)
-                        lo = mid + 1;
-                    else
-                        hi = mid;
-                }
-                n = lo;
-                if (n >= innerLen)
-                    break;
-            }
+            // Advance the term-id cursor to the first id >= target (galloping from the current position).
+            n = Sorting.GallopLowerBound(innerItems, n, innerLen, target);
+            if (n >= innerLen)
+                break;
 
             long current = innerItems[n];
             if (current == target)
