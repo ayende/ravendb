@@ -323,7 +323,9 @@ public static class CompiledQueryHelper
             llt.ReleaseCompactKey(ref entryKey);
 
             iterator.Dispose();
-            ArrayPool<EntryTermsReader>.Shared.Return(readers);
+            // clearArray: EntryTermsReader is a struct holding references (LowLevelTransaction, marker HashSets);
+            // clearing prevents the shared pool from pinning a transaction's objects until the array is reused.
+            ArrayPool<EntryTermsReader>.Shared.Return(readers, clearArray: true);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
         }
     }
