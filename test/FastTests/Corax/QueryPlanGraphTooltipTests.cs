@@ -36,6 +36,7 @@ public class QueryPlanGraphTooltipTests : RavenTestBase
             var rql = "from Items where Name = $n include timings()";
             await session.Advanced.AsyncRawQuery<Item>(rql)
                 .AddParameter("n", "even")
+                .WaitForNonStaleResults()
                 .Timings(out var timings)
                 .ToListAsync();
 
