@@ -80,20 +80,18 @@ public class IndexSearcherTest : StorageTest
     private static BitmapMatch AndNot(IndexSearcher searcher, IQueryMatch left, IQueryMatch right)
     {
         var bitmap = new BitmapMatch(searcher.Allocator);
-        RoaringBitmap tempData = new(searcher.Allocator);
+        using RoaringBitmap tempData = new(searcher.Allocator);
         QueryPrimitives.OrWithMatch(left, ref bitmap.BitmapState);
         QueryPrimitives.AndNotWithMatch(right, ref bitmap.BitmapState, ref tempData);
-        tempData.Dispose();
         return bitmap;
     }
 
     private static BitmapMatch And(IndexSearcher searcher, IQueryMatch left, IQueryMatch right)
     {
         var bitmap = new BitmapMatch(searcher.Allocator);
-        RoaringBitmap tempData = new(searcher.Allocator);
+        using RoaringBitmap tempData = new(searcher.Allocator);
         QueryPrimitives.OrWithMatch(left, ref bitmap.BitmapState);
         QueryPrimitives.AndWithMatch(right, ref bitmap.BitmapState, ref tempData);
-        tempData.Dispose();
         return bitmap;
     }
 

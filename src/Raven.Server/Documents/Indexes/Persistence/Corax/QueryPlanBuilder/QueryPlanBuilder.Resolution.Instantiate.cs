@@ -372,6 +372,8 @@ internal static partial class QueryPlanBuilder
             return QueryPrimitives.EntryScanGateUnset;
         if (queryParameters.TryGet(ForceEntryScanParameterName, out long value) == false)
             return QueryPrimitives.EntryScanGateUnset;
+        if (value < int.MinValue || value > int.MaxValue)
+            throw new InvalidQueryException($"The reserved query parameter '${ForceEntryScanParameterName}' must fit in a 32-bit integer, but got '{value}'.");
         return (int)value;
     }
 }

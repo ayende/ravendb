@@ -1851,7 +1851,7 @@ namespace FastTests.Corax
             var compiledMatch = QueryPlanBuilder.BuildFilterMatch(
                 planParams,
                 new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, fields),
-                out var debugPlan,
+                out _,
                 highlightingTerms: null,
                 wantTimings: false,
                 CancellationToken.None);
