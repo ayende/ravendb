@@ -116,20 +116,17 @@ public partial class IndexSearcher
             return TermMatch.CreateEmpty(this, Allocator);
         }
 
-        CompactKey termKey;
-        if (term.Size != 0)
+        if (term.Size == 0)
         {
-            termKey = _fieldsTree.Llt.AcquireCompactKey();
-            termKey.Set(term.AsReadOnlySpan());
-        }
-        else
-        {
-            termKey = null;
+            // An empty term matches nothing (mirrors the analyzed-string overload); passing a null CompactKey
+            // into CompactTree.TryGetValue would throw.
+            return TermMatch.CreateEmpty(this, Allocator);
         }
 
+        CompactKey termKey = _fieldsTree.Llt.AcquireCompactKey();
+        termKey.Set(term.AsReadOnlySpan());
         var match = TermQuery(field, termKey, terms);
-        if (termKey != null)
-            _fieldsTree.Llt.ReleaseCompactKey(ref termKey);
+        _fieldsTree.Llt.ReleaseCompactKey(ref termKey);
         return match;
     }
 

@@ -84,12 +84,15 @@ namespace Corax.Analyzers
             bool isCompoundFieldCompatible = tokenizerOk;
             foreach( var transformer in transformers)
             {
-                IsExactAnalyzer &= transformer is ExactTransformer;
-
                 // NullTransformer is a placeholder slot used by Create<...> when fewer than 3 transformers
-                // are supplied; it has no effect on the pipeline so skip the compatibility check for it.
+                // are supplied; it has no effect on the pipeline, so skip it for BOTH shape checks. Otherwise
+                // a real Exact + Null + Null pipeline (e.g. the default analyzer) would wrongly report
+                // IsExactAnalyzer == false and cascade into picking the wrong wildcard analyzer for exact fields.
                 if (transformer is not NullTransformer)
+                {
+                    IsExactAnalyzer &= transformer is ExactTransformer;
                     isCompoundFieldCompatible &= transformer is ExactTransformer || transformer is LowerCaseTransformer;
+                }
 
                 if (transformer.BufferSpaceMultiplier > 1)
                     sourceBufferMultiplier *= transformer.BufferSpaceMultiplier;

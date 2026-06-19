@@ -159,6 +159,12 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
                 if (match.TotalResults == 0)
                     return 0;
 
+                // The secondary comparers resolve sort keys via Lookup.GetFor, which gallops from the previous
+                // cursor position and requires ascending entry ids. A drained non-bitmap inner yields them in
+                // arbitrary order, so sort ascending (matching the bitmap path) before SortResults.
+                allMatches.Sort();
+                match.CandidatesAreSorted = true;
+
                 long sortStart = Stopwatch.GetTimestamp();
                 SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches);
                 match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
