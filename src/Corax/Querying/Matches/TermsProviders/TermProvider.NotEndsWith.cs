@@ -6,10 +6,10 @@ using Corax.Querying.Matches.Meta;
 using Voron.Data.CompactTrees;
 using Voron.Data.Lookups;
 
-namespace Corax.Querying.Matches.TermProviders
+namespace Corax.Querying.Matches.TermsProviders
 {
     [DebuggerDisplay("{DebugView,nq}")]
-    public struct NotEndsWithTermProvider<TLookupIterator> : ITermProvider
+    public struct NotEndsWithTermsProvider<TLookupIterator> : ITermsProvider
         where TLookupIterator : struct, ILookupIterator
     {
         private readonly CompactTree _tree;
@@ -19,7 +19,7 @@ namespace Corax.Querying.Matches.TermProviders
 
         private CompactTree.Iterator<TLookupIterator> _iterator;
 
-        public NotEndsWithTermProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey endsWith)
+        public NotEndsWithTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey endsWith)
         {
             _searcher = searcher;
             _field = field;
@@ -29,11 +29,26 @@ namespace Corax.Querying.Matches.TermProviders
             _tree = tree;
         }
 
-        public bool IsFillSupported { get; }
-
-        public int Fill(Span<long> containers)
+        public int FillPostingListIds(Span<long> postingListIds)
         {
-            throw new NotImplementedException();
+            var suffix = _endsWith.Decoded();
+            int count = 0;
+
+            using var scope = new CompactKeyCacheScope(_searcher.Transaction.LowLevelTransaction);
+            var key = scope.Key;
+
+            while (count < postingListIds.Length)
+            {
+                if (_iterator.MoveNext(key, out long postingListId, out _) == false)
+                    break;
+
+                if (key.Decoded().EndsWith(suffix))
+                    continue;
+
+                postingListIds[count++] = postingListId;
+            }
+
+            return count;
         }
 
         public void Reset()
@@ -41,31 +56,12 @@ namespace Corax.Querying.Matches.TermProviders
             _iterator.Reset();
         }
 
-        public bool Next(out TermMatch term)
-        {
-            var suffix = _endsWith.Decoded();
-            while (_iterator.MoveNext(out var key, out _, out _))
-            {
-                var termSlice = key.Decoded();
-                if (termSlice.EndsWith(suffix))
-                {
-                    continue;
-                }
-
-                term = _searcher.TermQuery(_field, key, _tree);
-                return true;
-            }
-
-            term = TermMatch.CreateEmpty(_searcher, _searcher.Allocator);
-            return false;
-        }
-
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(NotEndsWithTermProvider<TLookupIterator>)}",
+            return new QueryInspectionNode($"{nameof(NotEndsWithTermsProvider<TLookupIterator>)}",
                 parameters: new Dictionary<string, string>()
                 {
-                    { Constants.QueryInspectionNode.FieldName, _field.ToString() },
+                    { Constants.QueryInspectionNode.FieldName, _field.FieldName.ToString() },
                     { Constants.QueryInspectionNode.Suffix, _endsWith.ToString()}
                 });
         }
