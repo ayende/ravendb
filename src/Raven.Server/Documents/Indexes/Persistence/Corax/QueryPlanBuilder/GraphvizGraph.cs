@@ -65,7 +65,7 @@ internal sealed class GraphvizGraph
     {
         var sb = new StringBuilder();
         sb.AppendLine("digraph QueryPlan {");
-        sb.AppendLine("  rankdir=").Append(RankDir).Append(";");
+        sb.Append("  rankdir=").Append(RankDir).AppendLine(";");
 
         if (NodeDefaults.Count > 0)
         {
