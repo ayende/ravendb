@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Corax.Querying;
 using Corax.Querying.Matches.Meta;
@@ -47,8 +47,8 @@ namespace Voron.Benchmark.Corax
                     return (be.Operator, be.Left, be.Right) switch
                     {
                         (OperatorType.Equal, FieldExpression f, ValueExpression v) => _searcher.TermQuery(f.FieldValue, v.Token.Value),
-                        (OperatorType.And, QueryExpression q1, QueryExpression q2) => _searcher.And(Evaluate(q1), Evaluate(q2)),
-                        (OperatorType.Or, QueryExpression q1, QueryExpression q2) => _searcher.Or(Evaluate(q1), Evaluate(q2)),
+                        (OperatorType.And, _, _) => throw new NotSupportedException("AND queries require QueryPlanBuilder; use Search(string) with a full RQL query."),
+                        (OperatorType.Or, _, _) => throw new NotSupportedException("OR queries require QueryPlanBuilder; use Search(string) with a full RQL query."),
                         _ => throw new NotSupportedException()
                     };
                 default:

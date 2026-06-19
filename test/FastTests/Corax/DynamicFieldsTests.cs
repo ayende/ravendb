@@ -273,7 +273,7 @@ public unsafe class DynamicFieldsTests : StorageTest
             Page p = default;
             var reader = searcher.GetEntryTermsReader(documentId, ref p);
             var debugView = reader.Debug();
-            searcher.GetTermAmountInField(fields.GetByFieldId(1).Metadata);
+            searcher.GetDistinctTermCountInField(fields.GetByFieldId(1).Metadata);
         }
 
         using (var writer = new IndexWriter(Env, fields, SupportedFeatures.All))
