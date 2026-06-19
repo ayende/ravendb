@@ -77,6 +77,8 @@ public static class CompiledQueryHelper
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
         {
+            if (reader.IsNonExisting)
+                continue; // no value at all — Current is not populated; never matches an IN value
             if (reader.IsNull)
             {
                 if (includeNull)
