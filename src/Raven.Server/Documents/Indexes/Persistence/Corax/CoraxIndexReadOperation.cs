@@ -623,7 +623,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             // allocates a fresh CompactKey per entry and rents pool buffers that are never returned (the reader
             // is discarded without Reset), so the thread-static pool stays empty and every entry allocates anew.
             // EntryTermsReader's Set() restarts the key arena per entry, so reuse is safe and bounded.
-            var entryReaderKey = new Voron.Data.CompactTrees.CompactKey();
+            // `using` so the iterator state machine disposes the key on early termination (yield break / the
+            // consumer abandoning enumeration), not only when the loop runs to completion.
+            using var entryReaderKey = new Voron.Data.CompactTrees.CompactKey();
             entryReaderKey.Initialize(_lowLevelTransaction);
             while (runQuery)
             {
@@ -868,8 +870,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     queryTimings.SetQueryPlan(inspectionNode);
                 }
 
-                compileResult.Dispose();
-
                 ReturnQueryResources(ids, sortingData);
 
 
@@ -901,8 +901,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     identityTracker.QueryStart = totalResults.Value;
                 }
             }
-
-            entryReaderKey.Dispose();
 
             if (isDistinctCount)
                 totalResults.Value -= skippedResults.Value;
@@ -1261,6 +1259,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             // Materialize into bitmap via OR
             Voron.Data.RoaringBitmaps.RoaringBitmap mltBitmapData = new(_allocator);
+            // Hoisted out of the try so the finally can release them even when the iterator exits early
+            // (yield break at query.Limit) or the consumer abandons enumeration.
+            long[] ids = null;
+            Voron.Data.RoaringBitmaps.RoaringBitmapIterator mltIterator = default;
             try
             {
                 long[] fillBuf = new long[4096];
@@ -1290,10 +1292,10 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 }
 
                 mltBitmapData.PrepareForReading();
-                var mltIterator = mltBitmapData.GetIterator();
+                mltIterator = mltBitmapData.GetIterator();
 
                 var ravenIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                long[] ids = QueryPool.Rent(pageSize);
+                ids = QueryPool.Rent(pageSize);
                 long returnedDocs = 0;
                 long skippedDocs = 0;
                 Page page = default;
@@ -1340,11 +1342,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         }
                     }
                 }
-                QueryPool.Return(ids);
-                mltIterator.Dispose();
             }
             finally
             {
+                if (ids != null)
+                    QueryPool.Return(ids);
+                mltIterator.Dispose();
                 mltBitmapData.Dispose();
             }
         }
