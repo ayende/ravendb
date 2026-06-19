@@ -920,7 +920,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
         using var _ = allocator.Allocate(paddedLen * sizeof(int), out Span<int> indexes);
         InitializeIndices(indexes, n);
 
-        ranks.Sort(indexes);
+        ranks.Sort(indexes.Slice(0, n)); // indexes is padded to a Vector256 width for the SIMD fill; Sort requires equal-length spans.
 
         int rankIdx = 0;
 
