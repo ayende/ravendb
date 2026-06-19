@@ -76,6 +76,34 @@ public sealed unsafe class CompactKey : IDisposable
         _keyMappingCache = KeyMappingPool.Rent(2 * MappingTableMask);
     }
 
+    /// <summary>Re-arm an already-initialized key for a new transaction without renting fresh pool buffers:
+    /// <see cref="Set"/> restarts the arena per key, so storage/mapping buffers are reusable across
+    /// transactions and only the owner and arena cursors need resetting. Lets long-lived key caches (e.g.
+    /// the entry-scan loop) pay the pool rent once rather than per query.</summary>
+    public void Rebind(LowLevelTransaction tx)
+    {
+        Debug.Assert(_storage is not null && _keyMappingCache is not null, "Rebind requires an initialized key; call Initialize first.");
+
+        _owner = tx;
+
+        Dictionary = Invalid;
+        _currentKeyIdx = Invalid;
+        _decodedKeyIdx = Invalid;
+        _lastKeyMappingItem = Invalid;
+
+        _currentIdx = 0;
+        MaxLength = 0;
+    }
+
+    /// <summary>Drop the transaction reference (from <see cref="Rebind"/>/<see cref="Initialize"/>) without
+    /// returning the rented buffers. A long-lived key cache calls this when a query finishes so the
+    /// <see cref="LowLevelTransaction"/> (and the pages/scratch it roots) can be collected while the thread
+    /// idles. Buffers stay rented; call <see cref="Rebind"/> before the next use.</summary>
+    public void Unbind()
+    {
+        _owner = null;
+    }
+
     public void Reset()
     {
         if (_storage is null || _keyMappingCache is null)
@@ -253,12 +281,17 @@ public sealed unsafe class CompactKey : IDisposable
 
         Debug.Assert(_storage.Length >= maxLength);
 
-        // We write the size and the key. 
+        // We write the size and the key.
         Unsafe.WriteUnaligned<int>(ref _storage[0], key.Length);
 
-        // PERF: Between pinning the pointer and just execute the Unsafe.CopyBlock unintuitively it is faster to just copy. 
-        ref readonly byte kPtr = ref key[0];
-        Unsafe.CopyBlock(ref _storage[sizeof(int)],  in kPtr, (uint)key.Length);
+        // An empty key is a valid "before all keys" sentinel (e.g. open-ended range estimation): nothing to
+        // copy, and dereferencing key[0] on an empty span would throw. Set(int, ...) handles this the same way.
+        if (key.Length > 0)
+        {
+            // PERF: counterintuitively, plain Unsafe.CopyBlock here beats pinning the pointer first.
+            ref readonly byte kPtr = ref key[0];
+            Unsafe.CopyBlock(ref _storage[sizeof(int)],  in kPtr, (uint)key.Length);
+        }
 
         _currentIdx = key.Length + sizeof(int);
 
