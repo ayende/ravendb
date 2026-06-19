@@ -7,13 +7,13 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
 using Sparrow;
 using Sparrow.Server;
+using Sparrow.Server.Utils;
+using Sparrow.Server.Utils.VxSort;
 
 namespace Voron.Data.RoaringBitmaps;
 
 public unsafe partial struct RoaringBitmap
 {
-    #region Bitmap Container
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool BitmapContains(ulong* bitmap, ushort val) =>
         (bitmap[val >> 6] & (1UL << (val & 63))) != 0;
@@ -95,10 +95,6 @@ public unsafe partial struct RoaringBitmap
 
     internal static void ClearArrayInBitmap(ushort* arr, int arrLen, ulong* bitmap)
         => ApplyArrayToBitmap<ArrayAndNotOp>(arr, arrLen, bitmap);
-
-    #endregion
-
-    #region SIMD Bitmap Operations
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void BitmapOrNoPop(ulong* a, ulong* b, ulong* dst) =>
@@ -297,10 +293,6 @@ public unsafe partial struct RoaringBitmap
                 return new ContainerEntry { Cardinality = entry.Cardinality, Data = storage.Ptr, Storage = storage };
         }
     }
-
-    #endregion
-
-    #region Array Container
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool ArrayContainerContains(ushort* data, int cardinality, ushort value)
@@ -615,30 +607,9 @@ public unsafe partial struct RoaringBitmap
     /// </summary>
     private static void SortAndDedupSmallArray(ref ContainerEntry entry, out ContainerType type)
     {
-        var arr = entry.ArrayData;
-        int count = entry.Cardinality;
-
-        new Span<ushort>(arr, count).Sort();
-
-        if (count > 1)
-        {
-            int write = 1;
-            for (int read = 1; read < count; read++)
-            {
-                if (arr[read] != arr[write - 1])
-                    arr[write++] = arr[read];
-            }
-            count = write;
-        }
-
-        entry.Cardinality = count;
+        entry.Cardinality = Sorting.SortAndRemoveDuplicates(entry.ArrayData, entry.Cardinality);
         type = ContainerType.Array;
     }
-
-    #endregion
-    
-    
-    #region Range Container
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int RangeEndExclusive(ref ContainerEntry entry) => entry.RangeStart + entry.Cardinality;
@@ -780,6 +751,4 @@ public unsafe partial struct RoaringBitmap
 
         return MaybeConvertRangeToArray(ref left, ref leftType, right.RangeStart, rightCount, buffer[..leftCount]);
     }
-
-    #endregion
 }
