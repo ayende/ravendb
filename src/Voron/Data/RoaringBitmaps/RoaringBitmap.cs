@@ -8,6 +8,7 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.X86;
 using Sparrow;
 using Sparrow.Server;
+using Sparrow.Server.Utils;
 using Voron.Util;
 
 namespace Voron.Data.RoaringBitmaps;
@@ -852,7 +853,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
         while (i < count)
         {
             long containerKey = values[i] >> ContainerKeyShift;
-            int groupEnd = GallopRight(values, i, count, (containerKey + 1) << ContainerKeyShift);
+            int groupEnd = Sorting.GallopLowerBound(values, i, count, (containerKey + 1) << ContainerKeyShift);
 
             if (containerKey < 0 || containerKey >= idxLen || idx[containerKey] < 0)
             {
@@ -1034,28 +1035,6 @@ public unsafe partial struct RoaringBitmap : IDisposable
         }
 
         return unique;
-    }
-
-    /// <summary>Returns the first index in <c>[lo, hi)</c> where <c>buffer[index] &gt;= sentinel</c>,
-    /// using exponential probing then binary search — O(log d) where d is the run length.</summary>
-    private static int GallopRight(Span<long> buffer, int lo, int hi, long sentinel)
-    {
-        int step = 1;
-        int probe = lo;
-        while (probe < hi && buffer[probe] < sentinel)
-        {
-            lo = probe + 1;
-            probe = lo + step;
-            step <<= 1;
-        }
-        int limit = probe < hi ? probe : hi;
-        while (lo < limit)
-        {
-            int mid = (lo + limit) >> 1;
-            if (buffer[mid] < sentinel) lo = mid + 1;
-            else limit = mid;
-        }
-        return lo;
     }
 
     /// <summary>
