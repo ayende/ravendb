@@ -73,33 +73,6 @@ namespace Sparrow.Server.Utils
                 return SortAndRemoveDuplicates(basePtr, values.Length);
         }
 
-        public static unsafe int SortAndRemoveDuplicates<T, W>(T* bufferBasePtr, W* itemsBasePtr, int count)
-            where T : unmanaged, IBinaryNumber<T>
-            where W : unmanaged
-        {
-            new Span<T>(bufferBasePtr, count).Sort(new Span<W>(itemsBasePtr, count));
-
-            // We need to fill in the gaps left by removing deduplication process.
-            // If there are no duplicated the writes at the architecture level will execute
-            // way faster than if there are.
-
-            int index = 0;
-            int runningIndex = 0;
-
-            count--;
-            while (runningIndex < count)
-            {
-                index += (bufferBasePtr[runningIndex + 1] != bufferBasePtr[runningIndex]).ToInt32();
-
-                bufferBasePtr[index] = bufferBasePtr[runningIndex + 1];
-                itemsBasePtr[index] = itemsBasePtr[runningIndex + 1];
-
-                runningIndex++;
-            }
-
-            return index + 1;
-        }
-
         public static unsafe int SortAndRemoveDuplicates<T>(T* bufferBasePtr, int count)
             where T : unmanaged, IBinaryNumber<T>
         {
