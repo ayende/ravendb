@@ -185,8 +185,8 @@ internal static partial class QueryPlanBuilder
             }
 
             // Residual present: DirectScanFilteredMatch must read each scanned entry's stored fields
-            // (EntryTermsReader, ~64× a posting decode) to test the residual, and it over-scans the sorted
-            // stream to fill the page because only a fraction of scanned entries survive. Estimate that
+            // (EntryTermsReader, EntryScanCostMultiplier× a posting decode) to test the residual, and it over-scans
+            // the sorted stream to fill the page because only a fraction of scanned entries survive. Estimate that
             // over-scan and let the gate decide whether it still beats the bitmap pipeline.
             entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
             bitmapCost += SurvivorSortCost(EstimateSurvivors(execs, indexSearcher)); // add the bitmap's survivor-sort cost

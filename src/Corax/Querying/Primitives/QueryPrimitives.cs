@@ -233,25 +233,16 @@ public static class QueryPrimitives
     // The threshold is the bitmap count below which we consider entry scan.
     public const long EntryScanCountThreshold = 32 * 1024;
 
-    // The multiplier approximates the cost ratio: one entry blob read (EntryTermsReader stored-field
-    // fetch + residual check) vs a single posting-list decode. Entry scan wins when
-    // entriesToScan * multiplier < bitmapCost.
-    //
-    // Recalibrated 64 -> 128 (CoraxCostModelCalibration, RavenDB-25281). The original 64 picked the 8-9x SLOWER
-    // scan for small-limit + selective-residual queries (entries_to_scan 2,493, below the 32K cap, yet Bitmap 9x
-    // faster) because few survivors made the bitmap cheap. Paired with the survivor-aware bitmapCost below (the
-    // sort term a pure-Σ cost omitted), 128 makes the gate pick the faster branch across the whole swept
-    // (selectivity × limit) grid — see EntryScanSurvivorSortFactor.
+    // Approximate cost ratio: one entry blob read (EntryTermsReader stored-field fetch + residual check) vs a
+    // single posting-list decode. Entry scan wins when entriesToScan * multiplier < bitmapCost. Only meaningful
+    // alongside the survivor-aware bitmapCost below (see EntryScanSurvivorSortFactor): without the survivor-sort
+    // term no multiplier can separate the few-survivor (cheap bitmap) and many-survivor (sort-bound) regimes.
     public const long EntryScanCostMultiplier = 128;
 
     // The bitmap pipeline doesn't just decode posting lists (Σ cardinalities) — it then SORTS the surviving
-    // intersection. That sort cost is what a pure-Σ bitmapCost omitted, which is why no single
-    // EntryScanCostMultiplier could split the two regimes (few survivors -> bitmap cheap; many -> sort-bound).
-    // bitmapCost = Σ cardinalities + survivors × EntryScanSurvivorSortFactor, with survivors estimated by the
-    // independence (product) rule. This factor approximates sort+materialize-one-survivor in posting-decode
-    // units. Calibrated to 32 (CoraxCostModelCalibration, RavenDB-25281): with multiplier 128 it makes the gate
-    // pick the faster branch on every swept (selectivity × limit) row, including the high-survivor cases the
-    // multiplier alone mis-classified.
+    // intersection. bitmapCost = Σ cardinalities + survivors × EntryScanSurvivorSortFactor, survivors estimated
+    // by the independence (product) rule. Without this term the cost is regime-blind (few survivors -> cheap
+    // bitmap; many -> sort-bound). The factor approximates sort+materialize-one-survivor in posting-decode units.
     public const long EntryScanSurvivorSortFactor = 32;
 
     // Sentinels for the $rvn_corax_entry_scan override carried on ForcedEntryScanGate.

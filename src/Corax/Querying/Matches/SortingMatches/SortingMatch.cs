@@ -43,22 +43,14 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// Strings longer than this fall back to heap allocation.</summary>
     private const int Utf8StackAllocThreshold = 256;
 
-    /// <summary>How many streamed sort-index entries cost as much as one materialized-and-sorted candidate —
-    /// the cost weight in the <see cref="ShouldUseIndexOrderStreaming"/> gate. A streamed entry is a sequential
-    /// FastPFor posting decode + an O(1) candidate-bitmap test; a sorted candidate pays a random entries→terms
-    /// lookup (GetFor), a random term-blob fetch (GetAll), and its share of an N log N comparison sort.
-    /// Calibrated by <c>CoraxCostModelCalibration</c> (RavenData-driven, uninstrumented include timings(), 200K
-    /// docs, multi-valued clustered sort field): streaming beat InMemorySort in EVERY swept case with
-    /// take &lt; candidates — 9.2× at 40% selectivity, 6.x at 8%, and still 2.2× at 0.5% with a 16× over-scan —
-    /// because early termination caps the scan at 1–2 batches. The only loss was take ≥ candidates, already
-    /// short-circuited above. Since the comparison is <c>estimatedScan &lt; candidates × ratio</c>, the ratio IS
-    /// the maximum over-scan multiple the gate will accept; it is set to match <c>maxScanCandidateMultiplier</c>
-    /// (the streaming bail-out, also 16) so the gate never starts a walk the bail-out would abandon, and to sit
-    /// at the clear-win edge (streaming wins through ~16× over-scan, marginal/losing beyond). Lowered 32 -> 16:
-    /// 32 let the gate pick streaming up to a 32× walk that the 16× bail-out then aborted (wasted scan), and was
-    /// over-permissive once StreamScanInflation had already learned a query over-scans badly. IMPORTANT:
-    /// deliberately NOT 1 — do not simplify the gate to <c>estimatedScan &lt; candidates</c>, which ignores the
-    /// per-entry cost asymmetry and over-picks InMemorySort.</summary>
+    /// <summary>How many streamed sort-index entries cost as much as one materialized-and-sorted candidate.
+    /// A streamed entry is a sequential FastPFor posting decode + an O(1) candidate-bitmap test (and the limit
+    /// usually halts the walk early); a sorted candidate pays a random entries→terms lookup (GetFor), a random
+    /// term-blob fetch (GetAll), and its share of an N log N comparison sort. The gate compares
+    /// <c>estimatedScan &lt; candidates × ratio</c>, so the ratio is the maximum over-scan multiple it accepts;
+    /// it matches <c>maxScanCandidateMultiplier</c> (the streaming bail-out) so the gate never starts a walk the
+    /// bail-out would abandon. Deliberately &gt; 1 — comparing 1:1 ignores the per-entry cost asymmetry and
+    /// over-picks InMemorySort.</summary>
     internal const double IndexStreamingVsInMemorySortCostRatio = 16;
     private ByteStringContext<ByteStringMemoryCache>.InternalScope _entriesBufferScope;
 
@@ -318,10 +310,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         match.StreamScanInflationFactor = inflationFactor;
         match.StreamScanEstimateInflated = estimatedScan;
 
-        // Cost-weighted comparison: a streamed entry is far cheaper than a materialized-and-sorted candidate,
-        // so streaming stays the better plan even when it scans several times the candidate count. Comparing
-        // 1:1 (estimatedScan < candidates) wrongly rejected streaming for high-candidate / small-LIMIT queries
-        // that streaming finishes in milliseconds (RavenDB-25281).
+        // Cost-weighted: a streamed entry is far cheaper than a sorted candidate (see the ratio's doc).
         double threshold = candidates * IndexStreamingVsInMemorySortCostRatio;
         match.GateThreshold = threshold;
 
@@ -629,15 +618,10 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
         int maxResults = match._take == -1 ? int.MaxValue : match._take;
 
-        // Runtime escape hatch: the gate assumed uniform candidate spread; if they cluster far from the
-        // scan start the walk reads far more entries without hitting the limit. Past this multiple of the
-        // candidate count, abandon the walk and materialize+sort instead, capping the cost.
-        //
-        // Calibrated (CoraxCostModelCalibration, RavenDB-25281): streaming still beat InMemorySort at a 16x
-        // over-scan (2.2x faster) and the crossover where it stops winning interpolates to ~35x. Bailing at 2x
-        // abandoned clearly-profitable streaming; 16 keeps it through the winning range while still capping the
-        // pathological case (~344x over-scan was ~10x slower). Erring late is cheap (extra sequential posting
-        // reads ~3ns each) vs erring early (forfeiting up to a ~9x win).
+        // Runtime escape hatch: the gate assumed uniform candidate spread; if they cluster far from the scan
+        // start the walk reads far more entries without hitting the limit. Past this multiple of the candidate
+        // count, abandon the walk and materialize+sort instead, capping the cost. Erring late is cheap (extra
+        // sequential posting reads) vs erring early (forfeiting streaming's win when it would have finished soon).
         const int maxScanCandidateMultiplier = 16;
         long scanBailoutThreshold = match.TotalResults * maxScanCandidateMultiplier;
         bool forceUsingOnlyIndex = match.ForcedStrategy == CoraxSortingStrategy.IndexOrderStreaming;

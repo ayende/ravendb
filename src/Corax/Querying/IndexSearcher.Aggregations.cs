@@ -91,12 +91,11 @@ public partial class IndexSearcher
     private const int RangeBottomSample = 512;
     private const int RangeTopSample = 256;
 
-    // Clamp on the per-clause calibration multiplier (beta). beta scales the shrinkage prior k = beta * middleTerms
-    // (see the worked rationale in EstimateMatchesInRange). The clamp keeps a noisy or pathological calibration
-    // signal from collapsing the estimate onto a single source: beta can pull the unscanned middle at most 4x toward
-    // the global density (whale-cautious) or trust the local sample down to 1/4 the neutral prior, never further.
-    private const double CalibrationBetaMin = 0.25;
-    private const double CalibrationBetaMax = 4.0;
+    // Clamp on the per-clause calibration multiplier applied to the range estimate (see EstimateMatchesInRange).
+    // Keeps a noisy or pathological single run from blowing the estimate up or collapsing it: at most 4x up or
+    // 1/4 down per clause.
+    private const double CalibrationMultiplierMin = 0.25;
+    private const double CalibrationMultiplierMax = 4.0;
 
     public long EstimateMatchesInRange<TValue>(in FieldMetadata field, TValue low, TValue high,
         out RangeEstimateBreakdown breakdown,
@@ -166,24 +165,16 @@ public partial class IndexSearcher
         //
         //     middleAvg = (sampledPostings + k*globalAvg) / (sampledTerms + k)   // k pseudo-obs at globalAvg
         //
-        // with k = beta * middleTerms. At beta = 1 (cold-start; calibrationFactor 0 = no history) this is the
-        // coverage blend coverage*sampledAvg + (1-coverage)*globalAvg, coverage = sampledTerms/(sampledTerms+
-        // middleTerms): well-sampled trusts its edges, barely-sampled defers to global. beta is the leeway
-        // dial: <1 trusts the local sample, >1 leans whale-cautious toward globalAvg; beta->inf snaps to it.
-        //
-        // beta adapts via calibrationFactor: a per-clause EWMA of actual-matched / prior-estimate (see
-        // ClauseInfo.RangeEstimateCalibration / InflationEwma). Systematic under-estimates push it above 1
-        // (estimate rises, self-correcting); over-estimates push below 1. Clamped to
-        // [CalibrationBetaMin, CalibrationBetaMax] so one bad run can't run away.
+        // With beta fixed at 1, k = middleTerms and this is the coverage blend coverage*sampledAvg +
+        // (1-coverage)*globalAvg, coverage = sampledTerms/(sampledTerms+middleTerms): well-sampled trusts its
+        // edges, barely-sampled defers to global. It is whale-cautious (it can only raise a sparse-looking
+        // estimate, never lower it). Per-clause calibration is applied separately as a direct multiplier below,
+        // NOT folded in here as the shrinkage strength — that would correct the estimate only sublinearly and
+        // pin a repeated, already-counted clause at a wrong ratio instead of converging.
         //
         // Worked example: 1,000,000 docs over 100,000 terms -> globalAvg = 10. Sparse range of 1500 terms,
         // sampledTerms = 768 (sampledAvg = 2, sampledPostings = 1536), middleTerms = 732:
-        //     beta = 1:    middleAvg = (1536 + 732*10)/(768+732)   = 5.9  -> 5855  (== coverage blend)
-        //     beta = 4:    middleAvg = (1536 + 2928*10)/(768+2928) = 8.34 -> 7641  (leans toward globalAvg)
-        //     beta -> inf: middle snaps to globalAvg = 10                 -> 8856
-        // Cold-start blend at beta = 1 (whale-cautious coverage blend toward globalAvg). The per-clause EWMA does
-        // NOT feed in here as beta any more: scaling the shrinkage strength corrects the estimate only sublinearly,
-        // so a repeated clause that we have actually counted would pin at a wrong ratio instead of converging.
+        //     middleAvg = (1536 + 732*10)/(768+732) = 5.9 -> estimate 5855.
         const double beta = 1.0;
         double k = beta * middleTerms;
         double middleAvg = (sampledPostings + k * globalAvg) / (sampledTerms + k);
@@ -194,7 +185,7 @@ public partial class IndexSearcher
         // RawEstimate as "predicted"), so estimate = RawEstimate * Factor converges to the measured actual in a
         // single observation (InflationEwma seeds on the first sample). 0 = no history -> neutral 1.0. Clamped so a
         // single pathological run can't blow the estimate up or collapse it.
-        double mult = calibrationFactor <= 0 ? 1.0 : Math.Clamp(calibrationFactor, CalibrationBetaMin, CalibrationBetaMax);
+        double mult = calibrationFactor <= 0 ? 1.0 : Math.Clamp(calibrationFactor, CalibrationMultiplierMin, CalibrationMultiplierMax);
         long estimate = Math.Min((long)(rawEstimate * mult), NumberOfEntries);
 
         breakdown.SampledTerms = sampledTerms;
