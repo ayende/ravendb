@@ -54,16 +54,17 @@ internal sealed class ValueWriter
             {
                 long l => l,
                 double d => (long)d,
-                string str when long.TryParse(str, out long l) => l,
-                _ when long.TryParse(value?.ToString(), out long l) => l,
+                // Invariant culture so IN-term parsing is locale-independent ('.'/',' separators must not change query semantics across deployments).
+                string str when long.TryParse(str, System.Globalization.CultureInfo.InvariantCulture, out long l) => l,
+                _ when long.TryParse(value?.ToString(), System.Globalization.CultureInfo.InvariantCulture, out long l) => l,
                 _ => null
             }),
             ValueTokenType.Double => TryAddDouble(value switch
             {
                 double d => d,
                 long l => l,
-                string str when double.TryParse(str, out double d) => d,
-                _ when double.TryParse(value?.ToString(), out double d) => d,
+                string str when double.TryParse(str, System.Globalization.CultureInfo.InvariantCulture, out double d) => d,
+                _ when double.TryParse(value?.ToString(), System.Globalization.CultureInfo.InvariantCulture, out double d) => d,
                 _ => null
             }),
             _ => AddString(value?.ToString())
