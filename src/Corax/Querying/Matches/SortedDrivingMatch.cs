@@ -297,7 +297,11 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             var request = entryBuffer[..requestSize];
             if (_pendingLargeIterator.Fill(request, out int read) == false || read == 0)
             {
-                _hasPendingLargeIterator = true;
+                // Iterator exhausted: clear the pending flag so later Fills move on to the next term, and release
+                // the large posting list (nulled so the dispose-on-match-dispose at the bottom won't double-free).
+                _hasPendingLargeIterator = false;
+                _pendingPostingList?.Dispose();
+                _pendingPostingList = default;
                 break;
             }
             EntryIdEncodings.DecodeAndDiscardFrequency(request, read);

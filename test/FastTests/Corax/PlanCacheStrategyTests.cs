@@ -135,9 +135,9 @@ public class PlanCacheStrategyTests : RavenTestBase
         Assert.Equal("FieldSortedScan", directHint);
         Assert.Equal("FieldSortedScan", directCandidate); // both planned & actual strategies are always surfaced
 
-        // Selective residual (Name='Alice' matches ~25%, ~1000 of 4000 — below the ~1225 cost-gate
-        // boundary) over the same wide range and page: a bitmap is cheaper, so the per-execution gate
-        // demotes the FieldSortedScan candidate to BitmapPipeline.
+        // Selective residual (Name='Alice' matches ~10%, ~400 of 4000 — below the survivor-aware cost gate's
+        // ~565-survivor crossover for a 25-row page) over the same wide range and page: a bitmap is cheaper, so
+        // the per-execution gate demotes the FieldSortedScan candidate to BitmapPipeline.
         await session.Advanced
             .AsyncRawQuery<Item>($"from index '{index.IndexName}' where Seq between 0 and 3999 and Name = 'Alice' order by Seq as long limit 25 include timings()")
             .Timings(out var bitmapTimings)

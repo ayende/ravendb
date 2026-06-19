@@ -212,7 +212,7 @@ internal static class VectorHelpers
                 break;
             }
             default:
-                throw new NotSupportedException($"Unexpected value type provided as parameter to vector.search({fieldName}) method. Got '{value.GetType().FullName}' type.");
+                throw new InvalidQueryException($"Unexpected value provided as parameter to vector.search({fieldName}) method. Got '{value?.GetType().FullName ?? "null"}' type.");
         }
 
         var queryingVectorOption = new VectorOptions
