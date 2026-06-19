@@ -76,9 +76,12 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private NativeList<UnmanagedSpan> _groupHeapTermsSeq;
     private int _groupEmitIdx;
 
-    // Non-existing entries (docs where the primary sort field was absent) are treated as null-adjacent:
-    //   nullFirst=true → non-existing, then nulls, then normal values
-    //   nullFirst=false → normal values, then nulls, then non-existing
+    // Null (explicit null primary) and non-existing (primary field absent) are the SAME "no value" sort key:
+    // they form a single combined group ordered by the SECONDARY field (see PrepareNullGroup — they are drained
+    // into one buffer and the secondary sort decides their interleaved order, NOT a fixed null-vs-non-existing
+    // order). _nullFirst only decides where that combined no-value group sits relative to the real values:
+    //   nullFirst=true  → no-value group, then normal values
+    //   nullFirst=false → normal values, then no-value group
     private readonly bool _nullFirst;
     private readonly long _nullPostingListId;
     private readonly bool _hasNullPostingList;
