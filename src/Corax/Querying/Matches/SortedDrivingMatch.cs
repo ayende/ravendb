@@ -249,17 +249,42 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
     private void HandleNullOrNonExistent()
     {
-        if (_nonExistingExhausted is false && _hasNonExistingPostingList)
+        // Drain order must follow the documented field ordering (see the fields above):
+        //   nullFirst == true  -> non-existing, then null
+        //   nullFirst == false -> null, then non-existing
+        if (_nullFirst)
         {
-            _pendingLargeIterator = _nonExistingIterator;
-            _hasPendingLargeIterator = true;
-            _nonExistingExhausted = true;
+            if (QueueNonExisting() == false)
+                QueueNull();
         }
-        else if (_nullExhausted is false && _hasNullPostingList)
+        else
         {
-            _pendingLargeIterator = _nullIterator;
-            _hasPendingLargeIterator = true;
-            _nullExhausted = true;
+            if (QueueNull() == false)
+                QueueNonExisting();
+        }
+
+        bool QueueNonExisting()
+        {
+            if (_nonExistingExhausted is false && _hasNonExistingPostingList)
+            {
+                _pendingLargeIterator = _nonExistingIterator;
+                _hasPendingLargeIterator = true;
+                _nonExistingExhausted = true;
+                return true;
+            }
+            return false;
+        }
+
+        bool QueueNull()
+        {
+            if (_nullExhausted is false && _hasNullPostingList)
+            {
+                _pendingLargeIterator = _nullIterator;
+                _hasPendingLargeIterator = true;
+                _nullExhausted = true;
+                return true;
+            }
+            return false;
         }
     }
 
