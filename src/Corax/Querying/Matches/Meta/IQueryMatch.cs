@@ -15,33 +15,10 @@ public enum QueryCountConfidence : int
     High = 2,
 }
 
-public static class QueryConfidenceExtensions
-{
-    public static QueryCountConfidence Min(this QueryCountConfidence c1, QueryCountConfidence c2)
-    {
-        if (c1 < c2)
-            return c1;
-        return c2;
-    }
-
-    public static QueryCountConfidence Max(this QueryCountConfidence c1, QueryCountConfidence c2)
-    {
-        if (c1 > c2)
-            return c1;
-        return c2;
-    }
-}
-
 public interface IQueryMatch
 {
     long Count { get; }
     
-    /// <summary>
-    /// This is called when the call is not interested in getting
-    /// the results in sorted order (may want to do its own sorting, etc)
-    /// The match will let the caller know whatever this is possible
-    /// </summary>
-    SkipSortingResult AttemptToSkipSorting();
         
     // The confidence of the query count.
     //  - High: We know exactly how many items there are.
@@ -63,8 +40,13 @@ public interface IQueryMatch
     int AndWith(Span<long> buffer, int matches);
 
     // Guarantees: The output of this for unscored sequences should be a no-op.
-    // Requirements: The upmost call 
+    // Requirements: The upmost call
     void Score(Span<long> matches, Span<float> scores, float boostFactor);
+
+    // Same contract/result as Score, but the caller GUARANTEES `matches` is sorted ascending and deduplicated
+    // (holds on the in-memory-score-sort path off the bitmap iterator; vector/post-filter paths keep calling
+    // Score). Bitmap-backed leaves exploit the ordering; everyone else delegates to Score.
+    void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor);
 
     QueryInspectionNode Inspect();
 
@@ -73,15 +55,38 @@ public interface IQueryMatch
     DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
 }
 
-public enum SkipSortingResult
+/// <summary>
+/// Implemented by query matches backed by a RoaringBitmap, enabling SortingMatch
+/// to walk the CompactTree index and intersect batches via AndWith, stopping early
+/// when the LIMIT is reached — no full materialization needed.
+/// </summary>
+public interface IBitmapQueryMatch : IQueryMatch
 {
-    ResultsNativelySorted,
-    WillSkipSorting,
-    SortingIsRequired
+    bool Contains(long entryId);
+    long MinEntryId { get; }
+    long MaxEntryId { get; }
+
+    /// <summary>
+    /// Returns a reference to the underlying bitmap data. The caller MUST NOT dispose it.
+    /// Used by downstream consumers (vector search filter, faceted lookups) to skip re-materialization.
+    /// </summary>
+    [System.Diagnostics.CodeAnalysis.UnscopedRef]
+    ref Voron.Data.RoaringBitmaps.RoaringBitmap BitmapState { get; }
 }
 
 public enum DuplicatesOccurrence
 {
     Possible,
     NotPossible
+}
+
+/// <summary>
+/// Implemented by per-entry post-filter match families (spatial / vector). The flag is NOT intrinsic to the
+/// type: the same match is a top-level post-filter when the planner lifts it out of an AND, but a pipeline leaf
+/// inside an OR branch. <c>QueryPlanBuilder.ApplyPostFilters</c> sets it on the matches it wraps, so inspection
+/// reads the recorded role rather than re-deriving from the type.
+/// </summary>
+public interface IPostFilterMatch
+{
+    bool IsPostFilter { get; set; }
 }

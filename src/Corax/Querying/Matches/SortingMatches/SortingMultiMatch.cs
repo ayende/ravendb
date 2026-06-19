@@ -15,15 +15,15 @@ using Voron.Util;
 namespace Corax.Querying.Matches.SortingMatches;
 
 [DebuggerDisplay("{DebugView,nq}")]
-public unsafe partial struct SortingMultiMatch<TInner>
+public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
     where TInner : IQueryMatch
 {
     private const int NextComparerOffset = 3;
     private readonly IndexSearcher _searcher;
     private TInner _inner;
     private readonly OrderMetadata[] _orderMetadata;
-    private readonly NullsSortMode _defaultNullsSortMode;
-    private readonly delegate*<ref SortingMultiMatch<TInner>, Span<long>, int> _fillFunc;
+    private readonly bool _nullFirst;
+    private readonly delegate*<SortingMultiMatch<TInner>, Span<long>, int> _fillFunc;
     private readonly IEntryComparer[] _nextComparers;
     private readonly int _take;
     private readonly CancellationToken _token;
@@ -40,19 +40,29 @@ public unsafe partial struct SortingMultiMatch<TInner>
     // This is data persisted for holding score from secondary comparer.
     private UnmanagedSpan<float> _secondaryScoreBuffer;
     private IDisposable _scoreBufferHandler;
-    
+
+    // Secondary/tertiary lookup comparers pre-resolve their per-entry sort values once over the whole batch
+    // (amortized, sequential), instead of doing two B-tree lookups per pairwise Compare. Those buffers must
+    // outlive Init (they back the heap's tie-break comparisons inside SortBatch), so their allocation scopes
+    // are parked here and released with the match.
+    private List<IDisposable> _secondaryResolveScopes;
+
     private int _alreadyReadIdx;
 
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void TrackSecondaryResolveScope(IDisposable scope)
+    {
+        (_secondaryResolveScopes ??= new List<IDisposable>()).Add(scope);
+    }
 
-    public long TotalResults;
-    public SkipSortingResult AttemptToSkipSorting() => throw new NotSupportedException();
+
 
     public SortingMultiMatch(IndexSearcher searcher, in TInner inner, OrderMetadata[] orderMetadata, NullsSortMode defaultNullsSortMode, int take = -1, in CancellationToken token = default)
     {
         _searcher = searcher;
         _inner = inner;
         _orderMetadata = orderMetadata;
-        _defaultNullsSortMode = defaultNullsSortMode;
+        _nullFirst = defaultNullsSortMode == NullsSortMode.NullsSmallest;
         _take = take;
         _token = token;
         _alreadyReadIdx = 0;
@@ -98,7 +108,16 @@ public unsafe partial struct SortingMultiMatch<TInner>
         }
     }
 
-    public void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer)
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal bool NullIsSmallest(int comparerId)
+    {
+        var perField = _orderMetadata[comparerId].NullsSortMode;
+        if (perField != null)
+            return perField.Value == NullsSortMode.NullsSmallest;
+        return _nullFirst;
+    }
+
+    public override void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer)
     {
         _sortingDataTransfer = sortingDataTransfer;
         if (sortingDataTransfer.IncludeDistances)
@@ -107,38 +126,43 @@ public unsafe partial struct SortingMultiMatch<TInner>
             _scoresResults = new(_searcher.Allocator);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal readonly bool GetNullIsSmallestForClause(int comparerId) =>
-        (_orderMetadata[comparerId].NullsSortMode ?? _defaultNullsSortMode) == NullsSortMode.NullsSmallest;
-
-    private static int Fill<TComparer1, TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, Span<long> matches)
+    private static int Fill<TComparer1, TComparer2, TComparer3>(SortingMultiMatch<TInner> match, Span<long> matches)
         where TComparer1 : struct, IEntryComparer, IComparer<UnmanagedSpan> 
         where TComparer2 : struct, IEntryComparer, IComparer<int>, IComparer<UnmanagedSpan> 
         where TComparer3 : struct, IEntryComparer, IComparer<int>, IComparer<UnmanagedSpan>  
     
     {
-        // This method should also be re-entrant for the case where we have already pre-sorted everything and 
-        // we will just need to acquire via pages the totality of the results. 
+        // This method should also be re-entrant for the case where we have already pre-sorted everything, and
+        // we will just need to acquire via pages the totality of the results.
         if (match.TotalResults == NotStarted)
         {
-            if (match._inner is not MemoizationMatch memoizer)
-            {
-                memoizer = match._searcher.Memoize(match._inner).Replay();
-            }
-            
             match._token.ThrowIfCancellationRequested();
-            var allMatches = memoizer.FillAndRetrieve();
-            match.TotalResults = allMatches.Length;
-            memoizer.InnerRetriever(out IQueryMatch inner);
-            if (inner is TInner typedInner)
-                match._inner = typedInner;
-            
-            
-            if (match.TotalResults == 0)
-                return 0;
-            
-            SortResults<TComparer1, TComparer2, TComparer3>(ref match, allMatches);
-            memoizer.Dispose();
+
+            if (match._inner is IBitmapQueryMatch bitmapMatch)
+            {
+                match.TotalResults = bitmapMatch.Count;
+                if (match.TotalResults == 0)
+                    return 0;
+
+                using var _ = match._searcher.Allocator.Allocate((int)match.TotalResults, out Span<long> allMatches);
+                int filled = bitmapMatch.Fill(allMatches);
+
+                // The bitmap iterator yields entry ids ascending, so the score comparer can take the sorted fast path.
+                match.CandidatesAreSorted = true;
+                long sortStart = Stopwatch.GetTimestamp();
+                SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches[..filled]);
+                match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
+            }
+            else
+            {
+                using var scope = DrainInnerMatch(out Span<long> allMatches);
+                if (match.TotalResults == 0)
+                    return 0;
+
+                long sortStart = Stopwatch.GetTimestamp();
+                SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches);
+                match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
+            }
         }
 
         var read = match._results.CopyTo(matches, match._alreadyReadIdx);
@@ -159,9 +183,31 @@ public unsafe partial struct SortingMultiMatch<TInner>
         match._entriesBufferScope.Dispose();
         
         return 0;
+
+        ByteStringContext<ByteStringMemoryCache>.InternalScope DrainInnerMatch(out Span<long> allMatches)
+        {
+            var count = match._inner.Count;
+            int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
+            var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
+            var buffer = new Span<long>(bs.Ptr, bufferSize);
+            var filled = 0;
+            int r;
+            while ((r = match._inner.Fill(buffer[filled..])) > 0)
+            {
+                filled += r;
+                if (filled >= buffer.Length)
+                {
+                    match._searcher.Allocator.GrowAllocation(ref bs, ref scope, buffer.Length * sizeof(long));
+                    buffer = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
+                }
+            }
+            match.TotalResults = filled;
+            allMatches = buffer[..filled];
+            return scope;
+        }
     }
     
-    private static void SortResults<TComparer1, TComparer2, TComparer3>(ref SortingMultiMatch<TInner> match, Span<long> matches) 
+    private static void SortResults<TComparer1, TComparer2, TComparer3>(SortingMultiMatch<TInner> match, Span<long> matches) 
         where TComparer1 : struct,  IEntryComparer, IComparer<UnmanagedSpan>
         where TComparer2 : struct,  IEntryComparer, IComparer<int>, IComparer<UnmanagedSpan>
         where TComparer3 : struct,  IEntryComparer, IComparer<int>, IComparer<UnmanagedSpan>
@@ -178,58 +224,55 @@ public unsafe partial struct SortingMultiMatch<TInner>
         if (match._sortingDataTransfer.IncludeDistances)
             sizeToAllocate += take * sizeof(SpatialResult);
         
-        var bufScope = allocator.Allocate(sizeToAllocate, out ByteString bs);
+        using var bufScope = allocator.Allocate(sizeToAllocate, out ByteString bs);
         Span<long> matchesTermIds = new(bs.Ptr, take);
         UnmanagedSpan* termsPtr = (UnmanagedSpan*)(bs.Ptr + take * sizeof(long));
 
-        // Initialize the important infrastructure for the sorting.
         TComparer1 entryComparer = new();
-        entryComparer.Init(ref match, default, 0);
+        entryComparer.Init(match, default, 0);
         var pageCache = llt.PageLocator;
         fixed (long* ptrBatchResults = matches)
         {
             var resultsPtr = new UnmanagedSpan<long>(ptrBatchResults, sizeof(long)* matches.Length);
             var comp2 = new TComparer2();
-            comp2.Init(ref match, resultsPtr, 1);
+            comp2.Init(match, resultsPtr, 1);
             var comp3 = new TComparer3();
-            comp3.Init(ref match, resultsPtr, 2);
+            comp3.Init(match, resultsPtr, 2);
             
             for (int comparerId = 0; comparerId < match._nextComparers.Length; comparerId++)
             {
                 IEntryComparer add = match._nextComparers[comparerId];
-                add.Init(ref match, resultsPtr, NextComparerOffset + comparerId);
+                add.Init(match, resultsPtr, NextComparerOffset + comparerId);
             }
 
-            entryComparer.SortBatch(ref match, llt, pageCache, resultsPtr, matchesTermIds, termsPtr, match._orderMetadata, comp2, comp3);
+            entryComparer.SortBatch(match, llt, pageCache, resultsPtr, matchesTermIds, termsPtr, match._orderMetadata, comp2, comp3);
         }
-
-        bufScope.Dispose();
     }
 
 
-    public long Count => _inner.Count;
+    public override long Count => _inner.Count;
 
-    public QueryCountConfidence Confidence => throw new NotSupportedException();
+    public override QueryCountConfidence Confidence => throw new NotSupportedException();
 
-    public bool IsBoosting => _inner.IsBoosting || _orderMetadata[0].FieldType == MatchCompareFieldType.Score;
+    public override bool IsBoosting => _inner.IsBoosting || _orderMetadata[0].FieldType == MatchCompareFieldType.Score;
 
-    public int AndWith(Span<long> buffer, int matches)
+    public override int AndWith(Span<long> buffer, int matches)
     {
         throw new NotSupportedException($"{nameof(SortingMultiMatch<TInner>)} does not support the operation of {nameof(AndWith)}.");
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public int Fill(Span<long> matches)
+    public override int Fill(Span<long> matches)
     {
-        return _fillFunc(ref this, matches);
+        return _fillFunc(this, matches);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void Score(Span<long> matches, Span<float> scores, float boostFactor) 
+    public override void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
     }
 
-    public QueryInspectionNode Inspect()
+    public override QueryInspectionNode Inspect()
     {
         var parameters = new Dictionary<string, string>()
         {
@@ -260,9 +303,39 @@ public unsafe partial struct SortingMultiMatch<TInner>
             }
         }
         
+        // Surface the sort's own cost — it runs above the bitmap pipeline (timed onto the child CompiledQuery
+        // node) and is otherwise absent from include timings(). Strategy is constant: multi-key sorts always
+        // materialize and heap-sort (no index-order streaming variant exists).
+        if (SortingTimeInTicks > 0)
+        {
+            parameters["Strategy"] = CoraxSortingStrategy.InMemorySort.ToString();
+            parameters["Ms"] = (SortingTimeInTicks / (Stopwatch.Frequency / 1000.0)).ToString("F3", CultureInfo.InvariantCulture);
+        }
+
+        // The sort wrapper sits above the bitmap pipeline, so surface its own in/out (see SortingMatch.Inspect):
+        // Incoming is the full candidate set ranked, Output is what the page receives — capped by _take when set.
+        if (TotalResults >= 0)
+        {
+            parameters["Incoming"] = TotalResults.ToString("N0");
+            long output = _take >= 0 ? Math.Min(_take, TotalResults) : TotalResults;
+            parameters["Output"] = output.ToString("N0");
+        }
+
         return new QueryInspectionNode($"{nameof(SortingMultiMatch)}",
             children: new List<QueryInspectionNode> { _inner.Inspect()},
             parameters: parameters);
+    }
+
+    public override void Dispose()
+    {
+        _results.Dispose();
+        _entriesBufferScope.Dispose();
+        _scoresResults.Dispose();
+        _distancesResults.Dispose();
+        _scoreBufferHandler?.Dispose();
+        foreach (var scope in _secondaryResolveScopes ?? [])
+            scope.Dispose();
+        (_inner as IDisposable)?.Dispose();
     }
 
     string DebugView => Inspect().ToString();
