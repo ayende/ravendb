@@ -22,10 +22,9 @@ internal readonly record struct CompiledQuery(
 
     public void Dispose()
     {
+        // SortingWrapper is always either null or the SAME instance as QueryMatch (see BuildSortedQuery), and
+        // ExecutedMatch is the inner match that QueryMatch wraps and disposes in turn — so disposing QueryMatch
+        // releases everything.
         (QueryMatch as IDisposable)?.Dispose();
-        // When the query is sorted, SortingWrapper is the SAME instance as QueryMatch (the top SortingMatch is
-        // stored under both so inspection can find the sort node). Guard against disposing it twice.
-        if (ReferenceEquals(SortingWrapper, QueryMatch) == false)
-            (SortingWrapper as IDisposable)?.Dispose();
     }
 }
