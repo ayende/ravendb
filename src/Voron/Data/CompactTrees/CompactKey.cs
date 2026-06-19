@@ -59,6 +59,14 @@ public sealed unsafe class CompactKey : IDisposable
 
     public void Initialize(LowLevelTransaction tx)
     {
+        // Idempotent: if this key was already initialized (buffers rented), re-arm via Rebind instead of
+        // renting fresh arrays — a second Initialize would otherwise overwrite and leak the existing buffers.
+        if (_storage is not null && _keyMappingCache is not null)
+        {
+            Rebind(tx);
+            return;
+        }
+
         _owner = tx;
 
         Dictionary = Invalid;
