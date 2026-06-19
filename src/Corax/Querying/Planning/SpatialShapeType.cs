@@ -1,4 +1,4 @@
-﻿namespace Corax.Querying.Planning;
+namespace Corax.Querying.Planning;
 
 public enum SpatialShapeType : byte
 {

@@ -40,6 +40,8 @@ public static class CompiledQueryHelper
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
         {
+            if (reader.IsNull || reader.IsNonExisting)
+                continue; // Current holds a stale key for null/non-existing terms — don't match against it
             if (reader.Current.Decoded().StartsWith(prefix))
                 return true;
         }
@@ -52,6 +54,8 @@ public static class CompiledQueryHelper
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
         {
+            if (reader.IsNull || reader.IsNonExisting)
+                continue; // Current holds a stale key for null/non-existing terms — don't match against it
             if (reader.Current.Decoded().EndsWith(suffix))
                 return true;
         }
