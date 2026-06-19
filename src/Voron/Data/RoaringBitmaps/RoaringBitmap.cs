@@ -412,7 +412,7 @@ public unsafe partial struct RoaringBitmap : IDisposable
     /// lazy sort pass in PrepareForReading/AndContainerInPlace would be wasted work.</summary>
     private void CreateArrayContainerFromSorted(long key, ReadOnlySpan<long> sortedValues)
     {
-        int neededBytes = AlignForSimd(sortedValues.Length * sizeof(ushort));
+        int neededBytes = sortedValues.Length * sizeof(ushort);
         _freeList.Allocate(_ctx, neededBytes, out ByteString storage);
 
         CopyDenseBottom16BitsToUshortArray(sortedValues, (ushort*)storage.Ptr);
@@ -485,8 +485,9 @@ public unsafe partial struct RoaringBitmap : IDisposable
                 bool stillSorted = type == ContainerType.Array
                     && (entry.Cardinality == 0 || firstNew > entry.ArrayData[entry.Cardinality - 1]);
 
-                // Ensure enough space
-                int neededBytes = AlignForSimd(newTotal * sizeof(ushort));
+                // Ensure enough space (the free list rounds every block up to a 32-byte-aligned size class,
+                // and entry.Storage.Length is always such a class size, so this comparison is SIMD-exact).
+                int neededBytes = newTotal * sizeof(ushort);
                 if (entry.Storage.Length < neededBytes)
                 {
                     _freeList.Allocate(_ctx, neededBytes, out ByteString newStorage);
@@ -1871,13 +1872,6 @@ public unsafe partial struct RoaringBitmap : IDisposable
     #endregion
 
     #region Container Management
-
-    /// <summary>Round allocation size up to a multiple of 32 bytes so Vector256 ops need no bounds checking.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private static int AlignForSimd(int bytes)
-    {
-        return Math.Max(InitialArrayContainerSizeInBytes, (bytes + SimdAlignment - 1) & ~(SimdAlignment - 1));
-    }
 
     /// <summary>
     /// Append <paramref name="right"/>'s values into <paramref name="left"/> (<paramref name="totalCount"/>

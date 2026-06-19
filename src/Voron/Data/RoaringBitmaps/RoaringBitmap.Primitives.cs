@@ -729,7 +729,7 @@ public unsafe partial struct RoaringBitmap
     private void ConvertRangeToArray(ref ContainerEntry entry, ref ContainerType type, int rangeStart, int rangeCount, ReadOnlySpan<long> sortedValues)
     {
         int totalCount = rangeCount + sortedValues.Length;
-        int neededBytes = AlignForSimd(totalCount * sizeof(ushort));
+        int neededBytes = totalCount * sizeof(ushort);
         _freeList.Allocate(_ctx, neededBytes, out ByteString storage);
         ushort* arr = (ushort*)storage.Ptr;
 
