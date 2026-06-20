@@ -12,8 +12,6 @@ namespace Voron.Data.RoaringBitmaps;
 
 public unsafe partial struct RoaringBitmap
 {
-    #region Bitmap Container
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static bool BitmapContains(ulong* bitmap, ushort val) =>
         (bitmap[val >> 6] & (1UL << (val & 63))) != 0;
@@ -36,7 +34,7 @@ public unsafe partial struct RoaringBitmap
                 acc = AdvSimd.Add(acc, AdvSimd.Add(lower, upper));
             }
 
-            // 65,536 bits max fits in 16 bits, so the ushort accumulator can't overflow.
+            // 65,536 bits max fit in 16 bits, so the ushort accumulator can't overflow.
             return Vector128.Sum(acc);
         }
 
@@ -95,10 +93,6 @@ public unsafe partial struct RoaringBitmap
 
     internal static void ClearArrayInBitmap(ushort* arr, int arrLen, ulong* bitmap)
         => ApplyArrayToBitmap<ArrayAndNotOp>(arr, arrLen, bitmap);
-
-    #endregion
-
-    #region SIMD Bitmap Operations
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void BitmapOrNoPop(ulong* a, ulong* b, ulong* dst) =>
@@ -165,15 +159,13 @@ public unsafe partial struct RoaringBitmap
         public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => Vector512.AndNot(a, b);
     }
 
-    /// <summary>Narrow long values to ushort (low 16 bits), using SIMD when available.</summary>
     internal static void CopyDenseBottom16BitsToUshortArray(ReadOnlySpan<long> source, ushort* destination)
     {
         int j = 0;
         int count = source.Length;
         ref long src = ref MemoryMarshal.GetReference(source);
 
-        // Chained Narrow (ulong→uint→ushort): truncation == masking 0xFFFF for non-negative values,
-        // so no explicit AND with ContainerValueMask.
+        // Chained Narrow (ulong→uint→ushort): truncation == masking 0xFFFF for non-negative values, so no explicit AND with ContainerValueMask.
         if (Vector256.IsHardwareAccelerated && count >= 16)
         {
             for (; j <= count - 16; j += 16)
@@ -297,10 +289,6 @@ public unsafe partial struct RoaringBitmap
                 return new ContainerEntry { Cardinality = entry.Cardinality, Data = storage.Ptr, Storage = storage };
         }
     }
-
-    #endregion
-
-    #region Array Container
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     internal static bool ArrayContainerContains(ushort* data, int cardinality, ushort value)
@@ -620,25 +608,17 @@ public unsafe partial struct RoaringBitmap
 
         new Span<ushort>(arr, count).Sort();
 
-        if (count > 1)
+        int write = 1;
+        for (int read = 1; read < count; read++)
         {
-            int write = 1;
-            for (int read = 1; read < count; read++)
-            {
-                if (arr[read] != arr[write - 1])
-                    arr[write++] = arr[read];
-            }
-            count = write;
+            if (arr[read] != arr[write - 1])
+                arr[write++] = arr[read];
         }
+        count = write;
 
         entry.Cardinality = count;
         type = ContainerType.Array;
     }
-
-    #endregion
-    
-    
-    #region Range Container
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static int RangeEndExclusive(ref ContainerEntry entry) => entry.RangeStart + entry.Cardinality;
@@ -713,13 +693,13 @@ public unsafe partial struct RoaringBitmap
     {
         Debug.Assert(type == ContainerType.Range);
 
-        _freeList.Allocate(_ctx, BitmapContainerSizeInBytes, out ByteString storage);
+        _buffersFreeListHeads.Allocate(ctx, BitmapContainerSizeInBytes, out ByteString storage);
         ulong* bitmap = (ulong*)storage.Ptr;
         ClearBitmap(bitmap);
         FillBitmapFromRange(bitmap, entry.RangeStart, entry.Cardinality);
 
         if (entry.Storage.HasValue)
-            _ctx.Release(ref entry.Storage);
+            ctx.Release(ref entry.Storage);
 
         entry.Storage = storage;
         entry.Data = storage.Ptr;
@@ -730,7 +710,7 @@ public unsafe partial struct RoaringBitmap
     {
         int totalCount = rangeCount + sortedValues.Length;
         int neededBytes = totalCount * sizeof(ushort);
-        _freeList.Allocate(_ctx, neededBytes, out ByteString storage);
+        _buffersFreeListHeads.Allocate(ctx, neededBytes, out ByteString storage);
         ushort* arr = (ushort*)storage.Ptr;
 
         FillSequentialUInt16(arr, rangeStart, rangeCount);
@@ -763,24 +743,21 @@ public unsafe partial struct RoaringBitmap
         int totalCount = leftCount + rightCount;
         if (totalCount > ArrayContainerMaxCardinality)
             return false;
+        Span<long> buffer = stackalloc long[ArrayContainerMaxCardinality];
 
         if (left.RangeStart < right.RangeStart)
         {
-            long* rightValues = stackalloc long[rightCount];
-            long rightCurrent = right.RangeStart;
+           long rightCurrent = right.RangeStart;
             for (int i = 0; i < rightCount; i++, rightCurrent++)
-                rightValues[i] = rightCurrent;
+                buffer[i] = rightCurrent;
 
-            return MaybeConvertRangeToArray(ref left, ref leftType, left.RangeStart, leftCount, new ReadOnlySpan<long>(rightValues, rightCount));
+            return MaybeConvertRangeToArray(ref left, ref leftType, left.RangeStart, leftCount, buffer[..rightCount]);
         }
 
-        long* leftValues = stackalloc long[leftCount];
         long leftCurrent = left.RangeStart;
         for (int i = 0; i < leftCount; i++, leftCurrent++)
-            leftValues[i] = leftCurrent;
+            buffer[i] = leftCurrent;
 
-        return MaybeConvertRangeToArray(ref left, ref leftType, right.RangeStart, rightCount, new ReadOnlySpan<long>(leftValues, leftCount));
+        return MaybeConvertRangeToArray(ref left, ref leftType, right.RangeStart, rightCount, buffer[..leftCount]);
     }
-
-    #endregion
 }
