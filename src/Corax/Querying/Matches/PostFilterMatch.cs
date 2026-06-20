@@ -66,26 +66,13 @@ public sealed class PostFilterMatch : IQueryMatch
         return read == 0 ? 0 : ApplyPostFilters(matches, read);
     }
 
-    public int AndWith(Span<long> buffer, int matches)
-    {
-        long t0 = _wantTimings ? Stopwatch.GetTimestamp() : 0;
-        int count = _inner.AndWith(buffer, matches);
-        if (_wantTimings)
-        {
-            _innerTicks += Stopwatch.GetTimestamp() - t0;
-            _innerEmitted += count;
-        }
-
-        return count == 0 ? 0 : ApplyPostFilters(buffer, count);
-    }
-
     private int ApplyPostFilters(Span<long> buffer, int count)
     {
         for (int i = 0; i < _postFilters.Length; i++)
         {
             int input = count;
             long ti = _wantTimings ? Stopwatch.GetTimestamp() : 0;
-            count = _postFilters[i].AndWith(buffer, count);
+            count = FilterSpan(_postFilters[i], buffer, count);
             if (_wantTimings)
             {
                 _filterTicks[i] += Stopwatch.GetTimestamp() - ti;
@@ -98,6 +85,27 @@ public sealed class PostFilterMatch : IQueryMatch
         }
 
         return count;
+    }
+
+    /// <summary>
+    /// Filter <paramref name="buffer"/> (the first <paramref name="count"/> sorted entries) down to those the
+    /// post-filter accepts. Post-filters come only from the spatial resolution path, so the concrete type is one
+    /// of three: a per-entry recheck (<see cref="IPostFilterMatch"/> — SpatialMatch), a negated-spatial bitmap
+    /// (<see cref="IBitmapQueryMatch"/> — BitmapMatch), or an empty sentinel (TermMatch.CreateEmpty, returned by
+    /// SpatialQuery when the field/terms are absent on this shard) which matches nothing.
+    /// </summary>
+    private static int FilterSpan(IQueryMatch filter, Span<long> buffer, int count)
+    {
+        switch (filter)
+        {
+            case IPostFilterMatch postFilter:
+                return postFilter.AndWith(buffer, count);
+            case IBitmapQueryMatch bitmapMatch:
+                return bitmapMatch.BitmapState.AndWith(buffer, count);
+            default:
+                Debug.Assert(filter.Count == 0, $"Unexpected post-filter match type {filter.GetType().Name}; only spatial post-filters (per-entry, bitmap, or empty) are expected.");
+                return 0;
+        }
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)

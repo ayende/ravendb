@@ -78,12 +78,6 @@ public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransact
         return _iterator.Fill(ref _bitmap, matches);
     }
 
-    public int AndWith(Span<long> buffer, int matches)
-    {
-        Initialize();
-        return _bitmap.AndWith(buffer, matches);
-    }
-
     public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
     {
         if (boostFactor == 0f)
