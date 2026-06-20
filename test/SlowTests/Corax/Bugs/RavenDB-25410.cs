@@ -138,9 +138,6 @@ public class RavenDB_25410(ITestOutputHelper output) : StorageTest(output)
             return toReturn;
         }
 
-        public int AndWith(Span<long> buffer, int matches) => throw new NotImplementedException();
-
-
         public void Score(Span<long> matches, Span<float> scores, float boostFactor)
         {
             Assert.True(_fillExecuted);
