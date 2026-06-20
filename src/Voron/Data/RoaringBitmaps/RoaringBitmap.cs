@@ -1739,13 +1739,15 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
 
 
     /// <summary>
-    /// Convert an array container (sorted or unsorted) to bitmap. For unsorted arrays with possible duplicates, cardinality is recounted via popcount.
+    /// Convert an array container (sorted or unsorted) to bitmap. The resulting bitmap is marked dirty
+    /// (Cardinality = LazyCardinality): every caller OR's more bits in right after and re-marks it dirty
+    /// anyway, so recomputing the popcount here would be wasted. ResolveCardinality / PrepareForReading /
+    /// RepairAfterLazy recompute it on demand.
     /// </summary>
     private void ConvertArrayToBitmap(ref ContainerEntry entry, ref ContainerType type)
     {
         Debug.Assert(type is ContainerType.Array or ContainerType.ArrayUnsorted);
 
-        bool unsorted = type == ContainerType.ArrayUnsorted;
         ushort* arr = entry.ArrayData;
         int count = entry.Cardinality;
 
@@ -1753,14 +1755,10 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
         ClearBitmap((ulong*)newStorage.Ptr);
         SetArrayInBitmap(arr, count, (ulong*)newStorage.Ptr);
 
-        if (unsorted)
-        {
-            var updatedCount = BitmapContainerCardinality(newStorage.Ptr);
-            entry.Cardinality = updatedCount;
-        }
         if (entry.Storage.HasValue)
             _buffersFreeListHeads.Return(entry.Storage);
 
+        entry.Cardinality = LazyCardinality;
         entry.Storage = newStorage;
         entry.Data = newStorage.Ptr;
         type = ContainerType.Bitmap;
