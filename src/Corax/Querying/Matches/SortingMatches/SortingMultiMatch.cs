@@ -265,11 +265,6 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
 
     public override bool IsBoosting => _inner.IsBoosting || _orderMetadata[0].FieldType == MatchCompareFieldType.Score;
 
-    public override int AndWith(Span<long> buffer, int matches)
-    {
-        throw new NotSupportedException($"{nameof(SortingMultiMatch<TInner>)} does not support the operation of {nameof(AndWith)}.");
-    }
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override int Fill(Span<long> matches)
     {

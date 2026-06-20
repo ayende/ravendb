@@ -19,7 +19,7 @@ namespace Corax.Querying.Matches;
 public sealed class PostFilterMatch : IQueryMatch
 {
     private readonly IQueryMatch _inner;
-    private readonly IQueryMatch[] _postFilters;
+    private readonly IPostFilterMatch[] _postFilters;
 
     // True when introspection timing capture was requested. Gates all counter writes.
     private readonly bool _wantTimings;
@@ -34,7 +34,7 @@ public sealed class PostFilterMatch : IQueryMatch
     private readonly long[] _filterSurvivors;   // survivors after that filter ran
     private readonly long[] _filterRejected;    // rejections (input - survivors)
 
-    public PostFilterMatch(IQueryMatch inner, IQueryMatch[] postFilters, bool wantTimings)
+    public PostFilterMatch(IQueryMatch inner, IPostFilterMatch[] postFilters, bool wantTimings)
     {
         _inner = inner;
         _postFilters = postFilters;
@@ -64,19 +64,6 @@ public sealed class PostFilterMatch : IQueryMatch
         }
 
         return read == 0 ? 0 : ApplyPostFilters(matches, read);
-    }
-
-    public int AndWith(Span<long> buffer, int matches)
-    {
-        long t0 = _wantTimings ? Stopwatch.GetTimestamp() : 0;
-        int count = _inner.AndWith(buffer, matches);
-        if (_wantTimings)
-        {
-            _innerTicks += Stopwatch.GetTimestamp() - t0;
-            _innerEmitted += count;
-        }
-
-        return count == 0 ? 0 : ApplyPostFilters(buffer, count);
     }
 
     private int ApplyPostFilters(Span<long> buffer, int count)

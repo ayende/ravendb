@@ -34,9 +34,6 @@ namespace Corax.Querying.Matches
         public bool IsBoosting => true;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int AndWith(Span<long> buffer, int matches) => _inner.AndWith(buffer, matches);
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public int Fill(Span<long> matches) => _inner.Fill(matches);
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

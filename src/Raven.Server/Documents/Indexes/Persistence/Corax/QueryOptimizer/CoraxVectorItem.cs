@@ -102,8 +102,6 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
     public bool IsBoosting { get; }
     public int Fill(Span<long> matches) => throw new NotSupportedException(IQueryMatchUsageException);
 
-    public int AndWith(Span<long> buffer, int matches) => throw new NotSupportedException(IQueryMatchUsageException);
-
     public void Score(Span<long> matches, Span<float> scores, float boostFactor) => throw new NotSupportedException(IQueryMatchUsageException);
 
     public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => throw new NotSupportedException(IQueryMatchUsageException);

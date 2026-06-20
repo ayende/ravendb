@@ -160,12 +160,6 @@ public class CompiledQueryMatch(
         return _iterator.Fill(ref _bitmapData, matches);
     }
 
-    public int AndWith(Span<long> buffer, int matches)
-    {
-        if (!_executed) Execute();
-        return _bitmapData.AndWith(buffer, matches);
-    }
-
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         foreach (var it in ResolvedMatches ?? [])

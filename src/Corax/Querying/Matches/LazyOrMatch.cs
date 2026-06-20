@@ -70,12 +70,6 @@ public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, I
         return _iterator.Fill(ref _bitmap, matches);
     }
 
-    public int AndWith(Span<long> buffer, int matches)
-    {
-        Initialize();
-        return _bitmap.AndWith(buffer, matches);
-    }
-
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         if (boostFactor == 0f)

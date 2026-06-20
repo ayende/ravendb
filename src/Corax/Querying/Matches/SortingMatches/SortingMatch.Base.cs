@@ -123,7 +123,6 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     public abstract long Count { get; }
     public abstract QueryCountConfidence Confidence { get; }
     public abstract int Fill(Span<long> buffer);
-    public abstract int AndWith(Span<long> buffer, int matches);
     public abstract void Score(Span<long> matches, Span<float> scores, float boostFactor);
     // A SortingMatch is never nested inside another match's score chain (it is the top-level sort), so its own
     // Score is a no-op; ScoreSorted just mirrors it.

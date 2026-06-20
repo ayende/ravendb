@@ -678,7 +678,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
             // Intersect this batch with the WHERE bitmap, then dedup against the emitted
             // bitmap in a single pass — filters + adds new entries to emittedBitmap at once.
-            read = bitmapMatch.AndWith(sortedIdBuffer, read);
+            read = bitmapMatch.BitmapState.AndWith(sortedIdBuffer, read);
             read = emittedBitmap.DedupAddNew(sortedIdBuffer, read);
 
             int toAdd = Math.Min(read, maxResults - match._results.Count);
@@ -887,11 +887,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     public override QueryCountConfidence Confidence => throw new NotSupportedException();
 
     public override bool IsBoosting => _inner.IsBoosting || _orderMetadata.FieldType == MatchCompareFieldType.Score;
-
-    public override int AndWith(Span<long> buffer, int matches)
-    {
-        throw new NotSupportedException($"{nameof(SortingMatch<TInner>)} does not support the operation of {nameof(AndWith)}.");
-    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public override int Fill(Span<long> matches)

@@ -391,15 +391,17 @@ internal static partial class QueryPlanBuilder
             // These spatial matches were lifted to top-level post-filters by the planner (AND context). Record the
             // role on each one so inspection reports it as a post-filter rather than re-deriving it from the type
             // (a spatial leaf inside an OR is NOT a post-filter — see IPostFilterMatch).
-            foreach (var spatialMatch in spatialMatches)
+            var postFilters = new IPostFilterMatch[spatialMatches.Length];
+            for (int i = 0; i < spatialMatches.Length; i++)
             {
-                if (spatialMatch is IPostFilterMatch postFilter)
-                    postFilter.IsPostFilter = true;
+                var postFilter = (IPostFilterMatch)spatialMatches[i];
+                postFilter.IsPostFilter = true;
+                postFilters[i] = postFilter;
             }
 
             result = result is null
-                ? new PostFilterMatch(spatialMatches[0], spatialMatches.Length is 1 ? [] : spatialMatches[1..], wantTimings)
-                : new PostFilterMatch(result, spatialMatches, wantTimings);
+                ? new PostFilterMatch(postFilters[0], postFilters.Length is 1 ? [] : postFilters[1..], wantTimings)
+                : new PostFilterMatch(result, postFilters, wantTimings);
         }
 
         if (exec.VectorSelects is { Length: > 0 })

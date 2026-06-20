@@ -63,8 +63,6 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
         return _iterator.Fill(ref _bitmapState, matches);
     }
 
-    public int AndWith(Span<long> buffer, int matches) => _bitmapState.AndWith(buffer, matches);
-
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         // For bitmap-backed matches (e.g. search() results built by OR-ing term posting
