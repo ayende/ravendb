@@ -33,12 +33,6 @@ public interface IQueryMatch
     //             0 return means no more matches. 
     int Fill(Span<long> matches);
 
-    // Guarantees: AndWith accepts sorted and returns sorted.
-    //             May optimize for continued sorted.
-    //             0 return means no more matches from the provided span, and may need to go to the next batch
-    // Requirements: Cannot be called with .Fill() from same instance.
-    int AndWith(Span<long> buffer, int matches);
-
     // Guarantees: The output of this for unscored sequences should be a no-op.
     // Requirements: The upmost call
     void Score(Span<long> matches, Span<float> scores, float boostFactor);
@@ -86,7 +80,12 @@ public enum DuplicatesOccurrence
 /// inside an OR branch. <c>QueryPlanBuilder.ApplyPostFilters</c> sets it on the matches it wraps, so inspection
 /// reads the recorded role rather than re-deriving from the type.
 /// </summary>
-public interface IPostFilterMatch
+public interface IPostFilterMatch : IQueryMatch
 {
     bool IsPostFilter { get; set; }
+
+    // Filters an already-materialized batch in place: keeps only the entries in buffer[0..matches) that also
+    // satisfy this post-filter predicate, returning the survivor count. Accepts sorted input, returns sorted.
+    // Driven by PostFilterMatch.ApplyPostFilters after the inner match's Fill builds the candidate batch.
+    int AndWith(Span<long> buffer, int matches);
 }

@@ -79,8 +79,6 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
 
     public abstract int Fill(Span<long> matches);
 
-    public int AndWith(Span<long> buffer, int matches) => throw new NotSupportedException("DirectScanMatch produces final sorted results");
-
     public void Score(Span<long> matches, Span<float> scores, float boostFactor) { }
 
     public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) { }
@@ -240,7 +238,7 @@ public sealed class DirectScanFilteredMatch(
 
                 var sorted = sortedIds[..read];
                 batch[..read].CopyTo(sorted);
-                Voron.Data.RoaringBitmaps.RoaringBitmap.InitializeIndices(indices, read);
+                RoaringBitmap.InitializeIndices(indices, read);
                 sorted.Sort(indices[..read]);
 
                 passed[..read].Clear();
