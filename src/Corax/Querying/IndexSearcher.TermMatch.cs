@@ -171,7 +171,7 @@ public partial class IndexSearcher
         if ((containerId & (long)TermIdMask.PostingList) != 0)
         {
             var postingList = GetPostingList(containerId);
-            matches = TermMatch.YieldSet(this, Allocator, postingList, termRatioToWholeCollection, field.HasBoost, IsAccelerated);
+            matches = TermMatch.YieldSet(this, Allocator, postingList, termRatioToWholeCollection, field.HasBoost);
         }
         else if ((containerId & (long)TermIdMask.SmallPostingList) != 0)
         {

@@ -56,12 +56,6 @@ public struct PhraseMatch<TInner> : IQueryMatch
         return ScanDocumentsTermsEntries(matches.Slice(0, results));
     }
 
-    public int AndWith(Span<long> buffer, int matches)
-    {
-        var results = _inner.AndWith(buffer, matches);
-        return ScanDocumentsTermsEntries(buffer.Slice(0, results));
-    }
-    
     private int ScanDocumentsTermsEntries(Span<long> matches)
     {
         int currentId = 0;

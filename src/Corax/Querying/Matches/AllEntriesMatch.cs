@@ -39,13 +39,6 @@ namespace Corax.Querying.Matches
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public int AndWith(Span<long> buffer, int matches)
-        {
-            // this match *everything*, so ands with everything 
-            return matches;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public void Score(Span<long> matches, Span<float> scores, float boostFactor)
         {
             //there is no sense to add anything here because this would add same value to all items in collection.
