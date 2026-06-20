@@ -10,16 +10,16 @@ using Sparrow.Server.Utils.VxSort;
 namespace Voron.Data.RoaringBitmaps;
 
 /// <summary>
-/// Forward iterator for RoaringBitmap supporting Fill(Span&lt;long&gt;) streaming. On construction it builds
-/// a sorted array of packed (key in upper 32 bits, slot in lower 32 bits) ulongs for deterministic traversal.
+/// Forward iterator for RoaringBitmap supporting Fill(Span&lt;long&gt;) streaming. On construction, builds a sorted array of packed
+/// (key in upper 32 bits, slot in lower 32 bits) ulongs for deterministic traversal.
 /// </summary>
 public unsafe struct RoaringBitmapIterator : IDisposable
 {
-    private ByteStringContext _ctx;
+    private readonly ByteStringContext _ctx;
     private ByteString _packedEntries; // array of packed (key << 32) | slot
-    private int _entryCount;
+    private readonly int _entryCount;
     private int _containerIndex; // index into _packedEntries
-    /// <summary>Array: index into sorted array. Range: offset from RangeStart. Bitmap: current ulong index (0..1023).</summary>
+    /// <summary>Array: index into a sorted array. Range: offset from RangeStart. Bitmap: current ulong index (0..1023).</summary>
     private int _positionInContainer;
     private ulong _bitmapCurrentWord; // Bitmap only: remaining bits in current word
 
@@ -78,17 +78,10 @@ public unsafe struct RoaringBitmapIterator : IDisposable
             ref ContainerEntry entry = ref data._entries[slot];
             ContainerType type = data._types.RawItems[slot];
             long baseValue = (long)key << RoaringBitmap.ContainerKeyShift;
-
-            // callers MUST call RoaringBitmap.PrepareForReading() before the first
-            // Fill() call, which converts every ArrayUnsorted container to sorted. 
-            Debug.Assert(type != ContainerType.ArrayUnsorted,
-                "RoaringBitmapIterator: ArrayUnsorted container at iteration time. " +
-                "PrepareForReading() must be called before Fill().");
-
+            
             switch (type)
             {
                 case ContainerType.Array:
-                case ContainerType.ArrayUnsorted: // accepted defensively in Release; PrepareForReading should have removed these
                     written = FillFromArray(ref entry, baseValue, buffer, written);
                     break;
 
@@ -99,6 +92,8 @@ public unsafe struct RoaringBitmapIterator : IDisposable
                 case ContainerType.Range:
                     written = FillFromRange(ref entry, baseValue, buffer, written);
                     break;
+                case ContainerType.ArrayUnsorted:
+                    throw new InvalidOperationException("RoaringBitmapIterator: ArrayUnsorted container at iteration time");
             }
 
             bool containerCompleted = type == ContainerType.Bitmap
@@ -119,7 +114,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private int FillFromArray(ref ContainerEntry entry, long baseValue, Span<long> buffer, int written)
     {
-        ushort* arr = (ushort*)entry.ArrayData;
+        ushort* arr = entry.ArrayData;
         int count = entry.Cardinality;
         int remaining = count - _positionInContainer;
         int space = buffer.Length - written;
@@ -139,8 +134,7 @@ public unsafe struct RoaringBitmapIterator : IDisposable
                 Vector256<long> vBase = Vector256.Create(baseValue);
                 for (; i + 4 <= toCopy; i += 4)
                 {
-                    Vector256<long> vals = Vector256.Create(
-                        (long)src[i], (long)src[i + 1], (long)src[i + 2], (long)src[i + 3]);
+                    Vector256<long> vals = Vector256.Create(src[i], src[i + 1], src[i + 2], src[i + 3]);
                     (vals | vBase).Store(dst + i);
                 }
             }

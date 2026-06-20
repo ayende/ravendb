@@ -1737,13 +1737,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
         }
     }
 
-
-    /// <summary>
-    /// Convert an array container (sorted or unsorted) to bitmap. The resulting bitmap is marked dirty
-    /// (Cardinality = LazyCardinality): every caller OR's more bits in right after and re-marks it dirty
-    /// anyway, so recomputing the popcount here would be wasted. ResolveCardinality / PrepareForReading /
-    /// RepairAfterLazy recompute it on demand.
-    /// </summary>
+    /// <summary>Convert an array container (sorted or unsorted) to bitmap. The resulting bitmap is marked dirty  (Cardinality = LazyCardinality)</summary>
     private void ConvertArrayToBitmap(ref ContainerEntry entry, ref ContainerType type)
     {
         Debug.Assert(type is ContainerType.Array or ContainerType.ArrayUnsorted);

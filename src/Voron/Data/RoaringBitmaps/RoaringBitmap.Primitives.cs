@@ -36,7 +36,7 @@ public unsafe partial struct RoaringBitmap
                 acc = AdvSimd.Add(acc, AdvSimd.Add(lower, upper));
             }
 
-            // 65,536 bits max fits in 16 bits, so the ushort accumulator can't overflow.
+            // 65,536 bits max fit in 16 bits, so the ushort accumulator can't overflow.
             return Vector128.Sum(acc);
         }
 
@@ -161,15 +161,13 @@ public unsafe partial struct RoaringBitmap
         public static Vector512<ulong> Apply(Vector512<ulong> a, Vector512<ulong> b) => Vector512.AndNot(a, b);
     }
 
-    /// <summary>Narrow long values to ushort (low 16 bits), using SIMD when available.</summary>
     internal static void CopyDenseBottom16BitsToUshortArray(ReadOnlySpan<long> source, ushort* destination)
     {
         int j = 0;
         int count = source.Length;
         ref long src = ref MemoryMarshal.GetReference(source);
 
-        // Chained Narrow (ulong→uint→ushort): truncation == masking 0xFFFF for non-negative values,
-        // so no explicit AND with ContainerValueMask.
+        // Chained Narrow (ulong→uint→ushort): truncation == masking 0xFFFF for non-negative values, so no explicit AND with ContainerValueMask.
         if (Vector256.IsHardwareAccelerated && count >= 16)
         {
             for (; j <= count - 16; j += 16)
