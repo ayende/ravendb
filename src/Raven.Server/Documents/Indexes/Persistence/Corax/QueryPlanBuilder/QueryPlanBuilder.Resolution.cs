@@ -390,7 +390,9 @@ internal static partial class QueryPlanBuilder
         {
             // These spatial matches were lifted to top-level post-filters by the planner (AND context). Record the
             // role on each one so inspection reports it as a post-filter rather than re-deriving it from the type
-            // (a spatial leaf inside an OR is NOT a post-filter — see IPostFilterMatch).
+            // (a spatial leaf inside an OR is NOT a post-filter — see IPostFilterMatch). The array can also hold a
+            // negated-spatial BitmapMatch or an empty TermMatch (absent field/terms on this shard), neither of which
+            // is IPostFilterMatch; PostFilterMatch dispatches on the concrete capability when filtering.
             foreach (var spatialMatch in spatialMatches)
             {
                 if (spatialMatch is IPostFilterMatch postFilter)
