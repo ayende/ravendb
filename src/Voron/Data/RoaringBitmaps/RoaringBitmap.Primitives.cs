@@ -603,24 +603,18 @@ public unsafe partial struct RoaringBitmap
     /// </summary>
     private static void SortAndDedupSmallArray(ref ContainerEntry entry, out ContainerType type)
     {
-        // NOTE: array containers hold ushort values; the VxSort-backed Sorting.SortAndRemoveDuplicates only
-        // supports 32/64-bit element types (it throws NotSupportedException for UInt16), so sort the small
-        // ushort span with the managed introsort and dedup in place.
         var arr = entry.ArrayData;
         int count = entry.Cardinality;
 
         new Span<ushort>(arr, count).Sort();
 
-        if (count > 1)
+        int write = 1;
+        for (int read = 1; read < count; read++)
         {
-            int write = 1;
-            for (int read = 1; read < count; read++)
-            {
-                if (arr[read] != arr[write - 1])
-                    arr[write++] = arr[read];
-            }
-            count = write;
+            if (arr[read] != arr[write - 1])
+                arr[write++] = arr[read];
         }
+        count = write;
 
         entry.Cardinality = count;
         type = ContainerType.Array;
