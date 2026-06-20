@@ -7,8 +7,6 @@ using System.Runtime.Intrinsics;
 using System.Runtime.Intrinsics.Arm;
 using Sparrow;
 using Sparrow.Server;
-using Sparrow.Server.Utils;
-using Sparrow.Server.Utils.VxSort;
 
 namespace Voron.Data.RoaringBitmaps;
 
@@ -605,7 +603,26 @@ public unsafe partial struct RoaringBitmap
     /// </summary>
     private static void SortAndDedupSmallArray(ref ContainerEntry entry, out ContainerType type)
     {
-        entry.Cardinality = Sorting.SortAndRemoveDuplicates(entry.ArrayData, entry.Cardinality);
+        // NOTE: array containers hold ushort values; the VxSort-backed Sorting.SortAndRemoveDuplicates only
+        // supports 32/64-bit element types (it throws NotSupportedException for UInt16), so sort the small
+        // ushort span with the managed introsort and dedup in place.
+        var arr = entry.ArrayData;
+        int count = entry.Cardinality;
+
+        new Span<ushort>(arr, count).Sort();
+
+        if (count > 1)
+        {
+            int write = 1;
+            for (int read = 1; read < count; read++)
+            {
+                if (arr[read] != arr[write - 1])
+                    arr[write++] = arr[read];
+            }
+            count = write;
+        }
+
+        entry.Cardinality = count;
         type = ContainerType.Array;
     }
 
