@@ -9,7 +9,6 @@ using System.Runtime.Intrinsics.X86;
 using Sparrow;
 using Sparrow.Server;
 using Sparrow.Server.Utils;
-using Sparrow.Server.Utils.VxSort;
 using Voron.Util;
 
 namespace Voron.Data.RoaringBitmaps;
@@ -911,21 +910,24 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
     }
 
     /// <summary>Dedup + add in a single pass: for each entry in <paramref name="buffer"/>, if it is NOT already in the bitmap, keep it in the buffer and add it to the bitmap.
-    /// Returns the count of new (non-duplicate) entries. The kept entries are restored to their original (input) order;
-    /// allocates a temporary index scratch. </summary>
+    /// Returns the count of new (non-duplicate) entries. The kept entries are restored to their original (input) order.</summary>
+    [SkipLocalsInit]
     public int DedupAddNew(Span<long> buffer, int count)
     {
         if (count == 0) return 0;
 
+        if(count <= 4096)
+        {
+            Span<int> temp = stackalloc int[4096];
+            return DedupAddNew(buffer, count, temp);
+        }
+        
         using var _ = ctx.Allocate(PadToVector256Width(count), out Span<int> indices);
-        return DedupAddNew(buffer, count, indices, restoreOrder: true);
+        return DedupAddNew(buffer, count, indices);
     }
+    
 
-    /// <summary>Dedup + add over a caller-supplied index scratch (avoids per-call allocation when invoked in a loop).
-    /// <paramref name="indices"/> must have length &gt;= <see cref="PadToVector256Width"/>(<paramref name="count"/>).
-    /// When <paramref name="restoreOrder"/> is true the kept entries are restored to their original input order; when
-    /// false they are left ascending (sorted) — cheaper (skips the final sort), for callers that want sorted output.</summary>
-    public int DedupAddNew(Span<long> buffer, int count, Span<int> indices, bool restoreOrder)
+    private int DedupAddNew(Span<long> buffer, int count, Span<int> indices)
     {
         if (count == 0) return 0;
 
@@ -940,8 +942,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
         // Add the new entries to the bitmap while they're still sorted.
         AddRange(buffer[..kept]);
 
-        if (restoreOrder)
-            indices[..kept].Sort(buffer[..kept]); // restore original order
+        indices[..kept].Sort(buffer[..kept]); // restore original order
         return kept;
     }
 

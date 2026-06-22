@@ -127,8 +127,6 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     public int Fill(Span<long> matches)
     {
         Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-        // Index scratch for DedupAddNew when batching runs of Single-term entries (capped at EntryScanBatchSize).
-        Span<int> dedupScratch = stackalloc int[RoaringBitmap.PadToVector256Width(QueryPrimitives.EntryScanBatchSize)];
         if (_nullFirst && (_nonExistingExhausted && _nullExhausted) is false)
         {
             // If nulls-first, drain non-existing and null iterators at the start of every Fill call.
@@ -212,7 +210,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                         matches[count++] = (long)EntryIdEncodings.GetContainerId(runPlId);
                         _plIdsIdx++;
                     }
-                    count = runStart + _emittedBitmap.DedupAddNew(matches.Slice(runStart, count - runStart), count - runStart, dedupScratch, restoreOrder: true);
+                    count = runStart + _emittedBitmap.DedupAddNew(matches.Slice(runStart, count - runStart), count - runStart);
                     continue;
                 }
 

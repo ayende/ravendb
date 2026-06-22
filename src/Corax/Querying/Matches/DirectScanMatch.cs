@@ -133,8 +133,6 @@ public sealed class DirectScanSimpleMatch(IndexSearcher searcher, IQueryMatch dr
         int count = 0;
         int remaining = Take > 0 ? (int)Math.Min(matches.Length, Take - TotalMatched) : matches.Length;
         Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-        // Reused once per Fill: DedupAddNew needs an index scratch padded to the Vector256 width.
-        Span<int> dedupScratch = stackalloc int[RoaringBitmap.PadToVector256Width(QueryPrimitives.EntryScanBatchSize)];
 
         while (count < remaining)
         {
@@ -155,11 +153,8 @@ public sealed class DirectScanSimpleMatch(IndexSearcher searcher, IQueryMatch dr
             }
             TreeEntriesScanned += read;
 
-            // Dedup the whole batch against EmittedBitmap in one bulk pass (grouped merge + AddRange, which keeps
-            // EmittedBitmap's containers sorted instead of degenerating to a linearly-scanned unsorted array).
-            // restoreOrder: true preserves the driving match's emission order (which may be sort-field order, not
-            // entry-id order), matching the previous per-entry pass-through.
-            int kept = EmittedBitmap.DedupAddNew(batch, read, dedupScratch, restoreOrder: true);
+            // Dedup the whole batch against EmittedBitmap in one bulk pass
+            int kept = EmittedBitmap.DedupAddNew(batch, read);
             batch[..kept].CopyTo(matches[count..]);
             count += kept;
         }

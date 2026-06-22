@@ -228,20 +228,6 @@ namespace Voron.Benchmark.Corax
 
         private long[] _ids;
 
-        [Benchmark]
-        public void StartsWithRuntimeQuery()
-        {
-            using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
-            using var indexSearcher = new IndexSearcher(Env, CreateFieldsMapping(bsc));
-
-            var typeTerm = indexSearcher.TermQuery("Type", "Dog");
-            var ageTerm = indexSearcher.StartWithQuery("Age", "1");
-
-            Span<long> ids = _ids;
-            int read;
-            while ((read = typeTerm.Fill(ids)) > 0)
-                ageTerm.AndWith(ids, read);
-        }
 
         [Benchmark]
         public void InParserQuery()

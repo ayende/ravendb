@@ -194,8 +194,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     public int Fill(Span<long> matches)
     {
         Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
-        // Index scratch for DedupAddNew when batching runs of Single-term entries (capped at EntryScanBatchSize).
-        Span<int> dedupScratch = stackalloc int[RoaringBitmap.PadToVector256Width(QueryPrimitives.EntryScanBatchSize)];
         int count = 0;
 
         // Nulls-first: load null-primary group and sort by secondary before regular terms.
@@ -267,7 +265,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                         matches[count++] = (long)EntryIdEncodings.GetContainerId(runPlId);
                         _plIdsIdx++;
                     }
-                    count = runStart + _emittedBitmap.DedupAddNew(matches.Slice(runStart, count - runStart), count - runStart, dedupScratch, restoreOrder: true);
+                    count = runStart + _emittedBitmap.DedupAddNew(matches.Slice(runStart, count - runStart), count - runStart);
                     continue;
                 }
 
