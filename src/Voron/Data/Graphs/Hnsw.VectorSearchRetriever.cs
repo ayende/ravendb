@@ -96,7 +96,7 @@ public partial class Hnsw
                         continue;
                     }
 
-                    total = FilterDuplicates(matches, distances, index, total);
+                    total = FilterDuplicates(matches, index, total);
 
                     distances.Slice(index, total).Fill(distance);
                     index += total;
@@ -107,7 +107,7 @@ public partial class Hnsw
                 {
                     var amountRead = Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
                     _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, amountRead);
-                    var dedupedAmount = FilterDuplicates(matches, distances, index, amountRead);
+                    var dedupedAmount = FilterDuplicates(matches, index, amountRead);
                     distances.Slice(index, dedupedAmount).Fill(distance);
                     index += dedupedAmount;
                     _currentMatchesIndex += amountRead;
@@ -182,21 +182,14 @@ public partial class Hnsw
             return index;
         }
 
-        private int FilterDuplicates(Span<long> matches, Span<float> distances, int index, int total)
+        // Dedup a freshly-read batch against everything emitted so far, in bulk. DedupAddNew sorts the batch,
+        // drops entries already in _alreadySeen, AddRange's the survivors (keeping _alreadySeen's containers
+        // compact rather than degenerating into a linearly-scanned unsorted array), and restores original order.
+        // Callers overwrite distances[index..] with the node's single distance afterward, so distances are not
+        // carried here.
+        private int FilterDuplicates(Span<long> matches, int index, int total)
         {
-            int pos = index;
-            int end = index + total;
-            for (int i = index; i < end; i++)
-            {
-                if (_alreadySeen.Contains(matches[i]))
-                    continue;
-                _alreadySeen.Add(matches[i]);
-                matches[pos] = matches[i];
-                distances[pos] = distances[i];
-                pos++;
-            }
-
-            return pos - index;
+            return _alreadySeen.DedupAddNew(matches.Slice(index, total), total);
         }
 
         private int FillWithFilter(Span<long> matches, Span<float> distances, ref RoaringBitmap filter)
@@ -257,22 +250,23 @@ public partial class Hnsw
                     //decode in bulk
                     Registration.InternalEntryIdToEntryId(matches.Slice(index, total));
 
-                    var currentDocIdx = index;
-                    var endDocIdx = index + total;
-                    for (; currentDocIdx < endDocIdx; currentDocIdx++)
+                    // Compact to the filter survivors in place (filter is read-only; per-element Contains is O(1)
+                    // on its finalized containers, and the posting-list batch is sorted so survivors stay sorted),
+                    // then dedup the survivors against _alreadySeen in one bulk pass. Doing the dedup per element
+                    // here is the quadratic trap — _alreadySeen grows via single Adds, so its array containers stay
+                    // unsorted and each Contains is a linear scan. DedupAddNew sorts + merges + AddRanges instead.
+                    int survivors = 0;
+                    for (int s = index; s < index + total; s++)
                     {
-                        if (filter.Contains(matches[currentDocIdx]) == false)
-                            continue;
-
-                        if (_alreadySeen.Contains(matches[currentDocIdx]))
-                            continue;
-                        _alreadySeen.Add(matches[currentDocIdx]);
-
-                        _foundCandidateInCurrentSmallPostingList = true;
-                        matches[index] = matches[currentDocIdx];
-                        distances[index] = distance;
-                        index++;
+                        if (filter.Contains(matches[s]))
+                            matches[index + survivors++] = matches[s];
                     }
+
+                    int kept = _alreadySeen.DedupAddNew(matches.Slice(index, survivors), survivors);
+                    if (kept > 0)
+                        _foundCandidateInCurrentSmallPostingList = true;
+                    distances.Slice(index, kept).Fill(distance);
+                    index += kept;
 
                     continue;
                 }

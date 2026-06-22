@@ -704,6 +704,17 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
         VisitPresentSorted(sortedMatches, sortedMatches.Length, ref visitor);
     }
 
+    /// <summary>Count how many of <paramref name="sortedMatches"/> (ascending) are present in this bitmap, via a
+    /// single grouped forward-cursor merge per container — O(matches + containers) instead of a point lookup per
+    /// element.</summary>
+    public int CountPresentSorted(Span<long> sortedMatches)
+    {
+        AssertNotConsumed();
+        var visitor = new CountVisitor();
+        VisitPresentSorted(sortedMatches, sortedMatches.Length, ref visitor);
+        return visitor.Count;
+    }
+
     private interface IPresenceVisitor
     {
         bool VisitsMisses { get; }
@@ -711,6 +722,15 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
         void OnMiss(int index);
 
         void OnAbsentRun(int from, int to);
+    }
+
+    private struct CountVisitor : IPresenceVisitor
+    {
+        public int Count;
+        public readonly bool VisitsMisses => false;
+        public void OnHit(int index) => Count++;
+        public readonly void OnMiss(int index) { }
+        public readonly void OnAbsentRun(int from, int to) { }
     }
 
     private void VisitPresentSorted<TVisitor>(Span<long> sortedMatches, int count, scoped ref TVisitor visitor)
