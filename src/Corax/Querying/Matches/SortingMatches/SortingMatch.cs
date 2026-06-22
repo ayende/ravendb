@@ -40,19 +40,13 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     private readonly int _take;
     private const int NotStarted = -1;
 
-    /// <summary>UTF-8 byte buffer size for stackalloc encode/compare in sort-hint seek and SliceEqualsUtf8.
-    /// Strings longer than this fall back to heap allocation.</summary>
     private const int Utf8StackAllocThreshold = 256;
 
-    /// <summary>How many streamed sort-index entries cost as much as one materialized-and-sorted candidate.
-    /// A streamed entry is a sequential FastPFor posting decode + an O(1) candidate-bitmap test (and the limit
-    /// usually halts the walk early); a sorted candidate pays a random entries→terms lookup (GetFor), a random
-    /// term-blob fetch (GetAll), and its share of an N log N comparison sort. The gate compares
-    /// <c>estimatedScan &lt; candidates × ratio</c>, so the ratio is the maximum over-scan multiple it accepts;
-    /// it matches <c>maxScanCandidateMultiplier</c> (the streaming bail-out) so the gate never starts a walk the
-    /// bail-out would abandon. Deliberately &gt; 1 — comparing 1:1 ignores the per-entry cost asymmetry and
-    /// over-picks InMemorySort.</summary>
-    internal const double IndexStreamingVsInMemorySortCostRatio = 16;
+    /// <summary>
+    /// Cost ratio of cheap streamed entries (sequential decode + bitmap test) vs. expensive materialized candidates (random lookups in GetFor, GetAll, sorting, etc).
+    /// Benchmarks led to this value, which is how much more entries we should process in streaming vs. in memory sort.
+    /// </summary>
+    private const double IndexStreamingVsInMemorySortCostRatio = 16;
     private ByteStringContext<ByteStringMemoryCache>.InternalScope _entriesBufferScope;
 
     private ContextBoundNativeList<long> _results;
@@ -63,9 +57,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
     private SortingDataTransfer _sortingDataTransfer;
 
-    /// <summary>Uniform-distribution scan estimate the cost gate computed when it chose IndexOrderStreaming,
-    /// retained so the streaming run can feed (actual EntriesStreamed / this estimate) into the plan's
-    /// scan-inflation EWMA. Zero when streaming wasn't gated (forced path / non-CompiledQueryMatch inner).</summary>
+    /// <summary>The scan estimate  computed when it chose IndexOrderStreaming.</summary>
     private double _rawStreamScanEstimate;
 
     public override DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
@@ -158,16 +150,13 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
         where TDirection : struct, ILookupIterator
     {
-        // This method should also be re-entrant for the case where we have already pre-sorted everything and
+        // This method should also be re-entrant for the case where we have already pre-sorted everything, and
         // we will just need to acquire via pages the totality of the results.
         if (match.TotalResults == NotStarted)
         {
             if (match._inner is IBitmapQueryMatch bitmapMatch)
             {
-                // First access to Count runs the inner compiled pipeline (the AND/OR/scan that builds the
-                // candidate bitmap). Deliberately left outside the sort timer below: that execution is timed
-                // onto the inner CompiledQuery node's per-op telemetry, so charging it to the sort too would
-                // double-count the query. Everything after this line is sort-specific work.
+                // First Count call will initialize the bitmap, putting that *outside* the sorting time bookkeeping intentionally
                 match.TotalResults = bitmapMatch.Count;
                 if (match.TotalResults == 0)
                     return 0;
@@ -182,11 +171,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 else if (typeof(TDirection) == typeof(NoIterationOptimization) || match._orderMetadata.MayHaveMissingEntries)
                 {
                     // Score/spatial/alphanumeric: no index to walk, must materialize + heap sort.
-                    // Also taken when MayHaveMissingEntries is set (e.g. dynamic CreateField sort fields):
-                    // IndexOrderStreaming only walks tree terms + null/nonExisting posting lists, so docs
-                    // that didn't emit the field would be silently dropped; InMemorySort drains the whole
-                    // bitmap and uses the comparer's missing-value sentinel. Guards correctness, not cost,
-                    // so a $rvn_corax_sort pin can't override it.
+                    // IndexOrderStreaming only walks tree terms + null/nonExisting posting lists, so missing entries requires InMemorySort
                     match.SortStrategy = CoraxSortingStrategy.InMemorySort;
                     match.GateDecision = SortStrategyDecision.NotIterableSortField;
                     SortInMemory<TEntryComparer>(match, bitmapMatch);
@@ -207,17 +192,13 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 }
                 else if (match.ForcedStrategy == CoraxSortingStrategy.IndexOrderStreaming)
                 {
-                    // Cost gate rejected streaming, but the query explicitly pinned it: walk the index anyway
-                    // (and, being forced, with the over-scan bailout suppressed). Used to exercise the
-                    // streaming path's ordering semantics regardless of the candidate distribution.
+                    // Cost gate rejected streaming, but the query explicitly pinned it
                     match.SortStrategy = CoraxSortingStrategy.IndexOrderStreaming;
                     StreamInIndexOrder<TEntryComparer, TDirection>(match, bitmapMatch);
                 }
                 else
                 {
-                    // Cost model rejected the streaming scan: the candidate set is too sparse in the
-                    // sort index for early termination to pay off, so walking the index would read far
-                    // more entries than the candidate set itself. Materialize the candidates and sort.
+                    // Cost model rejected the streaming scan: Materialize the candidates and sort.
                     match.SortStrategy = CoraxSortingStrategy.InMemorySort;
                     SortInMemory<TEntryComparer>(match, bitmapMatch);
                 }
@@ -226,8 +207,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             }
             else
             {
-                // Non-bitmap path (VectorSearchMatch, PostFilterMatch, scoring matches, etc.)
-                // Must drain via Fill to preserve match-specific state (vector distances, scores).
+                // Non-bitmap path (VectorSearchMatch, PostFilterMatch, scoring matches, etc.), must fully drain
                 SortComputedResults<TEntryComparer>(match);
             }
         }
@@ -254,52 +234,42 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     }
 
     /// <summary>
-    /// Cost-based choice between the two indexed-sort strategies (score/spatial/alphanumeric and
-    /// MayHaveMissingEntries already excluded by the caller).
+    /// Chooses between IndexOrderStreaming (sequential index walk halted by a limit) 
+    /// and InMemorySort (materializing candidates and heap-sorting).
+    /// 
+    /// Compares the estimated scan steps against candidates scaled by <see cref="IndexStreamingVsInMemorySortCostRatio"/> 
+    /// to account for streaming being significantly cheaper per entry than random-lookup sorting.
+    /// Heavy scans or missing limits automatically fall back to InMemorySort.
     ///
-    /// <para>IndexOrderStreaming walks the sort index in order, intersecting each batch against the
-    /// candidate bitmap, stopping once <c>take</c> results are collected — cost ≈
-    /// <c>take · indexSize / candidates</c> (uniform-distribution assumption), or the FULL index with no
-    /// LIMIT since it can't stop early. InMemorySort materializes the candidates (cost ∝ <c>candidates</c>)
-    /// and heap-sorts.</para>
+    /// One streamed entry is a sequential FastPFor posting decode plus an O(1) candidate-bitmap test, while one
+    /// sorted candidate pays a random entries→terms lookup (GetFor), a random term-blob fetch (GetAll), and its
+    /// share of an O(N*logN) comparison sort.
     ///
-    /// <para>Streaming wins when the estimated scan is cheaper than materialize-and-sort. The two sides are
-    /// NOT measured in the same unit: one streamed entry is a sequential FastPFor posting decode plus an O(1)
-    /// candidate-bitmap test, while one sorted candidate pays a random entries→terms lookup (GetFor), a random
-    /// term-blob fetch (GetAll), and its share of an N log N comparison sort. We therefore compare the scan
-    /// estimate against <c>candidates × <see cref="IndexStreamingVsInMemorySortCostRatio"/></c> rather than
-    /// against <c>candidates</c> directly. A selective WHERE with a large/absent LIMIT degenerates into a
-    /// near-full index walk — the no-LIMIT guard steers that to InMemorySort. <see cref="IndexSearcher.NumberOfEntries"/>
-    /// proxies the reader's full-scan size; it slightly overestimates for sparse sort fields, biasing
-    /// toward the always-bounded InMemorySort.</para>
+    /// A selective WHERE with a large/absent LIMIT degenerates into a near-full index walk — the no-LIMIT guard steers
+    /// that to InMemorySort.
     /// </summary>
     private static bool ShouldUseIndexOrderStreaming(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
     {
         long candidates = match.TotalResults; // == bitmapMatch.Count, already set by the caller
         long indexSize = match._searcher.NumberOfEntries;
 
-        // No LIMIT (or a limit that can't cut below the candidate count): streaming can never terminate
-        // early, so it walks the entire index. InMemorySort touches only the candidates (a subset of the
-        // index), so it is never worse here.
+        // No LIMIT (or a limit that can't cut below the candidate count): streaming will scan it all, in memory just the query matches
         if (match._take < 0 || match._take >= candidates)
         {
             match.GateDecision = SortStrategyDecision.NoLimitFullScan;
             return false;
         }
 
-        // Expected entries scanned to collect `take` matches, assuming candidates are spread uniformly
-        // across the index. Computed in double to avoid overflow on the multiply.
-        double estimatedScan = (double)match._take * indexSize / candidates;
+        // Expected entries scanned to collect `take` matches, assuming candidates are spread uniformly across the index
+        double estimatedScan = (double)match._take * indexSize / candidates; // double to avoid overflow
         match._rawStreamScanEstimate = estimatedScan; // retained for the EWMA update on completion/bailout
         match.StreamScanEstimateRaw = estimatedScan;
 
         double inflationFactor = 1;
         if (bitmapMatch is CompiledQueryMatch { CompiledPlan.StreamScanInflation: { } scanInflation })
         {
-            // Correct the uniform-distribution estimate by what this plan has actually scanned in past
-            // streaming runs: clustered candidates push (actual scanned / estimate) above 1, so a plan that
-            // kept over-scanning (and bailing) inflates the estimate here and stops choosing streaming. The
-            // factor is 0 until the plan has streamed at least once (no history -> trust the raw estimate).
+            // Correct the uniform-distribution estimate by what this plan has actually scanned in the past.
+            // Self-correcting by inflating / deflating estimation with prior queries' results 
             var inflation = scanInflation.Factor;
             if (inflation > 0)
             {
@@ -746,9 +716,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         }
     }
 
-    /// <summary>Ensures <see cref="SortingMatch.Utf8ThreadBuffer"/> is at least <paramref name="byteCount"/>
-    /// bytes long and returns it. Grows to the next power of two on demand.
-    /// Called only on the rare path where the string exceeds <see cref="Utf8StackAllocThreshold"/>.</summary>
     [MethodImpl(MethodImplOptions.NoInlining)]
     private static byte[] GrowUtf8Buffer(int byteCount)
     {
@@ -758,24 +725,18 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         return buf;
     }
 
-    /// <summary>Compare a Slice's bytes to a string's UTF-8 encoding without allocating.
-    /// Used for sort-hint field-name matching where the slice comes from the index
-    /// and the hint field name comes from the query AST.</summary>
-    [System.Runtime.CompilerServices.SkipLocalsInit]
+    [SkipLocalsInit]
     private static bool SliceEqualsUtf8(Slice slice, string s)
     {
         var sliceSpan = slice.AsReadOnlySpan();
-        int byteCount = System.Text.Encoding.UTF8.GetByteCount(s);
-        if (byteCount != sliceSpan.Length)
-            return false;
-        if (byteCount <= Utf8StackAllocThreshold)
+        int byteCount = System.Text.Encoding.UTF8.GetMaxByteCount(s.Length);
+        Span<byte> span = byteCount switch
         {
-            Span<byte> stackBuf = stackalloc byte[Utf8StackAllocThreshold];
-            int written = System.Text.Encoding.UTF8.GetBytes(s, stackBuf);
-            return sliceSpan.SequenceEqual(stackBuf[..written]);
-        }
-        int written2 = System.Text.Encoding.UTF8.GetBytes(s, GrowUtf8Buffer(byteCount));
-        return sliceSpan.SequenceEqual(((Span<byte>)Utf8ThreadBuffer)[..written2]);
+            <= Utf8StackAllocThreshold => stackalloc byte[Utf8StackAllocThreshold],
+            _ => GrowUtf8Buffer(byteCount)
+        };
+        int written = System.Text.Encoding.UTF8.GetBytes(s, span);
+        return written == sliceSpan.Length && sliceSpan.SequenceEqual(span[..written]);
     }
 
     /// <summary>
