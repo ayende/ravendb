@@ -127,6 +127,8 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     public int Fill(Span<long> matches)
     {
         Span<long> entryBuffer = stackalloc long[QueryPrimitives.EntryScanBatchSize];
+        // Index scratch for DedupAddNew when batching runs of Single-term entries (capped at EntryScanBatchSize).
+        Span<int> dedupScratch = stackalloc int[RoaringBitmap.PadToVector256Width(QueryPrimitives.EntryScanBatchSize)];
         if (_nullFirst && (_nonExistingExhausted && _nullExhausted) is false)
         {
             // If nulls-first, drain non-existing and null iterators at the start of every Fill call.
@@ -193,19 +195,29 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 long plId = _plIdsBuffer.RawItems[_plIdsIdx];
                 var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
 
+                if (termType == TermIdMask.Single)
+                {
+                    // Accumulate a run of consecutive Single-term entries (in sort/emit order) into the output, then
+                    // dedup the run in one bulk pass. DedupAddNew sorts internally for the grouped merge + AddRange
+                    // and restores the emit order, so we keep sort order while avoiding the per-entry linear Contains
+                    // on the growing _emittedBitmap. The run is capped at the scratch size; longer runs flush across
+                    // iterations.
+                    int runStart = count;
+                    int runLimit = Math.Min(matches.Length, count + QueryPrimitives.EntryScanBatchSize);
+                    while (_plIdsIdx < _plIdsRead && count < runLimit)
+                    {
+                        long runPlId = _plIdsBuffer.RawItems[_plIdsIdx];
+                        if (((TermIdMask)runPlId & TermIdMask.EnsureIsSingleMask) != TermIdMask.Single)
+                            break;
+                        matches[count++] = (long)EntryIdEncodings.GetContainerId(runPlId);
+                        _plIdsIdx++;
+                    }
+                    count = runStart + _emittedBitmap.DedupAddNew(matches.Slice(runStart, count - runStart), count - runStart, dedupScratch, restoreOrder: true);
+                    continue;
+                }
+
                 switch (termType)
                 {
-                    case TermIdMask.Single:
-                    {
-                        long entryId = (long)EntryIdEncodings.GetContainerId(plId);
-                        if (_emittedBitmap.Contains(entryId) == false)
-                        {
-                            _emittedBitmap.Add(entryId);
-                            matches[count++] = entryId;
-                        }
-                        _plIdsIdx++;
-                        break;
-                    }
                     case TermIdMask.SmallPostingList:
                     {
                         var item = _smallContainerItems.RawItems[_smallItemsIdx++];
