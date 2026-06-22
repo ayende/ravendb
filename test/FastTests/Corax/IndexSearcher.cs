@@ -69,8 +69,8 @@ namespace FastTests.Corax
             using (var indexSearcher = new IndexSearcher(Env, knownFields))
             {
                 Assert.True(knownFields.TryGetByFieldId(ContentIndex, out var binding));
-                var query = indexSearcher.BetweenQuery(binding.Metadata, double.MinValue, double.MaxValue, UnaryMatchOperation.GreaterThanOrEqual,
-                    UnaryMatchOperation.LessThanOrEqual);
+                var query = indexSearcher.BetweenQuery(binding.Metadata, double.MinValue, double.MaxValue, ComparisonOperator.GreaterThanOrEqual,
+                    ComparisonOperator.LessThanOrEqual);
                 Span<long> ids = stackalloc long[64];
 
                 Assert.Equal(0, query.Fill(ids));

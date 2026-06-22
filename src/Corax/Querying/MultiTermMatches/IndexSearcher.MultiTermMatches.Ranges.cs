@@ -14,22 +14,22 @@ namespace Corax.Querying;
 public partial class IndexSearcher
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch BetweenQuery<TValue>(in FieldMetadata field, TValue low, TValue high, UnaryMatchOperation leftSide = UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation rightSide = UnaryMatchOperation.LessThanOrEqual, bool forward = true, long maxNumberOfTerms = long.MaxValue) {
+    public IQueryMatch BetweenQuery<TValue>(in FieldMetadata field, TValue low, TValue high, ComparisonOperator leftSide = ComparisonOperator.GreaterThanOrEqual, ComparisonOperator rightSide = ComparisonOperator.LessThanOrEqual, bool forward = true, long maxNumberOfTerms = long.MaxValue) {
         if (typeof(TValue) == typeof(long))
         {
             return (leftSide, rightSide) switch
             {
                 // (x, y)
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field, (long)(object)low, (long)(object)high, forward),
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field, (long)(object)low, (long)(object)high, forward),
 
                 //<x, y)
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field, (long)(object)low, (long)(object)high, forward),
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field, (long)(object)low, (long)(object)high, forward),
 
                 //<x, y>
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(field, (long)(object)low, (long)(object)high, forward),
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(field, (long)(object)low, (long)(object)high, forward),
 
                 //(x, y>
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field, (long)(object)low, (long)(object)high, forward),
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field, (long)(object)low, (long)(object)high, forward),
                 _ => throw new ArgumentOutOfRangeException($"Unknown operation at {nameof(BetweenQuery)}.")
             };
         }
@@ -39,16 +39,16 @@ public partial class IndexSearcher
             return (leftSide, rightSide) switch
             {
                 // (x, y)
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field, (double)(object)low, (double)(object)high, forward),
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field, (double)(object)low, (double)(object)high, forward),
 
                 //<x, y)
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field, (double)(object)low, (double)(object)high, forward),
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field, (double)(object)low, (double)(object)high, forward),
 
                 //<x, y>
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(field, (double)(object)low, (double)(object)high, forward),
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(field, (double)(object)low, (double)(object)high, forward),
 
                 //(x, y>
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field, (double)(object)low, (double)(object)high, forward),
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field, (double)(object)low, (double)(object)high, forward),
                 _ => throw new ArgumentOutOfRangeException($"Unknown operation at {nameof(BetweenQuery)}.")
 
             };
@@ -62,19 +62,19 @@ public partial class IndexSearcher
             return (leftSide, rightSide) switch
             {
                 // (x, y)
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field,
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field,
                     leftValue, rightValue, forward),
 
                 //<x, y)
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field,
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field,
                     leftValue, rightValue, forward),
 
                 //<x, y>
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(
                     field, leftValue, rightValue, forward),
 
                 //(x, y>
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field,
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field,
                     leftValue, rightValue, forward),
                 _ => throw new ArgumentOutOfRangeException($"Unknown operation at {nameof(BetweenQuery)}.")
             };
