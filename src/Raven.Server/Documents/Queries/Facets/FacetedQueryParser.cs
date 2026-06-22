@@ -497,9 +497,9 @@ namespace Raven.Server.Documents.Queries.Facets
                 {
                     var lowValueRange = RangeTypeToCoraxRange(_leftSide);
                     if (type is RangeType.Double or RangeType.Long)
-                        return searcher.BetweenQuery(metadata, LowValueAsDouble, double.MaxValue, lowValueRange, UnaryMatchOperation.LessThanOrEqual, forward);
+                        return searcher.BetweenQuery(metadata, LowValueAsDouble, double.MaxValue, lowValueRange, ComparisonOperator.LessThanOrEqual, forward);
 
-                    return lowValueRange == UnaryMatchOperation.GreaterThan
+                    return lowValueRange == ComparisonOperator.GreaterThan
                         ? searcher.GreaterThanQuery(metadata, LowValue, forward)
                         : searcher.GreaterThanOrEqualsQuery(metadata, LowValue, forward);
                 }
@@ -507,20 +507,20 @@ namespace Raven.Server.Documents.Queries.Facets
                 {
                     var highValueRange = RangeTypeToCoraxRange(_rightSide);
                     if (type is RangeType.Double or RangeType.Long)
-                        return searcher.BetweenQuery(metadata, double.MinValue, HighValueAsDouble, UnaryMatchOperation.GreaterThanOrEqual, highValueRange, forward);
+                        return searcher.BetweenQuery(metadata, double.MinValue, HighValueAsDouble, ComparisonOperator.GreaterThanOrEqual, highValueRange, forward);
 
-                    return highValueRange == UnaryMatchOperation.LessThan
+                    return highValueRange == ComparisonOperator.LessThan
                         ? searcher.LessThanQuery(metadata, HighValue, forward)
                         : searcher.LessThanOrEqualsQuery(metadata, HighValue, forward);
                 }
             }
 
-            private UnaryMatchOperation RangeTypeToCoraxRange(Operation o) => o switch
+            private ComparisonOperator RangeTypeToCoraxRange(Operation o) => o switch
             {
-                Operation.LowerThan => UnaryMatchOperation.LessThan,
-                Operation.GreaterThan => UnaryMatchOperation.GreaterThan,
-                Operation.LowerOrEqualThan => UnaryMatchOperation.LessThanOrEqual,
-                Operation.GreaterOrEqualThan => UnaryMatchOperation.GreaterThanOrEqual,
+                Operation.LowerThan => ComparisonOperator.LessThan,
+                Operation.GreaterThan => ComparisonOperator.GreaterThan,
+                Operation.LowerOrEqualThan => ComparisonOperator.LessThanOrEqual,
+                Operation.GreaterOrEqualThan => ComparisonOperator.GreaterThanOrEqual,
                 _ => throw new ArgumentOutOfRangeException(nameof(o), o, null)
             };
             
