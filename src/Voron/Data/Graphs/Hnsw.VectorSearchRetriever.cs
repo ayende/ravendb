@@ -240,18 +240,12 @@ public partial class Hnsw
                     //decode in bulk
                     Registration.InternalEntryIdToEntryId(matches.Slice(index, total));
 
-                    // Compact to the filter survivors in place (filter is read-only; per-element Contains is O(1)
-                    // on its finalized containers, and the posting-list batch is sorted so survivors stay sorted),
-                    // then dedup the survivors against _alreadySeen in one bulk pass. Doing the dedup per element
-                    // here is the quadratic trap — _alreadySeen grows via single Adds, so its array containers stay
-                    // unsorted and each Contains is a linear scan. DedupAddNew sorts + merges + AddRanges instead.
-                    int survivors = 0;
-                    for (int s = index; s < index + total; s++)
-                    {
-                        if (filter.Contains(matches[s]))
-                            matches[index + survivors++] = matches[s];
-                    }
-
+                    // The posting-list batch is sorted, so retain the filter matches with one grouped merge
+                    // (RetainPresentSorted) instead of a point lookup per element, then dedup the survivors against
+                    // _alreadySeen in one bulk pass. Doing the dedup per element here would be the quadratic trap:
+                    // _alreadySeen grows via single Adds, so its array containers stay unsorted and each Contains is
+                    // a linear scan. DedupAddNew sorts + merges + AddRanges instead.
+                    int survivors = filter.RetainPresentSorted(matches.Slice(index, total));
                     int kept = _alreadySeen.DedupAddNew(matches.Slice(index, survivors), survivors);
                     if (kept > 0)
                         _foundCandidateInCurrentSmallPostingList = true;
@@ -263,21 +257,20 @@ public partial class Hnsw
 
                 if (_currentMatchesIndex < _postingListResults.Count)
                 {
-                    var currentFillLimit = _currentMatchesIndex + Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
-                    for (; _currentMatchesIndex < currentFillLimit; _currentMatchesIndex++)
-                    {
-                        if (filter.Contains(_postingListResults[_currentMatchesIndex]) == false)
-                            continue;
-
-                        if (_alreadySeen.Contains(_postingListResults[_currentMatchesIndex]))
-                            continue;
-                        _alreadySeen.Add(_postingListResults[_currentMatchesIndex]);
-
-                        matches[index] = _postingListResults[_currentMatchesIndex];
-                        distances[index] = distance;
+                    // _postingListResults was decoded in bulk on read and is sorted, so a window of it can be
+                    // filtered + deduped in bulk like the large posting-list path: copy the window into the output,
+                    // retain the filter matches with one grouped merge, then dedup the survivors against
+                    // _alreadySeen. The resume cursor advances by the window size (independent of survivors), so the
+                    // remainder is processed on the next Fill — same streaming contract as before.
+                    var amountRead = Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
+                    _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, amountRead);
+                    int survivors = filter.RetainPresentSorted(matches.Slice(index, amountRead));
+                    int kept = _alreadySeen.DedupAddNew(matches.Slice(index, survivors), survivors);
+                    if (kept > 0)
                         _foundCandidateInCurrentSmallPostingList = true;
-                        index++;
-                    }
+                    distances.Slice(index, kept).Fill(distance);
+                    index += kept;
+                    _currentMatchesIndex += amountRead;
 
                     if (_currentMatchesIndex == _postingListResults.Count)
                     {

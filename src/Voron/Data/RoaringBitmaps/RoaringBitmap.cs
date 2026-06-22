@@ -715,6 +715,18 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
         return visitor.Count;
     }
 
+    /// <summary>Retain only the entries of <paramref name="sortedMatches"/> (ascending) that are present in this
+    /// bitmap, compacting them to the front of the span in place; returns the retained count. One grouped
+    /// forward-cursor merge per container, vs a point lookup per element. The inverse of the filtering that
+    /// <see cref="DedupAddNew"/>'s visitor does (it keeps the absent; this keeps the present).</summary>
+    public int RetainPresentSorted(Span<long> sortedMatches)
+    {
+        AssertNotConsumed();
+        var visitor = new RetainVisitor(sortedMatches);
+        VisitPresentSorted(sortedMatches, sortedMatches.Length, ref visitor);
+        return visitor.Kept;
+    }
+
     private interface IPresenceVisitor
     {
         bool VisitsMisses { get; }
@@ -729,6 +741,20 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
         public int Count;
         public readonly bool VisitsMisses => false;
         public void OnHit(int index) => Count++;
+        public readonly void OnMiss(int index) { }
+        public readonly void OnAbsentRun(int from, int to) { }
+    }
+
+    // Keeps the present entries (the inverse of DedupVisitor): compacts each hit to the front in place. Hits are
+    // visited in ascending index order and Kept <= index throughout, so the in-place write never clobbers an
+    // unread element. VisitsMisses is false — absent entries (OnMiss / whole OnAbsentRun runs) are simply dropped.
+    private ref struct RetainVisitor(Span<long> buffer) : IPresenceVisitor
+    {
+        private readonly Span<long> _buffer = buffer;
+        public int Kept;
+
+        public readonly bool VisitsMisses => false;
+        public void OnHit(int index) => _buffer[Kept++] = _buffer[index];
         public readonly void OnMiss(int index) { }
         public readonly void OnAbsentRun(int from, int to) { }
     }
