@@ -292,6 +292,71 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return EncodeAndApplyAnalyzer(binding, binding.Analyzer, term.AsSpan());
     }
 
+    // Non-throwing counterpart of the span EncodeAndApplyAnalyzer: literal/empty/null fast-paths return true;
+    // otherwise delegates to TryApplyAnalyzer, which returns false when the analyzer emits != 1 token.
+    internal bool TryEncodeAndApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<char> term, out Slice value)
+    {
+        if (term.Length == 0 || term.SequenceEqual(Constants.EmptyStringCharSpan.Span))
+        {
+            value = Constants.EmptyStringSlice;
+            return true;
+        }
+
+        if (term.SequenceEqual(Constants.NullValueCharSpan.Span))
+        {
+            value = Constants.NullValueSlice;
+            return true;
+        }
+
+        using var _ = Allocator.Allocate(Encodings.Utf8.GetByteCount(term), out Span<byte> termBuffer);
+        var byteCount = Encodings.Utf8.GetBytes(term, termBuffer);
+
+        return TryApplyAnalyzer(binding, analyzer, termBuffer.Slice(0, byteCount), out value);
+    }
+
+    /// <summary>
+    /// Non-throwing single-token analysis for callers that resolve a SINGLE term's posting list id / document count
+    /// (<see cref="GetTermPostingListId(in FieldMetadata, string)"/>, <see cref="NumberOfDocumentsUnderSpecificTerm{TData}"/>).
+    /// Mirrors <see cref="EncodeAndApplyAnalyzer(in FieldMetadata, string)"/>'s literal fast-paths, but returns false
+    /// (instead of throwing <see cref="NotSupportedException"/>) when the analyzer turns <paramref name="term"/> into
+    /// more than one token: a multi-token input has no single posting list, so the caller resolves it as "absent".
+    /// </summary>
+    [SkipLocalsInit]
+    public bool TryAnalyzeSingleToken(in FieldMetadata binding, string term, out Slice termSlice)
+    {
+        if (term is null)
+        {
+            termSlice = Constants.NullValueSlice;
+            return true;
+        }
+
+        if (ReferenceEquals(term, Constants.BeforeAllKeys))
+        {
+            termSlice = Slices.BeforeAllKeys;
+            return true;
+        }
+
+        if (ReferenceEquals(term, Constants.AfterAllKeys))
+        {
+            termSlice = Slices.AfterAllKeys;
+            return true;
+        }
+
+        if (term.Length == 0 || term == Constants.EmptyString)
+        {
+            termSlice = Constants.EmptyStringSlice;
+            return true;
+        }
+
+        if (term == Constants.NullValue)
+        {
+            termSlice = Constants.NullValueSlice;
+            return true;
+        }
+
+        return TryEncodeAndApplyAnalyzer(binding, binding.Analyzer, term.AsSpan(), out termSlice);
+    }
+
 
     public void ApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value)
     {
@@ -314,8 +379,41 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         AnalyzeTerm(analyzer, originalTerm, out value);
     }
 
+    // Non-throwing counterpart of ApplyAnalyzer. The exact / no-analyzer path is always a single literal token
+    // (returns true); only the analyzed path can produce != 1 token, in which case it returns false.
+    private bool TryApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value)
+    {
+        if (binding.FieldId == Constants.IndexWriter.DynamicField && binding.Mode is not (FieldIndexingMode.Exact or FieldIndexingMode.No))
+        {
+            analyzer = _fieldMapping.DefaultAnalyzer;
+        }
+        else if (binding.Mode is FieldIndexingMode.Exact || binding.Analyzer is null)
+        {
+            _ = Allocator.AllocateDirect(originalTerm.Length, ByteStringType.Mutable, out var originalTermSliced);
+            originalTerm.CopyTo(new Span<byte>(originalTermSliced._pointer->Ptr, originalTerm.Length));
+
+            value = new Slice(originalTermSliced);
+            return true;
+        }
+
+        return TryAnalyzeTerm(analyzer, originalTerm, out value, out _);
+    }
+
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private ByteStringContext<ByteStringMemoryCache>.InternalScope AnalyzeTerm(Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value)
+    {
+        if (TryAnalyzeTerm(analyzer, originalTerm, out value, out var disposable) == false)
+            throw new NotSupportedException($"Analyzer turned term: {Encoding.UTF8.GetString(originalTerm)} into multiple terms, which is not allowed in this case.");
+
+        return disposable;
+    }
+
+    // Non-throwing core of AnalyzeTerm: runs the analyzer and returns false (instead of throwing) when it emits
+    // != 1 token. The throwing callers (AnalyzeTerm / ApplyAnalyzer / EncodeAndApplyAnalyzer, which require a single
+    // term) wrap this; the single-posting-list resolvers (GetTermPostingListId / NumberOfDocumentsUnderSpecificTerm)
+    // reach it via TryAnalyzeSingleToken and treat false as "no such single term" rather than a query failure.
+    private bool TryAnalyzeTerm(Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value,
+        out ByteStringContext<ByteStringMemoryCache>.InternalScope disposable)
     {
         analyzer.GetOutputBuffersSize(originalTerm.Length, out int outputSize, out int tokenSize);
 
@@ -328,15 +426,22 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         Span<byte> bufferSpan = buffer.AsSpan();
         Span<Token> tokensSpan = tokens.AsSpan();
         analyzer.Execute(originalTerm, ref bufferSpan, ref tokensSpan);
-        if (tokensSpan.Length != 1)
-            throw new NotSupportedException($"Analyzer turned term: {Encoding.UTF8.GetString(originalTerm)} into multiple terms ({tokensSpan.Length}), which is not allowed in this case.");
-        
-        var disposable = Indexing.IndexWriter.CreateNormalizedTerm(Allocator, bufferSpan, out value);
+
+        bool isSingleToken = tokensSpan.Length == 1;
+        if (isSingleToken)
+        {
+            disposable = Indexing.IndexWriter.CreateNormalizedTerm(Allocator, bufferSpan, out value);
+        }
+        else
+        {
+            disposable = default;
+            value = default;
+        }
 
         Analyzer.TokensPool.Return(tokens);
         Analyzer.BufferPool.Return(buffer);
 
-        return disposable;
+        return isSingleToken;
     }
     
     public AllEntriesMatch AllEntries() => new(this, _transaction);

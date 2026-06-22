@@ -210,20 +210,9 @@ public partial class IndexSearcher
         if (term is null || ReferenceEquals(term, Constants.ProjectionNullValue))
             return TryGetPostingListForNull(field, out var plId) ? plId : -1;
 
-        Slice termSlice;
-        try
-        {
-            termSlice = term switch
-            {
-                Constants.EmptyString => Constants.EmptyStringSlice,
-                _ => EncodeAndApplyAnalyzer(field, term)
-            };
-        }
-        catch (NotSupportedException)
-        {
-            // Analyzer produced multiple tokens; no single posting list ID
+        // A term the analyzer splits into != 1 token has no single posting list id.
+        if (TryAnalyzeSingleToken(field, term, out var termSlice) == false)
             return -1;
-        }
 
         if (termSlice.Size == 0)
             return -1;
@@ -297,21 +286,9 @@ public partial class IndexSearcher
             return termMatch.Count;
         }
         
-        Slice termSlice;
-        try
-        {
-            termSlice = term switch
-            {
-                Constants.EmptyString => Constants.EmptyStringSlice,
-                _ => EncodeAndApplyAnalyzer(binding, term)
-            };
-        }
-        catch (NotSupportedException)
-        {
-            // Analyzer produced multiple tokens — a multi-word phrase doesn't
-            // match any single indexed term (e.g. MoreLikeThis passing un-tokenized text).
+        // A multi-token input (e.g. MoreLikeThis passing un-tokenized text) matches no single indexed term.
+        if (TryAnalyzeSingleToken(binding, term, out var termSlice) == false)
             return 0;
-        }
 
         return NumberOfDocumentsUnderSpecificTerm((CompactTree)terms, (Slice)termSlice);
     }
