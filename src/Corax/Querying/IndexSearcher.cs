@@ -253,43 +253,23 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         Analyzer.TokensPool.Return(tokens);
         Analyzer.BufferPool.Return(buffer);
     }
+    // Throwing wrapper over TryEncodeAndApplyAnalyzer: a term the analyzer splits into != 1 token has no single
+    // posting list, which is not allowed where a single Slice is required.
     internal Slice EncodeAndApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<char> term)
     {
-        if (term.Length == 0 || term.SequenceEqual(Constants.EmptyStringCharSpan.Span))
-            return Constants.EmptyStringSlice;
-
-        if (term.SequenceEqual(Constants.NullValueCharSpan.Span))
-            return Constants.NullValueSlice;
-        
-        using var _ = Allocator.Allocate(Encodings.Utf8.GetByteCount(term), out Span<byte> termBuffer);
-        var byteCount = Encodings.Utf8.GetBytes(term, termBuffer);
-        
-        ApplyAnalyzer(binding, analyzer, termBuffer.Slice(0, byteCount), out var encodedTerm);
-        return encodedTerm;
+        if (TryEncodeAndApplyAnalyzer(binding, analyzer, term, out var value) == false)
+            throw new NotSupportedException($"Analyzer turned term: {term.ToString()} into multiple terms, which is not allowed in this case.");
+        return value;
     }
 
     //Function used to generate Slice from query parameters.
     //We cannot dispose them before the whole query is executed because they are an integral part of IQueryMatch.
     //We know that the Slices are automatically disposed when the transaction is closed so we don't need to track them.
-    [SkipLocalsInit]
     public Slice EncodeAndApplyAnalyzer(in FieldMetadata binding, string term)
     {
-        if (term is null)
-            return Constants.NullValueSlice; // unary match
-
-        if (ReferenceEquals(term, Constants.BeforeAllKeys))
-            return Slices.BeforeAllKeys;
-        
-        if (ReferenceEquals(term, Constants.AfterAllKeys))
-            return Slices.AfterAllKeys;
-
-        if (term.Length == 0 || term == Constants.EmptyString)
-            return Constants.EmptyStringSlice;
-
-        if (term == Constants.NullValue)
-            return Constants.NullValueSlice;
-
-        return EncodeAndApplyAnalyzer(binding, binding.Analyzer, term.AsSpan());
+        if (TryAnalyzeSingleToken(binding, term, out var value) == false)
+            throw new NotSupportedException($"Analyzer turned term: {term} into multiple terms, which is not allowed in this case.");
+        return value;
     }
 
     // Non-throwing counterpart of the span EncodeAndApplyAnalyzer: literal/empty/null fast-paths return true;
@@ -358,25 +338,11 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     }
 
 
+    // Throwing wrapper over TryApplyAnalyzer.
     public void ApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value)
     {
-        if (binding.FieldId == Constants.IndexWriter.DynamicField && binding.Mode is not (FieldIndexingMode.Exact or FieldIndexingMode.No))
-        {
-            analyzer = _fieldMapping.DefaultAnalyzer;
-        }
-        else
-        {
-            if (binding.Mode is FieldIndexingMode.Exact || binding.Analyzer is null)
-            {
-                _ = Allocator.AllocateDirect(originalTerm.Length, ByteStringType.Mutable, out var originalTermSliced);
-                originalTerm.CopyTo(new Span<byte>(originalTermSliced._pointer->Ptr, originalTerm.Length));
-
-                value = new Slice(originalTermSliced);
-                return;
-            }
-        }
-
-        AnalyzeTerm(analyzer, originalTerm, out value);
+        if (TryApplyAnalyzer(binding, analyzer, originalTerm, out value) == false)
+            throw new NotSupportedException($"Analyzer turned term: {Encoding.UTF8.GetString(originalTerm)} into multiple terms, which is not allowed in this case.");
     }
 
     // Non-throwing counterpart of ApplyAnalyzer. The exact / no-analyzer path is always a single literal token
@@ -399,19 +365,10 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return TryAnalyzeTerm(analyzer, originalTerm, out value, out _);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private ByteStringContext<ByteStringMemoryCache>.InternalScope AnalyzeTerm(Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value)
-    {
-        if (TryAnalyzeTerm(analyzer, originalTerm, out value, out var disposable) == false)
-            throw new NotSupportedException($"Analyzer turned term: {Encoding.UTF8.GetString(originalTerm)} into multiple terms, which is not allowed in this case.");
-
-        return disposable;
-    }
-
-    // Non-throwing core of AnalyzeTerm: runs the analyzer and returns false (instead of throwing) when it emits
-    // != 1 token. The throwing callers (AnalyzeTerm / ApplyAnalyzer / EncodeAndApplyAnalyzer, which require a single
-    // term) wrap this; the single-posting-list resolvers (GetTermPostingListId / NumberOfDocumentsUnderSpecificTerm)
-    // reach it via TryAnalyzeSingleToken and treat false as "no such single term" rather than a query failure.
+    // Runs the analyzer and returns false (instead of throwing) when it emits != 1 token. The throwing entry points
+    // (ApplyAnalyzer / EncodeAndApplyAnalyzer, which require a single term) wrap this; the single-posting-list
+    // resolvers (GetTermPostingListId / NumberOfDocumentsUnderSpecificTerm) reach it via TryAnalyzeSingleToken and
+    // treat false as "no such single term" rather than a query failure.
     private bool TryAnalyzeTerm(Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value,
         out ByteStringContext<ByteStringMemoryCache>.InternalScope disposable)
     {
