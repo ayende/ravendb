@@ -96,7 +96,7 @@ public partial class Hnsw
                         continue;
                     }
 
-                    total = FilterDuplicates(matches, index, total);
+                    total = _alreadySeen.DedupAddNew(matches.Slice(index, total), total);
 
                     distances.Slice(index, total).Fill(distance);
                     index += total;
@@ -107,7 +107,7 @@ public partial class Hnsw
                 {
                     var amountRead = Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
                     _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, amountRead);
-                    var dedupedAmount = FilterDuplicates(matches, index, amountRead);
+                    var dedupedAmount = _alreadySeen.DedupAddNew(matches.Slice(index, amountRead), amountRead);
                     distances.Slice(index, dedupedAmount).Fill(distance);
                     index += dedupedAmount;
                     _currentMatchesIndex += amountRead;
@@ -180,16 +180,6 @@ public partial class Hnsw
 
             Registration.InternalEntryIdToEntryId(matches.Slice(0, index));
             return index;
-        }
-
-        // Dedup a freshly-read batch against everything emitted so far, in bulk. DedupAddNew sorts the batch,
-        // drops entries already in _alreadySeen, AddRange's the survivors (keeping _alreadySeen's containers
-        // compact rather than degenerating into a linearly-scanned unsorted array), and restores original order.
-        // Callers overwrite distances[index..] with the node's single distance afterward, so distances are not
-        // carried here.
-        private int FilterDuplicates(Span<long> matches, int index, int total)
-        {
-            return _alreadySeen.DedupAddNew(matches.Slice(index, total), total);
         }
 
         private int FillWithFilter(Span<long> matches, Span<float> distances, ref RoaringBitmap filter)
