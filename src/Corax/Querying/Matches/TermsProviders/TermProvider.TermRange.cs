@@ -260,8 +260,9 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
 
         // A "before all keys" low bound is represented by the empty span, which sorts before every stored key.
         var lowSpan = _low.Options == SliceOptions.BeforeAllKeys ? ReadOnlySpan<byte>.Empty : _low.AsSpan();
+        var highSpan = _high.Options == SliceOptions.AfterAllKeys ? ReadOnlySpan<byte>.Empty : _high.AsSpan();
         // An "after all keys" high has no concrete key to seek; signal the descent to walk to the rightmost leaf.
-        return _tree.GetNumberOfEntriesInRangeEstimate(lowSpan, _high.AsSpan(), highToEnd: _high.Options == SliceOptions.AfterAllKeys);
+        return _tree.GetNumberOfEntriesInRangeEstimate(lowSpan, highSpan);
     }
 
     /// <summary>Total number of terms stored for this field (O(1)); used by the cardinality combiner's whale guard.</summary>

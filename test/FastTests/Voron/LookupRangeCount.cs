@@ -41,7 +41,7 @@ namespace FastTests.Voron
             using var rtx = Env.ReadTransaction();
             var lookup = rtx.LookupFor<Int64LookupKey>("test");
             long expected = BruteForce(keys, low, high);
-            long actual = lookup.GetNumberOfEntriesInRangeEstimate(low, high, highToEnd: false, lowToStart: false);
+            long actual = lookup.GetNumberOfEntriesInRangeEstimate(low, lowToStart: false, high: high, highToEnd: false);
 
             long allowed = Math.Max(absFloor, (long)(expected * relTol));
             long diff = Math.Abs(actual - expected);
@@ -146,7 +146,7 @@ namespace FastTests.Voron
             var lookup = rtx.LookupFor<Int64LookupKey>("test");
             long expected = BruteForce(keys, low, long.MaxValue);
             // pass an arbitrary (here: deliberately wrong, far-below) high to prove it is ignored when highToEnd
-            long actual = lookup.GetNumberOfEntriesInRangeEstimate(low, low, highToEnd: true, lowToStart: false);
+            long actual = lookup.GetNumberOfEntriesInRangeEstimate(low, lowToStart: false, high: low, highToEnd: true);
 
             long allowed = Math.Max(absFloor, (long)(expected * relTol));
             long diff = Math.Abs(actual - expected);
