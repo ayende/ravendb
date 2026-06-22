@@ -97,21 +97,17 @@ public partial class IndexSearcher
         ref BitmapMatch searchBitmap, ref Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData,
         Constants.Search.Operator @operator, CancellationToken cancellationToken)
     {
+        if (terms.Count == 0)
+            return;
+
         var phraseBitmap = new BitmapMatch(Allocator);
         var tempPhraseBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
-        bool first = true;
-        foreach (var term in terms)
+
+        Primitives.QueryPrimitives.OrWithMatch(TermQuery(field, terms[0]), ref phraseBitmap.BitmapState, token: cancellationToken);
+        for (int index = 1; index < terms.Count; index++)
         {
-            var termQuery = TermQuery(field, term);
-            if (first)
-            {
-                Primitives.QueryPrimitives.OrWithMatch(termQuery, ref phraseBitmap.BitmapState, token: cancellationToken);
-                first = false;
-            }
-            else
-            {
-                Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData, cancellationToken);
-            }
+            var termQuery = TermQuery(field, terms[index]);
+            Primitives.QueryPrimitives.AndWithMatch(termQuery, ref phraseBitmap.BitmapState, ref tempPhraseBitmapData, cancellationToken);
         }
 
         var phraseMatch = PhraseQuery(phraseBitmap, field, terms.ToSpan());
