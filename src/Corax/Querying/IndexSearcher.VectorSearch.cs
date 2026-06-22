@@ -34,11 +34,7 @@ public partial class IndexSearcher
 
         public static RoaringBitmap LoadFilterMatches(IndexSearcher indexSearcher, ref IQueryMatch query, out bool owned)
         {
-            // Fast path: the upstream pipeline (CompiledQueryMatch / BitmapMatch / PostFilterMatch
-            // wrapping a bitmap) already has the bitmap built. Borrow the data directly — we only
-            // read, and the source query keeps the storage alive for our entire scope. Skipping
-            // re-materialization avoids one full Fill loop and one bitmap construction per query.
-            if (query is IBitmapQueryMatch bitmapMatch)
+            if (query is IBitmapQueryMatch bitmapMatch) // fast path, when source already has a bitmap
             {
                 owned = false;
                 ref RoaringBitmap borrowed = ref bitmapMatch.BitmapState;
@@ -72,9 +68,8 @@ public partial class IndexSearcher
             private List<long> _results;
             private long _current;
             private readonly IndexSearcher _indexSearcher;
-            private long[] _entryIds;
+            private readonly long[] _entryIds;
             private int _entryIndex;
-            private readonly Random _random;
             private bool _isDone;
             private Page p = default;
             private CompactKey _key;
@@ -85,7 +80,6 @@ public partial class IndexSearcher
             public RandomNodesFromFilterEnumerator(IndexSearcher indexSearcher, FieldMetadata metadata, RoaringBitmap filterResults, Random random = null)
             {
                 _indexSearcher = indexSearcher;
-                _random = random ?? Random.Shared;
                 _key = indexSearcher._transaction.LowLevelTransaction.AcquireCompactKey();
                 var searchState = new Hnsw.SearchState(indexSearcher.Transaction.LowLevelTransaction, metadata.FieldName);
                 _vectorsByHash = indexSearcher._transaction.CompactTreeFor(Hnsw.VectorsIdByHashSlice);
@@ -93,9 +87,8 @@ public partial class IndexSearcher
                 _current = -1L;
 
                 var filterCount = filterResults.ComputeCount();
-                _isDone =
-                    indexSearcher.TryGetRootPageByFieldName(metadata.FieldName, out _vectorRootPage) == false
-                    || filterCount == 0;
+                _isDone = indexSearcher.TryGetRootPageByFieldName(metadata.FieldName, out _vectorRootPage) == false
+                          || filterCount == 0;
 
                 if (_isDone)
                 {
@@ -103,43 +96,32 @@ public partial class IndexSearcher
                     return;
                 }
 
-                // Sample entry IDs for HNSW probe seeds, capped (HNSW probes <= 512 nodes) to avoid a huge
-                // array for large filters. Must not bias toward old documents (low entry IDs index first, and
-                // the bitmap is entry-ID ordered) or recall degrades for newer docs. Instead of an
-                // O(filterCount) reservoir sweep, pick random ranks in [0, filterCount) and resolve via
-                // RoaringBitmap.Select (one container walk, O(C + N log N)); the cap branch takes every entry.
-                // Sampling is with replacement — duplicate seeds only cost a redundant probe (HNSW dedups), and
-                // the cap is 16x the probe budget so distinctness isn't needed.
-                const int MaxFilterSampleSize = 8192;
-                var sampleSize = (int)Math.Min(filterCount, MaxFilterSampleSize);
+                const int maxFilterSampleSize = 8192;
+                random ??= Random.Shared;
+                var sampleSize = (int)Math.Min(filterCount, maxFilterSampleSize);
                 _entryIds = new long[sampleSize];
                 var ranks = new long[sampleSize];
-                if (filterCount <= MaxFilterSampleSize)
+                if (filterCount <= maxFilterSampleSize)
                 {
+                    // small enough that we can just take it all 
                     for (int i = 0; i < sampleSize; i++)
                         ranks[i] = i;
                 }
                 else
                 {
+                    // select random matches from the filter to fit the sample size
                     for (int i = 0; i < sampleSize; i++)
-                        ranks[i] = _random.NextInt64(filterCount);
+                        ranks[i] = random.NextInt64(filterCount);
                 }
 
-                // Select sorts ranks in place and scatters results back to input order;
-                // ranks and _entryIds must not alias (they are separate arrays here).
                 filterResults.Select(_indexSearcher.Allocator, ranks, _entryIds);
 
-                // Make probe order independent of entry-ID order (the take-all branch
-                // produced ascending values; the sampled branch is already random but
-                // shuffling is cheap and keeps both paths uniform).
-                _random.Shuffle(_entryIds.AsSpan());
+                // ensure we scan in random order
+                random.Shuffle(_entryIds.AsSpan());
                 _entryIndex = 0;
             }
 
-            public RandomNodesFromFilterEnumerator()
-            {
-                throw new NotSupportedException($"Default constructor is not supported for {nameof(RandomNodesFromFilterEnumerator)}");
-            }
+            public RandomNodesFromFilterEnumerator() => throw new NotSupportedException($"Default constructor is not supported for {nameof(RandomNodesFromFilterEnumerator)}");
 
             public void Dispose()
             {
@@ -220,14 +202,8 @@ public partial class IndexSearcher
 
             nodesIdsToScan = new ContextBoundNativeList<long>(indexSearcher.Allocator);
 
-            // Scan all entries from the filter to retrieve all node IDs. This is important for returning the correct number of results.
-            // To satisfy the NumberOfCandidates requirement, we need to return up to `NumberOfCandidates` posting lists with the filter applied to the query.
-            // Instead of building a mapping of nodes to matching posting lists (and distances),
-            // we reuse ExactSearch mechanisms to find the nearest nodes to the vector (so we know that each node has at least one matching document)
-            // and then filter the documents stored in the posting list of each node individually.
-            // Ideally, each node represents only a single document.
             Page p = default;
-            var iterator = filterResults.GetIterator();
+            using var iterator = filterResults.GetIterator();
             Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
             int read;
             while ((read = iterator.Fill(ref filterResults, batch)) > 0)
@@ -246,8 +222,7 @@ public partial class IndexSearcher
                     }
                 }
             }
-            iterator.Dispose();
-
+            // we get _all_ the node ids, so we can then use exact nearest neighbour to find the closest matches 
             var uniqueCount = Sorting.SortAndRemoveDuplicates(nodesIdsToScan.ToSpan());
             nodesIdsToScan.Count = uniqueCount;
 
