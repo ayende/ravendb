@@ -201,10 +201,7 @@ unsafe sealed partial class SortingMatch<TInner>
             _lookup.GetFor(batchResults, batchTermIds, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(batchTermIds, NonExistingTermContainerId, NullTermContainerId, SortingHelpers.MissingTermId);
 
-            // Sort by term id (≈ page order, since term ids are container ids) and co-permute the entry ids so
-            // term[i] stays paired with batchResults[i]; the value-sort below reorders everything anyway, so the
-            // original order is never needed. GetAll's page-grouped read then walks the already-sorted ids without a
-            // second (redundant) sort — using GetAllSortedByPage here would re-sort what we just sorted.
+            // Sort by term id (≈ page order, since term ids are container ids) to optimize GetAll access patterns
             batchTermIds.Sort(batchResults);
 
             var terms = new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length);

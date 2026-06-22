@@ -720,8 +720,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     }
 
     /// <summary>
-    /// For sort types without an index to walk (score, spatial, alphanumeric, random),
-    /// materialize all bitmap entries directly and heap sort.
+    /// For sort types without an index to walk (score, spatial, alphanumeric, random), materialize all bitmap entries directly and heap sort.
     /// </summary>
     private static void SortInMemory<TEntryComparer>(SortingMatch<TInner> match, IBitmapQueryMatch bitmapMatch)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
@@ -734,9 +733,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         int total = (int)match.TotalResults;
 
         // TotalResults == bitmapMatch.Count, so one Fill call covers everything.
-        using var scope = allocator.Allocate(total * sizeof(long), out ByteString bs);
-        var allMatches = new Span<long>(bs.Ptr, total);
-
+        using var scope = allocator.Allocate(total, out Span<long> allMatches);
         int filled = bitmapMatch.Fill(allMatches);
 
         if (filled == 0)
@@ -747,9 +744,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         SortResults<TEntryComparer>(match, allMatches[..filled]);
     }
     
-    /// <summary>Drain all results from the inner match via Fill, then heap sort.
-    /// Used for non-bitmap matches (VectorSearchMatch, PostFilterMatch, scoring matches)
-    /// where materializing into a bitmap would lose match-specific state.</summary>
+    /// <summary>Drain all results from the inner match via Fill, then heap sort.</summary>
     private static void SortComputedResults<TEntryComparer>(SortingMatch<TInner> match)
         where TEntryComparer : struct, IEntryComparer, IComparer<UnmanagedSpan>
     {
@@ -771,10 +766,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             }
         }
 
-        // The term comparers in SortResults resolve sort keys via Lookup.GetFor, which gallops from the previous
-        // key's cursor position and therefore requires ascending, unique entry ids. The bitmap path gets that for
-        // free (its iterator yields ascending, distinct ids); a drained non-bitmap inner (vector search /
-        // post-filter) can yield ids out of order and with duplicates, so sort + dedup with the shared helper.
         filled = Sorting.SortAndRemoveDuplicates(allMatches[..filled]);
         match.TotalResults = filled;
         if (match.TotalResults == 0)
@@ -830,14 +821,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     public override bool IsBoosting => _inner.IsBoosting || _orderMetadata.FieldType == MatchCompareFieldType.Score;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public override int Fill(Span<long> matches)
-    {
-        // No timing here: the sort-specific work (heap sort / index-order walk) is timed at the strategy
-        // call sites into SortingTimeInTicks, so the inner match's own execution stays out of the sort
-        // metric. The first call does the actual work (TotalResults == NotStarted); later calls just page
-        // out already-sorted results.
-        return _fillFunc(this, matches);
-    }
+    public override int Fill(Span<long> matches) => _fillFunc(this, matches);
 
 
     public override QueryInspectionNode Inspect()
@@ -862,15 +846,9 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 break;
         }
 
-        // Surface the sort wrapper's own cost — it runs above the bitmap pipeline (which times its ops
-        // into CompiledQueryMatch's telemetry) and is otherwise absent from include timings().
-        // EntriesStreamed >> result count flags a degenerate IndexOrderStreaming.
         if (SortStrategy is { } strategy)
             parameters["Strategy"] = strategy.ToString();
 
-        // Why that strategy was chosen, not just which one. GateDecision is the cost gate's verdict; for the
-        // cost-weighted branches we also surface the numbers it weighed so the choice is auditable (and a
-        // Strategy that disagrees with GateDecision flags a $rvn_corax_sort pin override).
         if (GateDecision != SortStrategyDecision.NotEvaluated)
         {
             parameters["StrategyReason"] = GateDecision.ToString();
@@ -889,10 +867,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         if (SortingTimeInTicks > 0)
             parameters["Ms"] = (SortingTimeInTicks / (Stopwatch.Frequency / 1000.0)).ToString("F3", CultureInfo.InvariantCulture);
 
-        // Surface the sort's in/out, otherwise invisible above the pipeline. Incoming = full candidate set
-        // considered (TotalResults); Output = rows handed to the page, capped by _take since a top-N sort
-        // ranks every candidate but emits at most _take (e.g. "order by score() limit 10" over 283K reads
-        // Incoming=283,000, Output=10).
         if (TotalResults >= 0)
         {
             parameters["Incoming"] = TotalResults.ToString("N0");

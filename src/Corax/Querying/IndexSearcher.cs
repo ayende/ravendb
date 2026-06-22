@@ -253,9 +253,8 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         Analyzer.TokensPool.Return(tokens);
         Analyzer.BufferPool.Return(buffer);
     }
-    // Throwing wrapper over TryEncodeAndApplyAnalyzer: a term the analyzer splits into != 1 token has no single
-    // posting list, which is not allowed where a single Slice is required.
-    internal Slice EncodeAndApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<char> term)
+
+    private Slice EncodeAndApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<char> term)
     {
         if (TryEncodeAndApplyAnalyzer(binding, analyzer, term, out var value) == false)
             throw new NotSupportedException($"Analyzer turned term: {term.ToString()} into multiple terms, which is not allowed in this case.");
@@ -274,7 +273,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
 
     // Non-throwing counterpart of the span EncodeAndApplyAnalyzer: literal/empty/null fast-paths return true;
     // otherwise delegates to TryApplyAnalyzer, which returns false when the analyzer emits != 1 token.
-    internal bool TryEncodeAndApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<char> term, out Slice value)
+    private bool TryEncodeAndApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<char> term, out Slice value)
     {
         if (term.Length == 0 || term.SequenceEqual(Constants.EmptyStringCharSpan.Span))
         {
@@ -336,15 +335,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
 
         return TryEncodeAndApplyAnalyzer(binding, binding.Analyzer, term.AsSpan(), out termSlice);
     }
-
-
-    // Throwing wrapper over TryApplyAnalyzer.
-    public void ApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value)
-    {
-        if (TryApplyAnalyzer(binding, analyzer, originalTerm, out value) == false)
-            throw new NotSupportedException($"Analyzer turned term: {Encoding.UTF8.GetString(originalTerm)} into multiple terms, which is not allowed in this case.");
-    }
-
+    
     // Non-throwing counterpart of ApplyAnalyzer. The exact / no-analyzer path is always a single literal token
     // (returns true); only the analyzed path can produce != 1 token, in which case it returns false.
     private bool TryApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value)
@@ -365,10 +356,6 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return TryAnalyzeTerm(analyzer, originalTerm, out value, out _);
     }
 
-    // Runs the analyzer and returns false (instead of throwing) when it emits != 1 token. The throwing entry points
-    // (ApplyAnalyzer / EncodeAndApplyAnalyzer, which require a single term) wrap this; the single-posting-list
-    // resolvers (GetTermPostingListId / NumberOfDocumentsUnderSpecificTerm) reach it via TryAnalyzeSingleToken and
-    // treat false as "no such single term" rather than a query failure.
     private bool TryAnalyzeTerm(Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value,
         out ByteStringContext<ByteStringMemoryCache>.InternalScope disposable)
     {

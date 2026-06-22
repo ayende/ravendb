@@ -1493,19 +1493,6 @@ namespace Voron.Data.Containers
             }
         }
 
-        /// <summary>
-        /// Assumes that ids is sorted 
-        /// </summary>
-        public static void GetAll(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, PageLocator pageCache)
-        {
-            // Reads each id's container into spans[i], preserving the caller's order. A negative id is "missing" and
-            // yields a default span (container ids are always positive, so any negative is the caller's sentinel).
-            GetAllCore(llt, ids, spans, permutation: default, pageCache);
-        }
-
-        /// <summary>
-        /// Like <see cref="GetAll"/>, but fetches in container-id (≈ page) order for locality first, doesn't change the order of ids.
-        /// </summary>
         public static void GetAllSortedByPage(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, PageLocator pageCache)
         {
             int n = ids.Length;
@@ -1519,16 +1506,11 @@ namespace Voron.Data.Containers
             RoaringBitmap.InitializeIndices(idx, n);
             keys.Sort(idx[..n]); // keys ascending (page order)
 
-            // Read in (now sorted) page order and scatter each result back to its original slot via idx, so the
-            // caller still sees spans[i] paired with its ids[i].
             GetAllCore(llt, keys, spans, idx[..n], pageCache);
         }
 
-        // Page-grouped container read shared by GetAll and GetAllSortedByPage. For each ids[i] it reads the container
-        // into spans[target], where target is permutation[i] when permutation is non-empty (GetAllSortedByPage scatters
-        // a page-ordered read back to the original slots) or i otherwise (GetAll, input order). Reusing the current
-        // page across a run of same-page ids avoids repeating the page lookup + Container construction per id; a
-        // negative id is "missing" and yields a default span.
+        public static void GetAll(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, PageLocator pageCache) => GetAllCore(llt, ids, spans, permutation: default, pageCache);
+        
         private static void GetAllCore(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, ReadOnlySpan<int> permutation, PageLocator pageCache)
         {
             bool permuted = permutation.IsEmpty == false;
@@ -1554,15 +1536,16 @@ namespace Voron.Data.Containers
                         page = llt.GetPage(pageNum);
                         pageCache.SetReadable(page);
                     }
-                    currentPageNum = pageNum;
-                    if (page.IsOverflow == false)
-                        container = new Container(page);
-                }
 
-                if (page.IsOverflow)
-                {
-                    spans[target] = new(page.DataPointer, page.OverflowSize);
-                    continue;
+                    currentPageNum = pageNum;
+
+                    if (page.IsOverflow)
+                    {
+                        spans[target] = new(page.DataPointer, page.OverflowSize);
+                        continue;
+                    }
+
+                    container = new Container(page);
                 }
 
                 var metadata = container.MetadataFor(OffsetToIndex(offset));
