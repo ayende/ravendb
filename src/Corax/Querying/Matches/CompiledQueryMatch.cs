@@ -105,12 +105,6 @@ public class CompiledQueryMatch(
 
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
-    public bool Contains(long entryId)
-    {
-        EnsureExecuted();
-        return _bitmapData.Contains(entryId);
-    }
-
     public long MinEntryId
     {
         get

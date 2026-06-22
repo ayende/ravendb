@@ -56,7 +56,6 @@ public interface IQueryMatch
 /// </summary>
 public interface IBitmapQueryMatch : IQueryMatch
 {
-    bool Contains(long entryId);
     long MinEntryId { get; }
     long MaxEntryId { get; }
 

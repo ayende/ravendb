@@ -32,12 +32,6 @@ public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransact
         }
     }
 
-    public bool Contains(long entryId)
-    {
-        Initialize();
-        return _bitmap.Contains(entryId);
-    }
-
     public long MinEntryId
     {
         get

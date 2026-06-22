@@ -29,12 +29,6 @@ public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, I
 
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
-    public bool Contains(long entryId)
-    {
-        Initialize();
-        return _bitmap.Contains(entryId);
-    }
-
     public long MinEntryId
     {
         get
