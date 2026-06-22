@@ -72,7 +72,7 @@ internal static class RangePostingBuckets
 
         using var containersScope = allocator.Allocate(sizeof(UnmanagedSpan) * count, out ByteString containers);
         var containersPtr = (UnmanagedSpan*)containers.Ptr;
-        Container.GetAll(llt, ids, new Span<UnmanagedSpan>(containersPtr, count), -1L, llt.PageLocator);
+        Container.GetAll(llt, ids, new Span<UnmanagedSpan>(containersPtr, count), llt.PageLocator);
 
         long total = 0;
         if (isLarge)

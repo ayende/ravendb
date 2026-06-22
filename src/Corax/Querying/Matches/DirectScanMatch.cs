@@ -247,7 +247,7 @@ public sealed class DirectScanFilteredMatch(
                 Searcher.ResolveEntryLocations(sorted, locs);
 
                 var spans = containerSpans[..read];
-                Container.GetAll(Llt, locs, spans, -1, Llt.PageLocator);
+                Container.GetAllSortedByPage(Llt, locs, spans, Llt.PageLocator);
 
                 Searcher.InitializeSpecialTermsMarkers();
 

@@ -169,7 +169,7 @@ namespace Corax.Querying.Matches.TermsProviders
             }
             
             
-            Voron.Data.Containers.Container.GetAll(_searcher._transaction.LowLevelTransaction, containersIds, new Span<UnmanagedSpan>(containersPtr, containersIds.Length), -1, _searcher.Transaction.LowLevelTransaction.PageLocator);
+            Voron.Data.Containers.Container.GetAll(_searcher._transaction.LowLevelTransaction, containersIds, new Span<UnmanagedSpan>(containersPtr, containersIds.Length), _searcher.Transaction.LowLevelTransaction.PageLocator);
             
             for (int i = _nullExists ? 1 : 0; i < NumberOfTerms; ++i)
             {

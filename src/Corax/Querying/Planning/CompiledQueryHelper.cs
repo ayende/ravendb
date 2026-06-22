@@ -289,7 +289,7 @@ public static class CompiledQueryHelper
                 ctx.EntryScanEntriesScanned += read;
 
                 searcher.ResolveEntryLocations(batch, containerLocs);
-                Container.GetAll(llt, containerLocs[..read], spans, -1, llt.PageLocator);
+                Container.GetAllSortedByPage(llt, containerLocs[..read], spans, llt.PageLocator);
                 searcher.InitializeSpecialTermsMarkers();
 
                 int validCount = 0;

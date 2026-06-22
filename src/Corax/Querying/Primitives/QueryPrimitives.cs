@@ -798,7 +798,7 @@ public static class QueryPrimitives
                     containerItems.Clear();
                     containerItems.EnsureCapacityFor(smallLen);
                     containerItems.Count = smallLen;
-                    Container.GetAll(llt, smallsSpan[..smallLen], containerItems.ToSpan(), long.MinValue, pageLocator);
+                    Container.GetAll(llt, smallsSpan[..smallLen], containerItems.ToSpan(), pageLocator);
 
                     if (readerInitialized == false)
                     {

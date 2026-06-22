@@ -1496,38 +1496,11 @@ namespace Voron.Data.Containers
         /// <summary>
         /// Assumes that ids is sorted 
         /// </summary>
-        public static void GetAll(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, long missingValue, PageLocator pageCache)
+        public static void GetAll(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, PageLocator pageCache)
         {
-            for (int i = 0; i < ids.Length; i++)
-            {
-                if (ids[i]== missingValue)
-                {
-                    spans[i] = default;
-                    continue;
-                }
-                var pageNum = ids[i] >> Constants.Storage.PageSizeShift;
-                var offset = ids[i] & Constants.Storage.PageSizeMask;
-
-                if (pageCache.TryGetReadOnlyPage(pageNum, out var page) == false)
-                {
-                    page = llt.GetPage(pageNum);
-                    pageCache.SetReadable(page);
-                }
-
-                if (page.IsOverflow)
-                {
-                    spans[i] = new(page.DataPointer, page.OverflowSize);
-                    continue;
-                }
-                
-                var container = new Container(page);
-                
-                var metadata = container.MetadataFor(OffsetToIndex(offset));
-                Debug.Assert(metadata.IsFree == false);
-                var p = page.Pointer;
-                int size = metadata.Get(ref p);
-                spans[i] = new(p, size);
-            }
+            // Reads each id's container into spans[i], preserving the caller's order. A negative id is "missing" and
+            // yields a default span (container ids are always positive, so any negative is the caller's sentinel).
+            GetAllCore(llt, ids, spans, permutation: default, pageCache);
         }
 
         /// <summary>
@@ -1546,54 +1519,57 @@ namespace Voron.Data.Containers
             RoaringBitmap.InitializeIndices(idx, n);
             keys.Sort(idx[..n]); // keys ascending (page order)
 
-            int firstRealValue = Sorting.GallopLowerBound(keys, 0, n, 0);
+            // Read in (now sorted) page order and scatter each result back to its original slot via idx, so the
+            // caller still sees spans[i] paired with its ids[i].
+            GetAllCore(llt, keys, spans, idx[..n], pageCache);
+        }
 
-            for (int k = 0; k < firstRealValue; k++)
+        // Page-grouped container read shared by GetAll and GetAllSortedByPage. For each ids[i] it reads the container
+        // into spans[target], where target is permutation[i] when permutation is non-empty (GetAllSortedByPage scatters
+        // a page-ordered read back to the original slots) or i otherwise (GetAll, input order). Reusing the current
+        // page across a run of same-page ids avoids repeating the page lookup + Container construction per id; a
+        // negative id is "missing" and yields a default span.
+        private static void GetAllCore(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, ReadOnlySpan<int> permutation, PageLocator pageCache)
+        {
+            bool permuted = permutation.IsEmpty == false;
+            long currentPageNum = -1;
+            Container container = default;
+            Page page = default;
+            for (int i = 0; i < ids.Length; i++)
             {
-                spans[idx[k]] = default;
-            }
-
-            int i = firstRealValue;
-
-            while (i < n)
-            {
-                long id = keys[i];
-                int orig = idx[i];
-
-                long pageNum = id >> Constants.Storage.PageSizeShift;
-                if (pageCache.TryGetReadOnlyPage(pageNum, out var page) == false)
+                int target = permuted ? permutation[i] : i;
+                if (ids[i] < 0)
                 {
-                    page = llt.GetPage(pageNum);
-                    pageCache.SetReadable(page);
+                    spans[target] = default;
+                    continue;
+                }
+
+                var pageNum = ids[i] >> Constants.Storage.PageSizeShift;
+                var offset = ids[i] & Constants.Storage.PageSizeMask;
+
+                if (pageNum != currentPageNum)
+                {
+                    if (pageCache.TryGetReadOnlyPage(pageNum, out page) == false)
+                    {
+                        page = llt.GetPage(pageNum);
+                        pageCache.SetReadable(page);
+                    }
+                    currentPageNum = pageNum;
+                    if (page.IsOverflow == false)
+                        container = new Container(page);
                 }
 
                 if (page.IsOverflow)
                 {
-                    // An overflow page has one value only; process it and move to next index safely
-                    spans[orig] = new(page.DataPointer, page.OverflowSize);
-                    i++;
+                    spans[target] = new(page.DataPointer, page.OverflowSize);
                     continue;
                 }
 
-                // Optimization: Process all contiguous IDs belonging to this same non-overflow page
-                var container = new Container(page);
-                while (i < n)
-                {
-                    long currentId = keys[i];
-                    long currentPageNum = currentId >> Constants.Storage.PageSizeShift;
-                    if (currentPageNum != pageNum)
-                        break; // Encountered a new page; i points to its first element.
-
-                    long offset = currentId & Constants.Storage.PageSizeMask;
-                    var metadata = container.MetadataFor(OffsetToIndex(offset));
-                    Debug.Assert(metadata.IsFree == false);
-
-                    var p = page.Pointer;
-                    int size = metadata.Get(ref p);
-                    spans[idx[i]] = new(p, size);
-
-                    i++;
-                }
+                var metadata = container.MetadataFor(OffsetToIndex(offset));
+                Debug.Assert(metadata.IsFree == false);
+                var p = page.Pointer;
+                int size = metadata.Get(ref p);
+                spans[target] = new(p, size);
             }
         }
 

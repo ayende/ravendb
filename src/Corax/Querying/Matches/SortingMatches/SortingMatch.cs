@@ -302,17 +302,13 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
         if (take < 0)
         {
-            // No LIMIT: materialize the whole bitmap in one Fill, then Fisher-Yates shuffle.
+            // No LIMIT: materialize the whole bitmap in one Fill, then shuffle.
             match._results.EnsureCapacityFor((int)totalCount);
             Span<long> bulk = match._results.ToFullCapacitySpan();
             int filled = bitmapMatch.Fill(bulk);
             match._results.Count = filled;
 
-            for (int i = filled - 1; i > 0; i--)
-            {
-                int j = random.Next(i + 1);
-                (match._results[i], match._results[j]) = (match._results[j], match._results[i]);
-            }
+            random.Shuffle(match._results.ToSpan());
         }
         else
         {
@@ -496,7 +492,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
             if (_smallPostListIds.Count == 0)
                 return;
 
-            Container.GetAll(_llt, _smallPostListIds.ToSpan(), new Span<UnmanagedSpan>(_containerItems, _smallPostListIds.Count), long.MinValue, _pageLocator);
+            Container.GetAll(_llt, _smallPostListIds.ToSpan(), new Span<UnmanagedSpan>(_containerItems, _smallPostListIds.Count), _pageLocator);
 
             
         }

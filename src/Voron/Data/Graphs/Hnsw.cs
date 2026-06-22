@@ -524,7 +524,7 @@ public unsafe partial class Hnsw
             _nodeIdToLocations.GetFor(keys, keys, -1);
 
             var spans = Buffers.GetSpans(keys.Length);
-            Container.GetAll(Llt, keys, spans, -1, Llt.PageLocator);
+            Container.GetAllSortedByPage(Llt, keys, spans, Llt.PageLocator);
             for (int i = 0; i < keys.Length; i++)
             {
                 var buf = spans[i].ToSpan();

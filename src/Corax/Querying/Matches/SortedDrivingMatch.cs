@@ -184,7 +184,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 if (smallCount > 0)
                 {
                     Container.GetAll(_llt, entryBuffer[..smallCount],
-                        new Span<UnmanagedSpan>(_smallContainerItems.RawItems, smallCount), long.MinValue, pageLocator);
+                        new Span<UnmanagedSpan>(_smallContainerItems.RawItems, smallCount), pageLocator);
                 }
             }
 
