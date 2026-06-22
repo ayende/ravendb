@@ -29,8 +29,8 @@ public abstract class SortingMultiMatch : IQueryMatch, IDisposable, IRequireSort
     public abstract long Count { get; }
     public abstract QueryCountConfidence Confidence { get; }
     public abstract int Fill(Span<long> buffer);
-    public abstract void Score(Span<long> matches, Span<float> scores, float boostFactor);
-    // Top-level sort: its own Score is a no-op, so ScoreSorted just mirrors it.
+    // Top-level sort: its own Score is a no-op (never nested in another match's score chain), so ScoreSorted mirrors it.
+    public void Score(Span<long> matches, Span<float> scores, float boostFactor) { }
     public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor) => Score(matches, scores, boostFactor);
     public abstract QueryInspectionNode Inspect();
     public abstract void SetSortingDataTransfer(in SortingDataTransfer sortingDataTransfer);
