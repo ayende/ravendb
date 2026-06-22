@@ -136,9 +136,12 @@ public sealed class DirectScanSimpleMatch(IndexSearcher searcher, IQueryMatch dr
 
         while (count < remaining)
         {
-            // Bound the read by the output space so DedupAddNew survivors always fit in matches. We process whole
-            // batches (no mid-batch stop), so a single batch may overshoot the take limit by up to its size.
-            int batchSize = Math.Min(QueryPrimitives.EntryScanBatchSize, matches.Length - count);
+            // Bound the read by the remaining take/output space, not matches.Length. We process whole batches with
+            // no mid-batch stop, so reading matches.Length entries would pull the entire driving set in one batch and
+            // defeat the page-bound early exit. This still batches (one bulk DedupAddNew over up to EntryScanBatchSize
+            // entries); it only avoids over-reading past the page. remaining <= matches.Length, so the kept survivors
+            // always fit in matches[count..].
+            int batchSize = Math.Min(QueryPrimitives.EntryScanBatchSize, remaining - count);
             if (batchSize == 0)
                 break;
 
