@@ -37,13 +37,6 @@ public partial class IndexSearcher
         };
     }
 
-    // ── Shared search helpers ───────────────────────────────────────────
-
-    /// <summary>
-    /// Accumulate <paramref name="match"/> into <paramref name="searchBitmap"/>, allocating the
-    /// bitmap and its scratch buffer on first use. The first accumulation always uses OR
-    /// (seeding the empty bitmap); subsequent accumulations respect <paramref name="operator"/>.
-    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private void AccumulateIntoSearchBitmap(
         IQueryMatch match,
@@ -68,8 +61,6 @@ public partial class IndexSearcher
         }
     }
 
-    /// <summary>AND or OR the accumulated single-term matches into the search bitmap.
-    /// Shared by all three SearchQuery variants.</summary>
     private void MergeTermMatches(List<Slice> termMatches, FieldMetadata field,
         ref BitmapMatch searchBitmap, ref Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData,
         Constants.Search.Operator @operator, CancellationToken cancellationToken)
@@ -82,25 +73,19 @@ public partial class IndexSearcher
 
         if (@operator == Constants.Search.Operator.And)
         {
-            bool first = true;
-            foreach (var term in termMatches)
+            Primitives.QueryPrimitives.OrWithMatch(TermQuery(field, termMatches[0]), ref termBitmap.BitmapState, token: cancellationToken);
+            for (int index = 1; index < termMatches.Count; index++)
             {
-                var termQuery = TermQuery(field, term);
-                if (first)
-                {
-                    Primitives.QueryPrimitives.OrWithMatch(termQuery, ref termBitmap.BitmapState, token: cancellationToken);
-                    first = false;
-                }
-                else
-                {
-                    Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData, cancellationToken);
-                }
+                var termQuery = TermQuery(field, termMatches[index]);
+                Primitives.QueryPrimitives.AndWithMatch(termQuery, ref termBitmap.BitmapState, ref tempTermBitmapData, cancellationToken);
             }
         }
         else
         {
             foreach (var term in termMatches)
+            {
                 Primitives.QueryPrimitives.OrWithMatch(TermQuery(field, term), ref termBitmap.BitmapState, token: cancellationToken);
+            }
         }
 
         AccumulateIntoSearchBitmap(termBitmap, ref searchBitmap, ref tempBitmapData, @operator, cancellationToken);
@@ -108,8 +93,6 @@ public partial class IndexSearcher
         termBitmap.Dispose();
     }
 
-    /// <summary>AND all phrase terms together, wrap in PhraseQuery for proximity verification,
-    /// then accumulate. Shared by PhraseQuery and WildcardAdjustments variants.</summary>
     private void AccumulatePhraseQuery(FieldMetadata field, ContextBoundNativeList<Slice> terms,
         ref BitmapMatch searchBitmap, ref Voron.Data.RoaringBitmaps.RoaringBitmap tempBitmapData,
         Constants.Search.Operator @operator, CancellationToken cancellationToken)

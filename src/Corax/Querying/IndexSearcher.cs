@@ -121,13 +121,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private bool _nonExistingPostingListsTreeLoaded;
 
     public long MaxFacetQueryFilterSizeInBytes = 128 * 1024 * 1024;
-    [Obsolete("Use MaxFacetQueryFilterSizeInBytes instead")]
-    public long MaxMemoizationSizeInBytes
-    {
-        get => MaxFacetQueryFilterSizeInBytes;
-        set => MaxFacetQueryFilterSizeInBytes = value;
-    }
-
+ 
     public bool DocumentsAreBoosted => GetDocumentBoostTree().NumberOfEntries > 0;
 
     
@@ -178,13 +172,8 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     public long[] VectorFieldsMarkers { get { InitializeSpecialTermsMarkers(); return _vectorFieldsMarkers; } }
     public long DictionaryId => _dictionaryId;
 
-    /// <summary>Batch-resolve entry IDs to container locations. Entry IDs MUST be sorted ascending —
-    /// the underlying <see cref="Lookup{TKey}.GetFor"/> is cursor/gallop based and assumes ascending
-    /// keys (it is not merely a locality optimization). Unresolvable entries get -1.</summary>
-    public void ResolveEntryLocations(ReadOnlySpan<long> entryIds, Span<long> containerLocations)
-    {
-        _entryIdToLocation.GetFor(entryIds, containerLocations, -1);
-    }
+    /// <summary>Batch-resolve entry IDs to container locations. Entry IDs MUST be sorted ascending. Unresolvable entries get -1.</summary>
+    public void ResolveEntryLocations(ReadOnlySpan<long> entryIds, Span<long> containerLocations) => _entryIdToLocation.GetFor(entryIds, containerLocations, -1);
 
     public EntryTermsReader GetEntryTermsReader(long id, ref Page p, CompactKey key = null)
     {
@@ -300,8 +289,6 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         if (term == Constants.NullValue)
             return Constants.NullValueSlice;
 
-        // Delegate to the span overload, which encodes into the transaction allocator instead of allocating a
-        // managed byte[] via Encodings.Utf8.GetBytes(term). AsSpan() is allocation-free.
         return EncodeAndApplyAnalyzer(binding, binding.Analyzer, term.AsSpan());
     }
 
@@ -362,22 +349,16 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return terms?.DictionaryId ?? -1;
     }
    
-    /// <summary>Number of distinct terms recorded under <paramref name="field"/>'s compact tree,
-    /// plus an entry for the null-posting-list bucket if one exists. This is a *term-dictionary*
-    /// count, not a matching-document count — use <see cref="NumberOfEntries"/> or
-    /// <see cref="NumberOfDocumentsUnderSpecificTerm"/> for document-count metrics.</summary>
+    /// <summary>Number of distinct terms recorded under <paramref name="field"/>'s compact tree, plus null if exists for this field.</summary>
     public long GetDistinctTermCountInField(in FieldMetadata field)
     {
         long termCount = 0;
-
         var fieldTree = _fieldsTree?.CompactTreeFor(field.FieldName);
-
         termCount += fieldTree?.NumberOfEntries ?? 0;
 
         if (TryGetPostingListForNull(field, out var nullPostingListId))
         {
             var nullPostingList = GetPostingList(nullPostingListId);
-
             termCount += nullPostingList?.State.NumberOfEntries ?? 0;
         }
 
@@ -585,18 +566,13 @@ public sealed unsafe partial class IndexSearcher : IDisposable
 
     public bool HasMultipleTermsInField(string fieldName)
     {
-        // When the write-time snapshot is attached, answer straight from it: a string hash lookup with no
-        // slice allocation and no Voron read. This is the hot path for the structural plan key.
         if (_fieldsWithMultipleTerms is { } snapshot)
             return snapshot.Contains(fieldName);
 
-        // No snapshot (disabled by the field-count cap, or a standalone searcher): prefer the interned slice
-        // from the field mapping (a string-keyed dictionary lookup, no allocation) over allocating a temporary
-        // slice. Dynamic fields not present in the mapping fall back to the allocating path.
-        if (_fieldMapping.TryGetByFieldName(fieldName, out var binding))
+        if (_fieldMapping.TryGetByFieldName(fieldName, out var binding)) // prefer interned slice over allocation
             return HasMultipleTermsInField(binding.Metadata.FieldName);
 
-        using var _ = Slice.From(Allocator, fieldName, out var slice);
+        using var _ = Slice.From(Allocator, fieldName, out var slice); // probably dynamic field, have to allocate
         return HasMultipleTermsInField(slice);
     }
 
@@ -633,10 +609,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return NumberOfDocumentsUnderSpecificTerm(postingListId) > 0;
     }
 
-    /// <summary>Exact O(1) count of documents where <paramref name="field"/> exists (is present, including
-    /// explicit nulls) — the index entry count minus the field's non-existing posting list. This matches the
-    /// deduplicated document set <see cref="ExistsQuery"/> produces, so it is exact for multi-valued fields too
-    /// (a document lacking the field is recorded once in the non-existing list regardless of value count).</summary>
+    /// <summary>Exact O(1) count of documents where <paramref name="field"/> exists (including explicit nulls).</summary>
     public long NumberOfEntriesForExists(in FieldMetadata field)
     {
         long nonExisting = 0;
