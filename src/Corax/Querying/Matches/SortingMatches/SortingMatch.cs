@@ -46,7 +46,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// Cost ratio of cheap streamed entries (sequential decode + bitmap test) vs. expensive materialized candidates (random lookups in GetFor, GetAll, sorting, etc).
     /// Benchmarks led to this value, which is how much more entries we should process in streaming vs. in memory sort.
     /// </summary>
-    private const double IndexStreamingVsInMemorySortCostRatio = 16;
+    private const int IndexStreamingVsInMemorySortCostRatio = 16;
     private ByteStringContext<ByteStringMemoryCache>.InternalScope _entriesBufferScope;
 
     private ContextBoundNativeList<long> _results;
@@ -343,7 +343,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         }
     }
     
-    internal unsafe struct SortedIndexReader<TDirection> : IDisposable
+    internal struct SortedIndexReader<TDirection> : IDisposable
         where TDirection : struct, ILookupIterator
     {
         private PostingList.Iterator _postListIt;
@@ -592,17 +592,13 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
         int maxResults = match._take == -1 ? int.MaxValue : match._take;
 
-        // Runtime escape hatch: the gate assumed uniform candidate spread; if they cluster far from the scan
-        // start the walk reads far more entries without hitting the limit. Past this multiple of the candidate
-        // count, abandon the walk and materialize+sort instead, capping the cost. Erring late is cheap (extra
-        // sequential posting reads) vs erring early (forfeiting streaming's win when it would have finished soon).
-        const int maxScanCandidateMultiplier = 16;
-        long scanBailoutThreshold = match.TotalResults * maxScanCandidateMultiplier;
+        // Runtime escape hatch: the cost gate assumed uniform candidate spread; if we scan too many entries without hitting the
+        // end of the query, we bail to in memory sort.  Erring late is cheap (extra sequential posting reads) vs erring early
+        // (forfeiting streaming's win when it would have finished soon).
+        long scanBailoutThreshold = match.TotalResults * IndexStreamingVsInMemorySortCostRatio;
         bool forceUsingOnlyIndex = match.ForcedStrategy == CoraxSortingStrategy.IndexOrderStreaming;
 
-        // Per-plan learning: record (entries actually scanned / the gate's uniform estimate) so a future
-        // ShouldUseIndexOrderStreaming for this plan can inflate its estimate when candidates turn out to
-        // cluster. Skipped on the forced path — those runs ignore the gate and would pollute the signal.
+        // Per-plan learning: record (entries actually scanned / the gate's uniform estimate) so a future query for this plan can have a better estimate
         var scanInflation = forceUsingOnlyIndex is false && bitmapMatch is CompiledQueryMatch { CompiledPlan.StreamScanInflation: { } si } ? si : null;
 
         using var sortedIdsScope = allocator.Allocate(sizeof(long) * SortBatchSize, out ByteString bs);
@@ -610,13 +606,9 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
         using var emittedBitmap = new RoaringBitmap(allocator);
 
-        // Seek optimization: when the WHERE field matches the ORDER BY field, skip walking
-        // tree terms that can't match by seeking the underlying iterator to the boundary value.
-        // The hint value is matched against the sort field at the per-direction branch in GetReader,
-        // where the concrete key type is known.
+        // Seek optimization: when the WHERE field matches the ORDER BY field, skip walking tree terms that can't match by seeking the underlying iterator to the boundary value.
         object hintValue = null;
-        if (bitmapMatch is CompiledQueryMatch { SortHint: { } hint } &&
-            SliceEqualsUtf8(entryCmp.GetSortFieldName(match), hint.FieldName))
+        if (bitmapMatch is CompiledQueryMatch { SortHint: { } hint } && SliceEqualsUtf8(entryCmp.GetSortFieldName(match), hint.FieldName))
         {
             hintValue = hint.Value;
         }
@@ -629,9 +621,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
             if (forceUsingOnlyIndex == false && match.EntriesStreamed > scanBailoutThreshold)
             {
-                // Degenerate walk: scanned too much for too few hits. Discard the streamed prefix
-                // and re-sort the full candidate set via SortInMemory. We discard the sorted portion from the
-                // scan to ensure that the sort is done consistently with the SortInMemory.
+                // Degenerate walk: scanned too much for too few hits. Discard the streamed prefix and re-sort the full candidate set via SortInMemory.
                 // EntriesStreamed is kept so the wasted scan stays visible in the query plan graph.
                 match.SortStrategy = CoraxSortingStrategy.IndexOrderFallbackToInMemorySort;
                 scanInflation?.Observe(match.EntriesStreamed, (long)match._rawStreamScanEstimate);
@@ -646,14 +636,12 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
             match.EntriesStreamed += read; // sort-index IDs read before intersection
 
-            // Intersect this batch with the WHERE bitmap, then dedup against the emitted
-            // bitmap in a single pass — filters + adds new entries to emittedBitmap at once.
-            read = bitmapMatch.BitmapState.AndWith(sortedIdBuffer, read);
+            // Intersect this batch with the WHERE bitmap, then dedup against the emitted bitmap in a single pass
+            read = bitmapMatch.BitmapState.AndWith(sortedIdBuffer, read); 
             read = emittedBitmap.DedupAddNew(sortedIdBuffer, read);
 
             int toAdd = Math.Min(read, maxResults - match._results.Count);
-            for (int i = 0; i < toAdd; i++)
-                match._results.Add(sortedIdBuffer[i]);
+            match._results.AddRange(sortedIdBuffer[..toAdd]);
         }
 
         // Streaming completed within budget: feed the observed scan back so the gate keeps trusting this plan.
@@ -661,7 +649,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
 
         [SkipLocalsInit]
-        SortedIndexReader<TDirection> GetReader(long min, long max, object hint)
+        SortedIndexReader<TDirection> GetReader(long min, long max, object h)
         {
             if (typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.ForwardIterator) ||
                 typeof(TDirection) == typeof(Lookup<CompactTree.CompactKeyLookup>.BackwardIterator))
@@ -669,21 +657,17 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 var termsTree = match._searcher.GetTermsFor(entryCmp.GetSortFieldName(match));
                 var it = termsTree.IterateValues<TDirection>();
                 it.Reset();
-                if (hint is string strVal)
+                if (h is string strVal)
                 {
                     var compactKey = llt.AcquireCompactKey();
-                    int byteCount = System.Text.Encoding.UTF8.GetByteCount(strVal);
-                    if (byteCount <= Utf8StackAllocThreshold)
+                    int byteCount = System.Text.Encoding.UTF8.GetMaxByteCount(strVal.Length);
+                    Span<byte> stackBuf = byteCount switch
                     {
-                        Span<byte> stackBuf = stackalloc byte[Utf8StackAllocThreshold];
-                        int written = System.Text.Encoding.UTF8.GetBytes(strVal, stackBuf);
-                        compactKey.Set(stackBuf[..written]);
-                    }
-                    else
-                    {
-                        int written = System.Text.Encoding.UTF8.GetBytes(strVal, GrowUtf8Buffer(byteCount));
-                        compactKey.Set(((Span<byte>)Utf8ThreadBuffer)[..written]);
-                    }
+                        <= Utf8StackAllocThreshold => stackalloc byte[Utf8StackAllocThreshold],
+                        _ => GrowUtf8Buffer(byteCount)
+                    };
+                    int written = System.Text.Encoding.UTF8.GetBytes(strVal, stackBuf);
+                    compactKey.Set(stackBuf[..written]);
                     compactKey.ChangeDictionary(termsTree.DictionaryId);
                     it.Seek(new CompactTree.CompactKeyLookup(compactKey));
                 }
@@ -696,7 +680,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 var termsTree = match._searcher.GetLongTermsFor(entryCmp.GetSortFieldName(match));
                 var it = termsTree.Iterate<TDirection>();
                 it.Reset();
-                if (hint is long longVal)
+                if (h is long longVal)
                     it.Seek(new Int64LookupKey(longVal));
                 return new SortedIndexReader<TDirection>(llt, match._searcher, it, match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
@@ -707,7 +691,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
                 var termsTree = match._searcher.GetDoubleTermsFor(entryCmp.GetSortFieldName(match));
                 var it = termsTree.Iterate<TDirection>();
                 it.Reset();
-                if (hint is double doubleVal)
+                if (h is double doubleVal)
                     it.Seek(new DoubleLookupKey(doubleVal));
                 return new SortedIndexReader<TDirection>(llt, match._searcher, it, match._orderMetadata.Field, min, max, match._nullFirst, match._orderMetadata.Ascending);
             }
