@@ -64,10 +64,6 @@ public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, I
         return _iterator.Fill(ref _bitmap, matches);
     }
 
-    // Scores an UNSORTED batch (caller order significant, scores[i] aligned to matches[i]). Linear point Contains
-    // per element by design: matches[] is read-only and _bitmap is finalized, so each lookup is O(1). The grouped
-    // container merge can't be used because it requires sorted input; a sort+scatter alternative benchmarked
-    // 7-23x slower (see ayende/ravendb#4894). Sorted+deduped callers use ScoreSorted instead.
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         if (boostFactor == 0f)

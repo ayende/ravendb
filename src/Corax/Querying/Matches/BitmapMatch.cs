@@ -61,14 +61,6 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
         return _iterator.Fill(ref _bitmapState, matches);
     }
 
-    // Scores an UNSORTED batch: used when the caller's match order is significant and must be preserved (e.g. a
-    // vector post-filter feeding similarity-score order, or any Fill batch that wasn't materialized+sorted). Because
-    // scores[i] is positionally aligned to the unsorted matches[i], we cannot run the grouped container merge that
-    // ScoreSorted uses, so this is a point Contains per element. The loop is linear by design, NOT a perf bug:
-    // matches[] is read-only here and _bitmapState is finalized, so each Contains is an O(1) point lookup. A
-    // sort-into-scratch + grouped-merge + scatter-back alternative was benchmarked and ran 7-23x SLOWER (the sort
-    // and the random scatter-writes into scores[] cost more than the cheap, branch-predictable point lookups) - see
-    // ayende/ravendb#4894. When the caller already has sorted+deduped matches it calls ScoreSorted instead.
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
         // For bitmap-backed matches (e.g. search() results built by OR-ing term posting
