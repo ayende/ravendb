@@ -898,10 +898,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         return _fillFunc(this, matches);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public override void Score(Span<long> matches, Span<float> scores, float boostFactor)
-    {
-    }
 
     public override QueryInspectionNode Inspect()
     {
