@@ -240,15 +240,11 @@ public partial class Hnsw
                     //decode in bulk
                     Registration.InternalEntryIdToEntryId(matches.Slice(index, total));
 
-                    // The posting-list batch is sorted, so retain the filter matches with one grouped merge
-                    // (RetainPresentSorted) instead of a point lookup per element, then dedup the survivors against
-                    // _alreadySeen in one bulk pass. Doing the dedup per element here would be the quadratic trap:
-                    // _alreadySeen grows via single Adds, so its array containers stay unsorted and each Contains is
-                    // a linear scan. DedupAddNew sorts + merges + AddRanges instead.
+                    // first find only the items that are in the filter
                     int survivors = filter.RetainPresentSorted(matches.Slice(index, total));
+                    // then add only items that we didn't previously already have
                     int kept = _alreadySeen.DedupAddNew(matches.Slice(index, survivors), survivors);
-                    if (kept > 0)
-                        _foundCandidateInCurrentSmallPostingList = true;
+                    _foundCandidateInCurrentSmallPostingList |= kept > 0;
                     distances.Slice(index, kept).Fill(distance);
                     index += kept;
 
@@ -257,17 +253,11 @@ public partial class Hnsw
 
                 if (_currentMatchesIndex < _postingListResults.Count)
                 {
-                    // _postingListResults was decoded in bulk on read and is sorted, so a window of it can be
-                    // filtered + deduped in bulk like the large posting-list path: copy the window into the output,
-                    // retain the filter matches with one grouped merge, then dedup the survivors against
-                    // _alreadySeen. The resume cursor advances by the window size (independent of survivors), so the
-                    // remainder is processed on the next Fill — same streaming contract as before.
                     var amountRead = Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
                     _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, amountRead);
                     int survivors = filter.RetainPresentSorted(matches.Slice(index, amountRead));
                     int kept = _alreadySeen.DedupAddNew(matches.Slice(index, survivors), survivors);
-                    if (kept > 0)
-                        _foundCandidateInCurrentSmallPostingList = true;
+                    _foundCandidateInCurrentSmallPostingList |= kept > 0;
                     distances.Slice(index, kept).Fill(distance);
                     index += kept;
                     _currentMatchesIndex += amountRead;
