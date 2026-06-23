@@ -390,7 +390,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     
     public AllEntriesMatch AllEntries() => new(this, _transaction);
     
-    public TermMatch EmptyMatch() => TermMatch.CreateEmpty(this, Allocator);
+    public IQueryMatch EmptyMatch() => Matches.Meta.EmptyQueryMatch.Instance;
 
     public long GetDictionaryIdFor(Slice field)
     {

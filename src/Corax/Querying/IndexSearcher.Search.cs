@@ -142,7 +142,7 @@ public partial class IndexSearcher
         if (searchBitmap.IsAllocated == false)
         {
             searchBitmap.Dispose();
-            return TermMatch.CreateEmpty(this, Allocator);
+            return EmptyQueryMatch.Instance;
         }
         return searchBitmap;
     }

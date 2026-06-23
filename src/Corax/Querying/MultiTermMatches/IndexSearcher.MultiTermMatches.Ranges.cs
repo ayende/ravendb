@@ -178,7 +178,7 @@ public partial class IndexSearcher
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)
-            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+            return EmptyQueryMatch.Instance;
 
         ITermsProvider provider = forward
             ? new TermsRangeProvider<Lookup<CompactKeyLookup>.ForwardIterator, TLow, THigh>(this, terms, field, low, high)
@@ -194,7 +194,7 @@ public partial class IndexSearcher
         field = field.GetNumericFieldMetadata<long>(Allocator);
         var set = _fieldsTree?.LookupFor<Int64LookupKey>(field.FieldName);
         if (set == null)
-            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+            return EmptyQueryMatch.Instance;
 
         ITermsProvider provider = forward
             ? new TermsNumericRangeProvider<Lookup<Int64LookupKey>.ForwardIterator, TLow, THigh, Int64LookupKey>(this, set, field, low, high)
@@ -210,7 +210,7 @@ public partial class IndexSearcher
         field = field.GetNumericFieldMetadata<double>(Allocator);
         var set = _fieldsTree?.LookupFor<DoubleLookupKey>(field.FieldName);
         if (set == null)
-            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+            return EmptyQueryMatch.Instance;
 
         ITermsProvider provider = forward
             ? new TermsNumericRangeProvider<Lookup<DoubleLookupKey>.ForwardIterator, TLow, THigh, DoubleLookupKey>(this, set, field, low, high)
