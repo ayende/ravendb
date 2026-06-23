@@ -32,9 +32,12 @@ namespace Corax.Querying.Matches;
 ///   FROM Orders ORDER BY Status, CreatedAt DESC
 ///   FROM Users WHERE Age &gt; 18 ORDER BY Age, LastName
 ///
-/// The planner gates by per-term group size — this class caps groups at MaxGroupSize and throws if
-/// exceeded. Same-field optimization as SortedDrivingMatch: a WHERE on the primary sort field narrows
-/// the TermsRangeProvider. Residual predicates on other fields are evaluated by the wrapping
+/// To bound memory when many docs share one primary value, each primary-term group is capped at _maxGroupSize
+/// and truncated to its top-<c>take</c> entries by secondary value (a bounded top-K heap). This is loss-free for
+/// a paged query: only a group's top-<c>take</c> can ever reach the final result. An unbounded take (no LIMIT)
+/// disables truncation (_maxGroupSize = int.MaxValue), so the group grows to hold every matching doc.
+/// Same-field optimization as SortedDrivingMatch: a WHERE on the primary sort field narrows the
+/// TermsRangeProvider. Residual predicates on other fields are evaluated by the wrapping
 /// <see cref="DirectScanMatch"/>.
 /// </summary>
 public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDisposable
