@@ -16,7 +16,7 @@ public partial class IndexSearcher
         if (terms == null)
         {
             // If either the term or the field does not exist the request will be empty.
-            return TermMatch.CreateEmpty(this, Allocator);
+            return EmptyQueryMatch.Instance;
         }
 
         IQueryMatch match = field.HasBoost
