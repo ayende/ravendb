@@ -632,19 +632,24 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             DrainSpecialIntoGroup(_nonExistingPostingListId, entryBuffer);
             _nonExistingExhausted = true;
         }
+
+        int countAfterNonExisting = _groupEntries.Count;
         if (hasNull)
         {
             DrainSpecialIntoGroup(_nullPostingListId, entryBuffer);
             _nullExhausted = true;
         }
 
-        if ( _groupEntries.Count <= 0) return;
+        if (_groupEntries.Count <= 0) return;
 
-        if(_nullExhausted && _nonExistingExhausted)
-        { 
-            // Non-existing and null posting lists are each sorted, but after concat, we need to sort again 
+        // Each posting list is internally ascending, so a group fed by only one of them is already sorted. Only
+        // when BOTH contribute entries is the group a concatenation of two ascending runs (not globally ascending),
+        // and we must re-sort — the cursor-based secondary lookup (SortGroupBySecondary -> Lookup.GetFor) requires
+        // ascending entry ids.
+        bool bothContributed = countAfterNonExisting > 0 && _groupEntries.Count > countAfterNonExisting;
+        if (bothContributed)
             _groupEntries.ToSpan().Sort();
-        }
+
         SortGroupBySecondary();
     }
 
