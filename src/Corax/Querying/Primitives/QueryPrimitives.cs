@@ -498,14 +498,12 @@ public static class QueryPrimitives
                 return; // Universal pass-through: AND with all entries = no-op.
 
             case Planning.PostingSourceKind.Single:
-                {
                     long entryId = source.SingleEntryId;
                     bool keep = bitmap.Contains(entryId);
                     bitmap.Clear();
                     if (keep)
                         bitmap.Add(entryId);
                     return;
-                }
 
             case Planning.PostingSourceKind.SmallPostingList:
                 // limit bounds the AND *result*, not the operand. Truncating the materialized term to
@@ -600,20 +598,18 @@ public static class QueryPrimitives
         var buffer = stackalloc long[FillBufferSize];
         using var reader = new FastPForBufferedReader(llt.Allocator);
         reader.Init(item.Address + offset, item.Length - offset);
+        int read;
+        long total = 0;
+        while (total < limit && (read = reader.Fill(buffer, FillBufferSize)) > 0)
         {
-            int read;
-            long total = 0;
-            while (total < limit && (read = reader.Fill(buffer, FillBufferSize)) > 0)
-            {
-                token.ThrowIfCancellationRequested();
-                long remaining = limit - total;
-                read = (int)Math.Min(read, remaining);
-                if (read <= 0) break;
-                var results = new Span<long>(buffer, read);
-                EntryIdEncodings.DecodeAndDiscardFrequency(results, read);
-                bitmap.AddRange(results[..read]);
-                total += read;
-            }
+            token.ThrowIfCancellationRequested();
+            long remaining = limit - total;
+            read = (int)Math.Min(read, remaining);
+            if (read <= 0) break;
+            var results = new Span<long>(buffer, read);
+            EntryIdEncodings.DecodeAndDiscardFrequency(results, read);
+            bitmap.AddRange(results[..read]);
+            total += read;
         }
     }
 
@@ -659,18 +655,9 @@ public static class QueryPrimitives
         FastPForBufferedReader smallListReader = default;
         bool readerInitialized = false;
 
-        // upperBound counts the entry ids fed into the bitmap; it is an upper bound on the
-        // real cardinality (duplicates across terms collapse on insert). While upperBound < limit
-        // the real count cannot have reached the limit, so the expensive bitmap.ComputeCount()
-        // (O(containers), repairs lazy popcounts) is skipped via short-circuit — the AND/ANDNOT and
-        // TermsProviderMatch callers pass limit = long.MaxValue and therefore never pay for it. The
-        // exact count is consulted only once upperBound says the limit might have been reached.
-        // Batches are not clipped to the exact remaining room: overshooting by at most a batch
-        // (or one large posting list) is harmless — the caller pages to its real limit and
-        // for an AND seed an over-full bitmap only feeds the narrowing clause more candidates.
-        // It is also returned as the over-counting postings tally the range estimator calibrates against
-        // (see the <returns> note), which is why the large bucket below adds NumberOfEntries to it rather
-        // than resyncing to the dedup'd ComputeCount.
+        // an upper bound on the real cardinality (duplicates across terms collapse on insert).
+        // While upperBound < limit the real count cannot have reached the limit, so expensive bitmap.ComputeCount() can be skipped.
+        // Limit is checked on a per batch boundary, not exact, caller needs to check it
         long upperBound = 0;
         try
         {
@@ -754,11 +741,8 @@ public static class QueryPrimitives
                         var iterator = postingList.Iterate();
                         FillFromPostings(ref iterator, ref bitmap, token);
 
-                        // FillFromPostings adds an untracked number of entries, so add the posting list's
-                        // own NumberOfEntries (already in the header we just read) to keep upperBound an
-                        // over-counting tally. It stays a valid loop gate (>= the entries actually added,
-                        // so the exact ComputeCount still guards the real stop) and is exactly the postings
-                        // sum the range estimator predicts, so the returned tally needs no popcount.
+                        // FillFromPostings doesn't tell us the exact count it added, so we use NumberOfEntries
+                        // to keep upperBound an over-counting tally. May be less than that if there are duplicates, but not less 
                         upperBound += setState.NumberOfEntries;
                     }
                 }
