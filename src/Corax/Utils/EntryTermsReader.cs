@@ -81,7 +81,8 @@ public unsafe struct EntryTermsReader
     private readonly long[] _vectorFieldsMarkers;
     private readonly long _dicId;
     private byte* _cur;
-    private byte* _end, _start;
+    private readonly byte* _end;
+    private readonly byte* _start;
     private long _prevTerm;
     private long _prevLong;
     // Deferred key materialization: HandleRegularTerm records the matched term's container item

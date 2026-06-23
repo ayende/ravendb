@@ -746,7 +746,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
             if (_metadataTree != null && _metadataTree.TryRead(Constants.IndexWriter.VectorFieldsRootPagesSlice, out var reader))
                 _vectorFieldsMarkers = reader.ToUnmanagedSpan<long>().ToSpan().ToArray();
             else
-                _vectorFieldsMarkers = Array.Empty<long>();
+                _vectorFieldsMarkers = [];
         }
     }
 
