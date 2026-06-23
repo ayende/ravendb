@@ -145,13 +145,6 @@ public partial class IndexSearcher
         throw new ArgumentException("Range queries are supporting strings, longs or doubles only");
     }
 
-    // ── Slice-overloads for pre-analyzed terms ──────────────────────────
-    // These exist so callers that already hold an analyzer-encoded slice (e.g. via the
-    // per-execution analyzed-slice cache on QueryExecution) can skip the analyzer pass that
-    // the string-typed generic builders run internally. They use distinct names ("...Slice")
-    // because the existing generic builders accept TValue=Slice, which would otherwise make
-    // the calls ambiguous at use sites.
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public IQueryMatch GreaterThanQuerySlice(in FieldMetadata field, Slice value, bool forward = true)
         => RangeBuilder<Range.Exclusive, Range.Inclusive>(field, value, Slices.AfterAllKeys, forward);
