@@ -642,13 +642,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
         if (_groupEntries.Count <= 0) return;
 
-        // Each posting list is internally ascending, so a group fed by only one of them is already sorted. Only
-        // when BOTH contribute entries is the group a concatenation of two ascending runs (not globally ascending),
-        // and we must re-sort — the cursor-based secondary lookup (SortGroupBySecondary -> Lookup.GetFor) requires
-        // ascending entry ids.
-        bool bothContributed = countAfterNonExisting > 0 && _groupEntries.Count > countAfterNonExisting;
-        if (bothContributed)
-            _groupEntries.ToSpan().Sort();
+        if (countAfterNonExisting > 0 && _groupEntries.Count > countAfterNonExisting) 
+            _groupEntries.ToSpan().Sort(); // both contributed (each separately sorted), so we have to sort
 
         SortGroupBySecondary();
     }

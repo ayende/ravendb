@@ -100,13 +100,9 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     /// <c>FROM Orders WHERE Company = 'companies/1' ORDER BY OrderedAt</c> on a compound (Company, OrderedAt) index.
     /// The provider walks the compound subtree for the pinned first field, so it already yields the second field in
     /// order within that prefix.
-    ///
-    /// Unlike the single-field ctor, it does NOT merge the field's null / non-existing posting lists: those are
-    /// global (they span every first-field value) while this scan covers only one prefix, so merging them would emit
-    /// rows from other Company values. It also doesn't need to: the planner only routes a query here when the second
-    /// field's null/missing docs can't reach the result in the wrong order — either a range clause on the second
-    /// field excludes them, or the field has none. When they must be ordered (per NullsSortMode), the planner rejects
-    /// this scan and falls back to bitmap + SortingMatch (see the null/missing guard in QueryPlanBuilder.Resolution).
+    /// 
+    /// The planner rejects scans when the field has null / missing values and the null sort mode isn't a match to the
+    /// phyiscally sorted layout and falls back to bitmap + SortingMatch.
     /// </summary>
     public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator)
     {
@@ -200,11 +196,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
                 if (termType == TermIdMask.Single)
                 {
-                    // Accumulate a run of consecutive Single-term entries (in sort/emit order) into the output, then
-                    // dedup the run in one bulk pass. DedupAddNew sorts internally for the grouped merge + AddRange
-                    // and restores the emit order, so we keep sort order while avoiding the per-entry linear Contains
-                    // on the growing _emittedBitmap. The run is capped at the scratch size; longer runs flush across
-                    // iterations.
+                    // Accumulate a run of consecutive Single-term entries (in sort/emit order) into the output, avoid linear Contains() calls
                     int runStart = count;
                     int runLimit = Math.Min(matches.Length, count + QueryPrimitives.EntryScanBatchSize);
                     while (_plIdsIdx < _plIdsRead && count < runLimit)
@@ -337,11 +329,10 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             var request = entryBuffer[..requestSize];
             if (_pendingLargeIterator.Fill(request, out int read) == false || read == 0)
             {
-                // Iterator exhausted: clear the pending flag so later Fills move on to the next term, and release
-                // the large posting list (nulled so the dispose-on-match-dispose at the bottom won't double-free).
+                // Iterator exhausted: clear the pending flag so later Fills move on to the next term
                 _hasPendingLargeIterator = false;
                 _pendingPostingList?.Dispose();
-                _pendingPostingList = default;
+                _pendingPostingList = null;
                 break;
             }
             EntryIdEncodings.DecodeAndDiscardFrequency(request, read);
