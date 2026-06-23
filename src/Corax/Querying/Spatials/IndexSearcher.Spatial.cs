@@ -1,6 +1,5 @@
 ﻿using System.Threading;
 using Corax.Mappings;
-using Corax.Querying.Matches;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Matches.SpatialMatch;
 using Spatial4n.Shapes;
@@ -10,7 +9,7 @@ namespace Corax.Querying;
 
 public partial class IndexSearcher
 {
-    public IQueryMatch SpatialQuery(in FieldMetadata field, double error, IShape shape, SpatialContext spatialContext, Utils.Spatial.SpatialRelation spatialRelation, bool isNegated = false, in CancellationToken token = default)
+    public IQueryMatch SpatialQuery(in FieldMetadata field, double error, IShape shape, SpatialContext spatialContext, Utils.Spatial.SpatialRelation spatialRelation, in CancellationToken token = default)
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)
@@ -19,32 +18,10 @@ public partial class IndexSearcher
             return EmptyQueryMatch.Instance;
         }
 
-        IQueryMatch match = field.HasBoost
+        // Negation (NOT spatial.within(...)) is applied by the query pipeline's AndNot against the positive
+        // match, so this only ever builds the positive spatial post-filter.
+        return field.HasBoost
             ? new SpatialMatch<HasBoosting>(this, _transaction.Allocator, spatialContext, field, shape, terms, error, spatialRelation, token)
             : new SpatialMatch<NoBoosting>(this, _transaction.Allocator, spatialContext, field, shape, terms, error, spatialRelation, token);
-        if (isNegated)
-        {
-            // Negated spatial query: all entries except those matching the spatial condition
-            // Build bitmap from all entries, then AND NOT the spatial match
-            var allEntriesBitmap = new Matches.BitmapMatch(Allocator);
-            var allEntries = AllEntries();
-            Primitives.QueryPrimitives.OrWithMatch(allEntries, ref allEntriesBitmap.BitmapState, token: token);
-
-            // tempBitmapData is passed by ref into AndNotWithMatch, so it can't be a `using var` (CS1657);
-            // try/finally keeps disposal exception-safe (e.g. on cancellation inside AndNotWithMatch).
-            var tempBitmapData = new Voron.Data.RoaringBitmaps.RoaringBitmap(Allocator);
-            try
-            {
-                Primitives.QueryPrimitives.AndNotWithMatch(match, ref allEntriesBitmap.BitmapState, ref tempBitmapData, token);
-            }
-            finally
-            {
-                tempBitmapData.Dispose();
-            }
-
-            return allEntriesBitmap;
-        }
-
-        return match;
     }
 }
