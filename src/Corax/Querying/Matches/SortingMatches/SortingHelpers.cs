@@ -5,6 +5,7 @@ using System.Runtime.Intrinsics;
 using Corax.Querying.Matches.Meta;
 using Sparrow;
 using Sparrow.Server;
+using Sparrow.Server.Utils;
 
 namespace Corax.Querying.Matches.SortingMatches;
 
@@ -12,10 +13,7 @@ internal static class SortingHelpers
 {
     public const long InvalidTermId = -1;
 
-    /// <summary>Drains <paramref name="inner"/> fully into an allocator-backed buffer (growing on overflow) and
-    /// returns the filled span plus the owning scope; the caller is responsible for disposing the scope once it is
-    /// done reading <paramref name="results"/>. Shared by the non-bitmap "computed results" sort drain in both
-    /// SortingMatch and SortingMultiMatch. Taken by <c>ref</c> so a struct inner is drained in place — no box, no copy.</summary>
+    /// <summary>Drains match into an allocator-backed buffer; the caller is responsible for disposing the scope once done.</summary>
     public static unsafe ByteStringContext<ByteStringMemoryCache>.InternalScope DrainMatch<TInner>(
         ref TInner inner, ByteStringContext allocator, out Span<long> results)
         where TInner : IQueryMatch
@@ -29,14 +27,16 @@ internal static class SortingHelpers
         while ((r = inner.Fill(buffer[filled..])) > 0)
         {
             filled += r;
-            if (filled >= buffer.Length)
-            {
-                allocator.GrowAllocation(ref bs, ref scope, buffer.Length * sizeof(long));
-                buffer = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
-            }
+            if (filled < buffer.Length) 
+                continue;
+            
+            allocator.GrowAllocation(ref bs, ref scope, buffer.Length * sizeof(long));
+            buffer = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
         }
 
-        results = buffer[..filled];
+        int unique = Sorting.SortAndRemoveDuplicates(buffer[..filled]);
+        results = buffer[..unique];
+        
         return scope;
     }
     

@@ -499,19 +499,23 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     {
         var entriesSpan = _groupEntries.ToSpan();
         var secondarySpan = new Span<long>(_groupSecondary.RawItems, _groupSecondary.Capacity);
-        switch (_secondaryType)
+        if (_secondaryLookup is null)
         {
-            case MatchCompareFieldType.Integer:
-            case MatchCompareFieldType.Floating:
-                SortKernels.ResolveLongs(_secondaryLookup, entriesSpan, secondarySpan, _missingSecondaryValue);
-                break;
-            case MatchCompareFieldType.Sequence:
-                var termsSpan = new Span<UnmanagedSpan>(_groupTerms.RawItems, _groupTerms.Capacity);
-                SortKernels.ResolveSlices(_secondaryLookup, _llt, _llt.PageLocator,
-                    entriesSpan, secondarySpan, termsSpan,
-                    _nullTermContainerId, _nonExistingTermContainerId);
-                break;
+            secondarySpan[..entriesSpan.Length].Fill(_missingSecondaryValue);
+            return;
         }
+
+        int n = entriesSpan.Length;
+        Debug.Assert(secondarySpan.Length >= n);
+        _secondaryLookup.GetFor(entriesSpan, secondarySpan, _missingSecondaryValue);
+
+        if (_secondaryType != MatchCompareFieldType.Sequence) 
+            return; // long / double are already handled above
+        
+        var termsSpan = new Span<UnmanagedSpan>(_groupTerms.RawItems, _groupTerms.Capacity);
+        Debug.Assert(termsSpan.Length >= n);
+        SortingHelpers.ReplaceNullAndNonExistingTermIds(secondarySpan[..n], _nonExistingTermContainerId, _nullTermContainerId, _missingSecondaryValue);
+        Container.GetAllSortedByPage(_llt, secondarySpan[..n], termsSpan[..n], _llt.PageLocator);
     }
 
     private void SortGroupBySecondary()
@@ -519,24 +523,76 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         var entriesSpan = _groupEntries.ToSpan();
         var secondarySpan = new Span<long>(_groupSecondary.RawItems, _groupSecondary.Capacity);
         var indexesSpan = new Span<int>(_groupSortedIndexes.RawItems, _groupSortedIndexes.Capacity);
+        var termsSpan = new Span<UnmanagedSpan>(_groupTerms.RawItems, _groupTerms.Capacity);
+
         _groupEmitIdx = 0;
+        int n = entriesSpan.Length;
+
+        Debug.Assert(secondarySpan.Length >= n);
+        Debug.Assert(indexesSpan.Length >= n);
+        Debug.Assert(termsSpan.Length >= n);
+
+        RoaringBitmap.InitializeIndices(indexesSpan, n);
+        var idxs = indexesSpan[..n];
+
+        if (_secondaryLookup is null)
+        {
+            if (_secondaryType is MatchCompareFieldType.Integer or MatchCompareFieldType.Floating)
+            {
+                secondarySpan[..n].Fill(_missingSecondaryValue);
+            }
+            else
+            {
+                termsSpan[..n].Clear();
+            }
+
+            return;
+        } 
+        
+        _secondaryLookup.GetFor(entriesSpan, secondarySpan, _missingSecondaryValue);
+
         switch (_secondaryType)
         {
             case MatchCompareFieldType.Integer:
-                SortKernels.SortByLong(_secondaryLookup, entriesSpan, secondarySpan, indexesSpan, _missingSecondaryValue);
+                secondarySpan[..n].Sort(idxs);
                 break;
             case MatchCompareFieldType.Floating:
-                SortKernels.SortByDouble(_secondaryLookup, entriesSpan, secondarySpan, indexesSpan, _missingSecondaryValue);
+                MemoryMarshal.Cast<long, double>(secondarySpan[..n]).Sort(idxs);
                 break;
             case MatchCompareFieldType.Sequence:
-                var termsSpan = new Span<UnmanagedSpan>(_groupTerms.RawItems, _groupTerms.Capacity);
-                SortKernels.SortBySlice(_secondaryLookup, _llt, _llt.PageLocator,
-                    entriesSpan, secondarySpan, termsSpan, indexesSpan,
-                    _nullTermContainerId, _nonExistingTermContainerId);
+                SortingHelpers.ReplaceNullAndNonExistingTermIds(secondarySpan[..n], _nonExistingTermContainerId, _nullTermContainerId, SortingHelpers.MissingTermId);
+                Container.GetAllSortedByPage(_llt, secondarySpan[..n], termsSpan[..n], _llt.PageLocator);
+                fixed (UnmanagedSpan* termsPtr = termsSpan)
+                {
+                    idxs.Sort(new SliceComparer(termsPtr));
+                }
                 break;
             default:
                 Debug.Assert(false, $"Unexpected secondary type {_secondaryType}");
                 break;
+        }
+    }
+    
+    private readonly struct SliceComparer(UnmanagedSpan* terms) : IComparer<int>
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public int Compare(int x, int y)
+        {
+            ref var xItem = ref terms[x];
+            ref var yItem = ref terms[y];
+
+            if (yItem.Address == null)
+                return xItem.Address == null ? 0 : 1;
+            if (xItem.Address == null)
+                return -1;
+
+            var cmp = Memory.Compare(xItem.Address + 1, yItem.Address + 1, Math.Min(xItem.Length - 1, yItem.Length - 1));
+            if (cmp != 0)
+                return cmp;
+
+            var xBits = (xItem.Length - 1) * 8 - (xItem.Address[0] >> 4);
+            var yBits = (yItem.Length - 1) * 8 - (yItem.Address[0] >> 4);
+            return xBits - yBits;
         }
     }
 

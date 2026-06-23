@@ -752,17 +752,14 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         // so it is deliberately left untimed here — only the SortResults call below is charged to the sort.
         using var scope = SortingHelpers.DrainMatch(ref match._inner, match._searcher.Allocator, out var allMatches);
 
-        // The secondary comparers resolve sort keys via Lookup.GetFor, which requires ascending, unique entry ids;
-        // a drained non-bitmap inner can yield them out of order and with duplicates, so sort + dedup first.
-        int filled = Sorting.SortAndRemoveDuplicates(allMatches);
-        match.TotalResults = filled;
+        match.TotalResults = allMatches.Length;
         if (match.TotalResults == 0)
             return;
 
         match.CandidatesAreSorted = true;
 
         long sortStart = Stopwatch.GetTimestamp();
-        SortResults<TEntryComparer>(match, allMatches[..filled]);
+        SortResults<TEntryComparer>(match, allMatches);
         match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
     }
 

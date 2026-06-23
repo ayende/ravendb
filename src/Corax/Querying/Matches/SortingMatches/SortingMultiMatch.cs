@@ -160,15 +160,8 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
                 match.TotalResults = allMatches.Length;
                 if (match.TotalResults == 0)
                     return 0;
-
-                // The secondary comparers resolve sort keys via Lookup.GetFor, which gallops from the previous
-                // cursor position and requires ascending, unique entry ids. A drained non-bitmap inner can yield
-                // them out of order and with duplicates, so sort + dedup with the shared helper before SortResults.
-                int unique = Sorting.SortAndRemoveDuplicates(allMatches);
-                allMatches = allMatches[..unique];
-                match.TotalResults = unique;
+                
                 match.CandidatesAreSorted = true;
-
                 long sortStart = Stopwatch.GetTimestamp();
                 SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches);
                 match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
@@ -282,17 +275,12 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
             }
         }
         
-        // Surface the sort's own cost — it runs above the bitmap pipeline (timed onto the child CompiledQuery
-        // node) and is otherwise absent from include timings(). Strategy is constant: multi-key sorts always
-        // materialize and heap-sort (no index-order streaming variant exists).
         if (SortingTimeInTicks > 0)
         {
             parameters["Strategy"] = CoraxSortingStrategy.InMemorySort.ToString();
             parameters["Ms"] = (SortingTimeInTicks / (Stopwatch.Frequency / 1000.0)).ToString("F3", CultureInfo.InvariantCulture);
         }
 
-        // The sort wrapper sits above the bitmap pipeline, so surface its own in/out (see SortingMatch.Inspect):
-        // Incoming is the full candidate set ranked, Output is what the page receives — capped by _take when set.
         if (TotalResults >= 0)
         {
             parameters["Incoming"] = TotalResults.ToString("N0");
@@ -301,7 +289,7 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         }
 
         return new QueryInspectionNode($"{nameof(SortingMultiMatch)}",
-            children: new List<QueryInspectionNode> { _inner.Inspect()},
+            children: [_inner.Inspect()],
             parameters: parameters);
     }
 
