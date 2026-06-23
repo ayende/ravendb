@@ -103,8 +103,10 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     ///
     /// Unlike the single-field ctor, it does NOT merge the field's null / non-existing posting lists: those are
     /// global (they span every first-field value) while this scan covers only one prefix, so merging them would emit
-    /// rows from other Company values. Null / missing second-field entries are handled inline by the prefix walk (or
-    /// excluded by a range clause on the second field).
+    /// rows from other Company values. It also doesn't need to: the planner only routes a query here when the second
+    /// field's null/missing docs can't reach the result in the wrong order — either a range clause on the second
+    /// field excludes them, or the field has none. When they must be ordered (per NullsSortMode), the planner rejects
+    /// this scan and falls back to bitmap + SortingMatch (see the null/missing guard in QueryPlanBuilder.Resolution).
     /// </summary>
     public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator)
     {
