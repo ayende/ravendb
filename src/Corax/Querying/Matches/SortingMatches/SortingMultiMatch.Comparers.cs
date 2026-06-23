@@ -208,16 +208,15 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         }
     }
 
-    private struct EntryComparerByTerm : IEntryComparer, IComparer<UnmanagedSpan>, IComparer<int>
+    private struct EntryComparerByTerm : IEntryComparer
     {
         private Lookup<Int64LookupKey> _lookup;
         private int _comparerId;
         private int _nullResult;
         private long _nullTermContainerId;
         private long _nonExistingTermContainerId;
-        // When used as a tie-break (comparerId != 0), the term blob for every batch entry is resolved once up front
-        // (see Init) via the same GetFor + Container.GetAll pipeline the primary key uses, so Compare(int,int) is a
-        // single CompactKeyComparer call over the pre-loaded blobs instead of two TermsReader.GetTerm container reads.
+        
+        // An array for the field values on each of the secondary items, loaded eagerly to make the sorting faster
         private UnmanagedSpan* _resolvedTerms;
 
         public Slice GetSortFieldName(SortingMultiMatch<TInner> match) => match._orderMetadata[_comparerId].Field.FieldName;
@@ -245,12 +244,10 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             _resolvedTerms = (UnmanagedSpan*)termsBuffer.Ptr;
 
             // Transient term-id scratch: only needed to drive Container.GetAll, freed once the blobs are loaded.
-            using var idScope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var idBuffer);
-            var termIds = new Span<long>(idBuffer.Ptr, batchResults.Length);
+            using var idScope = match._searcher.Allocator.Allocate(batchResults.Length, out Span<long> termIds);
             _lookup.GetFor(batchResults, termIds, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(termIds, _nonExistingTermContainerId, _nullTermContainerId, SortingHelpers.MissingTermId);
             // Page-group the container reads; scatters back so _resolvedTerms[i] stays paired with batchResults[i]
-            // (secondary comparers index it by position, so we can't co-permute the way single-field sort does).
             Container.GetAllSortedByPage(llt, termIds, new Span<UnmanagedSpan>(_resolvedTerms, batchResults.Length), llt.PageLocator);
         }
 
@@ -295,13 +292,12 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         }
     }
 
-    private struct EntryComparerByLong : IEntryComparer, IComparer<UnmanagedSpan>, IComparer<int>
+    private struct EntryComparerByLong : IEntryComparer
     {
         private Lookup<Int64LookupKey> _lookup;
         private int _comparerId;
         private long _missingValue;
-        // When used as a tie-break (comparerId != 0), the field's value for every batch entry is resolved once
-        // up front (see Init) so Compare(int,int) is an O(1) array read instead of two B-tree lookups per call.
+        // Array holding the batched resolved secondary values
         private long* _resolved;
 
         public Slice GetSortFieldName(SortingMultiMatch<TInner> match)
@@ -316,9 +312,6 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             _lookup = match._searcher.EntriesToTermsReader(GetSortFieldName(match));
             _missingValue = match.NullIsSmallest(_comparerId) ? long.MinValue : long.MaxValue;
 
-            // comparerId == 0 is the primary key: it sorts via SortBatch (the heap's primary comparison reads the
-            // pre-loaded terms array), never through Compare(int,int), and Init gets a default (empty) batch — so
-            // there is nothing to pre-resolve. For a tie-break, resolve the whole batch in one sequential pass.
             if (comparerId == 0 || _lookup == null) return;
             var scope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var buffer);
             match.TrackSecondaryResolveScope(scope);
@@ -368,13 +361,10 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         }
     }
 
-    private struct NullComparer : IEntryComparer, IComparer<UnmanagedSpan>
+    private struct NullComparer : IEntryComparer
     {
         private const string NullComparerExceptionMessage = $"{nameof(NullComparer)} is for type-relaxation. You should not use it";
-        public Slice GetSortFieldName(SortingMultiMatch<TInner> match)
-        {
-            throw new NotSupportedException(NullComparerExceptionMessage);
-        }
+        public Slice GetSortFieldName(SortingMultiMatch<TInner> match) => throw new NotSupportedException(NullComparerExceptionMessage);
 
         public void Init(SortingMultiMatch<TInner> match, UnmanagedSpan<long> batchResults, int comparerId)
         {
@@ -385,29 +375,20 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             UnmanagedSpan<long> batchResults, Span<long> batchTermIds,
             UnmanagedSpan* batchTerms, OrderMetadata[] orderMetadata, TComparer2 comparer2, TComparer3 comparer3)
             where TComparer2 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
-            where TComparer3 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer
-        {
+            where TComparer3 : struct, IComparer<UnmanagedSpan>, IComparer<int>, IEntryComparer =>
             throw new NotSupportedException(NullComparerExceptionMessage);
-        }
 
-        public int Compare(UnmanagedSpan x, UnmanagedSpan y)
-        {
-            throw new NotSupportedException(NullComparerExceptionMessage);
-        }
+        public int Compare(UnmanagedSpan x, UnmanagedSpan y) => throw new NotSupportedException(NullComparerExceptionMessage);
 
-        public int Compare(int x, int y)
-        {
-            throw new NotSupportedException(NullComparerExceptionMessage);
-        }
+        public int Compare(int x, int y) => throw new NotSupportedException(NullComparerExceptionMessage);
     }
 
-    private struct EntryComparerByDouble : IEntryComparer, IComparer<UnmanagedSpan>
+    private struct EntryComparerByDouble : IEntryComparer
     {
         private long _missingValue;
         private int _comparerId;
         private Lookup<Int64LookupKey> _lookup;
-        // When used as a tie-break (comparerId != 0), every batch entry's value (as raw double bits) is resolved
-        // once up front (see Init) so Compare(int,int) is an O(1) array read instead of two B-tree lookups per call.
+        // Array holding the batched resolved values to sort on
         private long* _resolved;
 
         public void SortBatch<TComparer2, TComparer3>(SortingMultiMatch<TInner> match, LowLevelTransaction llt, PageLocator pageLocator,
@@ -434,7 +415,9 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             var heapSorter = HeapSorterBuilder.BuildCompoundNumericalSorter(indexes.Slice(0, heapSize), terms, orderMetadata[0].Ascending == false, secondaryComparer, match.NullIsSmallest(_comparerId));
                 
             for (int i = 0; i < indexes.Length; i++)
+            {
                 heapSorter.Insert(i, BitConverter.Int64BitsToDouble(batchTermIds[i]));
+            }
 
             heapSorter.Fill(batchResults, ref match._results, ref match._scoresResults, match._secondaryScoreBuffer);
         }
@@ -451,9 +434,6 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             _lookup = match._searcher.EntriesToTermsReader(GetSortFieldName(match));
             _missingValue = BitConverter.DoubleToInt64Bits(match.NullIsSmallest(_comparerId) ? double.MinValue : double.MaxValue);
 
-            // comparerId == 0 is the primary key: it sorts via SortBatch, never through Compare(int,int), and Init
-            // gets a default (empty) batch — so nothing to pre-resolve. For a tie-break, resolve the whole batch in
-            // one sequential pass (raw double bits) so the per-pair comparison below needs no lookup.
             if (comparerId == 0 || _lookup == null) return;
             var scope = match._searcher.Allocator.Allocate(batchResults.Length * sizeof(long), out var buffer);
             match.TrackSecondaryResolveScope(scope);
@@ -475,7 +455,7 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         }
     }
 
-    private struct EntryComparerByTermAlphaNumeric : IEntryComparer, IComparer<UnmanagedSpan>, IComparer<int>
+    private struct EntryComparerByTermAlphaNumeric : IEntryComparer
     {
         private TermsReader _reader;
         private long _dictionaryId;
@@ -522,7 +502,9 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             Container.GetAllSortedByPage(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), pageLocator);
             var documents = MemoryMarshal.Cast<long, int>(batchTermIds)[..(batchTermIds.Length)];
             for (int i = 0; i < batchTermIds.Length; i++)
+            {
                 documents[i] = i;
+            }
 
             var heapCapacity = match._take == -1 ? batchResults.Length : Math.Min(match._take, batchResults.Length);
             using var _ = _allocator.Allocate(heapCapacity, out Span<ByteString> terms);
@@ -547,10 +529,7 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             nullIndexes.Dispose();
         }
 
-        public int Compare(UnmanagedSpan x, UnmanagedSpan y)
-        {
-            throw new NotSupportedException($"Method `{nameof(Compare)} for `{nameof(UnmanagedSpan)}` should never be used.");
-        }
+        public int Compare(UnmanagedSpan x, UnmanagedSpan y) => throw new NotSupportedException($"Method `{nameof(Compare)} for `{nameof(UnmanagedSpan)}` should never be used.");
 
         public int Compare(int x, int y)
         {
@@ -587,7 +566,7 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
         }
     }
 
-    private struct EntryComparerBySpatial : IEntryComparer, IComparer<UnmanagedSpan>
+    private struct EntryComparerBySpatial : IEntryComparer
     {
         private SpatialReader _reader;
         private (double X, double Y) _center;
@@ -633,11 +612,7 @@ public unsafe sealed partial class SortingMultiMatch<TInner>
             var indexes = MemoryMarshal.Cast<long, int>(batchTermIds)[..(batchTermIds.Length)];
             using var _ = llt.Allocator.Allocate(heapSize, out Span<SpatialResult> terms);
 
-
-            var heapSorter = HeapSorterBuilder.BuildSingleNumericalSorter<SpatialResult>(indexes.Slice(0, heapSize), terms, descending, match.NullIsSmallest(_comparerId));
-            
-
-
+            var heapSorter = HeapSorterBuilder.BuildSingleNumericalSorter(indexes[..heapSize], terms, descending, match.NullIsSmallest(_comparerId));
             for (int i = 0; i < batchResults.Length; i++)
             {
                 SpatialResult distance; 
