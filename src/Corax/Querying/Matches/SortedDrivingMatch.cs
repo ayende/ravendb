@@ -102,7 +102,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     /// order within that prefix.
     /// 
     /// The planner rejects scans when the field has null / missing values and the null sort mode isn't a match to the
-    /// phyiscally sorted layout and falls back to bitmap + SortingMatch.
+    /// physically sorted layout and falls back to bitmap + SortingMatch.
     /// </summary>
     public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator)
     {
