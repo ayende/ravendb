@@ -96,12 +96,15 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     }
 
     /// <summary>
-    /// Compound-driven variant: the provider walks a compound(field1, field2) subtree with field1 pinned by an
-    /// equality, so it already yields field2 order within that prefix. Unlike the single-field ctor this does NOT
-    /// merge the field's null / non-existing posting lists. Those lists are scoped to the compound field GLOBALLY
-    /// (across every field1 value), but this scan is scoped to a single field1 prefix — merging them would leak
-    /// rows from other field1 values and double-count. field2's null / missing entries are either excluded by a
-    /// field2 range clause or already covered inline by the compound prefix walk.
+    /// Compound-driven variant — serves a query like
+    /// <c>FROM Orders WHERE Company = 'companies/1' ORDER BY OrderedAt</c> on a compound (Company, OrderedAt) index.
+    /// The provider walks the compound subtree for the pinned first field, so it already yields the second field in
+    /// order within that prefix.
+    ///
+    /// Unlike the single-field ctor, it does NOT merge the field's null / non-existing posting lists: those are
+    /// global (they span every first-field value) while this scan covers only one prefix, so merging them would emit
+    /// rows from other Company values. Null / missing second-field entries are handled inline by the prefix walk (or
+    /// excluded by a range clause on the second field).
     /// </summary>
     public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator)
     {
