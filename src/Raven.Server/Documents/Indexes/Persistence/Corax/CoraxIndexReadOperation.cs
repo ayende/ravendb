@@ -618,6 +618,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             long docsToLoad = pageSize;
             bool runQuery = true;
+            // Loop-invariant: depends only on index type / fields / query. Used both to decide whether
+            // per-document dedup runs and to gate limit-aware truncation below.
+            bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
             // Reuse a single CompactKey across the whole result loop. With no key supplied, GetEntryTermsReader
             // allocates a fresh CompactKey per entry and rents pool buffers that are never returned (the reader
             // is discarded without Reset), so the thread-static pool stays empty and every entry allocates anew.
@@ -677,7 +680,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         // the bitmap is truncated to the page instead of materializing the whole posting
                         // list. We can do this when the client doesn't need the exact total (SkipStatistics),
                         // or when we already know it cheaply (knownExactTotal) and supply it below.
-                        if (take > 0 && (query.SkipStatistics || knownExactTotal >= 0))
+                        // Only when entries map 1:1 to returned documents: with a fan-out index a document
+                        // can appear under several entries and get deduped away, so truncating to exactly
+                        // `take` entries would return fewer than `take` documents and the non-sorting path
+                        // has no page-refill loop to compensate.
+                        if (take > 0 && (query.SkipStatistics || knownExactTotal >= 0)
+                            && (willAlwaysIncludeInResults || _maxNumberOfOutputsPerDocument <= 1))
                             compiledMatch.Limit = (int)Math.Min(take, int.MaxValue);
                     }
                     else if (compileResult.QueryMatch is DirectScanMatchBase { KnownExactTotal: >= 0 } directScan)
@@ -697,7 +705,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 var ids = QueryPool.Rent(bufferSize);
                 using var queryFilter = GetQueryFilterInternal();
                 Page page = default;
-                bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
                 totalResults.Value = 0;
 
                 var (sortingData, hasOrderByDistance) = SetupSortingData(query, compileResult.QueryBuilderParams, compileResult.QueryMatch, bufferSize);
