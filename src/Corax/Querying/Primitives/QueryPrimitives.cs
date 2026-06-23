@@ -19,38 +19,20 @@ using Voron.Util.PFor;
 
 namespace Corax.Querying.Primitives;
 
-/// <summary>
-/// Static methods called by compiled query functions (DynamicMethod IL).
-/// Each primitive operates on a RoaringBitmap accumulator.
-/// </summary>
 public static class QueryPrimitives
 {
     // Buffer size for stackalloc Fill operations (posting-list batch reads).
     internal const int FillBufferSize = 4096;
 
-    // Buffer size for the posting-list AND/ANDNOT/Fill scans that feed RoaringBitmap.AddRange.
-    // Deliberately 2x FillBufferSize, which is larger than a RoaringBitmap array container's max
-    // cardinality (also 4096): since posting-list entries are sorted, a dense container's entries are
-    // contiguous, so a batch this size lets AddRange see a single container's slice exceed the
-    // array->bitmap crossover and build it as a bitmap directly — instead of growing an array and
-    // re-converting it later. Local to these scans; the global FillBufferSize stays 4096 for the
-    // compiled-query stackallocs and the generic IQueryMatch.Fill paths.
+    // Buffer size for the posting-list AND/ANDNOT/Fill scans, intentionally great han 
+    // the RoaringBitmap's array size, so we can directly jump to bitmap containers for dense ranges
     internal const int PostingScanBufferSize = 2 * FillBufferSize;
 
-    // Bitmap slot reserved as scratch for the AND/ANDNOT primitives: materializing a posting source
-    // or tree scan into a temporary before intersecting/subtracting needs a working bitmap. The plan
-    // emitter never targets this slot as an AND destination (the destination is passed explicitly),
-    // so it is always free to be clobbered. Keeping it a named constant — rather than a literal 1
-    // sprinkled through the primitives — makes the dest≠scratch invariant explicit and assertable.
+    // Bitmap slot reserved as scratch for the AND/ANDNOT primitives: The planner will never user bitmap index 1
+    // so it is free for scratch usage
     public const int AndScratchBitmapSlot = 1;
-
-    // ── IL entry points ──────────────────────────────────────────────
-    // Called from DynamicMethod IL. Take CompiledQueryMatch by value (ref type)
-    // so the emitter just pushes ldarg.0 + int constants — no per-field ldfld chains.
-
-    // Fill seeds a bitmap slot: it clears the target first, so the slot holds exactly this source's
-    // entries regardless of prior contents. This lets IN/AllIn build their union/intersection in the
-    // ephemeral slot (or a save-slot) without a separate ClearBitmap op.
+    
+    // Fill first clears the bitmap (unlike OR) 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
@@ -59,11 +41,7 @@ public static class QueryPrimitives
         FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.OpLimit);
     }
 
-    /// <summary>Seed bitmap[0] with AllEntries — used by AllNegated AND chains
-    /// where the plan starts from "everything" and ANDNOTs each clause. No
-    /// slot lookup: the AllEntries match is obtained directly from the searcher
-    /// so the IL stays parameter-independent even when an IN clause's runtime
-    /// term count differs from its template Bindings.Length.</summary>
+    // Use as the complement for negation (NOT x means All Entries AND NOT x) 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillAllEntries(Matches.CompiledQueryMatch ctx, int bitmapSlot)
         => OrWithMatch(ctx.Searcher.AllEntries(), ref ctx.Bitmaps[bitmapSlot], ctx.OpLimit);
@@ -73,17 +51,12 @@ public static class QueryPrimitives
     {
         ctx.Bitmaps[bitmapSlot].Clear();
         long tally = FillBitmapFromTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.OpLimit);
-        // A driving fill honors OpLimit and may stop early; only an unbounded fill yields a complete,
-        // calibration-grade tally. AND/ANDNOT scratch fills are always unbounded (handled in their helpers).
-        if (ctx.OpLimit == long.MaxValue)
-            ObserveTreeScanTally(ref ctx.Leaves[paramIndex], tally);
+        if (ctx.OpLimit != long.MaxValue) 
+            return; // we cannot observe the tree scan if we didn't complete it (stopped because of the set limit). 
+        ObserveTreeScanTally(ref ctx.Leaves[paramIndex], tally);
     }
 
-    /// <summary>Feed a tree-scan fill's over-counting postings tally back into the leaf's range-estimate
-    /// calibration. No-op unless the leaf carries calibration (range/StartsWith only) and a fill actually
-    /// ran (tally >= 0). The tally and the stored estimate are the same over-counting quantity, so the
-    /// ratio the EWMA smooths is unit-clean. Only AND-side tree-scan consumers call this — OR fills are
-    /// deliberately excluded (cardinality drives no OR-group decision).</summary>
+    // Feed a tree-scan fill's actual count into EWMA range calibration, so next queries we'll be smarter
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     private static void ObserveTreeScanTally(ref Planning.LeafResolveInfo leaf, long tally)
     {
@@ -120,8 +93,6 @@ public static class QueryPrimitives
         OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], remaining, ctx.Token);
     }
 
-    // Boost-rewrite target of CtxFillFromPostingSource/CtxFillFromTreeScan (see ToMatchVariant).
-    // Same clear-then-seed contract: the slot ends up holding exactly this match's entries.
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
@@ -175,34 +146,23 @@ public static class QueryPrimitives
         AndNotWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
     }
 
-    // ── Lazy leaf resolution ─────────────────────────────────────────
-    // The compiled pipeline hands over value-independent metadata (field + packed
-    // parameter) per leaf in CompiledQueryMatch.Leaves; the concrete posting source /
-    // terms provider is materialized here, when the slot is consumed, instead of being
-    // pre-decoded up front by Raven.Server.
-
     /// <summary>Materialize the native posting source for a posting-list leaf slot.</summary>
-    internal static Planning.PostingSource ResolvePostingSource(ref Planning.LeafResolveInfo info, IndexSearcher searcher, Planning.QueryExecution exec)
+    private static Planning.PostingSource ResolvePostingSource(ref Planning.LeafResolveInfo info, IndexSearcher searcher, Planning.QueryExecution exec)
     {
-        switch (info.Kind)
+        return info.Kind switch
         {
-            case Planning.LeafResolveKind.TermPosting:
-                return Planning.PostingSource.Decode(info.Packed.GetTermPostingListId(info.FieldMeta, searcher, exec), searcher);
-            case Planning.LeafResolveKind.NullPosting:
-                return searcher.TryGetPostingListForNull(in info.FieldMeta, out long nullPlId)
-                    ? Planning.PostingSource.Decode(nullPlId, searcher)
-                    : default;
-            case Planning.LeafResolveKind.AllPosting:
-                return new Planning.PostingSource { Kind = Planning.PostingSourceKind.All };
-            default: // EmptyPosting / unset
-                return default;
-        }
+            Planning.LeafResolveKind.TermPosting => Planning.PostingSource.Decode(info.Packed.GetTermPostingListId(info.FieldMeta, searcher, exec), searcher),
+            Planning.LeafResolveKind.NullPosting => searcher.TryGetPostingListForNull(in info.FieldMeta, out long nullPlId) ? Planning.PostingSource.Decode(nullPlId, searcher) : default,
+            Planning.LeafResolveKind.AllPosting => new Planning.PostingSource
+            {
+                Kind = Planning.PostingSourceKind.All
+            },
+            _ => default
+        };
     }
 
-    /// <summary>Materialize the <see cref="ITermsProvider"/> for a tree-scan leaf slot.
-    /// Builds the match via the existing factory query methods, then extracts its provider;
-    /// falls back to <see cref="EmptyTermsProvider.Instance"/> when the field doesn't exist.</summary>
-    internal static ITermsProvider ResolveTermsProvider(ref Planning.LeafResolveInfo info, IndexSearcher searcher, Planning.QueryExecution exec)
+    /// <summary>Materialize the <see cref="ITermsProvider"/> for a tree-scan leaf slot.</summary>
+    private static ITermsProvider ResolveTermsProvider(ref Planning.LeafResolveInfo info, IndexSearcher searcher, Planning.QueryExecution exec)
     {
         IQueryMatch match = info.ClauseType switch
         {
@@ -223,20 +183,15 @@ public static class QueryPrimitives
     // Batch size for entry scan: how many bitmap entries to read per iteration.
     internal const int EntryScanBatchSize = 256;
 
-    // Initial capacity for per-term group buffers in SortedDrivingWithTieBreakMatch.
-    // Also used as the plan-cache cardinality cliff threshold for tie-break eligibility.
     public const int TieBreakGroupInitialCapacity = 1024;
 
-    // Entry scan vs. bitmap AND heuristic (tuned on typical NVMe workloads):
-    // When the candidate bitmap is small enough, it's cheaper to read each entry's
-    // stored fields and check predicates than to decode a full posting list and AND.
-    // The threshold is the bitmap count below which we consider entry scan.
+    // Entry scan vs. bitmap AND heuristic (tuned on typical NVMe workloads): When the candidate bitmap is small
+    // enough, it's cheaper to read each entry's stored fields and check predicates than to decode a full posting list and AND.
     public const long EntryScanCountThreshold = 32 * 1024;
 
     // Approximate cost ratio: one entry blob read (EntryTermsReader stored-field fetch + residual check) vs a
-    // single posting-list decode. Entry scan wins when entriesToScan * multiplier < bitmapCost. Only meaningful
-    // alongside the survivor-aware bitmapCost below (see EntryScanSurvivorSortFactor): without the survivor-sort
-    // term no multiplier can separate the few-survivor (cheap bitmap) and many-survivor (sort-bound) regimes.
+    // single posting-list decode. Entry scan wins when entriesToScan * multiplier < bitmapCost.
+    // Works alongside: EntryScanSurvivorSortFactor
     public const long EntryScanCostMultiplier = 128;
 
     // The bitmap pipeline doesn't just decode posting lists (Σ cardinalities) — it then SORTS the surviving
@@ -246,19 +201,9 @@ public static class QueryPrimitives
     public const long EntryScanSurvivorSortFactor = 32;
 
     // Sentinels for the $rvn_corax_entry_scan override carried on ForcedEntryScanGate.
-    // Unset leaves the cost gate in charge; Disabled is below any real gate cursor (>= 0),
-    // so it can never equal one and therefore suppresses every gate.
+    // Unset leaves the cost gate in charge; setting to a negative number disable this entirely
     public const int EntryScanGateUnset = int.MinValue;
-    public const int EntryScanGateDisabled = -1;
 
-    /// <summary>
-    /// Fill a bitmap from a posting list. Walks leaf pages, decodes PFor blocks,
-    /// adds entries to the bitmap via batch AddRange.
-    /// Each batch is decoded via DecodeAndDiscardFrequency, which strips the
-    /// frequency bits packed into the high bits of each entry ID by the indexer.
-    /// Stops once <paramref name="limit"/> entries have been added; the final batch
-    /// is truncated so the bitmap never overshoots the requested limit.
-    /// </summary>
     [SkipLocalsInit]
     private static void FillFromPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, CancellationToken token, long limit = long.MaxValue)
     {
@@ -279,25 +224,16 @@ public static class QueryPrimitives
     }
 
     /// <summary>
-    /// Shared setup for the posting-list AND scans. Bounds the scan to the bitmap's container key
-    /// range — <see cref="PostingList.Iterator.Seek"/> jumps past entries below the bitmap's min and
-    /// the returned <paramref name="pruneAfter"/> stops reading past its max, so only posting-list
-    /// pages overlapping the bitmap's entry-id range are touched (a 50K bitmap vs a 10M posting list
-    /// reads only the pages covering the 50K range). Clears <paramref name="tempBitmap"/> for reuse.
-    /// Returns false when there is nothing left to do — either the bitmap was already empty, or the
-    /// seek found no posting-list entries in range (in which case the bitmap is cleared) — and the
-    /// caller must return immediately.
+    /// Only posting-list pages overlapping the bitmap's entry-id range are touched (a 50K bitmap vs a 10M posting list
+    /// reads only the pages covering the 50K range). 
     /// </summary>
-    private static bool TrySetupPostingScan(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, out long pruneAfter)
+    private static bool TrySetupPostingScan(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, out long pruneAfter)
     {
         pruneAfter = 0;
         if (bitmap.IsEmpty)
             return false;
-
-        tempBitmap.Clear();
-
+        
         // Bound the posting list scan to the bitmap's container key range.
-        // Each container key covers 65.536 entry IDs.
         long minKey = bitmap.MinContainerKey;
         long maxKey = bitmap.MaxContainerKey;
         Debug.Assert(minKey is not -1 && maxKey is not -1, "shouldn't happen, we checked IsEmpty");
@@ -308,27 +244,20 @@ public static class QueryPrimitives
         pruneAfter = EntryIdEncodings.PrepareIdForPruneInPostingList((maxKey + 1) * RoaringBitmap.ContainerSize - 1);
 
         // Seek past all posting list entries below the bitmap's range
-        if (!iterator.Seek(seekFrom))
-        {
-            // No entries at or after seekFrom — nothing to AND
-            bitmap.Clear();
-            return false;
-        }
-
-        return true;
+        if (iterator.Seek(seekFrom)) 
+            return true;
+        
+        bitmap.Clear(); // no matches to AND with
+        return false;
     }
 
-    /// <summary>
-    /// AND bitmap with a posting list using the bounded range scan from <see cref="TrySetupPostingScan"/>.
-    /// Materializes the whole in-range slice into <paramref name="tempBitmap"/>, then does a single
-    /// container-level AND.
-    /// </summary>
     [SkipLocalsInit]
     private static void AndWithPostings(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token)
     {
-        if (!TrySetupPostingScan(ref iterator, ref bitmap, ref tempBitmap, out long pruneAfter))
+        if (TrySetupPostingScan(ref iterator, ref bitmap, out long pruneAfter) is false)
             return;
 
+        tempBitmap.Clear();
         Span<long> buffer = stackalloc long[PostingScanBufferSize];
         while (iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
         {
@@ -341,49 +270,36 @@ public static class QueryPrimitives
     }
 
     /// <summary>
-    /// Limit-aware AND for unordered "limit N" queries, where any N valid survivors suffice. Same
-    /// bounded range scan as <see cref="AndWithPostings"/>, but the scan also stops early: the posting
-    /// list is read in ascending order, so after each batch every candidate container below the highest
-    /// container seen is "settled" (<paramref name="tempBitmap"/> holds all of its term entries). We
-    /// intersect just that settled prefix per batch — reusing the full container-level AND, no per-entry
-    /// membership test — and stop reading once the survivors reach <paramref name="limit"/>, dropping the
-    /// still-unintersected tail. If the limit is never reached, the tail is intersected against the
-    /// now-complete term after the loop.
+    /// Limit-aware AND for unordered "limit N" queries, where any N valid survivors suffice.
     /// </summary>
     [SkipLocalsInit]
     private static void AndWithPostingsLimited(ref PostingList.Iterator iterator, ref RoaringBitmap bitmap, ref RoaringBitmap tempBitmap, CancellationToken token, long limit)
     {
-        if (!TrySetupPostingScan(ref iterator, ref bitmap, ref tempBitmap, out long pruneAfter))
+        if (TrySetupPostingScan(ref iterator, ref bitmap, out long pruneAfter) is false)
             return;
 
+        tempBitmap.Clear();
         Span<long> buffer = stackalloc long[PostingScanBufferSize];
         long matched = 0;
         int processedKey = 0;
-        bool reached = false;
         while (iterator.Fill(buffer, out int read, pruneAfter) && read > 0)
         {
             token.ThrowIfCancellationRequested();
             EntryIdEncodings.DecodeAndDiscardFrequency(buffer, read);
             tempBitmap.AddRange(buffer[..read]);
 
-            // buffer is sorted ascending, so its last entry's container is the highest seen. Every
-            // container strictly below it is now settled and safe to intersect; that container itself
-            // may still grow in the next batch, so leave it for later.
             int seenMaxKey = (int)(buffer[read - 1] >> RoaringBitmap.ContainerKeyShift);
-            matched += bitmap.AndWithRange(ref tempBitmap, processedKey, seenMaxKey);
+            matched += bitmap.AndWithRange(ref tempBitmap, processedKey, seenMaxKey); // used < seenMaxKey (so excluding latest container
             processedKey = seenMaxKey;
 
-            if (matched >= limit)
-            {
-                reached = true;
-                break;
-            }
+            if (matched < limit) continue;
+            
+            // enough survivors already; drop the unscanned tail
+            bitmap.RemoveContainersFrom(processedKey);
+            return;
         }
 
-        if (reached)
-            bitmap.RemoveContainersFrom(processedKey); // enough survivors already; drop the unscanned tail
-        else
-            bitmap.AndWithRange(ref tempBitmap, processedKey, int.MaxValue); // term complete: finish the tail
+        bitmap.AndWithRange(ref tempBitmap, processedKey, int.MaxValue); // term complete: finish the tail
     }
 
     /// <summary>
@@ -421,9 +337,7 @@ public static class QueryPrimitives
 
     /// <summary>
     /// Runtime check: should we switch from bitmap AND to per-entry scan?
-    /// Compares the cost of reading <paramref name="bitmapCount"/> entry blobs
-    /// against the planner's estimate of the next clause's cardinality. Returns
-    /// true when entry scan is cheaper. Called directly from IL-emitted code.
+    /// Called directly from IL-emitted code.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool ShouldSwitchToEntryScan(int forcedGate, int gate, long bitmapCount, long nextClauseCardinality)

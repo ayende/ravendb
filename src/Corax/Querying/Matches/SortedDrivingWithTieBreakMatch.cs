@@ -374,7 +374,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 if (_emittedBitmap.Contains(entryId))
                     return;
                 _emittedBitmap.Add(entryId);
-                // Must grow via EnsureGroupCapacity, not _groupEntries.Add: the parallel _groupSecondary/_groupSortedIndexes/_groupTerms buffers must stay >= _groupEntries.Count or SortGroupBySecondary reads them out of bounds.
+                // Ensure parallel _groupSecondary/_groupSortedIndexes/_groupTerms buffers grow in step
                 EnsureGroupCapacity(_groupEntries.Count + 1);
                 _groupEntries.AddUnsafe(entryId);
                 break;
