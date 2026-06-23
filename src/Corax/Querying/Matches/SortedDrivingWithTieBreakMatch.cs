@@ -79,10 +79,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
     private NativeList<UnmanagedSpan> _groupHeapTermsSeq;
     private int _groupEmitIdx;
 
-    // Null (explicit null primary) and non-existing (primary field absent) are the SAME "no value" sort key:
-    // they form a single combined group ordered by the SECONDARY field (see PrepareNullGroup — they are drained
-    // into one buffer and the secondary sort decides their interleaved order, NOT a fixed null-vs-non-existing
-    // order). _nullFirst only decides where that combined no-value group sits relative to the real values:
+    // no-value == null or non-existing
     //   nullFirst=true  → no-value group, then normal values
     //   nullFirst=false → normal values, then no-value group
     private readonly bool _nullFirst;
@@ -122,7 +119,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _nullIsSmallest = nullIsSmallest;
         // When take is unbounded (TakeAll = -1) or very large, disable the group truncation
         // by setting _maxGroupSize to int.MaxValue — the group grows as needed without truncation.
-        if (take is Constants.IndexSearcher.TakeAll || take > int.MaxValue / 4)
+        if (take is Constants.IndexSearcher.TakeAll or > int.MaxValue / 4)
         {
             _take = int.MaxValue;
             _maxGroupSize = int.MaxValue;
@@ -252,12 +249,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
                 if (termType == TermIdMask.Single)
                 {
-                    // A Single term is its own one-entry primary group, so it bypasses the tie-break group path and
-                    // emits directly in primary-sort order. Accumulate a run of consecutive Singles into the output
-                    // and dedup the run in one bulk pass: DedupAddNew sorts internally for the grouped merge +
-                    // AddRange and restores the emit (primary-sort) order, avoiding the per-entry linear Contains on
-                    // the growing _emittedBitmap. The run is capped at the scratch size; longer runs flush across
-                    // iterations.
+                    // A Single term is its own one-entry primary group, accumulate a run of consecutive Singles into the output
+                    // and dedup the run in one bulk pass. No need for a secondary step
                     int runStart = count;
                     int runLimit = Math.Min(matches.Length, count + QueryPrimitives.EntryScanBatchSize);
                     while (_plIdsIdx < _plIdsRead && count < runLimit)
@@ -370,11 +363,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         }
     }
 
-    // Drains a null/non-existing posting list into the group. The stored id may encode a
-    // single entry, a small posting list, or a large posting list — exactly like a regular
-    // term id — so it must be dispatched on TermIdMask. Treating it unconditionally as a
-    // large PostingList reinterprets a small-list/single container blob as a PostingListState,
-    // whose bogus RootPage points at an unrelated (document) page that then decodes as garbage.
     private void DrainSpecialIntoGroup(long postingListId, Span<long> entryBuffer)
     {
         var termType = (TermIdMask)postingListId & TermIdMask.EnsureIsSingleMask;
@@ -386,8 +374,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 if (_emittedBitmap.Contains(entryId))
                     return;
                 _emittedBitmap.Add(entryId);
-                EnsureGroupCapacity(_groupEntries.Count + 1);
-                _groupEntries.AddUnsafe(entryId);
+                _groupEntries.Add(_allocator, entryId);
                 break;
             }
             case TermIdMask.SmallPostingList:
@@ -433,11 +420,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
         _groupEntries.Count += newCount;
     }
 
-    /// <summary>Keep only the top <see cref="_take"/> entries of the current group by secondary value,
-    /// discarding the rest. Uses a bounded max-heap of size <see cref="_take"/> over the resolved
-    /// secondary values (O(n log take)) instead of a full O(n log n) sort — the survivors are the
-    /// same set, and the final per-group <see cref="SortGroupBySecondary"/> orders them for emission.
-    /// Only ever called on the bounded-take path (TakeAll never reaches <see cref="_maxGroupSize"/>).</summary>
+    /// <summary>Keep only the top N entries of the current group by secondary value, discarding the rest.</summary>
     private void TruncateGroupToTopTake()
     {
         int n = _groupEntries.Count;
@@ -446,16 +429,13 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
         ResolveGroupSecondary();
 
-        // Bounded top-K via the shared Corax max-heap (HeapSorterBuilder), keeping surviving group-entry
-        // indices in `documents` (_groupSortedIndexes) keyed by the secondary value; ties stabilize by group
-        // index. The heap only selects the top-_take set — SortGroupBySecondary still produces the final order.
         var docs = new Span<int>(_groupSortedIndexes.RawItems, _take);
         switch (_secondaryType)
         {
             case MatchCompareFieldType.Integer:
             {
                 var terms = new Span<long>(_groupHeapTerms.RawItems, _take);
-                var sorter = HeapSorterBuilder.BuildSingleNumericalSorter<long>(docs, terms, _secondaryDescending, _nullIsSmallest);
+                var sorter = HeapSorterBuilder.BuildSingleNumericalSorter(docs, terms, _secondaryDescending, _nullIsSmallest);
                 for (int i = 0; i < n; i++)
                     sorter.Insert(i, _groupSecondary.RawItems[i]);
                 break;
@@ -463,7 +443,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             case MatchCompareFieldType.Floating:
             {
                 var terms = new Span<double>((double*)_groupHeapTerms.RawItems, _take);
-                var sorter = HeapSorterBuilder.BuildSingleNumericalSorter<double>(docs, terms, _secondaryDescending, _nullIsSmallest);
+                var sorter = HeapSorterBuilder.BuildSingleNumericalSorter(docs, terms, _secondaryDescending, _nullIsSmallest);
                 for (int i = 0; i < n; i++)
                     sorter.Insert(i, BitConverter.Int64BitsToDouble(_groupSecondary.RawItems[i]));
                 break;
@@ -478,8 +458,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
             }
         }
 
-        // Compact survivors (docs[0.._take]) to the front of _groupEntries. _groupSecondary is free to use as
-        // scratch here: its resolved values were already consumed while building the heap above.
+        // Compact survivors (docs[0.._take]) to the front of _groupEntries. _groupSecondary used as scratchpad here
         var entries = _groupEntries.RawItems;
         var scratch = _groupSecondary.RawItems;
         for (int i = 0; i < _take; i++)
@@ -488,16 +467,10 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
         _groupSortedIndexes.Count = _groupSecondary.Count = _groupEntries.Count = _take;
 
-        // The heap left the survivors in heap order, NOT entry-id order. The secondary lookup (Lookup.GetFor,
-        // used by ResolveGroupSecondary / SortGroupBySecondary) is cursor-based and REQUIRES its keys sorted
-        // ascending by entry id — fed unsorted keys it returns wrong/missing values. The drain appends id-sorted
-        // batches, so as long as each group starts id-sorted it stays a valid GetFor input; restore that here.
+        // The heap left the survivors in heap order, NOT entry-id order. The secondary lookups REQUIRES its keys sorted by entry id
         new Span<long>(entries, _take).Sort();
     }
 
-    /// <summary>Resolve the secondary values for the current group into <see cref="_groupSecondary"/>
-    /// (and <see cref="_groupTerms"/> for Sequence), without sorting. Shared by the bounded top-K
-    /// selection in <see cref="TruncateGroupToTopTake"/>.</summary>
     private void ResolveGroupSecondary()
     {
         var entriesSpan = _groupEntries.ToSpan();
@@ -571,8 +544,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 }
                 break;
             default:
-                Debug.Assert(false, $"Unexpected secondary type {_secondaryType}");
-                break;
+                throw new InvalidOperationException($"Unexpected secondary type {_secondaryType}");
         }
     }
     
