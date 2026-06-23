@@ -156,7 +156,8 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
             }
             else
             {
-                using var scope = DrainInnerMatch(out Span<long> allMatches);
+                using var scope = SortingHelpers.DrainMatch(ref match._inner, match._searcher.Allocator, out Span<long> allMatches);
+                match.TotalResults = allMatches.Length;
                 if (match.TotalResults == 0)
                     return 0;
 
@@ -193,27 +194,6 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         
         return 0;
 
-        ByteStringContext<ByteStringMemoryCache>.InternalScope DrainInnerMatch(out Span<long> allMatches)
-        {
-            var count = match._inner.Count;
-            int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
-            var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
-            var buffer = new Span<long>(bs.Ptr, bufferSize);
-            var filled = 0;
-            int r;
-            while ((r = match._inner.Fill(buffer[filled..])) > 0)
-            {
-                filled += r;
-                if (filled >= buffer.Length)
-                {
-                    match._searcher.Allocator.GrowAllocation(ref bs, ref scope, buffer.Length * sizeof(long));
-                    buffer = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
-                }
-            }
-            match.TotalResults = filled;
-            allMatches = buffer[..filled];
-            return scope;
-        }
     }
     
     private static void SortResults<TComparer1, TComparer2, TComparer3>(SortingMultiMatch<TInner> match, Span<long> matches) 

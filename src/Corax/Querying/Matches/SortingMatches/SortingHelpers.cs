@@ -2,13 +2,43 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
+using Corax.Querying.Matches.Meta;
 using Sparrow;
+using Sparrow.Server;
 
 namespace Corax.Querying.Matches.SortingMatches;
 
 internal static class SortingHelpers
 {
     public const long InvalidTermId = -1;
+
+    /// <summary>Drains <paramref name="inner"/> fully into an allocator-backed buffer (growing on overflow) and
+    /// returns the filled span plus the owning scope; the caller is responsible for disposing the scope once it is
+    /// done reading <paramref name="results"/>. Shared by the non-bitmap "computed results" sort drain in both
+    /// SortingMatch and SortingMultiMatch. Taken by <c>ref</c> so a struct inner is drained in place — no box, no copy.</summary>
+    public static unsafe ByteStringContext<ByteStringMemoryCache>.InternalScope DrainMatch<TInner>(
+        ref TInner inner, ByteStringContext allocator, out Span<long> results)
+        where TInner : IQueryMatch
+    {
+        var count = inner.Count;
+        int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
+        var scope = allocator.Allocate(bufferSize * sizeof(long), out var bs);
+        var buffer = new Span<long>(bs.Ptr, bufferSize);
+        int filled = 0;
+        int r;
+        while ((r = inner.Fill(buffer[filled..])) > 0)
+        {
+            filled += r;
+            if (filled >= buffer.Length)
+            {
+                allocator.GrowAllocation(ref bs, ref scope, buffer.Length * sizeof(long));
+                buffer = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
+            }
+        }
+
+        results = buffer[..filled];
+        return scope;
+    }
     
     /// <summary>
     /// There are textual values for fields that are either null or do not exist. However, since we want to specifically control the order of the nulls,

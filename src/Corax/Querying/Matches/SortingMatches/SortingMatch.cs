@@ -750,36 +750,20 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     {
         // Draining the inner match (Count + the Fill loop) is the inner query's execution, not sort work,
         // so it is deliberately left untimed here — only the SortResults call below is charged to the sort.
-        var count = match._inner.Count;
-        int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
-        var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
-        var allMatches = new Span<long>(bs.Ptr, bufferSize);
-        int filled = 0;
-        int r;
-        while ((r = match._inner.Fill(allMatches[filled..])) > 0)
-        {
-            filled += r;
-            if (filled >= allMatches.Length)
-            {
-                match._searcher.Allocator.GrowAllocation(ref bs, ref scope, allMatches.Length * sizeof(long));
-                allMatches = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
-            }
-        }
+        using var scope = SortingHelpers.DrainMatch(ref match._inner, match._searcher.Allocator, out var allMatches);
 
-        filled = Sorting.SortAndRemoveDuplicates(allMatches[..filled]);
+        // The secondary comparers resolve sort keys via Lookup.GetFor, which requires ascending, unique entry ids;
+        // a drained non-bitmap inner can yield them out of order and with duplicates, so sort + dedup first.
+        int filled = Sorting.SortAndRemoveDuplicates(allMatches);
         match.TotalResults = filled;
         if (match.TotalResults == 0)
-        {
-            scope.Dispose();
             return;
-        }
 
         match.CandidatesAreSorted = true;
 
         long sortStart = Stopwatch.GetTimestamp();
         SortResults<TEntryComparer>(match, allMatches[..filled]);
         match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
-        scope.Dispose();
     }
 
     private static void SortResults<TEntryComparer>(SortingMatch<TInner> match, Span<long> batchResults)
