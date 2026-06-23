@@ -410,9 +410,6 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
     
     public long Count { get; private set; }
 
-
-    public QueryCountConfidence Confidence => QueryCountConfidence.Low;
-    
     public bool IsBoosting { get; init; }
 
     private void Dispose()

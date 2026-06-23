@@ -68,7 +68,6 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
     }
 
     public long Count => TotalMatched;
-    public QueryCountConfidence Confidence => QueryCountConfidence.Low;
     public bool IsBoosting => false;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 

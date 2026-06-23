@@ -37,7 +37,6 @@ namespace Corax.Querying.Matches
 #endif
 
 
-        public QueryCountConfidence Confidence => QueryCountConfidence.High;
 
         private TermMatch(
             Querying.IndexSearcher indexSearcher,
@@ -76,7 +75,6 @@ namespace Corax.Querying.Matches
                     {
                         { Constants.QueryInspectionNode.IsBoosting, term.IsBoosting.ToString() },
                         { Constants.QueryInspectionNode.Count, term.Count.ToString() },
-                        { Constants.QueryInspectionNode.CountConfidence, term.Confidence.ToString() },
                     });
             }
 
@@ -117,7 +115,6 @@ namespace Corax.Querying.Matches
                     {
                         { Constants.QueryInspectionNode.IsBoosting, term.IsBoosting.ToString() },
                         { Constants.QueryInspectionNode.Count, term.Count.ToString() },
-                        { Constants.QueryInspectionNode.CountConfidence, term.Confidence.ToString() },
                     });
             }
 
@@ -186,7 +183,6 @@ namespace Corax.Querying.Matches
                     {
                         { Constants.QueryInspectionNode.IsBoosting, term.IsBoosting.ToString() },
                         { Constants.QueryInspectionNode.Count, term.Count.ToString() },
-                        { Constants.QueryInspectionNode.CountConfidence, term.Confidence.ToString() },
                     });
             }
 
@@ -235,7 +231,6 @@ namespace Corax.Querying.Matches
                     {
                         { Constants.QueryInspectionNode.IsBoosting, term.IsBoosting.ToString() },
                         { Constants.QueryInspectionNode.Count, term.Count.ToString() },
-                        { Constants.QueryInspectionNode.CountConfidence, term.Confidence.ToString() },
                     });
             }
 

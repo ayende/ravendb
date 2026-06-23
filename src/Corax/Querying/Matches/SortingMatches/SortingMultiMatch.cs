@@ -234,8 +234,6 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
 
     public override long Count => _inner.Count;
 
-    public override QueryCountConfidence Confidence => throw new NotSupportedException();
-
     public override bool IsBoosting => _inner.IsBoosting || _orderMetadata[0].FieldType == MatchCompareFieldType.Score;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -250,7 +248,6 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         {
             {Constants.QueryInspectionNode.IsBoosting, IsBoosting.ToString()},
             {Constants.QueryInspectionNode.Count, "0"},
-            {Constants.QueryInspectionNode.CountConfidence, QueryCountConfidence.Low.ToString()},
         };
 
         for (int cmpId = 0; cmpId < _orderMetadata.Length; ++cmpId)

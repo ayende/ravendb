@@ -797,8 +797,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
 
     public override long Count => _inner.Count;
 
-    public override QueryCountConfidence Confidence => throw new NotSupportedException();
-
     public override bool IsBoosting => _inner.IsBoosting || _orderMetadata.FieldType == MatchCompareFieldType.Score;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]

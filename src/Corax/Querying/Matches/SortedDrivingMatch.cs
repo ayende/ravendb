@@ -120,7 +120,6 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     }
 
     public long Count => -1;
-    public QueryCountConfidence Confidence => QueryCountConfidence.Low;
     public bool IsBoosting => false;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
 

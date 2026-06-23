@@ -7,7 +7,6 @@ public class EmptyQueryMatch : IQueryMatch
     public static readonly EmptyQueryMatch Instance = new();
     
     public long Count => 0;
-    public QueryCountConfidence Confidence => QueryCountConfidence.High;
     public bool IsBoosting  => false;
     public int Fill(Span<long> matches) => 0;
 

@@ -74,7 +74,6 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     public abstract bool IsBoosting { get; }
     public abstract DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
     public abstract long Count { get; }
-    public abstract QueryCountConfidence Confidence { get; }
     public abstract int Fill(Span<long> buffer);
 
     // A SortingMatch is never nested inside another match's score chain, nothing to do here

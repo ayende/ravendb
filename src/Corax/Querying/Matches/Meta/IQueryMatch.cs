@@ -8,23 +8,9 @@ public static class QueryMatch
     public const long Start = 0;
 }
 
-public enum QueryCountConfidence : int
-{
-    Low = 0,
-    Normal = 1,
-    High = 2,
-}
-
 public interface IQueryMatch
 {
     long Count { get; }
-    
-        
-    // The confidence of the query count.
-    //  - High: We know exactly how many items there are.
-    //  - Normal: We know roughly that it is in the order of magnitude.
-    //  - Low: We know very little about it.
-    QueryCountConfidence Confidence { get; }
 
     bool IsBoosting { get; }
 

@@ -86,10 +86,6 @@ public class CompiledQueryMatch(
         if (_executed is false) Execute();
     }
 
-    public QueryCountConfidence Confidence => _executed
-        ? (_count < Limit ? QueryCountConfidence.High : QueryCountConfidence.Low)
-        : QueryCountConfidence.Normal;
-
     public bool IsBoosting
     {
         get

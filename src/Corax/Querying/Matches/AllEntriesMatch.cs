@@ -29,8 +29,7 @@ namespace Corax.Querying.Matches
 
         public bool IsBoosting => false;
         public long Count => _count;
-        public QueryCountConfidence Confidence => QueryCountConfidence.High;
-        
+
         public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
         public int Fill(Span<long> matches)
@@ -57,7 +56,6 @@ namespace Corax.Querying.Matches
                 {
                     { Constants.QueryInspectionNode.IsBoosting, IsBoosting.ToString() },
                     { Constants.QueryInspectionNode.Count, Count.ToString()},
-                    { Constants.QueryInspectionNode.CountConfidence, Confidence.ToString()},
                 });
         }
 

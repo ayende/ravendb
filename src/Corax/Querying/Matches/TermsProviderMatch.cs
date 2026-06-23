@@ -61,8 +61,6 @@ public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransact
         }
     }
 
-    public QueryCountConfidence Confidence => _initialized ? QueryCountConfidence.High : QueryCountConfidence.Low;
-
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
 
