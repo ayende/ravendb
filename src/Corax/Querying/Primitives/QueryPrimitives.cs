@@ -289,7 +289,7 @@ public static class QueryPrimitives
             tempBitmap.AddRange(buffer[..read]);
 
             int seenMaxKey = (int)(buffer[read - 1] >> RoaringBitmap.ContainerKeyShift);
-            matched += bitmap.AndWithRange(ref tempBitmap, processedKey, seenMaxKey); // used < seenMaxKey (so excluding latest container
+            matched += bitmap.AndWithRange(ref tempBitmap, processedKey, seenMaxKey); // half-open [processedKey, seenMaxKey): excludes the latest container, which may still grow next batch
             processedKey = seenMaxKey;
 
             if (matched < limit) continue;
