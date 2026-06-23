@@ -14,13 +14,13 @@ public struct RegexTermsProvider<TLookupIterator> : ITermsProvider
     where TLookupIterator : struct, ILookupIterator
 {
     private readonly CompactTree _tree;
-    private readonly Querying.IndexSearcher _searcher;
+    private readonly IndexSearcher _searcher;
     private readonly FieldMetadata _field;
     private readonly Regex _regex;
 
     private CompactTree.Iterator<TLookupIterator> _iterator;
 
-    public RegexTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, Regex regex)
+    public RegexTermsProvider(IndexSearcher searcher, CompactTree tree, in FieldMetadata field, Regex regex)
     {
         _searcher = searcher;
         _regex = regex;
@@ -38,14 +38,14 @@ public struct RegexTermsProvider<TLookupIterator> : ITermsProvider
         var compactKey = scope.Key;
 
         // Decode each term's UTF-8 bytes into a reusable pooled char buffer and match the regex against the
-        // span directly, instead of allocating a fresh string per term via Encoding.UTF8.GetString. The buffer
-        // is rented once and grown only if a later term needs more room (see ToChars), then returned at the end.
+        // span directly, instead of allocating a fresh string per term.
+        // The buffer is rented once and grown only if a later term needs more room (see ToChars), then returned at the end.
         char[] buffer = null;
         try
         {
             while (count < postingListIds.Length)
             {
-                if (_iterator.MoveNext(compactKey, out long postingListId, out _) == false)
+                if (_iterator.MoveNext(compactKey, out long postingListId) == false)
                     break;
 
                 var key = compactKey.Decoded();

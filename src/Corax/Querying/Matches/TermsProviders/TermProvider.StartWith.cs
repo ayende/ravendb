@@ -13,8 +13,7 @@ namespace Corax.Querying.Matches.TermsProviders
     public struct StartsWithTermsProvider<TLookupIterator> : ITermsProvider
         where TLookupIterator : struct, ILookupIterator
     {
-        private readonly CompactTree _tree;
-        private readonly Querying.IndexSearcher _searcher;
+        private readonly IndexSearcher _searcher;
         private readonly FieldMetadata _field;
         private readonly CompactKey _startWith;
         private readonly CompactKey _startWithLimit;
@@ -24,7 +23,7 @@ namespace Corax.Querying.Matches.TermsProviders
 
         private CompactTree.Iterator<TLookupIterator> _iterator;
 
-        public StartsWithTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey startWith, CompactKey seekTerm, bool validatePostfixLen, CancellationToken token)
+        public StartsWithTermsProvider(IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey startWith, CompactKey seekTerm, bool validatePostfixLen, CancellationToken token)
         {
             _searcher = searcher;
             _field = field;
@@ -33,7 +32,6 @@ namespace Corax.Querying.Matches.TermsProviders
             _startWithLimit = seekTerm;
             _validatePostfixLen = validatePostfixLen;
             _token = token;
-            _tree = tree;
 
             Reset();
         }
@@ -48,7 +46,7 @@ namespace Corax.Querying.Matches.TermsProviders
 
             while (count < postingListIds.Length)
             {
-                if (_iterator.MoveNext(compactKey, out long postingListId, out _) == false)
+                if (_iterator.MoveNext(compactKey, out long postingListId ) == false)
                     break;
 
                 var key = compactKey.Decoded();

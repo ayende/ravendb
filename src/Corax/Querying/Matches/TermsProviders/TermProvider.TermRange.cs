@@ -31,7 +31,7 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
     private bool _shouldIncludeLastTerm;
     private long _endContainerId;
 
-    public TermsRangeProvider(Querying.IndexSearcher indexSearcher, CompactTree tree, in FieldMetadata field, Slice low, Slice high)
+    public TermsRangeProvider(IndexSearcher indexSearcher, CompactTree tree, in FieldMetadata field, Slice low, Slice high)
     {
         _indexSearcher = indexSearcher;
         _field = field;
@@ -170,7 +170,7 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
             ? null
             : _high.ToString();
 
-        return new QueryInspectionNode(nameof(TermsRangeProvider<TLookupIterator, TLow, THigh>),
+        return new QueryInspectionNode(nameof(TermsRangeProvider<,,>),
             parameters: new Dictionary<string, string>()
             {
                 { Constants.QueryInspectionNode.FieldName, _field.FieldName.ToString() },
@@ -184,10 +184,7 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
 
     public string DebugView => Inspect().ToString();
 
-    public IDisposable AggregateByTerms(out List<string> terms, out Span<long> counts)
-    {
-        throw new NotImplementedException();
-    }
+    public IDisposable AggregateByTerms(out List<string> terms, out Span<long> counts) => throw new NotImplementedException();
 
     public long AggregateByRange()
     {
@@ -220,7 +217,7 @@ public struct TermsRangeProvider<TLookupIterator, TLow, THigh> : ITermsProvider,
 
         try
         {
-            while (_isEmpty == false && _iterator.MoveNext(compactKey, out var termId, out _))
+            while (_isEmpty == false && _iterator.MoveNext(compactKey, out var termId))
             {
                 if (termId == _endContainerId)
                 {

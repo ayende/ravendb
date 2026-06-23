@@ -6,31 +6,20 @@ using Corax.Querying.Matches.Meta;
 
 namespace Corax.Querying.Matches.TermsProviders
 {
-    [DebuggerDisplay("{DebugView,nq}")]
-    public struct InTermsProvider : ITermsProvider
+    public struct InTermsProvider(IndexSearcher searcher, in FieldMetadata field, List<string> terms) : ITermsProvider
     {
-        private readonly IndexSearcher _searcher;
-        private readonly List<string> _terms;
-        private int _termIndex;
-        private readonly FieldMetadata _field;
-
-        public InTermsProvider(IndexSearcher searcher, in FieldMetadata field, List<string> terms)
-        {
-            _field = field;
-            _searcher = searcher;
-            _terms = terms;
-            _termIndex = -1;
-        }
+        private int _termIndex = -1;
+        private readonly FieldMetadata _field = field;
 
         public int FillPostingListIds(Span<long> postingListIds)
         {
             int count = 0;
 
-            while (count < postingListIds.Length && _termIndex + 1 < _terms.Count)
+            while (count < postingListIds.Length && _termIndex + 1 < terms.Count)
             {
                 _termIndex++;
 
-                long containerId = _searcher.GetTermPostingListId(_field, _terms[_termIndex]);
+                long containerId = searcher.GetTermPostingListId(_field, terms[_termIndex]);
 
                 if (containerId != -1)
                     postingListIds[count++] = containerId;
@@ -47,10 +36,8 @@ namespace Corax.Querying.Matches.TermsProviders
                             parameters: new Dictionary<string, string>()
                             {
                                 { Constants.QueryInspectionNode.FieldName, _field.FieldName.ToString() },
-                                { Constants.QueryInspectionNode.Term, string.Join(",", _terms)}
+                                { Constants.QueryInspectionNode.Term, string.Join(",", terms)}
                             });
         }
-
-        string DebugView => Inspect().ToString();
     }
 }

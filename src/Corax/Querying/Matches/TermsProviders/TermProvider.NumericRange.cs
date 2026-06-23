@@ -5,7 +5,6 @@ using Corax.Indexing;
 using Corax.Mappings;
 using Corax.Querying.Matches.Meta;
 using Sparrow.Extensions;
-using Sparrow.Threading;
 using Voron.Data.Lookups;
 using Voron.Util;
 using Range = Corax.Querying.Matches.Meta.Range;
@@ -20,7 +19,7 @@ namespace Corax.Querying.Matches.TermsProviders
         where THigh  : struct, Range.Marker
         where TVal : struct, ILookupKey
     {
-        private readonly Querying.IndexSearcher _searcher;
+        private readonly IndexSearcher _searcher;
         private readonly Lookup<TVal> _set;
         private readonly FieldMetadata _field;
         private TVal _low, _high;
@@ -30,7 +29,7 @@ namespace Corax.Querying.Matches.TermsProviders
         private bool _includeLastTerm = true;
         private bool _isEmpty;
 
-        public TermsNumericRangeProvider(Querying.IndexSearcher searcher, Lookup<TVal> set, in FieldMetadata field, TVal low, TVal high)
+        public TermsNumericRangeProvider(IndexSearcher searcher, Lookup<TVal> set, in FieldMetadata field, TVal low, TVal high)
         {
             _searcher = searcher;
             _set = set;
@@ -179,9 +178,9 @@ namespace Corax.Querying.Matches.TermsProviders
 
         public string DebugView => Inspect().ToString();
         
-        public unsafe IDisposable AggregateByTerms(out List<string> terms, out Span<long> counts)
+        public IDisposable AggregateByTerms(out List<string> terms, out Span<long> counts)
         {
-            throw new NotSupportedException($"Primitive {nameof(TermsNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>)} doesnt support aggregation by terms.");
+            throw new NotSupportedException($"Primitive {nameof(TermsNumericRangeProvider<,,,>)} doesnt support aggregation by terms.");
         }
         
         public long AggregateByRange()
@@ -244,7 +243,5 @@ namespace Corax.Querying.Matches.TermsProviders
         }
 
         public long TotalTermCount() => _set.NumberOfEntries;
-
-        public int NumberOfTerms => throw new NotSupportedException($"{nameof(NumberOfTerms)} is not supported in {nameof(TermsNumericRangeProvider<TLookupIterator, TLow, THigh, TVal>)}."); // unknown
     }
 }

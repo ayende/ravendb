@@ -12,13 +12,13 @@ namespace Corax.Querying.Matches.TermsProviders
         where TLookupIterator : struct, ILookupIterator
     {
         private readonly CompactTree _tree;
-        private readonly Querying.IndexSearcher _searcher;
+        private readonly IndexSearcher _searcher;
         private readonly FieldMetadata _field;
         private readonly CompactKey _term;
 
         private CompactTree.Iterator<TLookupIterator> _iterator;
 
-        public NotContainsTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey term)
+        public NotContainsTermsProvider(IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey term)
         {
             _tree = tree;
             _searcher = searcher;
@@ -38,7 +38,7 @@ namespace Corax.Querying.Matches.TermsProviders
 
             while (count < postingListIds.Length)
             {
-                if (_iterator.MoveNext(key, out long postingListId, out _) == false)
+                if (_iterator.MoveNext(key, out long postingListId) == false)
                     break;
 
                 if (key.Decoded().Contains(contains))
@@ -58,7 +58,7 @@ namespace Corax.Querying.Matches.TermsProviders
 
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(NotContainsTermsProvider<TLookupIterator>)}",
+            return new QueryInspectionNode($"{nameof(NotContainsTermsProvider<>)}",
                             parameters: new Dictionary<string, string>()
                             {
                                 { Constants.QueryInspectionNode.FieldName, _field.FieldName.ToString() },

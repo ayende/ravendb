@@ -38,7 +38,7 @@ namespace Corax.Querying.Matches.TermsProviders
 
             while (count < postingListIds.Length)
             {
-                if (!_iterator.MoveNext(key, out long postingListId, out _))
+                if (!_iterator.MoveNext(key, out long postingListId))
                     break;
 
                 if (!key.Decoded().EndsWith(suffix))
@@ -58,7 +58,7 @@ namespace Corax.Querying.Matches.TermsProviders
 
         public QueryInspectionNode Inspect()
         {
-            return new QueryInspectionNode($"{nameof(EndsWithTermsProvider<TLookupIterator>)}",
+            return new QueryInspectionNode($"{nameof(EndsWithTermsProvider<>)}",
                 parameters: new Dictionary<string, string>
                 {
                     { Constants.QueryInspectionNode.FieldName, _field.FieldName.ToString() },
