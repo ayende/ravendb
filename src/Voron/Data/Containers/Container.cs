@@ -9,6 +9,7 @@ using System.Runtime.Intrinsics;
 using System.Text;
 using Sparrow;
 using Sparrow.Server;
+using Sparrow.Server.Utils;
 using Voron.Data.Lookups;
 using Voron.Data.RoaringBitmaps;
 using Voron.Exceptions;
@@ -1492,105 +1493,66 @@ namespace Voron.Data.Containers
             }
         }
 
-        /// <summary>
-        /// Assumes that ids is sorted 
-        /// </summary>
-        public static void GetAll(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, long missingValue, PageLocator pageCache)
-        {
-            for (int i = 0; i < ids.Length; i++)
-            {
-                if (ids[i]== missingValue)
-                {
-                    spans[i] = default;
-                    continue;
-                }
-                var pageNum = ids[i] >> Constants.Storage.PageSizeShift;
-                var offset = ids[i] & Constants.Storage.PageSizeMask;
-
-                if (pageCache.TryGetReadOnlyPage(pageNum, out var page) == false)
-                {
-                    page = llt.GetPage(pageNum);
-                    pageCache.SetReadable(page);
-                }
-
-                if (page.IsOverflow)
-                {
-                    spans[i] = new(page.DataPointer, page.OverflowSize);
-                    continue;
-                }
-                
-                var container = new Container(page);
-                
-                var metadata = container.MetadataFor(OffsetToIndex(offset));
-                Debug.Assert(metadata.IsFree == false);
-                var p = page.Pointer;
-                int size = metadata.Get(ref p);
-                spans[i] = new(p, size);
-            }
-        }
-
-        /// <summary>
-        /// Like <see cref="GetAll"/>, but fetches in container-id (≈ page) order for locality and scatters each
-        /// item back to its caller slot, so spans[i] stays paired with ids[i]. Use for large, page-scattered
-        /// batches (sort-key fetches); small / already-page-local callers should use GetAll, which avoids the
-        /// argsort + scratch this pays. ids is not mutated.
-        /// </summary>
-        public static void GetAllSortedByPage(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, long missingValue, PageLocator pageCache)
+        public static void GetAllSortedByPage(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, PageLocator pageCache)
         {
             int n = ids.Length;
             if (n == 0)
                 return;
 
-            // idx is padded to the Vector256 width so InitializeIndices can SIMD-store it without a scalar tail.
-            int idxLen = RoaringBitmap.PadToVector256Width(n);
-            using var keysScope = llt.Allocator.Allocate(n * sizeof(long), out ByteString keysBuffer);
-            using var idxScope = llt.Allocator.Allocate(idxLen * sizeof(int), out ByteString idxBuffer);
-            var keys = new Span<long>(keysBuffer.Ptr, n);
-            var idx = new Span<int>(idxBuffer.Ptr, idxLen);
+            using var keysScope = llt.Allocator.Allocate(n, out Span<long> keys);
+            // idx is padded to the Vector256 width, so InitializeIndices can SIMD-store it without a scalar tail.
+            using var idxScope = llt.Allocator.Allocate(RoaringBitmap.PadToVector256Width(n), out Span<int> idx);
             ids.CopyTo(keys);
             RoaringBitmap.InitializeIndices(idx, n);
+            keys.Sort(idx[..n]); // keys ascending (page order)
 
-            // keys ascending (page order); idx[k] is the caller slot for keys[k].
-            keys.Sort(idx[..n]);
+            GetAllCore(llt, keys, spans, idx[..n], pageCache);
+        }
 
-            // Sorted by id == sorted by page, so a run of ids on the same page is contiguous: resolve the page
-            // once per run and reuse it instead of going through the page cache for every entry.
-            long lastPageNum = -1;
+        public static void GetAll(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, PageLocator pageCache) => GetAllCore(llt, ids, spans, permutation: default, pageCache);
+        
+        private static void GetAllCore(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, ReadOnlySpan<int> permutation, PageLocator pageCache)
+        {
+            bool permuted = permutation.IsEmpty == false;
+            long currentPageNum = -1;
+            Container container = default;
             Page page = default;
-            for (int k = 0; k < n; k++)
+            for (int i = 0; i < ids.Length; i++)
             {
-                long id = keys[k];
-                int orig = idx[k];
-                if (id == missingValue)
+                int target = permuted ? permutation[i] : i;
+                if (ids[i] < 0)
                 {
-                    spans[orig] = default;
+                    spans[target] = default;
                     continue;
                 }
 
-                long pageNum = id >> Constants.Storage.PageSizeShift;
-                long offset = id & Constants.Storage.PageSizeMask;
-                if (pageNum != lastPageNum)
+                var pageNum = ids[i] >> Constants.Storage.PageSizeShift;
+                var offset = ids[i] & Constants.Storage.PageSizeMask;
+
+                if (pageNum != currentPageNum)
                 {
                     if (pageCache.TryGetReadOnlyPage(pageNum, out page) == false)
                     {
                         page = llt.GetPage(pageNum);
                         pageCache.SetReadable(page);
                     }
-                    lastPageNum = pageNum;
+
+                    currentPageNum = pageNum;
+
+                    if (page.IsOverflow)
+                    {
+                        spans[target] = new(page.DataPointer, page.OverflowSize);
+                        continue;
+                    }
+
+                    container = new Container(page);
                 }
 
-                if (page.IsOverflow)
-                {
-                    spans[orig] = new(page.DataPointer, page.OverflowSize);
-                    continue;
-                }
-
-                var container = new Container(page);
                 var metadata = container.MetadataFor(OffsetToIndex(offset));
                 Debug.Assert(metadata.IsFree == false);
                 var p = page.Pointer;
                 int size = metadata.Get(ref p);
-                spans[orig] = new(p, size);
+                spans[target] = new(p, size);
             }
         }
 

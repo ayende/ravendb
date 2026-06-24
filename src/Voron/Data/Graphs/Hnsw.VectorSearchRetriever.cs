@@ -96,7 +96,7 @@ public partial class Hnsw
                         continue;
                     }
 
-                    total = FilterDuplicates(matches, distances, index, total);
+                    total = _alreadySeen.DedupAddNew(matches.Slice(index, total), total);
 
                     distances.Slice(index, total).Fill(distance);
                     index += total;
@@ -107,7 +107,7 @@ public partial class Hnsw
                 {
                     var amountRead = Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
                     _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, amountRead);
-                    var dedupedAmount = FilterDuplicates(matches, distances, index, amountRead);
+                    var dedupedAmount = _alreadySeen.DedupAddNew(matches.Slice(index, amountRead), amountRead);
                     distances.Slice(index, dedupedAmount).Fill(distance);
                     index += dedupedAmount;
                     _currentMatchesIndex += amountRead;
@@ -182,23 +182,6 @@ public partial class Hnsw
             return index;
         }
 
-        private int FilterDuplicates(Span<long> matches, Span<float> distances, int index, int total)
-        {
-            int pos = index;
-            int end = index + total;
-            for (int i = index; i < end; i++)
-            {
-                if (_alreadySeen.Contains(matches[i]))
-                    continue;
-                _alreadySeen.Add(matches[i]);
-                matches[pos] = matches[i];
-                distances[pos] = distances[i];
-                pos++;
-            }
-
-            return pos - index;
-        }
-
         private int FillWithFilter(Span<long> matches, Span<float> distances, ref RoaringBitmap filter)
         {
             if (_vectorsSearcher.TryGetCurrentCandidates(out var indexes) == false)
@@ -257,43 +240,27 @@ public partial class Hnsw
                     //decode in bulk
                     Registration.InternalEntryIdToEntryId(matches.Slice(index, total));
 
-                    var currentDocIdx = index;
-                    var endDocIdx = index + total;
-                    for (; currentDocIdx < endDocIdx; currentDocIdx++)
-                    {
-                        if (filter.Contains(matches[currentDocIdx]) == false)
-                            continue;
-
-                        if (_alreadySeen.Contains(matches[currentDocIdx]))
-                            continue;
-                        _alreadySeen.Add(matches[currentDocIdx]);
-
-                        _foundCandidateInCurrentSmallPostingList = true;
-                        matches[index] = matches[currentDocIdx];
-                        distances[index] = distance;
-                        index++;
-                    }
+                    // first find only the items that are in the filter
+                    int survivors = filter.RetainPresentSorted(matches.Slice(index, total));
+                    // then add only items that we didn't previously already have
+                    int kept = _alreadySeen.DedupAddNew(matches.Slice(index, survivors), survivors);
+                    _foundCandidateInCurrentSmallPostingList |= kept > 0;
+                    distances.Slice(index, kept).Fill(distance);
+                    index += kept;
 
                     continue;
                 }
 
                 if (_currentMatchesIndex < _postingListResults.Count)
                 {
-                    var currentFillLimit = _currentMatchesIndex + Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
-                    for (; _currentMatchesIndex < currentFillLimit; _currentMatchesIndex++)
-                    {
-                        if (filter.Contains(_postingListResults[_currentMatchesIndex]) == false)
-                            continue;
-
-                        if (_alreadySeen.Contains(_postingListResults[_currentMatchesIndex]))
-                            continue;
-                        _alreadySeen.Add(_postingListResults[_currentMatchesIndex]);
-
-                        matches[index] = _postingListResults[_currentMatchesIndex];
-                        distances[index] = distance;
-                        _foundCandidateInCurrentSmallPostingList = true;
-                        index++;
-                    }
+                    var amountRead = Math.Min(_postingListResults.Count - _currentMatchesIndex, matches.Length - index);
+                    _postingListResults.CopyTo(matches[index..], _currentMatchesIndex, amountRead);
+                    int survivors = filter.RetainPresentSorted(matches.Slice(index, amountRead));
+                    int kept = _alreadySeen.DedupAddNew(matches.Slice(index, survivors), survivors);
+                    _foundCandidateInCurrentSmallPostingList |= kept > 0;
+                    distances.Slice(index, kept).Fill(distance);
+                    index += kept;
+                    _currentMatchesIndex += amountRead;
 
                     if (_currentMatchesIndex == _postingListResults.Count)
                     {
