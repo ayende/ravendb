@@ -618,6 +618,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             long docsToLoad = pageSize;
             bool runQuery = true;
+            // Loop-invariant: depends only on index type / fields / query.
+            bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
             // Reuse a single CompactKey across the whole result loop. With no key supplied, GetEntryTermsReader
             // allocates a fresh CompactKey per entry and rents pool buffers that are never returned (the reader
             // is discarded without Reset), so the thread-static pool stays empty and every entry allocates anew.
@@ -677,8 +679,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         // the bitmap is truncated to the page instead of materializing the whole posting
                         // list. We can do this when the client doesn't need the exact total (SkipStatistics),
                         // or when we already know it cheaply (knownExactTotal) and supply it below.
+                        // Fan-out indexes produce multiple entries per document; after dedup the page would
+                        // come up short if we truncated to exactly `take`. Inflate by the observed max
+                        // outputs-per-document so the bitmap contains enough entries to fill the page even
+                        // in the worst-case dedup scenario.
                         if (take > 0 && (query.SkipStatistics || knownExactTotal >= 0))
-                            compiledMatch.Limit = (int)Math.Min(take, int.MaxValue);
+                            compiledMatch.Limit = (int)Math.Min((long)take * _maxNumberOfOutputsPerDocument, int.MaxValue);
                     }
                     else if (compileResult.QueryMatch is DirectScanMatchBase { KnownExactTotal: >= 0 } directScan)
                     {
@@ -697,7 +703,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 var ids = QueryPool.Rent(bufferSize);
                 using var queryFilter = GetQueryFilterInternal();
                 Page page = default;
-                bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
                 totalResults.Value = 0;
 
                 var (sortingData, hasOrderByDistance) = SetupSortingData(query, compileResult.QueryBuilderParams, compileResult.QueryMatch, bufferSize);

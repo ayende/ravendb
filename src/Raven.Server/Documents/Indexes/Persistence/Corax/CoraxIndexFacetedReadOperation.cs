@@ -169,10 +169,19 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                         int read;
                         while ((read = termMatch.Fill(ids)) != 0)
                         {
-                            for (int i = 0; i < read; i++)
+                            // ids is sorted+deduped per the Fill contract, so when the base query is a bitmap we can
+                            // count membership with one grouped merge instead of a point lookup per id.
+                            if (baseQueryBitmap != null)
                             {
-                                if (baseQueryBitmap?.Contains(ids[i]) ?? baseQueryMatchingIds.Contains(ids[i]))
-                                    count++;
+                                count += baseQueryBitmap.BitmapState.CountPresentSorted(ids.AsSpan(0, read));
+                            }
+                            else
+                            {
+                                for (int i = 0; i < read; i++)
+                                {
+                                    if (baseQueryMatchingIds.Contains(ids[i]))
+                                        count++;
+                                }
                             }
                         }
                     }
@@ -225,10 +234,18 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                     int read;
                     while ((read = rangeQuery.Fill(ids)) != 0)
                     {
-                        for (int i = 0; i < read; i++)
+                        // ids is sorted+deduped per the Fill contract; batch the bitmap membership count.
+                        if (baseQueryBitmap != null)
                         {
-                            if (baseQueryBitmap?.Contains(ids[i]) ?? baseQueryMatchingIds.Contains(ids[i]))
-                                count++;
+                            count += baseQueryBitmap.BitmapState.CountPresentSorted(ids.AsSpan(0, read));
+                        }
+                        else
+                        {
+                            for (int i = 0; i < read; i++)
+                            {
+                                if (baseQueryMatchingIds.Contains(ids[i]))
+                                    count++;
+                            }
                         }
                     }
                 }
