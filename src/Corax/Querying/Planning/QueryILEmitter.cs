@@ -105,21 +105,21 @@ public static class QueryIlEmitter
             switch (op.Kind)
             {
                 case PlanOpKind.FillFromPostingSource:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromPostingSource, "QueryPrimitives.CtxFillFromPostingSource", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromPostingSource, op.BitmapLocal, advanceCursor);
                     if (shouldCheckLimitReached)
-                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                        d.EmitLimitReachedGoto(doneLabel);
                     break;
 
                 case PlanOpKind.FillFromTreeScan:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromTreeScan, "QueryPrimitives.CtxFillFromTreeScan", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromTreeScan, op.BitmapLocal, advanceCursor);
                     if (shouldCheckLimitReached)
-                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                        d.EmitLimitReachedGoto(doneLabel);
                     break;
 
                 case PlanOpKind.FillFromMatch:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromMatch, "QueryPrimitives.CtxFillFromMatch", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxFillFromMatch, op.BitmapLocal, advanceCursor);
                     if (shouldCheckLimitReached)
-                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                        d.EmitLimitReachedGoto(doneLabel);
                     break;
 
                 case PlanOpKind.FillAllEntries:
@@ -127,74 +127,74 @@ public static class QueryIlEmitter
                     break;
 
                 case PlanOpKind.AndFromPostingSource:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndFromPostingSource, "QueryPrimitives.CtxAndFromPostingSource", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndFromPostingSource, op.BitmapLocal, advanceCursor);
                     if (emitGoToEmpty)
-                        d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
+                        d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel);
                     break;
 
                 case PlanOpKind.AndFromTreeScan:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndFromTreeScan, "QueryPrimitives.CtxAndFromTreeScan", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndFromTreeScan, op.BitmapLocal, advanceCursor);
                     if (emitGoToEmpty)
-                        d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
+                        d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel);
                     break;
 
                 case PlanOpKind.AndFromMatch:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndFromMatch, "QueryPrimitives.CtxAndFromMatch", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndFromMatch, op.BitmapLocal, advanceCursor);
                     if (emitGoToEmpty)
-                        d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
+                        d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel);
                     break;
 
                 case PlanOpKind.OrFromPostingSource:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxOrFillFromPostingSource, "QueryPrimitives.CtxOrFillFromPostingSource", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxOrFillFromPostingSource, op.BitmapLocal, advanceCursor);
                     if (emitGotoLimitReached)
-                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                        d.EmitLimitReachedGoto(doneLabel);
                     break;
 
                 case PlanOpKind.OrFromTreeScan:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxOrFillFromTreeScan, "QueryPrimitives.CtxOrFillFromTreeScan", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxOrFillFromTreeScan, op.BitmapLocal, advanceCursor);
                     if (emitGotoLimitReached)
-                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                        d.EmitLimitReachedGoto(doneLabel);
                     break;
 
                 case PlanOpKind.OrFromMatch:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxOrWithMatchSlot, "QueryPrimitives.CtxOrWithMatchSlot", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxOrWithMatchSlot, op.BitmapLocal, advanceCursor);
                     if (emitGotoLimitReached)
-                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                        d.EmitLimitReachedGoto(doneLabel);
                     break;
 
                 case PlanOpKind.AndNotFromPostingSource:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndNotFromPostingSource, "QueryPrimitives.CtxAndNotFromPostingSource", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndNotFromPostingSource, op.BitmapLocal, advanceCursor);
                     break;
 
                 case PlanOpKind.AndNotFromTreeScan:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndNotFromTreeScan, "QueryPrimitives.CtxAndNotFromTreeScan", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndNotFromTreeScan, op.BitmapLocal, advanceCursor);
                     break;
 
                 case PlanOpKind.AndNotFromMatch:
-                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndNotFromMatch, "QueryPrimitives.CtxAndNotFromMatch", op.BitmapLocal, advanceCursor);
+                    d.EmitCancelledCursorSlotCall(cursorVar, IlEmitterShared.CtxAndNotFromMatch, op.BitmapLocal, advanceCursor);
                     break;
 
                 case PlanOpKind.ClearBitmap:
-                    d.EmitBitmapUnaryCall(op.BitmapLocal, IlEmitterShared.Clear, "Clear");
+                    d.EmitBitmapUnaryCall(op.BitmapLocal, IlEmitterShared.Clear);
                     break;
 
                 case PlanOpKind.AndBitmaps:
-                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.AndWith, "AndWith");
+                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.AndWith);
                     break;
 
                 case PlanOpKind.AndNotBitmaps:
-                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.AndNotWith, "AndNotWith");
+                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.AndNotWith);
                     break;
 
                 case PlanOpKind.LazyOrBitmaps:
-                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.LazyOrWith, "LazyOrWith");
+                    d.EmitBitmapBinaryOp(op.BitmapLocal, op.ParamIndex2, IlEmitterShared.LazyOrWith);
                     needsLazyRepair = true;
                     break;
 
                 case PlanOpKind.GotoDoneIfEmpty:
                     // Dead when terminal: `if (empty) goto Done;` falls straight through to the Done label, let's skip it then
                     if (isLastEffectiveOp is false)
-                        d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel.Il, doneLabel.Name);
+                        d.EmitBitmapEmptyGoto(op.BitmapLocal, doneLabel);
                     break;
 
                 case PlanOpKind.MaybeEntryScan:
@@ -206,29 +206,29 @@ public static class QueryIlEmitter
 
                 case PlanOpKind.OrRangeFromPostingSource:
                     EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
-                        IlEmitterShared.CtxOrFillFromPostingSource, "QueryPrimitives.CtxOrFillFromPostingSource", i,
+                        IlEmitterShared.CtxOrFillFromPostingSource, i,
                         earlyExit: false, skipEarlyExit: false, doneLabel);
                     if (emitGotoLimitReached)
-                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                        d.EmitLimitReachedGoto(doneLabel);
                     break;
 
                 case PlanOpKind.OrRangeFromMatch:
                     EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
-                        IlEmitterShared.CtxOrWithMatchSlot, "QueryPrimitives.CtxOrWithMatchSlot", i,
+                        IlEmitterShared.CtxOrWithMatchSlot, i,
                         earlyExit: false, skipEarlyExit: false, doneLabel);
                     if (emitGotoLimitReached)
-                        d.EmitLimitReachedGoto(doneLabel.Il, doneLabel.Name);
+                        d.EmitLimitReachedGoto(doneLabel);
                     break;
 
                 case PlanOpKind.AndRangeFromPostingSource:
                     EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
-                        IlEmitterShared.CtxAndFromPostingSource, "QueryPrimitives.CtxAndFromPostingSource", i,
+                        IlEmitterShared.CtxAndFromPostingSource, i,
                         earlyExit: true, skipEarlyExit: op.SkipEarlyExit, doneLabel);
                     break;
 
                 case PlanOpKind.AndRangeFromMatch:
                     EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
-                        IlEmitterShared.CtxAndFromMatch, "QueryPrimitives.CtxAndFromMatch", i,
+                        IlEmitterShared.CtxAndFromMatch, i,
                         earlyExit: true, skipEarlyExit: op.SkipEarlyExit, doneLabel);
                     break;
 
@@ -236,7 +236,7 @@ public static class QueryIlEmitter
                     // Falls straight through to the Done label when terminal — emitting the branch
                     // would be dead IL. Only emit when something real follows.
                     if (!isLastEffectiveOp)
-                        d.EmitGotoDone(doneLabel.Il, doneLabel.Name);
+                        d.EmitGotoDone(doneLabel);
                     break;
             }
 
@@ -248,7 +248,7 @@ public static class QueryIlEmitter
         // Done label
         d.MarkLabel(doneLabel);
         if (needsLazyRepair)
-            d.EmitBitmapUnaryCall(0, IlEmitterShared.RepairAfterLazy, "RepairAfterLazy");
+            d.EmitBitmapUnaryCall(0, IlEmitterShared.RepairAfterLazy);
         d.EmitRetVoid();
 
         // EntryScan tail
@@ -353,7 +353,7 @@ public static class QueryIlEmitter
     /// check-first loop (init; goto check; body; check: cond → body); the C# mirror is rendered
     /// as an equivalent <c>for</c> loop.</summary>
     private static void EmitRangeLoop(ref DualEmit d, LocalBuilder cursorVar, int rangeIdx, int bitmapLocal,
-        MethodInfo method, string methodName, int opIndex,
+        MethodInfo method, int opIndex,
         bool earlyExit, bool skipEarlyExit, LabelPair doneLabel)
     {
         var loopVar = d.DeclareLocal(typeof(int), $"j_{opIndex}");
@@ -389,12 +389,12 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Ldloc, loopVar);
         d.Il.Emit(OpCodes.Ldc_I4, bitmapLocal);
         d.Il.Emit(OpCodes.Call, method);
-        d.CsCall($"{methodName}(ctx, {d.GetLocalName(loopVar)}, {bitmapLocal});");
+        d.CsCall($"QueryPrimitives.{method.Name}(ctx, {d.GetLocalName(loopVar)}, {bitmapLocal});");
 
         // AND short-circuits once the destination is empty (the intersection can only shrink).
         if (earlyExit && !skipEarlyExit)
         {
-            d.EmitBitmapEmptyGoto(bitmapLocal, doneLabel.Il, doneLabel.Name);
+            d.EmitBitmapEmptyGoto(bitmapLocal, doneLabel);
         }
 
         // IL loopVar++ (IL only — the for-header carries this in C#).
