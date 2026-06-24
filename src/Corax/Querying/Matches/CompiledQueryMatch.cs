@@ -1,6 +1,7 @@
 using System;
 using System.Buffers;
 using System.Collections.Generic;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Planning;
@@ -31,31 +32,19 @@ public class CompiledQueryMatch(
 
     public readonly ResidualScanIlEmitter.ResidualScanPredicate CompiledEntryPredicate = compiledPlan.EntryScanSet.Compiled;
 
-    /// <summary>The plan this match executes. Exposed so a wrapping SortingMatch can reach per-plan learned
-    /// state (the IndexOrderStreaming scan-inflation EWMA) that must persist across queries sharing this plan.</summary>
     public readonly CompiledPlan CompiledPlan = compiledPlan;
 
-    /// <summary>Per-execution state — entry-scan IL reads this for analyzer-encoded slices,
-    /// field-root pages, and direct long/double values via baked field indices.</summary>
     public readonly QueryExecution Exec = exec;
 
     public SortHint SortHint;
+
+    // all those arrays are parallel to one another - one for each leaf clause in the query
     public readonly IQueryMatch[] ResolvedMatches = resolvedMatches;
-
-    /// <summary>Per-leaf resolution metadata for PostingSource / TreeScan slots, parallel to
-    /// <see cref="ResolvedMatches"/>. Match slots carry <see cref="LeafResolveKind.PreResolved"/>
-    /// and read from <see cref="ResolvedMatches"/> instead. Filled by Raven.Server; the posting
-    /// source / terms provider is materialized lazily inside <c>QueryPrimitives</c>.</summary>
     public readonly LeafResolveInfo[] Leaves = leaves;
-
     public int[] InRangeCounts;
-
-    /// <summary>Per-slot planner cardinality estimate. The entry-scan heuristic reads
-    /// <c>Cardinalities[cursor]</c> to decide whether bitmap[0] is small enough relative
-    /// to the next clause's estimated entries to switch to per-entry scanning. Sized to
-    /// match the resolver's slot layout (<see cref="ResolvedMatches"/>/<see cref="Leaves"/>),
-    /// so the IL cursor can index it directly regardless of dispatch.</summary>
     public long[] Cardinalities;
+    public long[] Timings;  
+    public long[] ResultCounts;
 
     public long EntryScanEntriesScanned;
     public long EntryScanEntriesPassed;
@@ -75,34 +64,27 @@ public class CompiledQueryMatch(
 
     public int Limit = int.MaxValue;
 
-    /// <summary>Per-op truncation budget for fill/OR/AND primitives, "unlimited" by default. Armed (to
-    /// <see cref="Limit"/>) only on ops that grow slot 0 monotonically to the result with no later narrowing
-    /// op — a fill/AND feeding a downstream narrowing op must read the full posting list or it could leave
-    /// fewer than Limit survivors. The entry scan's survivor early-exit reads <see cref="Limit"/> directly.</summary>
+    /// <summary>Per-op truncation budget for fill/OR/AND primitives, "unlimited" by default, allows to abort queries midway when we have enough results.</summary>
     public long OpLimit = long.MaxValue;
 
-    /// <summary>Diagnostic override for the entry-scan gate, set from the reserved $rvn_corax_entry_scan
-    /// parameter. <see cref="QueryPrimitives.EntryScanGateUnset"/> leaves the cost gate in charge;
-    /// <see cref="QueryPrimitives.EntryScanGateDisabled"/> suppresses every gate; any other value forces
-    /// the scan at the gate whose cursor equals it (the index reported as EntryScanAt).</summary>
     public int ForcedEntryScanGate = Primitives.QueryPrimitives.EntryScanGateUnset;
 
-    public long[] Timings;  
-    public long[] ResultCounts;
     public int EntryScanTakenAtOp;
 
     public long Count
     {
         get
         {
-            if (!_executed) Execute();
+            EnsureExecuted();
             return _count;
         }
     }
 
-    public QueryCountConfidence Confidence => _executed
-        ? (_count < Limit ? QueryCountConfidence.High : QueryCountConfidence.Low)
-        : QueryCountConfidence.Normal;
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    private void EnsureExecuted()
+    {
+        if (_executed is false) Execute();
+    }
 
     public bool IsBoosting
     {
@@ -110,7 +92,7 @@ public class CompiledQueryMatch(
         {
             foreach (var it in ResolvedMatches ?? [])
             {
-                if (it != null && it.IsBoosting)
+                if (it is { IsBoosting: true })
                     return true;
             }
             return false;
@@ -119,17 +101,11 @@ public class CompiledQueryMatch(
 
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
-    public bool Contains(long entryId)
-    {
-        if (!_executed) Execute();
-        return _bitmapData.Contains(entryId);
-    }
-
     public long MinEntryId
     {
         get
         {
-            if (!_executed) Execute();
+            EnsureExecuted();
             long minKey = _bitmapData.MinContainerKey;
             return minKey < 0 ? 0 : minKey * RoaringBitmap.ContainerSize;
         }
@@ -139,7 +115,7 @@ public class CompiledQueryMatch(
     {
         get
         {
-            if (!_executed) Execute();
+            EnsureExecuted();
             long maxKey = _bitmapData.MaxContainerKey;
             return maxKey < 0 ? 0 : (maxKey + 1) * RoaringBitmap.ContainerSize - 1;
         }
@@ -149,14 +125,14 @@ public class CompiledQueryMatch(
     {
         get
         {
-            if (!_executed) Execute();
+            EnsureExecuted();
             return ref _bitmapData;
         }
     }
 
     public int Fill(Span<long> matches)
     {
-        if (!_executed) Execute();
+        EnsureExecuted();
         return _iterator.Fill(ref _bitmapData, matches);
     }
 
@@ -164,8 +140,7 @@ public class CompiledQueryMatch(
     {
         foreach (var it in ResolvedMatches ?? [])
         {
-            if (it != null)
-                it.Score(matches, scores, boostFactor);
+            it?.Score(matches, scores, boostFactor);
         }
     }
 
@@ -173,8 +148,7 @@ public class CompiledQueryMatch(
     {
         foreach (var it in ResolvedMatches ?? [])
         {
-            if (it != null)
-                it.ScoreSorted(matches, scores, boostFactor);
+            it?.ScoreSorted(matches, scores, boostFactor);
         }
     }
 
@@ -215,17 +189,14 @@ public class CompiledQueryMatch(
         }
 
         var children = new List<QueryInspectionNode>();
-        if (ResolvedMatches != null)
+        foreach (var it in ResolvedMatches ?? [])
         {
-            foreach (var it in ResolvedMatches)
-            {
-                if (it is null or BitmapMatch) // a bitmap match is consumed by the pipeline and should not be inspected
-                    continue;
-                var node = it.Inspect();
-                if (node.IsPostFilter)
-                    continue;
-                children.Add(node);
-            }
+            if (it is null or BitmapMatch) // a bitmap match is consumed by the pipeline and should not be inspected
+                continue;
+            var node = it.Inspect();
+            if (node.IsPostFilter)
+                continue;
+            children.Add(node);
         }
 
         return new QueryInspectionNode("CompiledQuery", parameters: parameters, children: children);
@@ -236,26 +207,24 @@ public class CompiledQueryMatch(
     {
         if (_executed) return;
 
-        // Rent bitmap pool from ArrayPool — returned in finally block
         Bitmaps = ArrayPool<RoaringBitmap>.Shared.Rent(bitmapCount);
         Bitmaps[0] = _bitmapData; // main bitmap (owned by this instance)
-        for (int i = 1; i < bitmapCount; i++) Bitmaps[i] = new RoaringBitmap(allocator);
+        for (int i = 1; i < bitmapCount; i++)
+        {
+            Bitmaps[i] = new RoaringBitmap(allocator);
+        }
 
         Llt = Searcher.Transaction.LowLevelTransaction;
 
-        // Only allocate timing arrays when explicitly requested (include timings())
         Timings = wantTimings ? new long[opCount] : null;
         ResultCounts = wantTimings ? new long[opCount] : null;
         EntryScanTakenAtOp = -1;
 
-        // The two runtime exits leave the result in different slots: the bitmap pipeline lands in slot 0,
-        // the entry-scan tail writes survivors to slot 1 (RunEntryScan source 0 -> target 1) without
-        // swapping back. Read from whichever slot the taken exit used. Stays 0 on exception so the disposal
-        // below keeps slot 0 and disposes the rest.
         try
         {
             _compiledDelegate(this);
 
+            // EntryScan uses bitmap 1, otherwise, uses bitmap 0
             int resultSlot = EntryScanTakenAtOp >= 0 ? 1 : 0;
             _bitmapData = Bitmaps[resultSlot];
             Bitmaps[resultSlot] = default; // don't dispose this

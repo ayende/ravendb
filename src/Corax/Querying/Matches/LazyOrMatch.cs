@@ -25,15 +25,7 @@ public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, I
         }
     }
 
-    public QueryCountConfidence Confidence => _initialized ? QueryCountConfidence.High : QueryCountConfidence.Low;
-
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
-
-    public bool Contains(long entryId)
-    {
-        Initialize();
-        return _bitmap.Contains(entryId);
-    }
 
     public long MinEntryId
     {
@@ -98,7 +90,6 @@ public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, I
             {
                 { Constants.QueryInspectionNode.IsBoosting, IsBoosting.ToString() },
                 { Constants.QueryInspectionNode.Count, _initialized ? Count.ToString() : "lazy" },
-                { Constants.QueryInspectionNode.CountConfidence, Confidence.ToString() },
             });
     }
 

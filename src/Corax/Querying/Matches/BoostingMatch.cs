@@ -29,8 +29,6 @@ namespace Corax.Querying.Matches
         public DuplicatesOccurrence DuplicatesOccurrenceStatus => _inner.DuplicatesOccurrenceStatus;
 
 
-        public QueryCountConfidence Confidence => _inner.Confidence;
-
         public bool IsBoosting => true;
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -51,7 +49,6 @@ namespace Corax.Querying.Matches
                 {
                     { Constants.QueryInspectionNode.IsBoosting, IsBoosting.ToString() },
                     { Constants.QueryInspectionNode.Count, Count.ToString()},
-                    { Constants.QueryInspectionNode.CountConfidence, Confidence.ToString() },
                     { Constants.QueryInspectionNode.BoostFactor, BoostFactor.ToString(CultureInfo.InvariantCulture) }
                 })
             {

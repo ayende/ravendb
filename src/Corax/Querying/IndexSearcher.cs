@@ -121,13 +121,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private bool _nonExistingPostingListsTreeLoaded;
 
     public long MaxFacetQueryFilterSizeInBytes = 128 * 1024 * 1024;
-    [Obsolete("Use MaxFacetQueryFilterSizeInBytes instead")]
-    public long MaxMemoizationSizeInBytes
-    {
-        get => MaxFacetQueryFilterSizeInBytes;
-        set => MaxFacetQueryFilterSizeInBytes = value;
-    }
-
+ 
     public bool DocumentsAreBoosted => GetDocumentBoostTree().NumberOfEntries > 0;
 
     
@@ -178,13 +172,8 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     public long[] VectorFieldsMarkers { get { InitializeSpecialTermsMarkers(); return _vectorFieldsMarkers; } }
     public long DictionaryId => _dictionaryId;
 
-    /// <summary>Batch-resolve entry IDs to container locations. Entry IDs MUST be sorted ascending —
-    /// the underlying <see cref="Lookup{TKey}.GetFor"/> is cursor/gallop based and assumes ascending
-    /// keys (it is not merely a locality optimization). Unresolvable entries get -1.</summary>
-    public void ResolveEntryLocations(ReadOnlySpan<long> entryIds, Span<long> containerLocations)
-    {
-        _entryIdToLocation.GetFor(entryIds, containerLocations, -1);
-    }
+    /// <summary>Batch-resolve entry IDs to container locations. Entry IDs MUST be sorted ascending. Unresolvable entries get -1.</summary>
+    public void ResolveEntryLocations(ReadOnlySpan<long> entryIds, Span<long> containerLocations) => _entryIdToLocation.GetFor(entryIds, containerLocations, -1);
 
     public EntryTermsReader GetEntryTermsReader(long id, ref Page p, CompactKey key = null)
     {
@@ -264,71 +253,111 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         Analyzer.TokensPool.Return(tokens);
         Analyzer.BufferPool.Return(buffer);
     }
-    internal Slice EncodeAndApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<char> term)
-    {
-        if (term.Length == 0 || term.SequenceEqual(Constants.EmptyStringCharSpan.Span))
-            return Constants.EmptyStringSlice;
 
-        if (term.SequenceEqual(Constants.NullValueCharSpan.Span))
-            return Constants.NullValueSlice;
-        
-        using var _ = Allocator.Allocate(Encodings.Utf8.GetByteCount(term), out Span<byte> termBuffer);
-        var byteCount = Encodings.Utf8.GetBytes(term, termBuffer);
-        
-        ApplyAnalyzer(binding, analyzer, termBuffer.Slice(0, byteCount), out var encodedTerm);
-        return encodedTerm;
+    private Slice EncodeAndApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<char> term)
+    {
+        if (TryEncodeAndApplyAnalyzer(binding, analyzer, term, out var value) == false)
+            throw new NotSupportedException($"Analyzer turned term: {term.ToString()} into multiple terms, which is not allowed in this case.");
+        return value;
     }
 
     //Function used to generate Slice from query parameters.
     //We cannot dispose them before the whole query is executed because they are an integral part of IQueryMatch.
     //We know that the Slices are automatically disposed when the transaction is closed so we don't need to track them.
-    [SkipLocalsInit]
     public Slice EncodeAndApplyAnalyzer(in FieldMetadata binding, string term)
     {
-        if (term is null)
-            return Constants.NullValueSlice; // unary match
-
-        if (ReferenceEquals(term, Constants.BeforeAllKeys))
-            return Slices.BeforeAllKeys;
-        
-        if (ReferenceEquals(term, Constants.AfterAllKeys))
-            return Slices.AfterAllKeys;
-
-        if (term.Length == 0 || term == Constants.EmptyString)
-            return Constants.EmptyStringSlice;
-
-        if (term == Constants.NullValue)
-            return Constants.NullValueSlice;
-
-        // Delegate to the span overload, which encodes into the transaction allocator instead of allocating a
-        // managed byte[] via Encodings.Utf8.GetBytes(term). AsSpan() is allocation-free.
-        return EncodeAndApplyAnalyzer(binding, binding.Analyzer, term.AsSpan());
+        if (TryAnalyzeSingleToken(binding, term, out var value) == false)
+            throw new NotSupportedException($"Analyzer turned term: {term} into multiple terms, which is not allowed in this case.");
+        return value;
     }
 
+    // Non-throwing counterpart of the span EncodeAndApplyAnalyzer: literal/empty/null fast-paths return true;
+    // otherwise delegates to TryApplyAnalyzer, which returns false when the analyzer emits != 1 token.
+    private bool TryEncodeAndApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<char> term, out Slice value)
+    {
+        if (term.Length == 0 || term.SequenceEqual(Constants.EmptyStringCharSpan.Span))
+        {
+            value = Constants.EmptyStringSlice;
+            return true;
+        }
 
-    public void ApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value)
+        if (term.SequenceEqual(Constants.NullValueCharSpan.Span))
+        {
+            value = Constants.NullValueSlice;
+            return true;
+        }
+
+        using var _ = Allocator.Allocate(Encodings.Utf8.GetByteCount(term), out Span<byte> termBuffer);
+        var byteCount = Encodings.Utf8.GetBytes(term, termBuffer);
+
+        return TryApplyAnalyzer(binding, analyzer, termBuffer.Slice(0, byteCount), out value);
+    }
+
+    /// <summary>
+    /// Non-throwing single-token analysis for callers that resolve a SINGLE term's posting list id / document count
+    /// (<see cref="GetTermPostingListId(in FieldMetadata, string)"/>, <see cref="NumberOfDocumentsUnderSpecificTerm{TData}"/>).
+    /// Mirrors <see cref="EncodeAndApplyAnalyzer(in FieldMetadata, string)"/>'s literal fast-paths, but returns false
+    /// (instead of throwing <see cref="NotSupportedException"/>) when the analyzer turns <paramref name="term"/> into
+    /// more than one token: a multi-token input has no single posting list, so the caller resolves it as "absent".
+    /// </summary>
+    [SkipLocalsInit]
+    public bool TryAnalyzeSingleToken(in FieldMetadata binding, string term, out Slice termSlice)
+    {
+        if (term is null)
+        {
+            termSlice = Constants.NullValueSlice;
+            return true;
+        }
+
+        if (ReferenceEquals(term, Constants.BeforeAllKeys))
+        {
+            termSlice = Slices.BeforeAllKeys;
+            return true;
+        }
+
+        if (ReferenceEquals(term, Constants.AfterAllKeys))
+        {
+            termSlice = Slices.AfterAllKeys;
+            return true;
+        }
+
+        if (term.Length == 0 || term == Constants.EmptyString)
+        {
+            termSlice = Constants.EmptyStringSlice;
+            return true;
+        }
+
+        if (term == Constants.NullValue)
+        {
+            termSlice = Constants.NullValueSlice;
+            return true;
+        }
+
+        return TryEncodeAndApplyAnalyzer(binding, binding.Analyzer, term.AsSpan(), out termSlice);
+    }
+    
+    // Non-throwing counterpart of ApplyAnalyzer. The exact / no-analyzer path is always a single literal token
+    // (returns true); only the analyzed path can produce != 1 token, in which case it returns false.
+    private bool TryApplyAnalyzer(in FieldMetadata binding, Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value)
     {
         if (binding.FieldId == Constants.IndexWriter.DynamicField && binding.Mode is not (FieldIndexingMode.Exact or FieldIndexingMode.No))
         {
             analyzer = _fieldMapping.DefaultAnalyzer;
         }
-        else
+        else if (binding.Mode is FieldIndexingMode.Exact || binding.Analyzer is null)
         {
-            if (binding.Mode is FieldIndexingMode.Exact || binding.Analyzer is null)
-            {
-                _ = Allocator.AllocateDirect(originalTerm.Length, ByteStringType.Mutable, out var originalTermSliced);
-                originalTerm.CopyTo(new Span<byte>(originalTermSliced._pointer->Ptr, originalTerm.Length));
+            _ = Allocator.AllocateDirect(originalTerm.Length, ByteStringType.Mutable, out var originalTermSliced);
+            originalTerm.CopyTo(new Span<byte>(originalTermSliced._pointer->Ptr, originalTerm.Length));
 
-                value = new Slice(originalTermSliced);
-                return;
-            }
+            value = new Slice(originalTermSliced);
+            return true;
         }
 
-        AnalyzeTerm(analyzer, originalTerm, out value);
+        return TryAnalyzeTerm(analyzer, originalTerm, out value, out _);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    private ByteStringContext<ByteStringMemoryCache>.InternalScope AnalyzeTerm(Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value)
+    private bool TryAnalyzeTerm(Analyzer analyzer, ReadOnlySpan<byte> originalTerm, out Slice value,
+        out ByteStringContext<ByteStringMemoryCache>.InternalScope disposable)
     {
         analyzer.GetOutputBuffersSize(originalTerm.Length, out int outputSize, out int tokenSize);
 
@@ -341,20 +370,27 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         Span<byte> bufferSpan = buffer.AsSpan();
         Span<Token> tokensSpan = tokens.AsSpan();
         analyzer.Execute(originalTerm, ref bufferSpan, ref tokensSpan);
-        if (tokensSpan.Length != 1)
-            throw new NotSupportedException($"Analyzer turned term: {Encoding.UTF8.GetString(originalTerm)} into multiple terms ({tokensSpan.Length}), which is not allowed in this case.");
-        
-        var disposable = Indexing.IndexWriter.CreateNormalizedTerm(Allocator, bufferSpan, out value);
+
+        bool isSingleToken = tokensSpan.Length == 1;
+        if (isSingleToken)
+        {
+            disposable = Indexing.IndexWriter.CreateNormalizedTerm(Allocator, bufferSpan, out value);
+        }
+        else
+        {
+            disposable = default;
+            value = default;
+        }
 
         Analyzer.TokensPool.Return(tokens);
         Analyzer.BufferPool.Return(buffer);
 
-        return disposable;
+        return isSingleToken;
     }
     
     public AllEntriesMatch AllEntries() => new(this, _transaction);
     
-    public TermMatch EmptyMatch() => TermMatch.CreateEmpty(this, Allocator);
+    public IQueryMatch EmptyMatch() => Matches.Meta.EmptyQueryMatch.Instance;
 
     public long GetDictionaryIdFor(Slice field)
     {
@@ -362,22 +398,16 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return terms?.DictionaryId ?? -1;
     }
    
-    /// <summary>Number of distinct terms recorded under <paramref name="field"/>'s compact tree,
-    /// plus an entry for the null-posting-list bucket if one exists. This is a *term-dictionary*
-    /// count, not a matching-document count — use <see cref="NumberOfEntries"/> or
-    /// <see cref="NumberOfDocumentsUnderSpecificTerm"/> for document-count metrics.</summary>
+    /// <summary>Number of distinct terms recorded under <paramref name="field"/>'s compact tree, plus null if exists for this field.</summary>
     public long GetDistinctTermCountInField(in FieldMetadata field)
     {
         long termCount = 0;
-
         var fieldTree = _fieldsTree?.CompactTreeFor(field.FieldName);
-
         termCount += fieldTree?.NumberOfEntries ?? 0;
 
         if (TryGetPostingListForNull(field, out var nullPostingListId))
         {
             var nullPostingList = GetPostingList(nullPostingListId);
-
             termCount += nullPostingList?.State.NumberOfEntries ?? 0;
         }
 
@@ -585,18 +615,13 @@ public sealed unsafe partial class IndexSearcher : IDisposable
 
     public bool HasMultipleTermsInField(string fieldName)
     {
-        // When the write-time snapshot is attached, answer straight from it: a string hash lookup with no
-        // slice allocation and no Voron read. This is the hot path for the structural plan key.
         if (_fieldsWithMultipleTerms is { } snapshot)
             return snapshot.Contains(fieldName);
 
-        // No snapshot (disabled by the field-count cap, or a standalone searcher): prefer the interned slice
-        // from the field mapping (a string-keyed dictionary lookup, no allocation) over allocating a temporary
-        // slice. Dynamic fields not present in the mapping fall back to the allocating path.
-        if (_fieldMapping.TryGetByFieldName(fieldName, out var binding))
+        if (_fieldMapping.TryGetByFieldName(fieldName, out var binding)) // prefer interned slice over allocation
             return HasMultipleTermsInField(binding.Metadata.FieldName);
 
-        using var _ = Slice.From(Allocator, fieldName, out var slice);
+        using var _ = Slice.From(Allocator, fieldName, out var slice); // probably dynamic field, have to allocate
         return HasMultipleTermsInField(slice);
     }
 
@@ -633,10 +658,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return NumberOfDocumentsUnderSpecificTerm(postingListId) > 0;
     }
 
-    /// <summary>Exact O(1) count of documents where <paramref name="field"/> exists (is present, including
-    /// explicit nulls) — the index entry count minus the field's non-existing posting list. This matches the
-    /// deduplicated document set <see cref="ExistsQuery"/> produces, so it is exact for multi-valued fields too
-    /// (a document lacking the field is recorded once in the non-existing list regardless of value count).</summary>
+    /// <summary>Exact O(1) count of documents where <paramref name="field"/> exists (including explicit nulls).</summary>
     public long NumberOfEntriesForExists(in FieldMetadata field)
     {
         long nonExisting = 0;
@@ -724,7 +746,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
             if (_metadataTree != null && _metadataTree.TryRead(Constants.IndexWriter.VectorFieldsRootPagesSlice, out var reader))
                 _vectorFieldsMarkers = reader.ToUnmanagedSpan<long>().ToSpan().ToArray();
             else
-                _vectorFieldsMarkers = Array.Empty<long>();
+                _vectorFieldsMarkers = [];
         }
     }
 

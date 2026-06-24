@@ -28,38 +28,38 @@ public partial class IndexSearcher
             : new ExistsTermsProvider<Lookup<CompactTree.CompactKeyLookup>.BackwardIterator>(this, compactTree, field, forAggregation: true);
     }
 
-    public IAggregationProvider LowAggregationBuilder<TValue>(in FieldMetadata field, TValue value, UnaryMatchOperation operation, bool forward)
+    public IAggregationProvider LowAggregationBuilder<TValue>(in FieldMetadata field, TValue value, ComparisonOperator operation, bool forward)
     {
         Debug.Assert(value is double or string, "value is double or string");
-        Debug.Assert(operation is UnaryMatchOperation.LessThan or UnaryMatchOperation.LessThanOrEqual);
+        Debug.Assert(operation is ComparisonOperator.LessThan or ComparisonOperator.LessThanOrEqual);
         
         return value switch
         {
-            double d => BetweenAggregation(field, double.MinValue, d, UnaryMatchOperation.GreaterThanOrEqual, rightSide: operation,
+            double d => BetweenAggregation(field, double.MinValue, d, ComparisonOperator.GreaterThanOrEqual, rightSide: operation,
                 forward),
-            string s => BetweenAggregation(field, Slices.BeforeAllKeys, EncodeAndApplyAnalyzer(default, s), UnaryMatchOperation.GreaterThanOrEqual,
+            string s => BetweenAggregation(field, Slices.BeforeAllKeys, EncodeAndApplyAnalyzer(default, s), ComparisonOperator.GreaterThanOrEqual,
                 operation, forward),
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, null)
         };
     }
 
-    public IAggregationProvider GreaterAggregationBuilder<TValue>(in FieldMetadata field, TValue value, UnaryMatchOperation operation, bool forward)
+    public IAggregationProvider GreaterAggregationBuilder<TValue>(in FieldMetadata field, TValue value, ComparisonOperator operation, bool forward)
     {
-        Debug.Assert(operation is UnaryMatchOperation.GreaterThan or UnaryMatchOperation.GreaterThanOrEqual);
+        Debug.Assert(operation is ComparisonOperator.GreaterThan or ComparisonOperator.GreaterThanOrEqual);
         Debug.Assert(value is double or string, "value is double or string");
         
         return value switch
         {
-            double d => BetweenAggregation(field, d, double.MaxValue, operation, rightSide: UnaryMatchOperation.LessThanOrEqual,
+            double d => BetweenAggregation(field, d, double.MaxValue, operation, rightSide: ComparisonOperator.LessThanOrEqual,
                 forward),
             string s => BetweenAggregation(field, EncodeAndApplyAnalyzer(default, s), Slices.AfterAllKeys, operation,
-                UnaryMatchOperation.LessThanOrEqual, forward),
+                ComparisonOperator.LessThanOrEqual, forward),
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, null)
         };
     }
     
     public IAggregationProvider BetweenAggregation<TValue>(in FieldMetadata field, TValue low, TValue high,
-        UnaryMatchOperation leftSide = UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation rightSide = UnaryMatchOperation.LessThanOrEqual, bool forward = true)
+        ComparisonOperator leftSide = ComparisonOperator.GreaterThanOrEqual, ComparisonOperator rightSide = ComparisonOperator.LessThanOrEqual, bool forward = true)
     {
         Debug.Assert(low is double or long or string or Slice, "value is double, long, string or Slice");
 
@@ -68,16 +68,16 @@ public partial class IndexSearcher
         return (leftSide, rightSide) switch
         {
             // (x, y)
-            (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThan) =>
+            (ComparisonOperator.GreaterThan, ComparisonOperator.LessThan) =>
                 AggregationRangeBuilder<TValue, Range.Exclusive, Range.Exclusive>(field, low, high, forward),
             //<x, y)
-            (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan) =>
+            (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThan) =>
                 AggregationRangeBuilder<TValue, Range.Inclusive, Range.Exclusive>(field, low, high, forward),
             //<x, y>
-            (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual) =>
+            (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual) =>
                 AggregationRangeBuilder<TValue, Range.Inclusive, Range.Inclusive>(field, low, high, forward),
             //(x, y>
-            (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThanOrEqual) =>
+            (ComparisonOperator.GreaterThan, ComparisonOperator.LessThanOrEqual) =>
                 AggregationRangeBuilder<TValue, Range.Exclusive, Range.Inclusive>(field, low, high, forward),
             _ => throw new ArgumentOutOfRangeException($"Unknown operation at {nameof(BetweenQuery)}.")
         };
@@ -99,8 +99,8 @@ public partial class IndexSearcher
 
     public long EstimateMatchesInRange<TValue>(in FieldMetadata field, TValue low, TValue high,
         out RangeEstimateBreakdown breakdown,
-        UnaryMatchOperation leftSide = UnaryMatchOperation.GreaterThanOrEqual,
-        UnaryMatchOperation rightSide = UnaryMatchOperation.LessThanOrEqual,
+        ComparisonOperator leftSide = ComparisonOperator.GreaterThanOrEqual,
+        ComparisonOperator rightSide = ComparisonOperator.LessThanOrEqual,
         double calibrationFactor = 0)
     {
         breakdown = new RangeEstimateBreakdown { CalibrationFactor = calibrationFactor };
@@ -218,13 +218,13 @@ public partial class IndexSearcher
             {
                 using var __ = Slice.From(Allocator, successor.Slice(0, len), out Slice high);
                 return EstimateMatchesInRange(field, encodedPrefix, high, out breakdown,
-                    UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan, calibrationFactor);
+                    ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThan, calibrationFactor);
             }
         }
 
         // empty prefix or all-0xFF carry: no finite successor, so the match set runs to the end of the tree
         return EstimateMatchesInRange(field, encodedPrefix, Slices.AfterAllKeys, out breakdown,
-            UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual, calibrationFactor);
+            ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual, calibrationFactor);
     }
 
     // Writes successor(prefix) — the exclusive upper bound of a StartsWith(prefix) scan — into dest and returns its

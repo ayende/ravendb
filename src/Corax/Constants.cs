@@ -211,11 +211,6 @@ namespace Corax
             internal const string IteratorDirection = nameof(IteratorDirection);
             
             /// <summary>
-            /// Confidence of count. Look into IQueryMatch.cs for details.
-            /// </summary>
-            internal const string CountConfidence = nameof(CountConfidence);
-            
-            /// <summary>
             /// Count of documents from primitive.
             /// </summary>
             internal const string Count = nameof(Count);

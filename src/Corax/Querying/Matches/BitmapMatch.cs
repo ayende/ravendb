@@ -28,11 +28,8 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
     public ref RoaringBitmap BitmapState => ref _bitmapState;
 
     public long Count => _bitmapState.ComputeCount();
-    public QueryCountConfidence Confidence => QueryCountConfidence.High;
     public bool IsBoosting => false;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
-
-    public bool Contains(long entryId) => _bitmapState.Contains(entryId);
 
     public long MinEntryId
     {

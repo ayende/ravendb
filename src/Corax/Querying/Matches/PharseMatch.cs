@@ -47,7 +47,6 @@ public struct PhraseMatch<TInner> : IQueryMatch
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
 
 
-    public QueryCountConfidence Confidence => QueryCountConfidence.Normal;
     public bool IsBoosting => _inner.IsBoosting;
     public int Fill(Span<long> matches)
     {
@@ -195,7 +194,7 @@ public struct PhraseMatch<TInner> : IQueryMatch
             parameters: new Dictionary<string, string>()
             {
                 { nameof(IsBoosting), IsBoosting.ToString() },
-                { nameof(Count), $"{Count} [{Confidence}]" }
+                { nameof(Count), $"{Count}" }
             },
             children: [_inner.Inspect()]);
     }
