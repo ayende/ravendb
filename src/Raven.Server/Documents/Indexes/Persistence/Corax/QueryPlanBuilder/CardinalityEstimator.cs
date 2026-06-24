@@ -150,11 +150,11 @@ internal static class CardinalityEstimator
             {
                 var (low, high, left, right) = type switch
                 {
-                    ClauseType.Between            => (value1, value2, UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual),
-                    ClauseType.GreaterThan        => (value1, max,    UnaryMatchOperation.GreaterThan,        UnaryMatchOperation.LessThanOrEqual),
-                    ClauseType.GreaterThanOrEqual => (value1, max,    UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual),
-                    ClauseType.LessThan           => (min,    value1, UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan),
-                    ClauseType.LessThanOrEqual    => (min,    value1, UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual),
+                    ClauseType.Between            => (value1, value2, ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual),
+                    ClauseType.GreaterThan        => (value1, max,    ComparisonOperator.GreaterThan,        ComparisonOperator.LessThanOrEqual),
+                    ClauseType.GreaterThanOrEqual => (value1, max,    ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual),
+                    ClauseType.LessThan           => (min,    value1, ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThan),
+                    ClauseType.LessThanOrEqual    => (min,    value1, ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual),
                     _ => throw new ArgumentOutOfRangeException(nameof(type), type, "invalid clause type for range estimation")
                 };
                 long rangeEstimate = indexSearcher.EstimateMatchesInRange(fieldMeta, low, high, out var rangeBreakdown, left, right, e.Clause.RangeEstimateCalibration.Factor);

@@ -98,7 +98,6 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
 
     public long Count => throw new NotSupportedException(IQueryMatchUsageException);
 
-    public QueryCountConfidence Confidence { get => throw new NotSupportedException(IQueryMatchUsageException); }
     public bool IsBoosting { get; }
     public int Fill(Span<long> matches) => throw new NotSupportedException(IQueryMatchUsageException);
 
