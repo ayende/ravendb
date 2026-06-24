@@ -118,7 +118,6 @@ public class RavenDB_25410(ITestOutputHelper output) : StorageTest(output)
         private bool _fillExecuted;
         public long Count => 16;
 
-        public QueryCountConfidence Confidence => QueryCountConfidence.Low;
         public bool IsBoosting { get => true; }
 
         public int Fill(Span<long> matches)
