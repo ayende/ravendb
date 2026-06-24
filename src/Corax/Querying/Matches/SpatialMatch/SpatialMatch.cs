@@ -92,7 +92,6 @@ public sealed class SpatialMatch<TBoosting> : IQueryMatch, IPostFilterMatch
 
     public long Count => -1;
 
-    public QueryCountConfidence Confidence => QueryCountConfidence.Low;
     public bool IsBoosting => false;
 
     public int Fill(Span<long> matches)

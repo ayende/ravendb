@@ -347,16 +347,18 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
             }
         }
     }
+    
+    private string ResolveSearchMode()
+    {
+        if (_scanningQuery) return "ExactOverFilter"; // Brute-force over filter docs mapped to nodes
+        if (_isExact) return "ExactAll"; // Brute-force over the whole/filtered set
+        if (_filterQuery != null) return "ApproximateFromFiltered"; // HNSW ANN seeded from a sample of the filter set
+        return "ApproximateAll";// Plain HNSW ANN with no filter
+    }
 
     public QueryInspectionNode Inspect()
     {
-        // Exact: brute-force over the whole/filtered set. ExactScanning: brute-force over filter docs
-        // mapped to nodes. ApproximateFiltered: HNSW ANN seeded from a sample of the filter set.
-        // Approximate: plain HNSW ANN with no filter.
-        var searchMode = _scanningQuery ? "ExactScanning"
-            : _isExact ? "Exact"
-            : _filterQuery != null ? "ApproximateFiltered"
-            : "Approximate";
+        var searchMode = ResolveSearchMode();
 
         var vsInspect =  new QueryInspectionNode(nameof(VectorSearchMatch),
             parameters: new Dictionary<string, string>()
@@ -410,9 +412,6 @@ public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
     
     public long Count { get; private set; }
 
-
-    public QueryCountConfidence Confidence => QueryCountConfidence.Low;
-    
     public bool IsBoosting { get; init; }
 
     private void Dispose()

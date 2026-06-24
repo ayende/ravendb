@@ -274,9 +274,6 @@ public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
 
     public long Count { get; private set; }
 
-
-    public QueryCountConfidence Confidence => QueryCountConfidence.Low;
-
     public bool IsBoosting { get; }
 
     public QueryInspectionNode Inspect()

@@ -8,25 +8,22 @@ using Voron.Data.Lookups;
 
 namespace Corax.Querying.Matches.TermsProviders
 {
-    [DebuggerDisplay("{DebugView,nq}")]
     public struct NotEndsWithTermsProvider<TLookupIterator> : ITermsProvider
         where TLookupIterator : struct, ILookupIterator
     {
-        private readonly CompactTree _tree;
         private readonly Querying.IndexSearcher _searcher;
         private readonly FieldMetadata _field;
         private readonly CompactKey _endsWith;
 
         private CompactTree.Iterator<TLookupIterator> _iterator;
 
-        public NotEndsWithTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey endsWith)
+        public NotEndsWithTermsProvider(IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey endsWith)
         {
             _searcher = searcher;
             _field = field;
             _iterator = tree.Iterate<TLookupIterator>();
             _iterator.Reset();
             _endsWith = endsWith;
-            _tree = tree;
         }
 
         public int FillPostingListIds(Span<long> postingListIds)
@@ -39,7 +36,7 @@ namespace Corax.Querying.Matches.TermsProviders
 
             while (count < postingListIds.Length)
             {
-                if (_iterator.MoveNext(key, out long postingListId, out _) == false)
+                if (_iterator.MoveNext(key, out long postingListId) == false)
                     break;
 
                 if (key.Decoded().EndsWith(suffix))
@@ -65,7 +62,5 @@ namespace Corax.Querying.Matches.TermsProviders
                     { Constants.QueryInspectionNode.Suffix, _endsWith.ToString()}
                 });
         }
-
-        string DebugView => Inspect().ToString();
     }
 }

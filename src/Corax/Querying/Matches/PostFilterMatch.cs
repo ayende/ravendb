@@ -48,7 +48,6 @@ public sealed class PostFilterMatch : IQueryMatch
     }
 
     public long Count => _inner.Count;
-    public QueryCountConfidence Confidence => _inner.Confidence;
     public bool IsBoosting => _inner.IsBoosting;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => _inner.DuplicatesOccurrenceStatus;
 
@@ -87,25 +86,15 @@ public sealed class PostFilterMatch : IQueryMatch
         return count;
     }
 
-    /// <summary>
-    /// Filter <paramref name="buffer"/> (the first <paramref name="count"/> sorted entries) down to those the
-    /// post-filter accepts. Post-filters come only from the spatial resolution path, so the concrete type is one
-    /// of three: a per-entry recheck (<see cref="IPostFilterMatch"/> — SpatialMatch), a negated-spatial bitmap
-    /// (<see cref="IBitmapQueryMatch"/> — BitmapMatch), or an empty sentinel (TermMatch.CreateEmpty, returned by
-    /// SpatialQuery when the field/terms are absent on this shard) which matches nothing.
-    /// </summary>
     private static int FilterSpan(IQueryMatch filter, Span<long> buffer, int count)
     {
-        switch (filter)
+        return filter switch
         {
-            case IPostFilterMatch postFilter:
-                return postFilter.AndWith(buffer, count);
-            case IBitmapQueryMatch bitmapMatch:
-                return bitmapMatch.BitmapState.AndWith(buffer, count);
-            default:
-                Debug.Assert(filter.Count == 0, $"Unexpected post-filter match type {filter.GetType().Name}; only spatial post-filters (per-entry, bitmap, or empty) are expected.");
-                return 0;
-        }
+            IPostFilterMatch postFilter => postFilter.AndWith(buffer, count),
+            IBitmapQueryMatch bitmapMatch => bitmapMatch.BitmapState.AndWith(buffer, count),
+            EmptyQueryMatch => 0, 
+            _ => throw new InvalidOperationException($"Unexpected post-filter match type {filter.GetType().Name}; only spatial post-filters (per-entry, bitmap, or empty) are expected.")
+        };
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)

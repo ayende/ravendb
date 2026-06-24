@@ -20,7 +20,6 @@ namespace Corax.Querying.Matches.TermsProviders
         where TLookupIterator : struct, ILookupIterator
     {
         private readonly long _numberOfTerms;
-        private readonly CompactTree _tree;
         private readonly IndexSearcher _searcher;
         private readonly FieldMetadata _field;
         
@@ -33,7 +32,6 @@ namespace Corax.Querying.Matches.TermsProviders
 
         public ExistsTermsProvider(IndexSearcher searcher, CompactTree tree, in FieldMetadata field, bool forAggregation = false, bool skipNulls = false)
         {
-            _tree = tree;
             _field = field;
             _searcher = searcher;
             // A sorted index-only scan (SortedDrivingMatch / SortedDrivingWithTieBreakMatch) owns null, so we shouldn't emit it as well.
@@ -130,7 +128,7 @@ namespace Corax.Querying.Matches.TermsProviders
                 _fetchNulls = false;
             }
 
-            while (_iterator.MoveNext(_compactKey, out long postingListId, out _))
+            while (_iterator.MoveNext(_compactKey, out long postingListId))
             {
                 var key = _compactKey.Decoded();
                 
@@ -169,7 +167,7 @@ namespace Corax.Querying.Matches.TermsProviders
             }
             
             
-            Voron.Data.Containers.Container.GetAll(_searcher._transaction.LowLevelTransaction, containersIds, new Span<UnmanagedSpan>(containersPtr, containersIds.Length), -1, _searcher.Transaction.LowLevelTransaction.PageLocator);
+            Voron.Data.Containers.Container.GetAll(_searcher._transaction.LowLevelTransaction, containersIds, new Span<UnmanagedSpan>(containersPtr, containersIds.Length), _searcher.Transaction.LowLevelTransaction.PageLocator);
             
             for (int i = _nullExists ? 1 : 0; i < NumberOfTerms; ++i)
             {
@@ -195,11 +193,8 @@ namespace Corax.Querying.Matches.TermsProviders
 
         public RangePostingStats CountPostingsInRange(int maxTerms)
         {
-            // An exists scan walks every term in the field, so "all in range" is the whole field. We reuse the shared
-            // header-only bucket scan (no posting ids decoded) and add the field's synthetic null group, which the
-            // matching path emits but which is not a term in the tree. The summed posting count overcounts multi-valued
-            // documents, but the only caller (DirectScan known-total) already excludes multi-valued fields upstream, so
-            // here the total equals the document count exactly.
+            // We count the posting lists size for each one of the terms + null. This overestimate if we have duplicate terms for a single document
+            // Callers should either accept that or guard against this - see HasMultipleTermsPerField. 
             var stats = new RangePostingStats();
             var allocator = _searcher.Allocator;
             var llt = _searcher._transaction.LowLevelTransaction;
@@ -231,12 +226,12 @@ namespace Corax.Querying.Matches.TermsProviders
 
         public long EstimateTermCountInRange()
         {
-            throw new NotSupportedException($"{nameof(ExistsTermsProvider<TLookupIterator>)} supports only terms aggregation.");
+            throw new NotSupportedException($"{nameof(ExistsTermsProvider<>)} supports only terms aggregation.");
         }
 
         public long TotalTermCount()
         {
-            throw new NotSupportedException($"{nameof(ExistsTermsProvider<TLookupIterator>)} supports only terms aggregation.");
+            throw new NotSupportedException($"{nameof(ExistsTermsProvider<>)} supports only terms aggregation.");
         }
 
         private int NumberOfTerms => (int)_numberOfTerms + (_nullExists ? 1 : 0);

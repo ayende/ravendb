@@ -19,7 +19,7 @@ public partial class IndexSearcher
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)
-            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+            return EmptyQueryMatch.Instance;
 
         CompactKey termKey;
         if (term.Size != 0)
@@ -43,7 +43,7 @@ public partial class IndexSearcher
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)
-            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+            return EmptyQueryMatch.Instance;
 
         var slicedTerm = EncodeAndApplyAnalyzer(field, term);
         var termKey = _fieldsTree.Llt.AcquireCompactKey();

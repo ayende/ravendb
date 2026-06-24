@@ -9,12 +9,10 @@ using Voron.Data.Lookups;
 
 namespace Corax.Querying.Matches.TermsProviders
 {
-    [DebuggerDisplay("{DebugView,nq}")]
     public struct NotStartsWithTermsProvider<TLookupIterator> : ITermsProvider
         where TLookupIterator : struct, ILookupIterator
     {
-        private readonly CompactTree _tree;
-        private readonly Querying.IndexSearcher _searcher;
+        private readonly IndexSearcher _searcher;
         private readonly FieldMetadata _field;
         private readonly CompactKey _startWith;
         private readonly bool _validatePostfixLen;
@@ -23,7 +21,7 @@ namespace Corax.Querying.Matches.TermsProviders
         private CompactTree.Iterator<TLookupIterator> _iterator;
 
 
-        public NotStartsWithTermsProvider(Querying.IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey startWith, bool validatePostfixLen, CancellationToken token)
+        public NotStartsWithTermsProvider(IndexSearcher searcher, CompactTree tree, in FieldMetadata field, CompactKey startWith, bool validatePostfixLen, CancellationToken token)
         {
             _searcher = searcher;
             _field = field;
@@ -32,7 +30,6 @@ namespace Corax.Querying.Matches.TermsProviders
             _startWith = startWith;
             _validatePostfixLen = validatePostfixLen;
             _token = token;
-            _tree = tree;
         }
 
         public int FillPostingListIds(Span<long> postingListIds)
@@ -45,7 +42,7 @@ namespace Corax.Querying.Matches.TermsProviders
 
             while (count < postingListIds.Length)
             {
-                if (_iterator.MoveNext(key, out long postingListId, out _) == false)
+                if (_iterator.MoveNext(key, out long postingListId) == false)
                     break;
 
                 _token.ThrowIfCancellationRequested();
@@ -80,7 +77,5 @@ namespace Corax.Querying.Matches.TermsProviders
                                 { Constants.QueryInspectionNode.Prefix, _startWith.ToString()}
                             });
         }
-
-        string DebugView => Inspect().ToString();
     }
 }

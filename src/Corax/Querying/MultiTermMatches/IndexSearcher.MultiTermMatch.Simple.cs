@@ -97,7 +97,7 @@ public partial class IndexSearcher
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)
-            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+            return EmptyQueryMatch.Instance;
 
         ITermsProvider provider = forward
             ? new ExistsTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, terms, field, skipNulls: true)
@@ -110,7 +110,7 @@ public partial class IndexSearcher
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)
-            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+            return EmptyQueryMatch.Instance;
 
         ITermsProvider provider = forward
             ? new RegexTermsProvider<Lookup<CompactKeyLookup>.ForwardIterator>(this, terms, field, regex)

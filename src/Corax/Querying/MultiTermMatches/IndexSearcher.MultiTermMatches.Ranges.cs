@@ -14,22 +14,22 @@ namespace Corax.Querying;
 public partial class IndexSearcher
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch BetweenQuery<TValue>(in FieldMetadata field, TValue low, TValue high, UnaryMatchOperation leftSide = UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation rightSide = UnaryMatchOperation.LessThanOrEqual, bool forward = true, long maxNumberOfTerms = long.MaxValue) {
+    public IQueryMatch BetweenQuery<TValue>(in FieldMetadata field, TValue low, TValue high, ComparisonOperator leftSide = ComparisonOperator.GreaterThanOrEqual, ComparisonOperator rightSide = ComparisonOperator.LessThanOrEqual, bool forward = true, long maxNumberOfTerms = long.MaxValue) {
         if (typeof(TValue) == typeof(long))
         {
             return (leftSide, rightSide) switch
             {
                 // (x, y)
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field, (long)(object)low, (long)(object)high, forward),
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field, (long)(object)low, (long)(object)high, forward),
 
                 //<x, y)
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field, (long)(object)low, (long)(object)high, forward),
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field, (long)(object)low, (long)(object)high, forward),
 
                 //<x, y>
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(field, (long)(object)low, (long)(object)high, forward),
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(field, (long)(object)low, (long)(object)high, forward),
 
                 //(x, y>
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field, (long)(object)low, (long)(object)high, forward),
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field, (long)(object)low, (long)(object)high, forward),
                 _ => throw new ArgumentOutOfRangeException($"Unknown operation at {nameof(BetweenQuery)}.")
             };
         }
@@ -39,16 +39,16 @@ public partial class IndexSearcher
             return (leftSide, rightSide) switch
             {
                 // (x, y)
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field, (double)(object)low, (double)(object)high, forward),
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field, (double)(object)low, (double)(object)high, forward),
 
                 //<x, y)
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field, (double)(object)low, (double)(object)high, forward),
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field, (double)(object)low, (double)(object)high, forward),
 
                 //<x, y>
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(field, (double)(object)low, (double)(object)high, forward),
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(field, (double)(object)low, (double)(object)high, forward),
 
                 //(x, y>
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field, (double)(object)low, (double)(object)high, forward),
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field, (double)(object)low, (double)(object)high, forward),
                 _ => throw new ArgumentOutOfRangeException($"Unknown operation at {nameof(BetweenQuery)}.")
 
             };
@@ -62,19 +62,19 @@ public partial class IndexSearcher
             return (leftSide, rightSide) switch
             {
                 // (x, y)
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field,
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThan) => RangeBuilder<Range.Exclusive, Range.Exclusive>(field,
                     leftValue, rightValue, forward),
 
                 //<x, y)
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field,
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThan) => RangeBuilder<Range.Inclusive, Range.Exclusive>(field,
                     leftValue, rightValue, forward),
 
                 //<x, y>
-                (UnaryMatchOperation.GreaterThanOrEqual, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(
+                (ComparisonOperator.GreaterThanOrEqual, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Inclusive, Range.Inclusive>(
                     field, leftValue, rightValue, forward),
 
                 //(x, y>
-                (UnaryMatchOperation.GreaterThan, UnaryMatchOperation.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field,
+                (ComparisonOperator.GreaterThan, ComparisonOperator.LessThanOrEqual) => RangeBuilder<Range.Exclusive, Range.Inclusive>(field,
                     leftValue, rightValue, forward),
                 _ => throw new ArgumentOutOfRangeException($"Unknown operation at {nameof(BetweenQuery)}.")
             };
@@ -145,13 +145,6 @@ public partial class IndexSearcher
         throw new ArgumentException("Range queries are supporting strings, longs or doubles only");
     }
 
-    // ── Slice-overloads for pre-analyzed terms ──────────────────────────
-    // These exist so callers that already hold an analyzer-encoded slice (e.g. via the
-    // per-execution analyzed-slice cache on QueryExecution) can skip the analyzer pass that
-    // the string-typed generic builders run internally. They use distinct names ("...Slice")
-    // because the existing generic builders accept TValue=Slice, which would otherwise make
-    // the calls ambiguous at use sites.
-
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public IQueryMatch GreaterThanQuerySlice(in FieldMetadata field, Slice value, bool forward = true)
         => RangeBuilder<Range.Exclusive, Range.Inclusive>(field, value, Slices.AfterAllKeys, forward);
@@ -178,7 +171,7 @@ public partial class IndexSearcher
     {
         var terms = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (terms == null)
-            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+            return EmptyQueryMatch.Instance;
 
         ITermsProvider provider = forward
             ? new TermsRangeProvider<Lookup<CompactKeyLookup>.ForwardIterator, TLow, THigh>(this, terms, field, low, high)
@@ -194,7 +187,7 @@ public partial class IndexSearcher
         field = field.GetNumericFieldMetadata<long>(Allocator);
         var set = _fieldsTree?.LookupFor<Int64LookupKey>(field.FieldName);
         if (set == null)
-            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+            return EmptyQueryMatch.Instance;
 
         ITermsProvider provider = forward
             ? new TermsNumericRangeProvider<Lookup<Int64LookupKey>.ForwardIterator, TLow, THigh, Int64LookupKey>(this, set, field, low, high)
@@ -210,7 +203,7 @@ public partial class IndexSearcher
         field = field.GetNumericFieldMetadata<double>(Allocator);
         var set = _fieldsTree?.LookupFor<DoubleLookupKey>(field.FieldName);
         if (set == null)
-            return TermMatch.CreateEmpty(this, _transaction.Allocator);
+            return EmptyQueryMatch.Instance;
 
         ITermsProvider provider = forward
             ? new TermsNumericRangeProvider<Lookup<DoubleLookupKey>.ForwardIterator, TLow, THigh, DoubleLookupKey>(this, set, field, low, high)

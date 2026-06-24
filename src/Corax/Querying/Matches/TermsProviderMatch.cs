@@ -32,12 +32,6 @@ public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransact
         }
     }
 
-    public bool Contains(long entryId)
-    {
-        Initialize();
-        return _bitmap.Contains(entryId);
-    }
-
     public long MinEntryId
     {
         get
@@ -66,8 +60,6 @@ public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransact
             return ref _bitmap;
         }
     }
-
-    public QueryCountConfidence Confidence => _initialized ? QueryCountConfidence.High : QueryCountConfidence.Low;
 
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
