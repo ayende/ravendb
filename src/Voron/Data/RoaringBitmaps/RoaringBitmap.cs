@@ -9,7 +9,6 @@ using System.Runtime.Intrinsics.X86;
 using Sparrow;
 using Sparrow.Server;
 using Sparrow.Server.Utils;
-using Sparrow.Server.Utils.VxSort;
 using Voron.Util;
 
 namespace Voron.Data.RoaringBitmaps;
@@ -704,6 +703,29 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
         VisitPresentSorted(sortedMatches, sortedMatches.Length, ref visitor);
     }
 
+    /// <summary>Count how many of <paramref name="sortedMatches"/> (ascending) are present in this bitmap, via a
+    /// single grouped forward-cursor merge per container — O(matches + containers) instead of a point lookup per
+    /// element.</summary>
+    public int CountPresentSorted(Span<long> sortedMatches)
+    {
+        AssertNotConsumed();
+        var visitor = new CountVisitor();
+        VisitPresentSorted(sortedMatches, sortedMatches.Length, ref visitor);
+        return visitor.Count;
+    }
+
+    /// <summary>Retain only the entries of <paramref name="sortedMatches"/> (ascending) that are present in this
+    /// bitmap, compacting them to the front of the span in place; returns the retained count. One grouped
+    /// forward-cursor merge per container, vs a point lookup per element. The inverse of the filtering that
+    /// <see cref="DedupAddNew"/>'s visitor does (it keeps the absent; this keeps the present).</summary>
+    public int RetainPresentSorted(Span<long> sortedMatches)
+    {
+        AssertNotConsumed();
+        var visitor = new RetainVisitor(sortedMatches);
+        VisitPresentSorted(sortedMatches, sortedMatches.Length, ref visitor);
+        return visitor.Kept;
+    }
+
     private interface IPresenceVisitor
     {
         bool VisitsMisses { get; }
@@ -711,6 +733,29 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
         void OnMiss(int index);
 
         void OnAbsentRun(int from, int to);
+    }
+
+    private struct CountVisitor : IPresenceVisitor
+    {
+        public int Count;
+        public readonly bool VisitsMisses => false;
+        public void OnHit(int index) => Count++;
+        public readonly void OnMiss(int index) { }
+        public readonly void OnAbsentRun(int from, int to) { }
+    }
+
+    // Keeps the present entries (the inverse of DedupVisitor): compacts each hit to the front in place. Hits are
+    // visited in ascending index order and Kept <= index throughout, so the in-place write never clobbers an
+    // unread element. VisitsMisses is false — absent entries (OnMiss / whole OnAbsentRun runs) are simply dropped.
+    private ref struct RetainVisitor(Span<long> buffer) : IPresenceVisitor
+    {
+        private readonly Span<long> _buffer = buffer;
+        public int Kept;
+
+        public readonly bool VisitsMisses => false;
+        public void OnHit(int index) => _buffer[Kept++] = _buffer[index];
+        public readonly void OnMiss(int index) { }
+        public readonly void OnAbsentRun(int from, int to) { }
     }
 
     private void VisitPresentSorted<TVisitor>(Span<long> sortedMatches, int count, scoped ref TVisitor visitor)
@@ -865,12 +910,27 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
     }
 
     /// <summary>Dedup + add in a single pass: for each entry in <paramref name="buffer"/>, if it is NOT already in the bitmap, keep it in the buffer and add it to the bitmap.
-    /// Returns the count of new (non-duplicate) entries. </summary>
+    /// Returns the count of new (non-duplicate) entries. The kept entries are restored to their original (input) order.</summary>
+    [SkipLocalsInit]
     public int DedupAddNew(Span<long> buffer, int count)
     {
         if (count == 0) return 0;
 
+        if(count <= 4096)
+        {
+            Span<int> temp = stackalloc int[4096];
+            return DedupAddNew(buffer, count, temp);
+        }
+        
         using var _ = ctx.Allocate(PadToVector256Width(count), out Span<int> indices);
+        return DedupAddNew(buffer, count, indices);
+    }
+    
+
+    private int DedupAddNew(Span<long> buffer, int count, Span<int> indices)
+    {
+        if (count == 0) return 0;
+
         InitializeIndices(indices, count);
         buffer[..count].Sort(indices[..count]);
         count = RemoveDuplicates(buffer, indices, count);
@@ -881,7 +941,7 @@ public unsafe partial struct RoaringBitmap(ByteStringContext ctx) : IDisposable
 
         // Add the new entries to the bitmap while they're still sorted.
         AddRange(buffer[..kept]);
-        
+
         indices[..kept].Sort(buffer[..kept]); // restore original order
         return kept;
     }

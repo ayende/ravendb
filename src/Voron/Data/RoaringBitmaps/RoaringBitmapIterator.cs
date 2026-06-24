@@ -123,26 +123,26 @@ public unsafe struct RoaringBitmapIterator : IDisposable
         if (toCopy <= 0)
             return written;
 
-        fixed (long* dst = &buffer[written])
+        long* dst = (long*)Unsafe.AsPointer(ref buffer[written]);
+        ushort* src = arr + _positionInContainer;
+        int i = 0;
+
+        // SIMD: load 4 ushorts in one 64-bit read, widen to 4 longs, OR with baseValue.
+        if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
         {
-            ushort* src = arr + _positionInContainer;
-            int i = 0;
-
-            // SIMD: widen 4 ushorts → 4 longs, OR with baseValue, store 4 longs.
-            if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
+            Vector256<long> vBase = Vector256.Create(baseValue);
+            for (; i + 4 <= toCopy; i += 4)
             {
-                Vector256<long> vBase = Vector256.Create(baseValue);
-                for (; i + 4 <= toCopy; i += 4)
-                {
-                    Vector256<long> vals = Vector256.Create(src[i], src[i + 1], src[i + 2], src[i + 3]);
-                    (vals | vBase).Store(dst + i);
-                }
+                var v4us = Vector128.CreateScalarUnsafe(*(ulong*)(src + i)).AsUInt16();
+                var (v4ui, _) = Vector128.Widen(v4us);
+                var (v4ul, _) = Vector256.Widen(v4ui.ToVector256Unsafe());
+                (v4ul.AsInt64() | vBase).Store(dst + i);
             }
-
-            // Scalar remainder (or all, if no SIMD)
-            for (; i < toCopy; i++)
-                dst[i] = baseValue | src[i];
         }
+
+        // Scalar remainder (or all, if no SIMD)
+        for (; i < toCopy; i++)
+            dst[i] = baseValue | src[i];
 
         _positionInContainer += toCopy;
         return written + toCopy;
@@ -190,34 +190,29 @@ public unsafe struct RoaringBitmapIterator : IDisposable
         if (toCopy <= 0)
             return written;
 
-        fixed (long* dst = &buffer[written])
+        long* dst = (long*)Unsafe.AsPointer(ref buffer[written]);
+        int i = 0;
+
+        // SIMD: generate 4 sequential values at a time using a fixed offset vector
+        if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
         {
-            int i = 0;
+            Vector256<long> vOffsets = Vector256.Create(0L, 1L, 2L, 3L);
+            Vector256<long> vCurrent = Vector256.Create(baseValue + rangeStart + _positionInContainer) + vOffsets;
+            Vector256<long> vStep = Vector256.Create(4L);
 
-            // SIMD: generate 4 sequential values at a time
-            if (AdvInstructionSet.IsAcceleratedVector256 && toCopy >= 4)
+            for (; i + 4 <= toCopy; i += 4)
             {
-                Vector256<long> vCurrent = Vector256.Create(
-                    baseValue + rangeStart + _positionInContainer,
-                    baseValue + rangeStart + _positionInContainer + 1,
-                    baseValue + rangeStart + _positionInContainer + 2,
-                    baseValue + rangeStart + _positionInContainer + 3);
-                Vector256<long> vStep = Vector256.Create(4L);
-
-                for (; i + 4 <= toCopy; i += 4)
-                {
-                    vCurrent.Store(dst + i);
-                    vCurrent += vStep;
-                }
-                _positionInContainer += i;
+                vCurrent.Store(dst + i);
+                vCurrent += vStep;
             }
+            _positionInContainer += i;
+        }
 
-            // Scalar remainder (or all, if no SIMD)
-            for (; i < toCopy; i++)
-            {
-                dst[i] = baseValue | (uint)(rangeStart + _positionInContainer);
-                _positionInContainer++;
-            }
+        // Scalar remainder (or all, if no SIMD)
+        for (; i < toCopy; i++)
+        {
+            dst[i] = baseValue | (uint)(rangeStart + _positionInContainer);
+            _positionInContainer++;
         }
 
         return written + toCopy;
