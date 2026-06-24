@@ -296,7 +296,7 @@ namespace SlowTests.Tests.Linq
                     var q = indexedUsers.Where(user => user.Name.Any() == false);
 
                     var iq = RavenTestHelper.GetIndexQuery(q);
-                    Assert.Equal("from 'IndexedUsers' where (Name = $p0 or Name = $p1)", iq.Query);
+                    Assert.Equal("from 'IndexedUsers' where (true and not (Name != $p0 and Name != $p1))", iq.Query);
                     Assert.Equal(null, iq.QueryParameters["p0"]);
                     Assert.Equal(string.Empty, iq.QueryParameters["p1"]);
                 }
@@ -314,11 +314,11 @@ namespace SlowTests.Tests.Linq
                     var q = indexedUsers.Where(user => user.Name.Any() == false);
 
                     var iq = RavenTestHelper.GetIndexQuery(q);
-                    Assert.Equal("from 'IndexedUsers' where (Name = $p0 or Name = $p1)", iq.Query);
+                    Assert.Equal("from 'IndexedUsers' where (true and not (Name != $p0 and Name != $p1))", iq.Query);
                     Assert.Equal(null, iq.QueryParameters["p0"]);
                     Assert.Equal(string.Empty, iq.QueryParameters["p1"]);
 
-                    // Note: this can be generated also a smaller query: 
+                    // Note: this can be generated also a smaller query:
                     // Assert.Equal("*:* and (Name:[[NULL_VALUE]] or Name:[[EMPTY_STRING]])", q.ToString());
                 }
             }
