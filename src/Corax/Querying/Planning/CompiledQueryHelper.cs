@@ -266,6 +266,10 @@ public static class CompiledQueryHelper
         // survivors we Add below start from a clean, writable bitmap.
         targetBitmap.Clear();
 
+        // The source accumulator (slot 0) is consumed raw here, before Execute() prepares the
+        // result slot — prior ops may have left ArrayUnsorted containers, which the iterator
+        // rejects. Sort/dedup them now so iteration sees only sorted containers.
+        sourceBitmap.PrepareForReading();
         var iterator = sourceBitmap.GetIterator();
 
         // Lazy scan-param setup: the bitmap pipeline skips analyzer/field-root work at
@@ -289,7 +293,7 @@ public static class CompiledQueryHelper
                 ctx.EntryScanEntriesScanned += read;
 
                 searcher.ResolveEntryLocations(batch, containerLocs);
-                Container.GetAll(llt, containerLocs[..read], spans, -1, llt.PageLocator);
+                Container.GetAllSortedByPage(llt, containerLocs[..read], spans, llt.PageLocator);
                 searcher.InitializeSpecialTermsMarkers();
 
                 int validCount = 0;
