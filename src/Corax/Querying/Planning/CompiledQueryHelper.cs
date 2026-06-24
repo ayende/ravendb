@@ -147,7 +147,8 @@ public static class CompiledQueryHelper
                     if ((matched & bit) == 0 && compare.Matches(ref reader, window[i]))
                     {
                         matched |= bit;
-                        break;
+                        // intentionally not breaking here, we may have ['x','x'] in the terms to search, and we want to get all of them 
+                        // break;
                     }
                 }
             }
@@ -172,25 +173,24 @@ public static class CompiledQueryHelper
         var searcher = ctx.Searcher;
         var predicate = ctx.CompiledEntryPredicate;
         var llt = searcher.Transaction.LowLevelTransaction;
+      
+        targetBitmap.Clear();
+        sourceBitmap.PrepareForReading();
 
         // The emitted predicate evaluates readers strictly one at a time, every reader in the batch can share a single key
         var entryKey = llt.AcquireCompactKey();
 
-        targetBitmap.Clear();
-
-        sourceBitmap.PrepareForReading();
-
-        // we deferred building the scan params (not always needed), not we need them
-        var exec = ctx.Exec; 
-        if (exec.PopulateScanParams is { } populate)
-        {
-            populate();
-            exec.PopulateScanParams = null;
-        }
-
         using var iterator = sourceBitmap.GetIterator();
         try
         {
+            // we deferred building the scan params (not always needed), not we need them
+            var exec = ctx.Exec; 
+            if (exec.PopulateScanParams is { } populate)
+            {
+                populate();
+                exec.PopulateScanParams = null;
+            }
+
             int read;
             while ((read = iterator.Fill(ref sourceBitmap, buffer)) > 0)
             {

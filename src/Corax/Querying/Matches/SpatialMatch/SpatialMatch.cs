@@ -86,7 +86,7 @@ public sealed class SpatialMatch<TBoosting> : IQueryMatch, IPostFilterMatch
 
             return true;
         }
-        _currentMatch = TermMatch.CreateEmpty(_indexSearcher, _indexSearcher.Allocator);
+        _currentMatch = TermMatch.CreateEmpty();
         return false;
     }
 
