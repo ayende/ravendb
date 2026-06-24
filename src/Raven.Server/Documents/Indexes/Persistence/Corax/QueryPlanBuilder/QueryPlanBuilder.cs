@@ -133,7 +133,6 @@ internal static partial class QueryPlanBuilder
             CompoundFieldDrivingClause = walkerCtx.CompoundFieldDrivingClause,
             CompoundFieldSortName = walkerCtx.CompoundFieldSortName,
             CompoundFieldName = walkerCtx.CompoundFieldName,
-            CompoundFieldIsMultiSort = walkerCtx.CompoundFieldIsMultiSort,
             CompoundFieldField2Range = walkerCtx.CompoundFieldField2Range,
             ParameterSlots = parameterSlots,
             SortSeekHintTemplateIdx = sortSeekHintIdx,
@@ -295,7 +294,6 @@ internal static partial class QueryPlanBuilder
                     if (clauses[eqBuf[e]].FieldName != f1) continue;
                     walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
                     walkerCtx.CompoundFieldSortName = f2;
-                    walkerCtx.CompoundFieldIsMultiSort = true;
                     break;
                 }
 

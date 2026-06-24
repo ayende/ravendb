@@ -34,7 +34,6 @@ internal sealed class ResolutionContext
     public int CompoundFieldDrivingClause = -1;
     public string CompoundFieldSortName;
     public string CompoundFieldName;
-    public bool CompoundFieldIsMultiSort;
     public int CompoundFieldField2Range = -1;
 
     public ResolutionContext(PlanParameters p)

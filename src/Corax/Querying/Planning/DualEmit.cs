@@ -223,9 +223,6 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsStack.Push($"exec.FieldRootPages[{rootIdx}]");
     }
 
-    /// <summary>Push <c>new ReadOnlySpan&lt;T&gt;(exec.{flatArray}, exec.ResidualInSets[idx].Base,
-    /// exec.ResidualInSets[idx].Count)</c> — the <c>[Base, Base+Count)</c> window of the flat
-    /// per-execution value array matching <paramref name="valueType"/>, with no per-predicate copy.</summary>
     public void LoadInValueArray(int idx, ScanValueType valueType)
     {
         var (arrayField, spanCtor, csArray, csElem) = valueType switch
@@ -244,15 +241,12 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsStack.Push($"new ReadOnlySpan<{csElem}>({csArray}, exec.ResidualInSets[{idx}].Base, exec.ResidualInSets[{idx}].Count)");
     }
 
-    /// <summary>Push the <c>HasNull</c> flag of <c>exec.ResidualInSets[idx]</c>.</summary>
     public void LoadInHasNull(int idx)
     {
         EmitLoadInSetField(idx, IlEmitterShared.ResidualInValuesHasNull);
         CsStack.Push($"exec.ResidualInSets[{idx}].HasNull");
     }
 
-    /// <summary>Emit (IL only, no C# fragment) a load of <paramref name="field"/> from
-    /// <c>exec.ResidualInSets[idx]</c>, used for the Base/Count/HasNull descriptor fields.</summary>
     private void EmitLoadInSetField(int idx, FieldInfo field)
     {
         Il.Emit(OpCodes.Ldarg_0);
@@ -301,8 +295,6 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         for (int i = arity - 1; i >= 0; i--) args[i] = CsStack.Pop();
         CsStack.Push(string.Format(csTemplate, args));
     }
-
-    // --- Conditional branches: pop fragments, write a C# if/goto ---
 
     public void BranchLT(LabelPair l)
     {

@@ -4,7 +4,6 @@ using System.Reflection;
 using System.Reflection.Emit;
 using System.Threading;
 using Corax.Querying.Matches;
-using Corax.Querying.Matches.Meta;
 using Corax.Querying.Primitives;
 using Corax.Utils;
 using Voron;
@@ -13,12 +12,9 @@ using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
 
-/// <summary>Shared IL emission helpers and reflection members used by both <see cref="QueryILEmitter"/>
-/// and <see cref="ResidualScanIlEmitter"/>.</summary>
 public static class IlEmitterShared
 {
     public static readonly FieldInfo CtxBitmaps = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Bitmaps));
-    public static readonly FieldInfo CtxLeaves = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Leaves));
     public static readonly FieldInfo CtxLimit = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.Limit));
     public static readonly FieldInfo CtxOpLimit = typeof(CompiledQueryMatch).GetField(nameof(CompiledQueryMatch.OpLimit));
 
@@ -69,7 +65,6 @@ public static class IlEmitterShared
     public static readonly MethodInfo CtxFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromPostingSource))!;
     public static readonly MethodInfo CtxFillAllEntries = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillAllEntries))!;
     public static readonly MethodInfo CtxFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromTreeScan))!;
-    public static readonly MethodInfo CtxOrWithMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrWithMatch))!;
     public static readonly MethodInfo CtxFillFromMatch = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxFillFromMatch))!;
     public static readonly MethodInfo CtxOrFillFromPostingSource = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromPostingSource))!;
     public static readonly MethodInfo CtxOrFillFromTreeScan = typeof(QueryPrimitives).GetMethod(nameof(QueryPrimitives.CtxOrFillFromTreeScan))!;
@@ -159,11 +154,11 @@ public static class IlEmitterShared
     public static readonly FieldInfo ResidualInSets =
         typeof(QueryExecution).GetField(nameof(QueryExecution.ResidualInSets))!;
     public static readonly FieldInfo ResidualInValuesBase =
-        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.Base))!;
+        typeof(ResidualInValues).GetField(nameof(ResidualInValues.Base))!;
     public static readonly FieldInfo ResidualInValuesCount =
-        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.Count))!;
+        typeof(ResidualInValues).GetField(nameof(ResidualInValues.Count))!;
     public static readonly FieldInfo ResidualInValuesHasNull =
-        typeof(ResidualInValues).GetField(nameof(Planning.ResidualInValues.HasNull))!;
+        typeof(ResidualInValues).GetField(nameof(ResidualInValues.HasNull))!;
 
     // Constructs ReadOnlySpan<T>(T[] array, int start, int length) over the flat per-execution value
     // arrays, so the IN helpers receive the [Base, Base+Count) window without a per-predicate copy.

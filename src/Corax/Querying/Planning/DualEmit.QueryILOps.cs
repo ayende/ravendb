@@ -5,11 +5,7 @@ using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
 
-/// <summary>Statement-level emission helpers used by <see cref="QueryIlEmitter"/>.
-/// Each helper emits one IL sequence AND the matching C# line(s) so the two
-/// backends cannot drift — same drift-prevention discipline as the value-stack
-/// primitives in <see cref="DualEmit"/> but at statement granularity (no operand
-/// stack involvement; nothing is pushed or popped on CsStack).</summary>
+/// <summary>Statement-level emission helpers used by <see cref="QueryIlEmitter"/>.</summary>
 [StructLayout(LayoutKind.Auto)]
 internal ref partial struct DualEmit
 {

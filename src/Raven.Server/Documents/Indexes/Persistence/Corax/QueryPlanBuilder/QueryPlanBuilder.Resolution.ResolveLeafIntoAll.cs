@@ -78,9 +78,11 @@ internal static partial class QueryPlanBuilder
                 default: 
                     matches.Add(null);
                     LeafResolveInfo ret = clauseExec.HasNullTerm is false
-                        ? new LeafResolveInfo
+                        ? new LeafResolveInfo // we don't have a null here, but there is a slot for it, mark it as noop
                         {
-                            Kind = clauseExec.ClauseType == ClauseType.AllIn ? LeafResolveKind.AllPosting : LeafResolveKind.EmptyPosting
+                            Kind = clauseExec.ClauseType == ClauseType.AllIn 
+                                ? LeafResolveKind.AllPosting     // ALL IN → AND → identity is "everything"
+                                : LeafResolveKind.EmptyPosting   // IN     → OR  → identity is "nothing"
                         }
                         : new LeafResolveInfo
                         {

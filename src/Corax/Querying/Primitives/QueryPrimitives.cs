@@ -65,10 +65,6 @@ public static class QueryPrimitives
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void CtxOrWithMatch(Matches.CompiledQueryMatch ctx, int paramIndex)
-        => OrWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[0], ctx.OpLimit, ctx.Token);
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxOrFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].ComputeCount() : ctx.OpLimit;

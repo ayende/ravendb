@@ -1,59 +1,49 @@
 namespace Corax.Querying.Planning;
 
-/// <summary>The compiled pipeline op. Leaf-merge ops carry the operand source in the
-/// kind itself (<c>…From{PostingSource,TreeScan,Match}</c>) — there is no separate
-/// dispatch field. PostingSource / TreeScan operands are resolved lazily from
-/// <see cref="CompiledQueryMatch.Leaves"/>; Match operands read
-/// <see cref="CompiledQueryMatch.ResolvedMatches"/>.</summary>
+/// <summary>
+/// The low level operations that makes up an executed query
+/// </summary>
 public enum PlanOpKind : byte
 {
-    // ── Fill bitmap[0] from one leaf ────────────────────────────────
-    /// <summary>Seed bitmap[0] from a native posting-list leaf.</summary>
+    /// <summary>Seed bitmap from a native posting-list leaf.</summary>
     FillFromPostingSource,
 
-    /// <summary>Seed bitmap[0] from a CompactTree-scan leaf.</summary>
+    /// <summary>Seed bitmap from a CompactTree-scan leaf.</summary>
     FillFromTreeScan,
 
-    /// <summary>Seed bitmap[0] from an IQueryMatch leaf (spatial / vector / search / boosted, and the match-all plan).</summary>
+    /// <summary>Seed bitmap from an IQueryMatch leaf (spatial / vector / search / boosted, and the match-all plan).</summary>
     FillFromMatch,
 
-    /// <summary>Seed <c>bitmap[BitmapLocal]</c> with every entry via <c>Searcher.AllEntries()</c> — used for
-    /// all-negated AND chains, match-all, and complement builds (universe seeded into a scratch slot, then the
-    /// positive form is subtracted). No term-slot lookup (sidesteps IN's structural-vs-runtime slot-index mismatch).</summary>
+    /// <summary>Seed <c>bitmap[BitmapLocal]</c> with every entry via <c>Searcher.AllEntries()</c> — used for match all / negation with complement.</summary>
     FillAllEntries,
 
-    // ── Intersect bitmap[0] with one leaf ───────────────────────────
-    /// <summary>Intersect bitmap[0] with a posting-list leaf; stop the plan if the result is empty,
-    /// unless <see cref="PlanOp.SkipEarlyExit"/> is set.</summary>
+    /// <summary>Intersect bitmap with a posting-list leaf; stop the plan if the result is empty, unless <see cref="PlanOp.SkipEarlyExit"/> is set.</summary>
     AndFromPostingSource,
 
-    /// <summary>Intersect bitmap[0] with a tree-scan leaf. <see cref="AndFromPostingSource"/> semantics.</summary>
+    /// <summary>Intersect bitmap with a tree-scan leaf. <see cref="AndFromPostingSource"/> semantics.</summary>
     AndFromTreeScan,
 
-    /// <summary>Intersect bitmap[0] with an IQueryMatch leaf. <see cref="AndFromPostingSource"/> semantics.</summary>
+    /// <summary>Intersect bitmap with an IQueryMatch leaf. <see cref="AndFromPostingSource"/> semantics.</summary>
     AndFromMatch,
 
-    // ── Union one leaf into bitmap[BitmapLocal] ─────────────────────
-    /// <summary>Union a posting-list leaf into bitmap[BitmapLocal]. When the target is slot 0, stop once the page limit is reached.</summary>
+    /// <summary>Union a posting-list leaf into a bitmap. When the target is slot 0, stop once the page limit is reached.</summary>
     OrFromPostingSource,
 
-    /// <summary>Union a tree-scan leaf into bitmap[BitmapLocal]. <see cref="OrFromPostingSource"/> semantics.</summary>
+    /// <summary>Union a tree-scan leaf into a bitmap. <see cref="OrFromPostingSource"/> semantics.</summary>
     OrFromTreeScan,
 
-    /// <summary>Union an IQueryMatch leaf into bitmap[BitmapLocal]. <see cref="OrFromPostingSource"/> semantics.</summary>
+    /// <summary>Union an IQueryMatch leaf into a bitmap. <see cref="OrFromPostingSource"/> semantics.</summary>
     OrFromMatch,
 
-    // ── Subtract one leaf from bitmap[0] ────────────────────────────
-    /// <summary>Subtract a posting-list leaf from bitmap[0].</summary>
+    /// <summary>Subtract a posting-list leaf from bitmap.</summary>
     AndNotFromPostingSource,
 
-    /// <summary>Subtract a tree-scan leaf from bitmap[0]. <see cref="AndNotFromPostingSource"/> semantics.</summary>
+    /// <summary>Subtract a tree-scan leaf from bitmap. <see cref="AndNotFromPostingSource"/> semantics.</summary>
     AndNotFromTreeScan,
 
-    /// <summary>Subtract an IQueryMatch leaf from bitmap[0]. <see cref="AndNotFromPostingSource"/> semantics.</summary>
+    /// <summary>Subtract an IQueryMatch leaf from bitmap. <see cref="AndNotFromPostingSource"/> semantics.</summary>
     AndNotFromMatch,
 
-    // ── Range loops over IN-expanded term slots ─────────────────────
     /// <summary>Union a contiguous run of posting-list leaves (an expanded IN) into bitmap[BitmapLocal].
     /// ParamIndex2 = index into ctx.InRangeCounts for the runtime count.</summary>
     OrRangeFromPostingSource,
@@ -61,14 +51,13 @@ public enum PlanOpKind : byte
     /// <summary>Union a contiguous run of IQueryMatch leaves (a boosted IN) into bitmap[BitmapLocal].</summary>
     OrRangeFromMatch,
 
-    /// <summary>Intersect a contiguous run of posting-list leaves (an AllIn) with bitmap[0],
+    /// <summary>Intersect a contiguous run of posting-list leaves (an AllIn) with bitmap,
     /// stopping early on an empty result unless <see cref="PlanOp.SkipEarlyExit"/> is set.</summary>
     AndRangeFromPostingSource,
 
-    /// <summary>Intersect a contiguous run of IQueryMatch leaves (a boosted AllIn) with bitmap[0].</summary>
+    /// <summary>Intersect a contiguous run of IQueryMatch leaves (a boosted AllIn) with bitmap.</summary>
     AndRangeFromMatch,
 
-    // ── Source-agnostic ops ─────────────────────────────────────────
     ClearBitmap,
 
     /// <summary>Intersect two bitmap slots. BitmapLocal = target, ParamIndex2 = source.</summary>
@@ -84,7 +73,7 @@ public enum PlanOpKind : byte
     /// <summary>Short-circuit the plan when a bitmap slot is empty.</summary>
     GotoDoneIfEmpty,
 
-    /// <summary>Switch to the entry-scan tail when bitmap[0] is small relative to the next clause's
+    /// <summary>Switch to the entry-scan tail when bitmap is small relative to the next clause's
     /// cardinality (cheaper to scan the surviving entries than to keep intersecting).</summary>
     MaybeEntryScan,
 

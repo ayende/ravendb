@@ -14,14 +14,13 @@ namespace Corax.Querying.Planning;
 ///
 /// Two-generation structure: a single atomic <see cref="CacheRecord"/> reference
 /// holds both the current and previous ConcurrentDictionaries. Rotation swaps the
-/// entire generation atomically — no intermediate state where current and previous
-/// point to the same dict.
+/// entire generation atomically.
 ///
 /// Per-query: fixed-capacity SoA (struct-of-arrays, default 32 slots) — a ushort[] holding
 /// a 16-bit pre-filter slice of each plan's <see cref="PlanCacheKeyHash"/> plus a CompiledPlan[]
 /// for the payloads. SIMD compares scan all slots in Vector256/Vector128 iterations over 16-bit
 /// lanes (16 slots per Vector256 step); a lane hit is confirmed with a full 256-bit digest
-/// compare. Capacity is configurable via the constructor; must be a multiple of 16 for alignment.
+/// compare.
 /// </summary>
 public class PlanCache
 {
@@ -54,8 +53,6 @@ public class PlanCache
         _cache = new CacheRecord([], []);
     }
 
-    /// <summary>Locate the per-query bucket for a structural plan key, or null if no plan has been compiled
-    /// for it yet. Stale reads are harmless — a miss just falls through to ParseTemplate + GetOrAddBucket.</summary>
     public PerQueryPlans GetBucket(in Vector256<long> structuralKey)
     {
         var gen = _cache;
@@ -65,20 +62,19 @@ public class PlanCache
         return per;
     }
 
-    /// <summary>Get the existing bucket for a structural key or atomically create one carrying the parsed
-    /// template. The caller publishes compiled plan variants into the returned bucket. Rotation is driven here
-    /// (on distinct-query count), so bucket creation is the single place the two-generation swap can trigger.</summary>
+    /// <summary>The caller publishes compiled plan variants into the returned bucket. May trigger generational swap if exceeded cache limits.</summary>
     public PerQueryPlans GetOrAddBucket(in Vector256<long> structuralKey, PlanTemplate template, string queryText)
     {
         var gen = _cache;
 
-        // When the current generation exceeds half the max, rotate.
-        if (gen.Current.Count > HalfOfMaxDistinctQueries)
+        // This is called only after we called GetBucket (and didn't get a result), so we expect to add it below
+        if (gen.Current.Count >= HalfOfMaxDistinctQueries)
         {
+            // When the current generation reach half the max, rotate.
             var newGen = new CacheRecord([], gen.Current);
             // CompareExchange returns the previous value. If it equals gen, we won
             // the race and newGen is now installed. If another thread beat us, the
-            // returned value is the generation they installed — use that instead.
+            // returned value is the generation _they_ installed — use that instead.
             var prev = Interlocked.CompareExchange(ref _cache, newGen, gen);
             gen = prev == gen ? newGen : prev!;
         }
@@ -98,8 +94,7 @@ public class PlanCache
     /// <summary>
     /// Point-in-time snapshot of every cached query and its compiled plan variants across both
     /// generations. The current generation wins on duplicate structural keys. Reads are lock-free and
-    /// may observe concurrent publishes, so the result is best-effort — adequate for diagnostics
-    /// and tooling, not for correctness-sensitive logic.
+    /// may observe concurrent publishes, adequate for diagnostics.
     /// </summary>
     public IReadOnlyList<PlanCacheEntry> Snapshot()
     {
@@ -136,24 +131,19 @@ public class PlanCache
         private readonly ushort[] _hashLo = new ushort[maxSlots];
         private readonly CompiledPlan[] _plans = new CompiledPlan[maxSlots];
 
-        /// <summary>The query text this bucket was first compiled for, kept only as a human-readable label.
-        /// Diagnostics only — surfaced by <see cref="Snapshot"/>; never read on any hot path. The structural
-        /// key, not this string, is the dictionary identity, so two texts that collapse to one plan (e.g. the
-        /// same query shape with different literal values) share a bucket and only the first-seen text is
-        /// recorded.</summary>
+        /// <summary>
+        /// The query text this bucket was first compiled for diagnostics only — surfaced by <see cref="Snapshot"/>.
+        /// Queries are cached _structurally_ - same query with different literals use the same cache key, the first query text is held here.
+        /// </summary>
         public readonly string QueryText = queryText;
 
         /// <summary>
         /// Monotonically increasing slot allocator. Counts from 0 up to maxSlots and
-        /// then stays there — it is intentionally never decremented. Once it reaches
-        /// maxSlots, all subsequent publishes use random eviction (pick any slot).
+        /// then stays there. Once it reaches maxSlots, all subsequent publishes use random
+        /// eviction (pick any slot).
         ///
-        /// This is by design: a PerQueryPlans is expected to stabilize at maxSlots
-        /// distinct plan variants for the lifetime of the IndexSearcher; past that
-        /// point we accept random replacement as the steady state. Decrementing on
-        /// eviction would only complicate concurrency without changing the steady
-        /// behavior — the outer PlanCache.GetOrAddBucket still drives rotation based on
-        /// distinct-query count, not per-query slot occupancy.
+        /// This is by design: a PerQueryPlans is expected to stabilize at maxSlots distinct plan variants for the
+        /// lifetime of the IndexSearcher; past that point we accept random replacement as the steady state.
         /// </summary>
         private int _nextSlot;
 
@@ -162,11 +152,7 @@ public class PlanCache
         public CompiledPlan TryLookup(in Vector256<long> hash)
         {
             ushort key = PreFilterKey(hash);
-            if (Vector256.IsHardwareAccelerated)
-                return Vec256Lookup(key, hash);
-            if (Vector128.IsHardwareAccelerated)
-                return Vec128Lookup(key, hash);
-            return ScalarLookup(key, hash);
+            return Vec256Lookup(key, hash);
         }
 
         /// <summary>
@@ -193,6 +179,7 @@ public class PlanCache
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private CompiledPlan Vec256Lookup(ushort key, in Vector256<long> hash)
         {
+            // We use no platform specific code here, when running on hardware that doesn't have Vector256, the JIT will emit the right downgrade
             var keyVec = Vector256.Create(key);
             for (int i = 0; i < _hashLo.Length; i += Vector256<ushort>.Count)
             {
@@ -207,42 +194,6 @@ public class PlanCache
                         return resolved;
                 }
             }
-
-            return null;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private CompiledPlan Vec128Lookup(ushort key, in Vector256<long> hash)
-        {
-            var keyVec = Vector128.Create(key);
-            for (int i = 0; i < _hashLo.Length; i += Vector128<ushort>.Count)
-            {
-                var slots = Vector128.LoadUnsafe(ref _hashLo[i]);
-                uint mask = Vector128.Equals(slots, keyVec).ExtractMostSignificantBits();
-                while (mask != 0)
-                {
-                    int lane = BitOperations.TrailingZeroCount(mask);
-                    mask &= mask - 1;
-                    var resolved = Confirm(i + lane, hash);
-                    if (resolved != null)
-                        return resolved;
-                }
-            }
-
-            return null;
-        }
-
-        private CompiledPlan ScalarLookup(ushort key, in Vector256<long> hash)
-        {
-            for (int i = 0; i < _hashLo.Length; i++)
-            {
-                if (_hashLo[i] != key)
-                    continue;
-                var resolved = Confirm(i, hash);
-                if (resolved != null)
-                    return resolved;
-            }
-
             return null;
         }
 
@@ -278,14 +229,13 @@ public class PlanCache
         /// <summary>Lock-free snapshot of all non-null plan slots. Best-effort; see <see cref="Snapshot"/>.</summary>
         public CompiledPlan[] SnapshotPlans()
         {
-            var list = new List<CompiledPlan>();
+            var list = new List<CompiledPlan>(_plans.Length);
             for (int i = 0; i < _plans.Length; i++)
             {
                 var plan = Volatile.Read(ref _plans[i]);
                 if (plan != null)
                     list.Add(plan);
             }
-
             return list.ToArray();
         }
     }

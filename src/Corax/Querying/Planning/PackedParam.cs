@@ -5,17 +5,18 @@ using Corax.Querying.Matches.Meta;
 namespace Corax.Querying.Planning;
 
 /// <summary>
-///     Packed parameter reference — a 32-bit value encoding the type and index(es)
-///     of a clause's resolved value within the plan's typed arrays
-///     (QueryExecution.LongValues / DoubleValues / StringValues).
+/// Packed parameter reference — a 32-bit value encoding the type and index(es) of a clause's value:
+/// (QueryExecution.LongValues / DoubleValues / StringValues).
+/// 
 ///     bits [31:30] = value type (Long=0, Double=1, String=2, None=3)
 ///     bits [29:15] = first parameter index (0..32767)
 ///     bits [14:0]  = second parameter index (0..32767, 0x7FFF = no second param)
-///     For simple predicates (Equals, GT, LT, etc.): Param1 = value index, Param2 = NoParam.
-///     For BETWEEN: Param1 = low-bound index, Param2 = high-bound index (same-typed array).
-///     For IN/AllIn: Param1 = start index into the typed array. Term count is stored separately
-///     in ClauseInfo.InTermCount (not packed) because IN can exceed 32K terms.
-///     For parameterless clauses (Exists): None sentinel.
+/// 
+/// For simple predicates (Equals, GT, LT, etc.): Param1 = value index, Param2 = NoParam.
+/// For BETWEEN: Param1 = low-bound index, Param2 = high-bound index (same-typed array).
+/// For IN/AllIn: Param1 = start index into the typed array. Term count is stored separately
+/// in ClauseInfo.InTermCount (not packed) because IN can exceed 32K terms.
+/// For parameterless clauses (Exists): None sentinel.
 /// </summary>
 public readonly struct PackedParam
 {
