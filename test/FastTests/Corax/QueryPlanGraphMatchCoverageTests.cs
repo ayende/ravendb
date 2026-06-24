@@ -67,11 +67,15 @@ public class QueryPlanGraphMatchCoverageTests : RavenTestBase
         "AllEntriesMatch",
     };
 
-    // Plan roots: CompiledQueryMatch is the bitmap pipeline root; PostFilterMatch is the all-entries bypass root.
+    // Plan roots: CompiledQueryMatch is the bitmap pipeline root; PostFilterMatch is the all-entries bypass root;
+    // EmptyQueryMatch is the degenerate empty-result plan (missing field/term) returned directly to the caller.
+    // ToGraphviz receives it at the top level, finds no CompiledQuery/PostFilterMatch, and renders the valid
+    // "no compiled op stream" fallback — it carries no DestSlot ops, so there is nothing else to draw.
     private static readonly HashSet<string> RootMatches = new()
     {
         "CompiledQueryMatch",
         "PostFilterMatch",
+        "EmptyQueryMatch",
     };
 
     private static bool PostFilterPredicate(string name)
