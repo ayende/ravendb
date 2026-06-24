@@ -284,7 +284,7 @@ internal static partial class QueryPlanBuilder
 
         // Limit push-down: with a page limit (Limit != int.MaxValue), slot 0 grows only until full, then stops —
         // it does NOT scan the rest. Mark EarlyExit only when output actually reached the limit (output < limit
-        // means matches ran out first, nothing skipped). Mirrors CompiledQueryMatch.Confidence (Low == capped).
+        // means matches ran out first, nothing skipped).
         if (compiled.Limit != int.MaxValue)
         {
             compiledRoot.Parameters["Limit"] = compiled.Limit.ToString("N0");

@@ -72,7 +72,7 @@ internal static partial class QueryPlanBuilder
                     FieldMetadata nullMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx);
                     matches.Add(clauseExec.HasNullTerm
                         ? indexSearcher.TermQuery(nullMeta, null)
-                        : TermMatch.CreateEmpty(indexSearcher, indexSearcher.Allocator));
+                        : EmptyQueryMatch.Instance);
                     leaves.Add(new LeafResolveInfo { Kind = LeafResolveKind.PreResolved });
                     return;
                 default: 
