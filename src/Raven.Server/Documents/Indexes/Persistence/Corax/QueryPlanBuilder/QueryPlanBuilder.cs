@@ -735,7 +735,7 @@ internal static partial class QueryPlanBuilder
         {
             FieldName = fieldName,
             ClauseType = ClauseType.Search,
-            SearchOperator = (int)searchOp,
+            SearchOperator = searchOp,
             OriginalIndex = walkerCtx.Clauses.Count,
             Bindings = [CreateBinding(method.Arguments[1], walkerCtx)]
         });

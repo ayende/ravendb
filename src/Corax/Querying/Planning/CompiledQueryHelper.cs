@@ -7,33 +7,19 @@ using Corax.Querying.Primitives;
 using Corax.Utils;
 using Sparrow;
 using Voron;
-using Voron.Data.CompactTrees;
 using Voron.Data.Containers;
 using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
 
-/// <summary>
-/// Helper methods called by emitted IL for timing, result tracking, and the entry-scan
-/// iteration loop. Per-entry predicate evaluation is emitted as specialized IL by
-/// <see cref="ResidualScanIlEmitter"/> and reached via <c>CompiledQueryMatch.CompiledEntryPredicate</c>.
-/// </summary>
 public static class CompiledQueryHelper
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void RecordTiming(CompiledQueryMatch ctx, int opIndex, long startTick)
-    {
-        ctx.Timings[opIndex] = Stopwatch.GetTimestamp() - startTick;
-    }
+    public static void RecordTiming(CompiledQueryMatch ctx, int opIndex, long startTick) => ctx.Timings[opIndex] = Stopwatch.GetTimestamp() - startTick;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void RecordResultCount(CompiledQueryMatch ctx, int opIndex, int slot)
-    {
-        ctx.ResultCounts[opIndex] = ctx.Bitmaps[slot].ComputeCount();
-    }
+    public static void RecordResultCount(CompiledQueryMatch ctx, int opIndex, int slot) => ctx.ResultCounts[opIndex] = ctx.Bitmaps[slot].ComputeCount();
 
-    /// <summary>Check StartsWith/EndsWith against ALL terms for a field (multi-value support).
-    /// Returns true if ANY term matches.</summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool CheckFieldTermStartsWith(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<byte> prefix)
     {
@@ -45,6 +31,7 @@ public static class CompiledQueryHelper
             if (reader.Current.Decoded().StartsWith(prefix))
                 return true;
         }
+
         return false;
     }
 
@@ -59,190 +46,121 @@ public static class CompiledQueryHelper
             if (reader.Current.Decoded().EndsWith(suffix))
                 return true;
         }
+
         return false;
     }
 
-    // ── IN / ALL IN against an entry's terms ────────────────────────────
-    //
-    // IN (OR semantics): the field has at least one term equal to one of the values.
-    // ALL IN (set containment): the field's terms cover every value in the set.
-    // Both iterate ALL terms for the field (multi-value support) and compare the entry's
-    // stored term against the per-execution value set. Null terms are matched only when the
-    // IN list itself contained a null (<paramref name="includeNull"/>), mirroring the bitmap
-    // pipeline's null-term posting list. These run only on the entry-scan / direct-scan path,
-    // so the small per-call scratch in ALL IN is off the common query path.
-
-    public static bool CheckFieldTermInSlice(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<Slice> values, bool includeNull)
+    private interface ITermComparer<in T>
     {
-        reader.Reset();
-        while (reader.FindNext(fieldRootPage))
-        {
-            if (reader.IsNonExisting)
-                continue; // no value at all — Current is not populated; never matches an IN value
-            if (reader.IsNull)
-            {
-                if (includeNull)
-                    return true;
-                continue;
-            }
-
-            ReadOnlySpan<byte> term = reader.Current.Decoded();
-            for (int k = 0; k < values.Length; k++)
-            {
-                if (term.SequenceEqual(values[k].AsReadOnlySpan()))
-                    return true;
-            }
-        }
-        return false;
+        bool Matches(ref EntryTermsReader reader, T value);
     }
 
-    public static bool CheckFieldTermInLong(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<long> values, bool includeNull)
+    private struct SliceComparer : ITermComparer<Slice>
     {
-        reader.Reset();
-        while (reader.FindNext(fieldRootPage))
-        {
-            if (reader.IsNonExisting)
-                continue; // no value at all — CurrentLong is not populated; never matches an IN value
-            if (reader.IsNull)
-            {
-                if (includeNull)
-                    return true;
-                continue;
-            }
-
-            long term = reader.CurrentLong;
-            for (int k = 0; k < values.Length; k++)
-            {
-                if (term == values[k])
-                    return true;
-            }
-        }
-        return false;
+        public bool Matches(ref EntryTermsReader reader, Slice value) => reader.Current.Decoded().SequenceEqual(value.AsReadOnlySpan());
     }
 
-    public static bool CheckFieldTermInDouble(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<double> values, bool includeNull)
+    private struct LongComparer : ITermComparer<long>
     {
-        reader.Reset();
-        while (reader.FindNext(fieldRootPage))
-        {
-            if (reader.IsNonExisting)
-                continue; // no value at all — CurrentDouble is not populated; never matches an IN value
-            if (reader.IsNull)
-            {
-                if (includeNull)
-                    return true;
-                continue;
-            }
-
-            double term = reader.CurrentDouble;
-            for (int k = 0; k < values.Length; k++)
-            {
-                if (term == values[k])
-                    return true;
-            }
-        }
-        return false;
+        public bool Matches(ref EntryTermsReader reader, long value) => reader.CurrentLong == value;
     }
 
-    // ALL IN scans the field's terms once per value and fails fast on the first value that no
-    // term covers. A single shared match counter can't replace the per-value scan: a duplicate
-    // entry term (e.g. Tags=["x","x"] against ALL IN ('x','y')) would bump the counter to the
-    // value count while 'y' is still missing — a false positive. Scanning per value is immune to
-    // both duplicate entry terms and duplicate IN values, costs no scratch buffer, and stays
-    // O(values * terms) like the previous bitmask version.
+    private struct DoubleComparer : ITermComparer<double>
+    {
+        // ReSharper disable once CompareOfFloatsByEqualityOperator
+        public bool Matches(ref EntryTermsReader reader, double value) => reader.CurrentDouble == value;
+    }
+
     public static bool CheckFieldTermAllInSlice(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<Slice> values, bool includeNull)
-    {
-        for (int k = 0; k < values.Length; k++)
-        {
-            ReadOnlySpan<byte> needle = values[k].AsReadOnlySpan();
-            bool found = false;
-            reader.Reset();
-            while (reader.FindNext(fieldRootPage))
-            {
-                if (reader.IsNonExisting == false && reader.IsNull == false && reader.Current.Decoded().SequenceEqual(needle))
-                {
-                    found = true;
-                    break;
-                }
-            }
-
-            if (found == false)
-                return false;
-        }
-
-        return includeNull == false || FieldHasNull(ref reader, fieldRootPage);
-    }
+        => CheckFieldTermAllIn<Slice, SliceComparer>(ref reader, fieldRootPage, values, includeNull);
 
     public static bool CheckFieldTermAllInLong(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<long> values, bool includeNull)
-    {
-        for (int k = 0; k < values.Length; k++)
-        {
-            long needle = values[k];
-            bool found = false;
-            reader.Reset();
-            while (reader.FindNext(fieldRootPage))
-            {
-                if (reader.IsNonExisting == false && reader.IsNull == false && reader.CurrentLong == needle)
-                {
-                    found = true;
-                    break;
-                }
-            }
-
-            if (found == false)
-                return false;
-        }
-
-        return includeNull == false || FieldHasNull(ref reader, fieldRootPage);
-    }
+        => CheckFieldTermAllIn<long, LongComparer>(ref reader, fieldRootPage, values, includeNull);
 
     public static bool CheckFieldTermAllInDouble(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<double> values, bool includeNull)
+        => CheckFieldTermAllIn<double, DoubleComparer>(ref reader, fieldRootPage, values, includeNull);
+
+    
+    public static bool CheckFieldTermInSlice(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<Slice> values, bool includeNull)
+        => CheckFieldTermIn<Slice, SliceComparer>(ref reader, fieldRootPage, values, includeNull);
+
+    public static bool CheckFieldTermInLong(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<long> values, bool includeNull)
+        => CheckFieldTermIn<long, LongComparer>(ref reader, fieldRootPage, values, includeNull);
+
+    public static bool CheckFieldTermInDouble(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<double> values, bool includeNull)
+        => CheckFieldTermIn<double, DoubleComparer>(ref reader, fieldRootPage, values, includeNull);
+
+    private static bool CheckFieldTermIn<T, TComparer>(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<T> values, bool includeNull)
+        where TComparer : struct, ITermComparer<T>
     {
-        for (int k = 0; k < values.Length; k++)
-        {
-            double needle = values[k];
-            bool found = false;
-            reader.Reset();
-            while (reader.FindNext(fieldRootPage))
-            {
-                if (reader.IsNonExisting == false && reader.IsNull == false && reader.CurrentDouble == needle)
-                {
-                    found = true;
-                    break;
-                }
-            }
-
-            if (found == false)
-                return false;
-        }
-
-        return includeNull == false || FieldHasNull(ref reader, fieldRootPage);
-    }
-
-    /// <summary>True if the field has at least one null term for the current entry. Used by ALL IN
-    /// when the IN list contained a null, mirroring the bitmap pipeline's null-term posting list.</summary>
-    private static bool FieldHasNull(ref EntryTermsReader reader, long fieldRootPage)
-    {
+        TComparer compare = default;
         reader.Reset();
         while (reader.FindNext(fieldRootPage))
         {
+            if (reader.IsNonExisting)
+                continue;
             if (reader.IsNull)
-                return true;
+            {
+                if (includeNull)
+                    return true;
+                continue;
+            }
+
+            for (int k = 0; k < values.Length; k++)
+            {
+                if (compare.Matches(ref reader, values[k]))
+                    return true;
+            }
         }
+
         return false;
     }
 
-    // ── Entry scan iteration loop ───────────────────────────────────────
+    private static bool CheckFieldTermAllIn<T, TComparer>(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<T> values, bool includeNull)
+        where TComparer : struct, ITermComparer<T>
+    {
+        // we need to handle ALL IN ($terms), with null as an option, as well ass $terms = [x,x] - so the same value repeated
+        
+        TComparer compare = default;
+        bool hasNull = false;
+        for (int chunk = 0; chunk < values.Length; chunk += 64)
+        {
+            ReadOnlySpan<T> window = values.Slice(chunk, Math.Min(64, values.Length - chunk));
+            ulong allMatched = window.Length == 64 ? ulong.MaxValue : (1UL << window.Length) - 1;
+            ulong matched = 0;
 
-    /// <summary>Run entry scan: iterate the source bitmap in batches, resolve all entries
-    /// in each batch, evaluate the compiled predicate delegate once per batch (compact
-    /// survivors in-place), and add passing entries to the target bitmap. Batching avoids
-    /// the per-entry delegate invocation overhead — the IL-emitted predicate processes
-    /// the entire reader span and compacts entry IDs in a single call.</summary>
-    public static unsafe void RunEntryScan(
-        CompiledQueryMatch ctx,
-        ref RoaringBitmap sourceBitmap,
-        ref RoaringBitmap targetBitmap)
+            reader.Reset();
+            while (matched != allMatched && reader.FindNext(fieldRootPage))
+            {
+                if (reader.IsNonExisting)
+                    continue;
+
+                if (reader.IsNull)
+                {
+                    hasNull = true;
+                    continue;
+                }
+
+                for (int i = 0; i < window.Length; i++)
+                {
+                    ulong bit = 1UL << i;
+                    if ((matched & bit) == 0 && compare.Matches(ref reader, window[i]))
+                    {
+                        matched |= bit;
+                        break;
+                    }
+                }
+            }
+
+            if (matched != allMatched)
+                return false;
+        }
+
+        return includeNull == false || hasNull;
+    }
+
+    /// <summary>Run entry scan: the IL-emitted predicate processes in batches, this method ensures that it gets them in an efficient manner.</summary>
+    public static unsafe void RunEntryScan(CompiledQueryMatch ctx, ref RoaringBitmap sourceBitmap, ref RoaringBitmap targetBitmap)
     {
         long startTick = Stopwatch.GetTimestamp();
 
@@ -250,35 +168,27 @@ public static class CompiledQueryHelper
         Span<long> containerLocs = stackalloc long[QueryPrimitives.EntryScanBatchSize];
         Span<UnmanagedSpan> spans = stackalloc UnmanagedSpan[QueryPrimitives.EntryScanBatchSize];
         var readers = ArrayPool<EntryTermsReader>.Shared.Rent(QueryPrimitives.EntryScanBatchSize);
-        
+
         var searcher = ctx.Searcher;
         var predicate = ctx.CompiledEntryPredicate;
         var llt = searcher.Transaction.LowLevelTransaction;
 
-        // The emitted predicate evaluates readers strictly one at a time (it never decodes terms
-        // from two readers simultaneously), and once it returns RunEntryScan only consumes entry
-        // IDs — never the readers' decoded terms. So every reader in the batch can share a single
-        // scratch CompactKey instead of one per slot. Acquire it from the pooled buffer set.
+        // The emitted predicate evaluates readers strictly one at a time, every reader in the batch can share a single key
         var entryKey = llt.AcquireCompactKey();
 
-        // The target slot may have been used as AND/AndNot scratch by an earlier op, which
-        // leaves it marked consumed (and possibly holding stale containers). Reset it so the
-        // survivors we Add below start from a clean, writable bitmap.
         targetBitmap.Clear();
 
         sourceBitmap.PrepareForReading();
-        var iterator = sourceBitmap.GetIterator();
 
-        // Lazy scan-param setup: the bitmap pipeline skips analyzer/field-root work at
-        // construction time and defers it until entry-scan actually triggers. Most queries
-        // never reach this path, so the cost stays off the common path.
-        var exec = ctx.Exec;
+        // we deferred building the scan params (not always needed), not we need them
+        var exec = ctx.Exec; 
         if (exec.PopulateScanParams is { } populate)
         {
             populate();
             exec.PopulateScanParams = null;
         }
 
+        using var iterator = sourceBitmap.GetIterator();
         try
         {
             int read;
@@ -289,20 +199,22 @@ public static class CompiledQueryHelper
                 var batch = buffer[..read];
                 ctx.EntryScanEntriesScanned += read;
 
-                searcher.ResolveEntryLocations(batch, containerLocs);
-                Container.GetAllSortedByPage(llt, containerLocs[..read], spans, llt.PageLocator);
+                Span<long> locs = containerLocs[..read];
+                searcher.ResolveEntryLocations(batch, locs);
+                locs.Sort(batch);
+                Container.GetAll(llt, locs, spans, llt.PageLocator);
                 searcher.InitializeSpecialTermsMarkers();
 
                 int validCount = 0;
                 for (int i = 0; i < read; i++)
                 {
-                    if (containerLocs[i] == -1 || spans[i].Address == null)
+                    if (locs[i] == -1 || spans[i].Address == null)
                         continue;
                     readers[validCount] = new EntryTermsReader(llt,
                         searcher.NullTermsMarkers, searcher.NonExistingTermsMarkers,
                         spans[i].Address, spans[i].Length, searcher.DictionaryId,
                         searcher.VectorFieldsMarkers, entryKey);
-                    buffer[validCount] = buffer[i]; // compact entry IDs in-place
+                    batch[validCount] = batch[i]; // compact entry IDs in-place
                     validCount++;
                 }
 
@@ -311,8 +223,9 @@ public static class CompiledQueryHelper
 
                 int passed = predicate(exec, readers.AsSpan(0, validCount), buffer[..validCount], Span<int>.Empty);
                 ctx.EntryScanEntriesPassed += passed;
-                for (int i = 0; i < passed; i++)
-                    targetBitmap.Add(buffer[i]);
+                var passedBuffer = batch[..passed];
+                passedBuffer.Sort();
+                targetBitmap.AddRange(passedBuffer);
 
                 if (ctx.EntryScanEntriesPassed >= ctx.Limit)
                     break;
@@ -320,12 +233,8 @@ public static class CompiledQueryHelper
         }
         finally
         {
-            // Return the shared scratch key to the pool (keeps its rented buffers for reuse).
             llt.ReleaseCompactKey(ref entryKey);
-
-            iterator.Dispose();
             // clearArray: EntryTermsReader is a struct holding references (LowLevelTransaction, marker HashSets);
-            // clearing prevents the shared pool from pinning a transaction's objects until the array is reused.
             ArrayPool<EntryTermsReader>.Shared.Return(readers, clearArray: true);
             ctx.EntryScanTiming = Stopwatch.GetTimestamp() - startTick;
         }

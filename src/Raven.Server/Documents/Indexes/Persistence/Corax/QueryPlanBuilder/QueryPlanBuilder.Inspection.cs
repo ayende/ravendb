@@ -125,7 +125,7 @@ internal static partial class QueryPlanBuilder
                         parameters["SearchTerms"] = string.Join(", ", searchTerms);
                         parameters["SearchTermCount"] = searchTerms.Count.ToString(CultureInfo.InvariantCulture);
                     }
-                    parameters["SearchOperator"] = ((global::Corax.Constants.Search.Operator)clauseExec.Clause.SearchOperator).ToString();
+                    parameters["SearchOperator"] = clauseExec.Clause.SearchOperator.ToString();
                 }
 
                 if (inTermCount > 0)
