@@ -166,7 +166,21 @@ public unsafe partial struct RoaringBitmap
         ref long src = ref MemoryMarshal.GetReference(source);
 
         // Chained Narrow (ulong→uint→ushort): truncation == masking 0xFFFF for non-negative values, so no explicit AND with ContainerValueMask.
-        if (Vector256.IsHardwareAccelerated && count >= 16)
+        if (Vector512.IsHardwareAccelerated && count >= 32)
+        {
+            for (; j <= count - 32; j += 32)
+            {
+                var v0 = Vector512.LoadUnsafe(ref src, (nuint)j).AsUInt64();
+                var v1 = Vector512.LoadUnsafe(ref src, (nuint)(j + 8)).AsUInt64();
+                var v2 = Vector512.LoadUnsafe(ref src, (nuint)(j + 16)).AsUInt64();
+                var v3 = Vector512.LoadUnsafe(ref src, (nuint)(j + 24)).AsUInt64();
+
+                var u0 = Vector512.Narrow(v0, v1); // 16 uints
+                var u1 = Vector512.Narrow(v2, v3); // 16 uints
+                Vector512.Narrow(u0, u1).StoreUnsafe(ref *destination, (nuint)j); // 32 shorts
+            }
+        }
+        else if (Vector256.IsHardwareAccelerated && count >= 16)
         {
             for (; j <= count - 16; j += 16)
             {
@@ -312,7 +326,21 @@ public unsafe partial struct RoaringBitmap
         if (cardinality == 0)
             return false;
 
-        if (AdvInstructionSet.IsAcceleratedVector256)
+        if (AdvInstructionSet.IsAcceleratedVector512)
+        {
+            int vecCount = (cardinality + Vector512<ushort>.Count - 1) / Vector512<ushort>.Count;
+            Vector512<ushort> needle = Vector512.Create(value);
+            for (int v = 0; v < vecCount; v++)
+            {
+                var hasMatch = Vector512.Equals(Vector512.Load(arr + v * Vector512<ushort>.Count), needle).ExtractMostSignificantBits();
+                if (hasMatch == 0)
+                    continue;
+
+                int found = BitOperations.TrailingZeroCount(hasMatch) + v * Vector512<ushort>.Count;
+                return found < cardinality;
+            }
+        }
+        else if (AdvInstructionSet.IsAcceleratedVector256)
         {
             int vecCount = (cardinality + Vector256<ushort>.Count - 1) / Vector256<ushort>.Count;
             Vector256<ushort> needle = Vector256.Create(value);
@@ -320,9 +348,9 @@ public unsafe partial struct RoaringBitmap
             {
                 // Safe to over-read: allocation is SIMD-aligned with zeroed padding.
                 var hasMatch = Vector256.Equals(Vector256.Load(arr + v * Vector256<ushort>.Count), needle).ExtractMostSignificantBits();
-                if (hasMatch == 0) 
+                if (hasMatch == 0)
                     continue;
-                
+
                 int found = BitOperations.TrailingZeroCount(hasMatch) + v * Vector256<ushort>.Count;
                 return found < cardinality;
             }
