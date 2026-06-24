@@ -201,14 +201,11 @@ unsafe sealed partial class SortingMatch<TInner>
             _lookup.GetFor(batchResults, batchTermIds, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(batchTermIds, NonExistingTermContainerId, NullTermContainerId, SortingHelpers.MissingTermId);
 
-            // Page-group the container reads: sort the term ids ascending (≈ container/page order) and co-permute
-            // the entry ids so term[i] stays paired with batchResults[i]. GetAll then walks pages in order instead
-            // of re-locating a page per item. The value-sort below reorders everything anyway, so we never restore
-            // the original order — only the term↔entry pairing matters.
+            // Sort by term id (≈ page order, since term ids are container ids) to optimize GetAll access patterns
             batchTermIds.Sort(batchResults);
 
             var terms = new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length);
-            Container.GetAll(llt, batchTermIds, terms, SortingHelpers.MissingTermId, pageLocator);
+            Container.GetAll(llt, batchTermIds, terms, pageLocator);
 
             
             var indirectComparer = new IndirectComparer<CompactKeyComparer>(batchTerms, new CompactKeyComparer(), descending);
@@ -483,7 +480,7 @@ unsafe sealed partial class SortingMatch<TInner>
             match._cancellationToken.ThrowIfCancellationRequested();
             _lookup.GetFor(batchResults, batchTermIds, SortingHelpers.MissingTermId);
             SortingHelpers.ReplaceNullAndNonExistingTermIds(batchTermIds, NonExistingTermContainerId, NullTermContainerId, SortingHelpers.MissingTermId);
-            Container.GetAllSortedByPage(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), SortingHelpers.MissingTermId, pageLocator);
+            Container.GetAllSortedByPage(llt, batchTermIds, new Span<UnmanagedSpan>(batchTerms, batchTermIds.Length), pageLocator);
 
             var heapCapacity = _take == -1 ? batchResults.Length : Math.Min(_take, batchResults.Length);
             var documents = MemoryMarshal.Cast<long, int>(batchTermIds)[..(heapCapacity)];

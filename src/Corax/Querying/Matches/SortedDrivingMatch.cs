@@ -96,12 +96,13 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     }
 
     /// <summary>
-    /// Compound-driven variant: the provider walks a compound(field1, field2) subtree with field1 pinned by an
-    /// equality, so it already yields field2 order within that prefix. Unlike the single-field ctor this does NOT
-    /// merge the field's null / non-existing posting lists. Those lists are scoped to the compound field GLOBALLY
-    /// (across every field1 value), but this scan is scoped to a single field1 prefix — merging them would leak
-    /// rows from other field1 values and double-count. field2's null / missing entries are either excluded by a
-    /// field2 range clause or already covered inline by the compound prefix walk.
+    /// Compound-driven variant — serves a query like
+    /// <c>FROM Orders WHERE Company = 'companies/1' ORDER BY OrderedAt</c> on a compound (Company, OrderedAt) index.
+    /// The provider walks the compound subtree for the pinned first field, so it already yields the second field in
+    /// order within that prefix.
+    /// 
+    /// The planner rejects scans when the field has null / missing values and the null sort mode isn't a match to the
+    /// physically sorted layout and falls back to bitmap + SortingMatch.
     /// </summary>
     public SortedDrivingMatch(ITermsProvider provider, LowLevelTransaction llt, ByteStringContext allocator)
     {
@@ -119,7 +120,6 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
     }
 
     public long Count => -1;
-    public QueryCountConfidence Confidence => QueryCountConfidence.Low;
     public bool IsBoosting => false;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
 
@@ -184,7 +184,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 if (smallCount > 0)
                 {
                     Container.GetAll(_llt, entryBuffer[..smallCount],
-                        new Span<UnmanagedSpan>(_smallContainerItems.RawItems, smallCount), long.MinValue, pageLocator);
+                        new Span<UnmanagedSpan>(_smallContainerItems.RawItems, smallCount), pageLocator);
                 }
             }
 
@@ -193,19 +193,25 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
                 long plId = _plIdsBuffer.RawItems[_plIdsIdx];
                 var termType = (TermIdMask)plId & TermIdMask.EnsureIsSingleMask;
 
+                if (termType == TermIdMask.Single)
+                {
+                    // Accumulate a run of consecutive Single-term entries (in sort/emit order) into the output, avoid linear Contains() calls
+                    int runStart = count;
+                    int runLimit = Math.Min(matches.Length, count + QueryPrimitives.EntryScanBatchSize);
+                    while (_plIdsIdx < _plIdsRead && count < runLimit)
+                    {
+                        long runPlId = _plIdsBuffer.RawItems[_plIdsIdx];
+                        if (((TermIdMask)runPlId & TermIdMask.EnsureIsSingleMask) != TermIdMask.Single)
+                            break;
+                        matches[count++] = (long)EntryIdEncodings.GetContainerId(runPlId);
+                        _plIdsIdx++;
+                    }
+                    count = runStart + _emittedBitmap.DedupAddNew(matches.Slice(runStart, count - runStart), count - runStart);
+                    continue;
+                }
+
                 switch (termType)
                 {
-                    case TermIdMask.Single:
-                    {
-                        long entryId = (long)EntryIdEncodings.GetContainerId(plId);
-                        if (_emittedBitmap.Contains(entryId) == false)
-                        {
-                            _emittedBitmap.Add(entryId);
-                            matches[count++] = entryId;
-                        }
-                        _plIdsIdx++;
-                        break;
-                    }
                     case TermIdMask.SmallPostingList:
                     {
                         var item = _smallContainerItems.RawItems[_smallItemsIdx++];
@@ -322,11 +328,10 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
             var request = entryBuffer[..requestSize];
             if (_pendingLargeIterator.Fill(request, out int read) == false || read == 0)
             {
-                // Iterator exhausted: clear the pending flag so later Fills move on to the next term, and release
-                // the large posting list (nulled so the dispose-on-match-dispose at the bottom won't double-free).
+                // Iterator exhausted: clear the pending flag so later Fills move on to the next term
                 _hasPendingLargeIterator = false;
                 _pendingPostingList?.Dispose();
-                _pendingPostingList = default;
+                _pendingPostingList = null;
                 break;
             }
             EntryIdEncodings.DecodeAndDiscardFrequency(request, read);

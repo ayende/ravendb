@@ -47,17 +47,12 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
     public string Reason;
 
     /// <summary>
-    /// Exact TotalResults resolved up front from the driving provider's posting count (O(distinct terms)),
-    /// or -1 when it cannot be derived cheaply. When non-negative the read operation reports this instead
-    /// of draining Fill to exhaustion to recount. Only set on a no-residual scan over a single-valued field,
-    /// where the emitted set is exactly the provider's postings with no per-document dedup.
+    /// The driving provider's posting count (O(distinct terms)), or -1 when it cannot be derived cheaply. 
     /// </summary>
     public long KnownExactTotal = -1;
 
     /// <summary>
-    /// Cost (Stopwatch ticks) and in-range term count of the header-only probe (CountPostingsInRange) that
-    /// resolved <see cref="KnownExactTotal"/>. -1 ticks means no probe ran (total came from O(1) metadata, or
-    /// the scan drains to count). Surfaced so the graph can attribute this non-O(1) count source to its node.
+    /// Cost in Stopwatch ticks & the number of scanned terms to compute <see cref="KnownExactTotal"/>, for the introspection graph. 
     /// </summary>
     public long KnownTotalProbeTicks = -1;
     public int KnownTotalProbeTerms;
@@ -73,7 +68,6 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
     }
 
     public long Count => TotalMatched;
-    public QueryCountConfidence Confidence => QueryCountConfidence.Low;
     public bool IsBoosting => false;
     public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
@@ -100,9 +94,6 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
         if (EntryScanTicks > 0) parameters["EntryScans_ms"] = (EntryScanTicks / tickFreq).ToString("F3");
 
         parameters["TreeEntriesScanned"] = TreeEntriesScanned.ToString("N0");
-        // Entries this scan actually emitted (after dedup/residual-filter, capped by _take). This is the terminal
-        // output of the FieldSortedScan dataflow, surfaced so the graph's Result node can show output=N — the
-        // streaming/early-exit scan never builds a CompiledQueryMatch, so OverlayTimings cannot supply it.
         parameters["Output"] = TotalMatched.ToString("N0");
         if (StoppedReason != null) parameters["StoppedAt"] = StoppedReason;
         if (KnownExactTotal >= 0) parameters["KnownExactTotal"] = KnownExactTotal.ToString("N0");
@@ -132,11 +123,14 @@ public sealed class DirectScanSimpleMatch(IndexSearcher searcher, IQueryMatch dr
 
         int count = 0;
         int remaining = Take > 0 ? (int)Math.Min(matches.Length, Take - TotalMatched) : matches.Length;
-        int batchSize = Math.Min(QueryPrimitives.EntryScanBatchSize, Math.Max(1, remaining));
         Span<long> batch = stackalloc long[QueryPrimitives.EntryScanBatchSize];
 
         while (count < remaining)
         {
+            int batchSize = Math.Min(QueryPrimitives.EntryScanBatchSize, remaining - count);
+            if (batchSize == 0)
+                break;
+
             long t0 = Stopwatch.GetTimestamp();
             int read = DrivingMatch.Fill(batch[..batchSize]);
             TreeScanTicks += Stopwatch.GetTimestamp() - t0;
@@ -148,19 +142,14 @@ public sealed class DirectScanSimpleMatch(IndexSearcher searcher, IQueryMatch dr
             }
             TreeEntriesScanned += read;
 
-            for (int i = 0; i < read && count < remaining; i++)
-            {
-                long id = batch[i];
-                if (EmittedBitmap.Contains(id) == false)
-                {
-                    EmittedBitmap.Add(id);
-                    matches[count++] = id;
-                }
-            }
+            // Dedup the whole batch against EmittedBitmap in one bulk pass
+            int kept = EmittedBitmap.DedupAddNew(batch, read);
+            batch[..kept].CopyTo(matches[count..]);
+            count += kept;
         }
 
         if (Take > 0 && TotalMatched + count >= Take)
-            StoppedReason ??= $"_take({Take})";
+            StoppedReason ??= "ReachedQueryLimits";
 
         TotalMatched += count;
         return count;
@@ -168,15 +157,8 @@ public sealed class DirectScanSimpleMatch(IndexSearcher searcher, IQueryMatch dr
 }
 
 /// <summary>
-/// DirectScan with residual predicates: evaluates a compiled IL delegate against
-/// stored-field readers for each entry batch. Entry IDs are sorted by container
-/// location for sequential page access, then the delegate compacts survivors to
-/// the front. A parallel index tracks original sort positions so results are
-/// emitted in field-value order.
-///
-/// Uses the same compiled delegate as the entry-scan path (CompiledQueryMatch),
-/// evaluating ALL baked-in predicates — re-evaluating the driving-clause
-/// predicates is harmless since the tree scan already matched them.
+/// DirectScan with residual predicates: evaluates a compiled IL delegate
+/// against stored-field readers for each entry batch. 
 /// </summary>
 public sealed class DirectScanFilteredMatch(
     IndexSearcher searcher,
@@ -218,10 +200,12 @@ public sealed class DirectScanFilteredMatch(
         Span<int> packedOrigIdx = stackalloc int[QueryPrimitives.EntryScanBatchSize];
         var readersArr = ArrayPool<EntryTermsReader>.Shared.Rent(QueryPrimitives.EntryScanBatchSize);
         // The compiled predicate evaluates readers one at a time and RunEntryScan-style consumers
-        // only read entry IDs afterwards, so the whole batch can share a single scratch key.
+        // only read entry IDs afterward, so the whole batch can share a single scratch key.
         var scanKey = Llt.AcquireCompactKey();
         try
         {
+            Searcher.InitializeSpecialTermsMarkers();
+            
             while (count < remaining)
             {
                 long t0 = Stopwatch.GetTimestamp();
@@ -249,12 +233,8 @@ public sealed class DirectScanFilteredMatch(
                 Searcher.ResolveEntryLocations(sorted, locs);
 
                 var spans = containerSpans[..read];
-                Container.GetAll(Llt, locs, spans, -1, Llt.PageLocator);
-
-                Searcher.InitializeSpecialTermsMarkers();
-
-                var pIds = packedIds[..read];
-                var pIdxs = packedOrigIdx[..read];
+                Container.GetAllSortedByPage(Llt, locs, spans, Llt.PageLocator);
+                
                 int packed = 0;
                 for (int s = 0; s < read; s++)
                 {
@@ -273,8 +253,8 @@ public sealed class DirectScanFilteredMatch(
                     readersArr[packed] = new EntryTermsReader(Llt,
                         Searcher.NullTermsMarkers, Searcher.NonExistingTermsMarkers,
                         spans[s].Address, spans[s].Length, Searcher.DictionaryId, Searcher.VectorFieldsMarkers, scanKey);
-                    pIds[packed] = entryId;
-                    pIdxs[packed] = origIdx;
+                    packedIds[packed] = entryId;
+                    packedOrigIdx[packed] = origIdx;
                     packed++;
                 }
 
@@ -286,29 +266,27 @@ public sealed class DirectScanFilteredMatch(
                 EntriesRejected += packed - matched;
 
                 for (int k = 0; k < matched; k++)
-                    passed[pIdxs[k]] = true;
+                {
+                    passed[packedOrigIdx[k]] = true;
+                }
+
                 EntryScanTicks += Stopwatch.GetTimestamp() - t1;
 
-                // Emit in original sort-field order, not container-location order.
-                // The delegate compacted survivors in the order of sortedIds (page-order
-                // for sequential I/O). pIdxs[] holds each survivor's original sort-field
-                // position, but iterating pIdxs[] would emit results in page order, not
-                // sort order. Instead, scan the original batch (which is in sort-field
-                // order) and emit only the positions that passed.
+                // Emit in original sort-field order, scan the original batch (which is in sort-field order)
+                // and emit only the positions that passed.
                 for (int i = 0; i < read && count < remaining; i++)
                 {
-                    if (passed[i])
-                    {
-                        long id = batch[i];
-                        EmittedBitmap.Add(id);
-                        EntriesPassedFilter++;
-                        matches[count++] = id;
-                    }
+                    if (passed[i] is false) continue;
+                    
+                    long id = batch[i];
+                    EmittedBitmap.Add(id);
+                    EntriesPassedFilter++;
+                    matches[count++] = id;
                 }
             }
 
             if (Take > 0 && TotalMatched + count >= Take)
-                StoppedReason ??= $"_take({Take})";
+                StoppedReason ??= "ReachedQueryLimits";
 
             TotalMatched += count;
             return count;
@@ -316,8 +294,7 @@ public sealed class DirectScanFilteredMatch(
         finally
         {
             Llt.ReleaseCompactKey(ref scanKey);
-            ArrayPool<EntryTermsReader>.Shared.Return(readersArr);
+            ArrayPool<EntryTermsReader>.Shared.Return(readersArr, clearArray: true);
         }
     }
-
 }

@@ -1,6 +1,6 @@
-﻿namespace Corax.Querying.Matches.Meta;
+namespace Corax.Querying.Matches.Meta;
 
-public enum UnaryMatchOperation
+public enum ComparisonOperator
 {
     LessThan,
     LessThanOrEqual,

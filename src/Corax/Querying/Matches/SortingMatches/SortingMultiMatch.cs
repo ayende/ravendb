@@ -156,18 +156,12 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
             }
             else
             {
-                using var scope = DrainInnerMatch(out Span<long> allMatches);
+                using var scope = SortingHelpers.DrainMatch(ref match._inner, match._searcher.Allocator, out Span<long> allMatches);
+                match.TotalResults = allMatches.Length;
                 if (match.TotalResults == 0)
                     return 0;
-
-                // The secondary comparers resolve sort keys via Lookup.GetFor, which gallops from the previous
-                // cursor position and requires ascending, unique entry ids. A drained non-bitmap inner can yield
-                // them out of order and with duplicates, so sort + dedup with the shared helper before SortResults.
-                int unique = Sorting.SortAndRemoveDuplicates(allMatches);
-                allMatches = allMatches[..unique];
-                match.TotalResults = unique;
+                
                 match.CandidatesAreSorted = true;
-
                 long sortStart = Stopwatch.GetTimestamp();
                 SortResults<TComparer1, TComparer2, TComparer3>(match, allMatches);
                 match.SortingTimeInTicks += Stopwatch.GetTimestamp() - sortStart;
@@ -193,27 +187,6 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         
         return 0;
 
-        ByteStringContext<ByteStringMemoryCache>.InternalScope DrainInnerMatch(out Span<long> allMatches)
-        {
-            var count = match._inner.Count;
-            int bufferSize = count is > 0 and < (1024 * 1024) ? (int)count : 4096;
-            var scope = match._searcher.Allocator.Allocate(bufferSize * sizeof(long), out var bs);
-            var buffer = new Span<long>(bs.Ptr, bufferSize);
-            var filled = 0;
-            int r;
-            while ((r = match._inner.Fill(buffer[filled..])) > 0)
-            {
-                filled += r;
-                if (filled >= buffer.Length)
-                {
-                    match._searcher.Allocator.GrowAllocation(ref bs, ref scope, buffer.Length * sizeof(long));
-                    buffer = new Span<long>(bs.Ptr, bs.Length / sizeof(long));
-                }
-            }
-            match.TotalResults = filled;
-            allMatches = buffer[..filled];
-            return scope;
-        }
     }
     
     private static void SortResults<TComparer1, TComparer2, TComparer3>(SortingMultiMatch<TInner> match, Span<long> matches) 
@@ -261,8 +234,6 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
 
     public override long Count => _inner.Count;
 
-    public override QueryCountConfidence Confidence => throw new NotSupportedException();
-
     public override bool IsBoosting => _inner.IsBoosting || _orderMetadata[0].FieldType == MatchCompareFieldType.Score;
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -271,18 +242,12 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         return _fillFunc(this, matches);
     }
 
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public override void Score(Span<long> matches, Span<float> scores, float boostFactor)
-    {
-    }
-
     public override QueryInspectionNode Inspect()
     {
         var parameters = new Dictionary<string, string>()
         {
             {Constants.QueryInspectionNode.IsBoosting, IsBoosting.ToString()},
             {Constants.QueryInspectionNode.Count, "0"},
-            {Constants.QueryInspectionNode.CountConfidence, QueryCountConfidence.Low.ToString()},
         };
 
         for (int cmpId = 0; cmpId < _orderMetadata.Length; ++cmpId)
@@ -307,17 +272,12 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
             }
         }
         
-        // Surface the sort's own cost — it runs above the bitmap pipeline (timed onto the child CompiledQuery
-        // node) and is otherwise absent from include timings(). Strategy is constant: multi-key sorts always
-        // materialize and heap-sort (no index-order streaming variant exists).
         if (SortingTimeInTicks > 0)
         {
             parameters["Strategy"] = CoraxSortingStrategy.InMemorySort.ToString();
             parameters["Ms"] = (SortingTimeInTicks / (Stopwatch.Frequency / 1000.0)).ToString("F3", CultureInfo.InvariantCulture);
         }
 
-        // The sort wrapper sits above the bitmap pipeline, so surface its own in/out (see SortingMatch.Inspect):
-        // Incoming is the full candidate set ranked, Output is what the page receives — capped by _take when set.
         if (TotalResults >= 0)
         {
             parameters["Incoming"] = TotalResults.ToString("N0");
@@ -326,7 +286,7 @@ public sealed unsafe partial class SortingMultiMatch<TInner> : SortingMultiMatch
         }
 
         return new QueryInspectionNode($"{nameof(SortingMultiMatch)}",
-            children: new List<QueryInspectionNode> { _inner.Inspect()},
+            children: [_inner.Inspect()],
             parameters: parameters);
     }
 

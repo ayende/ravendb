@@ -8,23 +8,9 @@ public static class QueryMatch
     public const long Start = 0;
 }
 
-public enum QueryCountConfidence : int
-{
-    Low = 0,
-    Normal = 1,
-    High = 2,
-}
-
 public interface IQueryMatch
 {
     long Count { get; }
-    
-        
-    // The confidence of the query count.
-    //  - High: We know exactly how many items there are.
-    //  - Normal: We know roughly that it is in the order of magnitude.
-    //  - Low: We know very little about it.
-    QueryCountConfidence Confidence { get; }
 
     bool IsBoosting { get; }
 
@@ -33,8 +19,15 @@ public interface IQueryMatch
     //             0 return means no more matches. 
     int Fill(Span<long> matches);
 
-    // Guarantees: The output of this for unscored sequences should be a no-op.
-    // Requirements: The upmost call
+    // Adds the (boosted) relevance of each present entry into scores[i], positionally aligned to matches[i]; a no-op
+    // for unscored sequences. Used when the caller's match order is significant and must be preserved (e.g. a vector
+    // post-filter feeding similarity-score order, or any Fill batch that wasn't materialized+sorted). Bitmap-backed
+    // leaves implement this as a linear point lookup (one Contains per element) BY DESIGN, not as a perf shortcut:
+    // because scores[i] is positionally tied to the unsorted matches[i], the grouped container merge that ScoreSorted
+    // uses cannot apply, and on a finalized bitmap each Contains is an O(1) probe. A sort-into-scratch + grouped-merge
+    // + scatter-back alternative was benchmarked and ran 7-23x SLOWER (the sort plus random scatter-writes into
+    // scores[] cost more than the cheap, branch-predictable point lookups) - see ayende/ravendb#4894. Callers that
+    // already hold sorted+deduped matches call ScoreSorted instead.
     void Score(Span<long> matches, Span<float> scores, float boostFactor);
 
     // Same contract/result as Score, but the caller GUARANTEES `matches` is sorted ascending and deduplicated
@@ -56,7 +49,6 @@ public interface IQueryMatch
 /// </summary>
 public interface IBitmapQueryMatch : IQueryMatch
 {
-    bool Contains(long entryId);
     long MinEntryId { get; }
     long MaxEntryId { get; }
 
