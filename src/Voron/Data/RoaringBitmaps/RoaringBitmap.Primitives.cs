@@ -180,7 +180,7 @@ public unsafe partial struct RoaringBitmap
                 Vector512.Narrow(u0, u1).StoreUnsafe(ref *destination, (nuint)j); // 32 shorts
             }
         }
-        else if (Vector256.IsHardwareAccelerated && count >= 16)
+        if (Vector256.IsHardwareAccelerated && count >= 16)
         {
             for (; j <= count - 16; j += 16)
             {
@@ -194,7 +194,7 @@ public unsafe partial struct RoaringBitmap
                 Vector256.Narrow(u0, u1).StoreUnsafe(ref *destination, (nuint)j); // 16 shorts
             }
         }
-        else if (Vector128.IsHardwareAccelerated && count >= 8)
+        if (Vector128.IsHardwareAccelerated && count >= 8)
         {
             for (; j <= count - 8; j += 8)
             {
