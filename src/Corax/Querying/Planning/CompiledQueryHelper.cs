@@ -266,9 +266,6 @@ public static class CompiledQueryHelper
         // survivors we Add below start from a clean, writable bitmap.
         targetBitmap.Clear();
 
-        // The source accumulator (slot 0) is consumed raw here, before Execute() prepares the
-        // result slot — prior ops may have left ArrayUnsorted containers, which the iterator
-        // rejects. Sort/dedup them now so iteration sees only sorted containers.
         sourceBitmap.PrepareForReading();
         var iterator = sourceBitmap.GetIterator();
 
