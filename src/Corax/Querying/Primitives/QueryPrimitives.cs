@@ -31,14 +31,21 @@ public static class QueryPrimitives
     // Bitmap slot reserved as scratch for the AND/ANDNOT primitives: The planner will never user bitmap index 1
     // so it is free for scratch usage
     public const int AndScratchBitmapSlot = 1;
+
+    // Synthetic posting-list ids. Both have low two bits == TermIdMask.NotARealValue (0b11) - the bucket the
+    // indexer never emits for a real term - so they can't collide with a real id, and they fall through the
+    // real-type switch into its synthetic branch. They are told apart there by exact value because Empty and
+    // All have opposite AND semantics (Empty intersects to nothing, All is a universal pass-through).
+    private const long EmptyPostingsId = -1;   // the term does not exist in the index
+    private const long AllPostingsId = 0b11;   // universal source (AllIn's null-term slot when HasNullTerm=false)
     
     // Fill first clears the bitmap (unlike OR) 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxFillFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         ctx.Bitmaps[bitmapSlot].Clear();
-        var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.OpLimit);
+        long postingListId = ResolvePostingListId(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
+        FillBitmapFromPostingSource(postingListId, ctx.Searcher, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, ctx.OpLimit);
     }
 
     // Use as the complement for negation (NOT x means All Entries AND NOT x) 
@@ -69,8 +76,8 @@ public static class QueryPrimitives
     {
         long remaining = bitmapSlot == 0 ? ctx.OpLimit - ctx.Bitmaps[0].ComputeCount() : ctx.OpLimit;
         if (remaining <= 0) return;
-        var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        FillBitmapFromPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, remaining);
+        long postingListId = ResolvePostingListId(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
+        FillBitmapFromPostingSource(postingListId, ctx.Searcher, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ctx.Token, remaining);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -100,8 +107,8 @@ public static class QueryPrimitives
     public static void CtxAndFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
-        var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        AndWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token, ctx.OpLimit);
+        long postingListId = ResolvePostingListId(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
+        AndWithPostingSource(postingListId, ctx.Searcher, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token, ctx.OpLimit);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -123,8 +130,8 @@ public static class QueryPrimitives
     public static void CtxAndNotFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
         Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
-        var src = ResolvePostingSource(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        AndNotWithPostingSource(ref src, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
+        long postingListId = ResolvePostingListId(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
+        AndNotWithPostingSource(postingListId, ctx.Searcher, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -142,18 +149,17 @@ public static class QueryPrimitives
         AndNotWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
     }
 
-    /// <summary>Materialize the native posting source for a posting-list leaf slot.</summary>
-    private static Planning.PostingSource ResolvePostingSource(ref Planning.LeafResolveInfo info, IndexSearcher searcher, Planning.QueryExecution exec)
+    /// <summary>Resolve a posting-list leaf slot to its raw posting-list id, or a synthetic sentinel
+    /// (<see cref="EmptyPostingsId"/> / <see cref="AllPostingsId"/>) for the non-term slots.</summary>
+    private static long ResolvePostingListId(ref Planning.LeafResolveInfo info, IndexSearcher searcher, Planning.QueryExecution exec)
     {
         return info.Kind switch
         {
-            Planning.LeafResolveKind.TermPosting => Planning.PostingSource.Decode(info.Packed.GetTermPostingListId(info.FieldMeta, searcher, exec), searcher),
-            Planning.LeafResolveKind.NullPosting => searcher.TryGetPostingListForNull(in info.FieldMeta, out long nullPlId) ? Planning.PostingSource.Decode(nullPlId, searcher) : default,
-            Planning.LeafResolveKind.AllPosting => new Planning.PostingSource
-            {
-                Kind = Planning.PostingSourceKind.All
-            },
-            _ => default
+            // GetTermPostingListId already returns -1 (== EmptyPostingsId) when the term doesn't exist.
+            Planning.LeafResolveKind.TermPosting => info.Packed.GetTermPostingListId(info.FieldMeta, searcher, exec),
+            Planning.LeafResolveKind.NullPosting => searcher.TryGetPostingListForNull(in info.FieldMeta, out long nullPlId) ? nullPlId : EmptyPostingsId,
+            Planning.LeafResolveKind.AllPosting => AllPostingsId,
+            _ => EmptyPostingsId
         };
     }
 
@@ -434,47 +440,49 @@ public static class QueryPrimitives
         bitmap.AndNotWith(ref tempBitmap);
     }
 
-    /// <summary>OR a TermSource into the bitmap.
-    /// Single → Add; SmallPostingList → decode FastPFor buffer + AddRange;
-    /// PostingList → <see cref="FillFromPostings"/>; Empty → no-op.</summary>
+    /// <summary>OR a posting-list source into the bitmap. The low two bits of the id select the source type
+    /// (Single → Add; SmallPostingList → decode FastPFor buffer + AddRange; PostingList → <see cref="FillFromPostings"/>).
+    /// A synthetic id (NotARealValue bucket) can only be Empty here → no-op.</summary>
     [SkipLocalsInit]
     private static void FillBitmapFromPostingSource(
-        ref Planning.PostingSource source,
+        long postingListId,
+        IndexSearcher searcher,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
         CancellationToken token,
         long limit = long.MaxValue)
     {
-        switch (source.Kind)
+        switch ((TermIdMask)postingListId & TermIdMask.EnsureIsSingleMask)
         {
-            case Planning.PostingSourceKind.Empty:
-                return;
-
-            case Planning.PostingSourceKind.Single:
+            case TermIdMask.Single:
                 if (limit > 0)
-                    bitmap.Add(source.SingleEntryId);
+                    bitmap.Add((long)EntryIdEncodings.GetContainerId(postingListId));
                 return;
 
-            case Planning.PostingSourceKind.SmallPostingList:
-                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref bitmap, token, limit);
+            case TermIdMask.SmallPostingList:
+                AddSmallPostingListToBitmap(llt, (long)EntryIdEncodings.GetContainerId(postingListId), ref bitmap, token, limit);
                 return;
 
-            case Planning.PostingSourceKind.PostingList:
-                FillFromPostings(ref source.LargeIterator, ref bitmap, token, limit);
+            case TermIdMask.PostingList:
+            {
+                var iterator = searcher.GetPostingList(postingListId).Iterate();
+                FillFromPostings(ref iterator, ref bitmap, token, limit);
                 return;
+            }
 
-            default:
-                throw new InvalidOperationException($"Unknown PostingSourceKind: {source.Kind}");
+            default: // NotARealValue (0b11): only Empty reaches a fill (All is AND-only) → no-op.
+                Debug.Assert(postingListId != AllPostingsId, "All posting source is not expected on a fill path.");
+                return;
         }
     }
 
-    /// <summary>AND the bitmap with a TermSource. Bounded range scan when the
-    /// source is a large PostingList; per-key membership / temp-bitmap-fill for
-    /// the smaller cases. Empty source clears the bitmap (intersection with
-    /// nothing = nothing).</summary>
+    /// <summary>AND the bitmap with a posting-list source. Bounded range scan when the source is a large
+    /// PostingList; per-key membership / temp-bitmap-fill for the smaller cases. A synthetic id is either
+    /// Empty (clears the bitmap — intersection with nothing) or All (universal pass-through — no-op).</summary>
     [SkipLocalsInit]
     private static void AndWithPostingSource(
-        ref Planning.PostingSource source,
+        long postingListId,
+        IndexSearcher searcher,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
         ref RoaringBitmap tempBitmap,
@@ -484,46 +492,48 @@ public static class QueryPrimitives
         if (bitmap.IsEmpty)
             return;
 
-        switch (source.Kind)
+        switch ((TermIdMask)postingListId & TermIdMask.EnsureIsSingleMask)
         {
-            case Planning.PostingSourceKind.Empty:
+            case TermIdMask.Single:
+            {
+                long entryId = (long)EntryIdEncodings.GetContainerId(postingListId);
+                bool keep = bitmap.Contains(entryId);
                 bitmap.Clear();
+                if (keep)
+                    bitmap.Add(entryId);
                 return;
+            }
 
-            case Planning.PostingSourceKind.All:
-                return; // Universal pass-through: AND with all entries = no-op.
-
-            case Planning.PostingSourceKind.Single:
-                    long entryId = source.SingleEntryId;
-                    bool keep = bitmap.Contains(entryId);
-                    bitmap.Clear();
-                    if (keep)
-                        bitmap.Add(entryId);
-                    return;
-
-            case Planning.PostingSourceKind.SmallPostingList:
+            case TermIdMask.SmallPostingList:
                 // limit bounds the AND *result*, not the operand. Truncating the materialized term to
                 // `limit` entries would drop its low-id postings that intersect `bitmap`, leaving fewer
                 // than `limit` survivors (or none). The operand is a small posting list, so materializing
                 // it in full is cheap and the intersection is bounded by min(|bitmap|, |operand|) anyway.
-                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap, token);
+                MaterializeTermSourceIntoBitmap(postingListId, llt, ref tempBitmap, token);
                 bitmap.AndWith(ref tempBitmap);
                 return;
 
-            case Planning.PostingSourceKind.PostingList:
-                AndWithPostingsLimited(ref source.LargeIterator, ref bitmap, ref tempBitmap, token, limit);
+            case TermIdMask.PostingList:
+            {
+                var iterator = searcher.GetPostingList(postingListId).Iterate();
+                AndWithPostingsLimited(ref iterator, ref bitmap, ref tempBitmap, token, limit);
                 return;
+            }
 
-            default:
-                throw new InvalidOperationException($"Unknown PostingSourceKind: {source.Kind}");
+            default: // NotARealValue (0b11): All → no-op; Empty → intersection with nothing.
+                if (postingListId == AllPostingsId)
+                    return;
+                bitmap.Clear();
+                return;
         }
     }
 
-    /// <summary>ANDNOT the bitmap with a TermSource (subtract). Empty source is
-    /// a no-op (subtracting nothing).</summary>
+    /// <summary>ANDNOT the bitmap with a posting-list source (subtract). A synthetic id can only be Empty
+    /// here → no-op (subtracting nothing).</summary>
     [SkipLocalsInit]
     private static void AndNotWithPostingSource(
-        ref Planning.PostingSource source,
+        long postingListId,
+        IndexSearcher searcher,
         LowLevelTransaction llt,
         ref RoaringBitmap bitmap,
         ref RoaringBitmap tempBitmap,
@@ -532,47 +542,48 @@ public static class QueryPrimitives
         if (bitmap.IsEmpty)
             return;
 
-        switch (source.Kind)
+        switch ((TermIdMask)postingListId & TermIdMask.EnsureIsSingleMask)
         {
-            case Planning.PostingSourceKind.Empty:
-                return;
-
-            case Planning.PostingSourceKind.Single:
-            case Planning.PostingSourceKind.SmallPostingList:
-                MaterializeTermSourceIntoBitmap(ref source, llt, ref tempBitmap, token);
+            case TermIdMask.Single:
+            case TermIdMask.SmallPostingList:
+                MaterializeTermSourceIntoBitmap(postingListId, llt, ref tempBitmap, token);
                 bitmap.AndNotWith(ref tempBitmap);
                 return;
 
-            case Planning.PostingSourceKind.PostingList:
-                AndNotWithPostings(ref source.LargeIterator, ref bitmap, ref tempBitmap, token);
+            case TermIdMask.PostingList:
+            {
+                var iterator = searcher.GetPostingList(postingListId).Iterate();
+                AndNotWithPostings(ref iterator, ref bitmap, ref tempBitmap, token);
                 return;
+            }
 
-            default:
-                throw new InvalidOperationException($"Unknown PostingSourceKind: {source.Kind}");
+            default: // NotARealValue (0b11): only Empty reaches an ANDNOT (All is never subtracted) → no-op.
+                Debug.Assert(postingListId != AllPostingsId, "All posting source is not expected on an ANDNOT path.");
+                return;
         }
     }
 
-    /// <summary>Materialize a Single or SmallPostingList TermSource into the temp bitmap
-    /// (clears it first). Shared by AndWithPostingSource and AndNotWithPostingSource to avoid
-    /// duplicating the clear-then-populate pattern for these small-source cases.</summary>
+    /// <summary>Materialize a Single or SmallPostingList source into the temp bitmap (clears it first).
+    /// Shared by AndWithPostingSource and AndNotWithPostingSource to avoid duplicating the
+    /// clear-then-populate pattern for these small-source cases.</summary>
     private static void MaterializeTermSourceIntoBitmap(
-        ref Planning.PostingSource source,
+        long postingListId,
         LowLevelTransaction llt,
         ref RoaringBitmap tempBitmap,
         CancellationToken token,
         long limit = long.MaxValue)
     {
         tempBitmap.Clear();
-        switch (source.Kind)
+        switch ((TermIdMask)postingListId & TermIdMask.EnsureIsSingleMask)
         {
-            case Planning.PostingSourceKind.Single:
-                tempBitmap.Add(source.SingleEntryId);
+            case TermIdMask.Single:
+                tempBitmap.Add((long)EntryIdEncodings.GetContainerId(postingListId));
                 return;
-            case Planning.PostingSourceKind.SmallPostingList:
-                AddSmallPostingListToBitmap(llt, source.SmallPostingListId, ref tempBitmap, token, limit);
+            case TermIdMask.SmallPostingList:
+                AddSmallPostingListToBitmap(llt, (long)EntryIdEncodings.GetContainerId(postingListId), ref tempBitmap, token, limit);
                 return;
             default:
-                Debug.Fail($"MaterializeTermSourceIntoBitmap called with unexpected kind: {source.Kind}");
+                Debug.Fail($"MaterializeTermSourceIntoBitmap called with unexpected id: {postingListId}");
                 return;
         }
     }
