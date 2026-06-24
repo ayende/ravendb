@@ -618,8 +618,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             long docsToLoad = pageSize;
             bool runQuery = true;
-            // Loop-invariant: depends only on index type / fields / query. Used both to decide whether
-            // per-document dedup runs and to gate limit-aware truncation below.
+            // Loop-invariant: depends only on index type / fields / query.
             bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
             // Reuse a single CompactKey across the whole result loop. With no key supplied, GetEntryTermsReader
             // allocates a fresh CompactKey per entry and rents pool buffers that are never returned (the reader
@@ -680,13 +679,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         // the bitmap is truncated to the page instead of materializing the whole posting
                         // list. We can do this when the client doesn't need the exact total (SkipStatistics),
                         // or when we already know it cheaply (knownExactTotal) and supply it below.
-                        // Only when entries map 1:1 to returned documents: with a fan-out index a document
-                        // can appear under several entries and get deduped away, so truncating to exactly
-                        // `take` entries would return fewer than `take` documents and the non-sorting path
-                        // has no page-refill loop to compensate.
-                        if (take > 0 && (query.SkipStatistics || knownExactTotal >= 0)
-                            && (willAlwaysIncludeInResults || _maxNumberOfOutputsPerDocument <= 1))
-                            compiledMatch.Limit = (int)Math.Min(take, int.MaxValue);
+                        // Fan-out indexes produce multiple entries per document; after dedup the page would
+                        // come up short if we truncated to exactly `take`. Inflate by the observed max
+                        // outputs-per-document so the bitmap contains enough entries to fill the page even
+                        // in the worst-case dedup scenario.
+                        if (take > 0 && (query.SkipStatistics || knownExactTotal >= 0))
+                            compiledMatch.Limit = (int)Math.Min((long)take * _maxNumberOfOutputsPerDocument, int.MaxValue);
                     }
                     else if (compileResult.QueryMatch is DirectScanMatchBase { KnownExactTotal: >= 0 } directScan)
                     {
