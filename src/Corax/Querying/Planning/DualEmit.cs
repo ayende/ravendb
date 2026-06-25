@@ -1,7 +1,9 @@
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.InteropServices;
 using System.Text;
 using Voron;
 
@@ -306,7 +308,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsStack.Push($"{args[0]}.{method.Name}({string.Join(", ", args[1..])})");
     }
 
-    private string[] PopArgs(int arity)
+    private Span<string> PopArgs(int arity)
     {
         var args = new string[arity];
         for (int i = arity - 1; i >= 0; i--) args[i] = CsStack.Pop();
