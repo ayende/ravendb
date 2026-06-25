@@ -200,15 +200,36 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         if (template.WhenCount is 0)
             return;
 
-        if (clause.WhenCondition is not { } predicate || predicate(planParams.QueryParameters))
+        // The root clause's enclosing operator is the query root (template.IsOr); a nested clause's is its
+        // parent group's type, tracked as we descend.
+        ApplyFateRecursive(exec, clause, template.IsOr);
+    }
+
+    private void ApplyFateRecursive(ClauseExecution exec, ClauseInfo clause, bool enclosingIsOr)
+    {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
+
+        if (clause.WhenCondition is { } predicate && predicate(planParams.QueryParameters) == false)
+        {
+            // WHEN(false): the guard is off, so the whole guarded clause (its negation included) does not filter.
+            // It collapses to the identity of its enclosing boolean operator: MatchAll under AND, MatchNothing
+            // under OR. Once the (sub)clause is a sentinel its children are irrelevant, so stop descending.
+            if (enclosingIsOr)
+                exec.MarkAsSentinel(ClauseType.MatchNothing, 0);
+            else
+                exec.MarkAsSentinel(ClauseType.MatchAll, _indexSearcher.NumberOfEntries);
+            return;
+        }
+
+        // when() can sit on a clause nested inside a group, so walk the SubExecutions tree. Children's enclosing
+        // operator is THIS group's type, not the query root (a when(false) inside an AndGroup under an OR root
+        // must collapse to MatchAll, not MatchNothing).
+        if (exec.SubExecutions is not { } subExecs || clause.SubClauses is not { } subClauses)
             return;
 
-        // WHEN(false): the guard is off, so the whole guarded clause (its negation included) does not filter.
-        // It collapses to the identity of its enclosing boolean operator: MatchAll under AND, MatchNothing under OR.
-        if (template.IsOr)
-            exec.MarkAsSentinel(ClauseType.MatchNothing, 0);
-        else
-            exec.MarkAsSentinel(ClauseType.MatchAll, _indexSearcher.NumberOfEntries);
+        bool childEnclosingIsOr = clause.ClauseType == ClauseType.OrGroup;
+        for (int i = 0; i < subExecs.Count; i++)
+            ApplyFateRecursive(subExecs[i], subClauses[i], childEnclosingIsOr);
     }
 
     private static bool IsEmptyIn(ClauseExecution e) =>

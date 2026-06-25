@@ -36,9 +36,18 @@ internal static class PlanWalker
     {
         ctx.WhenCount = 0;
         foreach (var t in clauses)
+            CountWhenConditions(t, ctx);
+
+        // A WHEN(...) guard attaches wherever the when() method appears in the query — including inside an
+        // OR/AND group, where the guarded clause lives in SubClauses rather than the top-level list. Recurse
+        // so the count (the ApplyFate fast-path gate) sees nested guards too.
+        static void CountWhenConditions(ClauseInfo clause, ResolutionContext ctx)
         {
-            if (t.WhenCondition != null) // WHEN(...) guards only attach to top-level clauses
+            RuntimeHelpers.EnsureSufficientExecutionStack();
+            if (clause.WhenCondition != null)
                 ctx.WhenCount++;
+            foreach (var sub in clause.SubClauses ?? [])
+                CountWhenConditions(sub, ctx);
         }
     }
 
