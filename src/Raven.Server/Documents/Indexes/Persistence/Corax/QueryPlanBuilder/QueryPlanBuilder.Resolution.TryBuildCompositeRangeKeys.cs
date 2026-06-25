@@ -8,7 +8,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private static bool TryBuildCompositeRangeKeys(ref InstCtx ctx, Slice analyzedPrefix, string sortFieldName,
+    private static bool TryBuildCompositeRangeKeys(ref InstantiateContext ctx, Slice analyzedPrefix, string sortFieldName,
         ClauseExecution field2Exec, out Slice lowSlice, out Slice highSlice)
     {
         lowSlice = default;
@@ -50,7 +50,7 @@ internal static partial class QueryPlanBuilder
         highSlice = WriteCompositeRangeKey(ref ctx, analyzedPrefix, highSuffixSize, in highEnc, openFill: 0xFF);
         return true;
         
-        static Slice WriteCompositeRangeKey(ref InstCtx ctx, Slice analyzedPrefix, int suffixSize, in CompoundFieldEncoding? suffixEncoding, byte openFill)
+        static Slice WriteCompositeRangeKey(ref InstantiateContext ctx, Slice analyzedPrefix, int suffixSize, in CompoundFieldEncoding? suffixEncoding, byte openFill)
         {
             int len = analyzedPrefix.Size + suffixSize + 1;
             ctx.PlanParams.Allocator.Allocate(len, out ByteString buf);

@@ -101,7 +101,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                     HasDynamics = parameters.HasDynamics,
                     DynamicFields = parameters.DynamicFields,
                     HasBoost = parameters.HasBoost
-                }, parameters, out _, highlightingTerms: null, wantTimings: false, token);
+                }, parameters, highlightingTerms: null, wantTimings: false, token);
             baseQueryDisposable = baseQuery as IDisposable;
             queryTimings?.SetQueryPlan(baseQuery.Inspect());
 
@@ -301,7 +301,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
                     HasDynamics = parameters.HasDynamics,
                     DynamicFields = parameters.DynamicFields,
                     HasBoost = parameters.HasBoost
-                }, parameters, out _, highlightingTerms: null, wantTimings: false, token);
+                }, parameters, highlightingTerms: null, wantTimings: false, token);
 
         var coraxPageSize = CoraxBufferSize(_indexSearcher, facetQuery.Query.PageSize, query);
         var ids = CoraxIndexReadOperation.QueryPool.Rent(coraxPageSize);

@@ -608,7 +608,7 @@ public class StreamingOptimization_QueryBuilder(ITestOutputHelper output) : Rave
                         ? new Lazy<List<string>>(() => indexSearcher.GetFields())
                         : null,
                 };
-                var coraxQuery = QueryPlanBuilder.BuildFilterMatch(planParams, new QueryBuilderParameters(indexSearcher, bsc, indexQueryServerSide.Metadata, blittableParameters, mapping), out _, null, false, default);
+                var coraxQuery = QueryPlanBuilder.BuildFilterMatch(planParams, new QueryBuilderParameters(indexSearcher, bsc, indexQueryServerSide.Metadata, blittableParameters, mapping), null, false, default);
 
                 return coraxQuery;
             }

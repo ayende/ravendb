@@ -15,7 +15,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private static IQueryMatch Instantiate(
+    private static (IQueryMatch Exec, IQueryMatch Inner) Instantiate(
         QueryExecution exec,
         OrderMetadata[] orderByFields,
         PlanParameters planParams,
@@ -23,11 +23,10 @@ internal static partial class QueryPlanBuilder
         ResolutionContext walkerCtx,
         Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
         bool wantTimings,
-        out IQueryMatch innerMatch,
         CancellationToken token)
     {
         var compiledPlan = exec.Plan;
-        var ctx = new InstCtx(compiledPlan, exec, orderByFields, planParams, builderParameters, wantTimings);
+        var ctx = new InstantiateContext(compiledPlan, exec, orderByFields, planParams, builderParameters, wantTimings);
         if (compiledPlan.Strategy == ExecutionStrategy.NotEvaluated)
             SelectExecutionStrategy(ref ctx);
 
@@ -43,13 +42,16 @@ internal static partial class QueryPlanBuilder
         switch (effective)
         {
             case ExecutionStrategy.CompoundKeyLookup:
-                innerMatch = ConstructCompoundExact(ref ctx);
+            {
+                var innerMatch = ConstructCompoundExact(ref ctx);
                 if (innerMatch is null) goto default;
                 exec.ActualStrategy = ExecutionStrategy.CompoundKeyLookup;
-                return innerMatch;
+                return (innerMatch, innerMatch);
+            }
             // orderByFields can be null when page size is 0, in which case, we need to get the actual total count
             // no advantage of using compound field here, since we can't stop midway (like we do with paging)
             case ExecutionStrategy.CompoundSortedScan when orderByFields != null:
+            {
                 // Always compute the cost estimate: ConstructCompoundField consumes entriesToScan/bitmapCost.
                 // When forced, we ignore the gate's verdict but still need those values.
                 bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost);
@@ -62,13 +64,16 @@ internal static partial class QueryPlanBuilder
                 // a sorted scan IS the order, so a SortingMatch would only re-sort and force a TakeAll drain (the
                 // sort hint only applies in the bitmap pipeline). Mirrors the FieldSortedScan path.
                 bool canElideCompoundSort = orderByFields.Length == 1;
-                innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost, canElideCompoundSort);
+                var innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost, canElideCompoundSort);
                 if (innerMatch is null) goto default;
                 exec.ActualStrategy = ExecutionStrategy.CompoundSortedScan;
-                if (canElideCompoundSort)
-                    return innerMatch; // already in field2 order; DirectScan handles Take itself
-                return ApplyForcedSort(OrderBy(builderParameters, innerMatch, orderByFields), forcedSort);
+                var outer = canElideCompoundSort
+                    ? innerMatch // already in field2 order; DirectScan handles Take itself 
+                    : ApplyForcedSort(OrderBy(builderParameters, innerMatch, orderByFields), forcedSort);
+                return (outer, innerMatch);
+            }
             case ExecutionStrategy.FieldSortedScan when orderByFields != null:
+            {
                 var execs = exec.Executions;
                 bool isFullScan = execs is not { Count: > 0 };
                 string directScanReason = forced is not null ? "forced via $rvn_corax_strategy" : null;
@@ -77,34 +82,34 @@ internal static partial class QueryPlanBuilder
                 if (directScanEffective)
                 {
                     bool hasTieBreak = orderByFields.Length == 2;
-                    innerMatch = ConstructDirectScan(ref ctx, walkerCtx, exec.SortDrivingClause, isFullScan, hasTieBreak, directScanReason);
+                    var innerMatch = ConstructDirectScan(ref ctx, walkerCtx, exec.SortDrivingClause, isFullScan, hasTieBreak, directScanReason);
                     if (innerMatch is not null)
                     {
                         exec.ActualStrategy = ExecutionStrategy.FieldSortedScan;
-                        return innerMatch;
+                        return (innerMatch, innerMatch);
                     }
                 }
+
                 goto default;
+            }
             case ExecutionStrategy.BitmapPipeline:
             default: // may either be the selected strategy or a one-off (because of bad parameters preventing a faster strategy)
+            {
                 exec.ActualStrategy = ExecutionStrategy.BitmapPipeline;
-                innerMatch = InstantiateBitmapPipeline(ctx.Plan, ctx.Exec, ctx.PlanParams, ctx.BuilderParams, walkerCtx, highlightingTerms, wantTimings, token);
+                var innerMatch = InstantiateBitmapPipeline(ctx.Plan, ctx.Exec, ctx.PlanParams, ctx.BuilderParams, walkerCtx, highlightingTerms, wantTimings, token);
                 if (innerMatch is CompiledQueryMatch forcedScanMatch)
                     forcedScanMatch.ForcedEntryScanGate = TryGetForcedEntryScanGate(ctx.PlanParams.QueryParameters);
-                if (ctx.OrderByFields == null) return innerMatch;
-                // A single vector-search post-filter already streamed its results in similarity-score order
-                // (ApplyPostFilters told it to via VectorPostFilterProvidesScoreOrder). The score sort the query
-                // asks for is exactly that order, so the SortingMatch wrapper is redundant — return the match as is.
-                if (ctx.Exec.VectorPostFilterProvidesScoreOrder)
-                    return innerMatch;
+                // no ordering or already streams its results in right order — return the match as is.
+                if (ctx.OrderByFields == null || ctx.Exec.VectorPostFilterProvidesScoreOrder) 
+                    return (innerMatch, innerMatch);
                 if (innerMatch is CompiledQueryMatch seekMatch)
                     TrySetSortSeekHint(ctx.Plan, ctx.Exec, seekMatch);
-                return ApplyForcedSort(OrderBy(ctx.BuilderParams, innerMatch, ctx.OrderByFields), forcedSort);
+                return (ApplyForcedSort(OrderBy(ctx.BuilderParams, innerMatch, ctx.OrderByFields), forcedSort), innerMatch);
+            }
         }
 
-        static void SelectExecutionStrategy(ref InstCtx ctx)
+        static void SelectExecutionStrategy(ref InstantiateContext ctx)
         {
-            // ── Slow path: cache-miss, run Try* discovery chain ──
             ctx.Plan.DecisionTrail = new();
             ctx.Plan.Strategy = ExecutionStrategy.BitmapPipeline; // if nothing else overrides it
 
@@ -151,7 +156,7 @@ internal static partial class QueryPlanBuilder
             ctx.Plan.DecisionTrail.Record("BitmapPipeline", true, "bitmap pipeline with SortingMatch fallback");
         }
         
-        static bool CompoundFieldCostEffective(ref InstCtx ctx, out long entriesToScan, out long bitmapCost)
+        static bool CompoundFieldCostEffective(ref InstantiateContext ctx, out long entriesToScan, out long bitmapCost)
         {
             entriesToScan = 0;
             bitmapCost = 0;
@@ -193,7 +198,7 @@ internal static partial class QueryPlanBuilder
             return IsDirectScanCostEffective(entriesToScan, bitmapCost);
         }
         
-        static bool DirectScanCostEffective(ref InstCtx ctx, bool isFullScan, out string directScanReason)
+        static bool DirectScanCostEffective(ref InstantiateContext ctx, bool isFullScan, out string directScanReason)
         {
             if (isFullScan)
             {

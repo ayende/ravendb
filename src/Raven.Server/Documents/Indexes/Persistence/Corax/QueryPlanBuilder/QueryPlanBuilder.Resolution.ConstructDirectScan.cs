@@ -10,7 +10,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private static IQueryMatch ConstructDirectScan(ref InstCtx ctx, ResolutionContext walkerCtx,
+    private static IQueryMatch ConstructDirectScan(ref InstantiateContext ctx, ResolutionContext walkerCtx,
         ClauseExecution drivingClause, bool isFullScan, bool hasTieBreak, string reasonForInspection)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
@@ -69,7 +69,7 @@ internal static partial class QueryPlanBuilder
         }
         return ds;
         
-        static (IQueryMatch, string) ResolveDrivingProvider(ref InstCtx ctx, ResolutionContext walkerCtx, ClauseExecution drivingExec, bool forward)
+        static (IQueryMatch, string) ResolveDrivingProvider(ref InstantiateContext ctx, ResolutionContext walkerCtx, ClauseExecution drivingExec, bool forward)
         {
             var match = drivingExec.ClauseType == ClauseType.Equals
                 ? ResolveEqualsClauseWithDirection(drivingExec, ctx.Exec, forward, walkerCtx)
@@ -109,7 +109,7 @@ internal static partial class QueryPlanBuilder
             };
         }
 
-        static (IQueryMatch, string) ResolveFullScanDrivingProvider(ref InstCtx ctx, bool forward)
+        static (IQueryMatch, string) ResolveFullScanDrivingProvider(ref InstantiateContext ctx, bool forward)
         {
             var indexSearcher = ctx.PlanParams.IndexSearcher;
             var fieldMeta = ctx.OrderByFields[0].Field;
@@ -126,7 +126,7 @@ internal static partial class QueryPlanBuilder
         // For a no-residual DirectScanSimpleMatch the exact TotalResults is the driving provider's posting
         // count, readable without draining Fill. Returns -1 (fall back to the drain) unless every condition
         // that keeps "postings == documents" holds.
-        static long TryResolveDirectScanKnownTotal(ref InstCtx ctx, ResolutionContext walkerCtx, ClauseExecution drivingClause, bool isFullScan, bool forward,
+        static long TryResolveDirectScanKnownTotal(ref InstantiateContext ctx, ResolutionContext walkerCtx, ClauseExecution drivingClause, bool isFullScan, bool forward,
             out long probeTicks, out int probeTerms)
         {
             // -1 ticks marks the O(1) resolutions (NumberOfEntries below, or no resolution at all); only the

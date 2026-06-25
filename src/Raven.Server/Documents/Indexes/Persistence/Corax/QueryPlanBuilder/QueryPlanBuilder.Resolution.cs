@@ -56,8 +56,7 @@ internal static partial class QueryPlanBuilder
 
         PlanTemplate Finalize(PlanCache.PerQueryPlans b)
         {
-            // ExtractSlotBindings is only called on fresh metadata instances, that tends to be rare, since 
-            // we cache the metadata instances at the database level
+            // ExtractSlotBindings is only called on fresh metadata instances (rare, cached at db level)
             var bindings = metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams);
             planParams.SlotBindings = bindings;
             planParams.Bucket = b;
@@ -76,23 +75,16 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
-    /// This gets the query match without any sorting. This is used by callers who care about the results but not the order.
-    /// For example, facets, more-like-this, etc.
+    /// This gets the query match without any sorting. For facets, more-like-this, etc.
     /// </summary>
-    public static IQueryMatch BuildFilterMatch(
-        PlanParameters planParams,
-        QueryBuilderParameters builderParameters,
-        out QueryExecution exec,
-        Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
-        bool wantTimings,
-        CancellationToken token)
+    public static IQueryMatch BuildFilterMatch(PlanParameters planParams, QueryBuilderParameters builderParameters, Dictionary<string, 
+            CoraxHighlightingTermIndex> highlightingTerms, bool wantTimings, CancellationToken token)
     {
-        var indexSearcher = planParams.IndexSearcher;
         var walkerCtx = new ResolutionContext(builderParameters);
 
         var template = BuildTemplate(planParams);
 
-        exec = Build(template, planParams, builderParameters, walkerCtx);
+        var exec = new BuildResolver(template, planParams, builderParameters, walkerCtx).Resolve();
         return InstantiateBitmapPipeline(exec.Plan, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
     }
 
@@ -102,27 +94,16 @@ internal static partial class QueryPlanBuilder
         bool wantTimings,
         CancellationToken token)
     {
-        var indexSearcher = planParams.IndexSearcher;
         var walkerCtx = new ResolutionContext(builderParameters);
 
         var template = BuildTemplate(planParams);
 
-        var exec = Build(template, planParams, builderParameters, walkerCtx);
+        var exec = new BuildResolver(template, planParams, builderParameters, walkerCtx).Resolve();
         var orderByFields = GetSortMetadata(builderParameters, exec.Plan.Template);
-        // A single vector-search post-filter already streams its HNSW output in score order. When that matches what
-        // the query asks for, skip the redundant SortingMatch wrapper: stream score order in ApplyPostFilters, skip
-        // the wrapper in Instantiate. The order-agnostic BuildFilterMatch path never reaches here (facets / MLT keep
-        // entry-id-sorted vector output).
+        // A single vector-search post-filter already streams its output in score order, we can skip the sorting step then
         exec.VectorPostFilterProvidesScoreOrder = VectorPostFilterProvidesResultOrder(exec, builderParameters, orderByFields);
-        var queryMatch = Instantiate(exec, orderByFields,
-            planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
+        var (queryMatch,  innerMatch) = Instantiate(exec, orderByFields, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
         return new(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, exec, builderParameters, orderByFields);
-    }
-
-
-    private static QueryExecution Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
-    {
-        return new BuildResolver(template, planParams, builderParameters, walkerCtx).Resolve();
     }
 
     internal static ClauseExecution CreateExecution(ClauseInfo clause)
@@ -142,11 +123,11 @@ internal static partial class QueryPlanBuilder
         return exec;
     }
 
-    /// <summary>Marker bit OR-ed into a sentinel-bound parameter's FullKinds byte (kind occupies bits 0-1).
+    /// <summary>Marker bit OR-ed into a sentinel-bound parameter's kind (kind occupies bits 0-1).
     /// Forces a distinct plan-cache entry for parameter-bound BETWEEN sentinels — see ComputeTypeSignature.</summary>
     private const byte SentinelParamMark = 1 << 2;
 
-    /// <summary>Mark a parameter-bound BETWEEN sentinel's slot in the FullKinds carrier, lazily allocating it on first use.
+    /// <summary>Mark a parameter-bound BETWEEN sentinel's slot in the kind carrie.
     /// No-op for literal/deferred bounds (ParameterSlot == -1 — the sentinel is encoded in the query text, no marker needed).</summary>
     private static void MarkSentinel(ref byte[] full, int parameterSlotCount, ParameterBinding binding)
     {
@@ -446,7 +427,7 @@ internal static partial class QueryPlanBuilder
             HasDynamics = builderParams.HasDynamics,
             DynamicFields = builderParams.DynamicFields,
             HasBoost = builderParams.HasBoost,
-        }, builderParams, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
+        }, builderParams, highlightingTerms: null, wantTimings: false, builderParams.Token);
 
         QueryMetadata CreateQueryMetadataForMoreLikeThis()
         {
@@ -460,7 +441,7 @@ internal static partial class QueryPlanBuilder
     }
 
     
-    private static bool TryCreateCompoundExactMatch(ref InstCtx ctx, out string rejectReason)
+    private static bool TryCreateCompoundExactMatch(ref InstantiateContext ctx, out string rejectReason)
     {
         // The only thing still unknown is value-dependent — a bound parameter can resolve to "none" (null/missing), which has no composite-key encoding.
         if (ctx.Exec.CompoundExactFirst.PackedParamValue.IsNone || 
@@ -474,7 +455,7 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    private static IQueryMatch ConstructCompoundExact(ref InstCtx ctx)
+    private static IQueryMatch ConstructCompoundExact(ref InstantiateContext ctx)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         var eA = ctx.Exec.CompoundExactFirst;
@@ -504,7 +485,7 @@ internal static partial class QueryPlanBuilder
         return indexSearcher.TermQuery(compoundFieldMeta, new Slice(keyBuf));
     }
 
-    private static bool TryCreateCompoundFieldMatch(ref InstCtx ctx, out string rejectReason)
+    private static bool TryCreateCompoundFieldMatch(ref InstantiateContext ctx, out string rejectReason)
     {
         if (ctx.Exec.CompoundFieldDrivingClause is null || ctx.Exec.Plan.Template.CompoundFieldSortName is null)
         {
@@ -559,7 +540,7 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    private static Slice BuildField1Prefix(ref InstCtx ctx, string field1Name, PackedParam packed, out string field1ValueStrForIntrospection)
+    private static Slice BuildField1Prefix(ref InstantiateContext ctx, string field1Name, PackedParam packed, out string field1ValueStrForIntrospection)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         switch (packed.ValueType)
@@ -591,7 +572,7 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static bool TryCreateSimpleFieldDirectScan(ref InstCtx ctx, out string rejectReason)
+    private static bool TryCreateSimpleFieldDirectScan(ref InstantiateContext ctx, out string rejectReason)
     {
         if (ctx.OrderByFields is not { Length: not 0 })
         {
@@ -782,7 +763,7 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static IQueryMatch BuildSortedDrivingWithTieBreakMatch(InstCtx ctx, ITermsProvider provider, LowLevelTransaction llt, NullsSortMode indexDefaultNullsSortMode,
+    private static IQueryMatch BuildSortedDrivingWithTieBreakMatch(InstantiateContext ctx, ITermsProvider provider, LowLevelTransaction llt, NullsSortMode indexDefaultNullsSortMode,
         IndexSearcher indexSearcher, bool nullFirst, int take)
     {
         bool secondaryNullIsSmallest = (ctx.OrderByFields[1].NullsSortMode ?? indexDefaultNullsSortMode) == NullsSortMode.NullsSmallest;
@@ -877,7 +858,7 @@ internal static partial class QueryPlanBuilder
         public int Size;
     }
 
-    private static bool TryGetCompoundFieldEncoding(ref InstCtx ctx, string fieldName, PackedParam packed, int paramSlot, out CompoundFieldEncoding encoding)
+    private static bool TryGetCompoundFieldEncoding(ref InstantiateContext ctx, string fieldName, PackedParam packed, int paramSlot, out CompoundFieldEncoding encoding)
     {
         encoding = default;
         encoding.Packed = packed;

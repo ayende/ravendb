@@ -1600,7 +1600,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 HasBoost = builderParameters.HasBoost
             };
             return QueryPlanBuilder.QueryPlanBuilder.BuildFilterMatch(
-                planParams, builderParameters, out _, highlightingTerms: null, wantTimings: false, builderParameters.Token);
+                planParams, builderParameters, highlightingTerms: null, wantTimings: false, builderParameters.Token);
         }
     }
 }

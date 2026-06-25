@@ -11,7 +11,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private static IQueryMatch ConstructCompoundField(ref InstCtx ctx, ResolutionContext walkerCtx, ClauseExecution field2Range, long entriesToScan, long bitmapCost, bool canElideCompoundSort)
+    private static IQueryMatch ConstructCompoundField(ref InstantiateContext ctx, ResolutionContext walkerCtx, ClauseExecution field2Range, long entriesToScan, long bitmapCost, bool canElideCompoundSort)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         var drivingClause = ctx.Exec.CompoundFieldDrivingClause;
@@ -88,7 +88,7 @@ internal static partial class QueryPlanBuilder
 
         return directScan;
 
-        IQueryMatch CreateDrivingMatch(ref InstCtx context)
+        IQueryMatch CreateDrivingMatch(ref InstantiateContext context)
         {
             string fieldName = context.Exec.Plan.Template.CompoundFieldSortName;
             if (field2Range is not null &&
@@ -129,7 +129,7 @@ internal static partial class QueryPlanBuilder
         // For a no-residual elided scan over the exact composite range, the emitted set is exactly that range's
         // postings, so TotalResults can be read from posting-list headers (header-only walk) instead of draining.
         // Returns -1 (drain) unless every precondition that keeps "postings == documents" holds.
-        long TryResolveCompoundKnownTotal(ref InstCtx context)
+        long TryResolveCompoundKnownTotal(ref InstantiateContext context)
         {
             // Only the elided single-order path consults KnownExactTotal (a SortingMatch wrapper would drain anyway).
             if (canElideCompoundSort == false)
@@ -170,7 +170,7 @@ internal static partial class QueryPlanBuilder
             return -1;
         }
 
-        void SetDirectScanPropertiesForIntrospection(ref InstCtx context)
+        void SetDirectScanPropertiesForIntrospection(ref InstantiateContext context)
         {
             directScan.DrivingTreeName = compoundFieldName;
             directScan.DrivingClause = $"{field1Name} = '{field1ValueStr}'";
