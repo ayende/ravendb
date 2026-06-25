@@ -337,18 +337,12 @@ public static class QueryPrimitives
     }
 
     /// <summary>
-    /// Runtime check: should we switch from bitmap AND to per-entry scan?
-    /// Called directly from IL-emitted code.
+    /// Runtime check: should we switch from bitmap AND to per-entry scan? Called directly from IL-emitted code.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool ShouldSwitchToEntryScan(int forcedGate, int gate, long bitmapCount, long nextClauseCardinality)
-    {
-        if (forcedGate != EntryScanGateUnset)
-            return forcedGate == gate;
-
-        return bitmapCount < EntryScanCountThreshold
-            && bitmapCount * EntryScanCostMultiplier < nextClauseCardinality;
-    }
+    public static bool ShouldSwitchToEntryScan(int forcedGate, int gate, long bitmapCount, long nextClauseCardinality) =>
+        forcedGate == gate || 
+        bitmapCount < EntryScanCountThreshold && bitmapCount * EntryScanCostMultiplier < nextClauseCardinality;
 
     /// <summary>Fill bitmap from an IQueryMatch by calling Fill repeatedly.
     /// Fast paths (consume-after-use semantics — sources are not read again):

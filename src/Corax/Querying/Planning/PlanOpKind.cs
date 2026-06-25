@@ -46,17 +46,17 @@ public enum PlanOpKind : byte
 
     /// <summary>Union a contiguous run of posting-list leaves (an expanded IN) into bitmap[BitmapLocal].
     /// ParamIndex2 = index into ctx.InRangeCounts for the runtime count.</summary>
-    OrRangeFromPostingSource,
+    InRangeFromPostingSource,
 
     /// <summary>Union a contiguous run of IQueryMatch leaves (a boosted IN) into bitmap[BitmapLocal].</summary>
-    OrRangeFromMatch,
+    InRangeFromMatch,
 
     /// <summary>Intersect a contiguous run of posting-list leaves (an AllIn) with bitmap,
     /// stopping early on an empty result unless <see cref="PlanOp.SkipEarlyExit"/> is set.</summary>
-    AndRangeFromPostingSource,
+    AllInRangeFromPostingSource,
 
     /// <summary>Intersect a contiguous run of IQueryMatch leaves (a boosted AllIn) with bitmap.</summary>
-    AndRangeFromMatch,
+    AllInRangeFromMatch,
 
     ClearBitmap,
 

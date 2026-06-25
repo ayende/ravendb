@@ -26,10 +26,6 @@ public sealed class CompiledPlan
     public PlanTemplate Template { get; init; }
 
     public QueryIlEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
-
-    // for `include timings()`
-    public QueryIlEmitter.CompiledExecuteDelegate CompiledTimedDelegate { get; init; }
-    
     
     /// <summary>C# source string mirroring emitted IL.</summary>
     public string Source { get; init; }

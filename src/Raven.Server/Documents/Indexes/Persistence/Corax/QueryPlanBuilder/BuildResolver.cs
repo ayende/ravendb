@@ -54,8 +54,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
         var plan = new CompiledPlan
         {
-            CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText, emitTimings: false),
-            CompiledTimedDelegate = QueryIlEmitter.EmitDelegate(ops, out _, emitTimings: true),
+            CompiledDelegate = QueryIlEmitter.EmitDelegate(ops, out var csharpText),
             Template = template,
             Source = ComposePlanSource(csharpText, scanCsharp, directScanCsharp, compoundCsharp),
             CacheKeyHash = cacheKeyHash,

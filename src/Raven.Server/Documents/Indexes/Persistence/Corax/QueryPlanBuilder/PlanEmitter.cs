@@ -388,8 +388,8 @@ internal sealed class PlanEmitter
         PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan => PlanOpKind.AndFromMatch,
         PlanOpKind.OrFromPostingSource or PlanOpKind.OrFromTreeScan => PlanOpKind.OrFromMatch,
         PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan => PlanOpKind.AndNotFromMatch,
-        PlanOpKind.OrRangeFromPostingSource => PlanOpKind.OrRangeFromMatch,
-        PlanOpKind.AndRangeFromPostingSource => PlanOpKind.AndRangeFromMatch,
+        PlanOpKind.InRangeFromPostingSource => PlanOpKind.InRangeFromMatch,
+        PlanOpKind.AllInRangeFromPostingSource => PlanOpKind.AllInRangeFromMatch,
         _ => kind
     };
 
@@ -399,10 +399,10 @@ internal sealed class PlanEmitter
         if (merge is MergeKind.Fill or MergeKind.OrInto)
         {
             var firstKind = merge == MergeKind.Fill ? PlanOpKind.FillFromPostingSource : PlanOpKind.OrFromPostingSource;
-            EmitCommonInOps(exec.InTermCount, destSlot, firstKind, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false, Label(exec));
+            EmitCommonInOps(exec.InTermCount, destSlot, firstKind, PlanOpKind.InRangeFromPostingSource, suppressEarlyExit: false, Label(exec));
             return;
         }
-        EmitCommonInOps(exec.InTermCount, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false, Label(exec));
+        EmitCommonInOps(exec.InTermCount, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.InRangeFromPostingSource, suppressEarlyExit: false, Label(exec));
         _ops.Add(new PlanOp
         {
             Kind = merge == MergeKind.AndInto ? PlanOpKind.AndBitmaps : PlanOpKind.AndNotBitmaps,
@@ -416,13 +416,13 @@ internal sealed class PlanEmitter
     {
         if (merge == MergeKind.Fill)
         {
-            EmitCommonInOps(exec.InTermCount, destSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit, Label(exec));
+            EmitCommonInOps(exec.InTermCount, destSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AllInRangeFromPostingSource, suppressEarlyExit, Label(exec));
             return;
         }
 
         using var _ = AllocateScratchSlot(out int saveSlot);
 
-        EmitCommonInOps(exec.InTermCount, saveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true, Label(exec));
+        EmitCommonInOps(exec.InTermCount, saveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AllInRangeFromPostingSource, suppressEarlyExit: true, Label(exec));
 
         switch (merge)
         {
@@ -466,13 +466,13 @@ internal sealed class PlanEmitter
         switch (exec.ClauseType)
         {
             case ClauseType.In:
-                EmitCommonInOps(exec.InTermCount, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.OrRangeFromPostingSource, suppressEarlyExit: false, Label(exec));
+                EmitCommonInOps(exec.InTermCount, EphemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.InRangeFromPostingSource, suppressEarlyExit: false, Label(exec));
                 _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = EphemeralBitmap });
                 return;
             case ClauseType.AllIn:
             {
                 using var _ = AllocateScratchSlot(out int positiveSlot);
-                EmitCommonInOps(exec.InTermCount, positiveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AndRangeFromPostingSource, suppressEarlyExit: true, Label(exec));
+                EmitCommonInOps(exec.InTermCount, positiveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AllInRangeFromPostingSource, suppressEarlyExit: true, Label(exec));
                 _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = positiveSlot });
                 return;
             }

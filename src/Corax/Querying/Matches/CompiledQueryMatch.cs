@@ -27,9 +27,6 @@ public class CompiledQueryMatch(
     CancellationToken token)
     : IBitmapQueryMatch, IDisposable
 {
-    private readonly QueryIlEmitter.CompiledExecuteDelegate _compiledDelegate =
-        wantTimings ? compiledPlan.CompiledTimedDelegate : compiledPlan.CompiledDelegate;
-
     public readonly ResidualScanIlEmitter.ResidualScanPredicate CompiledEntryPredicate = compiledPlan.EntryScanSet.Compiled;
 
     public readonly CompiledPlan CompiledPlan = compiledPlan;
@@ -64,7 +61,11 @@ public class CompiledQueryMatch(
 
     public int Limit = int.MaxValue;
 
-    /// <summary>Per-op truncation budget for fill/OR/AND primitives, "unlimited" by default, allows to abort queries midway when we have enough results.</summary>
+    /// <summary>
+    /// Per-op truncation budget for fill/OR/AND primitives, "unlimited" by default, allows to abort queries midway when we have enough results.
+    /// </summary>
+    
+    // ReSharper disable once FieldCanBeMadeReadOnly.Global - This is being set by generated IL, see: DualEmit.EmitArmOpLimit
     public long OpLimit = long.MaxValue;
 
     public int ForcedEntryScanGate = Primitives.QueryPrimitives.EntryScanGateUnset;
@@ -222,7 +223,7 @@ public class CompiledQueryMatch(
 
         try
         {
-            _compiledDelegate(this);
+            CompiledPlan.CompiledDelegate(this);
 
             // EntryScan uses bitmap 1, otherwise, uses bitmap 0
             int resultSlot = EntryScanTakenAtOp >= 0 ? 1 : 0;

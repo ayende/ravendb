@@ -530,14 +530,14 @@ internal static partial class QueryPlanBuilder
                     PlanOpKind.LazyOrBitmaps => "OR-Bitmaps",
                     PlanOpKind.ClearBitmap => "Clear",
                     PlanOpKind.MaybeEntryScan => "EntryScanCheck",
-                    PlanOpKind.OrRangeFromPostingSource or PlanOpKind.OrRangeFromMatch => "OR-Range",
-                    PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch => "AND-Range",
+                    PlanOpKind.InRangeFromPostingSource or PlanOpKind.InRangeFromMatch => "OR-Range",
+                    PlanOpKind.AllInRangeFromPostingSource or PlanOpKind.AllInRangeFromMatch => "AND-Range",
                     _ => op.Kind.ToString()
                 },
                 Dispatch = op.Kind switch
                 {
                     PlanOpKind.FillFromPostingSource or PlanOpKind.AndFromPostingSource or PlanOpKind.OrFromPostingSource
-                        or PlanOpKind.AndNotFromPostingSource or PlanOpKind.OrRangeFromPostingSource or PlanOpKind.AndRangeFromPostingSource => "Term",
+                        or PlanOpKind.AndNotFromPostingSource or PlanOpKind.InRangeFromPostingSource or PlanOpKind.AllInRangeFromPostingSource => "Term",
                     PlanOpKind.FillFromTreeScan or PlanOpKind.AndFromTreeScan or PlanOpKind.OrFromTreeScan
                         or PlanOpKind.AndNotFromTreeScan => "MultiTerm",
                     // MaybeEntryScan is a control-flow branch, not a match dispatch — leave Dispatch unset 
@@ -555,8 +555,8 @@ internal static partial class QueryPlanBuilder
                 IsEntryScanGate = op.Kind == PlanOpKind.MaybeEntryScan,
                 RangeCountIndex = op.Kind switch
                 {
-                    PlanOpKind.OrRangeFromPostingSource or PlanOpKind.OrRangeFromMatch
-                        or PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch => op.ParamIndex2,
+                    PlanOpKind.InRangeFromPostingSource or PlanOpKind.InRangeFromMatch
+                        or PlanOpKind.AllInRangeFromPostingSource or PlanOpKind.AllInRangeFromMatch => op.ParamIndex2,
                     _ => -1
                 }
             };
@@ -585,8 +585,8 @@ internal static partial class QueryPlanBuilder
                 or PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan or PlanOpKind.AndFromMatch
                 or PlanOpKind.OrFromPostingSource or PlanOpKind.OrFromTreeScan or PlanOpKind.OrFromMatch
                 or PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch
-                or PlanOpKind.OrRangeFromPostingSource or PlanOpKind.OrRangeFromMatch
-                or PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch => true,
+                or PlanOpKind.InRangeFromPostingSource or PlanOpKind.InRangeFromMatch
+                or PlanOpKind.AllInRangeFromPostingSource or PlanOpKind.AllInRangeFromMatch => true,
             _ => false
         };
 

@@ -20,10 +20,8 @@ public static class IlEmitterShared
 
     public static readonly MethodInfo GetTimestamp =
         typeof(Stopwatch).GetMethod(nameof(Stopwatch.GetTimestamp))!;
-    public static readonly MethodInfo RecordTiming =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordTiming))!;
-    public static readonly MethodInfo RecordResultCount =
-        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordResultCount))!;
+    public static readonly MethodInfo RecordMetrics =
+        typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RecordMetrics))!;
     public static readonly MethodInfo RunEntryScanMethod =
         typeof(CompiledQueryHelper).GetMethod(nameof(CompiledQueryHelper.RunEntryScan))!;
 

@@ -14,7 +14,7 @@ public static class QueryIlEmitter
     // Span<long>
     private static readonly ConstructorInfo SpanCtor = typeof(Span<long>).GetConstructor([typeof(void*), typeof(int)])!;
 
-    public static CompiledExecuteDelegate EmitDelegate(PlanOp[] ops, out string csharpSource, bool emitTimings = true)
+    public static CompiledExecuteDelegate EmitDelegate(PlanOp[] ops, out string csharpSource)
     {
         if (ops == null || ops.Length == 0)
         {
@@ -68,17 +68,7 @@ public static class QueryIlEmitter
         // OpLimit starts unlimited; arm it (= ctx.Limit) on the first slot-0 op after which we only add, never subtracts
         bool opLimitArmed = false;
 
-        // Last op that narrows slot 0. "Nothing narrows after op i" is then a cheap i >= lastNarrowingIndex
-        // test. Scan from the end and stop at the first hit. -1 (no narrowing op) makes the test always true.
-        int lastNarrowingIndex = -1;
-        for (int i = ops.Length - 1; i >= 0; i--)
-        {
-            if (OpNarrowsSlot0(ref ops[i]))
-            {
-                lastNarrowingIndex = i;
-                break;
-            }
-        }
+        int lastNarrowingIndex = ComputeLastNarrowingIndex(ops);
 
         for (int i = 0; i < ops.Length; i++)
         {
@@ -107,8 +97,7 @@ public static class QueryIlEmitter
             }
 
             // Timing: record start tick before each op
-            if (emitTimings)
-                EmitTimingStart(ref d, startTickLocal, i);
+            EmitTimingStart(ref d, startTickLocal, i);
 
             switch (op.Kind)
             {
@@ -206,36 +195,34 @@ public static class QueryIlEmitter
                     break;
 
                 case PlanOpKind.MaybeEntryScan:
-                {
                     hasEntryScan = true;
                     EmitEntryScanCheck(ref d, cursorVar, entryScanLabel);
                     break;
-                }
 
-                case PlanOpKind.OrRangeFromPostingSource:
-                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
+                case PlanOpKind.InRangeFromPostingSource:
+                    EmitInRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
                         IlEmitterShared.CtxOrFillFromPostingSource, i,
                         earlyExit: false, skipEarlyExit: false, doneLabel);
                     if (emitGotoLimitReached)
                         d.EmitLimitReachedGoto(doneLabel);
                     break;
 
-                case PlanOpKind.OrRangeFromMatch:
-                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
+                case PlanOpKind.InRangeFromMatch:
+                    EmitInRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
                         IlEmitterShared.CtxOrWithMatchSlot, i,
                         earlyExit: false, skipEarlyExit: false, doneLabel);
                     if (emitGotoLimitReached)
                         d.EmitLimitReachedGoto(doneLabel);
                     break;
 
-                case PlanOpKind.AndRangeFromPostingSource:
-                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
+                case PlanOpKind.AllInRangeFromPostingSource:
+                    EmitInRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
                         IlEmitterShared.CtxAndFromPostingSource, i,
                         earlyExit: true, skipEarlyExit: op.SkipEarlyExit, doneLabel);
                     break;
 
-                case PlanOpKind.AndRangeFromMatch:
-                    EmitRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
+                case PlanOpKind.AllInRangeFromMatch:
+                    EmitInRangeLoop(ref d, cursorVar, op.ParamIndex2, op.BitmapLocal,
                         IlEmitterShared.CtxAndFromMatch, i,
                         earlyExit: true, skipEarlyExit: op.SkipEarlyExit, doneLabel);
                     break;
@@ -249,8 +236,7 @@ public static class QueryIlEmitter
             }
 
             // Timing: record elapsed time and result count after each op
-            if (emitTimings)
-                EmitTimingEnd(ref d, i, op.BitmapLocal, startTickLocal);
+            EmitTimingEnd(ref d, i, op.BitmapLocal, startTickLocal);
         }
 
         // Done label
@@ -275,17 +261,47 @@ public static class QueryIlEmitter
         return (CompiledExecuteDelegate)dm.CreateDelegate(typeof(CompiledExecuteDelegate));
     }
 
+    private static int ComputeLastNarrowingIndex(PlanOp[] ops)
+    {
+        ReadOnlySpan<PlanOpKind> narrowingOps =
+        [
+            PlanOpKind.AndFromPostingSource,
+            PlanOpKind.AndFromTreeScan,
+            PlanOpKind.AndFromMatch,
+            PlanOpKind.AndNotFromPostingSource,
+            PlanOpKind.AndNotFromTreeScan,
+            PlanOpKind.AndNotFromMatch,
+            PlanOpKind.AndBitmaps,
+            PlanOpKind.AndNotBitmaps,
+            PlanOpKind.AllInRangeFromPostingSource,
+            PlanOpKind.AllInRangeFromMatch
+        ];
+        
+        for (int i = ops.Length - 1; i >= 0; i--)
+        {
+            ref var op = ref ops[i];
+            if (op.Kind is PlanOpKind.MaybeEntryScan)
+                return i; // always count this as narrows, since it can _remove_ matches
+            
+            if (op.BitmapLocal is not 0 || // we don't care about the non primary bitmaps 
+                narrowingOps.Contains(op.Kind)) // all those ops can _remove_ matches
+                continue;
+            
+            return i;
+        }
+
+        return -1;
+    }
+
     private static int GetLastEffectiveIndex(PlanOp[] ops)
     {
-        // We want to avoid emitting "goto Done; Done:", so we check where the _real_ op is
-        int lastEffectiveIndex = ops.Length;
-        while (lastEffectiveIndex > 0 &&
-               ops[lastEffectiveIndex - 1].Kind is PlanOpKind.GotoDone or PlanOpKind.GotoDoneIfEmpty)
+        // We want to avoid emitting "goto Done; Done:", so we find the last _real_ op, skipping any trailing GotoDone / GotoDoneIfEmpty.
+        for (int i = ops.Length - 1; i >= 0; i--)
         {
-            lastEffectiveIndex--;
+            if (ops[i].Kind is not (PlanOpKind.GotoDone or PlanOpKind.GotoDoneIfEmpty))
+                return i;
         }
-        lastEffectiveIndex--; // step onto the last real op itself
-        return lastEffectiveIndex;
+        return -1;
     }
 
     /// <summary>stackalloc long[FillBufferSize] → bufferLocal</summary>
@@ -310,28 +326,20 @@ public static class QueryIlEmitter
         d.CsLine($"long startTick_{opIndex} = Stopwatch.GetTimestamp();");
     }
 
-    /// <summary>RecordTiming + RecordResultCount. <paramref name="slot"/> is the op's destination
-    /// bitmap (<c>op.BitmapLocal</c>) so the recorded count reflects what THIS op actually produced,
-    /// not the running slot-0 accumulator — an op writing to slot 2 (e.g. a FillAllEntries seed for a
-    /// later AndNot/OR) now reports its own result rather than the unrelated slot-0 total.</summary>
+    // record the timing & result count per operation, only actually does something when `include timings()` is set
     private static void EmitTimingEnd(ref DualEmit d, int opIndex, int slot, LocalBuilder startTickLocal)
     {
         d.Il.Emit(OpCodes.Ldarg_0);
         IlEmitterShared.EmitLdcI4(d.Il, opIndex);
         d.Il.Emit(OpCodes.Ldloc, startTickLocal);
-        d.Il.Emit(OpCodes.Call, IlEmitterShared.RecordTiming);
-
-        d.Il.Emit(OpCodes.Ldarg_0);
-        IlEmitterShared.EmitLdcI4(d.Il, opIndex);
         IlEmitterShared.EmitLdcI4(d.Il, slot);
-        d.Il.Emit(OpCodes.Call, IlEmitterShared.RecordResultCount);
+        d.Il.Emit(OpCodes.Call, IlEmitterShared.RecordMetrics);
 
-        d.CsLine($"CompiledQueryHelper.RecordTiming(ctx, {opIndex}, startTick_{opIndex});");
-        d.CsLine($"CompiledQueryHelper.RecordResultCount(ctx, {opIndex}, {slot});");
+        d.CsLine($"CompiledQueryHelper.RecordMetrics(ctx, {opIndex}, startTick_{opIndex}, {slot});");
         d.CsLine("");
     }
 
-    /// <summary>if (ShouldSwitchToEntryScan(ctx.ForcedEntryScanGate, cursor, bitmaps[0].Count, ctx.Cardinalities[cursor])) goto EntryScan.
+    /// <summary>if (ShouldSwitchToEntryScan(ctx.ForcedEntryScanGate, cursor, bitmaps[0].ComputeCount(), ctx.Cardinalities[cursor])) goto EntryScan.
     /// The cursor doubles as this gate's index, so the $rvn_corax_entry_scan override can target it.</summary>
     private static void EmitEntryScanCheck(ref DualEmit d, LocalBuilder cursorVar, LabelPair entryScanLabel)
     {
@@ -357,10 +365,8 @@ public static class QueryIlEmitter
         d.CsLine($"    goto {entryScanLabel.Name};");
     }
 
-    /// <summary>Emit the OR/AND range loop over IN-expanded term slots. The IL is a canonical
-    /// check-first loop (init; goto check; body; check: cond → body); the C# mirror is rendered
-    /// as an equivalent <c>for</c> loop.</summary>
-    private static void EmitRangeLoop(ref DualEmit d, LocalBuilder cursorVar, int rangeIdx, int bitmapLocal,
+    /// <summary>Emit the OR/AND range loop over IN-expanded term slots.</summary>
+    private static void EmitInRangeLoop(ref DualEmit d, LocalBuilder cursorVar, int rangeIdx, int bitmapLocal,
         MethodInfo method, int opIndex,
         bool earlyExit, bool skipEarlyExit, LabelPair doneLabel)
     {
@@ -469,28 +475,6 @@ public static class QueryIlEmitter
             maxSlot = Math.Max(curSlot, maxSlot);
         }
         return maxSlot + 1;
-    }
-    
-    /// <summary>
-    /// Whether this op can shrink slot 0's result. A fill feeding a downstream narrowing op must materialize its
-    /// full set, since the narrowing can drop enough entries to leave fewer than the limit. Output always lands
-    /// in slot 0, so only slot-0 ops matter — except the entry-scan gate, which consumes slot 0 as a
-    /// residual-filter candidate set (it only ever removes entries, never adds) regardless of its destination slot.
-    /// "Nothing narrows after op i" is monotonic, so the caller precomputes the last narrowing index once and
-    /// tests <c>i &gt;= lastNarrowingIndex</c>, instead of an O(N) suffix scan per op (which made the loop O(N^2)).
-    /// </summary>
-    private static bool OpNarrowsSlot0(ref PlanOp op)
-    {
-        if (op.Kind is PlanOpKind.MaybeEntryScan)
-            return true;
-
-        if (op.BitmapLocal != 0)
-            return false;
-
-        return op.Kind is PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan or PlanOpKind.AndFromMatch
-            or PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch
-            or PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps
-            or PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch;
     }
 
     private static void EmptyExecute(CompiledQueryMatch ctx) { }

@@ -15,10 +15,13 @@ namespace Corax.Querying.Planning;
 public static class CompiledQueryHelper
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void RecordTiming(CompiledQueryMatch ctx, int opIndex, long startTick) => ctx.Timings[opIndex] = Stopwatch.GetTimestamp() - startTick;
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static void RecordResultCount(CompiledQueryMatch ctx, int opIndex, int slot) => ctx.ResultCounts[opIndex] = ctx.Bitmaps[slot].ComputeCount();
+    public static void RecordMetrics(CompiledQueryMatch ctx, int opIndex, long startTick, int slot)
+    {
+        if(ctx.Timings is null) return;
+        
+        ctx.Timings[opIndex] = Stopwatch.GetTimestamp() - startTick;
+        ctx.ResultCounts[opIndex] = ctx.Bitmaps[slot].ComputeCount();
+    }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static bool CheckFieldTermStartsWith(ref EntryTermsReader reader, long fieldRootPage, ReadOnlySpan<byte> prefix)
