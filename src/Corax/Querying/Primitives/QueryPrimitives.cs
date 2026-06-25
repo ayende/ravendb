@@ -32,12 +32,11 @@ public static class QueryPrimitives
     // so it is free for scratch usage
     public const int AndScratchBitmapSlot = 1;
 
-    // Synthetic posting-list ids. Both have low two bits == TermIdMask.NotARealValue (0b11) - the bucket the
-    // indexer never emits for a real term - so they can't collide with a real id, and they fall through the
-    // real-type switch into its synthetic branch. They are told apart there by exact value because Empty and
-    // All have opposite AND semantics (Empty intersects to nothing, All is a universal pass-through).
-    private const long EmptyPostingsId = -1;   // the term does not exist in the index
-    private const long AllPostingsId = 0b11;   // universal source (AllIn's null-term slot when HasNullTerm=false)
+    /// <summary>
+    /// Synthetic posting-list ids. Both have low two bits == <see cref="TermIdMask.Reserved"/> (0b11).
+    /// </summary>
+    private const long EmptyPostingsId = long.MinValue;   // the term does not exist in the index
+    private const long AllPostingsId = long.MaxValue;     // universal source (AllIn's null-term slot when HasNullTerm=false)
     
     // Fill first clears the bitmap (unlike OR) 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -464,15 +463,15 @@ public static class QueryPrimitives
                 return;
 
             case TermIdMask.PostingList:
-            {
                 var iterator = searcher.GetPostingList(postingListId).Iterate();
                 FillFromPostings(ref iterator, ref bitmap, token, limit);
                 return;
-            }
 
-            default: // NotARealValue (0b11): only Empty reaches a fill (All is AND-only) → no-op.
-                Debug.Assert(postingListId != AllPostingsId, "All posting source is not expected on a fill path.");
-                return;
+            case  TermIdMask.Reserved when postingListId == EmptyPostingsId:
+                return; // nothing to do
+                
+            default:
+                throw new ArgumentOutOfRangeException(nameof(postingListId), "All posting source is not expected on a fill path.");
         }
     }
 
@@ -505,24 +504,19 @@ public static class QueryPrimitives
             }
 
             case TermIdMask.SmallPostingList:
-                // limit bounds the AND *result*, not the operand. Truncating the materialized term to
-                // `limit` entries would drop its low-id postings that intersect `bitmap`, leaving fewer
-                // than `limit` survivors (or none). The operand is a small posting list, so materializing
-                // it in full is cheap and the intersection is bounded by min(|bitmap|, |operand|) anyway.
+                // not limiting the small posting list, since we want to limit the AND result, not the source data 
                 MaterializeTermSourceIntoBitmap(postingListId, llt, ref tempBitmap, token);
                 bitmap.AndWith(ref tempBitmap);
                 return;
 
             case TermIdMask.PostingList:
-            {
                 var iterator = searcher.GetPostingList(postingListId).Iterate();
                 AndWithPostingsLimited(ref iterator, ref bitmap, ref tempBitmap, token, limit);
                 return;
-            }
 
-            default: // NotARealValue (0b11): All → no-op; Empty → intersection with nothing.
-                if (postingListId == AllPostingsId)
-                    return;
+            case TermIdMask.Reserved when postingListId == AllPostingsId:
+                return;
+            case TermIdMask.Reserved when postingListId == EmptyPostingsId:
                 bitmap.Clear();
                 return;
         }
@@ -551,15 +545,15 @@ public static class QueryPrimitives
                 return;
 
             case TermIdMask.PostingList:
-            {
                 var iterator = searcher.GetPostingList(postingListId).Iterate();
                 AndNotWithPostings(ref iterator, ref bitmap, ref tempBitmap, token);
                 return;
-            }
-
-            default: // NotARealValue (0b11): only Empty reaches an ANDNOT (All is never subtracted) → no-op.
-                Debug.Assert(postingListId != AllPostingsId, "All posting source is not expected on an ANDNOT path.");
-                return;
+            
+            case  TermIdMask.Reserved when postingListId == EmptyPostingsId:
+                return; // nothing to do
+                
+            default:
+                throw new ArgumentOutOfRangeException(nameof(postingListId), "All posting source is not expected on an ANDNOT path.");
         }
     }
 
@@ -583,8 +577,7 @@ public static class QueryPrimitives
                 AddSmallPostingListToBitmap(llt, (long)EntryIdEncodings.GetContainerId(postingListId), ref tempBitmap, token, limit);
                 return;
             default:
-                Debug.Fail($"MaterializeTermSourceIntoBitmap called with unexpected id: {postingListId}");
-                return;
+                throw new ArgumentOutOfRangeException($"MaterializeTermSourceIntoBitmap called with unexpected id: {postingListId}");
         }
     }
 
