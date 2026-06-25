@@ -35,7 +35,7 @@ public static class QueryPrimitives
     /// <summary>
     /// Synthetic posting-list ids. Both have low two bits == <see cref="TermIdMask.Reserved"/> (0b11).
     /// </summary>
-    private const long EmptyPostingsId = long.MinValue;   // the term does not exist in the index
+    private const long EmptyPostingsId = -1;              // the term does not exist in the index (matches GetTermPostingListId's "not found" return)
     private const long AllPostingsId = long.MaxValue;     // universal source (AllIn's null-term slot when HasNullTerm=false)
     
     // Fill first clears the bitmap (unlike OR) 
