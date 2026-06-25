@@ -51,14 +51,7 @@ internal static class PlanWalker
         }
     }
 
-    /// <summary>Mark every negated clause whose immediate enclosing context is OR with
-    /// <see cref="ClauseInfo.IsOrChainNotEquals"/> = true, telling the IL emitter
-    /// (EmitNegatedLeafInto) to materialize the complement (FillAllEntries + AndNot(positive))
-    /// instead of emitting the positive form. The enclosing context is OR for a top-level clause
-    /// iff the root expression is OR (<see cref="ResolutionContext.IsOr"/>), and for a nested
-    /// clause iff its parent is an <see cref="ClauseType.OrGroup"/>. The distinction matters: a
-    /// negated leaf inside a nested OrGroup must be flagged even under an AND root, and a negated
-    /// leaf inside a nested AndGroup must NOT be flagged even under an OR root.</summary>
+    /// <summary>Sets the IsOrChainNotEquals to true, telling the IL emitter to materialize the complement (FillAllEntries + AndNot(positive)).</summary>
     private static void NotCanonicalize(List<ClauseInfo> clauses, ResolutionContext ctx)
     {
         foreach (var c in clauses)
@@ -100,9 +93,7 @@ internal static class PlanWalker
             if (clause.ClauseType == ClauseType.Search)
             {
                 // search() on document-id field must NOT be wrapped — id() is the document key that is not analyzed.
-                if (string.Equals(clause.FieldName,
-                        Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName,
-                        StringComparison.Ordinal) == false)
+                if (string.Equals(clause.FieldName, Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName, StringComparison.OrdinalIgnoreCase) == false)
                 {
                     clause.ResolvedFieldName = AutoIndexField.GetSearchAutoIndexFieldName(clause.FieldName);
                 }
@@ -127,13 +118,6 @@ internal static class PlanWalker
         }
     }
 
-    /// <summary>
-    /// AND-query post-pass that pulls spatial and vector clauses out of the main
-    /// filter list into per-template aux arrays. Spatial and vector clauses are
-    /// dispatched on their own paths at execution time (separate IL emission and
-    /// per-execution materialization), so they must not be intermixed with the
-    /// regular filter chain.
-    /// </summary>
     private static void GroupCollapse(List<ClauseInfo> clauses, ResolutionContext ctx)
     {
         if (ctx.IsOr)

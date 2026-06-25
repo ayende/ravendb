@@ -162,7 +162,7 @@ internal sealed class PlanEmitter
     }
 
 
-    private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions, bool allScanEligible)
+    private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions, bool scanEligible)
     {
         var e0 = executions[0];
         if (e0.IsNegated)
@@ -170,18 +170,11 @@ internal sealed class PlanEmitter
 
         EmitClauseInto(e0, e0.IsNegated ? MergeKind.AndNotInto : MergeKind.Fill, suppressEarlyExit: false, destSlot: 0);
 
-        // Entry-scan eligibility is decided once by BuildScanPredicates (no null in the 1..N scan range — the seed
-        // at clause 0 always runs via the bitmap pipeline). When ineligible it also cleared the scan delegate.
         for (int i = 1; i < executions.Count; i++)
         {
             var cur = executions[i];
 
-            // Only switch to entry scan before a clause that actually consumes a leaf. A sentinel
-            // (MatchAll/MatchNothing) consumes no leaf and never advances the runtime cursor, so the cursor
-            // has already moved past it onto the following real leaves; emitting a MaybeEntryScan here would
-            // read Cardinalities[cursor] out of bounds (the cursor points past the leaf-indexed arrays).
-            // The sentinel's bitmap algebra is still baked by EmitClauseInto below.
-            if (allScanEligible && cur.IsSentinel == false) // if we can, check if we can move to entry scan after the first check
+            if (scanEligible && cur.IsSentinel == false) // if we can, check if we can move to entry scan after the first check
             {
                 _ops.Add(new PlanOp
                 {
@@ -192,10 +185,6 @@ internal sealed class PlanEmitter
 
             MergeKind merge = cur.IsNegated ? MergeKind.AndNotInto : MergeKind.AndInto;
 
-            // Suppress the leaf's built-in empty-check: a plain AndFrom* leaf would otherwise emit its own
-            // "if (bitmap[0].IsEmpty) goto Done" AND we'd add the explicit GotoDoneIfEmpty below — two
-            // identical checks back-to-back. Merge leaves (In/AllIn/group → AndBitmaps) don't self-guard,
-            // so the explicit op is the single uniform empty-check for every clause shape.
             EmitClauseInto(cur, merge, suppressEarlyExit: true, destSlot: 0);
             if (cur.IsNegated is false) // when we have 0 results, early exit
             {

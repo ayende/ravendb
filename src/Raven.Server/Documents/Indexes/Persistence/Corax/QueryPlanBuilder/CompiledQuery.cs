@@ -14,17 +14,13 @@ internal readonly record struct CompiledQuery(
     OrderMetadata[] OrderByFields) : IDisposable
 {
     /// <summary>
-    /// True when no SortingMatch wrapper will surface similarity scores into the scores buffer: a single vector
-    /// post-filter streams its HNSW output in score order, so the wrapper was skipped. The read loop must then
-    /// call <see cref="IQueryMatch.Score"/> per Fill batch to repopulate IndexScore for the entries it returns.
+    /// Vector  post-filter streams its HNSW output in score order, we skipped adding SortingMatch (which does scoring)
+    /// so we need to explicitly Score() after the Fill() call
     /// </summary>
     public bool ScoresProducedDuringFill => Execution is { VectorPostFilterProvidesScoreOrder: true };
 
     public void Dispose()
     {
-        // SortingWrapper is always either null or the SAME instance as QueryMatch (see BuildSortedQuery), and
-        // ExecutedMatch is the inner match that QueryMatch wraps and disposes in turn — so disposing QueryMatch
-        // releases everything.
         (QueryMatch as IDisposable)?.Dispose();
     }
 }

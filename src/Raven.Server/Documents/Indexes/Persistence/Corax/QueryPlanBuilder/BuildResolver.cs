@@ -36,9 +36,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     {
         var (scanSet, perClause, scanEligible) = BuildScanPredicates();
         var (ops, requiredBitmaps) = PlanEmitter.Emit(template, _exec.Executions, planParams, scanEligible);
-        // The entry-scan delegate is emitted only when the scan path is viable (BuildScanPredicates cleared the
-        // predicates otherwise). MaybeEntryScan is gated on the same verdict, so a non-viable plan never needs it.
-        string scanCsharp = null;
+        string directScanCsharp = null, compoundCsharp = null, scanCsharp = null;
         if (scanSet.HasPredicates)
             scanSet.Compiled = ResidualScanIlEmitter.EmitDelegate(scanSet.Predicates, out scanCsharp);
         // DirectScan / CompoundField walk the driving clause via the tree and filter every OTHER clause per-entry. Their residual set excludes the DRIVING clause,
@@ -50,7 +48,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             ? BuildResidualSet(_exec.Executions, perClause, _exec.SortDrivingClause, skip2: null)
             : null;
 
-        string directScanCsharp = null, compoundCsharp = null;
         if (directScanResidualSet is { HasPredicates: true } directSet)
             directSet.Compiled = ResidualScanIlEmitter.EmitDelegate(directSet.Predicates, out directScanCsharp);
         if (compoundFieldResidualSet is { HasPredicates: true } compoundSet)
@@ -200,8 +197,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         if (template.WhenCount is 0)
             return;
 
-        // The root clause's enclosing operator is the query root (template.IsOr); a nested clause's is its
-        // parent group's type, tracked as we descend.
         ApplyFateRecursive(exec, clause, template.IsOr);
     }
 
@@ -221,9 +216,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             return;
         }
 
-        // when() can sit on a clause nested inside a group, so walk the SubExecutions tree. Children's enclosing
-        // operator is THIS group's type, not the query root (a when(false) inside an AndGroup under an OR root
-        // must collapse to MatchAll, not MatchNothing).
         if (exec.SubExecutions is not { } subExecs || clause.SubClauses is not { } subClauses)
             return;
 
@@ -237,8 +229,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         e.InTermCount == 0 &&
         e.HasNullTerm is false;
 
-    // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
-    // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly.
     private (ResidualScanSet ScanSet, ScanPredicateInfo?[] PerClause, bool ScanEligible) BuildScanPredicates()
     {
         var perClause = new ScanPredicateInfo?[_exec.Executions.Count];
@@ -263,8 +253,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                 pred = null;
             perClause[i] = pred;
 
-            // AlwaysTrue (MatchAll sentinel) stays in perClause so it counts as scan-eligible, but it
-            // carries no predicate to evaluate, so it is never added to the residual list.
+            // AlwaysTrue (MatchAll sentinel) stays in perClause so it counts as scan-eligible, but has no predicate to evaluate.
             if (isScanCandidate is false || pred is not { } p || p.CompareOp == ScanCompareOp.AlwaysTrue)
                 continue;
 
@@ -272,57 +261,34 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             clauseIndices.Add(i);
         }
 
-        // The entry scan over clause 0's seed bitmap (1..N evaluated per-entry) is viable only when EVERY clause in
-        // the scan range can be expressed as a predicate. A null there means an unsupported clause or a top-level
-        // AlwaysFalse collapsed to null above — and since scanList silently drops nulls, a delegate built from the
-        // survivors would be missing that filter. PlanEmitter gates MaybeEntryScan on the same condition, so today
-        // such a delegate is dead, but we refuse to bake a partial (invalid) delegate at all rather than rely on it
-        // never being invoked. (Clause 0 is the seed, run via the bitmap pipeline, so a null there is irrelevant —
-        // mirror PlanEmitter's [1..] window.)
+        // We start with 1, because clause 0 is the baseline for entry scan and always runs
+        // A null here means an unsupported clause or a AlwaysFalse clause, a scan is not meaningful
         bool scanEligible = hasScanList && perClause.AsSpan()[1..].Contains(null) == false;
 
         return (new ResidualScanSet
         {
-            Predicates = scanEligible ? scanList?.ToArray() : null,
-            ClauseIndices = scanEligible ? clauseIndices?.ToArray() : null
+            Predicates = scanEligible ? scanList.ToArray() : null,
+            ClauseIndices = scanEligible ? clauseIndices.ToArray() : null
         }, perClause, scanEligible);
     }
 
     private ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType)
     {
         var clause = exec.Clause;
-        // Single-valued ⟺ the field holds at most one term per entry. The straight-line residual IL
-        // (DirectScan/CompoundScan/entry-scan) reads exactly one term instead of walking the term list.
-        // Folded into the structural plan key (ComputeStructuralKey) so a later single→multi flip selects
-        // a different bucket and re-plans rather than reusing this template built under the single-valued assumption.
+        // Single-valued ⟺ the field holds at most one term per entry. Can avoid a while(FindNext()) loop
         bool singleValued = clause.FieldName is { } fieldName && _indexSearcher.HasMultipleTermsInField(fieldName) == false;
 
-        // The residual-scan IL only encodes negation for IN / ALL IN (via ScanPredicateInfo.Negated, which the
-        // emitter inverts) and for NotEquals (the NotEqual compare op is inherently the negation). Any other
-        // negated clause (negated Equals, ranges, StartsWith/EndsWith/Exists, groups) would be emitted as its
-        // POSITIVE predicate and filter incorrectly — so disqualify the scan and let the bitmap pipeline, which
-        // builds the correct complement, handle it.
-        if (exec.IsNegated
-            && exec.ClauseType is not (ClauseType.In or ClauseType.AllIn or ClauseType.NotEquals))
+        // The residual-scan IL only encodes negation for IN / ALL IN and not equality. everything else is not supported
+        if (exec.IsNegated && exec.ClauseType is not (ClauseType.In or ClauseType.AllIn or ClauseType.NotEquals))
             return null;
 
         switch (exec.ClauseType)
         {
-            // x ∧ ALL = x: a MatchAll sentinel is always true, so it filters nothing. Emit an
-            // AlwaysTrue placeholder (non-null → keeps the clause scan-eligible) that the residual-set
-            // builders drop before IL emission. This lets a query keep the entry-scan tail even when a
-            // top-level clause has collapsed to match-all (e.g. WHEN(false)).
             case ClauseType.MatchAll:
                 return new ScanPredicateInfo { CompareOp = ScanCompareOp.AlwaysTrue };
-
-            // x ∧ ∅ = ∅: a MatchNothing sentinel is always false. As an AlwaysFalse placeholder it lets
-            // the group recursion below apply boolean algebra (x∨∅=x, x∧∅=∅). At the TOP level
-            // BuildScanPredicates collapses AlwaysFalse back to a disqualifier so the bitmap pipeline
-            // empties the whole AND via ClearBitmap + GotoDoneIfEmpty (faster than any scan).
             case ClauseType.MatchNothing:
                 return new ScanPredicateInfo { CompareOp = ScanCompareOp.AlwaysFalse };
 
-            // These clause types cannot be expressed as entry-scan predicates.
             case ClauseType.Search:
             case ClauseType.Regex:
             case ClauseType.Spatial:
@@ -333,7 +299,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             case ClauseType.AllIn:
             {
                 // Boosted IN stays on the scoring bitmap path (a complement has no match to score).
-                // Negation is fine: the per-entry helper returns a membership boolean we simply invert.
                 if (clause.HasBoost)
                     return null;
 
@@ -436,9 +401,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         };
     }
 
-    // Returns null when a non-scannable residual clause makes the path ineligible (caller falls back
-    // to the bitmap pipeline); otherwise a set whose Predicates may be empty (driving clause is the
-    // only clause → no per-entry filter needed). The Compiled delegate is baked by the caller.
+    // Returns null when a non-scannable residual clause makes the path ineligible.
     private static ResidualScanSet BuildResidualSet(List<ClauseExecution> execs, ScanPredicateInfo?[] perClause, ClauseExecution skip1, ClauseExecution skip2)
     {
         var residuals = new List<ScanPredicateInfo>();
@@ -452,7 +415,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             if (perClause[i] is not { } pred)
                 return null;
             // AlwaysTrue (MatchAll sentinel) is scan-eligible but has no predicate to evaluate — skip it
-            // without disqualifying the set.
             if (pred.CompareOp == ScanCompareOp.AlwaysTrue)
                 continue;
             residuals.Add(pred);
@@ -462,20 +424,16 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         return new ResidualScanSet { Predicates = residuals.ToArray(), ClauseIndices = indices.ToArray() };
     }
 
-    // ClauseExecution.CompareTo sorts negated clauses LAST, so if even the FIRST clause is negated then every
-    // clause must be — checking the head is enough to decide "all negated".
+    // ClauseExecution.CompareTo sorts negated clauses LAST, so first being negated means they all are
     private readonly bool CheckAllNegated() => _exec.Executions is [{ IsNegated: true }, ..];
 
-    // Single canonical serialization of every plan-disambiguating dimension, digested to a 256-bit cache key.
-    // Used for BOTH the cache probe and the on-miss store, so this appends sequence is the one source of truth —
-    // adding a dimension is one more Append.
     private Vector256<long> ComputeCacheKeyHash()
     {
         var execs = _exec.Executions;
 
         _builder.Append(execs.Count, 16); // length prefixed to ensure consistency
         foreach (var e in execs)
-        {
+        {   // the clauses are sorted, and this encodes their relative ordering by cardinality
             _builder.Append(e.Clause.OriginalIndex, 16);
         }
 
@@ -484,10 +442,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                     (_exec.DrivingClauseCardinality is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity).ToInt32();
         _builder.Append(flags, 2);
 
-        // Per-parameter runtime type (bits 0-1) OR-ed with the BETWEEN-sentinel mark (bit 2 of
-        // sentinelFull). A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to a
-        // QueryMatch-dispatched plan while a non-sentinel BETWEEN of the same query text can be
-        // TreeScan-dispatched, so the mark forces a distinct key.
+        // Per-parameter runtime type (bits 0-1) OR-ed with the BETWEEN-sentinel mark (bit 2 of sentinelFull).
+        // A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to a QueryMatch-dispatched plan while a
+        // non-sentinel BETWEEN of the same query text can be TreeScan-dispatched, so the mark forces a distinct key.
         _builder.Append((ushort)template.ParameterSlots.Length, 16);
         for (int i = 0; i < template.ParameterSlots.Length; i++)
         {

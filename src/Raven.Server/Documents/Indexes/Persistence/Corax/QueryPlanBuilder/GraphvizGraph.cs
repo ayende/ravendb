@@ -4,16 +4,6 @@ using System.Text;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
-/// <summary>
-/// A small, render-agnostic Graphviz (DOT) document model. An ordered set of nodes and edges, each carrying two
-/// property bags:
-/// <list type="bullet">
-/// <item><b>Data</b> — machine-readable facts about the element (dispatch, slot, cardinality, taken-state, …),
-/// emitted as <c>data_&lt;key&gt;</c> attributes. Filled while BUILDING the graph.</item>
-/// <item><b>Attributes</b> — presentation only (label, shape, style, color), emitted as raw DOT attributes. Filled
-/// by the styler callbacks at RENDER time, derived from each element's Data.</item>
-/// </list>
-/// </summary>
 internal sealed class GraphvizGraph
 {
     internal abstract class Element
@@ -109,9 +99,6 @@ internal sealed class GraphvizGraph
             first = AppendRawAttr(sb, first, "data_" + SanitizeKey(kv.Key), EscapeAttr(kv.Value));
         }
 
-        // Surface every data_* fact as a single-line hover tooltip (original key names, not the sanitized
-        // attribute keys), so the full machine-readable detail is reachable on hover without bloating the
-        // visible label. A styler that set its own tooltip wins.
         if (e.Attributes.ContainsKey("tooltip") == false)
         {
             string tooltip = BuildDataTooltip(e.Data);
@@ -120,8 +107,6 @@ internal sealed class GraphvizGraph
         }
     }
 
-    /// <summary>Join all non-empty data facts into one line as <c>Key: Value  |  Key: Value</c>, for use as a
-    /// Graphviz tooltip. Uses the original (un-sanitized) keys for readability.</summary>
     private static string BuildDataTooltip(Dictionary<string, string> data)
     {
         StringBuilder tip = null;
@@ -131,7 +116,7 @@ internal sealed class GraphvizGraph
                 continue;
             tip ??= new StringBuilder();
             if (tip.Length != 0)
-                tip.Append("  |  ");
+                tip.Append("\\\n");
             tip.Append(kv.Key).Append(": ").Append(kv.Value);
         }
 
@@ -140,7 +125,7 @@ internal sealed class GraphvizGraph
 
     private readonly Dictionary<string, string> _sanitizedKeyCache = [];
 
-    private string SanitizeKey(string key) // we may be called with "Number Of Candidates", for example, needs to fix this
+    private string SanitizeKey(string key) 
     {
         if (string.IsNullOrEmpty(key)) 
             return string.Empty;
