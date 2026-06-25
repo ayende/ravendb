@@ -123,10 +123,7 @@ internal static partial class QueryPlanBuilder
         return exec;
     }
 
-    /// <summary>Set the bit for a parameter-bound BETWEEN sentinel's slot in the per-slot sentinel bitmap, forcing a
-    /// distinct plan-cache entry (a "*"/"NULL" open bound must go to a QueryMatch-dispatched plan, not a TreeScan one).
-    /// No-op for literal/deferred bounds (ParameterSlot == -1 — the sentinel is encoded in the query text, no marker
-    /// needed) and when there are no slots (empty bitmap).</summary>
+    /// <summary>Set the bit for a parameter-bound BETWEEN sentinel's slot, forcing a distinct plan-cache entry.</summary>
     private static void MarkSentinel(Span<ulong> sentinelBits, ParameterBinding binding)
     {
         int slot = binding.ParameterSlot;
@@ -240,9 +237,7 @@ internal static partial class QueryPlanBuilder
 
     private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
     {
-        // The template binding supplies only structure plus its canonical ValueOrdinal; the value for THIS query
-        // lives in the per-query slot vector at that ordinal (so value/name/param variants share one template).
-        // Redirect to the slot binding before reading any value. (Idempotent: slotBindings[b.ValueOrdinal] == b.)
+        // switch to the binding for the _current_ query...
         binding = slotBindings[binding.ValueOrdinal];
         switch (binding.Source)
         {
@@ -291,10 +286,7 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    /// <summary>
-    /// Foo BETWEEN $x AND $y - where $x > $y - returns nothing, this collapses the clause to a
-    /// MatchNothing sentinel so the plan emitter bakes an empty bitmap for it.
-    /// </summary>
+    /// <summary> Foo BETWEEN $x AND $y - where $x > $y - returns nothing</summary>
     internal static void PropagateBetweenContradiction(ClauseExecution exec, ValueWriter writer)
     {
         var p = exec.PackedParamValue;
@@ -367,11 +359,6 @@ internal static partial class QueryPlanBuilder
 
         if (spatialMatches is { Length: > 0 })
         {
-            // These spatial matches were lifted to top-level post-filters by the planner (AND context). Record the
-            // role on each one so inspection reports it as a post-filter rather than re-deriving it from the type
-            // (a spatial leaf inside an OR is NOT a post-filter — see IPostFilterMatch). The array can also hold a
-            // negated-spatial BitmapMatch or an empty TermMatch (absent field/terms on this shard), neither of which
-            // is IPostFilterMatch; PostFilterMatch dispatches on the concrete capability when filtering.
             foreach (var spatialMatch in spatialMatches)
             {
                 if (spatialMatch is IPostFilterMatch postFilter)
@@ -442,8 +429,7 @@ internal static partial class QueryPlanBuilder
     private static bool TryCreateCompoundExactMatch(ref InstantiateContext ctx, out string rejectReason)
     {
         // The only thing still unknown is value-dependent — a bound parameter can resolve to "none" (null/missing), which has no composite-key encoding.
-        if (ctx.Exec.CompoundExactFirst.PackedParamValue.IsNone || 
-            ctx.Exec.CompoundExactSecond.PackedParamValue.IsNone)
+        if (ctx.Exec.CompoundExactFirst.PackedParamValue.IsNone || ctx.Exec.CompoundExactSecond.PackedParamValue.IsNone)
         {
             rejectReason = "the combined-key lookup needs both values, but one is null or missing";
             return false;
@@ -500,11 +486,11 @@ internal static partial class QueryPlanBuilder
         var driving = ctx.Exec.CompoundFieldDrivingClause;
         var field2Range = ctx.Exec.CompoundFieldField2Range;
         var execs = ctx.Exec.Executions;
-        for (int i = 0; i < execs.Count; i++)
+        foreach (var exec in execs)
         {
-            if (ReferenceEquals(execs[i], driving) || ReferenceEquals(execs[i], field2Range))
+            if (ReferenceEquals(exec, driving) || ReferenceEquals(exec, field2Range))
                 continue;
-            if (IsClauseBoosted(execs[i]))
+            if (IsClauseBoosted(exec))
             {
                 rejectReason = "a filter uses boosting, which needs scoring this scan can't do";
                 return false;
@@ -517,15 +503,8 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
-        // Null / missing guard for the bare shape (equality on field1, ORDER BY field2, no clause on field2). The
-        // compound walk emits field2's null/missing docs where their marker sorts in the tree (after real values),
-        // which does NOT match NullsSortMode / the SortingMatch fallback (nulls-first by default). A field2 range
-        // clause excludes nulls, so the walk is safe; otherwise fall back to bitmap + SortingMatch. (Mirrors the
-        // single-field MayHaveMissingEntries guard, extended to nulls since the compound scan skips both the null
-        // and non-existing posting-list merges SortedDrivingMatch would apply.)
-        if (field2Range is null && ctx.OrderByFields is { Length: 1 })
+        if (field2Range is null && ctx.OrderByFields is [var sortField])
         {
-            var sortField = ctx.OrderByFields[0];
             if (sortField.MayHaveMissingEntries ||
                 ctx.PlanParams.IndexSearcher.TryGetPostingListForNull(in sortField.Field, out _))
             {
@@ -572,7 +551,7 @@ internal static partial class QueryPlanBuilder
 
     private static bool TryCreateSimpleFieldDirectScan(ref InstantiateContext ctx, out string rejectReason)
     {
-        if (ctx.OrderByFields is not { Length: not 0 })
+        if (ctx.OrderByFields is not { Length: > 0 })
         {
             rejectReason = "the query has no ORDER BY for the scan to follow";
             return false;
@@ -625,11 +604,6 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
-        // A driving clause on a multi-valued sort field cannot be elided from the residual: the
-        // residual set excludes the driving clause assuming the in-order tree walk enforces it, but
-        // SortedDrivingMatch walks every posting of a multi-valued field, so documents matching the
-        // driving term under one value AND a different value elsewhere are emitted unfiltered. Fall
-        // back to bitmap + SortingMatch, which applies the clause as a real filter.
         if (ctx.PlanParams.IndexSearcher.HasMultipleTermsInField(ctx.OrderByFields[0].Field))
         {
             rejectReason = "the sort field holds multiple values per document, so its filter can't be safely skipped during the walk";

@@ -18,15 +18,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     private PlanCacheKeyBuilder _builder = new();
     private readonly ValueWriter _writer = new();
 
-    // Per-parameter-slot bitmap marking slots bound to a BETWEEN "*"/"NULL" sentinel. 256 bits live inline on this
-    // ref struct so the common case never allocates; a larger parameter count spills to the heap overflow array.
-    private const int SentinelInlineWords = 4; // 4 * 64 = 256 bits
-    [InlineArray(SentinelInlineWords)]
-    private struct SentinelInlineBitmap
-    {
-        private ulong _word;
-    }
-    private SentinelInlineBitmap _sentinelInline;
+    private Vector256<ulong> _sentinelInline;
     private ulong[] _sentinelOverflow;
 
     private QueryExecution _exec;
@@ -440,13 +432,11 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     // ClauseExecution.CompareTo sorts negated clauses LAST, so first being negated means they all are
     private readonly bool CheckAllNegated() => _exec.Executions is [{ IsNegated: true }, ..];
 
-    // Sentinel bitmap span sized to the current parameter-slot count, backed by the inline buffer (or the heap
-    // overflow for very large parameter counts). Marked during PopulateClauseValues and read back when hashing.
     private Span<ulong> SentinelBits()
     {
         int words = (template.ParameterSlots.Length + 63) >> 6;
-        if (words <= SentinelInlineWords)
-            return MemoryMarshal.CreateSpan(ref Unsafe.As<SentinelInlineBitmap, ulong>(ref _sentinelInline), words);
+        if (words <= Vector256<ulong>.Count)
+            return MemoryMarshal.CreateSpan(ref Unsafe.As<Vector256<ulong>, ulong>(ref _sentinelInline), words);
         return _sentinelOverflow ??= new ulong[words];
     }
 
@@ -465,18 +455,18 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                     (_exec.DrivingClauseCardinality is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity).ToInt32();
         _builder.Append(flags, 2);
 
-        // Per-parameter discriminators: the BETWEEN-sentinel bitmap and each slot's runtime kind (bits 0-1).
-        // A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to a QueryMatch-dispatched plan while a
-        // non-sentinel BETWEEN of the same query text can be TreeScan-dispatched, so the sentinel bit forces a
-        // distinct key. Hash the whole bitmap once, then each slot's 2-bit kind.
+        // A parameter-bound BETWEEN sentinel ("*"/"NULL") have different plans, the sentinel guards against it.
         _builder.Append((ushort)template.ParameterSlots.Length, 16);
         Span<ulong> sentinelBits = SentinelBits();
-        if (sentinelBits.IsEmpty == false)
+        _builder.Append(sentinelBits.IsEmpty.ToInt32(), 1);
+        if (sentinelBits.IsEmpty is false)
             _builder.Append(MemoryMarshal.AsBytes(sentinelBits));
-        for (int i = 0; i < template.ParameterSlots.Length; i++)
+
+        // Per-parameter discriminators: the BETWEEN-sentinel bitmap and each slot's runtime kind 
+        foreach (var slot in template.ParameterSlots)
         {
-            int kind = (int)QueryPlanBuilder.ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0b11;
-            _builder.Append(kind, 2);
+            var kind = QueryPlanBuilder.ClassifyParamType(planParams.QueryParameters, slot);
+            _builder.Append((byte)kind, 8);
         }
 
         return _builder.ToHash();
