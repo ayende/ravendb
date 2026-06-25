@@ -281,13 +281,13 @@ public static class QueryIlEmitter
         {
             ref var op = ref ops[i];
             if (op.Kind is PlanOpKind.MaybeEntryScan)
-                return i; // always count this as narrows, since it can _remove_ matches
-            
-            if (op.BitmapLocal is not 0 || // we don't care about the non primary bitmaps 
-                narrowingOps.Contains(op.Kind)) // all those ops can _remove_ matches
+                return i; // always counts as narrowing: it reads slot 0 as its candidate set and only removes
+
+            if (op.BitmapLocal is not 0) // only ops writing the primary result bitmap can narrow it
                 continue;
-            
-            return i;
+
+            if (narrowingOps.Contains(op.Kind)) // all those ops can _remove_ matches
+                return i;
         }
 
         return -1;
@@ -432,8 +432,8 @@ public static class QueryIlEmitter
         d.CsLine($"{d.GetLocalName(cursorVar)} = {d.GetLocalName(endVar)};");
     }
 
-    /// <summary>EntryScan tail: set ctx.EntryScanTakenAtOp, run entry scan, return. Survivors are left in
-    /// slot 1 (RunEntryScan source 0 -> target 1).</summary>
+    /// <summary>EntryScan tail: set ctx.EntryScanTakenAtOp, run entry scan, return. RunEntryScan reads the
+    /// candidate set from slot 0 and stages survivors into slot 1, then swaps them back so the result is in slot 0.</summary>
     private static void EmitEntryScanTail(ref DualEmit d, LabelPair entryScanLabel, LocalBuilder cursorVar)
     {
         d.MarkLabel(entryScanLabel);
@@ -451,7 +451,7 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.RunEntryScanMethod);
         d.CsLine("CompiledQueryHelper.RunEntryScan(ctx, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
 
-        // Execute() reads the result from slot 1 because EntryScanTakenAtOp is now set, and disposes slot 0.
+        // RunEntryScan leaves the result in slot 0 (it swaps survivors back from slot 1), so Execute() reads slot 0.
         d.EmitRetVoid();
     }
 

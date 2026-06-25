@@ -233,6 +233,11 @@ public static class CompiledQueryHelper
                 if (ctx.EntryScanEntriesPassed >= ctx.Limit)
                     break;
             }
+
+            // Survivors were built into targetBitmap (slot 1). Swap the two bitmap structs so the result
+            // lands in the source slot (slot 0) — Execute() then always reads slot 0. The swap is just a
+            // header exchange (no data copy); the now-stale candidate set ends up in slot 1 and is disposed.
+            (sourceBitmap, targetBitmap) = (targetBitmap, sourceBitmap);
         }
         finally
         {

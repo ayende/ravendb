@@ -225,10 +225,9 @@ public class CompiledQueryMatch(
         {
             CompiledPlan.CompiledDelegate(this);
 
-            // EntryScan uses bitmap 1, otherwise, uses bitmap 0
-            int resultSlot = EntryScanTakenAtOp >= 0 ? 1 : 0;
-            _bitmapData = Bitmaps[resultSlot];
-            Bitmaps[resultSlot] = default; // don't dispose this
+            // The result always lands in slot 0 (RunEntryScan swaps its survivors there too).
+            _bitmapData = Bitmaps[0];
+            Bitmaps[0] = default; // don't dispose this
             _bitmapData.PrepareForReading();
             _count = _bitmapData.ComputeCount();
             _iterator = _bitmapData.GetIterator();
