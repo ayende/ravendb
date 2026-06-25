@@ -108,15 +108,16 @@ internal static partial class QueryPlanBuilder
 
         PlanOptimizationFlags optFlags = ComputeTemplateOptimizations(walkerCtx, p, orderBy, orderByPrimaryField, orderByPrimaryAscending,
             out int sortDrivingIdx, out int sortSeekHintIdx, out bool sortSeekUseParam2);
-        HashSet<string> seen = [];
-        CollectParameterNames(walkerCtx.Clauses, seen);
-        CollectParameterNames(walkerCtx.SpatialClauses, seen);
-        CollectParameterNames(walkerCtx.VectorClauses, seen);
+        // Slot a parameter the first time we encounter it (Clauses → Spatial → Vector DFS), reusing the slot
+        // for later occurrences. One pass: name→slot lookup is O(1), no second walk and no Array.IndexOf.
+        Dictionary<string, int> slots = [];
+        AssignParameterSlots(walkerCtx.Clauses, slots);
+        AssignParameterSlots(walkerCtx.SpatialClauses, slots);
+        AssignParameterSlots(walkerCtx.VectorClauses, slots);
 
-        string[] parameterSlots = seen.ToArray();
-        AssignParameterSlots(walkerCtx.Clauses, parameterSlots);
-        AssignParameterSlots(walkerCtx.SpatialClauses, parameterSlots);
-        AssignParameterSlots(walkerCtx.VectorClauses, parameterSlots);
+        string[] parameterSlots = new string[slots.Count];
+        foreach ((string name, int slot) in slots)
+            parameterSlots[slot] = name;
 
         return new PlanTemplate
         {
@@ -159,7 +160,7 @@ internal static partial class QueryPlanBuilder
         return ctx.SlotBindings.ToArray();
     }
 
-    private static void CollectParameterNames(List<ClauseInfo> clauses, HashSet<string> seen)
+    private static void AssignParameterSlots(List<ClauseInfo> clauses, Dictionary<string, int> slots)
     {
         foreach (ClauseInfo clause in clauses ?? [])
         {
@@ -167,27 +168,13 @@ internal static partial class QueryPlanBuilder
             {
                 if (binding is { Source: BindingSource.QueryParameter, ParameterName: not null })
                 {
-                    seen.Add(binding.ParameterName);
+                    if (slots.TryGetValue(binding.ParameterName, out int slot) == false)
+                        slots.Add(binding.ParameterName, slot = slots.Count);
+                    binding.ParameterSlot = slot;
                 }
             }
 
-            CollectParameterNames(clause.SubClauses, seen); // recurse into groups
-        }
-    }
-
-    private static void AssignParameterSlots(List<ClauseInfo> clauses, string[] parameterSlots)
-    {
-        foreach (ClauseInfo clause in clauses ?? [])
-        {
-            foreach (ParameterBinding binding in clause.Bindings ?? [])
-            {
-                if (binding is { Source: BindingSource.QueryParameter, ParameterName: not null })
-                {
-                    binding.ParameterSlot = Array.IndexOf(parameterSlots, binding.ParameterName);
-                }
-            }
-
-            AssignParameterSlots(clause.SubClauses, parameterSlots); // recurse into groups
+            AssignParameterSlots(clause.SubClauses, slots); // recurse into groups
         }
     }
 
