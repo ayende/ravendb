@@ -67,7 +67,7 @@ namespace Raven.Server.Documents.Queries
         /// QueryMetadata and never needs invalidation. Only set for the main WHERE path; an MLT sub-expression
         /// override builds its own vector fresh and does not touch this field.
         /// </summary>
-        public Corax.Querying.Planning.ParameterBinding[] CachedSlotBindings { get; set; }
+        public ParameterBinding[] CachedSlotBindings { get; set; }
 
         public sealed class PlanMemo(long planCacheGeneration, Corax.Querying.Planning.PlanCache.PerQueryPlans bucket)
         {

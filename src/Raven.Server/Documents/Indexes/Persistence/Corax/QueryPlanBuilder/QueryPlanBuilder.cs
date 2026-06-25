@@ -242,11 +242,12 @@ internal static partial class QueryPlanBuilder
             flags |= PlanOptimizationFlags.CompoundExactCandidate;
         }
 
-        // Compound-field candidate: Equals clause + a single ORDER BY field forming a compound field. A two-key
-        // ORDER BY only survives partial-sort elision when its leading key is multi-valued — which can't drive
-        // the compound-tree walk (a doc sorts under several leading values) — so that shape stays on the bitmap path.
-        if (orderBy is [{ Name.Value: { } sf }]) // exactly one order by
+        // Compound-field candidate: Equals clause + a single ORDER BY field forming a compound field. 
+        if (orderBy is [{ Name.Value: { } sf }]) 
         {
+            // from Movies where Category = 'Action' order by Category, Year
+            //  we elided the Category (in ComputeEffectiveOrderBy), so we have orderBy [Year]
+            //  then we search for a compound field with (Category, Year), to use the direct scan optimization
             for (int e = 0; e < eqCount; e++) // search for matching compound field
             {
                 string ef = clauses[eqBuf[e]].ResolvedFieldName ?? clauses[eqBuf[e]].FieldName;
@@ -260,7 +261,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // Optional field2 range narrowing clause: a GT/GTE/LT/LTE/Between on the compound sort field.
-        // For example: WHERE Age > $x ORDER BY Age 
+        // For example: WHERE Age > $x ORDER BY Age - will seek to the right area in the index, then run from there
         if (walkerCtx.CompoundFieldDrivingClause != -1)
         {
             walkerCtx.CompoundFieldName = $"compound({clauses[walkerCtx.CompoundFieldDrivingClause].FieldName},{walkerCtx.CompoundFieldSortName})";
@@ -364,9 +365,7 @@ internal static partial class QueryPlanBuilder
         {
             case OperatorType.And:
             {
-                // For AND, handle OR sub-expressions as grouped clauses
                 BooleanOp left = be.Left is BinaryExpression { Operator: OperatorType.Or } ? HandleGroup(be.Left, ClauseType.OrGroup) : ParseExpression(be.Left, walkerCtx);
-
                 BooleanOp right = be.Right is BinaryExpression { Operator: OperatorType.Or } ? HandleGroup(be.Right, ClauseType.OrGroup) : ParseExpression(be.Right, walkerCtx);
 
                 return (left, right) switch
@@ -381,7 +380,6 @@ internal static partial class QueryPlanBuilder
             case OperatorType.Or:
             {
                 BooleanOp left = be.Left is BinaryExpression { Operator: OperatorType.And } ? HandleGroup(be.Left, ClauseType.AndGroup) : ParseExpression(be.Left, walkerCtx);
-
                 BooleanOp right = be.Right is BinaryExpression { Operator: OperatorType.And } ? HandleGroup(be.Right, ClauseType.AndGroup) : ParseExpression(be.Right, walkerCtx);
 
                 return (left, right) switch
@@ -520,8 +518,7 @@ internal static partial class QueryPlanBuilder
             return;
         }
 
-        // Capture bindings for each IN term. Array parameters expand at PopulateParameters time.
-        List<ParameterBinding> inBindings = new();
+        List<ParameterBinding> inBindings = [];
         foreach (QueryExpression value in inExpr.Values)
         {
             if (CreateBinding(value, walkerCtx) is { } binding)
@@ -612,8 +609,6 @@ internal static partial class QueryPlanBuilder
     }
 
     // Shared shape for the (field, value) leaf methods: startsWith, endsWith, regex.
-    // argHint names the second argument in the arity-error message ("field, prefix" / "field, pattern");
-    // the method label is derived from the clause type (e.g. ClauseType.StartsWith → "startswith").
     private static BooleanOp ParseFieldValueLeaf(MethodExpression method, ResolutionContext walkerCtx, ClauseType clauseType, string argHint)
     {
         string label = clauseType.ToString().ToLowerInvariant();
@@ -678,9 +673,6 @@ internal static partial class QueryPlanBuilder
     private static BooleanOp ParseExact(MethodExpression method, ResolutionContext walkerCtx)
     {
         // exact(expr) → recurse, then mark all new clauses as exact.
-        // Propagate the inner BooleanOp so that exact(A OR B) is still detected as OR at
-        // the root — otherwise the outer ParseExpression would see Leaf and compile in
-        // AND mode, intersecting the OR branches.
         int beforeCount = walkerCtx.Clauses.Count;
         BooleanOp innerOp = BooleanOp.Leaf;
         if (method.Arguments.Count > 0)
@@ -699,7 +691,6 @@ internal static partial class QueryPlanBuilder
     private static BooleanOp ParseBoost(MethodExpression method, ResolutionContext walkerCtx)
     {
         // boost(expr, factor) → recurse, then capture the clauses' instances for later call to BoostPropagate.
-        // even if they are moved by GroupCollapse or AnalyzerRewrite later on, the instances are the same
         int beforeCount = walkerCtx.Clauses.Count;
         if (method.Arguments.Count is 0)
         {
@@ -714,12 +705,7 @@ internal static partial class QueryPlanBuilder
             return innerOp;
         }
 
-        ClauseInfo[] inner = new ClauseInfo[walkerCtx.Clauses.Count - beforeCount];
-        for (int c = 0; c < inner.Length; c++)
-        {
-            inner[c] = walkerCtx.Clauses[beforeCount + c];
-        }
-
+        List<ClauseInfo> inner = walkerCtx.Clauses.Slice(beforeCount, walkerCtx.Clauses.Count - beforeCount);
         walkerCtx.RecordPendingBoost(inner, boostBinding);
         return innerOp;
     }
@@ -924,17 +910,11 @@ internal static partial class QueryPlanBuilder
 
     private static ParameterBinding CreateBinding(QueryExpression expr, ResolutionContext ctx)
     {
-        // CreateBinding is the single chokepoint for every value leaf, invoked in strict left-to-right DFS
-        // order while parsing WHERE. Stamp each created binding with its canonical hole index and record it,
-        // so both the shared template (hole numbering) and a query's per-text slot vector (built by re-running
-        // the same parse) agree on leaf order by construction.
-        var binding = BuildBinding(expr, ctx);
-        if (binding != null)
-        {
-            binding.ValueOrdinal = ctx.SlotBindings.Count;
-            ctx.SlotBindings.Add(binding);
-        }
-
+        if (BuildBinding(expr, ctx) is not { } binding) 
+            return null;
+        
+        binding.ValueOrdinal = ctx.SlotBindings.Count;
+        ctx.SlotBindings.Add(binding);
         return binding;
     }
 
@@ -956,10 +936,9 @@ internal static partial class QueryPlanBuilder
                             bp.ServerContext,
                             bp.DocumentsContext.DocumentDatabase.CompareExchangeStorage,
                             me, qp, bp.QueryTime);
+                        
                         if (resolvedExpr is not ValueExpression valueExpression || valueExpression.Value == ValueTokenType.Null)
-                        {
                             return null;
-                        }
 
                         return valueExpression.GetValue(qp);
                     },
