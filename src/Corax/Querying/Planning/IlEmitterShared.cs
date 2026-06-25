@@ -99,6 +99,8 @@ public static class IlEmitterShared
         typeof(QueryExecution).GetField(nameof(QueryExecution.DoubleValues))!;
     public static readonly FieldInfo AnalyzedSlices =
         typeof(QueryExecution).GetField(nameof(QueryExecution.AnalyzedSlices))!;
+    public static readonly FieldInfo ResidualStringValues =
+        typeof(QueryExecution).GetField(nameof(QueryExecution.StringValues))!;
     public static readonly FieldInfo ResidualFieldRootPages =
         typeof(QueryExecution).GetField(nameof(QueryExecution.FieldRootPages))!;
 

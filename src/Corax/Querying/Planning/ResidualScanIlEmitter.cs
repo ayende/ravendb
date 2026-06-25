@@ -47,6 +47,9 @@ public static class ResidualScanIlEmitter
         var entryIdsIdx =  d.RegisterArg("entryIds");
         var originalIndexesIdx = d.RegisterArg("originalIndexes");
 
+        // Load* helpers read their fields off this arg (instead of hardcoding arg 0 / "exec")
+        d.SetContextArg(execIdx);
+
         d.CsLine("static int ResidualScan(QueryExecution exec, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
         d.CsLine("{");
 
@@ -241,6 +244,65 @@ public static class ResidualScanIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);
         d.CsLine("reader.Reset();");
 
+        // String (in)equality may target a runtime-null value: a literal `null`, or a $param that resolved to
+        // null (BuildResolver maps Null → ScanValueType.Slice). Term comparison is impossible against null —
+        // Current is stale for null/non-existing markers — so the null vs concrete decision has to happen at
+        // RUNTIME, not be baked into the cached plan. Branch on whether the bound string is null; one compiled
+        // plan serves both bindings.
+        if (pred.ValueType is ScanValueType.Slice or ScanValueType.SliceLong &&
+            pred.CompareOp is ScanCompareOp.Equal or ScanCompareOp.NotEqual)
+        {
+            EmitNullableEquality(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, readerRefLocal);
+            return;
+        }
+
+        EmitLeafComparison(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, readerRefLocal);
+    }
+
+    /// <summary>Emit the runtime null-aware dispatch for a string Equal/NotEqual leaf. When the bound value is
+    /// concrete it falls through to the ordinary term comparison; when it is null it decides on <c>reader.IsNull</c>
+    /// alone, matching the bitmap pipeline (<c>= null</c> ⇒ the null-marker term; <c>!= null</c> ⇒ its complement).</summary>
+    private static void EmitNullableEquality(ref DualEmit d, in ScanPredicateInfo pred, Label failIl, string failName, int rootIdx, ref int inSetIdx, LocalBuilder readerRefLocal)
+    {
+        bool isNotEqual = pred.CompareOp == ScanCompareOp.NotEqual;
+        var concrete = d.DefineLabelPair("concreteTarget");
+        var leafDone = d.DefineLabelPair("nullCmpDone");
+
+        // if (StringValues[ParamIndex] != null) goto concrete;  — concrete target uses ordinary term comparison
+        d.BranchIfStringTargetNotNull(pred.ParamIndex, concrete);
+
+        // Null target: decide on reader.IsNull alone (Current is stale, no term comparison possible).
+        EmitFindNext(ref d, readerRefLocal, rootIdx);
+        if (isNotEqual)
+        {
+            // != null passes unless the field carries the explicit null-marker term.
+            EmitBranchFalse(ref d, leafDone.Il, leafDone.Name);   // no term → concrete/absent → pass
+            d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+            d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
+            d.Il.Emit(OpCodes.Brtrue, failIl);
+            d.CsLine(JumpIf("reader.IsNull", failName));          // null-marker term → fail
+            d.Il.Emit(OpCodes.Br, leafDone.Il);                   // concrete term → pass
+            d.CsLine(Jump(leafDone.Name));
+        }
+        else
+        {
+            // = null passes only when the field carries the explicit null-marker term.
+            EmitBranchFalse(ref d, failIl, failName);             // no term → fail
+            d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
+            d.Il.Emit(OpCodes.Ldfld, IlEmitterShared.ReaderIsNull);
+            d.Il.Emit(OpCodes.Brfalse, failIl);
+            d.CsLine(JumpIf("reader.IsNull is false", failName)); // concrete term → fail
+            d.Il.Emit(OpCodes.Br, leafDone.Il);                   // null-marker term → pass
+            d.CsLine(Jump(leafDone.Name));
+        }
+
+        d.MarkLabel(concrete);
+        EmitLeafComparison(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, readerRefLocal);
+        d.MarkLabel(leafDone);
+    }
+
+    private static void EmitLeafComparison(ref DualEmit d, in ScanPredicateInfo pred, Label failIl, string failName, int rootIdx, ref int inSetIdx, LocalBuilder readerRefLocal)
+    {
         switch (pred.CompareOp)
         {
             case ScanCompareOp.In or ScanCompareOp.AllIn:
@@ -288,8 +350,10 @@ public static class ResidualScanIlEmitter
                 return;
             case ScanCompareOp.NotEqual when pred.IsSingleValued:
             {
-                //   if (!reader.FindNext(rootPage)) goto pass; if (reader.IsNull) goto pass;
-                //   if (term == target) goto fail;   // else fall through → pass
+                //   if (!reader.FindNext(rootPage)) goto pass;   // no term → pass
+                //   if (reader.IsNull) goto pass;                // null term → pass
+                //   if (reader.IsNonExisting) goto pass;         // absent (stale Current) → pass
+                //   if (term == target) goto fail;               // else fall through → pass
                 var singlePass = d.DefineLabelPair("notEqualPass");
 
                 EmitFindNext(ref d, readerRefLocal, rootIdx);

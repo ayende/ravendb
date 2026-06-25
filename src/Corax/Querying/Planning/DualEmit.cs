@@ -30,6 +30,11 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
     private int _labelCounter = 0;
     private int _tempCounter = 0;
 
+    /// <summary>Index of the registered arg that holds the context object the Load* helpers read fields from
+    /// (the residual scan's <c>exec</c>). Set via <see cref="SetContextArg"/> so Load* emit a load of that arg
+    /// instead of hardcoding arg 0.</summary>
+    private byte _contextArgIndex;
+
     /// <summary>Clause label staged by <see cref="SetPendingComment"/> and emitted as a TRAILING comment
     /// on the next <see cref="CsCall"/> line (the op's primary statement), so the label sits on the call
     /// it describes rather than floating on its own line above the cancellation check.</summary>
@@ -134,6 +139,12 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
 
     public string GetArgName(byte index) => _args[index];
 
+    /// <summary>Designate which registered arg the Load* helpers read fields from (the residual scan's <c>exec</c>).</summary>
+    public void SetContextArg(byte index) => _contextArgIndex = index;
+
+    private string ContextArgName => _args[_contextArgIndex];
+
+    private void LoadContextArg() => Il.Emit(OpCodes.Ldarg_S, _contextArgIndex);
 
     public void LoadArgAddress(byte index)
     {
@@ -190,68 +201,81 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
 
     public void LoadLongParam(int idx)
     {
-        Il.Emit(OpCodes.Ldarg_0);
+        LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualLongs);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelem_I8);
-        CsStack.Push($"exec.LongValues[{idx}]");
+        CsStack.Push($"{ContextArgName}.LongValues[{idx}]");
     }
 
     public void LoadDoubleParam(int idx)
     {
-        Il.Emit(OpCodes.Ldarg_0);
+        LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualDoubles);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelem_R8);
-        CsStack.Push($"exec.DoubleValues[{idx}]");
+        CsStack.Push($"{ContextArgName}.DoubleValues[{idx}]");
     }
 
     public void LoadSliceSpan(int idx)
     {
-        Il.Emit(OpCodes.Ldarg_0);
+        LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.AnalyzedSlices);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelema, typeof(Slice));
         Il.Emit(OpCodes.Call, IlEmitterShared.SliceAsReadOnlySpan);
-        CsStack.Push($"exec.AnalyzedSlices[{idx}].AsReadOnlySpan()");
+        CsStack.Push($"{ContextArgName}.AnalyzedSlices[{idx}].AsReadOnlySpan()");
     }
 
     public void LoadFieldRootPage(int rootIdx)
     {
-        Il.Emit(OpCodes.Ldarg_0);
+        LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualFieldRootPages);
         IlEmitterShared.EmitLdcI4(Il, rootIdx);
         Il.Emit(OpCodes.Ldelem_I8);
-        CsStack.Push($"exec.FieldRootPages[{rootIdx}]");
+        CsStack.Push($"{ContextArgName}.FieldRootPages[{rootIdx}]");
     }
 
     public void LoadInValueArray(int idx, ScanValueType valueType)
     {
         var (arrayField, spanCtor, csArray, csElem) = valueType switch
         {
-            ScanValueType.Long => (IlEmitterShared.ResidualLongs, IlEmitterShared.ReadOnlySpanLongCtor, "exec.LongValues", "long"),
-            ScanValueType.Double => (IlEmitterShared.ResidualDoubles, IlEmitterShared.ReadOnlySpanDoubleCtor, "exec.DoubleValues", "double"),
-            _ => (IlEmitterShared.AnalyzedSlices, IlEmitterShared.ReadOnlySpanSliceCtor, "exec.AnalyzedSlices", "Slice"),
+            ScanValueType.Long => (IlEmitterShared.ResidualLongs, IlEmitterShared.ReadOnlySpanLongCtor, $"{ContextArgName}.LongValues", "long"),
+            ScanValueType.Double => (IlEmitterShared.ResidualDoubles, IlEmitterShared.ReadOnlySpanDoubleCtor, $"{ContextArgName}.DoubleValues", "double"),
+            _ => (IlEmitterShared.AnalyzedSlices, IlEmitterShared.ReadOnlySpanSliceCtor, $"{ContextArgName}.AnalyzedSlices", "Slice"),
         };
         // flat array
-        Il.Emit(OpCodes.Ldarg_0);
+        LoadContextArg();
         Il.Emit(OpCodes.Ldfld, arrayField);
         // start = exec.ResidualInSets[idx].Base, length = exec.ResidualInSets[idx].Count
         EmitLoadInSetField(idx, IlEmitterShared.ResidualInValuesBase);
         EmitLoadInSetField(idx, IlEmitterShared.ResidualInValuesCount);
         Il.Emit(OpCodes.Newobj, spanCtor);
-        CsStack.Push($"new ReadOnlySpan<{csElem}>({csArray}, exec.ResidualInSets[{idx}].Base, exec.ResidualInSets[{idx}].Count)");
+        CsStack.Push($"new ReadOnlySpan<{csElem}>({csArray}, {ContextArgName}.ResidualInSets[{idx}].Base, {ContextArgName}.ResidualInSets[{idx}].Count)");
     }
 
     public void LoadInHasNull(int idx)
     {
         EmitLoadInSetField(idx, IlEmitterShared.ResidualInValuesHasNull);
-        CsStack.Push($"exec.ResidualInSets[{idx}].HasNull");
+        CsStack.Push($"{ContextArgName}.ResidualInSets[{idx}].HasNull");
+    }
+
+    /// <summary>Branch when the residual string param at <paramref name="idx"/> holds a concrete (non-null)
+    /// value: <c>if (exec.StringValues[idx] != null) goto label;</c>. Routes concrete-valued equality away
+    /// from the null-target (IsNull-only) path. Null-ness is a per-execution value, so this is a runtime test.</summary>
+    public void BranchIfStringTargetNotNull(int idx, LabelPair l)
+    {
+        LoadContextArg();
+        Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualStringValues);
+        IlEmitterShared.EmitLdcI4(Il, idx);
+        Il.Emit(OpCodes.Ldelem_Ref);
+        Il.Emit(OpCodes.Brtrue, l.Il);
+        CsLine($"if ({ContextArgName}.StringValues[{idx}] != null) goto {l.Name};");
     }
 
     private void EmitLoadInSetField(int idx, FieldInfo field)
     {
-        Il.Emit(OpCodes.Ldarg_0);
+        LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualInSets);
         IlEmitterShared.EmitLdcI4(Il, idx);
         Il.Emit(OpCodes.Ldelema, typeof(ResidualInValues));

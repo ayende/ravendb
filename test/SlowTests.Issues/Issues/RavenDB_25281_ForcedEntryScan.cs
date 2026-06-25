@@ -38,6 +38,7 @@ namespace SlowTests.Issues
             public string Id { get; set; }
             public string Category { get; set; }
             public string Status { get; set; }
+            public string Note { get; set; }
         }
 
         private IDocumentStore GetSeededStore()
@@ -178,6 +179,148 @@ namespace SlowTests.Issues
             (List<string> Ids, int EntryScanAt) forced = Run(store, RareCategory, force: 99_999);
             Assert.Equal(-1, forced.EntryScanAt);
             AssertSameIds(baseline.Ids, forced.Ids, forced.EntryScanAt);
+        }
+
+        // A residual `Field != null` must agree with the pure bitmap pipeline: a document whose field is
+        // explicitly null does NOT satisfy `!= null`. The single-valued NotEqual residual jumps to "pass"
+        // on IsNull / IsNonExisting (no concrete term equalled the null target), so this pins that forcing
+        // the entry scan over a `!= null` clause still drops the null documents the bitmap baseline drops —
+        // i.e. the IsNull/IsNonExisting "pass" branches do not wrongly admit them.
+        [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+        public void ForcedScan_NotEqualNull_ExcludesNullDocuments()
+        {
+            using IDocumentStore store = GetDocumentStore(Options.ForSearchEngine(RavenSearchEngineMode.Corax));
+
+            int rareWithNote = 0;
+            using (var bulk = store.BulkInsert())
+            {
+                for (int i = 0; i < DocCount; i++)
+                {
+                    bool rare = i < RareCategoryDocs;
+                    string note = i % 3 == 0 ? "set" : null; // 1/3 carry a concrete value, the rest are explicit null
+                    if (rare && note != null)
+                        rareWithNote++;
+                    bulk.Store(new Item
+                    {
+                        Category = rare ? RareCategory : $"common-{i % 50}",
+                        Status = i % 2 == 0 ? "active" : "inactive",
+                        Note = note
+                    });
+                }
+            }
+
+            Indexes.WaitForIndexing(store);
+            Assert.True(rareWithNote > 0 && rareWithNote < RareCategoryDocs,
+                $"seed must mix non-null and null Note within the rare category (got {rareWithNote} of {RareCategoryDocs})");
+
+            // Category = rare fills slot 0; `Note != null` is AND'd behind the entry-scan gate as the residual.
+            const string rql = "from Items where Category = $cat and Note != null";
+
+            // Pure bitmap baseline (every gate disabled): the authoritative `!= null` result set.
+            (List<string> Ids, int EntryScanAt) baseline = RunNotNull(store, rql, force: -1);
+            Assert.Equal(-1, baseline.EntryScanAt);
+            Assert.Equal(rareWithNote, baseline.Ids.Count); // null docs excluded by the bitmap pipeline
+
+            // Find the gate and force the residual scan over the `!= null` clause; it must return the same set.
+            int gate = -1;
+            for (int f = 0; f <= 15; f++)
+            {
+                (List<string> Ids, int EntryScanAt) forced = RunNotNull(store, rql, force: f);
+                AssertSameIds(baseline.Ids, forced.Ids, forced.EntryScanAt);
+                if (forced.EntryScanAt == f)
+                {
+                    gate = f;
+                    break;
+                }
+
+                Assert.Equal(-1, forced.EntryScanAt);
+            }
+
+            Assert.True(gate >= 0, "expected to find an entry-scan gate for the `!= null` residual by sweeping op-indices 0..15");
+        }
+
+        // Mirror of the above for `Field = null`: the residual must match only documents carrying the explicit
+        // null-marker term, agreeing with the bitmap pipeline. The string-equality residual short-circuits on
+        // IsNull / IsNonExisting, so this pins that forcing the entry scan over a `= null` clause keeps exactly the
+        // null documents the bitmap baseline keeps — i.e. the concrete-term path does not wrongly admit them and
+        // the no-term path does not wrongly drop them.
+        [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+        public void ForcedScan_EqualNull_IncludesOnlyNullDocuments()
+        {
+            using IDocumentStore store = GetDocumentStore(Options.ForSearchEngine(RavenSearchEngineMode.Corax));
+
+            int rareWithNullNote = 0;
+            using (var bulk = store.BulkInsert())
+            {
+                for (int i = 0; i < DocCount; i++)
+                {
+                    bool rare = i < RareCategoryDocs;
+                    string note = i % 3 == 0 ? "set" : null; // 1/3 carry a concrete value, the rest are explicit null
+                    if (rare && note == null)
+                        rareWithNullNote++;
+                    bulk.Store(new Item
+                    {
+                        Category = rare ? RareCategory : $"common-{i % 50}",
+                        Status = i % 2 == 0 ? "active" : "inactive",
+                        Note = note
+                    });
+                }
+            }
+
+            Indexes.WaitForIndexing(store);
+            Assert.True(rareWithNullNote > 0 && rareWithNullNote < RareCategoryDocs,
+                $"seed must mix non-null and null Note within the rare category (got {rareWithNullNote} null of {RareCategoryDocs})");
+
+            // Category = rare fills slot 0; `Note = null` is AND'd behind the entry-scan gate as the residual.
+            const string rql = "from Items where Category = $cat and Note = null";
+
+            // Pure bitmap baseline (every gate disabled): the authoritative `= null` result set.
+            (List<string> Ids, int EntryScanAt) baseline = RunNotNull(store, rql, force: -1);
+            Assert.Equal(-1, baseline.EntryScanAt);
+            Assert.Equal(rareWithNullNote, baseline.Ids.Count); // only explicit-null docs admitted by the bitmap pipeline
+
+            // Find the gate and force the residual scan over the `= null` clause; it must return the same set.
+            int gate = -1;
+            for (int f = 0; f <= 15; f++)
+            {
+                (List<string> Ids, int EntryScanAt) forced = RunNotNull(store, rql, force: f);
+                AssertSameIds(baseline.Ids, forced.Ids, forced.EntryScanAt);
+                if (forced.EntryScanAt == f)
+                {
+                    gate = f;
+                    break;
+                }
+
+                Assert.Equal(-1, forced.EntryScanAt);
+            }
+
+            Assert.True(gate >= 0, "expected to find an entry-scan gate for the `= null` residual by sweeping op-indices 0..15");
+        }
+
+        private static (List<string> Ids, int EntryScanAt) RunNotNull(IDocumentStore store, string rql, long? force)
+        {
+            using IDocumentSession session = store.OpenSession();
+            IRawDocumentQuery<Item> q = session.Advanced.RawQuery<Item>(rql + " include timings()")
+                .NoCaching()
+                .Timings(out QueryTimings timings)
+                .AddParameter("cat", RareCategory);
+            if (force.HasValue)
+                q.AddParameter("rvn_corax_entry_scan", force.Value);
+
+            List<Item> results = q.ToList();
+
+            var plan = (QueryInspectionNode)timings.QueryPlan;
+            QueryInspectionNode entryScan = FindNode(plan, "EntryScan");
+            int entryScanAt = -1;
+            if (entryScan?.Parameters != null
+                && entryScan.Parameters.TryGetValue("Taken", out string taken)
+                && string.Equals(taken, "True", StringComparison.OrdinalIgnoreCase)
+                && entryScan.Parameters.TryGetValue("SwitchedAfterClauses", out string s))
+            {
+                int.TryParse(s, out entryScanAt);
+            }
+
+            return (results.Select(x => x.Id).OrderBy(x => x, StringComparer.Ordinal).ToList(), entryScanAt);
         }
 
         private static void AssertSameIds(List<string> expected, List<string> actual, int entryScanAt)
