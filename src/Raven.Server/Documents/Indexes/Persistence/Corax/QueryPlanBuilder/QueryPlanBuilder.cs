@@ -242,33 +242,21 @@ internal static partial class QueryPlanBuilder
             flags |= PlanOptimizationFlags.CompoundExactCandidate;
         }
 
-        // Compound-field candidate: Equals clause + ORDER BY field forming a compound field. 
-        switch (orderBy)
+        // Compound-field candidate: Equals clause + a single ORDER BY field forming a compound field. A two-key
+        // ORDER BY only survives partial-sort elision when its leading key is multi-valued — which can't drive
+        // the compound-tree walk (a doc sorts under several leading values) — so that shape stays on the bitmap path.
+        if (orderBy is [{ Name.Value: { } sf }]) // exactly one order by
         {
-            case [{ Name.Value: { } sf }]: // exactly one order by
-                for (int e = 0; e < eqCount; e++) // search for matching compound field
-                {
-                    string ef = clauses[eqBuf[e]].ResolvedFieldName ?? clauses[eqBuf[e]].FieldName;
-                    if (p.Index.HasCompoundField(p.Allocator, ef, sf) == false)
-                        continue;
-                    walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
-                    walkerCtx.CompoundFieldSortName = sf;
-                    flags |= PlanOptimizationFlags.DirectScanCandidate;
-                    break;
-                }
-
+            for (int e = 0; e < eqCount; e++) // search for matching compound field
+            {
+                string ef = clauses[eqBuf[e]].ResolvedFieldName ?? clauses[eqBuf[e]].FieldName;
+                if (p.Index.HasCompoundField(p.Allocator, ef, sf) == false)
+                    continue;
+                walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
+                walkerCtx.CompoundFieldSortName = sf;
+                flags |= PlanOptimizationFlags.DirectScanCandidate;
                 break;
-            case [{ Name.Value: { } f1 }, { Name.Value: { } f2 }] when p.Index.HasCompoundField(p.Allocator, f1, f2):
-                for (int e = 0; e < eqCount; e++)
-                {
-                    if (clauses[eqBuf[e]].FieldName != f1) 
-                        continue;
-                    
-                    walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
-                    walkerCtx.CompoundFieldSortName = f2;
-                    break;
-                }
-                break;
+            }
         }
 
         // Optional field2 range narrowing clause: a GT/GTE/LT/LTE/Between on the compound sort field.
