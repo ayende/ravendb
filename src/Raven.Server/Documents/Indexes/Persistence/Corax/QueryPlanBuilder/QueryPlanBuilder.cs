@@ -4,16 +4,13 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using Corax.Mappings;
 using Corax.Querying.Planning;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Json;
-using Sparrow.Server;
 using Voron;
 using Constants = Corax.Constants;
 using ClientConstants = Raven.Client.Constants;
-using IndexSearcher = Corax.Querying.IndexSearcher;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
@@ -58,8 +55,7 @@ internal static partial class QueryPlanBuilder
         QueryExpression where = p.Metadata.Query.Where;
         if (where == null)
         {
-            // A bare sort with no WHERE clause is a full index scan, itself a direct-scan candidate; the sort
-            // field's sortability / missing-entry check happens later before the candidacy is selected.
+            // A bare sort with no WHERE clause is a full index scan: a direct-scan candidate.
             bool hasBareSort = p.Metadata.OrderBy is { Length: > 0 } && p.Metadata.OrderBy[0].Name?.Value is not null;
             return new PlanTemplate
             {
@@ -72,15 +68,10 @@ internal static partial class QueryPlanBuilder
         BooleanOp rootOp = ParseExpression(where, walkerCtx);
         PlanWalker.ThrowIfErrors(walkerCtx);
 
-        // Slot bindings come from the canonical parse walk above (RewriteClauses never adds bindings). The count
-        // rides along on every template returned past here so the per-query slot vector can be asserted to match.
         if (rootOp == BooleanOp.True || walkerCtx.Clauses.Count == 0)
             return new PlanTemplate { Clauses = [], ValueOrdinalCount = walkerCtx.SlotBindings.Count };
 
-        Debug.Assert(rootOp != BooleanOp.False,
-            "No RQL expression currently reduces to BooleanOp.False at template time. " +
-            "If a future rewrite introduces this, add an AlwaysEmpty flag to PlanTemplate " +
-            "and handle it in Build (return null → empty result, not AllEntries).");
+        Debug.Assert(rootOp != BooleanOp.False, "No RQL expression currently reduces to BooleanOp.False at template time. ");
 
         walkerCtx.IsOr = rootOp == BooleanOp.Or;
 
@@ -98,26 +89,22 @@ internal static partial class QueryPlanBuilder
         }
 
         // Partial sort elision: drop ORDER BY keys pinned to a constant by a top-level equality and single-valued.
-        // We select the driving clause / strategy below against this reduced shape, and BuildSortMetadataTemplate
-        // reduces identically (same structural inputs), so the cached plan and prebuilt sort metadata agree.
         OrderByField[] orderBy = ComputeEffectiveOrderBy(p.Metadata.OrderBy, walkerCtx.Clauses, walkerCtx.IsOr, p.IndexSearcher);
         string orderByPrimaryField = orderBy is { Length: > 0 }
             ? orderBy[0].Name?.Value
             : null;
-        bool orderByPrimaryAscending = orderBy is { Length: > 0 } && orderBy[0].Ascending;
+        bool orderByPrimaryAscending = orderBy is [{ Ascending: true }, ..];
 
         PlanOptimizationFlags optFlags = ComputeTemplateOptimizations(walkerCtx, p, orderBy, orderByPrimaryField, orderByPrimaryAscending,
             out int sortDrivingIdx, out int sortSeekHintIdx, out bool sortSeekUseParam2);
-        // Slot a parameter the first time we encounter it (Clauses → Spatial → Vector DFS), reusing the slot
-        // for later occurrences. One pass: name→slot lookup is O(1), no second walk and no Array.IndexOf.
+        
         Dictionary<string, int> slots = [];
         AssignParameterSlots(walkerCtx.Clauses, slots);
         AssignParameterSlots(walkerCtx.SpatialClauses, slots);
         AssignParameterSlots(walkerCtx.VectorClauses, slots);
 
-        string[] parameterSlots = new string[slots.Count];
-        foreach ((string name, int slot) in slots)
-            parameterSlots[slot] = name;
+        string[] parameterSlots = slots.Keys.ToArray();
+        p.Metadata.CachedSlotBindings = walkerCtx.SlotBindings.ToArray();
 
         return new PlanTemplate
         {
@@ -138,17 +125,11 @@ internal static partial class QueryPlanBuilder
             ParameterSlots = parameterSlots,
             SortSeekHintTemplateIdx = sortSeekHintIdx,
             SortSeekUseParam2 = sortSeekUseParam2,
-            ValueOrdinalCount = walkerCtx.SlotBindings.ToArray().Length,
+            ValueOrdinalCount = walkerCtx.SlotBindings.Count,
         };
     }
 
-    /// <summary>Re-run the canonical WHERE parse purely to collect the value-bearing bindings, in the same
-    /// left-to-right DFS order used by <see cref="ParseTemplate"/>. The returned vector is indexed by
-    /// <see cref="ParameterBinding.ValueOrdinal"/> and is a pure function of the query text/AST (literal values
-    /// live in the text, parameters store names, deferred methods store closures) — parameter-value- and
-    /// index-independent — so it can be memoized per <see cref="QueryMetadata"/>. Returns an empty array when
-    /// there is no WHERE clause.</summary>
-    public static ParameterBinding[] ExtractSlotBindings(PlanParameters p)
+    private static ParameterBinding[] ExtractSlotBindings(PlanParameters p)
     {
         QueryExpression where = p.Metadata.Query.Where;
         if (where == null)
@@ -162,19 +143,19 @@ internal static partial class QueryPlanBuilder
 
     private static void AssignParameterSlots(List<ClauseInfo> clauses, Dictionary<string, int> slots)
     {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
         foreach (ClauseInfo clause in clauses ?? [])
         {
             foreach (ParameterBinding binding in clause.Bindings ?? [])
             {
-                if (binding is { Source: BindingSource.QueryParameter, ParameterName: not null })
-                {
-                    if (slots.TryGetValue(binding.ParameterName, out int slot) == false)
-                        slots.Add(binding.ParameterName, slot = slots.Count);
-                    binding.ParameterSlot = slot;
-                }
+                if (binding is not { Source: BindingSource.QueryParameter, ParameterName: not null }) 
+                    continue;
+                if (slots.TryGetValue(binding.ParameterName, out int slot) == false)
+                    slots.Add(binding.ParameterName, slot = slots.Count);
+                binding.ParameterSlot = slot;
             }
 
-            AssignParameterSlots(clause.SubClauses, slots); // recurse into groups
+            AssignParameterSlots(clause.SubClauses, slots); 
         }
     }
 
@@ -190,7 +171,7 @@ internal static partial class QueryPlanBuilder
         List<ClauseInfo> clauses = walkerCtx.Clauses;
 
         // Collect non-negated, non-boosted Equals clause indices for compound lookups.
-        const int maxStackAllocSize = 64;
+        const int maxStackAllocSize = 128;
         Span<int> eqBuf = clauses.Count <= maxStackAllocSize ? stackalloc int[maxStackAllocSize] : new int[clauses.Count];
         int eqCount = 0;
 
@@ -228,11 +209,6 @@ internal static partial class QueryPlanBuilder
             if (sortSeekHintIdx != -1)
                 continue;
 
-            // a SortedIndexReader is all about optimizing range seeks
-            //   ASC + GT/GTE   → seek to lower bound (read Param1)
-            //   DESC + LT/LTE  → seek to upper bound (read Param1)
-            //   BETWEEN ASC    → seek to lower bound (read Param1)
-            //   BETWEEN DESC   → seek to upper bound (read Param2)
             switch (c.ClauseType, orderByPrimaryAscending)
             {
                 case (ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual, true):
@@ -257,10 +233,7 @@ internal static partial class QueryPlanBuilder
         // Compound-exact pair: two Equals clauses whose fields form a compound field.
         if (eqCount >= 2) TryFindCompoundFieldEqualMatches(eqBuf);
 
-        // CompoundKeyLookup collapses the pair into a single composite-key TermQuery encoding ONLY the two
-        // compound fields. Sound only when the pair IS the entire query (no residual clause) and neither member
-        // is WHEN-guarded (a guard can drop a member at bind time, leaving a single-clause query this strategy
-        // can't represent). Both structural, so decide candidacy here; instantiate-time only checks the key encoding.
+        // CompoundKeyLookup collapses two WHERE A = $x AND B = $y into compound($x, $y) lookup
         if (walkerCtx.CompoundExact.First >= 0 &&
             clauses.Count == 2 &&
             clauses[walkerCtx.CompoundExact.First].WhenCondition is null &&
@@ -269,51 +242,40 @@ internal static partial class QueryPlanBuilder
             flags |= PlanOptimizationFlags.CompoundExactCandidate;
         }
 
-        // Compound-field candidate: Equals clause + ORDER BY field forming a compound field. Uses the
-        // partial-elision-reduced ORDER BY (orderBy), so a pinned single-valued leading key is already gone —
-        // a two-key compound on a pinned field1 reduces to a one-key sort, which falls into Case 2 below.
+        // Compound-field candidate: Equals clause + ORDER BY field forming a compound field. 
         switch (orderBy)
         {
-            // Case 1: OrderBy has exactly 2 elements with non-null names
-            case [{ Name.Value: { } f1 }, { Name.Value: { } f2 }] when p.Index.HasCompoundField(p.Allocator, f1, f2):
-                for (int e = 0; e < eqCount; e++)
-                {
-                    if (clauses[eqBuf[e]].FieldName != f1) continue;
-                    walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
-                    walkerCtx.CompoundFieldSortName = f2;
-                    break;
-                }
-
-                break;
-
-            // Case 2: OrderBy has exactly 1 element with a non-null name
-            case [{ Name.Value: { } sf }]:
-                for (int e = 0; e < eqCount; e++)
+            case [{ Name.Value: { } sf }]: // exactly one order by
+                for (int e = 0; e < eqCount; e++) // search for matching compound field
                 {
                     string ef = clauses[eqBuf[e]].ResolvedFieldName ?? clauses[eqBuf[e]].FieldName;
-                    if (p.Index.HasCompoundField(p.Allocator, ef, sf) == false) continue;
+                    if (p.Index.HasCompoundField(p.Allocator, ef, sf) == false)
+                        continue;
                     walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
                     walkerCtx.CompoundFieldSortName = sf;
-                    // Equality on ef pins the compound(ef, sf) leading-key prefix; the sf subtree is then walked
-                    // in sf order with no residual (residualCount=0 → CompoundFieldCostEffective is unconditionally
-                    // true). The walk is streamed via SortedDrivingMatch (see ConstructCompoundField), so the
-                    // SortingMatch heap is skipped even though there is no WHERE clause on the sort field.
                     flags |= PlanOptimizationFlags.DirectScanCandidate;
                     break;
                 }
 
                 break;
+            case [{ Name.Value: { } f1 }, { Name.Value: { } f2 }] when p.Index.HasCompoundField(p.Allocator, f1, f2):
+                for (int e = 0; e < eqCount; e++)
+                {
+                    if (clauses[eqBuf[e]].FieldName != f1) 
+                        continue;
+                    
+                    walkerCtx.CompoundFieldDrivingClause = eqBuf[e];
+                    walkerCtx.CompoundFieldSortName = f2;
+                    break;
+                }
+                break;
         }
 
-        // Optional field2 range narrowing clause: a GT/GTE/LT/LTE/Between on the compound
-        // sort field. Structural (clause-type + field name only), so it is template-stable —
-        // bake the template-position index here instead of recomputing on every Construct call.
+        // Optional field2 range narrowing clause: a GT/GTE/LT/LTE/Between on the compound sort field.
+        // For example: WHERE Age > $x ORDER BY Age 
         if (walkerCtx.CompoundFieldDrivingClause != -1)
         {
-            // Bake the compound tree name once (template-stable) instead of interpolating per execution in
-            // ConstructCompoundField. Mirror that method's use of FieldName (not ResolvedFieldName) so they match.
-            walkerCtx.CompoundFieldName =
-                $"compound({clauses[walkerCtx.CompoundFieldDrivingClause].FieldName},{walkerCtx.CompoundFieldSortName})";
+            walkerCtx.CompoundFieldName = $"compound({clauses[walkerCtx.CompoundFieldDrivingClause].FieldName},{walkerCtx.CompoundFieldSortName})";
 
             for (int i = 0; i < clauses.Count; i++)
             {
@@ -335,7 +297,7 @@ internal static partial class QueryPlanBuilder
         {
             if (c.HasBoost)
                 return true;
-
+            RuntimeHelpers.EnsureSufficientExecutionStack();
             foreach (ClauseInfo t in c.SubClauses ?? [])
             {
                 if (HasBoostRecursive(t))
@@ -350,28 +312,26 @@ internal static partial class QueryPlanBuilder
             {
                 ClauseInfo c1 = clauses[eqBuf[a]];
                 string f1 = c1.ResolvedFieldName ?? c1.FieldName;
+                using var _ = Slice.From(p.Allocator, f1, out Slice s1);
                 for (int b = a + 1; b < eqCount; b++)
                 {
                     ClauseInfo c2 = clauses[eqBuf[b]];
                     string f2 = c2.ResolvedFieldName ?? c2.FieldName;
-                    using (Slice.From(p.Allocator, f1, out Slice s1))
-                    using (Slice.From(p.Allocator, f2, out Slice s2))
+                    using var __ = Slice.From(p.Allocator, f2, out Slice s2);
+                    if (p.Index.HasCompoundField(s1, s2))
                     {
-                        if (p.Index.HasCompoundField(s1, s2))
-                        {
-                            walkerCtx.CompoundExact = (eqBuf[a], eqBuf[b]);
-                            walkerCtx.CompoundExactAFirst = true;
-                            walkerCtx.CompoundExactName = $"compound({f1},{f2})";
-                            return;
-                        }
+                        walkerCtx.CompoundExact = (eqBuf[a], eqBuf[b]);
+                        walkerCtx.CompoundExactAFirst = true;
+                        walkerCtx.CompoundExactName = $"compound({f1},{f2})";
+                        return;
+                    }
 
-                        if (p.Index.HasCompoundField(s2, s1))
-                        {
-                            walkerCtx.CompoundExact = (eqBuf[a], eqBuf[b]);
-                            walkerCtx.CompoundExactAFirst = false;
-                            walkerCtx.CompoundExactName = $"compound({f2},{f1})";
-                            return;
-                        }
+                    if (p.Index.HasCompoundField(s2, s1))
+                    {
+                        walkerCtx.CompoundExact = (eqBuf[a], eqBuf[b]);
+                        walkerCtx.CompoundExactAFirst = false;
+                        walkerCtx.CompoundExactName = $"compound({f2},{f1})";
+                        return;
                     }
                 }
             }
