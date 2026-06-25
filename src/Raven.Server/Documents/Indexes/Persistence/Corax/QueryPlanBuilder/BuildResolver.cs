@@ -34,10 +34,13 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
     private QueryExecution BuildOnCacheMiss(in Vector256<long> cacheKeyHash)
     {
-        var (scanSet, perClause) = BuildScanPredicates();
-        var (ops, requiredBitmaps) = PlanEmitter.Emit(template, _exec.Executions, planParams, perClause);
-        // The entry-scan delegate is always emitted (an empty predicate set when there is no entry-scan path); its C# mirror joins the plan Source.
-        scanSet.Compiled = ResidualScanIlEmitter.EmitDelegate(scanSet.Predicates, out var scanCsharp);
+        var (scanSet, perClause, scanEligible) = BuildScanPredicates();
+        var (ops, requiredBitmaps) = PlanEmitter.Emit(template, _exec.Executions, planParams, scanEligible);
+        // The entry-scan delegate is emitted only when the scan path is viable (BuildScanPredicates cleared the
+        // predicates otherwise). MaybeEntryScan is gated on the same verdict, so a non-viable plan never needs it.
+        string scanCsharp = null;
+        if (scanSet.HasPredicates)
+            scanSet.Compiled = ResidualScanIlEmitter.EmitDelegate(scanSet.Predicates, out scanCsharp);
         // DirectScan / CompoundField walk the driving clause via the tree and filter every OTHER clause per-entry. Their residual set excludes the DRIVING clause,
         // whereas the entry-scan set excludes clause[0] (the bitmap seed). Those differ whenever the driving clause is not the smallest-cardinality clause (always, for a range-driven scan).
         var compoundFieldResidualSet = _exec.CompoundFieldDrivingClause is not null
@@ -215,7 +218,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
     // Consider the query: FROM Posts WHERE Tags = 'good' AND Status = 'Public', Tags = 'good' has 100 results, Status = 'Public' (may has 1 million)
     // it is cheaper to evaluate 100 entries to find if Status = 'Public' directly.
-    private (ResidualScanSet ScanSet, ScanPredicateInfo?[] PerClause) BuildScanPredicates()
+    private (ResidualScanSet ScanSet, ScanPredicateInfo?[] PerClause, bool ScanEligible) BuildScanPredicates()
     {
         var perClause = new ScanPredicateInfo?[_exec.Executions.Count];
 
@@ -248,7 +251,20 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             clauseIndices.Add(i);
         }
 
-        return (new ResidualScanSet { Predicates = scanList?.ToArray(), ClauseIndices = clauseIndices?.ToArray() }, perClause);
+        // The entry scan over clause 0's seed bitmap (1..N evaluated per-entry) is viable only when EVERY clause in
+        // the scan range can be expressed as a predicate. A null there means an unsupported clause or a top-level
+        // AlwaysFalse collapsed to null above — and since scanList silently drops nulls, a delegate built from the
+        // survivors would be missing that filter. PlanEmitter gates MaybeEntryScan on the same condition, so today
+        // such a delegate is dead, but we refuse to bake a partial (invalid) delegate at all rather than rely on it
+        // never being invoked. (Clause 0 is the seed, run via the bitmap pipeline, so a null there is irrelevant —
+        // mirror PlanEmitter's [1..] window.)
+        bool scanEligible = hasScanList && perClause.AsSpan()[1..].Contains(null) == false;
+
+        return (new ResidualScanSet
+        {
+            Predicates = scanEligible ? scanList?.ToArray() : null,
+            ClauseIndices = scanEligible ? clauseIndices?.ToArray() : null
+        }, perClause, scanEligible);
     }
 
     private ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType)

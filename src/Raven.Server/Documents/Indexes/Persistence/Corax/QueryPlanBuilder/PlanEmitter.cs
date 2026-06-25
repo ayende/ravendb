@@ -20,13 +20,13 @@ internal sealed class PlanEmitter
     private int _nextScratch = EphemeralBitmap + 1;
     private int _maxScratchUsed = EphemeralBitmap;
 
-    public static (PlanOp[] Ops, int RequiredBitmaps) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams, ScanPredicateInfo?[] perClause)
+    public static (PlanOp[] Ops, int RequiredBitmaps) Emit(PlanTemplate template, List<ClauseExecution> executions, PlanParameters planParams, bool scanEligible)
     {
         if (executions.Count is 0) // a genuinely clause-less query (no WHERE) — match every doc.
-            return (BuildAllEntriesPlan(), 2); 
+            return (BuildAllEntriesPlan(), 2);
 
         var emitter = new PlanEmitter();
-        var (ops, bitmaps) = template.IsOr ? emitter.EmitOrPlan(executions) : emitter.EmitAndPlan(executions, perClause);
+        var (ops, bitmaps) = template.IsOr ? emitter.EmitOrPlan(executions) : emitter.EmitAndPlan(executions, scanEligible);
         if (planParams.HasBoost)
         {
             // we require query match for boost, because the other options cannot compute it
@@ -162,7 +162,7 @@ internal sealed class PlanEmitter
     }
 
 
-    private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions, ScanPredicateInfo?[] perClause)
+    private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions, bool allScanEligible)
     {
         var e0 = executions[0];
         if (e0.IsNegated)
@@ -170,9 +170,8 @@ internal sealed class PlanEmitter
 
         EmitClauseInto(e0, e0.IsNegated ? MergeKind.AndNotInto : MergeKind.Fill, suppressEarlyExit: false, destSlot: 0);
 
-        // check if we have any clause after the first that we cannot scan on, we don't bother with the first since we always run it normally
-        bool allScanEligible = perClause.AsSpan()[1..].Contains(null) is false;
-
+        // Entry-scan eligibility is decided once by BuildScanPredicates (no null in the 1..N scan range — the seed
+        // at clause 0 always runs via the bitmap pipeline). When ineligible it also cleared the scan delegate.
         for (int i = 1; i < executions.Count; i++)
         {
             var cur = executions[i];
