@@ -679,11 +679,14 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         // the bitmap is truncated to the page instead of materializing the whole posting
                         // list. We can do this when the client doesn't need the exact total (SkipStatistics),
                         // or when we already know it cheaply (knownExactTotal) and supply it below.
+                        // Boost disqualifies the truncation: scores rank the output, so an arbitrary doc-id
+                        // ordered page would drop the genuine top-scored documents — keep the full match
+                        // materialized so the scorer sees everything (the exact total is still reported below).
                         // Fan-out indexes produce multiple entries per document; after dedup the page would
                         // come up short if we truncated to exactly `take`. Inflate by the observed max
                         // outputs-per-document so the bitmap contains enough entries to fill the page even
                         // in the worst-case dedup scenario.
-                        if (take > 0 && (query.SkipStatistics || knownExactTotal >= 0))
+                        if (take > 0 && builderParameters.HasBoost == false && (query.SkipStatistics || knownExactTotal >= 0))
                             compiledMatch.Limit = (int)Math.Min((long)take * _maxNumberOfOutputsPerDocument, int.MaxValue);
                     }
                     else if (compileResult.QueryMatch is DirectScanMatchBase { KnownExactTotal: >= 0 } directScan)

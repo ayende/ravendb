@@ -131,13 +131,15 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         if (_exec.Executions is [{ IsSentinel: true } sentinel])
             return sentinel.Cardinality;
 
-        // A single non-boosted Equals / NotEquals has an exactly-known result count that the cardinality
-        // estimator already computed from O(1) metadata (no sampling):
+        // A single Equals / NotEquals has an exactly-known result count that the cardinality estimator already
+        // computed from O(1) metadata (no sampling):
         //   Equals    -> the term posting list's NumberOfEntries;
         //   NotEquals -> index NumberOfEntries minus that exact term count (FillAllEntries AndNot term).
         // Guards: a resolvable packed value (an unresolved param makes the estimator fall back to a
         // non-exact whole-index bound) and the canonical clause shape (a negated Equals or a non-negated
-        // NotEquals would not match the value the estimator returned).
+        // NotEquals would not match the value the estimator returned). Boost is NOT a guard here — it never
+        // changes the matched set, so the count is identical; whether the page may be truncated to a limit is a
+        // separate concern owned by the consumer (CoraxIndexReadOperation gates the limit push-down on HasBoost).
         var execs = _exec.Executions;
         if (execs is { Count: 1 })
         {
@@ -146,15 +148,15 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             bool exactNotEquals = only.ClauseType == ClauseType.NotEquals && only.IsNegated;
             if (only.IsSentinel == false
                 && only.PackedParamValue.IsNone == false
-                && (exactEquals || exactNotEquals)
-                && only.Clause.HasBoost == false
-                && only.Cardinality >= 0)
+                && (exactEquals || exactNotEquals))
             {
+                // Cardinality is either a real count (the estimator never yields a negative for Equals/NotEquals)
+                // or the -1 "not estimated" sentinel — which is exactly this method's "unknown" return, so return it.
                 return only.Cardinality;
             }
 
-            // A single non-boosted exists() has an exactly-known total the estimator does NOT supply (it returns
-            // the whole-index upper bound for Exists). The candidate exact total is index entries minus the field's
+            // A single exists() has an exactly-known total the estimator does NOT supply (it returns the
+            // whole-index upper bound for Exists). The candidate exact total is index entries minus the field's
             // non-existing posting list — both O(1). NOT exists() is excluded (it emits the complement).
             //
             // Only valid for a SINGLE-VALUED field: a multi-valued field can hold an EMPTY array — present (not in
@@ -164,8 +166,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             // O(1) total is exact; otherwise fall through (-1) to the drained count.
             if (only.IsSentinel == false
                 && only.ClauseType == ClauseType.Exists
-                && only.IsNegated == false
-                && only.Clause.HasBoost == false)
+                && only.IsNegated == false)
             {
                 FieldMetadata existsField = QueryPlanBuilder.ResolveFieldMetadata(only.Clause, walkerCtx);
                 if (_indexSearcher.HasMultipleTermsInField(existsField) == false)
