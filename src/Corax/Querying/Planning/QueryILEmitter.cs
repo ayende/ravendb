@@ -37,18 +37,14 @@ public static class QueryIlEmitter
         var d = new DualEmit(il, cs);
 
         int bitmapCount = CountBitmaps(ops);
-        d.CsLine($"// Uses {bitmapCount} result bitmaps");
         d.CsLine("""
                  [SkipLocalsInit]
                  static void CompiledQuery(CompiledQueryMatch ctx)
                  {
                  """);
-
-        // Calling convention for the QueryPrimitives.Ctx*From*(ctx, cursor, slot) helpers below:
-        //   'cursor' is the leaf cursor — it picks WHICH match we read from (the posting source / tree
-        //   scan / query match resolved for ctx.Leaves[cursor] / ctx.ResolvedMatches[cursor], i.e. the
-        //   field+term of that clause). 'slot' is only the DESTINATION bitmap (ctx.Bitmaps[slot]); slot 0
-        //   is the live result accumulator. The cursor auto-advances by one after each such call.
+        
+        // cursor - the leaf cursor we currently operate on: ctx.Leaves[cursor] / ctx.ResolvedMatches[cursor]
+        // slot - the _destination_ bitmap for the operation: ctx.Bitmaps[slot]
 
         // Locals
         var bufferLocal = d.DeclareLocal(typeof(Span<long>), "buffer");
@@ -69,10 +65,7 @@ public static class QueryIlEmitter
 
         int lastEffectiveIndex = GetLastEffectiveIndex(ops);
 
-        // OpLimit starts unlimited; arm it (= ctx.Limit) on the first slot-0 op past which nothing narrows
-        // slot 0. From there the set only grows toward the result, so fills/AND may truncate to the limit;
-        // everything upstream of a narrowing op (incl. an entry-scan gate) keeps the full set. Monotonic:
-        // once "nothing narrows after" holds it holds for every later slot-0 op, so a single arm suffices.
+        // OpLimit starts unlimited; arm it (= ctx.Limit) on the first slot-0 op after which we only add, never subtracts
         bool opLimitArmed = false;
 
         for (int i = 0; i < ops.Length; i++)
@@ -87,12 +80,14 @@ public static class QueryIlEmitter
             bool advanceCursor = !isLastEffectiveOp;
 
             // If we can only ever grow the set of results, we should check if we reached the limit early 
-            bool shouldCheckLimitReached = op.BitmapLocal == 0 && !isLastEffectiveOp && LaterOpNarrowsSlot0(ops, i + 1) is false;
+            bool laterOpNarrowsSlot0 = LaterOpNarrowsSlot0(ops, i + 1);
+            
+            bool shouldCheckLimitReached = op.BitmapLocal == 0 && !isLastEffectiveOp && laterOpNarrowsSlot0 is false;
 
             if (op.DebugLabel != null)
                 d.SetPendingComment(op.DebugLabel);
 
-            if (!opLimitArmed && op.BitmapLocal == 0 && LaterOpNarrowsSlot0(ops, i + 1) is false)
+            if (!opLimitArmed && op.BitmapLocal == 0 && laterOpNarrowsSlot0 is false)
             {
                 d.EmitArmOpLimit();
                 opLimitArmed = true;
