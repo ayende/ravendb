@@ -123,27 +123,25 @@ internal static partial class QueryPlanBuilder
         return exec;
     }
 
-    /// <summary>Marker bit OR-ed into a sentinel-bound parameter's kind (kind occupies bits 0-1).
-    /// Forces a distinct plan-cache entry for parameter-bound BETWEEN sentinels — see ComputeTypeSignature.</summary>
-    private const byte SentinelParamMark = 1 << 2;
-
-    /// <summary>Mark a parameter-bound BETWEEN sentinel's slot in the kind carrie.
-    /// No-op for literal/deferred bounds (ParameterSlot == -1 — the sentinel is encoded in the query text, no marker needed).</summary>
-    private static void MarkSentinel(ref byte[] full, int parameterSlotCount, ParameterBinding binding)
+    /// <summary>Set the bit for a parameter-bound BETWEEN sentinel's slot in the per-slot sentinel bitmap, forcing a
+    /// distinct plan-cache entry (a "*"/"NULL" open bound must go to a QueryMatch-dispatched plan, not a TreeScan one).
+    /// No-op for literal/deferred bounds (ParameterSlot == -1 — the sentinel is encoded in the query text, no marker
+    /// needed) and when there are no slots (empty bitmap).</summary>
+    private static void MarkSentinel(Span<ulong> sentinelBits, ParameterBinding binding)
     {
-        if (binding.ParameterSlot < 0 || parameterSlotCount is 0)
+        int slot = binding.ParameterSlot;
+        if (slot < 0 || sentinelBits.IsEmpty)
             return;
-        full ??= new byte[parameterSlotCount];
-        full[binding.ParameterSlot] |= SentinelParamMark;
+        sentinelBits[slot >> 6] |= 1UL << (slot & 63);
     }
 
     internal static void PopulateClauseValues(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters,
-        int parameterSlotCount, ref byte[] full)
+        Span<ulong> sentinelBits)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         foreach (var it in exec.SubExecutions ?? [])
         {   // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
-            PopulateClauseValues(it, slotBindings, queryParameters, writer, builderParameters, parameterSlotCount, ref full);
+            PopulateClauseValues(it, slotBindings, queryParameters, writer, builderParameters, sentinelBits);
         }
 
         if (exec.Clause is { HasBoost: true, Bindings.Length: > 0 })
@@ -177,18 +175,18 @@ internal static partial class QueryPlanBuilder
                 {
                     case (true, true):
                         exec.SentinelRewriteType = ClauseType.Exists;
-                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenLow]);
-                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenHigh]);
+                        MarkSentinel(sentinelBits, bindings[BindingIndex.BetweenLow]);
+                        MarkSentinel(sentinelBits, bindings[BindingIndex.BetweenHigh]);
                         return;
                     case (true, false):
                         exec.SentinelRewriteType = ClauseType.LessThanOrEqual;
-                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenLow]);
+                        MarkSentinel(sentinelBits, bindings[BindingIndex.BetweenLow]);
                         exec.TermValueType = highType;
                         exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType));
                         return;
                     case (false, true):
                         exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual;
-                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenHigh]);
+                        MarkSentinel(sentinelBits, bindings[BindingIndex.BetweenHigh]);
                         exec.TermValueType = lowType;
                         exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType));
                         return;

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Runtime.Intrinsics;
 using Corax.Mappings;
 using Corax.Querying.Planning;
@@ -16,7 +17,17 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
     private PlanCacheKeyBuilder _builder = new();
     private readonly ValueWriter _writer = new();
-    private byte[] _sentinelFull = null;
+
+    // Per-parameter-slot bitmap marking slots bound to a BETWEEN "*"/"NULL" sentinel. 256 bits live inline on this
+    // ref struct so the common case never allocates; a larger parameter count spills to the heap overflow array.
+    private const int SentinelInlineWords = 4; // 4 * 64 = 256 bits
+    [InlineArray(SentinelInlineWords)]
+    private struct SentinelInlineBitmap
+    {
+        private ulong _word;
+    }
+    private SentinelInlineBitmap _sentinelInline;
+    private ulong[] _sentinelOverflow;
 
     private QueryExecution _exec;
 
@@ -154,7 +165,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             ApplyFate(exec, cached);
             if (exec.IsSentinel == false)
             {
-                QueryPlanBuilder.PopulateClauseValues(exec, planParams.SlotBindings, planParams.QueryParameters, _writer, builderParameters, template.ParameterSlots.Length, ref _sentinelFull);
+                QueryPlanBuilder.PopulateClauseValues(exec, planParams.SlotBindings, planParams.QueryParameters, _writer, builderParameters, SentinelBits());
                 QueryPlanBuilder.PropagateBetweenContradiction(exec, _writer); // a contradictory BETWEEN collapses to MatchNothing
                 if (IsEmptyIn(exec))
                     exec.MarkAsSentinel(ClauseType.MatchNothing, 0); // an empty IN matches nothing
@@ -429,6 +440,16 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     // ClauseExecution.CompareTo sorts negated clauses LAST, so first being negated means they all are
     private readonly bool CheckAllNegated() => _exec.Executions is [{ IsNegated: true }, ..];
 
+    // Sentinel bitmap span sized to the current parameter-slot count, backed by the inline buffer (or the heap
+    // overflow for very large parameter counts). Marked during PopulateClauseValues and read back when hashing.
+    private Span<ulong> SentinelBits()
+    {
+        int words = (template.ParameterSlots.Length + 63) >> 6;
+        if (words <= SentinelInlineWords)
+            return MemoryMarshal.CreateSpan(ref Unsafe.As<SentinelInlineBitmap, ulong>(ref _sentinelInline), words);
+        return _sentinelOverflow ??= new ulong[words];
+    }
+
     private Vector256<long> ComputeCacheKeyHash()
     {
         var execs = _exec.Executions;
@@ -444,16 +465,18 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
                     (_exec.DrivingClauseCardinality is >= 0 and <= QueryPrimitives.TieBreakGroupInitialCapacity).ToInt32();
         _builder.Append(flags, 2);
 
-        // Per-parameter runtime type (bits 0-1) OR-ed with the BETWEEN-sentinel mark (bit 2 of sentinelFull).
+        // Per-parameter discriminators: the BETWEEN-sentinel bitmap and each slot's runtime kind (bits 0-1).
         // A parameter-bound BETWEEN sentinel ("*"/"NULL") must go to a QueryMatch-dispatched plan while a
-        // non-sentinel BETWEEN of the same query text can be TreeScan-dispatched, so the mark forces a distinct key.
+        // non-sentinel BETWEEN of the same query text can be TreeScan-dispatched, so the sentinel bit forces a
+        // distinct key. Hash the whole bitmap once, then each slot's 2-bit kind.
         _builder.Append((ushort)template.ParameterSlots.Length, 16);
+        Span<ulong> sentinelBits = SentinelBits();
+        if (sentinelBits.IsEmpty == false)
+            _builder.Append(MemoryMarshal.AsBytes(sentinelBits));
         for (int i = 0; i < template.ParameterSlots.Length; i++)
         {
             int kind = (int)QueryPlanBuilder.ClassifyParamType(planParams.QueryParameters, template.ParameterSlots[i]) & 0b11;
-            if (_sentinelFull != null)
-                kind |= _sentinelFull[i]; // SentinelParamMark is already (1 << 2), i.e. bit 2 — OR it in directly; a further << 2 would push it out of the 3-bit payload
-            _builder.Append(kind, 3);
+            _builder.Append(kind, 2);
         }
 
         return _builder.ToHash();
