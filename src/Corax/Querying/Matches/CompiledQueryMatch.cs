@@ -225,9 +225,7 @@ public class CompiledQueryMatch(
         {
             CompiledPlan.CompiledDelegate(this);
 
-            // The result always lands in slot 0 (RunEntryScan swaps its survivors there too).
             _bitmapData = Bitmaps[0];
-            Bitmaps[0] = default; // don't dispose this
             _bitmapData.PrepareForReading();
             _count = _bitmapData.ComputeCount();
             _iterator = _bitmapData.GetIterator();
@@ -235,7 +233,8 @@ public class CompiledQueryMatch(
         }
         finally
         {
-            for (int i = 0; i < bitmapCount; i++)
+            // we only dispose from 1 and up, 0 is the output for the query
+            for (int i = 1; i < bitmapCount; i++)
             {
                 Bitmaps[i].Dispose();
             }

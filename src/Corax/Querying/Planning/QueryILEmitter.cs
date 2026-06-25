@@ -36,7 +36,6 @@ public static class QueryIlEmitter
         var cs = new StringBuilder();
         var d = new DualEmit(il, cs);
 
-        int bitmapCount = CountBitmaps(ops);
         d.CsLine("""
                  [SkipLocalsInit]
                  static void CompiledQuery(CompiledQueryMatch ctx)
@@ -432,8 +431,7 @@ public static class QueryIlEmitter
         d.CsLine($"{d.GetLocalName(cursorVar)} = {d.GetLocalName(endVar)};");
     }
 
-    /// <summary>EntryScan tail: set ctx.EntryScanTakenAtOp, run entry scan, return. RunEntryScan reads the
-    /// candidate set from slot 0 and stages survivors into slot 1, then swaps them back so the result is in slot 0.</summary>
+    /// <summary>EntryScan tail: set ctx.EntryScanTakenAtOp, run entry scan, return. RunEntryScan reads & writes candidates from slot 0 and uses slot 1 as scratch storage.</summary>
     private static void EmitEntryScanTail(ref DualEmit d, LabelPair entryScanLabel, LocalBuilder cursorVar)
     {
         d.MarkLabel(entryScanLabel);
@@ -451,30 +449,7 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.RunEntryScanMethod);
         d.CsLine("CompiledQueryHelper.RunEntryScan(ctx, ref ctx.Bitmaps[0], ref ctx.Bitmaps[1]);");
 
-        // RunEntryScan leaves the result in slot 0 (it swaps survivors back from slot 1), so Execute() reads slot 0.
         d.EmitRetVoid();
-    }
-
-    /// <summary>Highest destination/source bitmap slot referenced by any op, +1. For the
-    /// bitmap-to-bitmap ops (AndBitmaps / AndNotBitmaps / LazyOrBitmaps) ParamIndex2 is a
-    /// source SLOT and counts; for the range ops it is an InRangeCounts index and does not.
-    /// MaybeEntryScan stages survivors into slot 1, so any plan with an entry-scan needs ≥2.</summary>
-    private static int CountBitmaps(PlanOp[] ops)
-    {
-        int maxSlot = 0;
-        for (int i = 0; i < ops.Length; i++)
-        {
-            ref var op = ref ops[i];
-            var curSlot = Math.Max(op.Kind switch
-            {
-                // For bitmap-to-bitmap ops ParamIndex2 is a source slot, so it counts toward the max.
-                PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps or PlanOpKind.LazyOrBitmaps => Math.Max(op.BitmapLocal, op.ParamIndex2),
-                PlanOpKind.MaybeEntryScan => 1,
-                _ => -1
-            }, op.BitmapLocal);
-            maxSlot = Math.Max(curSlot, maxSlot);
-        }
-        return maxSlot + 1;
     }
 
     private static void EmptyExecute(CompiledQueryMatch ctx) { }
