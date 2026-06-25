@@ -15,13 +15,13 @@ internal static partial class QueryPlanBuilder
 {
     public static QueryInspectionNode BuildInspectionGraph(CompiledQuery result)
     {
-        var plan = BuildPlan(result, out var compiledRoot, out var opNodes, out var entryScanNode);
+        var plan = BuildInspectionNodes(result, out var compiledRoot, out var opNodes, out var entryScanNode);
         if (plan == null)
         {
             var bypass = result.ExecutedMatch.Inspect();
             if (result.SortingWrapper?.Inspect() is {} bypassSort)
             {
-                // Mirror the BuildPlan wrapping so the sort strategy renders as the dataflow tail here too.
+                // Mirror the BuildInspectionNodes wrapping so the sort strategy renders as the dataflow tail here too.
                 bypassSort.Children.Clear();
                 bypassSort.Children.Add(bypass);
                 bypass = bypassSort;
@@ -36,7 +36,7 @@ internal static partial class QueryPlanBuilder
         return plan;
     }
 
-    private static QueryInspectionNode BuildPlan(CompiledQuery result, out QueryInspectionNode compiledRoot, out List<QueryInspectionNode> opNodes, out QueryInspectionNode entryScanNode)
+    private static QueryInspectionNode BuildInspectionNodes(CompiledQuery result, out QueryInspectionNode compiledRoot, out List<QueryInspectionNode> opNodes, out QueryInspectionNode entryScanNode)
     {
         compiledRoot = null;
         opNodes = null;
@@ -150,10 +150,10 @@ internal static partial class QueryPlanBuilder
             if (t.IsEntryScanGate)
                 hasEntryScanGate = true;
         }
-        
+
         if (hasEntryScanGate)
         {
-            var entryScanParams = new Dictionary<string, string> { ["DestSlot"] = "1", ["SourceSlot"] = "0" };
+            var entryScanParams = new Dictionary<string, string> { ["DestSlot"] = "0", ["SourceSlot"] = "0" };
             entryScanNode = new QueryInspectionNode("EntryScan", parameters: entryScanParams);
             if (compiledPlan.EntryScanSet is { HasPredicates: true } entryScan)
             {
