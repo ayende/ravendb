@@ -93,7 +93,7 @@ internal static class PlanWalker
             if (clause.ClauseType == ClauseType.Search)
             {
                 // search() on document-id field must NOT be wrapped — id() is the document key that is not analyzed.
-                if (string.Equals(clause.FieldName, Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName, StringComparison.OrdinalIgnoreCase) == false)
+                if (string.Equals(clause.FieldName, Client.Constants.Documents.Indexing.Fields.DocumentIdFieldName, StringComparison.Ordinal) == false)
                 {
                     clause.ResolvedFieldName = AutoIndexField.GetSearchAutoIndexFieldName(clause.FieldName);
                 }

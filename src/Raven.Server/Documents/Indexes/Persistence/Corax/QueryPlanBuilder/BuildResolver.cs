@@ -219,6 +219,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         if (exec.SubExecutions is not { } subExecs || clause.SubClauses is not { } subClauses)
             return;
 
+        // child's enclosing op is its parent group, not the query root
         bool childEnclosingIsOr = clause.ClauseType == ClauseType.OrGroup;
         for (int i = 0; i < subExecs.Count; i++)
             ApplyFateRecursive(subExecs[i], subClauses[i], childEnclosingIsOr);
@@ -275,7 +276,8 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     private ScanPredicateInfo? BuildScanPredicateInfoCore(ClauseExecution exec, ParamValueType termType)
     {
         var clause = exec.Clause;
-        // Single-valued ⟺ the field holds at most one term per entry. Can avoid a while(FindNext()) loop
+        // Single-valued ⟺ the field holds at most one term per entry. Can avoid a while(FindNext()) loop.
+        // Folded into the structural plan key, so a single→multi flip re-plans instead of reusing this template.
         bool singleValued = clause.FieldName is { } fieldName && _indexSearcher.HasMultipleTermsInField(fieldName) == false;
 
         // The residual-scan IL only encodes negation for IN / ALL IN and not equality. everything else is not supported
