@@ -30,9 +30,6 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
     private int _labelCounter = 0;
     private int _tempCounter = 0;
 
-    /// <summary>Index of the registered arg that holds the context object the Load* helpers read fields from
-    /// (the residual scan's <c>exec</c>). Set via <see cref="SetContextArg"/> so Load* emit a load of that arg
-    /// instead of hardcoding arg 0.</summary>
     private byte _contextArgIndex;
 
     /// <summary>Clause label staged by <see cref="SetPendingComment"/> and emitted as a TRAILING comment
@@ -139,7 +136,6 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
 
     public string GetArgName(byte index) => _args[index];
 
-    /// <summary>Designate which registered arg the Load* helpers read fields from (the residual scan's <c>exec</c>).</summary>
     public void SetContextArg(byte index) => _contextArgIndex = index;
 
     private string ContextArgName => _args[_contextArgIndex];
@@ -260,9 +256,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsStack.Push($"{ContextArgName}.ResidualInSets[{idx}].HasNull");
     }
 
-    /// <summary>Branch when the residual string param at <paramref name="idx"/> holds a concrete (non-null)
-    /// value: <c>if (exec.StringValues[idx] != null) goto label;</c>. Routes concrete-valued equality away
-    /// from the null-target (IsNull-only) path. Null-ness is a per-execution value, so this is a runtime test.</summary>
+    // if (exec.StringValues[idx] != null) goto label;
     public void BranchIfStringTargetNotNull(int idx, LabelPair l)
     {
         LoadContextArg();
