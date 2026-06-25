@@ -1,30 +1,13 @@
 using System;
-using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
-using System.Runtime.InteropServices;
 using System.Text;
-using Corax.Querying.Matches;
 using Corax.Utils;
-using Voron;
 
 namespace Corax.Querying.Planning;
 
 /// <summary>
-/// Emits IL for residual-predicate evaluation delegates used by both the entry-scan
-/// path (CompiledQueryMatch) and the direct-scan path (DirectScanMatch). A single
-/// delegate works against a <c>ref</c> to <see cref="ResidualParams"/>, which both
-/// context types embed as a field. Per-predicate value type, compare op, AND/OR
-/// sub-groups, and fieldRootPages indexing are baked into IL at emit time. Loads
-/// against the residual arrays use plain <c>Ldfld</c> on the byref struct — no
-/// interface dispatch, fully JIT-inlineable.
-///
-/// The delegate ALWAYS evaluates ALL predicates baked into the IL, regardless of
-/// which path calls it. In the direct-scan case, the driving-clause predicates
-/// (already satisfied by the tree scan) are re-evaluated — this is redundant but
-/// harmless, and it eliminates the need for a separate delegate-per-path or a
-/// runtime predicate-count parameter. The extra cost is negligible: a handful
-/// of FindNext + compare operations per entry against already-cached stored fields.
+/// Emits a delegate for entry-scan path (residuals after the query already did some work)
 /// </summary>
 public static class ResidualScanIlEmitter
 {
@@ -34,12 +17,8 @@ public static class ResidualScanIlEmitter
         Span<long> entryIds,
         Span<int> originalIndexes);
 
-    /// <summary>Emit a residual-scan delegate that evaluates <paramref name="predicates"/>
-    /// against each reader in the batch. Passing entry IDs and (optionally) original indexes
-    /// are compacted to the front of their spans. Returns the count of survivors.
-    /// The emitted IL always evaluates ALL predicates against every entry.
-    /// <paramref name="csharpSource"/> receives the C# equivalent of the emitted IL,
-    /// generated side-by-side via <see cref="DualEmit"/>.</summary>
+    /// <summary>Emit a residual-scan delegate that evaluates <paramref name="predicates"/> against each reader in the batch.
+    /// Passing entry IDs and (optionally) original indexes are compacted to the front of their spans. Returns the count of survivors.</summary>
     public static ResidualScanPredicate EmitDelegate(Span<ScanPredicateInfo> predicates, out string csharpSource)
     {
         if (predicates.IsEmpty)
@@ -62,18 +41,14 @@ public static class ResidualScanIlEmitter
         var cs = new StringBuilder();
         var d = new DualEmit(il, cs);
 
-        // Register arguments for C# name tracking. exec (arg 0) is used implicitly by
-        // LoadLongParam/LoadDoubleParam/LoadSliceSpan/LoadFieldRootPage, which emit Ldarg_0.
-        _ = d.RegisterArg("exec");
+        var execIdx = d.RegisterArg("exec");
         var readersIdx = d.RegisterArg("readers");
         var entryIdsIdx =  d.RegisterArg("entryIds");
         var originalIndexesIdx = d.RegisterArg("originalIndexes");
 
-        // C# function signature (no IL equivalent).
         d.CsLine("static int ResidualScan(QueryExecution exec, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
         d.CsLine("{");
 
-        // Locals
         var iLocal = d.DeclareLocal(typeof(int), "i");
         var writeIdxLocal = d.DeclareLocal(typeof(int), "writeIdx");
         var lengthLocal = d.DeclareLocal(typeof(int), "length");
@@ -84,11 +59,6 @@ public static class ResidualScanIlEmitter
         // writeIdx = 0
         d.StoreLocalConst(writeIdxLocal, 0);
 
-        // The IL keeps a goto-based loop (br loopCheck; loopBody: …; loopInc: i++; loopCheck: blt loopBody);
-        // the C# mirror renders the same thing as a plain `for` loop. A rejected entry branches to the
-        // `rejected` label in IL, which falls straight into the increment — the C# equivalent is `continue;`,
-        // so for-body-level rejects render as `continue;` while only an in-`while` reject (a `!=` leaf) needs
-        // a real `rejected:` C# label to jump past the survivor bookkeeping (see ContinueTarget / Jump).
         var loopCheck = d.DefineLabelPair("loopCheck");
         var loopBody = d.DefineLabelPair("loopBody");
         var loopIncrement = d.DefineLabelPair("loopInc");
@@ -107,8 +77,6 @@ public static class ResidualScanIlEmitter
         // ref reader = ref readers[i]
         EmitSpanGetItemRef(ref d, readersIdx, IlEmitterShared.SpanEntryTermsReaderGetItem, iLocal, readerRefLocal);
 
-        // Per-predicate emission (already through DualEmit). A reject routes to the `rejected` IL label,
-        // rendered as `continue;` in C# (the ContinueTarget sentinel).
         int rootIdx = 0;
         int inSetIdx = 0;
         for (int p = 0; p < predicates.Length; p++)
@@ -120,8 +88,6 @@ public static class ResidualScanIlEmitter
         // All passed: entryIds[writeIdx] = entryIds[i]
         EmitSpanElementCopy(ref d, entryIdsIdx, IlEmitterShared.SpanLongGetItem, writeIdxLocal, iLocal, OpCodes.Ldind_I8, OpCodes.Stind_I8);
 
-        // if (originalIndexes.Length != 0) originalIndexes[writeIdx] = originalIndexes[i];
-        // IL: if (originalIndexes.Length == 0) goto noOrigIdx; <copy>; noOrigIdx:
         var noOrigIdx = d.DefineLabelPair("noOrigIdx");
         d.Il.Emit(OpCodes.Ldarga_S, originalIndexesIdx);
         d.Il.Emit(OpCodes.Call, IlEmitterShared.SpanIntLength);
@@ -135,8 +101,6 @@ public static class ResidualScanIlEmitter
         // writeIdx++
         d.IncrementLocal(writeIdxLocal);
 
-        // IL only: the survivor path skips the reject label and jumps to the increment; in C# it just
-        // falls off the end of the for body.
         d.Il.Emit(OpCodes.Br, loopIncrement.Il);
 
         // rejected: (IL always; the C# label only when a `!=` leaf rejects from inside its term-scan while)
@@ -219,41 +183,42 @@ public static class ResidualScanIlEmitter
         LocalBuilder readerRefLocal,
         int pIdx)
     {
-        if (pred.SubPredicates != null)
+        if (pred.SubPredicates == null)
         {
-            if (pred.Group == GroupKind.Or)
-            {
-                var groupPassed = d.DefineLabelPair($"gp_{pIdx}");
-                for (int b = 0; b < pred.SubPredicates.Length; b++)
-                {
-                    var nextSub = d.DefineLabelPair("nextBranch");
-                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], nextSub.Il, nextSub.Name, rootIdx, ref inSetIdx, readerRefLocal);
-                    // Branch succeeded — skip remaining alternatives.
-                    d.GotoAlways(groupPassed);
-                    d.MarkLabel(nextSub);
-                    if (ConsumesFieldRootPage(in pred.SubPredicates[b]))
-                        rootIdx++;
-                }
-                // All branches fell through → group fails.
-                d.Il.Emit(OpCodes.Br, failLabel);
-                d.CsLine(Jump(ContinueTarget));
-                d.MarkLabel(groupPassed);
-            }
-            else
-            {
-                for (int b = 0; b < pred.SubPredicates.Length; b++)
-                {
-                    EmitLeafPredicate(ref d, in pred.SubPredicates[b], failLabel, ContinueTarget, rootIdx, ref inSetIdx, readerRefLocal);
-                    if (ConsumesFieldRootPage(in pred.SubPredicates[b]))
-                        rootIdx++;
-                }
-            }
+            EmitLeafPredicate(ref d, in pred, failLabel, ContinueTarget, rootIdx, ref inSetIdx, readerRefLocal);
+            if (ConsumesFieldRootPage(in pred))
+                rootIdx++;
             return;
         }
 
-        EmitLeafPredicate(ref d, in pred, failLabel, ContinueTarget, rootIdx, ref inSetIdx, readerRefLocal);
-        if (ConsumesFieldRootPage(in pred))
-            rootIdx++;
+        if (pred.Group == GroupKind.Or)
+        {
+            var groupPassed = d.DefineLabelPair($"gp_{pIdx}");
+            foreach (var predicate in pred.SubPredicates)
+            {
+                var nextSub = d.DefineLabelPair("nextBranch");
+                EmitLeafPredicate(ref d, in predicate, nextSub.Il, nextSub.Name, rootIdx, ref inSetIdx, readerRefLocal);
+                // Branch succeeded — skip remaining alternatives.
+                d.GotoAlways(groupPassed);
+                d.MarkLabel(nextSub);
+                if (ConsumesFieldRootPage(in predicate))
+                    rootIdx++;
+            }
+
+            // All branches fell through → group fails.
+            d.Il.Emit(OpCodes.Br, failLabel);
+            d.CsLine(Jump(ContinueTarget));
+            d.MarkLabel(groupPassed);
+        }
+        else
+        {
+            foreach (var predicate in pred.SubPredicates)
+            {
+                EmitLeafPredicate(ref d, in predicate, failLabel, ContinueTarget, rootIdx, ref inSetIdx, readerRefLocal);
+                if (ConsumesFieldRootPage(in predicate))
+                    rootIdx++;
+            }
+        }
     }
 
     /// <summary>A sentinel leaf (AlwaysTrue / AlwaysFalse) carries no field, so it consumes no
@@ -274,16 +239,13 @@ public static class ResidualScanIlEmitter
         ref int inSetIdx,
         LocalBuilder readerRefLocal)
     {
-        // Sentinel leaves (collapsed MatchAll / MatchNothing inside a group) carry no field and consume
-        // no fieldRootPage slot — the caller skips advancing rootIdx for them. AlwaysTrue is a no-op
-        // (the entry passes this leaf); AlwaysFalse fails unconditionally (the entry fails this leaf,
-        // or, in an OR group, falls through to the next branch).
+        // Sentinel leaves (collapsed MatchAll / MatchNothing inside a group) carry no field and consume no fieldRootPage slot
         if (pred.CompareOp == ScanCompareOp.AlwaysTrue)
         {
             d.CsLine("// always-true (MatchAll sentinel) — no-op");
             return;
         }
-
+        // skip directly to the fail path, nothing to do here
         if (pred.CompareOp == ScanCompareOp.AlwaysFalse)
         {
             d.Il.Emit(OpCodes.Br, failIl);

@@ -150,6 +150,7 @@ internal static partial class QueryPlanBuilder
 
                 if (clauseExec.RangeEstimate is { } bd)
                 {
+                    parameters["Estimate"] = bd.Estimate.ToString("N0", CultureInfo.InvariantCulture);
                     parameters["EstRangeTerms"] = bd.RangeTerms.ToString("N0", CultureInfo.InvariantCulture);
                     parameters["EstSampledTerms"] = bd.SampledTerms.ToString("N0", CultureInfo.InvariantCulture);
                     parameters["EstSampledPostings"] = bd.SampledPostings.ToString("N0", CultureInfo.InvariantCulture);
@@ -165,6 +166,7 @@ internal static partial class QueryPlanBuilder
                         parameters["EstMiddleAvg"] = bd.MiddleAvg.ToString("0.###", CultureInfo.InvariantCulture);
                         parameters["EstBeta"] = bd.Beta.ToString("0.###", CultureInfo.InvariantCulture);
                         parameters["EstCalibrationFactor"] = bd.CalibrationFactor.ToString("0.###", CultureInfo.InvariantCulture);
+                        parameters["K"] = bd.K.ToString("0.###", CultureInfo.InvariantCulture);
                     }
                 }
             }
