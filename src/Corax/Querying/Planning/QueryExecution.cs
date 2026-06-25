@@ -50,7 +50,7 @@ public class QueryExecution
     /// <summary>Range of values for each IN / ALL IN residual predicate.</summary>
     public ResidualInValues[] ResidualInSets;
     public SpatialFilterOp[] SpatialFilters;
-    public VectorSearchOp[] VectorSelects;
+    public ClauseExecution[] VectorSelects;
     
     public Func<string, Regex> RegexFactory;
 

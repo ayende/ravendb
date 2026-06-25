@@ -1,9 +1,5 @@
 namespace Corax.Querying.Planning;
 
-/// <summary>Per-execution spatial query parameters. Resolved from ParameterBinding during
-/// PopulateClauseValues — scalar params looked up by name in the blittable.
-/// Shape construction (spatialField.ReadCircle / ReadShape) also runs at execution time
-/// because it needs the spatial field factory from builderParameters.</summary>
 public sealed class SpatialParams
 {
     public double DistanceErrorPct = -1; // -1 = use default

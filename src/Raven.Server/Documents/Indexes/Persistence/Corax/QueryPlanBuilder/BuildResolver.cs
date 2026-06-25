@@ -25,9 +25,11 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         _exec = CreateQueryExecution();
         var cacheKeyHash = ComputeCacheKeyHash();
 
-        // BuildTemplate already resolved the per-query bucket for this structural key; we only probe/publish the
-        // runtime variant (inner 256-bit key) within that bucket here.
-        return planParams.Bucket.TryLookup(cacheKeyHash) is { } cachedPlan ? FinalizePlan(cachedPlan) : BuildOnCacheMiss(cacheKeyHash);
+        // BuildTemplate already resolved the per-query bucket for this structural key;
+        // we only probe/publish the runtime variant within that bucket here for the parameters types, cardinalities, etc
+        return planParams.Bucket.TryLookup(cacheKeyHash) is { } cachedPlan 
+            ? FinalizePlan(cachedPlan) 
+            : BuildOnCacheMiss(cacheKeyHash);
     }
 
     private QueryExecution BuildOnCacheMiss(in Vector256<long> cacheKeyHash)
@@ -36,9 +38,8 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         var (ops, requiredBitmaps) = PlanEmitter.Emit(template, _exec.Executions, planParams, perClause);
         // The entry-scan delegate is always emitted (an empty predicate set when there is no entry-scan path); its C# mirror joins the plan Source.
         scanSet.Compiled = ResidualScanIlEmitter.EmitDelegate(scanSet.Predicates, out var scanCsharp);
-
-        // DirectScan / CompoundField walk the driving clause via the tree and filter every OTHER clause per-entry. Their residual set excludes the DRIVING clause, whereas the entry-scan
-        // set excludes clause[0] (the bitmap seed). Those differ whenever the driving clause is not the smallest-cardinality clause (always, for a range-driven scan).
+        // DirectScan / CompoundField walk the driving clause via the tree and filter every OTHER clause per-entry. Their residual set excludes the DRIVING clause,
+        // whereas the entry-scan set excludes clause[0] (the bitmap seed). Those differ whenever the driving clause is not the smallest-cardinality clause (always, for a range-driven scan).
         var compoundFieldResidualSet = _exec.CompoundFieldDrivingClause is not null
             ? BuildResidualSet(_exec.Executions, perClause, _exec.CompoundFieldDrivingClause, _exec.CompoundFieldField2Range)
             : null;
@@ -93,84 +94,44 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     private QueryExecution FinalizePlan(CompiledPlan plan)
     {
         _exec.Plan = plan;
-        CardinalityArrayBuilder.Build(_exec.Executions, _exec.IsAllEntries, out var inRange, out var cards);
-        _exec.InRangeCounts = inRange;
-        _exec.Cardinalities = cards;
+        (_exec.InRangeCounts, _exec.Cardinalities) = CardinalityArrayBuilder.Build(_exec.Executions, _exec.IsAllEntries);
         _exec.KnownExactTotal = ComputeKnownExactTotal();
 
         QueryPlanBuilder.AttachSpatialAndVectorClauses(_exec, template, planParams, builderParameters, _writer);
         _writer.SetValues(_exec);
-        // A regex tree-scan leaf is materialized lazily inside the Corax engine, which cannot reach the server's
-        // QueryBuilderFactories; hand it the index's cached regex factory (compiled + match-timeout protected)
-        // so it never falls back to a bare new Regex per query. Mirrors the spatial factory used at resolve-time.
-        // Factories is null on the direct-planner test path (the QueryBuilderParameters test ctor leaves
-        // production-only fields unset); regex leaves are not exercised there, so leave RegexFactory null.
         _exec.RegexFactory = builderParameters.Factories?.GetRegexFactory;
         return _exec;
     }
 
-    /// <summary>The exact result count for the two plan shapes whose cardinality is a single O(1)
-    /// counter — so TotalResults can be reported without materializing the bitmap and the page limit
-    /// can be pushed down even when the caller wants statistics. Returns -1 for every other shape.</summary>
+    /// <summary> Try to compute the exact number of results if we can do that cheaply, -1 otherwise. Allows to avoid materializing the full bitmap when we need the count. </summary>
+    /// <returns></returns>
     private long ComputeKnownExactTotal()
     {
-        // Spatial / vector matches only ever report an approximate (Low-confidence) count.
         if (_exec.HasSpatialOrVector)
-            return -1;
+            return -1; // those don't have a good way to say how much we'll get
 
-        // No WHERE clauses at all → the result is every entry in the index.
-        if (_exec.IsAllEntries)
+        if (_exec.IsAllEntries) // the whole of the index
             return _indexSearcher.NumberOfEntries;
+        
+        if (_exec.Executions is not [{ } only]) 
+            return -1; // we can't detect if we have more than a single clause
 
-        // A single clause that statically collapsed to a sentinel is the same exactly-known shape as
-        // IsAllEntries, just expressed as a surviving MatchAll/MatchNothing op instead of an empty clause list:
-        // a WHEN(false) guard under AND (MatchAll = the whole index), or an empty IN / contradictory BETWEEN
-        // (MatchNothing = 0). The sentinel already carries its exact O(1) count in Cardinality (NumberOfEntries
-        // / 0), so report it directly — otherwise e.g. `where when(false, ...)` would drain the full index to
-        // count it and skip the limit push-down.
-        if (_exec.Executions is [{ IsSentinel: true } sentinel])
-            return sentinel.Cardinality;
+        if (only.IsSentinel)// a single when() clause, etc...
+            return only.Cardinality;// The sentinel already carries its exact O(1) count in Cardinality (NumberOfEntries / 0)
 
-        // A single non-boosted Equals / NotEquals has an exactly-known result count that the cardinality
-        // estimator already computed from O(1) metadata (no sampling):
-        //   Equals    -> the term posting list's NumberOfEntries;
-        //   NotEquals -> index NumberOfEntries minus that exact term count (FillAllEntries AndNot term).
-        // Guards: a resolvable packed value (an unresolved param makes the estimator fall back to a
-        // non-exact whole-index bound) and the canonical clause shape (a negated Equals or a non-negated
-        // NotEquals would not match the value the estimator returned).
-        var execs = _exec.Executions;
-        if (execs is { Count: 1 })
+        bool exactEquals = only.ClauseType == ClauseType.Equals && only.IsNegated == false;
+        bool exactNotEquals = only.ClauseType == ClauseType.NotEquals && only.IsNegated;
+        // any of those would block exact count
+        if (only.PackedParamValue.IsNone == false && (exactEquals || exactNotEquals) && only.Cardinality >= 0)
+            return only.Cardinality;
+
+        // A single exists() has an exactly-known total the estimator does NOT supply (it returns  the whole-index upper bound for Exists).
+        // Only valid for fields without multiple terms per field (empty array is consider to exists(), but wouldn't be properly counted).
+        if (only.ClauseType == ClauseType.Exists && only.IsNegated == false)
         {
-            var only = execs[0];
-            bool exactEquals = only.ClauseType == ClauseType.Equals && only.IsNegated == false;
-            bool exactNotEquals = only.ClauseType == ClauseType.NotEquals && only.IsNegated;
-            if (only.IsSentinel == false
-                && only.PackedParamValue.IsNone == false
-                && (exactEquals || exactNotEquals)
-                && only.Clause.HasBoost == false
-                && only.Cardinality >= 0)
-            {
-                return only.Cardinality;
-            }
-
-            // A single non-boosted exists() has an exactly-known total the estimator does NOT supply (it returns
-            // the whole-index upper bound for Exists). The candidate exact total is index entries minus the field's
-            // non-existing posting list — both O(1). NOT exists() is excluded (it emits the complement).
-            //
-            // Only valid for a SINGLE-VALUED field: a multi-valued field can hold an EMPTY array — present (not in
-            // the non-existing list) yet contributing no term, so exists() excludes it while (entries - non-existing)
-            // counts it, overcounting by the empty-array docs (RavenDB-26832 / Tests.Linq.Any.CanCountWithAny).
-            // HasMultipleTermsInField is set for any array, so when false no empty-array docs can exist and the
-            // O(1) total is exact; otherwise fall through (-1) to the drained count.
-            if (only.IsSentinel == false
-                && only.ClauseType == ClauseType.Exists
-                && only.IsNegated == false
-                && only.Clause.HasBoost == false)
-            {
-                FieldMetadata existsField = QueryPlanBuilder.ResolveFieldMetadata(only.Clause, walkerCtx);
-                if (_indexSearcher.HasMultipleTermsInField(existsField) == false)
-                    return _indexSearcher.NumberOfEntriesForExists(existsField);
-            }
+            FieldMetadata existsField = QueryPlanBuilder.ResolveFieldMetadata(only.Clause, walkerCtx); 
+            if (_indexSearcher.HasMultipleTermsInField(existsField) == false)
+                return _indexSearcher.NumberOfEntriesForExists(existsField);
         }
 
         return -1;
@@ -178,8 +139,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
     private QueryExecution CreateQueryExecution()
     {
-        // A clause that collapses (WHEN(false), a statically-true exists()/NOT exists(), an empty IN, a
-        // contradictory BETWEEN, etc) is replaced IN PLACE by a MatchAll / MatchNothing sentinel. 
+        // A clause that collapses (WHEN(false), a statically-true exists()/NOT exists(), an empty IN, a contradictory BETWEEN, etc) is replaced IN PLACE by a MatchAll / MatchNothing sentinel. 
         var execList = new List<ClauseExecution>(template.Clauses.Count);
         QueryExecution queryExecution = new();
         foreach (var cached in template.Clauses)
@@ -208,8 +168,6 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         return queryExecution;
     }
 
-    
-
     private void AppendSentinelCodes(ClauseExecution exec)
     {
         // Every clause contributes a 2-bit sentinel outcome (Keep / MatchAll / MatchNothing) in template order.
@@ -217,9 +175,9 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         RuntimeHelpers.EnsureSufficientExecutionStack();
         var val = exec.ClauseType switch
         {
-            ClauseType.MatchAll => 1,
-            ClauseType.MatchNothing => 2,
-            _ => 0 // Keep
+            ClauseType.MatchAll => 0b00,
+            ClauseType.MatchNothing => 0b01,
+            _ => 0b10 // Keep
         };
         _builder.Append(val, 2);
         foreach (var sub in exec.SubExecutions ?? [])
@@ -233,15 +191,11 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         if (template.WhenCount is 0)
             return;
 
-        if (clause.WhenCondition is not { } predicate ||
-            predicate(planParams.QueryParameters))
+        if (clause.WhenCondition is not { } predicate || predicate(planParams.QueryParameters))
             return;
 
-        // WHEN(false): the guard is off, so the whole guarded clause (its negation included) does not
-        // filter. It collapses to the identity of its enclosing boolean operator: MatchAll (the universe,
-        // x ∧ ALL = x) under AND, MatchNothing (the empty set, x ∨ ∅ = x) under OR. The polarity is purely
-        // operator-driven — a dropped clause's own negation is subsumed, since a removed filter contributes
-        // its parent's identity regardless of how it was written (e.g. `A and not when(false, X)` => A).
+        // WHEN(false): the guard is off, so the whole guarded clause (its negation included) does not filter.
+        // It collapses to the identity of its enclosing boolean operator: MatchAll under AND, MatchNothing under OR.
         if (template.IsOr)
             exec.MarkAsSentinel(ClauseType.MatchNothing, 0);
         else
@@ -274,9 +228,7 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             ClauseExecution clauseExec = _exec.Executions[i];
             ScanPredicateInfo? pred = BuildScanPredicateInfoCore(clauseExec, clauseExec.TermValueType);
 
-            // A TOP-LEVEL MatchNothing (AlwaysFalse) empties the whole AND; disqualify the entry-scan so
-            // the bitmap pipeline empties it via ClearBitmap + GotoDoneIfEmpty. (Nested AlwaysFalse stays
-            // inside its group predicate, where the IL bakes the boolean identity.)
+            // A TOP-LEVEL MatchNothing (AlwaysFalse) empties the whole AND; nested AlwaysFalse is handled in its group
             if (pred is { CompareOp: ScanCompareOp.AlwaysFalse })
                 pred = null;
             perClause[i] = pred;
@@ -472,8 +424,8 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
     private readonly bool CheckAllNegated() => _exec.Executions is [{ IsNegated: true }, ..];
 
     // Single canonical serialization of every plan-disambiguating dimension, digested to a 256-bit cache key.
-    // Used for BOTH the cache probe and the on-miss store, so this Append sequence is the one source of truth —
-    // adding a dimension is one more Append. Nothing is truncated: all clauses and all parameters contribute.
+    // Used for BOTH the cache probe and the on-miss store, so this appends sequence is the one source of truth —
+    // adding a dimension is one more Append.
     private Vector256<long> ComputeCacheKeyHash()
     {
         var execs = _exec.Executions;
