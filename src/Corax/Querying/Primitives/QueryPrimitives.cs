@@ -340,9 +340,18 @@ public static class QueryPrimitives
     /// Runtime check: should we switch from bitmap AND to per-entry scan? Called directly from IL-emitted code.
     /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public static bool ShouldSwitchToEntryScan(int forcedGate, int gate, long bitmapCount, long nextClauseCardinality) =>
-        forcedGate == gate || 
-        bitmapCount < EntryScanCountThreshold && bitmapCount * EntryScanCostMultiplier < nextClauseCardinality;
+    public static bool ShouldSwitchToEntryScan(int forcedGate, int gate, long bitmapCount, long nextClauseCardinality)
+    {
+        // A forced gate (set via $rvn_corax_entry_scan) is EXCLUSIVE: it takes the decision away from the cost
+        // heuristic entirely. When forced, this gate switches iff it is the targeted op-index, and every other
+        // gate stays off. Disabling (forcedGate = -1) works for free: no real gate index is negative, so -1 == gate
+        // is false everywhere and no gate ever switches. Using `forcedGate == gate || heuristic` would be wrong:
+        // the heuristic could still fire at non-targeted gates (or even when entry scan was disabled).
+        if (forcedGate != EntryScanGateUnset)
+            return forcedGate == gate;
+
+        return bitmapCount < EntryScanCountThreshold && bitmapCount * EntryScanCostMultiplier < nextClauseCardinality;
+    }
 
     /// <summary>Fill bitmap from an IQueryMatch by calling Fill repeatedly.
     /// Fast paths (consume-after-use semantics — sources are not read again):
