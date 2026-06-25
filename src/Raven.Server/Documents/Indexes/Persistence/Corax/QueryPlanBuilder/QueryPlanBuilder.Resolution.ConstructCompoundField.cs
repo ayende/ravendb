@@ -152,7 +152,7 @@ internal static partial class QueryPlanBuilder
                 // CountPostingsInRange advances (and exhausts) the provider's iterator, so it runs on a throwaway
                 // provider built with the same bounds - never drivingMatch, which still has to feed the scan.
                 var countMatch = BuildCompositeRangeMatch(compositeLow, compositeHigh);
-                return ProbeCountPostingsInRange(countMatch, out knownProbeTicks, out knownProbeTerms);
+                return TryCountPostingsInRange(countMatch, out knownProbeTicks, out knownProbeTerms);
             }
 
             // Bare field1-equality prefix (no field2 filter): the scan emits exactly the docs whose field1 equals

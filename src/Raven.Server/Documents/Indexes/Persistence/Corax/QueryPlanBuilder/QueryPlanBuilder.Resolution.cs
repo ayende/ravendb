@@ -626,80 +626,41 @@ internal static partial class QueryPlanBuilder
         return forward ? nullIsSmallest : nullIsSmallest is false;
     }
 
-    /// <summary>
-    /// Resolves the entry budget for a sorted index-only scan. Normally the driving match yields entries already in
-    /// ORDER BY order, so the first <c>take</c> (= pageSize + start) survivors ARE the answer and the scan can stop
-    /// early. Two situations break that assumption and require streaming the whole sorted tree (TakeAll):
-    /// <list type="bullet">
-    /// <item>A server-side <c>filter</c> clause is applied AFTER the index produces results, so an entry the tree
-    /// yields is only a *candidate* — the index must keep streaming until the filter has accepted enough (bounded
-    /// server-side by FilterLimit), else filtered+sorted queries truncate before reaching matching documents.</item>
-    /// <item>The client requested statistics (<c>SkipStatistics == false</c>) or this is a count query: the read
-    /// operation needs the exact <c>TotalResults</c>, which it derives by draining the match. Early-stopping at
-    /// <c>take</c> would report only the page-sized prefix as the total. For a no-residual full scan this drain
-    /// reads no entries (it just enumerates ids), matching the old SortingMatch behaviour.</item>
-    /// </list>
-    /// </summary>
+    // Compute how many results a direct scan needs to provide. Ideally, we can stoke at Take items, but we may
+    // have a filter post query, or need to provide the total result count, etc - that requires more work on our part.
     private static int ResolveSortedScanTake(QueryBuilderParameters builderParams)
     {
-        // Early-stopping at the page limit is only safe when nothing forces a full drain: no post-index filter to
-        // satisfy, and no exact total to report. Either one means stream the whole sorted tree.
         if (HasServerSideFilter(builderParams) || ConsumesExactTotal(builderParams))
             return Constants.IndexSearcher.TakeAll;
 
         return builderParams?.Take ?? Constants.IndexSearcher.TakeAll;
     }
 
-    /// <summary>
-    /// Whether the up-front known-total optimisation (resolving TotalResults from posting-list headers / O(1)
-    /// metadata instead of draining the scan to count it) is applicable for this read, independent of the plan
-    /// shape. It pays off only when the read actually <see cref="ConsumesExactTotal">consumes the total</see> and
-    /// stays correct only when there is no <see cref="HasServerSideFilter">server-side filter</see> (which would
-    /// make the header count overcount the survivors). When false, the total must come from draining the scan.
-    /// </summary>
+    // if we need to know the tota AND we have a filter, we *must* read the whole query results
     private static bool CanResolveKnownTotal(QueryBuilderParameters builderParams)
         => ConsumesExactTotal(builderParams) && HasServerSideFilter(builderParams) == false;
 
-    /// <summary>
-    /// The read operation needs the exact <c>TotalResults</c>: it answers a count query, or it reports statistics
-    /// (<c>SkipStatistics == false</c>, the default). When false the page bound is the only limit that matters, so
-    /// neither does a sorted scan have to drain past it nor is an up-front total worth computing.
-    /// </summary>
     private static bool ConsumesExactTotal(QueryBuilderParameters builderParams)
         => builderParams?.Query is { IsCountQuery: true } or { SkipStatistics: false };
 
-    /// <summary>
-    /// A server-side <c>filter</c> clause runs AFTER the index produces results, so an index hit is only a
-    /// candidate until the filter accepts it. That makes any index-side count (e.g. posting-list headers) an
-    /// overcount of the surviving documents, and forces a sorted scan to keep streaming until the filter has
-    /// accepted enough (bounded server-side by FilterLimit).
-    /// </summary>
     private static bool HasServerSideFilter(QueryBuilderParameters builderParams)
         => builderParams?.Metadata?.Query?.Filter != null;
 
-    /// <summary>
-    /// Runs the header-only <see cref="IAggregationProvider.CountPostingsInRange"/> probe on a throwaway
-    /// <paramref name="countMatch"/> provider (which it disposes), timing the walk and reporting how many in-range
-    /// terms it visited. Returns the summed posting total, or -1 when the match is not a countable aggregation
-    /// provider. The probe exhausts the provider's iterator, so <paramref name="countMatch"/> must be a fresh
-    /// instance — never the one feeding the scan, which still has to read.
-    /// </summary>
-    private static long ProbeCountPostingsInRange(IQueryMatch countMatch, out long probeTicks, out int probeTerms)
+    private static long TryCountPostingsInRange(IQueryMatch countMatch, out long probeTicks, out int probeTerms)
     {
         probeTicks = -1; // -1 ticks marks "no probe ran" (the match was not countable).
         probeTerms = 0;
         try
         {
-            if (countMatch is TermsProviderMatch { Provider: IAggregationProvider agg })
-            {
-                long t0 = Stopwatch.GetTimestamp();
-                var stats = agg.CountPostingsInRange(0);
-                probeTicks = Stopwatch.GetTimestamp() - t0;
-                probeTerms = stats.Terms;
-                return stats.Postings;
-            }
+            if (countMatch is not TermsProviderMatch { Provider: IAggregationProvider agg }) 
+                return -1;
+            
+            long t0 = Stopwatch.GetTimestamp();
+            var stats = agg.CountPostingsInRange(0);
+            probeTicks = Stopwatch.GetTimestamp() - t0;
+            probeTerms = stats.Terms;
+            return stats.Postings;
 
-            return -1;
         }
         finally
         {
@@ -707,20 +668,11 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>
-    /// The page size the residual-DirectScan cost model is allowed to assume. A residual scan only
-    /// early-terminates at the page boundary when the executor's take is page-bounded; <see cref="ResolveSortedScanTake"/>
-    /// returns <c>TakeAll</c> whenever a total-result count must be reported (<c>SkipStatistics == false</c>, the
-    /// default), the query is a count query, or a post-filter is present. In those cases the scan enumerates every
-    /// matching entry — doing a stored-entry read per entry — so the page no longer bounds the work. Modelling the
-    /// page bound there would let the cost gate price a handful of reads when the scan actually reads the whole
-    /// driving tree, so report the full matching set (<see cref="long.MaxValue"/>, clamped to the driving
-    /// cardinality by the caller) instead.
-    /// </summary>
+    // if we need to read everything anyway, the cost of doing entry scanning is very high, reflect that
     private static long ResolveEffectiveScanPageSize(QueryBuilderParameters builderParams)
     {
         return ResolveSortedScanTake(builderParams) == Constants.IndexSearcher.TakeAll
-            ? long.MaxValue
+            ? long.MaxValue // we have to scan everything, the cost is too high
             : builderParams.Query.PageSize;
     }
 
@@ -739,11 +691,13 @@ internal static partial class QueryPlanBuilder
         IndexSearcher indexSearcher, bool nullFirst, int take)
     {
         bool secondaryNullIsSmallest = (ctx.OrderByFields[1].NullsSortMode ?? indexDefaultNullsSortMode) == NullsSortMode.NullsSmallest;
-        return new SortedDrivingWithTieBreakMatch(
-            provider, llt, ctx.PlanParams.Allocator, indexSearcher,
-            ctx.OrderByFields[0].Field, ctx.OrderByFields[1].Field,
-            ctx.OrderByFields[1].FieldType, secondaryDescending: !ctx.OrderByFields[1].Ascending,
-            nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest,
+        return new SortedDrivingWithTieBreakMatch(provider, llt, ctx.PlanParams.Allocator, indexSearcher,
+            ctx.OrderByFields[0].Field, 
+            ctx.OrderByFields[1].Field,
+            ctx.OrderByFields[1].FieldType, 
+            secondaryDescending: ctx.OrderByFields[1].Ascending is false,
+            nullFirst: nullFirst, 
+            nullIsSmallest: secondaryNullIsSmallest,
             take: take);
     }
 
@@ -767,10 +721,8 @@ internal static partial class QueryPlanBuilder
         return (matchList.ToArray(), leafList.ToArray());
     }
 
-    // forward defaults to true for the bitmap/unsorted resolve path; the sorted direct-scan path passes the
-    // ORDER BY direction so a sentinel-rewritten BETWEEN (>= / <=) drives its provider in the right direction.
     private static IQueryMatch ResolveSentinelRewrittenBetween(ClauseExecution exec, FieldMetadata fieldMeta,
-        IndexSearcher indexSearcher, QueryExecution queryExec, bool forward = true)
+        IndexSearcher indexSearcher, QueryExecution queryExec, bool forward)
     {
         if (exec.SentinelRewriteType == ClauseType.Exists)
             return indexSearcher.AllEntries();
@@ -779,7 +731,7 @@ internal static partial class QueryPlanBuilder
 
         Debug.Assert(exec.SentinelRewriteType == ClauseType.GreaterThanOrEqual);
         IQueryMatch rangeMatch = exec.PackedParamValue.RangeQuery(ClauseType.GreaterThanOrEqual, fieldMeta, indexSearcher, queryExec, forward);
-        if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _) is false) 
+        if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _) is false) // no null in this field, we can do a tree scan directly
             return rangeMatch;
         
         // BETWEEN low AND 'NULL' must include null-valued docs (Lucene parity)
@@ -806,19 +758,14 @@ internal static partial class QueryPlanBuilder
             hasBoost: builderParams.HasBoost, forceDefaultSearchAnalyzer: forceSearchAnalyzer);
     }
 
-    private static bool IsClauseBoosted(ClauseExecution exec)
-        => exec.Clause.HasBoost || exec.BoostFactor > 0;
+    private static bool IsClauseBoosted(ClauseExecution exec) => exec.Clause.HasBoost || exec.BoostFactor > 0;
 
     private static void EncodeNumericValue(Span<byte> dest, int valueType, int paramIdx, QueryExecution exec, long numericXorMask)
     {
-        // The double path is order-preserving via DoubleToSortableLong; only the raw signed-long path needs the
-        // sign-flip mask, which must mirror the indexer (CoraxDocumentConverterBase) for the queried index.
         long raw = valueType == PackedParam.TypeDouble
             ? Bits.DoubleToSortableLong(exec.DoubleValues[paramIdx])
             : exec.LongValues[paramIdx] ^ numericXorMask;
-        // Must produce byte-for-byte the key the indexer wrote. CoraxDocumentConverterBase.AppendLong stores
-        // `SwapBytes(l ^ mask)` little-endian (i.e. big-endian/sortable order of `l ^ mask`); mirror it exactly —
-        // a big-endian write here would re-swap the bytes and the seek would never match (zero rows).
+        // CoraxDocumentConverterBase.AppendLong stores `SwapBytes(l ^ mask)` - ensuring the right lexical sort order on the bytes 
         BinaryPrimitives.WriteInt64LittleEndian(dest, Bits.SwapBytes(raw));
     }
 
@@ -863,14 +810,10 @@ internal static partial class QueryPlanBuilder
         EncodeNumericValue(dest, encoding.Packed.ValueType, encoding.SourceSlot, exec, numericXorMask);
     }
 
-    /// <summary>TreeScan-eligible: multi-term clauses with a direct ITermsProvider (StartsWith,
-    /// EndsWith, Exists, Regex, ranges, BETWEEN). Boosted clauses go through QueryMatch for scoring.
-    /// Sentinel-rewritten BETWEEN is handled by GetDispatch, not here, because it needs the
-    /// per-execution SentinelRewriteType.</summary>
     internal static bool IsTreeScanEligibleClause(ClauseInfo clause)
     {
         if (clause.HasBoost)
-            return false;
+            return false; // need scoring, cannot just scan
 
         return clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith
             or ClauseType.Exists or ClauseType.Regex
@@ -879,11 +822,6 @@ internal static partial class QueryPlanBuilder
             or ClauseType.Between;
     }
 
-    /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause execution at plan-build time.
-    /// Equals / NotEquals (unboosted) → <c>PostingList</c>. Multi-term (unboosted) → <c>TreeScan</c>.
-    /// All other clause types → <c>QueryMatch</c>. A sentinel-rewritten BETWEEN ("*"/"NULL" bounds)
-    /// always takes the QueryMatch path: ResolveSentinelRewrittenBetween reads SentinelRewriteType at
-    /// resolve time and may fold in the null posting list, so it cannot be expressed as a plain TreeScan.</summary>
     internal static MatchDispatch GetDispatch(ClauseExecution exec)
     {
         var clause = exec.Clause;
@@ -903,9 +841,7 @@ internal static partial class QueryPlanBuilder
     {
         if (idx is PackedParam.NoParamValue)
             return null;
-        // An IN clause with all-null terms records InTermCount=0 and writes no values
-        // to the typed arrays, but the packed Param1 still points at the (empty) slot.
-        // Bounds-check before indexing — return null to indicate "no displayable value".
+        // An IN clause with all-null terms records InTermCount=0. the packed Param1 still points at the (empty) slot.
         return packed.ValueType switch
         {
             PackedParam.TypeLong => idx < exec.LongValues.Length ? exec.LongValues[idx].ToString() : null,

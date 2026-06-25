@@ -157,7 +157,7 @@ internal static partial class QueryPlanBuilder
             // postings from posting-list headers alone (no id decode); the multi-valued overcount is excluded
             // above, so the summed posting count is the exact document total.
             var (countMatch, _) = ResolveDrivingProvider(ref ctx, walkerCtx, drivingClause, forward);
-            return ProbeCountPostingsInRange(countMatch, out probeTicks, out probeTerms);
+            return TryCountPostingsInRange(countMatch, out probeTicks, out probeTerms);
         }
 
         static void PopulateDirectScanInspection(DirectScanMatchBase ds, string sortFieldName, string drivingClauseDescription, bool forward,

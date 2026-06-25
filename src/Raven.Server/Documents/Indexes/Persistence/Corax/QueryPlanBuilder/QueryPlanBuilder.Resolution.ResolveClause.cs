@@ -43,7 +43,7 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Between:
                 if (cur.SentinelRewriteType != null)
-                    return ResolveSentinelRewrittenBetween(cur, fieldMeta, indexSearcher, root);
+                    return ResolveSentinelRewrittenBetween(cur, fieldMeta, indexSearcher, root, forward: true);
                 return packed.BetweenQuery(fieldMeta, indexSearcher, root);
 
             case ClauseType.In:
