@@ -68,6 +68,18 @@ public static class QueryIlEmitter
         // OpLimit starts unlimited; arm it (= ctx.Limit) on the first slot-0 op after which we only add, never subtracts
         bool opLimitArmed = false;
 
+        // Last op that narrows slot 0. "Nothing narrows after op i" is then a cheap i >= lastNarrowingIndex
+        // test. Scan from the end and stop at the first hit. -1 (no narrowing op) makes the test always true.
+        int lastNarrowingIndex = -1;
+        for (int i = ops.Length - 1; i >= 0; i--)
+        {
+            if (OpNarrowsSlot0(ref ops[i]))
+            {
+                lastNarrowingIndex = i;
+                break;
+            }
+        }
+
         for (int i = 0; i < ops.Length; i++)
         {
             ref PlanOp op = ref ops[i];
@@ -79,15 +91,16 @@ public static class QueryIlEmitter
             // The cursor advance after the last cursor-consuming op is a dead store 
             bool advanceCursor = !isLastEffectiveOp;
 
-            // If we can only ever grow the set of results, we should check if we reached the limit early 
-            bool laterOpNarrowsSlot0 = LaterOpNarrowsSlot0(ops, i + 1);
-            
-            bool shouldCheckLimitReached = op.BitmapLocal == 0 && !isLastEffectiveOp && laterOpNarrowsSlot0 is false;
+            // True once no op after i narrows slot 0 — see lastNarrowingIndex above.
+            bool noLaterNarrowing = i >= lastNarrowingIndex;
+
+            // If we can only ever grow the set of results, we should check if we reached the limit early
+            bool shouldCheckLimitReached = op.BitmapLocal == 0 && !isLastEffectiveOp && noLaterNarrowing;
 
             if (op.DebugLabel != null)
                 d.SetPendingComment(op.DebugLabel);
 
-            if (!opLimitArmed && op.BitmapLocal == 0 && laterOpNarrowsSlot0 is false)
+            if (!opLimitArmed && op.BitmapLocal == 0 && noLaterNarrowing)
             {
                 d.EmitArmOpLimit();
                 opLimitArmed = true;
@@ -459,33 +472,25 @@ public static class QueryIlEmitter
     }
     
     /// <summary>
-    /// Whether any op at or after <paramref name="from"/> can shrink slot 0's result. Used both to decide if a
-    /// fill may early-exit at the limit and whether it may truncate its posting-list read to the limit: a fill
-    /// feeding a downstream narrowing op must materialize its full set, since the narrowing can drop enough
-    /// entries to leave fewer than the limit. Output always lands in slot 0, so only slot-0 ops matter — except
-    /// the entry-scan gate, which consumes slot 0 as a residual-filter candidate set (it only ever removes
-    /// entries, never adds) regardless of its own destination slot.
+    /// Whether this op can shrink slot 0's result. A fill feeding a downstream narrowing op must materialize its
+    /// full set, since the narrowing can drop enough entries to leave fewer than the limit. Output always lands
+    /// in slot 0, so only slot-0 ops matter — except the entry-scan gate, which consumes slot 0 as a
+    /// residual-filter candidate set (it only ever removes entries, never adds) regardless of its destination slot.
+    /// "Nothing narrows after op i" is monotonic, so the caller precomputes the last narrowing index once and
+    /// tests <c>i &gt;= lastNarrowingIndex</c>, instead of an O(N) suffix scan per op (which made the loop O(N^2)).
     /// </summary>
-    private static bool LaterOpNarrowsSlot0(PlanOp[] ops, int from)
+    private static bool OpNarrowsSlot0(ref PlanOp op)
     {
-        for (int i = from; i < ops.Length; i++)
-        {
-            ref PlanOp op = ref ops[i];
+        if (op.Kind is PlanOpKind.MaybeEntryScan)
+            return true;
 
-            if (op.Kind is PlanOpKind.MaybeEntryScan)
-                return true;
+        if (op.BitmapLocal != 0)
+            return false;
 
-            if (op.BitmapLocal != 0)
-                continue;
-
-            if (op.Kind is PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan or PlanOpKind.AndFromMatch
-                or PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch
-                or PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps
-                or PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch)
-                return true;
-        }
-
-        return false;
+        return op.Kind is PlanOpKind.AndFromPostingSource or PlanOpKind.AndFromTreeScan or PlanOpKind.AndFromMatch
+            or PlanOpKind.AndNotFromPostingSource or PlanOpKind.AndNotFromTreeScan or PlanOpKind.AndNotFromMatch
+            or PlanOpKind.AndBitmaps or PlanOpKind.AndNotBitmaps
+            or PlanOpKind.AndRangeFromPostingSource or PlanOpKind.AndRangeFromMatch;
     }
 
     private static void EmptyExecute(CompiledQueryMatch ctx) { }
