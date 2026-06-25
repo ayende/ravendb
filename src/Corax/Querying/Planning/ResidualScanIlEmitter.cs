@@ -267,17 +267,17 @@ public static class ResidualScanIlEmitter
         if (pred.CompareOp == ScanCompareOp.In || pred.CompareOp == ScanCompareOp.AllIn)
         {
             bool allIn = pred.CompareOp == ScanCompareOp.AllIn;
-            var (helper, helperName) = pred.ValueType switch
+            var helper = pred.ValueType switch
             {
                 ScanValueType.Long => allIn
-                    ? (IlEmitterShared.CheckFieldTermAllInLong, "CompiledQueryHelper.CheckFieldTermAllInLong")
-                    : (IlEmitterShared.CheckFieldTermInLong, "CompiledQueryHelper.CheckFieldTermInLong"),
+                    ? IlEmitterShared.CheckFieldTermAllInLong
+                    : IlEmitterShared.CheckFieldTermInLong,
                 ScanValueType.Double => allIn
-                    ? (IlEmitterShared.CheckFieldTermAllInDouble, "CompiledQueryHelper.CheckFieldTermAllInDouble")
-                    : (IlEmitterShared.CheckFieldTermInDouble, "CompiledQueryHelper.CheckFieldTermInDouble"),
+                    ? IlEmitterShared.CheckFieldTermAllInDouble
+                    : IlEmitterShared.CheckFieldTermInDouble,
                 _ => allIn
-                    ? (IlEmitterShared.CheckFieldTermAllInSlice, "CompiledQueryHelper.CheckFieldTermAllInSlice")
-                    : (IlEmitterShared.CheckFieldTermInSlice, "CompiledQueryHelper.CheckFieldTermInSlice"),
+                    ? IlEmitterShared.CheckFieldTermAllInSlice
+                    : IlEmitterShared.CheckFieldTermInSlice,
             };
 
             // ref reader, fieldRootPage, values[], includeNull
@@ -286,7 +286,7 @@ public static class ResidualScanIlEmitter
             d.LoadFieldRootPage(rootIdx);
             d.LoadInValueArray(inSetIdx, pred.ValueType);
             d.LoadInHasNull(inSetIdx);
-            d.CallReturning(helper, arity: 4, csTemplate: helperName + "({0}, {1}, {2}, {3})");
+            d.CallStatic(helper);
             // Positive IN/ALL IN: fail when membership is false. Negated (NOT IN / NOT ALL IN):
             // fail when membership is true — a missing/null field has membership false, so it
             // passes, matching the bitmap AndNot complement.
@@ -302,16 +302,13 @@ public static class ResidualScanIlEmitter
             var helper = pred.CompareOp == ScanCompareOp.StartsWith
                 ? IlEmitterShared.CheckFieldTermStartsWith
                 : IlEmitterShared.CheckFieldTermEndsWith;
-            var helperName = pred.CompareOp == ScanCompareOp.StartsWith
-                ? "CompiledQueryHelper.CheckFieldTermStartsWith"
-                : "CompiledQueryHelper.CheckFieldTermEndsWith";
 
             // ref reader, fieldRootPage, paramSpan
             d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
             d.CsStack.Push("ref reader");
             d.LoadFieldRootPage(rootIdx);
             d.LoadSliceSpan(pred.ParamIndex);
-            d.CallReturning(helper, arity: 3, csTemplate: helperName + "({0}, {1}, {2})");
+            d.CallStatic(helper);
             // Fail if helper returned false.
             EmitBranchFalse(ref d, failIl, failName);
             return;
@@ -467,7 +464,7 @@ public static class ResidualScanIlEmitter
         d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
         d.CsStack.Push("reader");
         d.LoadFieldRootPage(rootIdx);
-        d.CallReturning(IlEmitterShared.ReaderFindNext, arity: 2, csTemplate: "{0}.FindNext({1})");
+        d.CallInstance(IlEmitterShared.ReaderFindNext);
     }
 
     /// <summary>Emit the comparison portion of a leaf predicate. On entry both stacks are
@@ -515,14 +512,14 @@ public static class ResidualScanIlEmitter
                     // a.SequenceCompareTo(low) < 0 → fail
                     d.LoadReaderDecodedSlice(readerRefLocal);
                     d.LoadSliceSpan(pred.ParamIndex);
-                    d.CallReturning(IlEmitterShared.SequenceCompareTo, arity: 2, csTemplate: "{0}.SequenceCompareTo({1})");
+                    d.CallStatic(IlEmitterShared.SequenceCompareTo);
                     d.PushConstInt(0);
                     d.BranchLT(fail);
 
                     // a.SequenceCompareTo(high) > 0 → fail
                     d.LoadReaderDecodedSlice(readerRefLocal);
                     d.LoadSliceSpan(pred.ParamIndex2);
-                    d.CallReturning(IlEmitterShared.SequenceCompareTo, arity: 2, csTemplate: "{0}.SequenceCompareTo({1})");
+                    d.CallStatic(IlEmitterShared.SequenceCompareTo);
                     d.PushConstInt(0);
                     d.BranchGT(fail);
 
@@ -533,13 +530,13 @@ public static class ResidualScanIlEmitter
                 {
                     d.LoadReaderDecodedSlice(readerRefLocal);
                     d.LoadSliceSpan(pred.ParamIndex);
-                    d.CallReturning(IlEmitterShared.SequenceEqual, arity: 2, csTemplate: "{0}.SequenceEqual({1})");
+                    d.CallStatic(IlEmitterShared.SequenceEqual);
                     break;
                 }
                 // Relational: compare SequenceCompareTo result against 0 using the same op.
                 d.LoadReaderDecodedSlice(readerRefLocal);
                 d.LoadSliceSpan(pred.ParamIndex);
-                d.CallReturning(IlEmitterShared.SequenceCompareTo, arity: 2, csTemplate: "{0}.SequenceCompareTo({1})");
+                d.CallStatic(IlEmitterShared.SequenceCompareTo);
                 d.PushConstInt(0);
                 EmitNumericCompareOp(ref d, pred.CompareOp);
                 break;
