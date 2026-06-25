@@ -47,7 +47,6 @@ public static class ResidualScanIlEmitter
         var entryIdsIdx =  d.RegisterArg("entryIds");
         var originalIndexesIdx = d.RegisterArg("originalIndexes");
 
-        // Load* helpers read their fields off this arg (instead of hardcoding arg 0 / "exec")
         d.SetContextArg(execIdx);
 
         d.CsLine("static int ResidualScan(QueryExecution exec, Span<EntryTermsReader> readers, Span<long> entryIds, Span<int> originalIndexes)");
@@ -244,13 +243,7 @@ public static class ResidualScanIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);
         d.CsLine("reader.Reset();");
 
-        // String (in)equality may target a runtime-null value: a literal `null`, or a $param that resolved to
-        // null (BuildResolver maps Null → ScanValueType.Slice). Term comparison is impossible against null —
-        // Current is stale for null/non-existing markers — so the null vs concrete decision has to happen at
-        // RUNTIME, not be baked into the cached plan. Branch on whether the bound string is null; one compiled
-        // plan serves both bindings.
-        if (pred.ValueType is ScanValueType.Slice or ScanValueType.SliceLong &&
-            pred.CompareOp is ScanCompareOp.Equal or ScanCompareOp.NotEqual)
+        if (pred.ValueType is ScanValueType.Slice or ScanValueType.SliceLong && pred.CompareOp is ScanCompareOp.Equal or ScanCompareOp.NotEqual)
         {
             EmitNullableEquality(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, readerRefLocal);
             return;
@@ -259,9 +252,6 @@ public static class ResidualScanIlEmitter
         EmitLeafComparison(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, readerRefLocal);
     }
 
-    /// <summary>Emit the runtime null-aware dispatch for a string Equal/NotEqual leaf. When the bound value is
-    /// concrete it falls through to the ordinary term comparison; when it is null it decides on <c>reader.IsNull</c>
-    /// alone, matching the bitmap pipeline (<c>= null</c> ⇒ the null-marker term; <c>!= null</c> ⇒ its complement).</summary>
     private static void EmitNullableEquality(ref DualEmit d, in ScanPredicateInfo pred, Label failIl, string failName, int rootIdx, ref int inSetIdx, LocalBuilder readerRefLocal)
     {
         bool isNotEqual = pred.CompareOp == ScanCompareOp.NotEqual;

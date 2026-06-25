@@ -82,7 +82,7 @@ internal static partial class QueryPlanBuilder
         var items = new List<CoraxVectorItem>(exec.VectorSelects.Length);
         foreach (var vec in exec.VectorSelects)
         {
-            items.Add(HandleVector(builderParams, vec.Exec));
+            items.Add(HandleVector(builderParams, vec));
         }
         return items;
     }

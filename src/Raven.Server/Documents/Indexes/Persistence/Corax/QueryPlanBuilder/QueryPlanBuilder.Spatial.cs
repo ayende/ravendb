@@ -134,15 +134,12 @@ internal static partial class QueryPlanBuilder
 
         if (vectorClauses != null)
         {
-            exec.VectorSelects = new VectorSearchOp[vectorClauses.Length];
+            exec.VectorSelects = new ClauseExecution[vectorClauses.Length];
             for (int i = 0; i < vectorClauses.Length; i++)
             {
                 var vectorExec = vectorExecs?[i] ?? new ClauseExecution(vectorClauses[i]);
                 execs.Add(vectorExec);
-                exec.VectorSelects[i] = new VectorSearchOp
-                {
-                    Clause = vectorClauses[i], Exec = vectorExec
-                };
+                exec.VectorSelects[i] = vectorExec;
             }
         }
 
