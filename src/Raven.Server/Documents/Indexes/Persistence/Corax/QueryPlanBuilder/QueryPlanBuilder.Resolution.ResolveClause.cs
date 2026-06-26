@@ -81,7 +81,7 @@ internal static partial class QueryPlanBuilder
                 throw new InvalidOperationException($"Unexpected ClauseType {clause.ClauseType} in ResolveClause.");
         }
 
-        IQueryMatch HandleSpatial(SpatialOperationType spatialMethod)
+        IQueryMatch HandleSpatial(global::Corax.Utils.Spatial.SpatialRelation spatialMethod)
         {
             var index = builderParams.Index;
             var allocator = builderParams.Allocator;
@@ -114,7 +114,7 @@ internal static partial class QueryPlanBuilder
                 throw new InvalidOperationException("Spatial clause has no pre-resolved shape parameters.");
             }
 
-            return builderParams.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), (global::Corax.Utils.Spatial.SpatialRelation)spatialMethod, token: builderParams.Token);
+            return builderParams.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), spatialMethod, token: builderParams.Token);
         }
         
         IQueryMatch HandleSearch()

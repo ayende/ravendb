@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Corax.Utils.Spatial;
 using Sparrow.Json;
 
 namespace Corax.Querying.Planning;
@@ -38,7 +39,7 @@ public sealed class ClauseInfo
 
     public Constants.Search.Operator SearchOperator { get; init; }
 
-    public SpatialOperationType SpatialMethodType { get; init; }
+    public SpatialRelation SpatialMethodType { get; init; }
 
     public VectorSourceKind VectorMethod { get; init; }
 

@@ -5,6 +5,7 @@ using System.Globalization;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Planning;
+using Corax.Utils.Spatial;
 using Raven.Server.Documents.Queries;
 using Raven.Server.Documents.Queries.AST;
 using Sparrow.Json;
@@ -38,15 +39,15 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static SpatialOperationType ToSpatialOp(MethodType t)
+    private static SpatialRelation ToSpatialOp(MethodType t)
     {
         return t switch
         {
-            MethodType.Spatial_Within => SpatialOperationType.Within,
-            MethodType.Spatial_Contains => SpatialOperationType.Contains,
-            MethodType.Spatial_Disjoint => SpatialOperationType.Disjoint,
-            MethodType.Spatial_Intersects => SpatialOperationType.Intersects,
-            _ => SpatialOperationType.Within
+            MethodType.Spatial_Within => SpatialRelation.Within,
+            MethodType.Spatial_Contains => SpatialRelation.Contains,
+            MethodType.Spatial_Disjoint => SpatialRelation.Disjoint,
+            MethodType.Spatial_Intersects => SpatialRelation.Intersects,
+            _ => SpatialRelation.Within
         };
     }
 
