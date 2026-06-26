@@ -90,7 +90,7 @@ internal static partial class QueryPlanBuilder
         }
 
         // Partial sort elision: drop ORDER BY keys pinned to a constant by a top-level equality and single-valued.
-        OrderByField[] orderBy = ComputeEffectiveOrderBy(p.Metadata.OrderBy, walkerCtx.Clauses, walkerCtx.IsOr, p.IndexSearcher);
+        OrderByField[] orderBy = ComputeEffectiveOrderBy(p.Metadata.OrderBy, walkerCtx.Clauses, walkerCtx.IsOr, p.IndexSearcher, out _);
         string orderByPrimaryField = orderBy is { Length: > 0 }
             ? orderBy[0].Name?.Value
             : null;

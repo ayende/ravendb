@@ -60,8 +60,8 @@ internal static partial class QueryPlanBuilder
 
     private static SortMetadataTemplate BuildSortMetadataTemplate(PlanParameters p, PlanTemplate planTemplate)
     {
-        // sort elision - where Name = $foo order by Name - all results has the same value, can drop the sort (for single value fields). 
-        var orderByFields = ComputeEffectiveOrderBy(p.Metadata.OrderBy, planTemplate.Clauses, planTemplate.IsOr, p.IndexSearcher);
+        // sort elision - where Name = $foo order by Name - all results has the same value, can drop the sort (for single value fields).
+        var orderByFields = ComputeEffectiveOrderBy(p.Metadata.OrderBy, planTemplate.Clauses, planTemplate.IsOr, p.IndexSearcher, out var originalIndices);
 
         if (orderByFields is null)
         {   
@@ -94,41 +94,27 @@ internal static partial class QueryPlanBuilder
         for (int i = 0; i < orderByFields.Length; i++)
         {
             var field = orderByFields[i];
+            int originalIndex = originalIndices?[i] ?? i; // slot in the live ORDER BY array, for per-query argument reads
 
             var orderingType = field.OrderingType;
             switch (field.OrderingType)
             {
                 case OrderByFieldType.Random:
-                    if (field.Arguments is { Length: > 0 }) // we have a seed to use
-                    {
-                        var seedArg = field.Arguments[0];
-                        if (seedArg.Type == ValueTokenType.Parameter)
-                        {
-                            prebuilt[i] = new OrderMetadata(0);
-                            patches[i].Kind = SortSlotPatchKind.RandomSeededByParam;
-                            patches[i].FieldName = seedArg.NameOrValue; // the parameter name
-                            anyPatch = true;
-                        }
-                        else
-                        {
-                            var seed = (int)Hashing.XXHash32.CalculateRaw(seedArg.NameOrValue);
-                            prebuilt[i] = new OrderMetadata(seed);
-                        }
-                    }
-                    else
-                    {
-                        prebuilt[i] = new OrderMetadata(0);
-                        patches[i].Kind = SortSlotPatchKind.RandomFreshSeed;
-                        anyPatch = true;
-                    }
+                    prebuilt[i] = new OrderMetadata(0);
+                    // The seed (literal or parameter) is read from the live query at materialize time, so it is NOT
+                    // baked into the cached template and is deliberately absent from the structural key.
+                    patches[i].Kind = field.Arguments is { Length: > 0 } ? SortSlotPatchKind.RandomSeeded : SortSlotPatchKind.RandomFreshSeed;
+                    patches[i].OrderByIndex = originalIndex;
+                    anyPatch = true;
                     continue;
                 case OrderByFieldType.Score:
                     prebuilt[i] = new OrderMetadata(true, MatchCompareFieldType.Score, field.Ascending);
                     continue;
                 case OrderByFieldType.Distance:
+                    // The center point/units (literal or parameter) are read from the live query at materialize time.
                     patches[i].Kind = SortSlotPatchKind.DistanceRuntime;
                     patches[i].FieldName = field.Name;
-                    patches[i].DistanceBuilder = GetDistanceBuilder(field);
+                    patches[i].OrderByIndex = originalIndex;
                     anyPatch = true;
                     continue;
                 case OrderByFieldType.Implicit when p.Index.Configuration.OrderByTicksAutomaticallyWhenDatesAreInvolved && p.Index.IndexFieldsPersistence.HasTimeValues(field.Name.Value):
@@ -153,9 +139,6 @@ internal static partial class QueryPlanBuilder
             Patches = anyPatch ? patches : null,
         };
         
-        SortDistanceMetadataBuilder GetDistanceBuilder(OrderByField field) => // side effect for this method, we aren't accidently capturing the wrong instance in a loop
-            (ctx, fieldMeta) => BuildDistanceOrderMetadata((QueryBuilderParameters)ctx, field, fieldMeta);
-
         MatchCompareFieldType GetMatchCompareFieldType(OrderByFieldType orderingType)
         {
             var compareType = orderingType switch
@@ -187,29 +170,49 @@ internal static partial class QueryPlanBuilder
         return pinned;
     }
 
-    // Partial sort elision -> WHERE status = 'Released' ORDER BY status, vote DESC</c> → <c>ORDER BY vote DESC
+    // Partial sort elision -> WHERE status = 'Released' ORDER BY status, vote DESC → ORDER BY vote DESC.
+    // originalIndices maps each surviving slot back to its position in the input array (null when nothing was elided,
+    // i.e. the mapping is the identity), so the runtime can read that slot's live ORDER BY arguments.
     private static OrderByField[] ComputeEffectiveOrderBy(OrderByField[] orderBy, List<ClauseInfo> clauses, bool isOr,
-        global::Corax.Querying.IndexSearcher indexSearcher)
+        global::Corax.Querying.IndexSearcher indexSearcher, out int[] originalIndices)
     {
+        originalIndices = null;
         if (orderBy is not { Length: > 0 } || CollectEqualityPinnedFields(clauses, isOr) is not { } pinned)
             return orderBy;
 
+        List<OrderByField> kept = null;
+        List<int> keptIndices = null;
         for (int i = 0; i < orderBy.Length; i++)
         {
-            if (IsElidableSortKey(orderBy[i], pinned, indexSearcher) is false)
-                continue;
-            // found a candidate, now let's filter all the claused eligible for elision    
-            var kept = new List<OrderByField>(orderBy);
-            kept.RemoveAt(i);
-            for (int j = i; j < kept.Count; j++)
+            bool elide = IsElidableSortKey(orderBy[i], pinned, indexSearcher);
+            if (elide && kept == null)
             {
-                if (IsElidableSortKey(kept[j], pinned, indexSearcher) is false) continue;
-                kept.RemoveAt(j);
-                j--;
+                // first elision: materialize the survivors so far (the non-elidable prefix 0..i-1), then drop this slot
+                kept = new List<OrderByField>(orderBy.Length);
+                keptIndices = new List<int>(orderBy.Length);
+                for (int k = 0; k < i; k++)
+                {
+                    kept.Add(orderBy[k]);
+                    keptIndices.Add(k);
+                }
+                continue;
             }
-            return kept.ToArray();
+
+            if (kept == null)
+                continue; // no elision yet, survivors still equal the input prefix
+
+            if (elide == false)
+            {
+                kept.Add(orderBy[i]);
+                keptIndices.Add(i);
+            }
         }
-        return orderBy;// no changes
+
+        if (kept == null)
+            return orderBy; // nothing elided
+
+        originalIndices = keptIndices.ToArray();
+        return kept.ToArray();
     }
 
     
@@ -284,9 +287,12 @@ internal static partial class QueryPlanBuilder
                     result[i] = new OrderMetadata(Random.Shared.Next());
                     break;
 
-                case SortSlotPatchKind.RandomSeededByParam:
+                case SortSlotPatchKind.RandomSeeded:
                 {
-                    builderParameters.Query.QueryParameters.TryGet(patch.FieldName, out string seedValue);
+                    // Seed (literal or parameter) read from the live ORDER BY arguments, so plans with different
+                    // seeds share one cached template/structural bucket.
+                    var seedArg = builderParameters.Metadata.OrderBy[patch.OrderByIndex].Arguments[0];
+                    var seedValue = seedArg.GetString(builderParameters.Query.QueryParameters);
                     var seed = (int)Hashing.XXHash32.CalculateRaw(seedValue ?? string.Empty);
                     result[i] = new OrderMetadata(seed);
                     break;
@@ -306,8 +312,11 @@ internal static partial class QueryPlanBuilder
 
                 case SortSlotPatchKind.DistanceRuntime:
                 {
+                    // Center point/units read from the live ORDER BY arguments, so plans with different
+                    // coordinates share one cached template/structural bucket.
+                    var liveField = builderParameters.Metadata.OrderBy[patch.OrderByIndex];
                     var fieldMeta = ResolveSortFieldMeta(builderParameters, patch.FieldName);
-                    result[i] = patch.DistanceBuilder(builderParameters, fieldMeta);
+                    result[i] = BuildDistanceOrderMetadata(builderParameters, liveField, fieldMeta);
                     break;
                 }
             }

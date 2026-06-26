@@ -18,16 +18,17 @@ public sealed class SortMetadataTemplate
     public SortSlotPatch[] Patches { get; init; }
 }
 
-public delegate OrderMetadata SortDistanceMetadataBuilder(object runtimeContext, FieldMetadata fieldMeta);
-
 public struct SortSlotPatch
 {
     public SortSlotPatchKind Kind;
     public string FieldName;
+
     /// <summary>
-    ///  To compute distance for spatial queries, we need to resolve the per-query center point from the parameters.  
+    /// Index into the live (per-query) ORDER BY array. Random seeds and distance center points are read from the
+    /// current query's arguments here rather than baked into the cached template, so plans with different literal
+    /// seeds/coordinates (or parameter names) can safely share one structural bucket.
     /// </summary>
-    public SortDistanceMetadataBuilder DistanceBuilder;
+    public int OrderByIndex;
 }
 
 public enum SortSlotPatchKind : byte
@@ -41,9 +42,9 @@ public enum SortSlotPatchKind : byte
     /// <summary>Random ordering with no Arguments — need a new seed each query.</summary>
     RandomFreshSeed,
 
-    /// <summary>Random ordering seeded by a query parameter (<c>random($p)</c>), need to read that via the FieldName.</summary>
-    RandomSeededByParam,
+    /// <summary>Random ordering with a seed (<c>random(123)</c> or <c>random($p)</c>) read from the live ORDER BY arguments.</summary>
+    RandomSeeded,
 
-    /// <summary>Distance ordering whose lat/lng/wkt arguments are parameter-bound. If the values are literals in the query, the sort kind is None.</summary>
+    /// <summary>Distance ordering whose center point/units (literal or parameter) are read from the live ORDER BY arguments.</summary>
     DistanceRuntime,
 }
