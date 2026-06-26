@@ -271,7 +271,7 @@ internal static partial class QueryPlanBuilder
 
         if (predicate.SubPredicates != null)
         {
-            var groupNode = new QueryInspectionNode(predicate.Group == GroupKind.Or ? "Residual-OrGroup" : "Residual-AndGroup");
+            var groupNode = new QueryInspectionNode(predicate.Group == GroupKind.Or ? QueryPlanGraph.ResidualOrGroupOp : QueryPlanGraph.ResidualAndGroupOp);
             foreach (var sub in predicate.SubPredicates)
                 groupNode.Children.Add(BuildScanPredicateNode(sub));
             return groupNode;
@@ -285,7 +285,7 @@ internal static partial class QueryPlanBuilder
         };
         if (predicate.Negated)
             parameters["Negated"] = "true";
-        return new QueryInspectionNode("Residual", parameters: parameters);
+        return new QueryInspectionNode(QueryPlanGraph.ResidualOp, parameters: parameters);
     }
 
     private static QueryInspectionNode BuildCompoundKeyLookupNode(CompiledQuery result, QueryExecution exec, CompiledPlan compiledPlan)

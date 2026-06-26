@@ -47,7 +47,7 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.In:
             case ClauseType.AllIn:
-                throw new InvalidOperationException("In/AllIn should be expanded by ResolveMatches (per-term slot loop), not resolved as a single clause.");
+                throw new InvalidOperationException($"In/AllIn should be expanded by {nameof(ResolveLeafIntoAll)} (per-term slot loop), not resolved as a single clause.");
 
             case ClauseType.Exists:
                 return indexSearcher.ExistsQuery(fieldMeta);
@@ -72,10 +72,10 @@ internal static partial class QueryPlanBuilder
                 // Pass isPostFilter:false so inspection reports the correct role.
                 return HandleVector(builderParams, cur).Materialize(null, isPostFilter: false);
             case ClauseType.OrGroup:
-                throw new InvalidOperationException("OrGroup should be expanded by ResolveMatches, not resolved as a single clause.");
+                throw new InvalidOperationException($"OrGroup should be expanded by {nameof(ResolveLeafIntoAll)}, not resolved as a single clause.");
 
             case ClauseType.AndGroup:
-                throw new InvalidOperationException("AndGroup should be expanded by ResolveMatches, not resolved as a single clause.");
+                throw new InvalidOperationException($"AndGroup should be expanded by {nameof(ResolveLeafIntoAll)}, not resolved as a single clause.");
 
             default:
                 throw new InvalidOperationException($"Unexpected ClauseType {clause.ClauseType} in ResolveClause.");
