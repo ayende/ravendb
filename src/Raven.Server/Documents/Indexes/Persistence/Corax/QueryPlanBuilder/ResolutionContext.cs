@@ -9,12 +9,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 internal sealed class ResolutionContext
 {
     public readonly List<string> Errors = [];
-
-    /// <summary>Every value-bearing binding created by <see cref="QueryPlanBuilder.CreateBinding"/>, in the
-    /// left-to-right DFS order in which the WHERE expression is parsed. This is the canonical value-ordinal order:
-    /// the position of a binding in this list is its <see cref="ParameterBinding.ValueOrdinal"/>. The same parse,
-    /// re-run for a query's per-text slot vector, reproduces the identical order, so template value-ordinal numbering
-    /// and the per-query slot vector align by construction.</summary>
+    // Where to find the values that the clauses need to execute (indexed using the ValueOrdinal)
     public readonly List<ParameterBinding> SlotBindings = [];
 
     public readonly BlittableJsonReaderObject QueryParameters;

@@ -1,15 +1,10 @@
+using System;
 using System.Collections.Generic;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Planning;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
-/// <summary>
-///     Renders a compiled-query <see cref="QueryInspectionNode" /> plan as a Graphviz (DOT) dataflow graph.
-///     The op stream is linear, but the bitmap SLOTS turn it into a graph: every op writes its <c>DestSlot</c>;
-///     a non-Fill op consumes whatever last wrote its target slot (the running accumulator); slot-to-slot merges
-///     (AND/ANDNOT/OR-Bitmaps) additionally consume their <c>SourceSlot</c>; EntryScanCheck branches slot 0 into
-///     the entry-scan tail (slot 1). Tracking the last writer per slot while walking the ops reconstructs the edges.
-/// </summary>
 internal static class QueryPlanGraph
 {
     // Per-node/per-edge fact keys we set ourselves (beyond the raw inspection parameters copied onto op nodes).
@@ -33,9 +28,7 @@ internal static class QueryPlanGraph
     private const string SortOp = "Sort";
     private const string BoostOp = "Boost";
 
-    // Operation names of the result-shaping wrappers that sit ABOVE the bitmap pipeline (CompiledQuery) in the
-    // plan tree. The graph roots at the pipeline, so these are peeled off and rendered as the dataflow tail
-    // (candidates → post-filters → sort/boost → Result).
+    // Operation names that wraps the compiled query
     private static readonly HashSet<string> ResultWrapperOps = ["SortingMatch", "SortingMultiMatch", "BoostingMatch"];
 
     // Edge kinds.
@@ -48,7 +41,7 @@ internal static class QueryPlanGraph
     private const string RankKind = "rank";
     private const string ProbeKind = "probe";
 
-    // Edge/node flow (taken) states. Drive the green/grey colouring at style time.
+    // Edge/node flow (taken) states. Drive the colouring at style time.
     private const string FlowOn = "on";
     private const string FlowOff = "off";
     private const string FlowCandidate = "candidate";
@@ -57,13 +50,12 @@ internal static class QueryPlanGraph
 
     private const string TakenGreen = "#1a7f37";
 
-    /// <summary>Render <paramref name="plan" /> (or the CompiledQuery node within it) as Graphviz DOT text.</summary>
-    public static string ToGraphviz(QueryInspectionNode plan)
+     public static string ToGraphviz(QueryInspectionNode plan)
     {
         QueryInspectionNode compiled = FindNode(plan, "CompiledQuery");
         if (compiled?.Children == null)
         {
-            // plan shape without a CompiledQuery is the spatial/vector all-entries bypass (InstantiateAllEntriesPostFilter)
+            // plan shape without a CompiledQuery is the spatial/vector all-entries bypass 
             if (FindNode(plan, "PostFilterMatch") is {} bypass)
                 return RenderAllEntriesBypass(bypass, CollectResultWrappers(plan, bypass));
 
@@ -96,8 +88,6 @@ internal static class QueryPlanGraph
 
         string bitmapSink = hasPostChain ? "candidates" : "result";
 
-        // Limit push-down telemetry (set by OverlayTimings on the CompiledQuery root): the pipeline grew slot 0
-        // only to the pushed-down page limit and stopped — so the result edge can say it did NOT scan the rest.
         bool earlyExit = compiled.Parameters != null && compiled.Parameters.TryGetValue("EarlyExit", out string ee) && ee == "true";
         string limitValue = compiled.Parameters?.GetValueOrDefault("Limit");
 
@@ -105,13 +95,14 @@ internal static class QueryPlanGraph
         List<int> gateOpIds = [];
         for (int i = 0; i < ops.Count; i++)
         {
-            if (ops[i].Operation == "EntryScan")
+            switch (ops[i].Operation)
             {
-                entryScanTailId = i;
-            }
-            else if (ops[i].Operation == "EntryScanCheck")
-            {
-                gateOpIds.Add(i);
+                case "EntryScan":
+                    entryScanTailId = i;
+                    break;
+                case "EntryScanCheck":
+                    gateOpIds.Add(i);
+                    break;
             }
         }
 
@@ -121,9 +112,11 @@ internal static class QueryPlanGraph
                               && takenVal == "True";
 
         int switchedAfter = -1;
-        if (entryScanTaken && ops[entryScanTailId].Parameters.TryGetValue("SwitchedAfterClauses", out string sac))
+        if (entryScanTaken 
+            && ops[entryScanTailId].Parameters.TryGetValue("SwitchedAfterClauses", out string sac) 
+            && int.TryParse(sac, out var tmp))
         {
-            int.TryParse(sac, out switchedAfter);
+            switchedAfter = tmp;
         }
 
         int firedGateOp = switchedAfter >= 1 && switchedAfter <= gateOpIds.Count ? gateOpIds[switchedAfter - 1] : -1;
@@ -144,10 +137,6 @@ internal static class QueryPlanGraph
                 _ => OpExecuted(i)
             };
 
-        // The bitmap spine (Fill → AND/OR/ANDNOT → candidates) is the query's default dataflow path; the
-        // entry-scan branch is the conditional alternative (rendered dashed). So the spine reads as the taken
-        // path (green) even with no runtime overlay — matching the always-on post-filter chain it feeds — and
-        // is greyed out only for the runtime-confirmed tail that an entry-scan switch actually cut off.
         string DataEdgeFlow(int to) => OpExecuted(to) ? FlowOn : FlowOff;
 
         GraphvizGraph g = new()
@@ -175,11 +164,8 @@ internal static class QueryPlanGraph
             d[OperationKey] = producerNode.Operation;
             CopyParameters(producerNode, d);
 
-            // The DirectScan resolved its exact TotalResults up front via a header-only CountPostingsInRange
-            // probe (instead of draining the scan). That probe is the only non-O(1) count source, so it gets its
-            // own node showing the terms it walked and the time it cost, feeding the scan its known total.
             if (producerNode.Parameters != null && producerNode.Parameters.ContainsKey("KnownTotalProbe_ms"))
-            {
+            {   
                 Dictionary<string, string> probe = g.CreateNode("count_probe");
                 probe[OperationKey] = CountProbeOp;
                 CopyParameters(producerNode, probe);
@@ -192,14 +178,9 @@ internal static class QueryPlanGraph
 
         Dictionary<string, string> resultData = g.CreateNode("result");
         resultData[OperationKey] = ResultOp;
-        // The pipeline's resolved output count is the final result count, so it is surfaced on the Result node
-        // (the terminal of the dataflow) rather than the query root.
         if (compiled.Parameters != null && compiled.Parameters.TryGetValue("Output", out string pipelineOutput) && string.IsNullOrEmpty(pipelineOutput) == false)
             resultData["Output"] = pipelineOutput;
-        // A FieldSortedScan/CompoundKeyLookup producer streams results straight to the Result node without a
-        // CompiledQueryMatch, so OverlayTimings leaves the root "Output" unset. Fall back to the producer's own
-        // emitted count (DirectScan "Output", lookup "Count") so the Result node still shows output=N.
-        else if (producerNode?.Parameters != null
+        else if (producerNode?.Parameters != null // FieldSortedScan/CompoundKeyLookup roots
                  && (producerNode.Parameters.TryGetValue("Output", out string producerOutput) || producerNode.Parameters.TryGetValue("Count", out producerOutput))
                  && string.IsNullOrEmpty(producerOutput) == false)
             resultData["Output"] = producerOutput;
@@ -264,16 +245,12 @@ internal static class QueryPlanGraph
             }
             else if (earlyExit)
             {
-                // Limit-truncated run: the count was capped by the pushed-down limit, so the pipeline stopped
-                // here instead of scanning the rest. Carry the limit so the edge label can say so.
                 e[VariantKey] = "bitmap-earlyexit";
                 e[LimitKey] = limitValue;
                 e[FlowKey] = FlowOn;
             }
             else
             {
-                // The bitmap pipeline fed the candidate set: it is the taken path whether or not a runtime overlay
-                // confirmed it (the variant only changes the optional edge label, which both cases leave blank).
                 e[VariantKey] = hasRuntime ? "bitmap-final" : "bitmap-plain";
                 e[FlowKey] = FlowOn;
             }
@@ -336,7 +313,8 @@ internal static class QueryPlanGraph
             BuildPostFilterChain(g, bitmapSink, postFilters, wrappers);
         }
 
-        // Invisible sequencing edges: pin parallel-looking branches to true execution order. An invisible edge forces the second to rank below the first.
+        // Invisible sequencing edges: pin parallel-looking branches to true execution order.
+        // An invisible edge forces the second to rank below the first.
         for (int i = 0; i + 1 < ops.Count; i++)
         {
             if (ops[i].Operation is "EntryScan" or "EntryScanCheck" &&   // Entry-scan nodes are skipped — their branch edges already express the (conditional) ordering.
@@ -487,12 +465,7 @@ internal static class QueryPlanGraph
         };
     }
 
-    /// <summary>
-    ///     Walks the result-shaping wrappers (sort / boost) that sit between the plan root and the bitmap
-    ///     pipeline node <paramref name="pipeline" />, returning them OUTERMOST-FIRST. These are the
-    ///     SortingMatch / SortingMultiMatch / BoostingMatch the executor layered on top of the candidate set;
-    ///     the graph roots at the pipeline, so without this they would be invisible.
-    /// </summary>
+    // extract the sorting match (etc) wrappers
     private static List<QueryInspectionNode> CollectResultWrappers(QueryInspectionNode plan, QueryInspectionNode pipeline)
     {
         List<QueryInspectionNode> wrappers = [];
@@ -506,12 +479,6 @@ internal static class QueryPlanGraph
         return wrappers;
     }
 
-    /// <summary>
-    ///     Chains the per-entry post-filters and the result-shaping wrappers off the bitmap pipeline output,
-    ///     terminating at the Result node: <c>candidates → SpatialMatch → … → Sort/Boost → Result</c>. The
-    ///     wrappers arrive outermost-first and are emitted innermost-first (the order data actually flows toward
-    ///     the result), so a SortingMatch(BoostingMatch(pipeline)) renders as <c>… → Boost → Sort → Result</c>.
-    /// </summary>
     private static void BuildPostFilterChain(GraphvizGraph g, string fromNode,
         List<QueryInspectionNode> postFilters, List<QueryInspectionNode> wrappers)
     {
@@ -553,12 +520,7 @@ internal static class QueryPlanGraph
         resultEdge[FlowKey] = FlowOn;
     }
 
-    /// <summary>
-    ///     Renders the spatial/vector all-entries bypass (InstantiateAllEntriesPostFilter): there is no
-    ///     compiled bitmap pipeline, just an implicit full scan feeding a PostFilterMatch. The PostFilterMatch
-    ///     children are the spatial/vector filters; they are chained off a synthetic AllEntries source, with
-    ///     any sort/boost wrapper that was peeled off the plan root rendered after them.
-    /// </summary>
+    // handle queries like where spatial.within() or where vector.search() - we only have post processing filters there
     private static string RenderAllEntriesBypass(QueryInspectionNode postFilter, List<QueryInspectionNode> wrappers)
     {
         GraphvizGraph g = new()
@@ -608,10 +570,6 @@ internal static class QueryPlanGraph
         return null;
     }
 
-    /// <summary>
-    ///     Copy an inspection node's parameters into a node Data bag, skipping the large source/graph blobs that
-    ///     only live on the root node — they must never bloat a rendered op/scan node.
-    /// </summary>
     private static void CopyParameters(QueryInspectionNode op, Dictionary<string, string> data)
     {
         if (op.Parameters == null)
@@ -629,17 +587,10 @@ internal static class QueryPlanGraph
         }
     }
 
-    /// <summary>
-    ///     Multi-line label for a bitmap op node (dispatch, field, term, slot, cardinality, count, timing). The
-    ///     taken-state is surfaced via data_taken and edge colouring, not the label.
-    /// </summary>
     private static string OpLabel(string operation, Dictionary<string, string> p)
     {
-        List<string> parts = new()
-            { operation };
+        List<string> parts = [operation];
 
-        // Dispatch (Term / MultiTerm / Match) — how this leaf reaches its postings. Slot-algebra and control-flow
-        // ops have no dispatch and so render none.
         if (p.TryGetValue("Dispatch", out string dispatch) && string.IsNullOrEmpty(dispatch) == false)
         {
             parts.Add("[" + dispatch + "]");
@@ -678,14 +629,9 @@ internal static class QueryPlanGraph
         return string.Join("\\n", parts);
     }
 
-    /// <summary>
-    ///     Label for the executed-tree-scan node: driving tree / clause / seek bound / direction, per-entry residual
-    ///     predicates, scan counts, per-phase timing.
-    /// </summary>
     private static string DirectScanLabel(Dictionary<string, string> p)
     {
-        List<string> parts = new()
-            { DirectScanOp };
+        List<string> parts = [DirectScanOp];
         AddIf(p, parts, "DrivingTree", "tree=");
         AddIf(p, parts, "DrivingClause", "drive=");
         AddIf(p, parts, "SeekBound", "seek=");
@@ -706,14 +652,9 @@ internal static class QueryPlanGraph
         return string.Join("\\n", parts);
     }
 
-    /// <summary>
-    ///     Label for a CompoundKeyLookup producer node: the synthetic compound field, the two component field=value
-    ///     pairs the composite key encodes, and the result count.
-    /// </summary>
     private static string CompoundLookupLabel(Dictionary<string, string> p)
     {
-        List<string> parts = new()
-            { CompoundLookupOp };
+        List<string> parts = [CompoundLookupOp];
         if (p.TryGetValue("Dispatch", out string dispatch) && string.IsNullOrEmpty(dispatch) == false)
         {
             parts.Add("[" + dispatch + "]");
@@ -730,13 +671,9 @@ internal static class QueryPlanGraph
         return string.Join("\\n", parts);
     }
 
-    /// <summary>
-    ///     Label for the up-front count-probe node (header-only CountPostingsInRange walk that resolved the
-    ///     DirectScan's exact total without draining it): in-range terms walked, posting total, probe cost.
-    /// </summary>
     private static string CountProbeLabel(Dictionary<string, string> p)
     {
-        List<string> parts = new() { CountProbeOp };
+        List<string> parts = [CountProbeOp];
         AddIf(p, parts, "KnownTotalProbeTerms", "terms=");
         AddIf(p, parts, "KnownExactTotal", "postings=");
         AddIf(p, parts, "KnownTotalProbe_ms", "", " ms");
@@ -745,11 +682,6 @@ internal static class QueryPlanGraph
         return string.Join("\\n", parts);
     }
 
-    /// <summary>
-    ///     Label for a per-entry post-filter node. The underlying match (MatchOperation) decides the facts shown:
-    ///     spatial → relation/field/shape; vector → mode + similarity, field, request shape, runtime cost. Variant
-    ///     names ("[And]" / "Multi") flow through verbatim so the heading reflects which match ran.
-    /// </summary>
     private static string PostFilterLabel(Dictionary<string, string> p)
     {
         string match = p.GetValueOrDefault("MatchOperation", PostFilterOp);
@@ -757,9 +689,9 @@ internal static class QueryPlanGraph
         if (match.Contains("Spatial"))
         {
             p.TryGetValue("SpatialRelation", out string relation);
-            parts = new() { string.IsNullOrEmpty(relation) ? match : match + " [" + relation + "]" };
-            AddIf(p, parts, "Field", "");
-            AddIf(p, parts, "Shape", "");
+            parts = [string.IsNullOrEmpty(relation) ? match : match + " [" + relation + "]"];
+            AddIf(p, parts, "Field");
+            AddIf(p, parts, "Shape");
         }
         else if (match.Contains("Vector"))
         {
@@ -767,8 +699,8 @@ internal static class QueryPlanGraph
             // candidates requested), and the runtime cost (filter set size, candidates actually scanned, init time).
             string mode = p.GetValueOrDefault("SearchMode", match);
             string similarity = p.GetValueOrDefault("SimilarityMethod");
-            parts = new() { match, string.IsNullOrEmpty(similarity) ? mode : mode + " (" + similarity + ")" };
-            AddIf(p, parts, "FieldName", "");
+            parts = [match, string.IsNullOrEmpty(similarity) ? mode : mode + " (" + similarity + ")"];
+            AddIf(p, parts, "FieldName");
             AddIf(p, parts, "MinimumMatch", "min match ");
             AddIf(p, parts, "NumberOfCandidates", "top ");
             AddIf(p, parts, "FilterEntries", "filter ");
@@ -779,8 +711,8 @@ internal static class QueryPlanGraph
         }
         else
         {
-            parts = new() { match };
-            AddIf(p, parts, "FieldName", "");
+            parts = [match];
+            AddIf(p, parts, "FieldName");
         }
 
         for (int i = 0; i < parts.Count; i++)
@@ -791,12 +723,7 @@ internal static class QueryPlanGraph
         return string.Join("\\n", parts);
     }
 
-    /// <summary>
-    ///     Label for a sort wrapper node: strategy + sort key(s). Single-field <c>SortingMatch</c> shows field /
-    ///     direction / compare type (score and spatial-distance sorts called out explicitly); <c>SortingMultiMatch</c>
-    ///     lists every ORDER BY field in priority order. (The streaming sorted-scan is NOT a wrapper — it shows up as
-    ///     the DirectScan producer node, since the scan yields entries already in order.)
-    /// </summary>
+    
     private static string SortLabel(Dictionary<string, string> p)
     {
         string match = p.GetValueOrDefault("MatchOperation", SortOp);
@@ -804,7 +731,7 @@ internal static class QueryPlanGraph
 
         if (match == "SortingMultiMatch")
         {
-            parts = new() { match + " [multi-field heap sort]" };
+            parts = [match + " [multi-field heap sort]"];
             for (int i = 0; p.ContainsKey("Comparer" + i + "_FieldName"); i++)
             {
                 string prefix = "Comparer" + i + "_";
@@ -821,29 +748,26 @@ internal static class QueryPlanGraph
             if (fieldType == "Score")
             {
                 bool boosting = p.GetValueOrDefault("IsBoosting") == "True";
-                parts = new() { match + " [heap sort]", "rank by score()" + (boosting ? " (boosting)" : "") };
+                parts = [match + " [heap sort]", "rank by score()" + (boosting ? " (boosting)" : "")];
             }
             else if (fieldType == "Spatial")
             {
-                parts = new() { match + " [heap sort]", "by distance" };
+                parts = [match + " [heap sort]", "by distance"];
                 AddIf(p, parts, "Point", "from ");
                 AddIf(p, parts, "Round", "round ");
-                AddIf(p, parts, "Units", "", "");
+                AddIf(p, parts, "Units");
                 parts.Add(SortDirection(p.GetValueOrDefault("Ascending")));
             }
             else
             {
-                parts = new()
-                {
+                parts =
+                [
                     match + " [" + SortMechanism(p) + "]",
                     SortKeyDescription(p.GetValueOrDefault("FieldName"), p.GetValueOrDefault("Ascending"), fieldType)
-                };
+                ];
             }
         }
 
-        // Runtime sort telemetry (set by SortingMatch.Inspect): the actual strategy chosen, how many
-        // sort-index entries were streamed (streaming strategy only), and the wall-clock sort time. The
-        // sort runs outside the compiled bitmap pipeline, so this is the only place these surface.
         AddIf(p, parts, "Strategy", "via ");
         AddIf(p, parts, "EntriesStreamed", "streamed=");
         AddIf(p, parts, "Candidates", "candidates=");
@@ -855,14 +779,7 @@ internal static class QueryPlanGraph
         return string.Join("\\n", parts);
     }
 
-    /// <summary>
-    ///     The bracketed mechanism for a single-field sort, derived from the strategy SortingMatch actually ran
-    ///     (surfaced as the "Strategy" parameter by <c>SortingMatch.Inspect</c>). <c>IndexOrderStreaming</c> walks
-    ///     the sort index in order and streams to the page limit — it is NOT a heap sort, so a hardcoded
-    ///     "[heap sort]" would contradict the "via IndexOrderStreaming" line on the same node. Score / spatial
-    ///     sorts reach this only via the heap-sorting branches above; the field branch is the one that can stream.
-    ///     Falls back to "heap sort" with no runtime strategy (the materialize-then-sort default).
-    /// </summary>
+  
     private static string SortMechanism(Dictionary<string, string> p) => p.GetValueOrDefault("Strategy") switch
     {
         "IndexOrderStreaming" => "index-order streaming",
@@ -880,10 +797,9 @@ internal static class QueryPlanGraph
 
     private static string SortDirection(string ascending) => ascending == "False" ? "DESC" : "ASC";
 
-    /// <summary>Builds the label for a boost wrapper node, surfacing the boost factor applied to the inner scores.</summary>
     private static string BoostLabel(Dictionary<string, string> p)
     {
-        List<string> parts = new() { p.GetValueOrDefault("MatchOperation", BoostOp) };
+        List<string> parts = [p.GetValueOrDefault("MatchOperation", BoostOp)];
         AddIf(p, parts, "BoostFactor", "factor x");
         for (int i = 0; i < parts.Count; i++)
             parts[i] = GraphvizGraph.Escape(parts[i]);
@@ -898,10 +814,6 @@ internal static class QueryPlanGraph
         }
     }
 
-    /// <summary>
-    ///     True when any op carries a runtime <c>Output</c> parameter, i.e. OverlayTimings ran and the taken path
-    ///     is knowable. Used for plans with no entry-scan gate, where there is no Taken flag to key off.
-    /// </summary>
     private static bool AnyHasOutput(List<QueryInspectionNode> ops)
     {
         foreach (QueryInspectionNode op in ops)
@@ -915,10 +827,6 @@ internal static class QueryPlanGraph
         return false;
     }
 
-    /// <summary>
-    ///     Joins a scan's Residual children into a single conjunctive filter string — "A AND B AND C" — for one
-    ///     note node, since every survivor must pass ALL of them. Returns null when there are no residual children.
-    /// </summary>
     private static string CombinedResidualFilter(List<QueryInspectionNode> children)
     {
         if (children == null)
@@ -926,7 +834,7 @@ internal static class QueryPlanGraph
             return null;
         }
 
-        List<string> tokens = new();
+        List<string> tokens = [];
         foreach (QueryInspectionNode child in children)
         {
             string token = ResidualToken(child);
@@ -939,11 +847,6 @@ internal static class QueryPlanGraph
         return tokens.Count == 0 ? null : string.Join(" AND ", tokens);
     }
 
-    /// <summary>
-    ///     Renders one residual-predicate node into a compact "Field Compare" token (a leading "!" marks a
-    ///     negated check, and an AND/OR group is wrapped in parentheses with the matching joiner). Returns null when the
-    ///     node is not a residual. Recurses into Residual-AndGroup / Residual-OrGroup children.
-    /// </summary>
     private static string ResidualToken(QueryInspectionNode node)
     {
         if (node.Operation is "Residual-AndGroup" or "Residual-OrGroup")
@@ -968,6 +871,22 @@ internal static class QueryPlanGraph
         node.Parameters.TryGetValue("FieldName", out string field);
         node.Parameters.TryGetValue("Compare", out string compare);
         bool negated = node.Parameters.TryGetValue("Negated", out string n) && n == "true";
-        return (negated ? "!" : "") + field + " " + compare;
+        var compareOp = compare switch
+        {
+            nameof(ScanCompareOp.Equal)              => "==",
+            nameof(ScanCompareOp.NotEqual)           => "!=",
+            nameof(ScanCompareOp.GreaterThan)        => ">",
+            nameof(ScanCompareOp.GreaterThanOrEqual) => ">=",
+            nameof(ScanCompareOp.LessThan)           => "<",
+            nameof(ScanCompareOp.LessThanOrEqual)    => "<=",
+            nameof(ScanCompareOp.Between)            => "BETWEEN",
+            nameof(ScanCompareOp.Exists)             => "EXISTS",
+            nameof(ScanCompareOp.StartsWith)         => "STARTS WITH",
+            nameof(ScanCompareOp.EndsWith)           => "ENDS WITH",
+            nameof(ScanCompareOp.In)                 => "IN",
+            nameof(ScanCompareOp.AllIn)              => "ALL IN",
+            _                                        => compare 
+        };
+        return (negated ? "NOT " : "") + field + " " + compareOp;
     }
 }
