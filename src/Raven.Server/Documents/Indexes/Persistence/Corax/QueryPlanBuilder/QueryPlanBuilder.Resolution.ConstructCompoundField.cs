@@ -37,7 +37,8 @@ internal static partial class QueryPlanBuilder
         if (CreateDrivingMatch(ref ctx) is not { } drivingMatch)
             return null; // unsupported shape (e.g. backward prefix scan) — fall back to the bitmap pipeline
 
-        // When the sort wrapper is elided, the output IS the final order, but TermsProviderMatch returns the entry id order 
+        // When the sort wrapper is elided, the output IS the final order, but TermsProviderMatch returns entry-id order
+        // so wrap it in a term-by-term walk that keeps field2 order (when not eliding, the outer SortingMatch re-sorts anyway).
         if (canElideCompoundSort && drivingMatch is TermsProviderMatch tpm)
             drivingMatch = new SortedDrivingMatch(tpm.Provider, tpm.Llt, ctx.PlanParams.Allocator);
 
@@ -74,7 +75,7 @@ internal static partial class QueryPlanBuilder
         IQueryMatch CreateDrivingMatch(ref InstantiateContext context)
         {
             string fieldName = context.Exec.Plan.Template.CompoundFieldSortName;
-            if (field2Range is not null && // can we do a range filte ron field2 ? 
+            if (field2Range is not null && // can we do a range filter on field2 ?
                 TryBuildCompositeRangeKeys(ref context, analyzedPrefix, fieldName, field2Range, out var lowSlice, out var highSlice))
             {
                 usedCompositeRange = true;
@@ -83,7 +84,7 @@ internal static partial class QueryPlanBuilder
                 return BuildCompositeRangeMatch(lowSlice, highSlice);
             }
 
-            // No field2 narrowing: run a prefix scan on field1 let entry-scan residuals filter the rest 
+            // No field2 narrowing: run a prefix scan on field1 and let entry-scan residuals filter the rest.
             return indexSearcher.StartWithQuery(compoundFieldMeta, analyzedPrefix,
                 isNegated: false, forward: forward,
                 validatePostfixLen: true);
