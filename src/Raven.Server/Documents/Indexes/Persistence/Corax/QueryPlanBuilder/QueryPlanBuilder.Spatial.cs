@@ -92,67 +92,35 @@ internal static partial class QueryPlanBuilder
         if (template.SpatialClauses == null && template.VectorClauses == null)
             return;
 
-        ClauseExecution[] spatialExecs = null;
-        ClauseExecution[] vectorExecs = null;
+        var execs = exec.Executions ??= [];
 
         if (template.SpatialClauses != null)
         {
             int sLen = template.SpatialClauses.Count;
-            spatialExecs = new ClauseExecution[sLen];
+            // compute where to put the match (after all existing clauses, or if there are none, the first (maybe after the FillAllEntries if we have that)
+            int matchIndex = exec.Cardinalities?.Length ?? (exec.IsAllEntries ? 1 : 0);
+            exec.SpatialFilters = new SpatialFilterOp[sLen];
             for (int si = 0; si < sLen; si++)
             {
-                var scExec = new ClauseExecution(template.SpatialClauses[si]);
+                var clause = template.SpatialClauses[si];
+                var scExec = new ClauseExecution(clause);
                 PopulateClauseValues(scExec, planParams.SlotBindings, planParams.QueryParameters, writer, builderParameters, Span<ulong>.Empty);
-                spatialExecs[si] = scExec;
+                execs.Add(scExec);
+                exec.SpatialFilters[si] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = clause, Exec = scExec };
             }
         }
 
         if (template.VectorClauses != null)
         {
             int vLen = template.VectorClauses.Count;
-            vectorExecs = new ClauseExecution[vLen];
+            exec.VectorSelects = new ClauseExecution[vLen];
             for (int vi = 0; vi < vLen; vi++)
             {
                 var vcExec = new ClauseExecution(template.VectorClauses[vi]);
                 PopulateClauseValues(vcExec, planParams.SlotBindings, planParams.QueryParameters, writer, builderParameters, Span<ulong>.Empty);
-                vectorExecs[vi] = vcExec;
+                execs.Add(vcExec);
+                exec.VectorSelects[vi] = vcExec;
             }
         }
-
-        AttachPostFilterPhases(exec, spatialExecs, vectorExecs);
-    }
-
-    private static void AttachPostFilterPhases(QueryExecution exec, ClauseExecution[] spatialExecs, ClauseExecution[] vectorExecs)
-    {
-        if (spatialExecs == null && vectorExecs == null)
-            return;
-
-        var execs = exec.Executions ??= [];
-
-        if (spatialExecs != null)
-        {
-            // compute where to put the match (after all existing clauses, or if there are none, the first (maybe after the FillAllEntries if we have that)
-            int matchIndex = exec.Cardinalities?.Length ?? (exec.IsAllEntries ? 1 : 0);
-            exec.SpatialFilters = new SpatialFilterOp[spatialExecs.Length];
-            for (int i = 0; i < spatialExecs.Length; i++)
-            {
-                var spatialExec = spatialExecs[i];
-                execs.Add(spatialExec);
-                exec.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialExec.Clause, Exec = spatialExec };
-            }
-        }
-
-        if (vectorExecs != null)
-        {
-            exec.VectorSelects = new ClauseExecution[vectorExecs.Length];
-            for (int i = 0; i < vectorExecs.Length; i++)
-            {
-                var vectorExec = vectorExecs[i];
-                execs.Add(vectorExec);
-                exec.VectorSelects[i] = vectorExec;
-            }
-        }
-
-        exec.Executions = execs;
     }
 }
