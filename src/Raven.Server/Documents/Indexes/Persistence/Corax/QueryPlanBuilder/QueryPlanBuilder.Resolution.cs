@@ -179,17 +179,17 @@ internal static partial class QueryPlanBuilder
                         exec.SentinelRewriteType = ClauseType.LessThanOrEqual;
                         MarkSentinel(sentinelBits, bindings[BindingIndex.BetweenLow]);
                         exec.TermValueType = highType;
-                        exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType));
+                        exec.PackedParamValue = writer.Add(high, highType);
                         return;
                     case (false, true):
                         exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual;
                         MarkSentinel(sentinelBits, bindings[BindingIndex.BetweenHigh]);
                         exec.TermValueType = lowType;
-                        exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType));
+                        exec.PackedParamValue = writer.Add(low, lowType);
                         return;
                     case (false, false):
                         exec.TermValueType = lowType;
-                        exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
+                        exec.PackedParamValue = writer.AddPair(low, high, lowType);
                         return;
                 }
             }
@@ -210,7 +210,7 @@ internal static partial class QueryPlanBuilder
                 }
 
                 exec.TermValueType = valueType;
-                exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
+                exec.PackedParamValue = writer.Add(value, valueType);
                 break;
         }
     }
@@ -219,13 +219,12 @@ internal static partial class QueryPlanBuilder
     private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType, List<object> values, bool hasNullTerm)
     {
         var (packedType, startIdx) = writer.ResolveInSlot(dominantType);
-        var dominantTokenType = ToValueTokenType(dominantType);
 
         int written = 0;
         for (int i = 0; i < values.Count; i++)
         {
             // Mixed-type IN: (IN [long, "Shalom"]). Silently drop it instead of throwing, Matches Lucene's behavior.
-            if (writer.TryAdd(values[i], dominantTokenType) is null)
+            if (writer.TryAdd(values[i], dominantType) is null)
                 continue;
             written++;
         }

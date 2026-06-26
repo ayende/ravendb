@@ -2,7 +2,6 @@
 using System;
 using System.Collections.Generic;
 using Corax.Querying.Planning;
-using Raven.Server.Documents.Queries.AST;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
@@ -36,21 +35,21 @@ internal sealed class ValueWriter
 
     /// <summary>Add a resolved value by its detected type. Used by Parse* methods
     /// after <see cref="ResolveTermValue"/> determines the native type.</summary>
-    public PackedParam Add(object? value, ValueTokenType type)
+    public PackedParam Add(object? value, ParamValueType type)
     {
         return type switch
         {
-            ValueTokenType.Long => AddLong(value is long l ? l : Convert.ToInt64(value)),
-            ValueTokenType.Double => AddDouble(value is double d ? d : Convert.ToDouble(value)),
+            ParamValueType.Long => AddLong(value is long l ? l : Convert.ToInt64(value)),
+            ParamValueType.Double => AddDouble(value is double d ? d : Convert.ToDouble(value)),
             _ => AddString(value?.ToString())
         };
     }
-    
-    public PackedParam? TryAdd(object? value, ValueTokenType type)
+
+    public PackedParam? TryAdd(object? value, ParamValueType type)
     {
         return type switch
         {
-            ValueTokenType.Long =>  TryAddLong(value switch
+            ParamValueType.Long =>  TryAddLong(value switch
             {
                 long l => l,
                 double d => (long)d,
@@ -59,7 +58,7 @@ internal sealed class ValueWriter
                 _ when long.TryParse(value?.ToString(), System.Globalization.CultureInfo.InvariantCulture, out long l) => l,
                 _ => null
             }),
-            ValueTokenType.Double => TryAddDouble(value switch
+            ParamValueType.Double => TryAddDouble(value switch
             {
                 double d => d,
                 long l => l,
@@ -72,14 +71,14 @@ internal sealed class ValueWriter
     }
 
     /// <summary>Add a pair of resolved values (for BETWEEN).</summary>
-    public PackedParam AddPair(object? value1, object? value2, ValueTokenType type)
+    public PackedParam AddPair(object? value1, object? value2, ParamValueType type)
     {
         return type switch
         {
-            ValueTokenType.Long => AddLongPair(
+            ParamValueType.Long => AddLongPair(
                 value1 is long l1 ? l1 : Convert.ToInt64(value1),
                 value2 is long l2 ? l2 : Convert.ToInt64(value2)),
-            ValueTokenType.Double => AddDoublePair(
+            ParamValueType.Double => AddDoublePair(
                 value1 is double d1 ? d1 : Convert.ToDouble(value1),
                 value2 is double d2 ? d2 : Convert.ToDouble(value2)),
             _ => AddStringPair(value1?.ToString(), value2?.ToString())
