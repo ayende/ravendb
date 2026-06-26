@@ -48,7 +48,8 @@ internal static partial class QueryPlanBuilder
                 // orderByFields are null when take is 0 (counting query, not sorting required) - no point in compound optimization
                 when orderByFields != null:
             {
-                bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost, out exec.StrategyGateReason);
+                bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost, out var cfReason);
+                exec.StrategyGateReason = forced is not null ? "forced via $rvn_corax_strategy" : cfReason; // mirror FieldSortedScan: a forced run reports the force, not the gate verdict
                 if (forced is null && cfEffective == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
                 
@@ -186,10 +187,7 @@ internal static partial class QueryPlanBuilder
             // Residual present: read each entry's fields for the residual, may over-scan
             entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
             bitmapCost += SurvivorSortCost(EstimateSurvivors(execs, indexSearcher)); // add the bitmap's survivor-sort cost
-            bool effective = IsDirectScanCostEffective(entriesToScan, bitmapCost);
-            if (ctx.WantTimings)
-                reason = FormatGateReason(entriesToScan, bitmapCost, unboundedReason: null);
-            return effective;
+            return IsDirectScanCostEffective(entriesToScan, bitmapCost, ctx.WantTimings, unboundedReason: null, out reason);
         }
         
         static bool DirectScanCostEffective(ref InstantiateContext ctx, bool isFullScan, out string directScanReason)
@@ -234,10 +232,8 @@ internal static partial class QueryPlanBuilder
             long drivingCard = drivingExec.GetEffectiveCardinality(indexSearcher);
             var entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
 
-            bool effective = IsDirectScanCostEffective(entriesToScan, bitmapCost);
-            if (ctx.WantTimings)
-                directScanReason = FormatGateReason(entriesToScan, bitmapCost, DescribeUnboundedScanTake(ctx.BuilderParams));
-            return effective;
+            string unboundedReason = ctx.WantTimings ? DescribeUnboundedScanTake(ctx.BuilderParams) : null;
+            return IsDirectScanCostEffective(entriesToScan, bitmapCost, ctx.WantTimings, unboundedReason, out directScanReason);
         }
         
         static long CalculateDirectCost(long entriesToScan)
@@ -247,12 +243,28 @@ internal static partial class QueryPlanBuilder
                 : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
         }
 
-        static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost)
+        // The cost verdict and its human-readable reason are derived together so the two can never disagree.
+        // reason is only formatted when wantTimings is set; the verdict is always returned.
+        static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost, bool wantTimings, string unboundedReason, out string reason)
         {
-            long directCost = CalculateDirectCost(entriesToScan);
+            reason = null;
+            string suffix = unboundedReason is null ? "" : $" [page unbounded: {unboundedReason}]";
 
-            // check what will be more costly, and set a hard limit (32K) to how many entries we may scan
-            return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
+            // hard limit (32K) on how many entries we may scan, regardless of the cost comparison
+            if (entriesToScan > QueryPrimitives.EntryScanCountThreshold)
+            {
+                if (wantTimings)
+                    reason = $"entries_to_scan({entriesToScan}) > cap({QueryPrimitives.EntryScanCountThreshold}) → bitmap{suffix}";
+                return false;
+            }
+
+            long directCost = CalculateDirectCost(entriesToScan);
+            bool effective = directCost < bitmapCost; // check what will be more costly
+            if (wantTimings)
+                reason = effective
+                    ? $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} < bitmap_cost({bitmapCost}) → scan{suffix}"
+                    : $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} >= bitmap_cost({bitmapCost}) → bitmap{suffix}";
+            return effective;
         }
 
         // Independence (product) estimate of the AND intersection: N * Π(card_i / N), clamped to [0, N]. 
@@ -275,20 +287,6 @@ internal static partial class QueryPlanBuilder
                 ? long.MaxValue // avoid overflow
                 : survivors * QueryPrimitives.EntryScanSurvivorSortFactor;
 
-        static string FormatGateReason(long entriesToScan, long bitmapCost, string unboundedReason)
-        {
-            string suffix = unboundedReason is null ? "" : $" [page unbounded: {unboundedReason}]";
-    
-            if (entriesToScan > QueryPrimitives.EntryScanCountThreshold)
-                return $"entries_to_scan({entriesToScan}) > cap({QueryPrimitives.EntryScanCountThreshold}) → bitmap{suffix}";
-
-            long directCost = CalculateDirectCost(entriesToScan);
-    
-            return directCost < bitmapCost
-                ? $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} < bitmap_cost({bitmapCost}) → scan{suffix}"
-                : $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} >= bitmap_cost({bitmapCost}) → bitmap{suffix}";
-        }
-        
         static long  ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
             ClauseExecution drivingClause, long drivingCard, long pageSize, IndexSearcher indexSearcher)
         {
