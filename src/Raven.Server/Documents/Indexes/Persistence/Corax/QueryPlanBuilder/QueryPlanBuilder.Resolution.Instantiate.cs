@@ -82,8 +82,7 @@ internal static partial class QueryPlanBuilder
                 if (directScanEffective)
                 {
                     bool hasTieBreak = orderByFields.Length == 2;
-                    var innerMatch = ConstructDirectScan(ref ctx, walkerCtx, exec.SortDrivingClause, isFullScan, hasTieBreak, directScanReason);
-                    if (innerMatch is not null)
+                    if (ConstructDirectScan(ref ctx, walkerCtx, exec.SortDrivingClause, isFullScan, hasTieBreak, directScanReason) is {} innerMatch)
                     {
                         exec.ActualStrategy = ExecutionStrategy.FieldSortedScan;
                         return (innerMatch, innerMatch);
