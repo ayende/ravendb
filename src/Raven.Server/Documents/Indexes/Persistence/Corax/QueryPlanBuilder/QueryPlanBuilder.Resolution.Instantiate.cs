@@ -30,14 +30,10 @@ internal static partial class QueryPlanBuilder
         if (compiledPlan.Strategy == ExecutionStrategy.NotEvaluated)
             SelectExecutionStrategy(ref ctx);
 
-        // A query may pin a specific execution strategy via the reserved $rvn_corax_strategy parameter.
-        // Forcing bypasses the per-execution cost gate but NOT structural validity. This exists so every strategy can be exercised under user's explicit request.
-        ExecutionStrategy? forced = TryGetForcedStrategy(ctx.PlanParams.QueryParameters);
+        ExecutionStrategy? forced = TryGetForcedStrategy(ctx.PlanParams.QueryParameters); // $rvn_corax_strategy - user can force exec strategy
         ExecutionStrategy effective = forced ?? compiledPlan.Strategy;
 
-        // Independent of the bitmap-pipeline strategy above: a query may also pin the SortingMatch's sort
-        // strategy via $rvn_corax_sort. Applied to whichever SortingMatch the dispatch below produces.
-        CoraxSortingStrategy? forcedSort = TryGetForcedSortStrategy(ctx.PlanParams.QueryParameters);
+        CoraxSortingStrategy? forcedSort = TryGetForcedSortStrategy(ctx.PlanParams.QueryParameters); //  $rvn_corax_sort - use can force sorting strategy
 
         switch (effective)
         {
@@ -48,17 +44,16 @@ internal static partial class QueryPlanBuilder
                 exec.ActualStrategy = ExecutionStrategy.CompoundKeyLookup;
                 return (innerMatch, innerMatch);
             }
-            // orderByFields can be null when page size is 0, in which case, we need to get the actual total count
-            // no advantage of using compound field here, since we can't stop midway (like we do with paging)
-            case ExecutionStrategy.CompoundSortedScan when orderByFields != null:
+            case ExecutionStrategy.CompoundSortedScan 
+                // orderByFields are null when take is 0 (counting query, not sorting required) - no point in compound optimization
+                when orderByFields != null:
             {
-                // Always compute the cost estimate: ConstructCompoundField consumes entriesToScan/bitmapCost.
-                // When forced, we ignore the gate's verdict but still need those values.
                 bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost);
                 if (wantTimings)
                     exec.StrategyGateReason = $"entries_to_scan({cfEntriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} {(cfEffective ? "<" : ">=")} bitmap_cost({cfBitmapCost})";
                 if (forced is null && cfEffective == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
+                
                 // Single-field order (== the compound's field2): the DirectScan already emits in that order, so
                 // elide the wrapper and push a page-bounded Take into the scan. Independent of $rvn_corax_sort —
                 // a sorted scan IS the order, so a SortingMatch would only re-sort and force a TakeAll drain (the

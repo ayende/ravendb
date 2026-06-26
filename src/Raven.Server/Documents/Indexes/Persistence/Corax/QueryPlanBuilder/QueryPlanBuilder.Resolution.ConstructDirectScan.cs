@@ -27,7 +27,7 @@ internal static partial class QueryPlanBuilder
         if (drivingMatchProvider is not TermsProviderMatch tpm)
             return null; // can happen if we have no entries for this field
 
-        var drivingClauseDescription = ctx.WantTimings ? $"{drivingClause.Clause.FieldName} {(isFullScan ? "[all]" : drivingClause.ClauseType.ToString())}" : null;
+        var drivingClauseDescription = ctx.WantTimings ? DrivingClauseDescription(ref ctx) : null;
         
         bool nullFirst = ResolveNullFirst(ctx.OrderByFields[0], ctx.BuilderParams.Index.Configuration.NullsSortMode, forward);
 
@@ -149,5 +149,10 @@ internal static partial class QueryPlanBuilder
             ds.ResidualDescription = residualArray == null ? null : string.Join(", ", Array.ConvertAll(residualArray, p => $"{p.FieldName} {p.CompareOp}"));
             ds.Reason = reason;
         }
+
+        string DrivingClauseDescription(ref InstantiateContext ctx) =>
+            isFullScan 
+                ? $"{ctx.OrderByFields[0].Field.FieldName} [all]"
+                : $"{drivingClause.Clause.FieldName} {drivingClause.ClauseType}";
     }
 }
