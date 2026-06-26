@@ -48,6 +48,33 @@ internal static partial class QueryPlanBuilder
 
     private static void AppendTag(ref PlanCacheKeyBuilder builder, AstTag tag) => builder.Append((int)tag, AstTagBits);
 
+    // Verifies every bit-field width above can encode all members of the enum it packs. Each enum is written with
+    // Append(value, bits), which keeps only the low `bits` bits, so a member value >= 2^bits would be silently
+    // truncated in Release and could collide two structurally distinct plans into the same cache bucket. Driven by a
+    // test (StructuralKeyBitWidthsTests) so an enum that grows past its field fails CI instead of corrupting buckets.
+    internal static void ValidateStructuralKeyBitWidths()
+    {
+        AssertEnumFitsInBits<AstTag>(AstTagBits, nameof(AstTagBits));
+        AssertEnumFitsInBits<OperatorType>(OperatorBits, nameof(OperatorBits));
+        AssertEnumFitsInBits<ValueTokenType>(ValueTokenBits, nameof(ValueTokenBits));
+        AssertEnumFitsInBits<OrderByFieldType>(OrderingTypeBits, nameof(OrderingTypeBits));
+        AssertEnumFitsInBits<NullsOrderingType>(NullsOrderingBits, nameof(NullsOrderingBits));
+        AssertEnumFitsInBits<MethodType>(MethodTypeBits, nameof(MethodTypeBits));
+
+        static void AssertEnumFitsInBits<TEnum>(int bits, string constantName) where TEnum : struct, Enum
+        {
+            long capacity = 1L << bits;
+            foreach (var member in Enum.GetValues<TEnum>())
+            {
+                long value = Convert.ToInt64(member);
+                if (value < 0 || value >= capacity)
+                    throw new InvalidOperationException(
+                        $"Structural-key bit field {constantName} = {bits} bits (capacity {capacity}) cannot encode " +
+                        $"{typeof(TEnum).Name}.{member} = {value}. Widen {constantName} and confirm the packed stream still fits.");
+            }
+        }
+    }
+
     // Structural plan key: a SHA256 digest over a canonical, bit-packed serialization of the query's WHERE +
     // ORDER BY AST, as a 256-bit value so the per-query bucket is keyed by Vector256<long>. WHERE operands are
     // value- and parameter-agnostic: literals reduce to their type token, parameter references collapse to one
