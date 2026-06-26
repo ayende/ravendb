@@ -15,7 +15,7 @@ using Voron.Util;
 namespace Corax.Querying.Matches;
 
 [DebuggerDisplay("{DebugView,nq}")]
-public struct VectorSearchMatch : IQueryMatch, IPostFilterMatch
+public struct VectorSearchMatch : IPostFilterMatch
 {
     private const int ScanningThreshold = 1024;
 

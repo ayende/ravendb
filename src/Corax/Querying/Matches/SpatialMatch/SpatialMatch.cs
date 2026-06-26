@@ -16,7 +16,7 @@ using SpatialRelation = Spatial4n.Shapes.SpatialRelation;
 
 namespace Corax.Querying.Matches.SpatialMatch;
 
-public sealed class SpatialMatch<TBoosting> : IQueryMatch, IPostFilterMatch
+public sealed class SpatialMatch<TBoosting> : IPostFilterMatch
     where TBoosting : IBoostingMarker
 {
     /// <summary>Set by <c>QueryPlanBuilder.ApplyPostFilters</c> when this spatial match was lifted to a top-level

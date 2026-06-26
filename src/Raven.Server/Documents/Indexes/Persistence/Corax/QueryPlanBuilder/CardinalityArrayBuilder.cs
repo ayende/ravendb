@@ -19,7 +19,7 @@ internal static class CardinalityArrayBuilder
             Walk(exec);
         }
 
-        var inRangeCounts = inRange.Count == 0 ? Array.Empty<int>() : inRange.ToArray();
+        var inRangeCounts = inRange.Count == 0 ? [] : inRange.ToArray();
         var cardinalities = cards.Count == 0 ? null : cards.ToArray();
         return (inRangeCounts, cardinalities);
 

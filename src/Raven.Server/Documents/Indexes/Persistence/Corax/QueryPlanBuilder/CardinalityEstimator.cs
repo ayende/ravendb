@@ -34,19 +34,20 @@ internal static class CardinalityEstimator
                     return EstimateRangeClause(e, e.ClauseType);
 
                 case ClauseType.Between:
-                    // A null sentinel bound ("*" / "NULL") rewrites BETWEEN into a half-open range or Exists, the estimate must follow that
+                    ClauseType clauseType = ClauseType.Between;
                     if (e.SentinelRewriteType is { } rewrite)
-                        return rewrite == ClauseType.Exists ? indexSearcher.NumberOfEntries : EstimateRangeClause(e, rewrite);
-                    return EstimateRangeClause(e, ClauseType.Between);
+                    {   // A null sentinel bound ("*" / "NULL") rewrites BETWEEN into a half-open range or Exists, the estimate must follow that
+                        if (rewrite is ClauseType.Exists) goto case ClauseType.Exists;
+                        clauseType = rewrite;
+                    }
+                    return EstimateRangeClause(e, clauseType);
 
                 case ClauseType.NotEquals:
                 {
-                    // NotEquals(X) is MatchAll AndNot Equals(X): the count is the whole index minus the docs under
-                    // term X - the same O(1) term lookup as Equals, just complemented. A missing packed value (can't
-                    // resolve the term) falls back to the whole-index bound.
+                    // NotEquals(X) is MatchAll AndNot Equals(X)
                     PackedParam p = e.PackedParamValue;
                     if (p.IsNone)
-                        return indexSearcher.NumberOfEntries;
+                        return indexSearcher.NumberOfEntries; // can't resolve missing value
 
                     long eq = EstimateNumberOfDocumentsUnderSpecificTerm(clause, e);
                     return Math.Max(0, indexSearcher.NumberOfEntries - eq);
@@ -54,12 +55,10 @@ internal static class CardinalityEstimator
 
                 case ClauseType.StartsWith:
                 {
-                    // StartsWith(prefix) is the bounded prefix range [prefix, successor(prefix)): the same two-descent
-                    // range estimate as a BETWEEN, not the whole index. A missing/non-string packed value (can't encode
-                    // the prefix) falls back to the whole-index bound.
+                    // StartsWith(prefix) is the bounded prefix range [prefix, successor(prefix))
                     PackedParam p = e.PackedParamValue;
                     if (p.IsNone || p.ValueType != PackedParam.TypeString)
-                        return indexSearcher.NumberOfEntries;
+                        return indexSearcher.NumberOfEntries; // we cannot encode properly 
 
                     FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(clause, walkerCtx);
                     long startsWith = indexSearcher.EstimateStartsWith(fieldMeta, writer.GetString(p.Param1), out var startsWithBreakdown, clause.RangeEstimateCalibration.Factor);
@@ -121,12 +120,6 @@ internal static class CardinalityEstimator
             }
         }
 
-        // Estimates how many documents a range predicate (BETWEEN / GT / GTE / LT / LTE) matches. All three value
-        // types share one helper: the per-type fan-out only resolves the concrete bound(s) and the open-side
-        // sentinels, then the helper maps the operator onto the (low, high, inclusivity) tuple. Numeric opens use
-        // the type's own min/max; string opens use the before/after-all-keys slices. Strings are analyzed with the
-        // field's own analyzer here (into the tx allocator, no managed byte[]), so the estimate samples the same
-        // byte ordering the real query does instead of the aggregation builder's default-field encoding.
         long EstimateRangeClause(ClauseExecution e, ClauseType type)
         {
             PackedParam p = e.PackedParamValue;
@@ -140,8 +133,7 @@ internal static class CardinalityEstimator
             {
                 PackedParam.TypeLong => EstimateRange(writer.GetLong(p.Param1), isBetween ? writer.GetLong(p.Param2) : 0, long.MinValue, long.MaxValue),
                 PackedParam.TypeDouble => EstimateRange(writer.GetDouble(p.Param1), isBetween ? writer.GetDouble(p.Param2) : 0, double.MinValue, double.MaxValue),
-                _ => EstimateRange(
-                    indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, writer.GetString(p.Param1)),
+                _ => EstimateRange(indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, writer.GetString(p.Param1)),
                     isBetween ? indexSearcher.EncodeAndApplyAnalyzer(fieldMeta, writer.GetString(p.Param2)) : default,
                     Slices.BeforeAllKeys, Slices.AfterAllKeys)
             };

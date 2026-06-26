@@ -59,13 +59,6 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
         };
     }
 
-    /// <param name="isPostFilter">True when the planner lifted this vector clause to a top-level post-filter
-    /// (an AND context); false when it is an ordinary leaf inside an OR branch. Recorded on the produced match so
-    /// inspection reads the role rather than re-deriving it from the type. <see cref="IPostFilterMatch"/>.</param>
-    /// <param name="streamScoreOrder">True when the planner determined this post-filter vector is the sole
-    /// scoring source and its similarity-score order is exactly the order the query asks for, so the redundant
-    /// SortingMatch wrapper is skipped. The vector match must then stream its HNSW output in score order instead
-    /// of the entry-id order Fill normally guarantees — the same relaxation the bare single-clause case uses.</param>
     public IQueryMatch Materialize(IQueryMatch inner, bool isPostFilter, bool streamScoreOrder = false)
     {
         if (_isEmpty)
@@ -87,7 +80,6 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
             vs = parameters.IndexSearcher.VectorSearch(_field, _vectorToSearch, _minimumDistance, _numberOfCandidates, _isExact, singleVectorSearch, inner, parameters.Index.Configuration.CoraxVectorSearchScanningThreshold);
         }
 
-        // Set on the boxed match (vs is IQueryMatch) so the flag travels with the instance that inspection walks.
         if (vs is IPostFilterMatch pf)
             pf.IsPostFilter = isPostFilter;
 

@@ -12,7 +12,7 @@ using Voron.Util;
 
 namespace Corax.Querying.Matches;
 
-public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
+public struct MultiVectorSearchMatch : IPostFilterMatch
 {
     private const int ScanningThreshold = 1024;
 
@@ -25,7 +25,7 @@ public struct MultiVectorSearchMatch : IQueryMatch, IPostFilterMatch
     private readonly float _minimumMatch;
     private readonly int _numberOfCandidates;
     private readonly bool _isExact;
-    private VectorValue[] _vectorsToSearch;
+    private readonly VectorValue[] _vectorsToSearch;
 
 
     // Number of documents to be directly scanned instead of ANN / Exact on HNSW.
