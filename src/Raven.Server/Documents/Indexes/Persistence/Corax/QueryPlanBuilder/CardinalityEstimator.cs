@@ -19,10 +19,6 @@ internal static class CardinalityEstimator
             RuntimeHelpers.EnsureSufficientExecutionStack();
             ClauseInfo clause = e.Clause;
 
-            // Clauses that carry no packed value of their own must be resolved before the shared
-            // missing-value guard below, because they are IsNone by design: sentinels carry a preset
-            // cardinality, OR/AND groups aggregate their children, and a few predicates are always the
-            // whole-index bound regardless of any value.
             switch (e.ClauseType)
             {
                 case ClauseType.MatchAll:
@@ -58,9 +54,7 @@ internal static class CardinalityEstimator
                     return andMin;
             }
 
-            // Every remaining clause type reads a resolved term/range from the packed slot. A missing
-            // (unresolvable) value can't be estimated, so fall back to the whole-index upper bound.
-            if (e.PackedParamValue.IsNone)
+            if (e.PackedParamValue.IsNone) //  A missing (unresolvable) value can't be estimated, so fall back to the whole-index upper bound.
                 return indexSearcher.NumberOfEntries;
 
             switch (e.ClauseType)
