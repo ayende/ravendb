@@ -1,3 +1,5 @@
+using System;
+
 namespace Corax.Querying.Planning;
 
 public enum ScanCompareOp : byte
@@ -21,4 +23,32 @@ public enum ScanCompareOp : byte
     AllIn,
     AlwaysTrue,
     AlwaysFalse,
+}
+
+public static class ScanCompareOpsHelper
+{
+    public static string ToOperator(string s)
+    {
+        return Enum.TryParse<ScanCompareOp>(s, out var op) ? op.ToOperator() : s;
+    } 
+    
+    public static string ToOperator(this ScanCompareOp op)
+    {
+        return op switch
+        {
+            ScanCompareOp.Equals             => "==",
+            ScanCompareOp.NotEquals          => "!=",
+            ScanCompareOp.GreaterThan        => ">",
+            ScanCompareOp.GreaterThanOrEqual => ">=",
+            ScanCompareOp.LessThan           => "<",
+            ScanCompareOp.LessThanOrEqual    => "<=",
+            ScanCompareOp.Between            => "BETWEEN",
+            ScanCompareOp.Exists             => "EXISTS",
+            ScanCompareOp.StartsWith         => "STARTS WITH",
+            ScanCompareOp.EndsWith           => "ENDS WITH",
+            ScanCompareOp.In                 => "IN",
+            ScanCompareOp.AllIn              => "ALL IN",
+            _                                => op.ToString() 
+        };
+    }
 }

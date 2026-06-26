@@ -888,22 +888,7 @@ internal static class QueryPlanGraph
         node.Parameters.TryGetValue("FieldName", out string field);
         node.Parameters.TryGetValue("Compare", out string compare);
         bool negated = node.Parameters.TryGetValue("Negated", out string n) && n == "true";
-        var compareOp = compare switch
-        {
-            nameof(ScanCompareOp.Equals)              => "==",
-            nameof(ScanCompareOp.NotEquals)           => "!=",
-            nameof(ScanCompareOp.GreaterThan)        => ">",
-            nameof(ScanCompareOp.GreaterThanOrEqual) => ">=",
-            nameof(ScanCompareOp.LessThan)           => "<",
-            nameof(ScanCompareOp.LessThanOrEqual)    => "<=",
-            nameof(ScanCompareOp.Between)            => "BETWEEN",
-            nameof(ScanCompareOp.Exists)             => "EXISTS",
-            nameof(ScanCompareOp.StartsWith)         => "STARTS WITH",
-            nameof(ScanCompareOp.EndsWith)           => "ENDS WITH",
-            nameof(ScanCompareOp.In)                 => "IN",
-            nameof(ScanCompareOp.AllIn)              => "ALL IN",
-            _                                        => compare 
-        };
+        var compareOp =  ScanCompareOpsHelper.ToOperator(compare);
         return (negated ? "NOT " : "") + field + " " + compareOp;
     }
 }
