@@ -40,17 +40,11 @@ namespace Raven.Server.Documents.Queries
 
         public readonly string OrderByName;
 
-        public struct Argument
+        public struct Argument(string nameOrValue, ValueTokenType type)
         {
-            public Argument(string nameOrValue, ValueTokenType type)
-            {
-                NameOrValue = nameOrValue;
-                Type = type;
-            }
+            public readonly string NameOrValue = nameOrValue;
 
-            public readonly string NameOrValue;
-
-            public readonly ValueTokenType Type;
+            public readonly ValueTokenType Type = type;
 
             public double GetDouble(BlittableJsonReaderObject parameters)
             {

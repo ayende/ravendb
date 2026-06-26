@@ -27,7 +27,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    public static PlanTemplate BuildTemplate(PlanParameters planParams)
+    private static PlanTemplate BuildTemplate(PlanParameters planParams)
     {
         var planCache = planParams.IndexSearcher.PlanCache;
         var metadata = planParams.Metadata;
