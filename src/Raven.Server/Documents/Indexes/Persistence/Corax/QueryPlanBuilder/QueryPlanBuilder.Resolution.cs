@@ -149,7 +149,7 @@ internal static partial class QueryPlanBuilder
         switch (exec.Clause.ClauseType) // Spatial and vector resolve via their binding array.
         {
             case ClauseType.Spatial when exec.Clause.Bindings is { Length: > 0 }:
-                ResolveSpatialFromBindings(exec, slotBindings, queryParameters);
+                ResolveSpatialFromBindings(exec, slotBindings, queryParameters, builderParameters);
                 return;
             case ClauseType.Vector when exec.Clause.Bindings is { Length: > 0 }:
                 ResolveVectorFromBindings(exec, slotBindings, queryParameters);

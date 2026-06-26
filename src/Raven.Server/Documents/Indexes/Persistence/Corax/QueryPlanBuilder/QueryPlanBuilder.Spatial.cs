@@ -1,5 +1,6 @@
 using System;
 using Corax.Querying.Planning;
+using Raven.Client.Exceptions;
 using Sparrow.Json;
 using SpatialUnits = Raven.Client.Documents.Indexes.Spatial.SpatialUnits;
 
@@ -7,16 +8,19 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    private static void ResolveSpatialFromBindings(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters)
+    private static void ResolveSpatialFromBindings(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
     {
         var bindings = exec.Clause.Bindings;
         var sp = new SpatialParams();
+        string fieldName = exec.Clause.FieldName;
+        string queryText = builderParameters?.Metadata?.QueryText;
 
         // [0] = distanceErrorPct
         if (bindings.Length > 0 && bindings[BindingIndex.SpatialDistErrPct] != null)
         {
-            var (depVal, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialDistErrPct], slotBindings, queryParameters, builderParameters: null);
-            sp.DistanceErrorPct = depVal != null ? Convert.ToDouble(depVal) : -1;
+            var (depVal, depType) = ResolveBindingScalar(bindings[BindingIndex.SpatialDistErrPct], slotBindings, queryParameters, builderParameters);
+            if (depVal != null)
+                sp.DistanceErrorPct = AsDouble(depVal, depType, "distanceErrorPct");
         }
 
         switch (bindings.Length) // Shape type determined by the number of bindings
@@ -24,18 +28,11 @@ internal static partial class QueryPlanBuilder
             case >= BindingIndex.SpatialCircleBindingCount - 1: // circle: at least distErrPct + radius + lat + lng
             {
                 sp.ShapeType = SpatialShapeType.Circle;
-                var (r, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialRadius], slotBindings, queryParameters, builderParameters: null);
-                var (lat, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLatitude], slotBindings, queryParameters, builderParameters: null);
-                var (lng, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialLongitude], slotBindings, queryParameters, builderParameters: null);
-                sp.CircleRadius = Convert.ToDouble(r);
-                sp.CircleLatitude = Convert.ToDouble(lat);
-                sp.CircleLongitude = Convert.ToDouble(lng);
+                sp.CircleRadius = ResolveDouble(BindingIndex.SpatialRadius, "radius");
+                sp.CircleLatitude = ResolveDouble(BindingIndex.SpatialLatitude, "latitude");
+                sp.CircleLongitude = ResolveDouble(BindingIndex.SpatialLongitude, "longitude");
                 if (bindings.Length > BindingIndex.SpatialUnits && bindings[BindingIndex.SpatialUnits] != null)
-                {
-                    var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialUnits], slotBindings, queryParameters, builderParameters: null);
-                    if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                        sp.Units = ToCoraxUnits(su);
-                }
+                    ApplyUnits(BindingIndex.SpatialUnits);
 
                 break;
             }
@@ -44,14 +41,12 @@ internal static partial class QueryPlanBuilder
                 sp.ShapeType = SpatialShapeType.Wkt;
                 if (bindings.Length > BindingIndex.SpatialWkt && bindings[BindingIndex.SpatialWkt] != null)
                 {
-                    var (wkt, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWkt], slotBindings, queryParameters, builderParameters: null);
-                    sp.Wkt = wkt?.ToString();
+                    var (wkt, wktType) = ResolveBindingScalar(bindings[BindingIndex.SpatialWkt], slotBindings, queryParameters, builderParameters);
+                    if (wkt == null || wktType != ParamValueType.String)
+                        throw new InvalidQueryException($"Spatial WKT value for field '{fieldName}' must be a string, but got '{(wkt == null ? "null" : wktType.ToString())}'.", queryText, queryParameters);
+                    sp.Wkt = wkt.ToString();
                     if (bindings.Length > BindingIndex.SpatialWktUnits && bindings[BindingIndex.SpatialWktUnits] != null)
-                    {
-                        var (u, _) = ResolveBindingScalar(bindings[BindingIndex.SpatialWktUnits], slotBindings, queryParameters, builderParameters: null);
-                        if (u != null && Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su))
-                            sp.Units = ToCoraxUnits(su);
-                    }
+                        ApplyUnits(BindingIndex.SpatialWktUnits);
                 }
 
                 break;
@@ -59,6 +54,32 @@ internal static partial class QueryPlanBuilder
         }
 
         exec.Spatial = sp;
+
+        double ResolveDouble(int bindingIndex, string component)
+        {
+            var (value, valueType) = ResolveBindingScalar(bindings[bindingIndex], slotBindings, queryParameters, builderParameters);
+            return AsDouble(value, valueType, component);
+        }
+
+        double AsDouble(object value, ParamValueType valueType, string component)
+        {
+            if (valueType is not (ParamValueType.Long or ParamValueType.Double))
+                throw new InvalidQueryException($"Spatial {component} for field '{fieldName}' must be a number, but got '{(value == null ? "null" : valueType.ToString())}'.", queryText, queryParameters);
+            return Convert.ToDouble(value);
+        }
+
+        void ApplyUnits(int bindingIndex)
+        {
+            var (u, uType) = ResolveBindingScalar(bindings[bindingIndex], slotBindings, queryParameters, builderParameters);
+            if (u == null)
+                return; // units omitted -> field default
+
+            if (uType != ParamValueType.String)
+                throw new InvalidQueryException($"Spatial units for field '{fieldName}' must be a string, but got '{uType}'.", queryText, queryParameters);
+            if (Enum.TryParse(typeof(SpatialUnits), u.ToString(), true, out var su) == false)
+                throw new InvalidQueryException($"{nameof(SpatialUnits)} value must be either '{SpatialUnits.Kilometers}' or '{SpatialUnits.Miles}' but was '{u}'.", queryText, queryParameters);
+            sp.Units = ToCoraxUnits(su);
+        }
 
         global::Corax.Utils.Spatial.SpatialUnits ToCoraxUnits(object su) =>
             (SpatialUnits)su == SpatialUnits.Kilometers
@@ -124,7 +145,7 @@ internal static partial class QueryPlanBuilder
             exec.SpatialFilters = new SpatialFilterOp[spatialClauses.Length];
             for (int i = 0; i < spatialClauses.Length; i++)
             {
-                var spatialExec = spatialExecs?[i] ?? new ClauseExecution(spatialClauses[i]);
+                var spatialExec = spatialExecs[i]; // callers always allocate spatialExecs alongside spatialClauses
                 execs.Add(spatialExec);
                 exec.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i], Exec = spatialExec };
             }
@@ -135,7 +156,7 @@ internal static partial class QueryPlanBuilder
             exec.VectorSelects = new ClauseExecution[vectorClauses.Length];
             for (int i = 0; i < vectorClauses.Length; i++)
             {
-                var vectorExec = vectorExecs?[i] ?? new ClauseExecution(vectorClauses[i]);
+                var vectorExec = vectorExecs[i]; // callers always allocate vectorExecs alongside vectorClauses
                 execs.Add(vectorExec);
                 exec.VectorSelects[i] = vectorExec;
             }
