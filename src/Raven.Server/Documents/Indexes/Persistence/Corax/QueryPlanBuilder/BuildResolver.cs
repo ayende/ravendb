@@ -391,14 +391,14 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
             },
             CompareOp = exec.ClauseType switch
             {
-                ClauseType.Equals => ScanCompareOp.Equal,
-                ClauseType.NotEquals => ScanCompareOp.NotEqual,
+                ClauseType.Equals => ScanCompareOp.Equals,
+                ClauseType.NotEquals => ScanCompareOp.NotEquals,
                 ClauseType.GreaterThan => ScanCompareOp.GreaterThan,
                 ClauseType.GreaterThanOrEqual => ScanCompareOp.GreaterThanOrEqual,
                 ClauseType.LessThan => ScanCompareOp.LessThan,
                 ClauseType.LessThanOrEqual => ScanCompareOp.LessThanOrEqual,
                 ClauseType.Between => ScanCompareOp.Between,
-                _ => ScanCompareOp.Equal
+                _ => ScanCompareOp.Equals
             },
             ParamIndex = exec.PackedParamValue.Param1,
             ParamIndex2 = exec.PackedParamValue.Param2 != PackedParam.NoParamValue ? exec.PackedParamValue.Param2 : -1,

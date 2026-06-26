@@ -2,8 +2,8 @@ namespace Corax.Querying.Planning;
 
 public enum ScanCompareOp : byte
 {
-    Equal,
-    NotEqual,
+    Equals,
+    NotEquals,
     GreaterThan,
     GreaterThanOrEqual,
     LessThan,

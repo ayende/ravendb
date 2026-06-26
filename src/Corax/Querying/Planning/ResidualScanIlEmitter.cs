@@ -243,7 +243,7 @@ public static class ResidualScanIlEmitter
         d.Il.Emit(OpCodes.Call, IlEmitterShared.ReaderReset);
         d.CsLine("reader.Reset();");
 
-        if (pred.ValueType is ScanValueType.Slice or ScanValueType.SliceLong && pred.CompareOp is ScanCompareOp.Equal or ScanCompareOp.NotEqual)
+        if (pred.ValueType is ScanValueType.Slice or ScanValueType.SliceLong && pred.CompareOp is ScanCompareOp.Equals or ScanCompareOp.NotEquals)
         {
             EmitNullableEquality(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, readerRefLocal);
             return;
@@ -254,7 +254,7 @@ public static class ResidualScanIlEmitter
 
     private static void EmitNullableEquality(ref DualEmit d, in ScanPredicateInfo pred, Label failIl, string failName, int rootIdx, ref int inSetIdx, LocalBuilder readerRefLocal)
     {
-        bool isNotEqual = pred.CompareOp == ScanCompareOp.NotEqual;
+        bool isNotEqual = pred.CompareOp == ScanCompareOp.NotEquals;
         var concrete = d.DefineLabelPair("concreteTarget");
         var leafDone = d.DefineLabelPair("nullCmpDone");
 
@@ -338,7 +338,7 @@ public static class ResidualScanIlEmitter
                 EmitFindNext(ref d, readerRefLocal, rootIdx);
                 EmitBranchFalse(ref d, failIl, failName);
                 return;
-            case ScanCompareOp.NotEqual when pred.IsSingleValued:
+            case ScanCompareOp.NotEquals when pred.IsSingleValued:
             {
                 //   if (!reader.FindNext(rootPage)) goto pass;   // no term → pass
                 //   if (reader.IsNull) goto pass;                // null term → pass
@@ -366,7 +366,7 @@ public static class ResidualScanIlEmitter
                 return;
             }
             //   while (reader.FindNext(rootPage)) { if (reader.IsNull) continue; if (term == target) goto fail; }
-            case ScanCompareOp.NotEqual:
+            case ScanCompareOp.NotEquals:
             {
                 var loopHead = d.DefineLabelPair("notEqualNext");
                 var pass = d.DefineLabelPair("notEqualPass");
@@ -522,7 +522,7 @@ public static class ResidualScanIlEmitter
                     EmitBetweenTail(ref d, fail, done);
                     break;
                 }
-                if (pred.CompareOp is ScanCompareOp.Equal or ScanCompareOp.NotEqual)
+                if (pred.CompareOp is ScanCompareOp.Equals or ScanCompareOp.NotEquals)
                 {
                     d.LoadReaderDecodedSlice(readerRefLocal);
                     d.LoadSliceSpan(pred.ParamIndex);
@@ -547,8 +547,8 @@ public static class ResidualScanIlEmitter
     {
         switch (op)
         {
-            case ScanCompareOp.Equal:
-            case ScanCompareOp.NotEqual:
+            case ScanCompareOp.Equals:
+            case ScanCompareOp.NotEquals:
                 // Caller decides whether to invert (NotEqual branches on TRUE-equal → fail).
                 d.Ceq();
                 break;
@@ -650,7 +650,7 @@ public static class ResidualScanIlEmitter
             ref readonly ScanPredicateInfo p = ref predicate;
             if (p.SubPredicates != null && AnyNotEqual(p.SubPredicates))
                 return true;
-            if (p.CompareOp == ScanCompareOp.NotEqual)
+            if (p.CompareOp == ScanCompareOp.NotEquals)
                 return true;
         }
 

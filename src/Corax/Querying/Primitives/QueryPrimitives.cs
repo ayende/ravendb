@@ -30,7 +30,7 @@ public static class QueryPrimitives
 
     // Bitmap slot reserved as scratch for the AND/ANDNOT primitives: The planner will never user bitmap index 1
     // so it is free for scratch usage
-    public const int AndScratchBitmapSlot = 1;
+    public const int EphemeralBitmapSlot = 1;
 
     /// <summary>
     /// Synthetic posting-list ids. Both have low two bits == <see cref="TermIdMask.Reserved"/> (0b11).
@@ -105,47 +105,47 @@ public static class QueryPrimitives
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
+        Debug.Assert(bitmapSlot != EphemeralBitmapSlot, "AND destination must not alias the AND scratch slot.");
         long postingListId = ResolvePostingListId(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        AndWithPostingSource(postingListId, ctx.Searcher, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token, ctx.OpLimit);
+        AndWithPostingSource(postingListId, ctx.Searcher, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[EphemeralBitmapSlot], ctx.Token, ctx.OpLimit);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
-        long tally = AndBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
+        Debug.Assert(bitmapSlot != EphemeralBitmapSlot, "AND destination must not alias the AND scratch slot.");
+        long tally = AndBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[EphemeralBitmapSlot], ctx.Token);
         ObserveTreeScanTally(ref ctx.Leaves[paramIndex], tally);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "AND destination must not alias the AND scratch slot.");
-        AndWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
+        Debug.Assert(bitmapSlot != EphemeralBitmapSlot, "AND destination must not alias the AND scratch slot.");
+        AndWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[EphemeralBitmapSlot], ctx.Token);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromPostingSource(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
+        Debug.Assert(bitmapSlot != EphemeralBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
         long postingListId = ResolvePostingListId(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec);
-        AndNotWithPostingSource(postingListId, ctx.Searcher, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
+        AndNotWithPostingSource(postingListId, ctx.Searcher, ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[EphemeralBitmapSlot], ctx.Token);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromTreeScan(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
-        long tally = AndNotBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
+        Debug.Assert(bitmapSlot != EphemeralBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
+        long tally = AndNotBitmapWithTreeScan(ResolveTermsProvider(ref ctx.Leaves[paramIndex], ctx.Searcher, ctx.Exec), ctx.Llt, ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[EphemeralBitmapSlot], ctx.Token);
         ObserveTreeScanTally(ref ctx.Leaves[paramIndex], tally);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public static void CtxAndNotFromMatch(Matches.CompiledQueryMatch ctx, int paramIndex, int bitmapSlot)
     {
-        Debug.Assert(bitmapSlot != AndScratchBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
-        AndNotWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[AndScratchBitmapSlot], ctx.Token);
+        Debug.Assert(bitmapSlot != EphemeralBitmapSlot, "ANDNOT destination must not alias the AND scratch slot.");
+        AndNotWithMatch(ctx.ResolvedMatches[paramIndex], ref ctx.Bitmaps[bitmapSlot], ref ctx.Bitmaps[EphemeralBitmapSlot], ctx.Token);
     }
 
     /// <summary>Resolve a posting-list leaf slot to its raw posting-list id, or a synthetic sentinel

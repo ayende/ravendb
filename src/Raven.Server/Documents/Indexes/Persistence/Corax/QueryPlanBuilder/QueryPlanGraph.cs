@@ -890,8 +890,8 @@ internal static class QueryPlanGraph
         bool negated = node.Parameters.TryGetValue("Negated", out string n) && n == "true";
         var compareOp = compare switch
         {
-            nameof(ScanCompareOp.Equal)              => "==",
-            nameof(ScanCompareOp.NotEqual)           => "!=",
+            nameof(ScanCompareOp.Equals)              => "==",
+            nameof(ScanCompareOp.NotEquals)           => "!=",
             nameof(ScanCompareOp.GreaterThan)        => ">",
             nameof(ScanCompareOp.GreaterThanOrEqual) => ">=",
             nameof(ScanCompareOp.LessThan)           => "<",
