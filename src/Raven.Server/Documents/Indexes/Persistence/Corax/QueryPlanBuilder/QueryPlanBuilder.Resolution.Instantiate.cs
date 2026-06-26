@@ -44,9 +44,7 @@ internal static partial class QueryPlanBuilder
                 exec.ActualStrategy = ExecutionStrategy.CompoundKeyLookup;
                 return (innerMatch, innerMatch);
             }
-            case ExecutionStrategy.CompoundSortedScan 
-                // orderByFields are null when take is 0 (counting query, not sorting required) - no point in compound optimization
-                when orderByFields != null:
+            case ExecutionStrategy.CompoundSortedScan when orderByFields != null: // no order by -> bitmap is more efficient 
             {
                 bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost, out var cfReason);
                 exec.StrategyGateReason = forced is not null ? "forced via $rvn_corax_strategy" : cfReason; 
@@ -61,10 +59,10 @@ internal static partial class QueryPlanBuilder
                 exec.ActualStrategy = ExecutionStrategy.CompoundSortedScan;
                 var outer = canElideCompoundSort
                     ? innerMatch // already in field2 order; DirectScan handles Take itself
-                    : OrderBy(builderParameters, innerMatch, orderByFields); // else-branch always has >=2 fields -> SortingMultiMatch, which ApplyForcedSort can't force, so don't wrap
+                    : OrderBy(builderParameters, innerMatch, orderByFields); // this uses SortingMultiMatch, $rvn_corax_sort is inapplicable
                 return (outer, innerMatch);
             }
-            case ExecutionStrategy.FieldSortedScan when orderByFields != null:
+            case ExecutionStrategy.FieldSortedScan when orderByFields != null: // no order by -> bitmap is more efficient
             {
                 var execs = exec.Executions;
                 bool isFullScan = execs is not { Count: > 0 };
@@ -89,7 +87,7 @@ internal static partial class QueryPlanBuilder
                 exec.ActualStrategy = ExecutionStrategy.BitmapPipeline;
                 var innerMatch = InstantiateBitmapPipeline(ctx.Plan, ctx.Exec, ctx.PlanParams, ctx.BuilderParams, walkerCtx, highlightingTerms, wantTimings, token);
                 if (innerMatch is CompiledQueryMatch forcedScanMatch)
-                    forcedScanMatch.ForcedEntryScanGate = TryGetForcedEntryScanGate(ctx.PlanParams.QueryParameters);
+                    forcedScanMatch.ForcedEntryScanGate = TryGetForcedEntryScanGate(ctx.PlanParams.QueryParameters); // $rvn_corax_entry_scan
                 // no ordering or already streams its results in right order — return the match as is.
                 if (ctx.OrderByFields == null || ctx.Exec.VectorPostFilterProvidesScoreOrder) 
                     return (innerMatch, innerMatch);
