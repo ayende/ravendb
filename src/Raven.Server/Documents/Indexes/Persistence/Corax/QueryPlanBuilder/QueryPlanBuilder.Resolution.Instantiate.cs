@@ -48,9 +48,9 @@ internal static partial class QueryPlanBuilder
                 // orderByFields are null when take is 0 (counting query, not sorting required) - no point in compound optimization
                 when orderByFields != null:
             {
-                bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost);
+                bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost, out var cfReason);
                 if (wantTimings)
-                    exec.StrategyGateReason = $"entries_to_scan({cfEntriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} {(cfEffective ? "<" : ">=")} bitmap_cost({cfBitmapCost})";
+                    exec.StrategyGateReason = cfReason;
                 if (forced is null && cfEffective == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
                 
@@ -150,15 +150,19 @@ internal static partial class QueryPlanBuilder
             ctx.Plan.DecisionTrail.Record("BitmapPipeline", true, "bitmap pipeline with SortingMatch fallback");
         }
         
-        static bool CompoundFieldCostEffective(ref InstantiateContext ctx, out long entriesToScan, out long bitmapCost)
+        static bool CompoundFieldCostEffective(ref InstantiateContext ctx, out long entriesToScan, out long bitmapCost, out string reason)
         {
             entriesToScan = 0;
             bitmapCost = 0;
+            reason = null;
             var execs  = ctx.Exec.Executions;
             var drivingExec = ctx.Exec.CompoundFieldDrivingClause;
 
             if (drivingExec.PackedParamValue.IsNone)
+            {
+                reason = "no driving value for the compound field";
                 return false;
+            }
 
             var indexSearcher = ctx.PlanParams.IndexSearcher;
             var field2Range = ctx.Exec.CompoundFieldField2Range;
@@ -180,6 +184,7 @@ internal static partial class QueryPlanBuilder
                 // exactly the posting-list work the bitmap path does, minus the sort the bitmap path still has to
                 // perform. So the sorted walk is unconditionally cheaper than build-bitmap-then-sort, paged or not.
                 entriesToScan = Math.Min(drivingCardinality, ctx.BuilderParams.Query.PageSize); // for diagnostics only
+                reason = "no residual filter — sorted walk is unconditionally cheaper than build-bitmap-then-sort";
                 return true;
             }
 
@@ -189,7 +194,10 @@ internal static partial class QueryPlanBuilder
             // over-scan and let the gate decide whether it still beats the bitmap pipeline.
             entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
             bitmapCost += SurvivorSortCost(EstimateSurvivors(execs, indexSearcher)); // add the bitmap's survivor-sort cost
-            return IsDirectScanCostEffective(entriesToScan, bitmapCost);
+            bool effective = IsDirectScanCostEffective(entriesToScan, bitmapCost);
+            if (ctx.WantTimings)
+                reason = FormatGateReason(entriesToScan, bitmapCost, unboundedReason: null);
+            return effective;
         }
         
         static bool DirectScanCostEffective(ref InstantiateContext ctx, bool isFullScan, out string directScanReason)
