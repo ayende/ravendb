@@ -97,8 +97,7 @@ internal static partial class QueryPlanBuilder
         if (template.SpatialClauses != null)
         {
             int sLen = template.SpatialClauses.Count;
-            // compute where to put the match (after all existing clauses, or if there are none, the first (maybe after the FillAllEntries if we have that)
-            int matchIndex = exec.Cardinalities?.Length ?? (exec.IsAllEntries ? 1 : 0);
+            int matchIndex = exec.Cardinalities?.Length ?? 0;
             exec.SpatialFilters = new SpatialFilterOp[sLen];
             for (int si = 0; si < sLen; si++)
             {
