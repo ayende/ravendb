@@ -48,9 +48,7 @@ internal static partial class QueryPlanBuilder
                 // orderByFields are null when take is 0 (counting query, not sorting required) - no point in compound optimization
                 when orderByFields != null:
             {
-                bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost, out var cfReason);
-                if (wantTimings)
-                    exec.StrategyGateReason = cfReason;
+                bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost, out exec.StrategyGateReason);
                 if (forced is null && cfEffective == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
                 
@@ -167,10 +165,10 @@ internal static partial class QueryPlanBuilder
             var indexSearcher = ctx.PlanParams.IndexSearcher;
             var field2Range = ctx.Exec.CompoundFieldField2Range;
             int residualCount = 0;
-            for (int i = 0; i < execs.Count; i++)
+            foreach (var exec in execs)
             {
-                bitmapCost += execs[i].GetEffectiveCardinality(indexSearcher);
-                if (ReferenceEquals(execs[i], drivingExec) || ReferenceEquals(execs[i], field2Range))
+                bitmapCost += exec.GetEffectiveCardinality(indexSearcher);
+                if (exec == drivingExec || exec == field2Range)
                     continue;
                 residualCount++;
             }
@@ -179,19 +177,13 @@ internal static partial class QueryPlanBuilder
 
             if (residualCount == 0)
             {
-                // No residual filter: the compound (field1, field2) subtree is walked in ORDER BY order and its
-                // entry ids are emitted directly — DirectScanSimpleMatch reads no stored entries at all. That is
-                // exactly the posting-list work the bitmap path does, minus the sort the bitmap path still has to
-                // perform. So the sorted walk is unconditionally cheaper than build-bitmap-then-sort, paged or not.
+                // No residual filter: compound(f1,f2)is walked in ORDER BY order and emitted directly - best option
                 entriesToScan = Math.Min(drivingCardinality, ctx.BuilderParams.Query.PageSize); // for diagnostics only
                 reason = "no residual filter — sorted walk is unconditionally cheaper than build-bitmap-then-sort";
                 return true;
             }
 
-            // Residual present: DirectScanFilteredMatch must read each scanned entry's stored fields
-            // (EntryTermsReader, EntryScanCostMultiplier× a posting decode) to test the residual, and it over-scans
-            // the sorted stream to fill the page because only a fraction of scanned entries survive. Estimate that
-            // over-scan and let the gate decide whether it still beats the bitmap pipeline.
+            // Residual present: read each entry's fields for the residual, may over-scan
             entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
             bitmapCost += SurvivorSortCost(EstimateSurvivors(execs, indexSearcher)); // add the bitmap's survivor-sort cost
             bool effective = IsDirectScanCostEffective(entriesToScan, bitmapCost);
@@ -263,8 +255,8 @@ internal static partial class QueryPlanBuilder
             return directCost < bitmapCost && entriesToScan <= QueryPrimitives.EntryScanCountThreshold;
         }
 
-        // Independence (product) estimate of the AND intersection: N * Π(card_i / N), clamped to [0, N]. This is
-        // the number of documents the bitmap pipeline must SORT, the cost a pure Σ-cardinalities bitmapCost omits.
+        // Independence (product) estimate of the AND intersection: N * Π(card_i / N), clamped to [0, N]. 
+        // Published = true (500K) AND Tag = $tag (10K) ~ 5K survivors. 
         static long EstimateSurvivors(List<ClauseExecution> execs, IndexSearcher indexSearcher)
         {
             double n = indexSearcher.NumberOfEntries;
@@ -297,28 +289,26 @@ internal static partial class QueryPlanBuilder
                 : $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} >= bitmap_cost({bitmapCost}) → bitmap{suffix}";
         }
         
-        static long ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
+        static long  ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
             ClauseExecution drivingClause, long drivingCard, long pageSize, IndexSearcher indexSearcher)
         {
             long resultsWanted = Math.Min(drivingCard, pageSize);
 
             long minResidual = long.MaxValue;
-            for (int i = 0; i < execs.Count; i++)
+            foreach (var exec in execs)
             {
-                if (ReferenceEquals(execs[i], drivingClause)) continue;
-                long c = execs[i].GetEffectiveCardinality(indexSearcher);
-                minResidual = Math.Min(c, minResidual);
+                if (exec == drivingClause) continue;
+                minResidual = Math.Min(exec.GetEffectiveCardinality(indexSearcher), minResidual);
             }
 
             if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
             {
                 // here we check what is the pass rate of the most selective residual clause (i.e, 1% of entries matched, etc)
-                double passRate = (double)minResidual / indexSearcher.NumberOfEntries;
+                double passRate = (double)minResidual / indexSearcher.NumberOfEntries; // pass rate is (0 .. 1) - ensured by if above
                 if (passRate > 0)
                 {
-                    // if the pass rate is 1%, we have to scan through 10_000 entries to get 100, etc, so we need to inflate the costs.
-                    // We inflate the *results wanted* (page-bounded) rather than the full driving cardinality: filling a 10-row
-                    // page through a 1%-selective residual means scanning ~1_000 entries, regardless of how large the driving set is.
+                    // if the pass rate is 1%, we have to scan through 10_000 entries to get 100, inflate the results by the pass rate to esitmate.
+                    // Getting 10 results with 1% pass rate means - scan 1,000 entries
                     return (long)(resultsWanted / passRate);
                 }
             }
