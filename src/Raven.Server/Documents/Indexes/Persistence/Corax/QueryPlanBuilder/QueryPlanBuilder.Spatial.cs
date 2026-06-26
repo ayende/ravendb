@@ -92,22 +92,17 @@ internal static partial class QueryPlanBuilder
         if (template.SpatialClauses == null && template.VectorClauses == null)
             return;
 
-        ClauseInfo[] spatialArr = null;
-        ClauseInfo[] vectorArr = null;
         ClauseExecution[] spatialExecs = null;
         ClauseExecution[] vectorExecs = null;
 
         if (template.SpatialClauses != null)
         {
             int sLen = template.SpatialClauses.Count;
-            spatialArr = new ClauseInfo[sLen];
             spatialExecs = new ClauseExecution[sLen];
             for (int si = 0; si < sLen; si++)
             {
-                var sc = template.SpatialClauses[si];
-                var scExec = new ClauseExecution(sc);
+                var scExec = new ClauseExecution(template.SpatialClauses[si]);
                 PopulateClauseValues(scExec, planParams.SlotBindings, planParams.QueryParameters, writer, builderParameters, Span<ulong>.Empty);
-                spatialArr[si] = sc;
                 spatialExecs[si] = scExec;
             }
         }
@@ -115,48 +110,44 @@ internal static partial class QueryPlanBuilder
         if (template.VectorClauses != null)
         {
             int vLen = template.VectorClauses.Count;
-            vectorArr = new ClauseInfo[vLen];
             vectorExecs = new ClauseExecution[vLen];
             for (int vi = 0; vi < vLen; vi++)
             {
-                var vc = template.VectorClauses[vi];
-                var vcExec = new ClauseExecution(vc);
+                var vcExec = new ClauseExecution(template.VectorClauses[vi]);
                 PopulateClauseValues(vcExec, planParams.SlotBindings, planParams.QueryParameters, writer, builderParameters, Span<ulong>.Empty);
-                vectorArr[vi] = vc;
                 vectorExecs[vi] = vcExec;
             }
         }
 
-        AttachPostFilterPhases(exec, spatialArr, spatialExecs, vectorArr, vectorExecs);
+        AttachPostFilterPhases(exec, spatialExecs, vectorExecs);
     }
 
-    private static void AttachPostFilterPhases(QueryExecution exec, ClauseInfo[] spatialClauses, ClauseExecution[] spatialExecs, ClauseInfo[] vectorClauses, ClauseExecution[] vectorExecs)
+    private static void AttachPostFilterPhases(QueryExecution exec, ClauseExecution[] spatialExecs, ClauseExecution[] vectorExecs)
     {
-        if (spatialClauses == null && vectorClauses == null)
+        if (spatialExecs == null && vectorExecs == null)
             return;
 
         var execs = exec.Executions ??= [];
 
-       
-        if (spatialClauses != null)
+        if (spatialExecs != null)
         {
             // compute where to put the match (after all existing clauses, or if there are none, the first (maybe after the FillAllEntries if we have that)
             int matchIndex = exec.Cardinalities?.Length ?? (exec.IsAllEntries ? 1 : 0);
-            exec.SpatialFilters = new SpatialFilterOp[spatialClauses.Length];
-            for (int i = 0; i < spatialClauses.Length; i++)
+            exec.SpatialFilters = new SpatialFilterOp[spatialExecs.Length];
+            for (int i = 0; i < spatialExecs.Length; i++)
             {
-                var spatialExec = spatialExecs[i]; // callers always allocate spatialExecs alongside spatialClauses
+                var spatialExec = spatialExecs[i];
                 execs.Add(spatialExec);
-                exec.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialClauses[i], Exec = spatialExec };
+                exec.SpatialFilters[i] = new SpatialFilterOp { MatchIndex = matchIndex++, Clause = spatialExec.Clause, Exec = spatialExec };
             }
         }
 
-        if (vectorClauses != null)
+        if (vectorExecs != null)
         {
-            exec.VectorSelects = new ClauseExecution[vectorClauses.Length];
-            for (int i = 0; i < vectorClauses.Length; i++)
+            exec.VectorSelects = new ClauseExecution[vectorExecs.Length];
+            for (int i = 0; i < vectorExecs.Length; i++)
             {
-                var vectorExec = vectorExecs[i]; // callers always allocate vectorExecs alongside vectorClauses
+                var vectorExec = vectorExecs[i];
                 execs.Add(vectorExec);
                 exec.VectorSelects[i] = vectorExec;
             }
