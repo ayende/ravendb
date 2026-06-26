@@ -62,7 +62,7 @@ internal sealed class PlanEmitter
         int i = 0;
         while (i < executions.Count)
         {
-            int runEnd = FoldableNegatedRunEnd(i);
+            int runEnd = FoldableNegatedRunEnd(executions, i);
             if (runEnd - i >= 2) // ≥2 foldable negations: collapse N FillAllEntries into one complement
             {
                 // Full query would effectively be Age > 18 or NOT (Status = 'Minor' AND Credit = 'Bad')
@@ -79,13 +79,15 @@ internal sealed class PlanEmitter
         }
 
         return Complete();
-            
-        int FoldableNegatedRunEnd(int j)
-        {
-            while (j < executions.Count && IsFoldableNegatedLeaf(executions[j]))
-                j++;
-            return j;
-        }
+    }
+
+    // Length of the contiguous run of foldable negated leaves starting at <paramref name="start"/>.
+    private static int FoldableNegatedRunEnd(List<ClauseExecution> executions, int start)
+    {
+        int j = start;
+        while (j < executions.Count && IsFoldableNegatedLeaf(executions[j]))
+            j++;
+        return j;
     }
 
     private static bool IsFoldableNegatedLeaf(ClauseExecution e)
@@ -97,19 +99,9 @@ internal sealed class PlanEmitter
         return e.ClauseType is not (ClauseType.OrGroup or ClauseType.AndGroup);
     }
 
-    private static bool CanFoldNegatedOr(List<ClauseExecution> executions)
-    {
-        if (executions.Count < 2)
-            return false;
-
-        foreach (var e in executions)
-        {
-            if (IsFoldableNegatedLeaf(e) == false)
-                return false;
-        }
-
-        return true;
-    }
+    // ≥2 members and every one of them is a foldable negated leaf (i.e. the run covers the whole list).
+    private static bool CanFoldNegatedOr(List<ClauseExecution> executions) =>
+        executions.Count >= 2 && FoldableNegatedRunEnd(executions, 0) == executions.Count;
     
     private void EmitFoldedNegatedRun(List<ClauseExecution> executions, int from, int to, bool isFirst)
     {
@@ -129,13 +121,20 @@ internal sealed class PlanEmitter
         void EmitComplementOfIntersection(int destSlot)
         {
             using var s = AllocateScratchSlot(out int xSlot);
-            EmitPositiveForm(executions[from], MergeKind.Fill, suppressEarlyExit: true, xSlot);
-            for (int i = from + 1; i < to; i++)
-                EmitPositiveForm(executions[i], MergeKind.AndInto, suppressEarlyExit: true, xSlot);
+            EmitPositiveIntersection(executions, from, to, xSlot);
 
             _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries, BitmapLocal = destSlot });
             _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = xSlot });
         }
+    }
+
+    // Build X = exec[from] ∧ … ∧ exec[to-1] into xSlot (Fill then AndInto, early-exit suppressed so a
+    // partial/empty intersection can't short-circuit). Shared head of both De Morgan complement paths.
+    private void EmitPositiveIntersection(List<ClauseExecution> executions, int from, int to, int xSlot)
+    {
+        EmitPositiveForm(executions[from], MergeKind.Fill, suppressEarlyExit: true, xSlot);
+        for (int i = from + 1; i < to; i++)
+            EmitPositiveForm(executions[i], MergeKind.AndInto, suppressEarlyExit: true, xSlot);
     }
 
 
@@ -277,9 +276,7 @@ internal sealed class PlanEmitter
     {
         using var _ = AllocateScratchSlot(out int xSlot);
 
-        EmitPositiveForm(subExecs[0], MergeKind.Fill, suppressEarlyExit: true, xSlot);
-        for (int i = 1; i < subExecs.Count; i++)
-            EmitPositiveForm(subExecs[i], MergeKind.AndInto, suppressEarlyExit: true, xSlot);
+        EmitPositiveIntersection(subExecs, 0, subExecs.Count, xSlot);
 
         _ops.Add(new PlanOp
         {
@@ -408,18 +405,14 @@ internal sealed class PlanEmitter
     {
         switch (exec.ClauseType)
         {
+            // IN/AllIn have no fused negated primitive: the set must be assembled into a bitmap and then
+            // subtracted. That assemble-then-subtract is exactly the leaf emitters' AndNotInto arm.
             case ClauseType.In:
-                var ephemeralBitmap = QueryPrimitives.EphemeralBitmapSlot;
-                EmitCommonInOps(exec.InTermCount, ephemeralBitmap, PlanOpKind.FillFromPostingSource, PlanOpKind.InRangeFromPostingSource, suppressEarlyExit: false, Label(exec));
-                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = ephemeralBitmap });
+                EmitInLeaf(exec, MergeKind.AndNotInto, destSlot);
                 return;
             case ClauseType.AllIn:
-            {
-                using var _ = AllocateScratchSlot(out int positiveSlot);
-                EmitCommonInOps(exec.InTermCount, positiveSlot, PlanOpKind.FillFromPostingSource, PlanOpKind.AllInRangeFromPostingSource, suppressEarlyExit: true, Label(exec));
-                _ops.Add(new PlanOp { Kind = PlanOpKind.AndNotBitmaps, BitmapLocal = destSlot, ParamIndex2 = positiveSlot });
+                EmitAllInLeaf(exec, MergeKind.AndNotInto, suppressEarlyExit: true, destSlot);
                 return;
-            }
             default:
                 _ops.Add(new PlanOp
                 {
