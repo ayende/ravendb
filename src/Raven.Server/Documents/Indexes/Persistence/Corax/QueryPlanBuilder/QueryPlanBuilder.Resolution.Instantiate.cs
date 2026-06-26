@@ -49,14 +49,12 @@ internal static partial class QueryPlanBuilder
                 when orderByFields != null:
             {
                 bool cfEffective = CompoundFieldCostEffective(ref ctx, out long cfEntriesToScan, out long cfBitmapCost, out var cfReason);
-                exec.StrategyGateReason = forced is not null ? "forced via $rvn_corax_strategy" : cfReason; // mirror FieldSortedScan: a forced run reports the force, not the gate verdict
+                exec.StrategyGateReason = forced is not null ? "forced via $rvn_corax_strategy" : cfReason; 
                 if (forced is null && cfEffective == false)
                     goto default; // if this isn't expected to benefit us, just use a bitmap query option
+
                 
-                // Single-field order (== the compound's field2): the DirectScan already emits in that order, so
-                // elide the wrapper and push a page-bounded Take into the scan. Independent of $rvn_corax_sort —
-                // a sorted scan IS the order, so a SortingMatch would only re-sort and force a TakeAll drain (the
-                // sort hint only applies in the bitmap pipeline). Mirrors the FieldSortedScan path.
+                // Single-field order (field2): the DirectScan already emits in that order, elide the wrapper and push a page-bounded Take into the scan.
                 bool canElideCompoundSort = orderByFields.Length == 1;
                 var innerMatch = ConstructCompoundField(ref ctx, walkerCtx, ctx.Exec.CompoundFieldField2Range, cfEntriesToScan, cfBitmapCost, canElideCompoundSort);
                 if (innerMatch is null) goto default;
@@ -202,16 +200,14 @@ internal static partial class QueryPlanBuilder
 
             var execs = ctx.Exec.Executions;
             var drivingExec = ctx.Exec.SortDrivingClause;
-            if (drivingExec is null)
-                return false;
-            if (drivingExec.PackedParamValue.IsNone)
+            if (drivingExec is null || drivingExec.PackedParamValue.IsNone)
                 return false;
 
             var indexSearcher = ctx.PlanParams.IndexSearcher;
 
             if (execs.Count <= 1)
             {
-                directScanReason = "sorted index walk with no extra filters to apply, so sorting is free";
+                directScanReason = "sorted index walk with no extra filters to apply, sorting is free";
                 return true;
             }
 
@@ -221,14 +217,10 @@ internal static partial class QueryPlanBuilder
                 bitmapCost += it.GetEffectiveCardinality(indexSearcher);
             }
 
-            // The bitmap path doesn't just decode the posting lists (Σ above) — it SORTS the surviving
-            // intersection. Add that sort cost, else few-survivor queries look expensive (Σ dominated by a broad
-            // clause) and the gate wrongly picks a scan that over-reads stored fields. See EntryScanSurvivorSortFactor.
+            // The bitmap path decode the posting lists and SORTS the surviving, estimate that cost too
             bitmapCost += SurvivorSortCost(EstimateSurvivors(execs, indexSearcher));
 
-            // Residual present: the scan reads each scanned entry's stored fields to test the residual and
-            // over-scans the sorted stream to fill the page. Estimate the over-scan and let the gate compare
-            // it to the cost of building and sorting the bitmap instead.
+            // Residual present: scan reads scanned entry's fields and over-scans. Estimate the over-scan amount for the costs
             long drivingCard = drivingExec.GetEffectiveCardinality(indexSearcher);
             var entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
 
@@ -243,30 +235,37 @@ internal static partial class QueryPlanBuilder
                 : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
         }
 
-        // The cost verdict and its human-readable reason are derived together so the two can never disagree.
-        // reason is only formatted when wantTimings is set; the verdict is always returned.
         static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost, bool wantTimings, string unboundedReason, out string reason)
         {
             reason = null;
-            string suffix = unboundedReason is null ? "" : $" [page unbounded: {unboundedReason}]";
-
-            // hard limit (32K) on how many entries we may scan, regardless of the cost comparison
             if (entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             {
                 if (wantTimings)
-                    reason = $"entries_to_scan({entriesToScan}) > cap({QueryPrimitives.EntryScanCountThreshold}) → bitmap{suffix}";
+                {
+                    reason = $"entries_to_scan({entriesToScan}) > cap({QueryPrimitives.EntryScanCountThreshold}) → bitmap{GetSuffix()}";
+                }
                 return false;
             }
 
             long directCost = CalculateDirectCost(entriesToScan);
-            bool effective = directCost < bitmapCost; // check what will be more costly
-            if (wantTimings)
-                reason = effective
-                    ? $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} < bitmap_cost({bitmapCost}) → scan{suffix}"
-                    : $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} >= bitmap_cost({bitmapCost}) → bitmap{suffix}";
-            return effective;
-        }
+            bool effective = directCost < bitmapCost;
 
+            if (wantTimings)
+            {
+                reason = effective ? FormatScanReason() : FormatBitmapReason();
+            }
+            
+            return effective;
+
+            string GetSuffix() => unboundedReason is null ? null : $", [page unbounded: {unboundedReason}]";
+
+            string FormatScanReason() => 
+                $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} < bitmap_cost({bitmapCost}) → scan{GetSuffix()}";
+
+            string FormatBitmapReason() => 
+                $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} >= bitmap_cost({bitmapCost}) → bitmap{GetSuffix()}";
+        }
+        
         // Independence (product) estimate of the AND intersection: N * Π(card_i / N), clamped to [0, N]. 
         // Published = true (500K) AND Tag = $tag (10K) ~ 5K survivors. 
         static long EstimateSurvivors(List<ClauseExecution> execs, IndexSearcher indexSearcher)
@@ -332,10 +331,7 @@ internal static partial class QueryPlanBuilder
 
     private const string ForceSortParameterName = "rvn_corax_sort";
 
-    // A query may pin the SortingMatch sort strategy via $rvn_corax_sort (e.g. "IndexOrderStreaming" to
-    // force the index walk, "InMemorySort" to force the bounded materialize-and-sort). Read at
-    // instantiation time, never part of the plan-cache key. The pin is honored only where a runtime
-    // choice exists (see SortingMatch.Fill); a pin that can't apply to the query shape is ignored.
+    //  $rvn_corax_sort is honored only where a runtime choice exists; a pin that can't apply to the query shape is ignored.
     private static CoraxSortingStrategy? TryGetForcedSortStrategy(BlittableJsonReaderObject queryParameters)
     {
         if (queryParameters is null)
@@ -358,17 +354,13 @@ internal static partial class QueryPlanBuilder
 
     private const string ForceEntryScanParameterName = "rvn_corax_entry_scan";
 
-    // A query may force or disable the entry-scan gate via $rvn_corax_entry_scan: the op-index of the
-    // gate to force (matches the EntryScanAt the plan reports), -1 to disable every gate, or absent to
-    // leave the runtime cost gate in charge. Read at instantiation time, never part of the plan-cache key.
+    // $rvn_corax_entry_scan: op-index of the gate to force (matches the EntryScanAt the plan reports), -1 to disable every gate
     private static int TryGetForcedEntryScanGate(BlittableJsonReaderObject queryParameters)
     {
         if (queryParameters is null)
             return QueryPrimitives.EntryScanGateUnset;
-        if (queryParameters.TryGet(ForceEntryScanParameterName, out long value) == false)
+        if (queryParameters.TryGet(ForceEntryScanParameterName, out int value) == false)
             return QueryPrimitives.EntryScanGateUnset;
-        if (value < int.MinValue || value > int.MaxValue)
-            throw new InvalidQueryException($"The reserved query parameter '${ForceEntryScanParameterName}' must fit in a 32-bit integer, but got '{value}'.");
-        return (int)value;
+        return value;
     }
 }
