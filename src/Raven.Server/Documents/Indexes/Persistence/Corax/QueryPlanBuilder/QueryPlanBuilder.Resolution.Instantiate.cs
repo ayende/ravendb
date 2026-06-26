@@ -60,8 +60,8 @@ internal static partial class QueryPlanBuilder
                 if (innerMatch is null) goto default;
                 exec.ActualStrategy = ExecutionStrategy.CompoundSortedScan;
                 var outer = canElideCompoundSort
-                    ? innerMatch // already in field2 order; DirectScan handles Take itself 
-                    : ApplyForcedSort(OrderBy(builderParameters, innerMatch, orderByFields), forcedSort);
+                    ? innerMatch // already in field2 order; DirectScan handles Take itself
+                    : OrderBy(builderParameters, innerMatch, orderByFields); // else-branch always has >=2 fields -> SortingMultiMatch, which ApplyForcedSort can't force, so don't wrap
                 return (outer, innerMatch);
             }
             case ExecutionStrategy.FieldSortedScan when orderByFields != null:
