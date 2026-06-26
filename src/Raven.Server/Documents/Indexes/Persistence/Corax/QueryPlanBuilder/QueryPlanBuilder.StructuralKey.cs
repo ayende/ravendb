@@ -141,8 +141,8 @@ internal static partial class QueryPlanBuilder
             case BetweenExpression bw:
                 AppendTag(ref builder, AstTag.Between);
                 AppendCanonicalField(ref builder, bw.Source, searcher, exactValues);
-                AppendCanonicalValue(ref builder, bw.Min, exactValues);
-                AppendCanonicalValue(ref builder, bw.Max, exactValues);
+                AppendCanonicalValue(ref builder, bw.Min.Value, bw.Min.Token.Value, exactValues);
+                AppendCanonicalValue(ref builder, bw.Max.Value, bw.Max.Token.Value, exactValues);
                 builder.Append(bw.MinInclusive.ToInt32(), 1);
                 builder.Append(bw.MaxInclusive.ToInt32(), 1);
                 return;
@@ -189,7 +189,7 @@ internal static partial class QueryPlanBuilder
 
             case ValueExpression ve:
                 AppendTag(ref builder, AstTag.Value);
-                AppendCanonicalValue(ref builder, ve, exactValues);
+                AppendCanonicalValue(ref builder, ve.Value, ve.Token.Value, exactValues);
                 return;
 
             case TrueExpression:
@@ -202,19 +202,19 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static void AppendCanonicalValue(ref PlanCacheKeyBuilder builder, ValueExpression ve, bool exactValues = false)
+    private static void AppendCanonicalValue(ref PlanCacheKeyBuilder builder, ValueTokenType valueTokenType, string value, bool exactValues = false)
     {
-        if (ve.Value == ValueTokenType.Parameter)
+        if (valueTokenType == ValueTokenType.Parameter)
         {
             builder.Append(0, 1); // 0 = parameter operand
             return;
         }
 
         builder.Append(1, 1); // 1 = literal operand
-        builder.Append((int)ve.Value, ValueTokenBits);
+        builder.Append((int)valueTokenType, ValueTokenBits);
         // Inside a constant-folded when() condition the literal VALUE effects the query plan, so it must be part of the key. 
         if (exactValues)
-            AppendString(ref builder, ve.Token.Value);
+            AppendString(ref builder, value);
     }
 
     private static void AppendCanonicalField(ref PlanCacheKeyBuilder builder, QueryExpression expr, IndexSearcher searcher, bool exactValues = false)
@@ -289,8 +289,7 @@ internal static partial class QueryPlanBuilder
                 builder.Append(field.Arguments.Length, 31);
                 foreach (var arg in field.Arguments)
                 {
-                    builder.Append((int)arg.Type, ValueTokenBits);
-                    AppendString(ref builder, arg.NameOrValue);
+                    AppendCanonicalValue(ref builder, arg.Type, arg.NameOrValue);
                 }
             }
         }
