@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using Corax.Querying.Matches.Meta;
+using Corax.Querying.Matches.SortingMatches;
 using Corax.Querying.Planning;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
@@ -19,6 +20,12 @@ internal static class QueryPlanGraph
     // Synthetic node "operations" for the nodes that are not bitmap ops.
     private const string ResultOp = "Result";
     private const string ResidualNoteOp = "ResidualNote";
+
+    // Residual scan-predicate op names. Produced by QueryPlanBuilder.BuildScanPredicateNode and consumed
+    // by ResidualToken here, so they are shared (internal) to keep both sides of the contract in sync.
+    internal const string ResidualOp = "Residual";
+    internal const string ResidualAndGroupOp = "Residual-AndGroup";
+    internal const string ResidualOrGroupOp = "Residual-OrGroup";
     private const string DirectScanOp = "DirectScan";
     private const string CompoundLookupOp = "CompoundKeyLookup";
     private const string CountProbeOp = "CountPostingsInRange";
@@ -47,6 +54,16 @@ internal static class QueryPlanGraph
     private const string FlowCandidate = "candidate";
     private const string FlowDashed = "dashed";
     private const string FlowInvis = "invis";
+
+    // Result-edge variant tokens. Set on edges at build time and decoded by ResultEdgeLabel.
+    private const string VariantNotTaken = "not-taken";
+    private const string VariantBitmapEarlyExit = "bitmap-earlyexit";
+    private const string VariantBitmapFinal = "bitmap-final";
+    private const string VariantBitmapPlain = "bitmap-plain";
+    private const string VariantLookupResult = "lookup-result";
+    private const string VariantScanResult = "scan-result";
+    private const string VariantEntryScanTaken = "entryscan-taken";
+    private const string VariantEntryScanIfTaken = "entryscan-iftaken";
 
     private const string TakenGreen = "#1a7f37";
 
@@ -240,18 +257,18 @@ internal static class QueryPlanGraph
             e[KindKey] = ResultKind;
             if (entryScanTaken)
             {
-                e[VariantKey] = "not-taken";
+                e[VariantKey] = VariantNotTaken;
                 e[FlowKey] = FlowOff;
             }
             else if (earlyExit)
             {
-                e[VariantKey] = "bitmap-earlyexit";
+                e[VariantKey] = VariantBitmapEarlyExit;
                 e[LimitKey] = limitValue;
                 e[FlowKey] = FlowOn;
             }
             else
             {
-                e[VariantKey] = hasRuntime ? "bitmap-final" : "bitmap-plain";
+                e[VariantKey] = hasRuntime ? VariantBitmapFinal : VariantBitmapPlain;
                 e[FlowKey] = FlowOn;
             }
         }
@@ -260,7 +277,7 @@ internal static class QueryPlanGraph
         {
             Dictionary<string, string> resultEdge = g.CreateEdge("producer", bitmapSink);
             resultEdge[KindKey] = ResultKind;
-            resultEdge[VariantKey] = producerNode.Operation == CompoundLookupOp ? "lookup-result" : "scan-result";
+            resultEdge[VariantKey] = producerNode.Operation == CompoundLookupOp ? VariantLookupResult : VariantScanResult;
             resultEdge[FlowKey] = FlowOn;
 
             string scanFilter = CombinedResidualFilter(producerNode.Children);
@@ -289,7 +306,7 @@ internal static class QueryPlanGraph
 
             Dictionary<string, string> tailResult = g.CreateEdge("op" + entryScanTailId, bitmapSink);
             tailResult[KindKey] = ResultKind;
-            tailResult[VariantKey] = entryScanTaken ? "entryscan-taken" : "entryscan-iftaken";
+            tailResult[VariantKey] = entryScanTaken ? VariantEntryScanTaken : VariantEntryScanIfTaken;
             tailResult[FlowKey] = entryScanTaken ? FlowOn : FlowCandidate;
 
             string entryFilter = CombinedResidualFilter(ops[entryScanTailId].Children);
@@ -455,12 +472,12 @@ internal static class QueryPlanGraph
         edge.Data.TryGetValue(VariantKey, out string variant);
         return variant switch
         {
-            "not-taken" => "(not taken)",
-            "scan-result" => "scan result",
-            "lookup-result" => "lookup result",
-            "entryscan-taken" => "entry-scan TAKEN",
-            "entryscan-iftaken" => "if entry-scan taken",
-            "bitmap-earlyexit" => "limit=" + edge.Data.GetValueOrDefault(LimitKey, "") + " (early exit)",
+            VariantNotTaken => "(not taken)",
+            VariantScanResult => "scan result",
+            VariantLookupResult => "lookup result",
+            VariantEntryScanTaken => "entry-scan TAKEN",
+            VariantEntryScanIfTaken => "if entry-scan taken",
+            VariantBitmapEarlyExit => "limit=" + edge.Data.GetValueOrDefault(LimitKey, "") + " (early exit)",
             _ => null // bitmap-final / bitmap-plain carry no label
         };
     }
@@ -782,10 +799,10 @@ internal static class QueryPlanGraph
   
     private static string SortMechanism(Dictionary<string, string> p) => p.GetValueOrDefault("Strategy") switch
     {
-        "IndexOrderStreaming" => "index-order streaming",
-        "IndexOrderFallbackToInMemorySort" => "index-order scan \u2192 heap-sort fallback",
-        "RandomOrder" => "reservoir sample",
-        _ => "heap sort"
+        nameof(CoraxSortingStrategy.IndexOrderStreaming) => "index-order streaming",
+        nameof(CoraxSortingStrategy.IndexOrderFallbackToInMemorySort) => "index-order scan \u2192 heap-sort fallback",
+        nameof(CoraxSortingStrategy.RandomOrder) => "reservoir sample",
+        _ => "heap sort" // CoraxSortingStrategy.InMemorySort
     };
 
     private static string SortKeyDescription(string field, string ascending, string fieldType)
@@ -849,9 +866,9 @@ internal static class QueryPlanGraph
 
     private static string ResidualToken(QueryInspectionNode node)
     {
-        if (node.Operation is "Residual-AndGroup" or "Residual-OrGroup")
+        if (node.Operation is ResidualAndGroupOp or ResidualOrGroupOp)
         {
-            string joiner = node.Operation == "Residual-OrGroup" ? " OR " : " AND ";
+            string joiner = node.Operation == ResidualOrGroupOp ? " OR " : " AND ";
             List<string> inner = [];
             foreach (QueryInspectionNode sub in node.Children ?? [])
             {
@@ -865,7 +882,7 @@ internal static class QueryPlanGraph
             return inner.Count == 0 ? null : "(" + string.Join(joiner, inner) + ")";
         }
 
-        if (node.Operation != "Residual" || node.Parameters == null)
+        if (node.Operation != ResidualOp || node.Parameters == null)
             return null;
 
         node.Parameters.TryGetValue("FieldName", out string field);
