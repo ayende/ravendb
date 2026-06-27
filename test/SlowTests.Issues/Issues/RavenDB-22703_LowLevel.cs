@@ -148,7 +148,7 @@ public class RavenDB_22703_LowLevel : StorageTest
             QueryParameters = null,
             Allocator = Allocator
         };
-        var match = QueryPlanBuilder.BuildFilterMatch(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, knownFields), out _, null, false, default);
+        var match = QueryPlanBuilder.BuildFilterMatch(planParams, new QueryBuilderParameters(searcher, Allocator, queryMetadata, null, knownFields), null, false, default);
         var list = new List<string>();
         Span<long> ids = stackalloc long[256];
         int count;
