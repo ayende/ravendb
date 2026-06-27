@@ -87,14 +87,17 @@ namespace Sparrow.Server.Utils
             int lo = from;
             int probe = from;
             int step = 1;
-            while (probe < to && sorted[probe] < target)
+            // Unsigned comparisons so a probe that overflows past int.MaxValue (spans can be up to 2^31-1
+            // long, and probe = lo + step doubles each step) wraps to a large unsigned value and exits the
+            // gallop instead of going negative and indexing out of bounds.
+            while ((uint)probe < (uint)to && sorted[probe] < target)
             {
                 lo = probe + 1;
                 probe = lo + step;
                 step <<= 1;
             }
 
-            int limit = probe < to ? probe : to;
+            int limit = (uint)probe < (uint)to ? probe : to;
             while (lo < limit)
             {
                 int mid = lo + ((limit - lo) >> 1);
