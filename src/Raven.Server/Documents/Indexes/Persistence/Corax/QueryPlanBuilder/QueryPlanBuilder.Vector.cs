@@ -18,7 +18,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>Resolve vector parameters from cached bindings (no MethodExpression dependency).</summary>
     private static void ResolveVectorFromBindings(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters)
     {
         var bindings = exec.Clause.Bindings;
@@ -67,8 +66,6 @@ internal static partial class QueryPlanBuilder
     
     private static (object Value, ParamValueType Type) ResolveBindingRaw(ParameterBinding binding, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters)
     {
-        // The template binding only carries structure; the vector value for THIS query text lives in the
-        // per-query slot vector at the binding's canonical hole index.
         binding = slotBindings[binding.ValueOrdinal];
         if (binding.LiteralType != ParamValueType.Parameter)
             return (binding.LiteralValue, binding.LiteralType);
@@ -82,7 +79,7 @@ internal static partial class QueryPlanBuilder
         var items = new List<CoraxVectorItem>(exec.VectorSelects.Length);
         foreach (var vec in exec.VectorSelects)
         {
-            items.Add(HandleVector(builderParams, vec.Exec));
+            items.Add(HandleVector(builderParams, vec));
         }
         return items;
     }
@@ -256,6 +253,16 @@ internal static partial class QueryPlanBuilder
 
         void AssertDimensions(in VectorValue vector)
         {
+            // When the query vector's true (pre-packing) dimension count is known, validate it exactly against the
+            // field's configured dimensions. This catches sub-byte mismatches on bit-packed Binary fields that the
+            // byte-length check below cannot — ceil(dims/8) is not injective, so e.g. 9 and 10 dims both pack to 2 bytes.
+            if (vector.SourceDimensions > 0 && indexField.Vector?.Dimensions is int fieldDimensions && vector.SourceDimensions != fieldDimensions)
+            {
+                using (vector)
+                    PortableExceptions.Throw<InvalidDataException>(
+                        $"Vector field `{fieldName}` has {fieldDimensions} dimensions, but the vector passed to vector.search() has {vector.SourceDimensions} dimensions.");
+            }
+
             if (numberOfDimensions != vector.Length)
             {
                 using (vector)

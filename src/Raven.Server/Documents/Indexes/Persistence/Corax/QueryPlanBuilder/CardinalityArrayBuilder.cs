@@ -7,8 +7,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static class CardinalityArrayBuilder
 {
-    public static void Build(List<ClauseExecution> executions, bool isAllEntries,
-        out int[] inRangeCounts, out long[] cardinalities)
+    public static (int[] InRangeCounts, long[] Cardinalities) Build(List<ClauseExecution> executions, bool isAllEntries)
     {
         List<int> inRange = [];
         List<long> cards = [];
@@ -20,9 +19,9 @@ internal static class CardinalityArrayBuilder
             Walk(exec);
         }
 
-        inRangeCounts = inRange.Count == 0 ? Array.Empty<int>() : inRange.ToArray();
-        cardinalities = cards.Count == 0 ? null : cards.ToArray();
-        return;
+        var inRangeCounts = inRange.Count == 0 ? [] : inRange.ToArray();
+        var cardinalities = cards.Count == 0 ? null : cards.ToArray();
+        return (inRangeCounts, cardinalities);
 
         void Walk(ClauseExecution exec)
         {
