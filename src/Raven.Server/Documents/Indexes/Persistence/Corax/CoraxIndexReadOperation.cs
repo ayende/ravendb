@@ -623,163 +623,174 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
             
             // Reuse a single CompactKey across the whole result loop. EntryTermsReader's Set() restarts the key arena per entry, so reuse is safe and bounded.
-            var entryReaderKey = _lowLevelTransaction.AcquireCompactKey();
-            try
+            using var entryKeyScope = new CompactKeyCacheScope(_lowLevelTransaction); 
+            while (runQuery)
             {
-                while (runQuery)
+                QueryPlanBuilder.CompiledQuery compileResult;
+                // Exact total known from O(1) metadata for single-posting / all-entries plans - to avoid counting throught them
+                long knownExactTotal = -1;
+                var coraxScope = queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false);
+                using (coraxScope?.Start())
                 {
-                    QueryPlanBuilder.CompiledQuery compileResult;
-                    // Exact total known from O(1) metadata for single-posting / all-entries plans - to avoid counting throught them
-                    long knownExactTotal = -1;
-                    var coraxScope = queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false);
-                    using (coraxScope?.Start())
+                    TransactionOperationContext serverContext = null;
+                    using var _ = query.Metadata.HasCmpXchg ? documentsContext.DocumentDatabase.ServerStore.ContextPool.AllocateOperationContext(out serverContext) : null;
+                    using var __ = serverContext?.OpenReadTransaction();
+
+                    var builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, serverContext, documentsContext, query, _index,
+                        query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take, 
+                        deduplicationDisabled: false, indexReadOperation: this, token: token, queryTime: queryTime);
+
+                    var planParams = new QueryPlanBuilder.PlanParameters
                     {
-                        TransactionOperationContext serverContext = null;
-                        using var _ = query.Metadata.HasCmpXchg ? documentsContext.DocumentDatabase.ServerStore.ContextPool.AllocateOperationContext(out serverContext) : null;
-                        using var __ = serverContext?.OpenReadTransaction();
-
-                        var builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, serverContext, documentsContext, query, _index,
-                            query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take, 
-                            deduplicationDisabled: false, indexReadOperation: this, token: token, queryTime: queryTime);
-
-                        var planParams = new QueryPlanBuilder.PlanParameters
-                        {
-                            IndexSearcher = IndexSearcher,
-                            Metadata = query.Metadata,
-                            QueryParameters = query.QueryParameters,
-                            Index = _index,
-                            IndexFieldsMapping = _fieldMappings,
-                            Allocator = _allocator,
-                            HasDynamics = builderParameters.HasDynamics,
-                            DynamicFields = builderParameters.DynamicFields,
-                            HasBoost = builderParameters.HasBoost
-                        };
-                        // we scope here the _building of the query, not its execution (below)
-                        using (coraxScope?.For(nameof(QueryTimingsScope.Names.Optimizer))?.Start())
-                        {
-                            compileResult = QueryPlanBuilder.QueryPlanBuilder.BuildSortedQuery(
-                                planParams, builderParameters, highlightings.Terms, wantTimings: queryTimings != null,
-                                token: token);
-                        }
-
-                        if (compileResult.OrderByFields == null && query.Metadata.IsDistinct == false
-                            && query.Metadata.Query.Filter == null
-                            && compileResult.QueryMatch is CompiledQueryMatch compiledMatch)
-                        {
-                            // Single-posting / all-entries plans know their exact total from O(1) metadata
-                            knownExactTotal = compiledMatch.Exec.KnownExactTotal;
-
-                            // we try to avoid counting the entire result set, if the count is known, or the caller doesn't care, we can do that
-                            if (take > 0 && builderParameters.HasBoost == false && (query.SkipStatistics || knownExactTotal >= 0))
-                                compiledMatch.Limit = (int)Math.Min(take * _maxNumberOfOutputsPerDocument, int.MaxValue);
-                        }
-                        else if (compileResult.QueryMatch is DirectScanMatchBase { KnownExactTotal: >= 0 } directScan)
-                        {
-                            knownExactTotal = directScan.KnownExactTotal;
-                        }
+                        IndexSearcher = IndexSearcher,
+                        Metadata = query.Metadata,
+                        QueryParameters = query.QueryParameters,
+                        Index = _index,
+                        IndexFieldsMapping = _fieldMappings,
+                        Allocator = _allocator,
+                        HasDynamics = builderParameters.HasDynamics,
+                        DynamicFields = builderParameters.DynamicFields,
+                        HasBoost = builderParameters.HasBoost
+                    };
+                    // we scope here the _building of the query, not its execution (below)
+                    using (coraxScope?.For(nameof(QueryTimingsScope.Names.Optimizer))?.Start())
+                    {
+                        compileResult = QueryPlanBuilder.QueryPlanBuilder.BuildSortedQuery(
+                            planParams, builderParameters, highlightings.Terms, wantTimings: queryTimings != null,
+                            token: token);
                     }
 
-                    using var ___ = compileResult;
+                    if (compileResult.OrderByFields == null && query.Metadata.IsDistinct == false
+                                                            && query.Metadata.Query.Filter == null
+                                                            && compileResult.QueryMatch is CompiledQueryMatch compiledMatch)
+                    {
+                        // Single-posting / all-entries plans know their exact total from O(1) metadata
+                        knownExactTotal = compiledMatch.Exec.KnownExactTotal;
 
-                    highlightings.Setup(query, documentsContext);
+                        // we try to avoid counting the entire result set, if the count is known, or the caller doesn't care, we can do that
+                        if (take > 0 && builderParameters.HasBoost == false && (query.SkipStatistics || knownExactTotal >= 0))
+                            compiledMatch.Limit = (int)Math.Min(take * _maxNumberOfOutputsPerDocument, int.MaxValue);
+                    }
+                    else if (compileResult.QueryMatch is DirectScanMatchBase { KnownExactTotal: >= 0 } directScan)
+                    {
+                        knownExactTotal = directScan.KnownExactTotal;
+                    }
+                }
 
-                    int bufferSize = CoraxBufferSize(IndexSearcher, take, query);
-                    var ids = QueryPool.Rent(bufferSize);
-                    using var queryFilter = GetQueryFilterInternal();
-                    Page page = default;
-                    totalResults.Value = 0;
+                using var ___ = compileResult;
 
-                    var (sortingData, hasOrderByDistance) = SetupSortingData(query, compileResult.QueryBuilderParams, compileResult.QueryMatch, bufferSize);
+                highlightings.Setup(query, documentsContext);
 
-                    // We don't need to do any processing for the query beyond counting if we are getting a count.
-                    long totalResultsBefore = totalResults.Value;
+                int bufferSize = CoraxBufferSize(IndexSearcher, take, query);
+                var ids = QueryPool.Rent(bufferSize);
+                using var queryFilter = GetQueryFilterInternal();
+                Page page = default;
+                totalResults.Value = 0;
 
-                    var executeScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Execute), start: false);
-                    var scoreScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Score), start: false);
-                    var pagingScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Paging), start: false);
-                    while (query.IsCountQuery == false || typeof(TDistinct) == typeof(HasDistinct))
+                var (sortingData, hasOrderByDistance) = SetupSortingData(query, compileResult.QueryBuilderParams, compileResult.QueryMatch, bufferSize);
+
+                // We don't need to do any processing for the query beyond counting if we are getting a count.
+                long totalResultsBefore = totalResults.Value;
+
+                var executeScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Execute), start: false);
+                var scoreScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Score), start: false);
+                var pagingScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Paging), start: false);
+                while (query.IsCountQuery == false || typeof(TDistinct) == typeof(HasDistinct))
+                {
+                    token.ThrowIfCancellationRequested();
+
+                    // We look for items that hadn't seen before in the case of paging.
+                    int read;
+                    using (coraxScope?.Start())
+                    using (executeScope?.Start())
+                        read = compileResult.QueryMatch.Fill(ids);
+                    if (read == 0)
+                        goto Done;
+
+                    // We need to deal with sorting in Fill, so have to call them on a per batch level
+                    if (sortingData.IncludeScores && compileResult.ScoresProducedDuringFill)
+                    {
+                        var scoresForBatch = sortingData.ScoresBuffer.AsSpan(0, read);
+                        scoresForBatch.Fill(Bm25Relevance.InitialScoreValue);
+                        using (coraxScope?.Start())
+                        using (scoreScope?.Start())
+                            compileResult.QueryMatch.Score(ids.AsSpan(0, read), scoresForBatch, 1f);
+                    }
+
+                    // If we are going to skip, we've better do it knowing how many we have passed.
+                    // After this call the order of ids from 0 to `i` may be changed, and we cannot rely on it (a sorting case).
+                    long i;
+                    using (coraxScope?.Start())
+                    using (pagingScope?.Start())
+                    {
+                        i = identityTracker.RegisterDuplicates(ref hasProjections, totalResults.Value, ids.AsSpan(0, read), token);
+                    }
+                    totalResults.Value += read; // important that this is *after* RegisterDuplicates
+
+                    // Now for every document that was selected. document it. 
+                    for (; docsToLoad != 0 && i < read; ++i, --docsToLoad)
                     {
                         token.ThrowIfCancellationRequested();
 
-                        // We look for items that hadn't seen before in the case of paging.
-                        int read;
-                        using (coraxScope?.Start())
-                        using (executeScope?.Start())
-                            read = compileResult.QueryMatch.Fill(ids);
-                        if (read == 0)
-                            goto Done;
+                        long indexEntryId = ids[i];
 
-                        // We need to deal with sorting in Fill, so have to call them on a per batch level
-                        if (sortingData.IncludeScores && compileResult.ScoresProducedDuringFill)
+                        // unless we are going to include no matter what, let's check if we can skip it else.
+                        if (willAlwaysIncludeInResults is false)
                         {
-                            var scoresForBatch = sortingData.ScoresBuffer.AsSpan(0, read);
-                            scoresForBatch.Fill(Bm25Relevance.InitialScoreValue);
-                            using (coraxScope?.Start())
-                            using (scoreScope?.Start())
-                                compileResult.QueryMatch.Score(ids.AsSpan(0, read), scoresForBatch, 1f);
-                        }
+                            // Ok, we will need to check for duplicates, then we will have to work. In some cases (like TimeSeries) we don't "have" unique identifier so we skip checking.
+                            var identityExists = retriever.TryGetKeyCorax(_documentIdReader, indexEntryId, out var rawIdentity);
 
-                        // If we are going to skip, we've better do it knowing how many we have passed.
-                        // After this call the order of ids from 0 to `i` may be changed, and we cannot rely on it (a sorting case).
-                        long i;
-                        using (coraxScope?.Start())
-                        using (pagingScope?.Start())
-                        {
-                            i = identityTracker.RegisterDuplicates(ref hasProjections, totalResults.Value, ids.AsSpan(0, read), token);
-                        }
-                        totalResults.Value += read; // important that this is *after* RegisterDuplicates
-
-                        // Now for every document that was selected. document it. 
-                        for (; docsToLoad != 0 && i < read; ++i, --docsToLoad)
-                        {
-                            token.ThrowIfCancellationRequested();
-
-                            long indexEntryId = ids[i];
-
-                            // unless we are going to include no matter what, let's check if we can skip it else.
-                            if (willAlwaysIncludeInResults is false)
-                            {
-                                // Ok, we will need to check for duplicates, then we will have to work. In some cases (like TimeSeries) we don't "have" unique identifier so we skip checking.
-                                var identityExists = retriever.TryGetKeyCorax(_documentIdReader, indexEntryId, out var rawIdentity);
-
-                                // If we have figured out that this document identity has already been seen, we are skipping it.
-                                if (identityExists && identityTracker.ShouldIncludeIdentity(ref hasProjections, rawIdentity) == false)
-                                {
-                                    docsToLoad++;
-                                    skippedResults.Value++;
-                                    continue;
-                                }
-
-                                if (typeof(TDistinct) == typeof(HasDistinct) && query.IsCountQuery)
-                                    continue;
-                            }
-
-                            // Now we know this is a new candidate document to be return therefore, we are going to be getting the
-                            // actual data and apply the rest of the filters. 
-
-                            float? documentScore = sortingData.IncludeScores ? sortingData.ScoresBuffer[i] : null;
-                            CoraxSpatialResult? documentDistance = hasOrderByDistance ? sortingData.DistancesBuffer[i] : null;
-
-                            var key = _documentIdReader.GetTermFor(indexEntryId);
-                            EntryTermsReader entryTermsReader = IndexSearcher.GetEntryTermsReader(indexEntryId, ref page, entryReaderKey);
-                            var retrieverInput = new RetrieverInput(IndexSearcher, _fieldMappings, in entryTermsReader, key, _index.IndexFieldsPersistence.HasTimeValues, documentScore, documentDistance);
-
-                            var filterResult = queryFilter.Apply(ref retrieverInput, key);
-                            if (filterResult is not FilterResult.Accepted)
+                            // If we have figured out that this document identity has already been seen, we are skipping it.
+                            if (identityExists && identityTracker.ShouldIncludeIdentity(ref hasProjections, rawIdentity) == false)
                             {
                                 docsToLoad++;
-                                if (filterResult is FilterResult.Skipped)
-                                    continue;
-
-                                if (filterResult is FilterResult.LimitReached)
-                                    break;
+                                skippedResults.Value++;
+                                continue;
                             }
 
-                            bool markedAsSkipped = false;
-                            var fetchedDocument = retriever.Get(ref retrieverInput, token);
-                            if (fetchedDocument.Document != null)
+                            if (typeof(TDistinct) == typeof(HasDistinct) && query.IsCountQuery)
+                                continue;
+                        }
+
+                        // Now we know this is a new candidate document to be return therefore, we are going to be getting the
+                        // actual data and apply the rest of the filters. 
+
+                        float? documentScore = sortingData.IncludeScores ? sortingData.ScoresBuffer[i] : null;
+                        CoraxSpatialResult? documentDistance = hasOrderByDistance ? sortingData.DistancesBuffer[i] : null;
+
+                        var key = _documentIdReader.GetTermFor(indexEntryId);
+                        EntryTermsReader entryTermsReader = IndexSearcher.GetEntryTermsReader(indexEntryId, ref page, entryKeyScope.Key);
+                        var retrieverInput = new RetrieverInput(IndexSearcher, _fieldMappings, in entryTermsReader, key, _index.IndexFieldsPersistence.HasTimeValues, documentScore, documentDistance);
+
+                        var filterResult = queryFilter.Apply(ref retrieverInput, key);
+                        if (filterResult is not FilterResult.Accepted)
+                        {
+                            docsToLoad++;
+                            if (filterResult is FilterResult.Skipped)
+                                continue;
+
+                            if (filterResult is FilterResult.LimitReached)
+                                break;
+                        }
+
+                        bool markedAsSkipped = false;
+                        var fetchedDocument = retriever.Get(ref retrieverInput, token);
+                        if (fetchedDocument.Document != null)
+                        {
+                            var qr = CreateQueryResult(ref identityTracker, fetchedDocument.Document, query, documentsContext, ref entryTermsReader, fieldsToFetch, compileResult.OrderByFields, ref highlightings, skippedResults, ref hasProjections, ref markedAsSkipped);
+                            if (qr.Result is null)
                             {
-                                var qr = CreateQueryResult(ref identityTracker, fetchedDocument.Document, query, documentsContext, ref entryTermsReader, fieldsToFetch, compileResult.OrderByFields, ref highlightings, skippedResults, ref hasProjections, ref markedAsSkipped);
+                                docsToLoad++;
+                                continue;
+                            }
+
+                            yield return qr;
+                        }
+                        else if (fetchedDocument.List != null)
+                        {
+                            foreach (Document item in fetchedDocument.List)
+                            {
+                                var qr = CreateQueryResult(ref identityTracker, item, query, documentsContext, ref entryTermsReader, fieldsToFetch, compileResult.OrderByFields, ref highlightings, skippedResults, ref hasProjections, ref markedAsSkipped);
                                 if (qr.Result is null)
                                 {
                                     docsToLoad++;
@@ -788,102 +799,85 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
                                 yield return qr;
                             }
-                            else if (fetchedDocument.List != null)
-                            {
-                                foreach (Document item in fetchedDocument.List)
-                                {
-                                    var qr = CreateQueryResult(ref identityTracker, item, query, documentsContext, ref entryTermsReader, fieldsToFetch, compileResult.OrderByFields, ref highlightings, skippedResults, ref hasProjections, ref markedAsSkipped);
-                                    if (qr.Result is null)
-                                    {
-                                        docsToLoad++;
-                                        continue;
-                                    }
-
-                                    yield return qr;
-                                }
-                            }
-                            else
-                            {
-                                skippedResults.Value++;
-                            }
-                        }
-
-                        // No need to continue filling buffers as there are no more docs to load and we are skipping statistics anyways.
-                        if (docsToLoad <= 0)
-                            break;
-                    }
-
-
-                    // If we are going to just return count() then we don't care about anything else than memoize the results.
-                    if (query.IsCountQuery || query.SkipStatistics == false)
-                    {
-                        if (knownExactTotal >= 0) // we already know what the totals are, can just skip the Fill work below
-                        {
-                            totalResults.Value = knownExactTotal;
                         }
                         else
                         {
-                            using (coraxScope?.Start())
-                            using (executeScope?.Start())
-                            {
-                                while(true)
-                                {
-                                    // Instead of memoizing, we just continue filling the buffer. First, because we don't need to keep the
-                                    // value or deduplicate at this stage; just to know how many potential matches we have left. Also memoizing
-                                    // is not supported for SortingMatch.
-                                    int read = compileResult.QueryMatch.Fill(ids);
-                                    if (read is 0) break;
-                                    totalResults.Value += read;
-                                }
-                            }
+                            skippedResults.Value++;
                         }
                     }
-                
-                
 
-                    Done:
-                    if (queryTimings != null)
+                    // No need to continue filling buffers as there are no more docs to load and we are skipping statistics anyways.
+                    if (docsToLoad <= 0)
+                        break;
+                }
+
+
+                // If we are going to just return count() then we don't care about anything else than memoize the results.
+                if (query.IsCountQuery || query.SkipStatistics == false)
+                {
+                    if (knownExactTotal >= 0) // we already know what the totals are, can just skip the Fill work below
                     {
-                        var inspectionNode = QueryPlanBuilder.QueryPlanBuilder.BuildInspectionGraph(compileResult);
-                        queryTimings.SetQueryPlan(inspectionNode);
-                    }
-
-                    ReturnQueryResources(ids, sortingData);
-
-
-                    long sortingMatchTotalResults = compileResult.QueryMatch switch
-                    {
-                        SortingMatch match => match.TotalResults,
-                        SortingMultiMatch multiMatch => multiMatch.TotalResults,
-                        _ => -1
-                    };
-                
-                    if(sortingMatchTotalResults is -1)
-                        break; // this is only relevant if we are sorting, since we may have filtered items and need to read more, see: RavenDB-20294
-                    
-                    if (docsToLoad == 0 ||
-                        sortingMatchTotalResults == totalResults.Value ||
-                        totalResults.Value == totalResultsBefore || // no progress this iteration — match exhausted
-                        scannedDocuments.Value >= query.FilterLimit)
-                    {
-                        totalResults.Value = (int)Math.Min(sortingMatchTotalResults, int.MaxValue);
-                        runQuery = false;
+                        totalResults.Value = knownExactTotal;
                     }
                     else
                     {
-                        Debug.Assert(_maxNumberOfOutputsPerDocument > 0);
-                        take += (pageSize - (pageSize - docsToLoad)) * _maxNumberOfOutputsPerDocument;
-                        if (take < 0) // handle overflow
-                            take = int.MaxValue;
-                        // start *after* all the items we already read and returned to the caller
-                        identityTracker.QueryStart = totalResults.Value;
+                        using (coraxScope?.Start())
+                        using (executeScope?.Start())
+                        {
+                            while(true)
+                            {
+                                // Instead of memoizing, we just continue filling the buffer. First, because we don't need to keep the
+                                // value or deduplicate at this stage; just to know how many potential matches we have left. Also memoizing
+                                // is not supported for SortingMatch.
+                                int read = compileResult.QueryMatch.Fill(ids);
+                                if (read is 0) break;
+                                totalResults.Value += read;
+                            }
+                        }
                     }
                 }
+                
+                
+
+                Done:
+                if (queryTimings != null)
+                {
+                    var inspectionNode = QueryPlanBuilder.QueryPlanBuilder.BuildInspectionGraph(compileResult);
+                    queryTimings.SetQueryPlan(inspectionNode);
+                }
+
+                ReturnQueryResources(ids, sortingData);
+
+
+                long sortingMatchTotalResults = compileResult.QueryMatch switch
+                {
+                    SortingMatch match => match.TotalResults,
+                    SortingMultiMatch multiMatch => multiMatch.TotalResults,
+                    _ => -1
+                };
+                
+                if(sortingMatchTotalResults is -1)
+                    break; // this is only relevant if we are sorting, since we may have filtered items and need to read more, see: RavenDB-20294
+                    
+                if (docsToLoad == 0 ||
+                    sortingMatchTotalResults == totalResults.Value ||
+                    totalResults.Value == totalResultsBefore || // no progress this iteration — match exhausted
+                    scannedDocuments.Value >= query.FilterLimit)
+                {
+                    totalResults.Value = (int)Math.Min(sortingMatchTotalResults, int.MaxValue);
+                    runQuery = false;
+                }
+                else
+                {
+                    Debug.Assert(_maxNumberOfOutputsPerDocument > 0);
+                    take += (pageSize - (pageSize - docsToLoad)) * _maxNumberOfOutputsPerDocument;
+                    if (take < 0) // handle overflow
+                        take = int.MaxValue;
+                    // start *after* all the items we already read and returned to the caller
+                    identityTracker.QueryStart = totalResults.Value;
+                }
             }
-            finally
-            {
-                _lowLevelTransaction.ReleaseCompactKey(ref entryReaderKey);
-            }
+            
 
             if (isDistinctCount)
                 totalResults.Value -= skippedResults.Value;
