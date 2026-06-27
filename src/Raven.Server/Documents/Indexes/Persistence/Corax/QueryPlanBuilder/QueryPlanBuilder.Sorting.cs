@@ -103,7 +103,9 @@ internal static partial class QueryPlanBuilder
                     // The seed (literal or parameter) is read from the live query at materialize time, so it is NOT
                     // baked into the cached template and is deliberately absent from the structural key.
                     patches[i].Kind = field.Arguments is { Length: > 0 } ? SortSlotPatchKind.RandomSeeded : SortSlotPatchKind.RandomFreshSeed;
-                    patches[i].OrderByIndex = Array.IndexOf(p.Metadata.OrderBy,field);
+                    // Record-struct value equality (with Arguments compared by its preserved reference) recovers this
+                    // slot's position in the raw, pre-elision array, so materialize can read the live seed from there.
+                    patches[i].OrderByIndex = Array.IndexOf(p.Metadata.OrderBy, field);
                     anyPatch = true;
                     continue;
                 case OrderByFieldType.Score:
@@ -113,7 +115,9 @@ internal static partial class QueryPlanBuilder
                     // The center point/units (literal or parameter) are read from the live query at materialize time.
                     patches[i].Kind = SortSlotPatchKind.DistanceRuntime;
                     patches[i].FieldName = field.Name;
-                    patches[i].OrderByIndex = Array.IndexOf(p.Metadata.OrderBy,field);
+                    // See the Random case above: IndexOf recovers the raw, pre-elision position so materialize can
+                    // read the live center point/units from there.
+                    patches[i].OrderByIndex = Array.IndexOf(p.Metadata.OrderBy, field);
                     anyPatch = true;
                     continue;
                 case OrderByFieldType.Implicit when p.Index.Configuration.OrderByTicksAutomaticallyWhenDatesAreInvolved && p.Index.IndexFieldsPersistence.HasTimeValues(field.Name.Value):
@@ -154,8 +158,8 @@ internal static partial class QueryPlanBuilder
 
 
     // Partial sort elision -> WHERE status = 'Released' ORDER BY status, vote DESC → ORDER BY vote DESC.
-    // originalIndices maps each surviving slot back to its position in the input array (null when nothing was elided,
-    // i.e. the mapping is the identity), so the runtime can read that slot's live ORDER BY arguments.
+    // Returns the surviving keys (the input array unchanged when nothing was elided). Callers that need a survivor's
+    // position in the raw array recover it via Array.IndexOf, so no index mapping is threaded out here.
     private static OrderByField[] ComputeEffectiveOrderBy(OrderByField[] orderBy, List<ClauseInfo> clauses, bool isOr, global::Corax.Querying.IndexSearcher indexSearcher)
     {
         if (orderBy is not { Length: > 0 } || isOr)
