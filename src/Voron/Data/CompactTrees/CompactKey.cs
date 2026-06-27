@@ -22,10 +22,12 @@ public sealed unsafe class CompactKey : IDisposable
 {
     public static readonly CompactKey NullInstance = new();
 
-    [ThreadStatic]
-    private static ArrayPool<byte> StoragePool;
-    [ThreadStatic]
-    private static ArrayPool<long> KeyMappingPool;
+    // Process-wide (NOT [ThreadStatic]): CompactKey instances are pooled across threads via
+    // LowLevelTransaction.SharedCompactKeyPool, so a key initialized on one thread can be reused (and grow its
+    // storage) on another. Thread-static pools would be null on the borrowing thread, NRE-ing in
+    // UnlikelyGrowStorage. ArrayPool.Create() is thread-safe for cross-thread rent/return.
+    private static readonly ArrayPool<byte> StoragePool = ArrayPool<byte>.Create();
+    private static readonly ArrayPool<long> KeyMappingPool = ArrayPool<long>.Create();
 
     private LowLevelTransaction _owner;
 
@@ -76,9 +78,6 @@ public sealed unsafe class CompactKey : IDisposable
 
         _currentIdx = 0;
         MaxLength = 0;
-
-        StoragePool ??= ArrayPool<byte>.Create();
-        KeyMappingPool ??= ArrayPool<long>.Create();
 
         _storage = StoragePool.Rent(2 * Constants.CompactTree.MaximumKeySize);
         _keyMappingCache = KeyMappingPool.Rent(2 * MappingTableMask);
