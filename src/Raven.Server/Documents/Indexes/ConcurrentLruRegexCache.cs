@@ -105,9 +105,8 @@ namespace Raven.Server.Documents.Indexes
                     if (_regexCache.TryRemove(kv.Key, out var removed))
                     {
                         countRemoved++;
-                        // release the evicted node's per-thread Regex instances promptly instead of waiting for
-                        // the non-deterministic ThreadLocal finalizer to reclaim the TLS slots
-                        removed.Dispose();
+                        // release the evicted node's per-thread Regex instances promptly instead 
+                        // the GC's finalizer will do the final cleanup
                     }
                 }
                 Interlocked.Add(ref _count, -countRemoved);
@@ -122,10 +121,10 @@ namespace Raven.Server.Documents.Indexes
         }
     }
 
-    internal sealed class ConcurrentLruRegexCacheNode : IDisposable
+    internal sealed class ConcurrentLruRegexCacheNode 
     {
         public long Timestamp;
-        public ThreadLocal<Regex> RegexLazy { get; set; }
+        public ThreadLocal<Regex> RegexLazy { get; }
 
         public ConcurrentLruRegexCacheNode(string pattern, TimeSpan regexTimeout, RegexOptions options = RegexOptions.None)
         {
@@ -136,13 +135,6 @@ namespace Raven.Server.Documents.Indexes
                 // on _each_ term in the results, potentially millions, so we specify a very
                 // short value to avoid very long queries
                 regexTimeout));
-        }
-
-        public void Dispose()
-        {
-            // intentionally not disposing it, letting the GC take care of that via finalizer
-            // so racing threads referencing it can do so without fear of it being disposed behind their back
-            RegexLazy = null;
         }
     }
 }
