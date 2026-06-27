@@ -66,8 +66,7 @@ namespace Raven.Server.Documents.Indexes
 
             if (res != result) // someone else created it
             {
-                // we lost the race; our unused node owns a ThreadLocal, dispose it so it does not leak TLS slots
-                result.Dispose();
+                // we lost the race; our unused node owns a ThreadLocal, return the one from the cache
                 return res.RegexLazy.Value;
             }
 
