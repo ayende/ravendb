@@ -80,8 +80,7 @@ namespace Corax.Analyzers
             // Compound fields rely on a stable single-token-per-value output. KeywordTokenizer is the only
             // tokenizer that guarantees this; Exact/LowerCase transformers are byte-for-byte stable wrappers.
             // When wrapped via With<>(), the actual tokenizer lives on the inner analyzer.
-            bool tokenizerOk = inner != null ? inner.IsCompoundFieldCompatible : tokenizer is KeywordTokenizer;
-            bool isCompoundFieldCompatible = tokenizerOk;
+            bool isCompoundFieldCompatible = inner?.IsCompoundFieldCompatible ?? tokenizer is KeywordTokenizer;
             foreach( var transformer in transformers)
             {
                 // NullTransformer is a placeholder slot used by Create<...> when fewer than 3 transformers
