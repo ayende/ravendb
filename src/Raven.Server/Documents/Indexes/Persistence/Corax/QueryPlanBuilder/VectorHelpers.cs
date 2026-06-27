@@ -94,9 +94,7 @@ internal static class VectorHelpers
 
         var vectorValue = GenerateEmbeddings.FromArray(parameters.Allocator, memScope, mem, vectorOptions, bytesUsed);
 
-        // For Single/Int8 source input, array.Length is the true dimension count, so record it for an exact
-        // dimensionality check. Binary source is already byte-packed, so the exact dimension count is not
-        // recoverable and we leave it unknown (the byte-length check is the best granularity available there).
+        // for Binary, the array length is not exact, so don't set it...
         if (vectorOptions.SourceEmbeddingType is not VectorEmbeddingType.Binary)
             vectorValue.SetSourceDimensions(array.Length);
 
