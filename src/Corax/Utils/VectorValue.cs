@@ -10,7 +10,13 @@ public struct VectorValue : IDisposable
     private readonly Memory<byte> _memory;
     private int _length;
     public int Length => _length;
-    
+
+    // Source (pre-packing) dimension count when known; 0 means unknown. Bit-packed Binary embeddings lose the
+    // exact dimension count (ceil(dims/8) is not injective), so callers that still hold the source element count
+    // record it here to allow an exact dimensionality check later.
+    private int _sourceDimensions;
+    public int SourceDimensions => _sourceDimensions;
+
     public readonly bool IsNull;
     public static readonly VectorValue Null = new(true);
 
@@ -41,6 +47,8 @@ public struct VectorValue : IDisposable
     }
 
     public void OverrideLength(int len) => _length = len;
+
+    public void SetSourceDimensions(int dimensions) => _sourceDimensions = dimensions;
 
     public void Dispose()
     {

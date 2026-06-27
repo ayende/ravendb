@@ -14,7 +14,7 @@ namespace Corax.Querying;
 public partial class IndexSearcher
 {
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch BetweenQuery<TValue>(in FieldMetadata field, TValue low, TValue high, ComparisonOperator leftSide = ComparisonOperator.GreaterThanOrEqual, ComparisonOperator rightSide = ComparisonOperator.LessThanOrEqual, bool forward = true, long maxNumberOfTerms = long.MaxValue) {
+    public IQueryMatch BetweenQuery<TValue>(in FieldMetadata field, TValue low, TValue high, ComparisonOperator leftSide = ComparisonOperator.GreaterThanOrEqual, ComparisonOperator rightSide = ComparisonOperator.LessThanOrEqual, bool forward = true) {
         if (typeof(TValue) == typeof(long))
         {
             return (leftSide, rightSide) switch
@@ -84,13 +84,13 @@ public partial class IndexSearcher
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch GreaterThanQuery<TValue>(in FieldMetadata field, TValue value, bool forward = true, long maxNumberOfTerms = long.MaxValue)
+    public IQueryMatch GreaterThanQuery<TValue>(in FieldMetadata field, TValue value, bool forward = true)
     {
         return GreatBuilder<Range.Exclusive, Range.Inclusive, TValue>(field, value, forward);
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch GreaterThanOrEqualsQuery<TValue>(in FieldMetadata field, TValue value, bool forward = true, long maxNumberOfTerms = long.MaxValue)
+    public IQueryMatch GreaterThanOrEqualsQuery<TValue>(in FieldMetadata field, TValue value, bool forward = true)
     {
         return GreatBuilder<Range.Inclusive, Range.Inclusive, TValue>(field, value, forward);
     }
@@ -117,11 +117,11 @@ public partial class IndexSearcher
     }
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch LessThanOrEqualsQuery<TValue>(in FieldMetadata field, TValue value, bool forward = true, long maxNumberOfTerms = long.MaxValue)
+    public IQueryMatch LessThanOrEqualsQuery<TValue>(in FieldMetadata field, TValue value, bool forward = true)
         => LessBuilder<Range.Inclusive, Range.Inclusive, TValue>(field, value, forward);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public IQueryMatch LessThanQuery<TValue>(in FieldMetadata field, TValue value, bool forward = true, long maxNumberOfTerms = long.MaxValue)
+    public IQueryMatch LessThanQuery<TValue>(in FieldMetadata field, TValue value, bool forward = true)
         => LessBuilder<Range.Inclusive, Range.Exclusive, TValue>(field, value, forward);
 
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
