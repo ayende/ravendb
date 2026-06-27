@@ -1466,31 +1466,14 @@ namespace Voron.Data.Containers
                 throw new InvalidDataException("Page " + _page.PageNumber + " is not a container page");
         }
 
-        public readonly struct Item
+        public readonly struct Item(Page page, byte* ptr, int size)
         {
-            public static readonly Item Invalid = new Item(default, null, 0);
-            public bool IsInvalid => _ptr == null;
-            
-            private readonly Page _page;
-            private readonly byte* _ptr;
-            public readonly int Length;
+            public readonly int Length = size;
 
-            public Item(Page page, byte* ptr, int size)
-            {
-                _page = page;
-                _ptr = ptr;
-                Length = size;
-            }
-
-            public byte* Address => _ptr;
-            public long PageLevelMetadata => ((ContainerPageHeader*)_page.Pointer)->PageLevelMetadata;
-            public Span<byte> ToSpan() => new Span<byte>(_ptr, Length);
-            public UnmanagedSpan ToUnmanagedSpan() => new UnmanagedSpan(_ptr, Length);
-
-            public Item IncrementOffset(int offset)
-            {
-                return new Item(_page, _ptr + offset, Length - offset);
-            }
+            public byte* Address => ptr;
+            public long PageLevelMetadata => ((ContainerPageHeader*)page.Pointer)->PageLevelMetadata;
+            public Span<byte> ToSpan() => new Span<byte>(ptr, Length);
+            public UnmanagedSpan ToUnmanagedSpan() => new UnmanagedSpan(ptr, Length);
         }
 
         public static void GetAllSortedByPage(LowLevelTransaction llt, Span<long> ids, Span<UnmanagedSpan> spans, PageLocator pageCache)
