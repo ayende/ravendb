@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Corax.Utils.Spatial;
 using Sparrow.Json;
 
 namespace Corax.Querying.Planning;
@@ -25,11 +26,7 @@ public sealed class ClauseInfo
 {
     public string FieldName { get; init; }
 
-    /// <summary>Pre-resolved dynamic-index field name variant (e.g. <c>exact(Name)</c> or
-    /// <c>search(Name)</c>). Set by the DynamicFieldNameResolve walker step for auto-indexes.
-    /// Null for static indexes and non-exact/non-search clauses. When set, execution-time
-    /// field metadata lookups use this instead of <see cref="FieldName"/> — saving one string
-    /// allocation per clause per query execution.</summary>
+    /// <summary>Pre-resolved dynamic-index field name variant (e.g. <c>exact(Name)</c> or <c>search(Name)</c>). </summary>
     public string ResolvedFieldName { get; set; }
 
     public ClauseType ClauseType { get; init; }
@@ -40,26 +37,18 @@ public sealed class ClauseInfo
 
     public bool IsExact { get; set; }
 
-    /// <summary>for Search (AND=1/OR=0)</summary>
-    public int SearchOperator { get; init; }
+    public Constants.Search.Operator SearchOperator { get; init; }
 
-    public SpatialOperationType SpatialMethodType { get; init; }
+    public SpatialRelation SpatialMethodType { get; init; }
 
     public VectorSourceKind VectorMethod { get; init; }
 
-    /// <summary>Set for any negated clause appearing in an OR chain — NotEquals,
-    /// NOT IN, NOT AllIn, NOT exists(), NOT startsWith(), etc.
+    /// <summary>Set for any negated clause appearing in an OR chain.
     /// Example: `WHERE Name != 'a' OR Age = 25` or `WHERE NOT exists(Tags) OR Score &gt; 10`.
-    /// The complement set cannot be delivered by the raw posting list / range / tree-scan
-    /// (which would produce the POSITIVE form). Instead, the IL emitter builds the complement
-    /// at execution time via FillAllEntries + AndNot(positive form), so OrWithMatch correctly
-    /// ORs in the set of entries NOT matching the positive predicate. Boost is intentionally
-    /// ignored on such clauses (matches Lucene — there is no match to score).</summary>
+    /// IL emitter builds the complement at execution time via FillAllEntries + AndNot(positive form.
+    /// Boost is intentionally ignored on such clauses (matches Lucene — there is no match to score).</summary>
     public bool IsOrChainNotEquals { get; set; }
 
-    /// <summary>Sub-clauses for OrGroup / AndGroup nodes. Mutually exclusive with other
-    /// group-type usage — a clause is either OrGroup or AndGroup (never both), determined
-    /// by <see cref="ClauseType"/>.</summary>
     public List<ClauseInfo> SubClauses { get; init; }
 
     /// <summary>Parameter bindings indexed by <see cref="BindingIndex"/> constants.
@@ -70,18 +59,9 @@ public sealed class ClauseInfo
     /// boost factor binding and exec.BoostFactor is resolved from it per-execution.</summary>
     public bool HasBoost { get; set; }
 
-    /// <summary>Optional WHEN condition delegate. Null when no WHEN wraps this clause.
-    /// Created at ParseTemplate time as a closure over the parsed condition expression.
-    /// Evaluated per-execution in BuildAndCompile: called with the query's BlittableJsonReaderObject
-    /// parameters; returns true to keep the clause, false to eliminate it.</summary>
+    /// <summary>Optional WHEN condition delegate, called with the query's BlittableJsonReaderObject parameters; returns false to eliminate the clause.</summary>
     public Func<BlittableJsonReaderObject, bool> WhenCondition { get; set; }
 
-    /// <summary>Per-clause, per-query calibration for the range-cardinality estimator. Lives on the
-    /// (immutable) template clause, so it is shared by every CompiledPlan derived from this template and
-    /// by every concurrent execution of them — calibration is a property of the predicate shape, not of a
-    /// particular data shape. Nesting is handled for free: each clause in a SubClauses group is its own
-    /// ClauseInfo and carries its own instance. Only range clauses (BETWEEN / GT / GTE / LT / LTE /
-    /// StartsWith) read or write it; for every other clause type it stays at the neutral "no history" state.
-    /// See <c>IndexSearcher.EstimateMatchesInRange</c> for how Factor steers the unscanned-middle blend.</summary>
+    /// <summary>Shared by every CompiledPlan derived from this template and by every concurrent execution of them. Help steer range estimations over time.</summary>
     public readonly InflationEwma RangeEstimateCalibration = new();
 }

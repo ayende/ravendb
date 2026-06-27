@@ -2,27 +2,22 @@ using System.Runtime.Intrinsics;
 
 namespace Corax.Querying.Planning;
 
-/// <summary>Execution strategy chosen for a CompiledPlan. Determined once at cache-miss time
-/// (when Try* discovery runs in Build) and baked into the CompiledPlan. On every subsequent
-/// cache hit, Instantiate dispatches directly on Strategy without re-running Try*.</summary>
 public enum ExecutionStrategy : byte
 {
-    /// <summary>The first execution hasn't completed yet — discovery has not run.
-    /// Treated as "run discovery" by the dispatch path.</summary>
     NotEvaluated = 0,
-    /// <summary>The general default: build the result by intersecting/unioning posting-list bitmaps
-    /// (CompiledQueryMatch), then wrap with SortingMatch only when an ORDER BY is present. No scan
-    /// optimization applies. The "Pipeline" name signals that sorting is a separate wrapper, not part
-    /// of this strategy — for a no-ORDER-BY query nothing sorts.</summary>
+    // Compute the result set into a bitmap, then sort if needed:
+    // from index 'Items' where Name = 'Alice' and Category = 'red' [order by Price]
     BitmapPipeline,
-    /// <summary>Single compound-tree exact-term lookup (a point lookup). No ORDER BY — replaces an AND
-    /// of two Equals on the compound field's component clauses with one TermQuery on the composite key.</summary>
+    // Use a compound field index, skip ORDER BY, and merge two field WHERE into a single lookup:
+    // from index 'Items' where Category = 'Action' and Age = 40 - with compound(Category,Age)
     CompoundKeyLookup,
-    /// <summary>Compound-tree range scan that emits docs already in ORDER BY order (streamed sorted).
-    /// Driving clause is an Equals on the prefix field of a compound (Equals + ORDER BY sort field).</summary>
+    // Scan a compound field index, match the first field equality and then scan in sorted manner, to skip the ORDER BY:
+    // from index 'Items' where Category = 'Action' order by Age as long limit 25 - with compound(Category, Age)
     CompoundSortedScan,
-    /// <summary>SortedDrivingMatch on the sort field — streams entries in sort order from a
-    /// single-field tree without materializing a bitmap (streamed sorted, single-field flavor).</summary>
+    // Stream results from a sorted field directly, without materializing the full result set:
+    // from index 'Items' order by Age as long limit 25
+    // can also use a range filter + order by: 
+    // from index 'Items' where Age > 10 order by Age as long limit 25
     FieldSortedScan,
 }
 
@@ -30,23 +25,28 @@ public sealed class CompiledPlan
 {
     public PlanTemplate Template { get; init; }
 
-    /// <summary>IL-emitted delegate that executes the posting-list scan plan (no timing instrumentation).</summary>
     public QueryIlEmitter.CompiledExecuteDelegate CompiledDelegate { get; init; }
+    
+    /// <summary>C# source string mirroring emitted IL.</summary>
+    public string Source { get; init; }
 
-    /// <summary>IL-emitted delegate with per-op timing instrumentation: `include timings()`.</summary>
-    public QueryIlEmitter.CompiledExecuteDelegate CompiledTimedDelegate { get; init; }
+    public string FormattedSource => field ??= CSharpFormatter.Format(Source);
 
     /// <summary>
     ///  A single query may be represented by different compiled plans because the shape
     ///  of the data is different. Consider `WHERE Tag = $tag and Published = $published`.
-    ///  If $tag is a popular term, and $published is true, that usually means that we
-    ///      need to generate a plan that would:
-    ///  - Read the posting list for $tag
-    ///  - AND that posting list with the Published=true posting list.
-    ///      On the other hand, if we want all the _unpublished_ items in a popular tag, we can check
-    ///      that Published=false is a small amount, then start from that, then we find that we have
-    ///      low enough results that we are going to just scan through them, instead of going through
-    ///      the posting list.
+    ///  If $tag is a popular term, and $published is true, the best plan is:
+    ///
+    ///     Fill(Tag, $tag, bitmap: 0) 
+    ///     AndWith(Published, $published, bitmap: 0)
+    /// 
+    /// On the other hand, if we want all the _unpublished_ items in a popular tag, we can use:
+    ///
+    ///     Fill(Published, $published, bitmap: 0)
+    ///     if (ShouldScan(bitmap))
+    ///         EntryScan(bitmap)
+    ///     else 
+    ///         AndWith(Tag, $tag, bitmap: 0)
     /// 
     ///  In other words, the parameters we use for the query impact the query plan. The digest folds
     ///  every disambiguating dimension (operand ordering, per-parameter runtime type, BETWEEN
@@ -55,51 +55,39 @@ public sealed class CompiledPlan
     /// </summary>
     public Vector256<long> CacheKeyHash { get; init; }
 
-    /// <summary>Execution strategy chosen for this compiled plan. Set once at cache-miss
-    /// time after Try* discovery (volatile store), then read-only — safe for concurrent readers.
-    /// Cache hits dispatch on this field without re-running Try*.</summary>
     public volatile ExecutionStrategy Strategy;
 
     public PlanDecisionTrail DecisionTrail;
 
-    /// <summary>C# source string mirroring emitted IL.</summary>
-    public string Source { get; init; }
-
-    /// <summary>Roslyn-normalized version of <see cref="Source"/>.</summary>
-    public string FormattedSource => field ??= CSharpFormatter.Format(Source);
-
-    /// <summary>Template inspection nodes built during IL emission.
-    /// At query time, cloned and populated with per-execution telemetry
-    /// (timings, result counts, scanned entries) from CompiledQueryMatch.</summary>
+    // The structure we'll use for inspecting the query result when using `include timings()`
     public InspectionOp[] InspectionTemplate { get; init; }
 
-    /// <summary>Number of PlanOps in the plan. Stored on the CompiledPlan so that
-    /// cache hits can size timing arrays without re-running EmitPlan.</summary>
     public int OpCount { get; init; }
 
-    /// <summary>Number of bitmaps the plan needs at execution time (2 or 3).
-    /// Stored on the CompiledPlan so cache hits can allocate bitmaps without
-    /// re-running EmitPlan.</summary>
     public int RequiredBitmaps { get; init; }
 
-    /// <summary>Predicate set for the bitmap entry-scan path (excludes clause 0, the bitmap seed).
-    /// This is used when we have small enough set of results that we can scan them, rather then search.</summary>
+    // when we have small enough entries it is more efficient to scan then continue the bitmap
     public ResidualScanSet EntryScanSet { get; init; }
 
-    /// <summary>Predicate set for the CompoundSortedScan strategy, null when a non-scannable clause makes the path ineligible.</summary>
-    public ResidualScanSet CompoundFieldResidualSet { get; set; }
+    // when we iterate over compound field with additional filters
+    // e.g. from index 'Items' where Category = 'Action' and Name = 'Alice' order by Age as long limit 25
+    //   → CompoundSortedScan walks (Category, Age) tree; Name = 'Alice' is the residual filter
+    public ResidualScanSet CompoundFieldResidualSet { get; init; }
 
-    /// <summary>Predicate set for the DirectScan dispatch path, null when a non-scannable clause makes it ineligible.</summary>
-    public ResidualScanSet DirectScanResidualSet { get; set; }
+    // when we scan a field with additional filters
+    // e.g. from index 'Items' where Age > 10 and Name = 'Alice' order by Age as long limit 25
+    //   → FieldSortedScan walks Age tree in order; Name = 'Alice' is the residual filter
+    public ResidualScanSet DirectScanResidualSet { get; init; }
 
-    /// <summary>True when every clause in the execution is negated (NOT pattern).
-    /// This is per-CompiledPlan (not per-template) because WHEN elimination can remove all non-negated clauses, leaving only negated ones.</summary>
+    // WHEN elimination can remove all non-negated clauses, leaving only negated ones, this tells us if all of there were already negated or not
     public bool AllNegated { get; init; }
 
-    /// <summary>Per-plan EWMA of (actual index entries scanned)/(uniform-estimate) for the IndexOrderStreaming
-    /// strategy. Each streaming run (including over-scan bailouts) feeds it, and the cost gate multiplies its
-    /// uniform estimate by this factor — so a plan whose candidates turn out to be clustered (and therefore
-    /// over-scans) learns to prefer InMemorySort. Concurrent queries sharing this plan update it without
-    /// locking: benign races on aligned doubles are acceptable for a heuristic.</summary>
-    public readonly InflationEwma StreamScanInflation = new();
+    // shared among all executions, feed statistics of the scanned entries for IndexOrderStreaming strategy.
+    private InflationEwma _streamScanInflation;
+
+    public InflationEwma GetOrCreateStreamScanInflation()
+    {
+        // may be racy, that is fine
+        return _streamScanInflation ??= new InflationEwma();
+    }
 }

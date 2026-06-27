@@ -18,37 +18,29 @@ public sealed class SortMetadataTemplate
     public SortSlotPatch[] Patches { get; init; }
 }
 
-public delegate OrderMetadata SortDistanceMetadataBuilder(object runtimeContext, FieldMetadata fieldMeta);
-
 public struct SortSlotPatch
 {
     public SortSlotPatchKind Kind;
     public string FieldName;
-    /// <summary>
-    ///  To compute distance for spatial queries, we need to resolve the per-query center point from the parameters.  
-    /// </summary>
-    public SortDistanceMetadataBuilder DistanceBuilder;
+
+    // Index into the live (per-query) ORDER BY array, to read parameters values
+    public int OrderByIndex;
 }
 
-/// <summary>Per-slot patch kind. See <see cref="SortSlotPatch"/>.</summary>
 public enum SortSlotPatchKind : byte
 {
     /// <summary>Slot is fully baked — runtime returns the prefab entry verbatim.</summary>
     None = 0,
 
-    /// <summary>Field-backed sort slot. <see cref="FieldMetadata"/> holds transaction-bound slices, so it must be
-    /// re-resolved every query. If the field has zero distinct terms, the slot is flagged
-    /// <see cref="OrderMetadata.MayHaveMissingEntries"/> so SortingMatch routes through InMemorySort (every doc
-    /// is treated as missing) instead of walking a non-existent term tree.</summary>
+    /// <summary>Field-backed sort slot holds transaction-bound slices, so it must be re-resolved every query.</summary>
     FieldRuntimeResolve,
 
     /// <summary>Random ordering with no Arguments — need a new seed each query.</summary>
     RandomFreshSeed,
 
-    /// <summary>Random ordering seeded by a query parameter (<c>random($p)</c>) — the seed depends on the
-    /// per-query parameter value, so it cannot be baked. <see cref="SortSlotPatch.FieldName"/> holds the parameter name.</summary>
-    RandomSeededByParam,
+    /// <summary>Random ordering with a seed (<c>random(123)</c> or <c>random($p)</c>) read from the live ORDER BY arguments.</summary>
+    RandomSeeded,
 
-    /// <summary>Distance ordering whose lat/lng/wkt arguments are parameter-bound. If the values are fixed to the query, the sort kind is None.</summary>
+    /// <summary>Distance ordering whose center point/units (literal or parameter) are read from the live ORDER BY arguments.</summary>
     DistanceRuntime,
 }

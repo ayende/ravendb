@@ -5,11 +5,7 @@ using Voron.Data.RoaringBitmaps;
 
 namespace Corax.Querying.Planning;
 
-/// <summary>Statement-level emission helpers used by <see cref="QueryIlEmitter"/>.
-/// Each helper emits one IL sequence AND the matching C# line(s) so the two
-/// backends cannot drift — same drift-prevention discipline as the value-stack
-/// primitives in <see cref="DualEmit"/> but at statement granularity (no operand
-/// stack involvement; nothing is pushed or popped on CsStack).</summary>
+/// <summary>Statement-level emission helpers used by <see cref="QueryIlEmitter"/>.</summary>
 [StructLayout(LayoutKind.Auto)]
 internal ref partial struct DualEmit
 {
@@ -38,37 +34,37 @@ internal ref partial struct DualEmit
         CsLine("cursor++;");
     }
 
-    public void EmitBitmapBinaryOp(int target, int source, MethodInfo ilMethod, string csOp)
+    public void EmitBitmapBinaryOp(int target, int source, MethodInfo ilMethod)
     {
         IlLoadBitmapRef(target);
         IlLoadBitmapRef(source);
         Il.Emit(OpCodes.Call, ilMethod);
-        CsLine($"ctx.Bitmaps[{target}].{csOp}(ref ctx.Bitmaps[{source}]);");
+        CsLine($"ctx.Bitmaps[{target}].{ilMethod.Name}(ref ctx.Bitmaps[{source}]);");
     }
 
-    public void EmitBitmapUnaryCall(int slot, MethodInfo ilMethod, string csOp)
+    public void EmitBitmapUnaryCall(int slot, MethodInfo ilMethod)
     {
         IlLoadBitmapRef(slot);
         Il.Emit(OpCodes.Call, ilMethod);
-        CsLine($"ctx.Bitmaps[{slot}].{csOp}();");
+        CsLine($"ctx.Bitmaps[{slot}].{ilMethod.Name}();");
     }
 
-    public void EmitBitmapEmptyGoto(int slot, Label doneIlLabel, string doneCsName)
+    public void EmitBitmapEmptyGoto(int slot, LabelPair done)
     {
         IlLoadBitmapRef(slot);
         Il.Emit(OpCodes.Call, IlEmitterShared.IsEmptyGetter);
-        Il.Emit(OpCodes.Brtrue, doneIlLabel);
-        CsLine($"if (ctx.Bitmaps[{slot}].IsEmpty) goto {doneCsName};");
+        Il.Emit(OpCodes.Brtrue, done.Il);
+        CsLine($"if (ctx.Bitmaps[{slot}].IsEmpty) goto {done.Name};");
     }
 
-    public void EmitLimitReachedGoto(Label doneIlLabel, string doneCsName)
+    public void EmitLimitReachedGoto(LabelPair done)
     {
         IlLoadBitmapRef(0);
         Il.Emit(OpCodes.Call, IlEmitterShared.ComputeCountMethod);
         Il.Emit(OpCodes.Ldarg_0);
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.CtxLimit);
-        Il.Emit(OpCodes.Bge, doneIlLabel);
-        CsLine($"if (ctx.Bitmaps[0].ComputeCount() >= ctx.Limit) goto {doneCsName};");
+        Il.Emit(OpCodes.Bge, done.Il);
+        CsLine($"if (ctx.Bitmaps[0].ComputeCount() >= ctx.Limit) goto {done.Name};");
     }
 
     /// <summary>Arm the per-op truncation budget: ctx.OpLimit = ctx.Limit. Emitted only before the first op
@@ -84,14 +80,14 @@ internal ref partial struct DualEmit
         CsLine("ctx.OpLimit = ctx.Limit;");
     }
 
-    public void EmitCancelledCursorSlotCall(LocalBuilder cursorVar, MethodInfo ilMethod, string csMethodName, int bitmapSlot, bool advanceCursor = true)
+    public void EmitCancelledCursorSlotCall(LocalBuilder cursorVar, MethodInfo ilMethod, int bitmapSlot, bool advanceCursor = true)
     {
         IlCancellationCheck();
         Il.Emit(OpCodes.Ldarg_0);
         Il.Emit(OpCodes.Ldloc, cursorVar);
         Il.Emit(OpCodes.Ldc_I4, bitmapSlot);
         Il.Emit(OpCodes.Call, ilMethod);
-        CsCall($"{csMethodName}(ctx, cursor, bitmapSlot: {bitmapSlot});");
+        CsCall($"QueryPrimitives.{ilMethod.Name}(ctx, cursor, bitmapSlot: {bitmapSlot});");
         // The advance after the last cursor-consuming op is a dead store; the caller suppresses it there.
         if (advanceCursor)
             IlAdvanceCursor(cursorVar);
@@ -103,12 +99,12 @@ internal ref partial struct DualEmit
         Il.Emit(OpCodes.Ldarg_0);
         IlEmitterShared.EmitLdcI4(Il, bitmapSlot);
         Il.Emit(OpCodes.Call, IlEmitterShared.CtxFillAllEntries);
-        CsLine($"QueryPrimitives.CtxFillAllEntries(ctx, {bitmapSlot});");
+        CsLine($"QueryPrimitives.{IlEmitterShared.CtxFillAllEntries.Name}(ctx, {bitmapSlot});");
     }
 
-    public void EmitGotoDone(Label doneIlLabel, string doneCsName)
+    public void EmitGotoDone(LabelPair done)
     {
-        Il.Emit(OpCodes.Br, doneIlLabel);
-        CsLine($"goto {doneCsName};");
+        Il.Emit(OpCodes.Br, done.Il);
+        CsLine($"goto {done.Name};");
     }
 }

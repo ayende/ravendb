@@ -8,49 +8,32 @@ namespace Corax.Querying.Planning;
 /// what actually happened to what a heuristic predicted (<c>actual / predicted</c>). It is a smoothed,
 /// self-correcting multiplier that lets a cheap a-priori estimate learn from the outcomes it produced,
 /// without any per-run state beyond a single double.
+///
+/// - Streaming-sort scan inflation - the number of scanned index entries vs. the expected number
+/// - Range-estimate calibration - documents within a range vs. the estimated value
+///
+/// The instances is shared among all query executions. Writes are rare (once per observed run);
+/// reads are on hot paths and may read stale value. The race between a reader and a writer is benign: on 64-bit
+/// the read can't see torn values and on 32-bit a torn read at worst nudges one query's estimate — acceptable for a
+/// self-correcting heuristic.
 /// </summary>
-/// <remarks>
-/// <para>One implementation, two consumers:</para>
-/// <list type="bullet">
-///   <item><b>Streaming-sort scan inflation</b> (per <see cref="CompiledPlan"/>): (index entries actually
-///   scanned) / (the cost gate's uniform estimate). Lifts the gate's estimate when the sort axis is
-///   clustered so a streaming walk really reads more than uniform.</item>
-///   <item><b>Range-estimate calibration</b> (per <see cref="ClauseInfo"/>): (documents the range clause
-///   actually matched) / (the range cardinality estimate). Feeds the shrinkage strength used by the
-///   two-ended range probe in <c>IndexSearcher.EstimateMatchesInRange</c>, nudging the unscanned-middle
-///   extrapolation toward the global density when this clause has historically been under-estimated.</item>
-/// </list>
-/// <para>Each instance is shared by every concurrent query that reaches it, so each run's observation is
-/// weighted equally regardless of its size — this is a smoothed multiplier, not a volume-weighted ratio.</para>
-/// <para>Writes are rare (once per observed run) and use a compare-exchange loop; reads are on hot paths and
-/// are plain. The race between a reader and a writer is benign: on 64-bit the read sees either the old or new
-/// value (never torn), and on 32-bit a torn read at worst nudges one query's estimate — acceptable for a
-/// heuristic that self-corrects on the next observation.</para>
-/// </remarks>
 public sealed class InflationEwma
 {
+    // how much an update value shifts the state
     private const double Alpha = 0.05;
 
-    /// <summary>Skip the (contended) write when the blended value would move the factor by less than
-    /// this fraction of its current magnitude. The blend moves the factor by Alpha*(sample-current),
-    /// so a 1% relative move corresponds to a sample within ~20% of the current factor — the
-    /// steady state once converged. A sub-1% nudge cannot change a consumer's decision, so suppressing
-    /// it spares the shared cache line a lock cmpxchg on every one of many concurrent queries hitting
-    /// the same instance.</summary>
+    // skip updating the metric if we are within 1% of the value, to avoid lock cmpxcng
     private const double ConvergenceTolerance = 0.01;
 
-    /// <summary>The smoothed factor, or 0 before the first observation ("no history").
-    /// Written only via <see cref="Interlocked.CompareExchange(ref double, double, double)"/>.</summary>
+    // by how much each change move the current value
     private double _factor;
 
-    /// <summary>The learned inflation factor, or 0 when nothing has been observed yet
-    /// (callers treat 0 as "trust the raw estimate / use the neutral default").</summary>
+    // 0 is a neutral value, means - don't change your estimate
     public double Factor => _factor;
 
     /// <summary>
-    /// Fold one run into the average. <paramref name="actual"/> is what really happened (entries scanned,
-    /// documents matched, ...); <paramref name="predicted"/> is what the heuristic estimated. Their ratio
-    /// is the inflation this run exhibited — the first observation seeds the average, later ones blend at Alpha.
+    /// We care here about the difference between the predicted and the actual values.
+    /// We'll use this rate to adjust the current metric based on that ratio. 
     /// </summary>
     public void Observe(long actual, long predicted)
     {
@@ -66,8 +49,7 @@ public sealed class InflationEwma
                 ? sample
                 : current + Alpha * (sample - current);
 
-            // Converged: the update would move the factor by less than ConvergenceTolerance of its
-            // magnitude, so don't pay for the write. (current == 0 is "no history" — always seed.)
+            // Converged: the update would move the factor by less than ConvergenceTolerance, no need to update
             if (current != 0 && Math.Abs(updated - current) <= current * ConvergenceTolerance)
                 return;
 

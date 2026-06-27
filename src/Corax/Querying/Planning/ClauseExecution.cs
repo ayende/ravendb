@@ -4,11 +4,7 @@ using System.Runtime.CompilerServices;
 
 namespace Corax.Querying.Planning;
 
-/// <summary>Per-execution state for a clause. Holds a back-reference to its
-/// <see cref="ClauseInfo"/> so the pair can be sorted / reordered without maintaining
-/// parallel arrays. Populated by PopulateClauseValues each execution (not cached).
-/// Implements <see cref="IComparable{ClauseExecution}"/> for cardinality-based
-/// operand reordering (negated clauses sort last, ties broken by ascending cardinality).</summary>
+/// <summary>Per-execution state for a clause. Populated by PopulateClauseValues each execution (not cached).</summary>
 public sealed class ClauseExecution : IComparable<ClauseExecution>
 {
     public readonly ClauseInfo Clause;
@@ -17,9 +13,7 @@ public sealed class ClauseExecution : IComparable<ClauseExecution>
     public ParamValueType TermValueType;
     public long Cardinality = -1;
 
-    /// <summary>Raw inputs behind this execution's range/StartsWith cardinality estimate, captured by the
-    /// estimator so the inspection / include timings() view can explain how the number was reached. Null for
-    /// non-range clauses (and for ranges whose plan was never re-estimated this run).</summary>
+    /// <summary>Raw inputs behind this execution's range/StartsWith cardinality estimate, captured for introspection.</summary>
     public RangeEstimateBreakdown? RangeEstimate;
 
     public int InTermCount;
@@ -30,26 +24,19 @@ public sealed class ClauseExecution : IComparable<ClauseExecution>
 
     public ClauseType? SentinelRewriteType;
 
-    /// <summary>Clause type for this execution. Initialized from
-    /// <see cref="ClauseInfo.ClauseType"/> at creation; mutable for per-execution rewrites
-    /// (e.g. contradictory BETWEEN → empty-IN).</summary>
     public ClauseType ClauseType
     {
         get;
-        set
+        private set
         {
             if (value is ClauseType.NotEquals)
                 IsNegated = true;
             field = value;
         }
     }
-
-    /// <summary>Negation flag for this execution. Initialized from
-    /// <see cref="ClauseInfo.IsNegated"/> at creation; mutable for per-execution rewrites
-    /// (e.g. standalone NotEquals marking).</summary>
+    
     public bool IsNegated;
 
-    /// <summary>Per-execution state for OrGroup/AndGroup subclauses. Parallel to <see cref="ClauseInfo.SubClauses"/>.</summary>
     public List<ClauseExecution> SubExecutions;
 
     public ClauseExecution(ClauseInfo clause)
@@ -59,21 +46,13 @@ public sealed class ClauseExecution : IComparable<ClauseExecution>
         ClauseType = clause.ClauseType;
     }
 
-    /// <summary>True when this execution has been collapsed to a <see cref="ClauseType.MatchAll"/> or
-    /// <see cref="ClauseType.MatchNothing"/> sentinel. Sentinels emit no match leaf, consume no
-    /// cardinality slot, and resolve to a bitmap fill/clear in the plan emitter — so every leaf-counting
-    /// pass (emitter match cursor, leaf resolution, cardinality array, inspection flattening) must skip them.</summary>
+    // A clause is a sentinal if it is a false WHEN() clause, or known upfront to be impossible (like contradictory BETWEEN) 
     public bool IsSentinel => ClauseType is ClauseType.MatchAll or ClauseType.MatchNothing;
 
-    /// <summary>Collapse this execution to a sentinel: a clause that statically resolves to match-all or
-    /// match-nothing. Clears <see cref="IsNegated"/> because the sentinel already subsumes the clause's
-    /// polarity (a dropped clause's negation is resolved into the MatchAll/MatchNothing choice), and presets
-    /// <see cref="Cardinality"/> so the cardinality estimator is skipped (MatchNothing sorts first → AND
-    /// short-circuits; MatchAll sorts last → AND no-op / OR absorb).</summary>
     public void MarkAsSentinel(ClauseType sentinel, long cardinality)
     {
         ClauseType = sentinel;
-        IsNegated = false;
+        IsNegated = false; //  the sentinel already subsumes it 
         Cardinality = cardinality;
     }
 
