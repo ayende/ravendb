@@ -46,10 +46,11 @@ public class QueryPlanGraphTooltipTests : RavenTestBase
             // Every node/edge that carries data_* facts must also expose them as a single-line tooltip.
             Assert.Contains("tooltip=\"", dot);
 
-            // The tooltip uses the original (readable) key names and the " | " one-line separator, and a node
-            // with more than one fact joins them — confirm a representative fact and the join are present.
+            // The tooltip uses the original (readable) key names; a node with more than one fact joins them
+            // with the Graphviz line-break separator (an escaped "\\" left after EscapeAttr collapses the
+            // newline to a space) — confirm a representative fact and the join are present.
             Assert.Contains("FieldName: Name", dot);
-            Assert.Contains("  |  ", dot);
+            Assert.Contains("\\\\ ", dot);
 
             // One line: a tooltip value must not contain a raw newline (EscapeAttr collapses them to spaces).
             foreach (var line in dot.Split('\n'))

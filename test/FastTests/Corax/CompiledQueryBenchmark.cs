@@ -9,9 +9,10 @@ using Xunit;
 namespace FastTests.Corax;
 
 /// <summary>
-/// End-to-end comparison benchmark: old streaming path vs bitmap path.
-/// Runs the same queries through the full RavenDB server with and without
-/// the bitmap pipeline enabled. Outputs timing comparison.
+/// Same-pipeline repeatability benchmark: measures query latencies through
+/// the Corax bitmap pipeline with two independent store instances.
+/// All queries exercise the same CompiledQuery path — no path comparison.
+/// Outputs timing comparison between the two runs.
 /// </summary>
 public class CompiledQueryBenchmark : RavenTestBase
 {

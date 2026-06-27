@@ -135,7 +135,7 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
         Assert.NotNull(compiledRoot);
         // timing overlay
         Assert.True(compiledRoot.Parameters.ContainsKey("Output"));
-        var fill = compiledRoot.Children.First(c => c.Operation == "Fill");
+        var fill = compiledRoot.Children.First(c => c.Operation == "FillFromPostingSource");
         Assert.True(fill.Parameters.ContainsKey("Ms"));
         Assert.True(fill.Parameters.ContainsKey("OutputWithDups"));
         // structural data sits alongside it
@@ -168,11 +168,11 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
         var compiledRoot = CompiledRoot(timings);
         Assert.NotNull(compiledRoot);
         // uniform op tree
-        Assert.Contains(compiledRoot.Children, c => c.Operation == "Fill");
+        Assert.Contains(compiledRoot.Children, c => c.Operation == "FillFromMatch");
         Assert.Contains(compiledRoot.Children, c => c.Operation.Contains("Spatial"));
         // no timing telemetry overlaid (no CompiledQueryMatch ran)
         Assert.False(compiledRoot.Parameters.ContainsKey("Output"));
-        var fill = compiledRoot.Children.First(c => c.Operation == "Fill");
+        var fill = compiledRoot.Children.First(c => c.Operation == "FillFromMatch");
         Assert.False(fill.Parameters.ContainsKey("Ms"));
         Assert.False(fill.Parameters.ContainsKey("Output"));
     }
