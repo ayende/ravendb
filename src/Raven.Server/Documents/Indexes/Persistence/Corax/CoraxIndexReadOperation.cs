@@ -637,8 +637,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     using var __ = serverContext?.OpenReadTransaction();
 
                     var builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, serverContext, documentsContext, query, _index,
-                        query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take, 
-                        deduplicationDisabled: false, indexReadOperation: this, token: token, queryTime: queryTime);
+                        query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take,
+                        indexReadOperation: this, token: token, queryTime: queryTime);
 
                     var planParams = new QueryPlanBuilder.PlanParameters
                     {
@@ -1151,7 +1151,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 using (closeServerTransaction)
                 {
                     builderParameters = new(IndexSearcher, _allocator, serverContext, context, query, _index, query.QueryParameters, QueryBuilderFactories,
-                        _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled: true, indexReadOperation: this, token: token);
+                        _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, indexReadOperation: this, token: token);
                     moreLikeThisQuery = BuildMoreLikeThisQuery(builderParameters, query.Metadata.Query.Where);
                 }
             }
@@ -1178,7 +1178,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             builderParameters = new(IndexSearcher, _allocator, null, context, query, _index, query.QueryParameters, QueryBuilderFactories,
-                _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled:true, indexReadOperation: this, token: token);
+                _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, indexReadOperation: this, token: token);
             using var mlt = new RavenRavenMoreLikeThis(builderParameters, options);
             long? baseDocId = null;
 
@@ -1356,7 +1356,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             
             var builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, null,
                 documentsContext, query, _index, query.QueryParameters, QueryBuilderFactories,
-                _fieldMappings, null, null, (int)take, deduplicationDisabled: false,
+                _fieldMappings, null, null, (int)take,
                 indexReadOperation: this, token: token);
 
             // Route through the sorted pipeline so the raw-entries view honors ORDER BY, matching Lucene.

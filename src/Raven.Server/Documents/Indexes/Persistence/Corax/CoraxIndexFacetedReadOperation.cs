@@ -76,8 +76,6 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
 
         // When a WHERE clause is present, materialize all matching doc IDs into a HashSet.
         // Both term and range facets intersect their posting lists against this set.
-        // deduplicationDisabled: true is safe here because the HashSet absorbs duplicates
-        // and skipping the query-level dedup saves work during materialization.
         HashSet<long> baseQueryMatchingIds = null;
         global::Corax.Querying.Matches.Meta.IBitmapQueryMatch baseQueryBitmap = null;
         // baseQueryDisposable owns the bitmap allocations of a CompiledQueryMatch base query;
@@ -87,7 +85,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         {
             var parameters = new QueryBuilderParameters(_indexSearcher, _allocator, null, null, query, _index,
                 query.QueryParameters, _queryBuilderFactories, _fieldMappings, null, null, global::Corax.Constants.IndexSearcher.TakeAll,
-                deduplicationDisabled: true, token: token);
+                token: token);
 
             IQueryMatch baseQuery = QueryPlanBuilder.QueryPlanBuilder.BuildFilterMatch(
                 new QueryPlanBuilder.PlanParameters
@@ -285,7 +283,7 @@ public sealed class CoraxIndexFacetedReadOperation : IndexFacetReadOperationBase
         Dictionary<string, Dictionary<string, FacetValues>> facetsByRange = new();
 
         var parameters = new QueryBuilderParameters(_indexSearcher, _allocator, null, null, query, _index, query.QueryParameters, _queryBuilderFactories,
-            _fieldMappings, null, null, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled: false, token: token, queryTime: queryTime);
+            _fieldMappings, null, null, global::Corax.Constants.IndexSearcher.TakeAll, token: token, queryTime: queryTime);
 
         IQueryMatch baseQuery = query.Metadata.Query.Where == null
             ? _indexSearcher.AllEntries()
