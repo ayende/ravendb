@@ -253,6 +253,16 @@ internal static partial class QueryPlanBuilder
 
         void AssertDimensions(in VectorValue vector)
         {
+            // When the query vector's true (pre-packing) dimension count is known, validate it exactly against the
+            // field's configured dimensions. This catches sub-byte mismatches on bit-packed Binary fields that the
+            // byte-length check below cannot — ceil(dims/8) is not injective, so e.g. 9 and 10 dims both pack to 2 bytes.
+            if (vector.SourceDimensions > 0 && indexField.Vector?.Dimensions is int fieldDimensions && vector.SourceDimensions != fieldDimensions)
+            {
+                using (vector)
+                    PortableExceptions.Throw<InvalidDataException>(
+                        $"Vector field `{fieldName}` has {fieldDimensions} dimensions, but the vector passed to vector.search() has {vector.SourceDimensions} dimensions.");
+            }
+
             if (numberOfDimensions != vector.Length)
             {
                 using (vector)
