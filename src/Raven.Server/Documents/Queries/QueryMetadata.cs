@@ -462,7 +462,7 @@ function execute(doc, args){
                     }
                     else if (order.Expression is FieldExpression fe)
                     {
-                        OrderBy[i] = new OrderByField(GetIndexFieldName(fe, parameters), order.FieldType, order.Ascending, nullsOrdering: order.NullsOrdering);
+                        OrderBy[i] = new OrderByField(GetIndexFieldName(fe, parameters), order.FieldType, order.Ascending, NullsOrdering: order.NullsOrdering);
                     }
                     else
                     {
@@ -1171,7 +1171,7 @@ function execute(doc, args){
                 {
                     case OrderByFieldType.AlphaNumeric:
                     case OrderByFieldType.String:
-                        return new OrderByField(new QueryFieldName(Constants.Documents.Indexing.Fields.DocumentIdFieldName, false), orderingType, asc, MethodType.Id, nullsOrdering: nullsOrdering);
+                        return new OrderByField(new QueryFieldName(Constants.Documents.Indexing.Fields.DocumentIdFieldName, false), orderingType, asc, MethodType.Id, NullsOrdering: nullsOrdering);
 
                     default:
                         throw new InvalidQueryException("Invalid ORDER BY 'id()' call, this field can only be sorted as a string or alphanumeric value, but got " + orderingType, QueryText, parameters);
@@ -1208,7 +1208,7 @@ function execute(doc, args){
                 HasOrderByRandom = true;
 
                 if (me.Arguments == null || me.Arguments.Count == 0)
-                    return new OrderByField(null, OrderByFieldType.Random, asc, nullsOrdering: nullsOrdering);
+                    return new OrderByField(null, OrderByFieldType.Random, asc, NullsOrdering: nullsOrdering);
 
                 if (me.Arguments.Count > 1)
                     throw new InvalidQueryException("Invalid ORDER BY 'random()' call, expected zero to one arguments, got " + me.Arguments.Count,
@@ -1234,7 +1234,7 @@ function execute(doc, args){
             if (me.Name.Equals("score", StringComparison.OrdinalIgnoreCase))
             {
                 if (me.Arguments == null || me.Arguments.Count == 0)
-                    return new OrderByField(null, OrderByFieldType.Score, asc, nullsOrdering: nullsOrdering);
+                    return new OrderByField(null, OrderByFieldType.Score, asc, NullsOrdering: nullsOrdering);
 
                 throw new InvalidQueryException("Invalid ORDER BY 'score()' call, expected zero arguments, got " + me.Arguments.Count, QueryText,
                     parameters);
@@ -1331,7 +1331,7 @@ function execute(doc, args){
                 if (me.Name.Equals("count", StringComparison.OrdinalIgnoreCase))
                 {
                     if (me.Arguments == null || me.Arguments.Count == 0)
-                        return new OrderByField(QueryFieldName.Count, OrderByFieldType.Long, asc, nullsOrdering: nullsOrdering)
+                        return new OrderByField(QueryFieldName.Count, OrderByFieldType.Long, asc, NullsOrdering: nullsOrdering)
                         {
                             AggregationOperation = AggregationOperation.Count
                         };
@@ -1357,7 +1357,7 @@ function execute(doc, args){
                         orderingType = OrderByFieldType.Double;
                     }
 
-                    return new OrderByField(new QueryFieldName(sumFieldToken.FieldValue, sumFieldToken.IsQuoted), orderingType, asc, nullsOrdering: nullsOrdering)
+                    return new OrderByField(new QueryFieldName(sumFieldToken.FieldValue, sumFieldToken.IsQuoted), orderingType, asc, NullsOrdering: nullsOrdering)
                     {
                         AggregationOperation = AggregationOperation.Sum
                     };

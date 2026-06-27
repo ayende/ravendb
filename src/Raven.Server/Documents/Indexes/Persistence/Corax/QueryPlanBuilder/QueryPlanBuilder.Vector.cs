@@ -18,7 +18,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    /// <summary>Resolve vector parameters from cached bindings (no MethodExpression dependency).</summary>
     private static void ResolveVectorFromBindings(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters)
     {
         var bindings = exec.Clause.Bindings;
@@ -67,8 +66,6 @@ internal static partial class QueryPlanBuilder
     
     private static (object Value, ParamValueType Type) ResolveBindingRaw(ParameterBinding binding, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters)
     {
-        // The template binding only carries structure; the vector value for THIS query text lives in the
-        // per-query slot vector at the binding's canonical hole index.
         binding = slotBindings[binding.ValueOrdinal];
         if (binding.LiteralType != ParamValueType.Parameter)
             return (binding.LiteralValue, binding.LiteralType);

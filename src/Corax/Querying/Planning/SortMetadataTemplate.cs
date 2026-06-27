@@ -23,11 +23,7 @@ public struct SortSlotPatch
     public SortSlotPatchKind Kind;
     public string FieldName;
 
-    /// <summary>
-    /// Index into the live (per-query) ORDER BY array. Random seeds and distance center points are read from the
-    /// current query's arguments here rather than baked into the cached template, so plans with different literal
-    /// seeds/coordinates (or parameter names) can safely share one structural bucket.
-    /// </summary>
+    // Index into the live (per-query) ORDER BY array, to read parameters values
     public int OrderByIndex;
 }
 

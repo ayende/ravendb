@@ -53,7 +53,6 @@ internal sealed class ValueWriter
             {
                 long l => l,
                 double d => (long)d,
-                // Invariant culture so IN-term parsing is locale-independent ('.'/',' separators must not change query semantics across deployments).
                 string str when long.TryParse(str, System.Globalization.CultureInfo.InvariantCulture, out long l) => l,
                 _ when long.TryParse(value?.ToString(), System.Globalization.CultureInfo.InvariantCulture, out long l) => l,
                 _ => null
@@ -70,7 +69,6 @@ internal sealed class ValueWriter
         };
     }
 
-    /// <summary>Add a pair of resolved values (for BETWEEN).</summary>
     public PackedParam AddPair(object? value1, object? value2, ParamValueType type)
     {
         return type switch

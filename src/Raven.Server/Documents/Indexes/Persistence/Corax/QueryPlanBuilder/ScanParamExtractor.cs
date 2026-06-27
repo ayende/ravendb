@@ -8,11 +8,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher indexSearcher, ResolutionContext walkerCtx)
 {
-    /// <summary>Extract field-root pages and analyzed slices for a residual scan set (entry-scan,
-    /// DirectScan, or CompoundField), populating <see cref="QueryExecution.FieldRootPages"/> and the
-    /// analyzed-slice cache in the SAME predicate order the matching delegate was emitted in.
-    /// <see cref="ResidualScanSet.ClauseIndices"/> maps each predicate to its post-sort
-    /// <see cref="QueryExecution.Executions"/> entry.</summary>
+    /// <summary>
+    /// Set the exec's FieldRootPages and ResidualInSets arrays
+    /// </summary>
     public static void Extract(QueryExecution exec, IndexSearcher indexSearcher, ResolutionContext walkerCtx, ResidualScanSet set)
     {
         if (set is not { HasPredicates: true })

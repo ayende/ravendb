@@ -61,7 +61,7 @@ internal static partial class QueryPlanBuilder
     private static SortMetadataTemplate BuildSortMetadataTemplate(PlanParameters p, PlanTemplate planTemplate)
     {
         // sort elision - where Name = $foo order by Name - all results has the same value, can drop the sort (for single value fields).
-        var orderByFields = ComputeEffectiveOrderBy(p.Metadata.OrderBy, planTemplate.Clauses, planTemplate.IsOr, p.IndexSearcher, out var originalIndices);
+        var orderByFields = ComputeEffectiveOrderBy(p.Metadata.OrderBy, planTemplate.Clauses, planTemplate.IsOr, p.IndexSearcher);
 
         if (orderByFields is null)
         {   
@@ -94,7 +94,6 @@ internal static partial class QueryPlanBuilder
         for (int i = 0; i < orderByFields.Length; i++)
         {
             var field = orderByFields[i];
-            int originalIndex = originalIndices?[i] ?? i; // slot in the live ORDER BY array, for per-query argument reads
 
             var orderingType = field.OrderingType;
             switch (field.OrderingType)
@@ -104,7 +103,7 @@ internal static partial class QueryPlanBuilder
                     // The seed (literal or parameter) is read from the live query at materialize time, so it is NOT
                     // baked into the cached template and is deliberately absent from the structural key.
                     patches[i].Kind = field.Arguments is { Length: > 0 } ? SortSlotPatchKind.RandomSeeded : SortSlotPatchKind.RandomFreshSeed;
-                    patches[i].OrderByIndex = originalIndex;
+                    patches[i].OrderByIndex = Array.IndexOf(p.Metadata.OrderBy,field);
                     anyPatch = true;
                     continue;
                 case OrderByFieldType.Score:
@@ -114,7 +113,7 @@ internal static partial class QueryPlanBuilder
                     // The center point/units (literal or parameter) are read from the live query at materialize time.
                     patches[i].Kind = SortSlotPatchKind.DistanceRuntime;
                     patches[i].FieldName = field.Name;
-                    patches[i].OrderByIndex = originalIndex;
+                    patches[i].OrderByIndex = Array.IndexOf(p.Metadata.OrderBy,field);
                     anyPatch = true;
                     continue;
                 case OrderByFieldType.Implicit when p.Index.Configuration.OrderByTicksAutomaticallyWhenDatesAreInvolved && p.Index.IndexFieldsPersistence.HasTimeValues(field.Name.Value):
@@ -153,84 +152,51 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    // Fields that are known to be limited to a _single_ value across all results (and thus we may drop the sort on them)
-    private static HashSet<string> CollectEqualityPinnedFields(List<ClauseInfo> clauses, bool isOr)
-    {
-        if (isOr)
-            return null;
-
-        HashSet<string> pinned = null;
-        foreach (var clause in clauses)
-        {
-            if (clause.ClauseType != ClauseType.Equals || clause.IsNegated || clause.WhenCondition != null || clause.FieldName is not { } fieldName)
-                continue;
-            (pinned ??= new HashSet<string>(StringComparer.Ordinal)).Add(fieldName);
-        }
-
-        return pinned;
-    }
 
     // Partial sort elision -> WHERE status = 'Released' ORDER BY status, vote DESC → ORDER BY vote DESC.
     // originalIndices maps each surviving slot back to its position in the input array (null when nothing was elided,
     // i.e. the mapping is the identity), so the runtime can read that slot's live ORDER BY arguments.
-    private static OrderByField[] ComputeEffectiveOrderBy(OrderByField[] orderBy, List<ClauseInfo> clauses, bool isOr,
-        global::Corax.Querying.IndexSearcher indexSearcher, out int[] originalIndices)
+    private static OrderByField[] ComputeEffectiveOrderBy(OrderByField[] orderBy, List<ClauseInfo> clauses, bool isOr, global::Corax.Querying.IndexSearcher indexSearcher)
     {
-        originalIndices = null;
-        if (orderBy is not { Length: > 0 } || CollectEqualityPinnedFields(clauses, isOr) is not { } pinned)
+        if (orderBy is not { Length: > 0 } || isOr)
             return orderBy;
 
         List<OrderByField> kept = null;
-        List<int> keptIndices = null;
         for (int i = 0; i < orderBy.Length; i++)
         {
-            bool elide = IsElidableSortKey(orderBy[i], pinned, indexSearcher);
+            var field = orderBy[i];
+            bool elide = false;
+            if (field.OrderingType is not (OrderByFieldType.Random or OrderByFieldType.Score or OrderByFieldType.Distance) &&
+                field.Name?.Value is { } name)
+            {
+                bool pinned = false;
+                foreach (var clause in clauses)
+                {
+                    if (clause.ClauseType == ClauseType.Equals && !clause.IsNegated && clause.WhenCondition == null &&
+                        clause.FieldName is { } fn && fn == name)
+                    {
+                        pinned = true;
+                        break;
+                    }
+                }
+
+                if (pinned && indexSearcher.HasMultipleTermsInField(name) is false)
+                    elide = true;
+            }
+
             if (elide && kept == null)
             {
-                // first elision: materialize the survivors so far (the non-elidable prefix 0..i-1), then drop this slot
                 kept = new List<OrderByField>(orderBy.Length);
-                keptIndices = new List<int>(orderBy.Length);
-                for (int k = 0; k < i; k++)
-                {
+                for (int k = 0; k < i; k++) 
                     kept.Add(orderBy[k]);
-                    keptIndices.Add(k);
-                }
                 continue;
             }
 
-            if (kept == null)
-                continue; // no elision yet, survivors still equal the input prefix
-
-            if (elide == false)
-            {
-                kept.Add(orderBy[i]);
-                keptIndices.Add(i);
-            }
+            if (kept != null && !elide)
+                kept.Add(field);
         }
 
-        if (kept == null)
-            return orderBy; // nothing elided
-
-        originalIndices = keptIndices.ToArray();
-        return kept.ToArray();
-    }
-
-    
-    private static bool IsElidableSortKey(OrderByField field, HashSet<string> pinnedFields, global::Corax.Querying.IndexSearcher indexSearcher)
-    {
-        switch (field.OrderingType)
-        {
-            case OrderByFieldType.Random:
-            case OrderByFieldType.Score:
-            case OrderByFieldType.Distance:
-                return false;
-        }
-
-        if (field.Name?.Value is not { } name || pinnedFields.Contains(name) == false)
-            return false;
-        // A field with multiple values cannot be elided, consider a document with Genres =[Action, Drama]
-        // because even though we limited to Genres = 'Drama', it needs to be sorted by Action 
-        return indexSearcher.HasMultipleTermsInField(name) == false;
+        return kept?.ToArray() ?? orderBy;
     }
 
     private static NullsSortMode? GetNullsSortMode(OrderByField field)
