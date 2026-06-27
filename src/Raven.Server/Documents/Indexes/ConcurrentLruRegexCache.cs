@@ -36,23 +36,7 @@ namespace Raven.Server.Documents.Indexes
             // of regex queries.
             if (_count > _halfCapacity)
                 UpdateTimestamp(result);
-            return GetRegexSafe(result, pattern);
-        }
-
-        // ClearOldItems disposes the ThreadLocal of an evicted node to release its TLS slots promptly. A
-        // reader that fetched the node just before eviction can race and hit a disposed ThreadLocal; in that
-        // (rare) case we simply recompute through GetUnlikely, which inserts a fresh node and reads its own
-        // just-created value. This keeps prompt slot reclamation without risking a hot-path crash.
-        private Regex GetRegexSafe(ConcurrentLruRegexCacheNode node, string pattern)
-        {
-            try
-            {
-                return node.RegexLazy.Value;
-            }
-            catch (ObjectDisposedException)
-            {
-                return GetUnlikely(pattern);
-            }
+            return result.RegexLazy.Value;
         }
 
         private static void UpdateTimestamp(ConcurrentLruRegexCacheNode result)
@@ -84,7 +68,7 @@ namespace Raven.Server.Documents.Indexes
             {
                 // we lost the race; our unused node owns a ThreadLocal, dispose it so it does not leak TLS slots
                 result.Dispose();
-                return GetRegexSafe(res, pattern);
+                return res.RegexLazy.Value;
             }
 
             //We have reached the capacity and we will now clear 25% of the cache
@@ -141,7 +125,7 @@ namespace Raven.Server.Documents.Indexes
     internal sealed class ConcurrentLruRegexCacheNode : IDisposable
     {
         public long Timestamp;
-        public ThreadLocal<Regex> RegexLazy { get; }
+        public ThreadLocal<Regex> RegexLazy { get; set; }
 
         public ConcurrentLruRegexCacheNode(string pattern, TimeSpan regexTimeout, RegexOptions options = RegexOptions.None)
         {
@@ -156,7 +140,9 @@ namespace Raven.Server.Documents.Indexes
 
         public void Dispose()
         {
-            RegexLazy.Dispose();
+            // intentionally not disposing it, letting the GC take care of that via finalizer
+            // so racing threads referencing it can do so without fear of it being disposed behind their back
+            RegexLazy = null;
         }
     }
 }
