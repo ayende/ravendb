@@ -54,32 +54,22 @@ namespace Raven.Server.Documents.Queries
 
 
         /// <summary>
-        /// Holds the resolved Corax plan bucket for this query so we skip the structural-key dictionary lookup on
-        /// the hot path. The bucket carries the parse template plus every compiled plan variant for this query.
+        /// Cached Corax plan memory - for _really_ hot paths :-) 
         /// </summary>
         public PlanMemo CachedPlanMemo { get; set; }
 
         /// <summary>
-        /// Memoized per-query slot-binding vector — the value-bearing bindings collected by the canonical WHERE
-        /// walk (<see cref="QueryPlanBuilder.ExtractSlotBindings"/>), indexed by
-        /// <see cref="ParameterBinding.ValueOrdinal"/>. It is a pure function of the query text/AST (independent of
-        /// parameter values and of the target index), so it is safe to cache here for the lifetime of this
-        /// QueryMetadata and never needs invalidation. Only set for the main WHERE path; an MLT sub-expression
-        /// override builds its own vector fresh and does not touch this field.
+        /// Cached the bindings between each query clause and its relevant parameters (saved lookup time)
         /// </summary>
         public ParameterBinding[] CachedSlotBindings { get; set; }
 
-        public sealed class PlanMemo(long planCacheGeneration, Corax.Querying.Planning.PlanCache.PerQueryPlans bucket)
+        public sealed class PlanMemo(long planCacheGeneration, PlanCache.PerQueryPlans bucket)
         {
             /// <summary>
-            /// The <see cref="PlanCache.GenerationIdx"/> observed when this bucket was resolved.
-            /// The memo is valid only while the live cache's generation still equals it: a different value means
-            /// either the index instance was swapped or an index-state input that can change plan selection (e.g. a
-            /// field flipping to multi-valued) has changed, so the memoized bucket can no longer be trusted and the
-            /// plan must be re-resolved against the structural key.
+            /// Generations change when the index is reset, or a field HasMultipleTermsInField() is changed, etc. 
             /// </summary>
             public readonly long PlanCacheGeneration = planCacheGeneration;
-            public readonly WeakReference<Corax.Querying.Planning.PlanCache.PerQueryPlans> Bucket = new(bucket);
+            public readonly WeakReference<PlanCache.PerQueryPlans> Bucket = new(bucket);
         }
 
         public QueryMetadata(string query, BlittableJsonReaderObject parameters, ulong cacheKey, bool addSpatialProperties = false, QueryType queryType = QueryType.Select)
@@ -2355,11 +2345,7 @@ function execute(doc, args){
                             ThrowIncompatibleTypesOfVariables(fieldName, QueryText, parameters, values.ToArray());
                     }
 
-                    // When the binding is a parameter that resolves to an array, walk every
-                    // array element pair-wise — peeking array[0] (the unwrapArrays:true path
-                    // below) hides mixed-type arrays like $p = [1L, "Shalom"]. This is the
-                    // centralised IN type check; engine-side IN walkers (Lucene's GetValues,
-                    // Corax v2's TryEmitInTermValue) no longer re-validate.
+                    // validates IN args has the same type, rejecting: $p = [1L, "Shalom"]. 
                     if (value.Value == ValueTokenType.Parameter
                         && parameters != null
                         && parameters.TryGetMember(value.Token, out var paramValue)

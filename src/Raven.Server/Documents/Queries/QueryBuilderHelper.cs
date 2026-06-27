@@ -49,8 +49,6 @@ public static class QueryBuilderHelper
 
             if (parameterValue is BlittableJsonReaderArray array)
             {
-                // Type compatibility across array elements is enforced upstream in
-                // QueryMetadata.VisitIn (centralised IN type check) — just yield here.
                 foreach (var item in UnwrapArray(array, metadata.QueryText, parameters))
                     yield return item;
 

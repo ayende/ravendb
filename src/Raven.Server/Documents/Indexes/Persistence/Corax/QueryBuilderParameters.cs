@@ -38,11 +38,7 @@ public sealed class QueryBuilderParameters
     public readonly bool IsVectorSingleClause;
     public readonly QueryTimeScope QueryTime;
 
-    /// <summary>Direct-planner test constructor. Used by tests that exercise <c>QueryPlanBuilder</c>
-    /// without a full <see cref="Index"/> / <see cref="IndexQueryServerSide"/> stack. The supplied
-    /// <see cref="IndexFieldsMapping"/> is required so resolvers (<c>ResolveFieldMetadata</c>,
-    /// compound-exact / compound-field branches) can route through
-    /// <see cref="QueryBuilderHelper.GetFieldMetadata"/> uniformly — there is no null-mapping branch.</summary>
+    // used for tests
     internal QueryBuilderParameters(IndexSearcher searcher, ByteStringContext allocator, QueryMetadata metadata, BlittableJsonReaderObject queryParameters, IndexFieldsMapping indexFieldsMapping, bool hasBoost = false)
     {
         IndexSearcher = searcher;
