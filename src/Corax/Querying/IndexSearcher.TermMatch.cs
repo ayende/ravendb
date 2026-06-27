@@ -55,7 +55,7 @@ public partial class IndexSearcher
         var containerId = GetContainerIdOfNumericalTerm(field, out var numericalField, term);
 
         return containerId == -1 
-            ? TermMatch.CreateEmpty(this, Allocator) 
+            ? TermMatch.CreateEmpty() 
             : TermQuery(numericalField, containerId, 1);
     }
     
@@ -71,14 +71,14 @@ public partial class IndexSearcher
         if (terms == null && term != null)
         {
             // If either the term or the field does not exist the request will be empty. 
-            return TermMatch.CreateEmpty(this, Allocator);
+            return TermMatch.CreateEmpty();
         }
         
         if (term is null || ReferenceEquals(term, Constants.ProjectionNullValue))
         {
             return TryGetPostingListForNull(field, out var postingListId) 
                 ? TermQuery(field, postingListId, 1D) 
-                : TermMatch.CreateEmpty(this, Allocator);
+                : TermMatch.CreateEmpty();
         }
         
         var termSlice = term switch
@@ -99,7 +99,7 @@ public partial class IndexSearcher
         }
 
         if (termKey is null)
-            return TermMatch.CreateEmpty(this, Allocator);
+            return TermMatch.CreateEmpty();
 
         var match = TermQuery(field, termKey, terms);
         _fieldsTree.Llt.ReleaseCompactKey(ref termKey);
@@ -113,14 +113,14 @@ public partial class IndexSearcher
         if (terms == null)
         {
             // If either the term or the field does not exist the request will be empty. 
-            return TermMatch.CreateEmpty(this, Allocator);
+            return TermMatch.CreateEmpty();
         }
 
         if (term.Size == 0)
         {
             // An empty term matches nothing (mirrors the analyzed-string overload); passing a null CompactKey
             // into CompactTree.TryGetValue would throw.
-            return TermMatch.CreateEmpty(this, Allocator);
+            return TermMatch.CreateEmpty();
         }
 
         CompactKey termKey = _fieldsTree.Llt.AcquireCompactKey();
@@ -133,7 +133,7 @@ public partial class IndexSearcher
     public TermMatch TermQuery(in FieldMetadata field, CompactKey term, CompactTree tree)
     {
         if (tree.TryGetValue(term, out var value) == false)
-            return TermMatch.CreateEmpty(this, Allocator);
+            return TermMatch.CreateEmpty();
 
         // Calculate bias for BM25 only when needed. There is no reason to calculate this in BM25 class because it would require to pass more information to primitive (and there is no reason to do so).
         double termRatioToWholeCollection = 1;
@@ -282,7 +282,7 @@ public partial class IndexSearcher
         {
             var termMatch =  TryGetPostingListForNull(binding, out var postingListId) 
                 ? TermQuery(binding, postingListId, 1D) 
-                : TermMatch.CreateEmpty(this, Allocator);
+                : TermMatch.CreateEmpty();
             return termMatch.Count;
         }
         

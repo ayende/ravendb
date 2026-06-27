@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using Corax.Querying.Matches.Meta;
 using Corax.Utils;
@@ -12,7 +11,6 @@ using Voron.Util.PFor;
 
 namespace Corax.Querying.Matches
 {
-    [DebuggerDisplay("{DebugView,nq}")]
     public unsafe struct TermMatch : IQueryMatch
     {
         private readonly delegate*<ref TermMatch, Span<long>, int> _fillFunc;
@@ -22,11 +20,9 @@ namespace Corax.Querying.Matches
         private bool _returnedValue;
         private readonly long _totalResults;
         private long _current;
-        internal Bm25Relevance _bm25Relevance;
+        private Bm25Relevance _bm25Relevance;
         private PostingList.Iterator _set;
-        private Container.Item _containerItem;
         private FastPForBufferedReader _containerReader;
-        private ByteStringContext _ctx;
         public bool IsBoosting => _scoreFunc != null;
         public long Count => _totalResults;
         
@@ -38,10 +34,7 @@ namespace Corax.Querying.Matches
 
 
 
-        private TermMatch(
-            Querying.IndexSearcher indexSearcher,
-            ByteStringContext ctx,
-            long totalResults,
+        private TermMatch(long totalResults,
             delegate*<ref TermMatch, Span<long>, int> fillFunc,
             delegate*<ref TermMatch, Span<long>, Span<float>, float, void> scoreFunc = null,
             delegate*<ref TermMatch, QueryInspectionNode> inspectFunc = null)
@@ -51,8 +44,6 @@ namespace Corax.Querying.Matches
             _fillFunc = fillFunc;
             _scoreFunc = scoreFunc;
             _inspectFunc = inspectFunc;
-            _ctx = ctx;
-            _containerItem = default;
             _set = default;
             _containerReader = default;
 #if DEBUG
@@ -60,7 +51,7 @@ namespace Corax.Querying.Matches
 #endif
         }
 
-        public static TermMatch CreateEmpty(Querying.IndexSearcher indexSearcher, ByteStringContext ctx)
+        public static TermMatch CreateEmpty()
         {
             static int FillFunc(ref TermMatch term, Span<long> matches)
             {
@@ -78,7 +69,7 @@ namespace Corax.Querying.Matches
                     });
             }
 
-            return new TermMatch(indexSearcher, ctx, 0, &FillFunc, inspectFunc: &InspectFunc)
+            return new TermMatch(0, &FillFunc, inspectFunc: &InspectFunc)
             {
 #if DEBUG
                 Term = "<empty>"
@@ -118,7 +109,7 @@ namespace Corax.Querying.Matches
                     });
             }
 
-            Bm25Relevance bm25Relevance = default;
+            Bm25Relevance bm25Relevance = null;
             long current = -1;
             if (isBoosting)
             {
@@ -126,7 +117,7 @@ namespace Corax.Querying.Matches
                 current = bm25Relevance.Add(value);
             }
 
-            return new TermMatch(indexSearcher, ctx, 1, &FillFunc, scoreFunc: isBoosting ? &ScoreFunc : null, inspectFunc: &InspectFunc)
+            return new TermMatch(1, &FillFunc, scoreFunc: isBoosting ? &ScoreFunc : null, inspectFunc: &InspectFunc)
             {
                 _current = bm25Relevance is not null
                     ? current
@@ -188,14 +179,13 @@ namespace Corax.Querying.Matches
 
             var itemsCount = VariableSizeEncoding.Read<int>(containerItem.Address, out var offset);
             var reader = new FastPForBufferedReader(ctx, containerItem.Address + offset, containerItem.Length - offset);
-            return new TermMatch(indexSearcher, ctx, itemsCount, isBoosting ? &FillFunc<HasBoosting> : &FillFunc<NoBoosting>,
+            return new TermMatch(itemsCount, isBoosting ? &FillFunc<HasBoosting> : &FillFunc<NoBoosting>,
                 inspectFunc: &InspectFunc, scoreFunc: isBoosting ? &ScoreFunc : null)
             {
                 _bm25Relevance = isBoosting
                     ? Bm25Relevance.Small(indexSearcher, itemsCount, ctx, itemsCount, termRatioToWholeCollection)
-                    : default,
+                    : null,
                 _current = 0,
-                _containerItem = containerItem,
                 _containerReader = reader
             };
         }
@@ -205,10 +195,9 @@ namespace Corax.Querying.Matches
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             static int FillFunc<TBoostingMode>(ref TermMatch term, Span<long> matches) where TBoostingMode : IBoostingMarker
             {
-                int i = 0;
                 var set = term._set;
 
-                set.Fill(matches, out i);
+                set.Fill(matches, out int i);
 
                 if (typeof(TBoostingMode) == typeof(HasBoosting))
                 {
@@ -243,11 +232,11 @@ namespace Corax.Querying.Matches
             var bm25Relevance = isBoosting
                 ? Bm25Relevance.Set(indexSearcher, postingList.State.NumberOfEntries, ctx, (int)postingList.State.NumberOfEntries, termRatioToWholeCollection,
                     postingList)
-                : default;
+                : null;
 
             var isStored = isBoosting && bm25Relevance.IsStored;
 
-            return new TermMatch(indexSearcher, ctx, postingList.State.NumberOfEntries,
+            return new TermMatch(postingList.State.NumberOfEntries,
                 (isBoosting, isStored) switch
                 {
                     (isBoosting: true, isStored: true) => &FillFunc<HasBoosting>,
@@ -304,7 +293,5 @@ namespace Corax.Querying.Matches
             iterator = _set;
             return _totalResults > 1 && _containerReader.IsValid == false;
         }
-
-        string DebugView => Inspect().ToString();
     }
 }
