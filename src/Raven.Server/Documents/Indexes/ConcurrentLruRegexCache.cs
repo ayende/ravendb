@@ -36,23 +36,7 @@ namespace Raven.Server.Documents.Indexes
             // of regex queries.
             if (_count > _halfCapacity)
                 UpdateTimestamp(result);
-            return GetRegexSafe(result, pattern);
-        }
-
-        // ClearOldItems disposes the ThreadLocal of an evicted node to release its TLS slots promptly. A
-        // reader that fetched the node just before eviction can race and hit a disposed ThreadLocal; in that
-        // (rare) case we simply recompute through GetUnlikely, which inserts a fresh node and reads its own
-        // just-created value. This keeps prompt slot reclamation without risking a hot-path crash.
-        private Regex GetRegexSafe(ConcurrentLruRegexCacheNode node, string pattern)
-        {
-            try
-            {
-                return node.RegexLazy.Value;
-            }
-            catch (ObjectDisposedException)
-            {
-                return GetUnlikely(pattern);
-            }
+            return result.RegexLazy.Value;
         }
 
         private static void UpdateTimestamp(ConcurrentLruRegexCacheNode result)
@@ -82,9 +66,8 @@ namespace Raven.Server.Documents.Indexes
 
             if (res != result) // someone else created it
             {
-                // we lost the race; our unused node owns a ThreadLocal, dispose it so it does not leak TLS slots
-                result.Dispose();
-                return GetRegexSafe(res, pattern);
+                // we lost the race; our unused node owns a ThreadLocal, return the one from the cache
+                return res.RegexLazy.Value;
             }
 
             //We have reached the capacity and we will now clear 25% of the cache
@@ -121,9 +104,8 @@ namespace Raven.Server.Documents.Indexes
                     if (_regexCache.TryRemove(kv.Key, out var removed))
                     {
                         countRemoved++;
-                        // release the evicted node's per-thread Regex instances promptly instead of waiting for
-                        // the non-deterministic ThreadLocal finalizer to reclaim the TLS slots
-                        removed.Dispose();
+                        // release the evicted node's per-thread Regex instances promptly instead 
+                        // the GC's finalizer will do the final cleanup
                     }
                 }
                 Interlocked.Add(ref _count, -countRemoved);
@@ -138,7 +120,7 @@ namespace Raven.Server.Documents.Indexes
         }
     }
 
-    internal sealed class ConcurrentLruRegexCacheNode : IDisposable
+    internal sealed class ConcurrentLruRegexCacheNode 
     {
         public long Timestamp;
         public ThreadLocal<Regex> RegexLazy { get; }
@@ -152,11 +134,6 @@ namespace Raven.Server.Documents.Indexes
                 // on _each_ term in the results, potentially millions, so we specify a very
                 // short value to avoid very long queries
                 regexTimeout));
-        }
-
-        public void Dispose()
-        {
-            RegexLazy.Dispose();
         }
     }
 }
