@@ -27,7 +27,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
 internal static partial class QueryPlanBuilder
 {
-    public static PlanTemplate BuildTemplate(PlanParameters planParams)
+    private static PlanTemplate BuildTemplate(PlanParameters planParams)
     {
         var planCache = planParams.IndexSearcher.PlanCache;
         var metadata = planParams.Metadata;
@@ -56,8 +56,7 @@ internal static partial class QueryPlanBuilder
 
         PlanTemplate Finalize(PlanCache.PerQueryPlans b)
         {
-            // ExtractSlotBindings is only called on fresh metadata instances, that tends to be rare, since 
-            // we cache the metadata instances at the database level
+            // ExtractSlotBindings is only called on fresh metadata instances (rare, cached at db level)
             var bindings = metadata.CachedSlotBindings ??= ExtractSlotBindings(planParams);
             planParams.SlotBindings = bindings;
             planParams.Bucket = b;
@@ -76,23 +75,16 @@ internal static partial class QueryPlanBuilder
     }
 
     /// <summary>
-    /// This gets the query match without any sorting. This is used by callers who care about the results but not the order.
-    /// For example, facets, more-like-this, etc.
+    /// This gets the query match without any sorting. For facets, more-like-this, etc.
     /// </summary>
-    public static IQueryMatch BuildFilterMatch(
-        PlanParameters planParams,
-        QueryBuilderParameters builderParameters,
-        out QueryExecution exec,
-        Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms,
-        bool wantTimings,
-        CancellationToken token)
+    public static IQueryMatch BuildFilterMatch(PlanParameters planParams, QueryBuilderParameters builderParameters, Dictionary<string, 
+            CoraxHighlightingTermIndex> highlightingTerms, bool wantTimings, CancellationToken token)
     {
-        var indexSearcher = planParams.IndexSearcher;
         var walkerCtx = new ResolutionContext(builderParameters);
 
         var template = BuildTemplate(planParams);
 
-        exec = Build(template, planParams, builderParameters, walkerCtx);
+        var exec = new BuildResolver(template, planParams, builderParameters, walkerCtx).Resolve();
         return InstantiateBitmapPipeline(exec.Plan, exec, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
     }
 
@@ -102,27 +94,16 @@ internal static partial class QueryPlanBuilder
         bool wantTimings,
         CancellationToken token)
     {
-        var indexSearcher = planParams.IndexSearcher;
         var walkerCtx = new ResolutionContext(builderParameters);
 
         var template = BuildTemplate(planParams);
 
-        var exec = Build(template, planParams, builderParameters, walkerCtx);
+        var exec = new BuildResolver(template, planParams, builderParameters, walkerCtx).Resolve();
         var orderByFields = GetSortMetadata(builderParameters, exec.Plan.Template);
-        // A single vector-search post-filter already streams its HNSW output in score order. When that matches what
-        // the query asks for, skip the redundant SortingMatch wrapper: stream score order in ApplyPostFilters, skip
-        // the wrapper in Instantiate. The order-agnostic BuildFilterMatch path never reaches here (facets / MLT keep
-        // entry-id-sorted vector output).
+        // A single vector-search post-filter already streams its output in score order, we can skip the sorting step then
         exec.VectorPostFilterProvidesScoreOrder = VectorPostFilterProvidesResultOrder(exec, builderParameters, orderByFields);
-        var queryMatch = Instantiate(exec, orderByFields,
-            planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, out var innerMatch, token);
+        var (queryMatch,  innerMatch) = Instantiate(exec, orderByFields, planParams, builderParameters, walkerCtx, highlightingTerms, wantTimings, token);
         return new(queryMatch, innerMatch, queryMatch == innerMatch ? null : queryMatch, exec, builderParameters, orderByFields);
-    }
-
-
-    private static QueryExecution Build(PlanTemplate template, PlanParameters planParams, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx)
-    {
-        return new BuildResolver(template, planParams, builderParameters, walkerCtx).Resolve();
     }
 
     internal static ClauseExecution CreateExecution(ClauseInfo clause)
@@ -142,27 +123,22 @@ internal static partial class QueryPlanBuilder
         return exec;
     }
 
-    /// <summary>Marker bit OR-ed into a sentinel-bound parameter's FullKinds byte (kind occupies bits 0-1).
-    /// Forces a distinct plan-cache entry for parameter-bound BETWEEN sentinels — see ComputeTypeSignature.</summary>
-    private const byte SentinelParamMark = 1 << 2;
-
-    /// <summary>Mark a parameter-bound BETWEEN sentinel's slot in the FullKinds carrier, lazily allocating it on first use.
-    /// No-op for literal/deferred bounds (ParameterSlot == -1 — the sentinel is encoded in the query text, no marker needed).</summary>
-    private static void MarkSentinel(ref byte[] full, int parameterSlotCount, ParameterBinding binding)
+    /// <summary>Set the bit for a parameter-bound BETWEEN sentinel's slot, forcing a distinct plan-cache entry.</summary>
+    private static void MarkSentinel(Span<ulong> sentinelBits, ParameterBinding binding)
     {
-        if (binding.ParameterSlot < 0 || parameterSlotCount is 0)
+        int slot = binding.ParameterSlot;
+        if (slot < 0 || sentinelBits.IsEmpty)
             return;
-        full ??= new byte[parameterSlotCount];
-        full[binding.ParameterSlot] |= SentinelParamMark;
+        sentinelBits[slot >> 6] |= 1UL << (slot & 63);
     }
 
     internal static void PopulateClauseValues(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, ValueWriter writer, QueryBuilderParameters builderParameters,
-        int parameterSlotCount, ref byte[] full)
+        Span<ulong> sentinelBits)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
         foreach (var it in exec.SubExecutions ?? [])
         {   // Always recurse into subclauses first (OrGroup/AndGroup have no binding of their own)
-            PopulateClauseValues(it, slotBindings, queryParameters, writer, builderParameters, parameterSlotCount, ref full);
+            PopulateClauseValues(it, slotBindings, queryParameters, writer, builderParameters, sentinelBits);
         }
 
         if (exec.Clause is { HasBoost: true, Bindings.Length: > 0 })
@@ -173,7 +149,7 @@ internal static partial class QueryPlanBuilder
         switch (exec.Clause.ClauseType) // Spatial and vector resolve via their binding array.
         {
             case ClauseType.Spatial when exec.Clause.Bindings is { Length: > 0 }:
-                ResolveSpatialFromBindings(exec, slotBindings, queryParameters);
+                ResolveSpatialFromBindings(exec, slotBindings, queryParameters, builderParameters);
                 return;
             case ClauseType.Vector when exec.Clause.Bindings is { Length: > 0 }:
                 ResolveVectorFromBindings(exec, slotBindings, queryParameters);
@@ -196,24 +172,24 @@ internal static partial class QueryPlanBuilder
                 {
                     case (true, true):
                         exec.SentinelRewriteType = ClauseType.Exists;
-                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenLow]);
-                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenHigh]);
+                        MarkSentinel(sentinelBits, bindings[BindingIndex.BetweenLow]);
+                        MarkSentinel(sentinelBits, bindings[BindingIndex.BetweenHigh]);
                         return;
                     case (true, false):
                         exec.SentinelRewriteType = ClauseType.LessThanOrEqual;
-                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenLow]);
+                        MarkSentinel(sentinelBits, bindings[BindingIndex.BetweenLow]);
                         exec.TermValueType = highType;
-                        exec.PackedParamValue = writer.Add(high, ToValueTokenType(highType));
+                        exec.PackedParamValue = writer.Add(high, highType);
                         return;
                     case (false, true):
                         exec.SentinelRewriteType = ClauseType.GreaterThanOrEqual;
-                        MarkSentinel(ref full, parameterSlotCount, bindings[BindingIndex.BetweenHigh]);
+                        MarkSentinel(sentinelBits, bindings[BindingIndex.BetweenHigh]);
                         exec.TermValueType = lowType;
-                        exec.PackedParamValue = writer.Add(low, ToValueTokenType(lowType));
+                        exec.PackedParamValue = writer.Add(low, lowType);
                         return;
                     case (false, false):
                         exec.TermValueType = lowType;
-                        exec.PackedParamValue = writer.AddPair(low, high, ToValueTokenType(lowType));
+                        exec.PackedParamValue = writer.AddPair(low, high, lowType);
                         return;
                 }
             }
@@ -234,7 +210,7 @@ internal static partial class QueryPlanBuilder
                 }
 
                 exec.TermValueType = valueType;
-                exec.PackedParamValue = writer.Add(value, ToValueTokenType(valueType));
+                exec.PackedParamValue = writer.Add(value, valueType);
                 break;
         }
     }
@@ -243,13 +219,12 @@ internal static partial class QueryPlanBuilder
     private static void EmitInTerms(ClauseExecution exec, ValueWriter writer, ParamValueType dominantType, List<object> values, bool hasNullTerm)
     {
         var (packedType, startIdx) = writer.ResolveInSlot(dominantType);
-        var dominantTokenType = ToValueTokenType(dominantType);
 
         int written = 0;
         for (int i = 0; i < values.Count; i++)
         {
             // Mixed-type IN: (IN [long, "Shalom"]). Silently drop it instead of throwing, Matches Lucene's behavior.
-            if (writer.TryAdd(values[i], dominantTokenType) is null)
+            if (writer.TryAdd(values[i], dominantType) is null)
                 continue;
             written++;
         }
@@ -261,9 +236,7 @@ internal static partial class QueryPlanBuilder
 
     private static (object Value, ParamValueType Type) ResolveBindingScalar(ParameterBinding binding, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
     {
-        // The template binding supplies only structure plus its canonical ValueOrdinal; the value for THIS query
-        // lives in the per-query slot vector at that ordinal (so value/name/param variants share one template).
-        // Redirect to the slot binding before reading any value. (Idempotent: slotBindings[b.ValueOrdinal] == b.)
+        // switch to the binding for the _current_ query...
         binding = slotBindings[binding.ValueOrdinal];
         switch (binding.Source)
         {
@@ -312,10 +285,7 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    /// <summary>
-    /// Foo BETWEEN $x AND $y - where $x > $y - returns nothing, this collapses the clause to a
-    /// MatchNothing sentinel so the plan emitter bakes an empty bitmap for it.
-    /// </summary>
+    /// <summary> Foo BETWEEN $x AND $y - where $x > $y - returns nothing</summary>
     internal static void PropagateBetweenContradiction(ClauseExecution exec, ValueWriter writer)
     {
         var p = exec.PackedParamValue;
@@ -388,11 +358,6 @@ internal static partial class QueryPlanBuilder
 
         if (spatialMatches is { Length: > 0 })
         {
-            // These spatial matches were lifted to top-level post-filters by the planner (AND context). Record the
-            // role on each one so inspection reports it as a post-filter rather than re-deriving it from the type
-            // (a spatial leaf inside an OR is NOT a post-filter — see IPostFilterMatch). The array can also hold a
-            // negated-spatial BitmapMatch or an empty TermMatch (absent field/terms on this shard), neither of which
-            // is IPostFilterMatch; PostFilterMatch dispatches on the concrete capability when filtering.
             foreach (var spatialMatch in spatialMatches)
             {
                 if (spatialMatch is IPostFilterMatch postFilter)
@@ -446,7 +411,7 @@ internal static partial class QueryPlanBuilder
             HasDynamics = builderParams.HasDynamics,
             DynamicFields = builderParams.DynamicFields,
             HasBoost = builderParams.HasBoost,
-        }, builderParams, out _, highlightingTerms: null, wantTimings: false, builderParams.Token);
+        }, builderParams, highlightingTerms: null, wantTimings: false, builderParams.Token);
 
         QueryMetadata CreateQueryMetadataForMoreLikeThis()
         {
@@ -460,11 +425,10 @@ internal static partial class QueryPlanBuilder
     }
 
     
-    private static bool TryCreateCompoundExactMatch(ref InstCtx ctx, out string rejectReason)
+    private static bool TryCreateCompoundExactMatch(ref InstantiateContext ctx, out string rejectReason)
     {
         // The only thing still unknown is value-dependent — a bound parameter can resolve to "none" (null/missing), which has no composite-key encoding.
-        if (ctx.Exec.CompoundExactFirst.PackedParamValue.IsNone || 
-            ctx.Exec.CompoundExactSecond.PackedParamValue.IsNone)
+        if (ctx.Exec.CompoundExactFirst.PackedParamValue.IsNone || ctx.Exec.CompoundExactSecond.PackedParamValue.IsNone)
         {
             rejectReason = "the combined-key lookup needs both values, but one is null or missing";
             return false;
@@ -474,7 +438,7 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    private static IQueryMatch ConstructCompoundExact(ref InstCtx ctx)
+    private static IQueryMatch ConstructCompoundExact(ref InstantiateContext ctx)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         var eA = ctx.Exec.CompoundExactFirst;
@@ -504,7 +468,7 @@ internal static partial class QueryPlanBuilder
         return indexSearcher.TermQuery(compoundFieldMeta, new Slice(keyBuf));
     }
 
-    private static bool TryCreateCompoundFieldMatch(ref InstCtx ctx, out string rejectReason)
+    private static bool TryCreateCompoundFieldMatch(ref InstantiateContext ctx, out string rejectReason)
     {
         if (ctx.Exec.CompoundFieldDrivingClause is null || ctx.Exec.Plan.Template.CompoundFieldSortName is null)
         {
@@ -521,11 +485,11 @@ internal static partial class QueryPlanBuilder
         var driving = ctx.Exec.CompoundFieldDrivingClause;
         var field2Range = ctx.Exec.CompoundFieldField2Range;
         var execs = ctx.Exec.Executions;
-        for (int i = 0; i < execs.Count; i++)
+        foreach (var exec in execs)
         {
-            if (ReferenceEquals(execs[i], driving) || ReferenceEquals(execs[i], field2Range))
+            if (ReferenceEquals(exec, driving) || ReferenceEquals(exec, field2Range))
                 continue;
-            if (IsClauseBoosted(execs[i]))
+            if (IsClauseBoosted(exec))
             {
                 rejectReason = "a filter uses boosting, which needs scoring this scan can't do";
                 return false;
@@ -538,15 +502,8 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
-        // Null / missing guard for the bare shape (equality on field1, ORDER BY field2, no clause on field2). The
-        // compound walk emits field2's null/missing docs where their marker sorts in the tree (after real values),
-        // which does NOT match NullsSortMode / the SortingMatch fallback (nulls-first by default). A field2 range
-        // clause excludes nulls, so the walk is safe; otherwise fall back to bitmap + SortingMatch. (Mirrors the
-        // single-field MayHaveMissingEntries guard, extended to nulls since the compound scan skips both the null
-        // and non-existing posting-list merges SortedDrivingMatch would apply.)
-        if (field2Range is null && ctx.OrderByFields is { Length: 1 })
+        if (field2Range is null && ctx.OrderByFields is [var sortField])
         {
-            var sortField = ctx.OrderByFields[0];
             if (sortField.MayHaveMissingEntries ||
                 ctx.PlanParams.IndexSearcher.TryGetPostingListForNull(in sortField.Field, out _))
             {
@@ -559,7 +516,7 @@ internal static partial class QueryPlanBuilder
         return true;
     }
 
-    private static Slice BuildField1Prefix(ref InstCtx ctx, string field1Name, PackedParam packed, out string field1ValueStrForIntrospection)
+    private static Slice BuildField1Prefix(ref InstantiateContext ctx, string field1Name, PackedParam packed, out string field1ValueStrForIntrospection)
     {
         var indexSearcher = ctx.PlanParams.IndexSearcher;
         switch (packed.ValueType)
@@ -591,9 +548,9 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static bool TryCreateSimpleFieldDirectScan(ref InstCtx ctx, out string rejectReason)
+    private static bool TryCreateSimpleFieldDirectScan(ref InstantiateContext ctx, out string rejectReason)
     {
-        if (ctx.OrderByFields is not { Length: not 0 })
+        if (ctx.OrderByFields is not { Length: > 0 })
         {
             rejectReason = "the query has no ORDER BY for the scan to follow";
             return false;
@@ -646,11 +603,6 @@ internal static partial class QueryPlanBuilder
             return false;
         }
 
-        // A driving clause on a multi-valued sort field cannot be elided from the residual: the
-        // residual set excludes the driving clause assuming the in-order tree walk enforces it, but
-        // SortedDrivingMatch walks every posting of a multi-valued field, so documents matching the
-        // driving term under one value AND a different value elsewhere are emitted unfiltered. Fall
-        // back to bitmap + SortingMatch, which applies the clause as a real filter.
         if (ctx.PlanParams.IndexSearcher.HasMultipleTermsInField(ctx.OrderByFields[0].Field))
         {
             rejectReason = "the sort field holds multiple values per document, so its filter can't be safely skipped during the walk";
@@ -673,80 +625,41 @@ internal static partial class QueryPlanBuilder
         return forward ? nullIsSmallest : nullIsSmallest is false;
     }
 
-    /// <summary>
-    /// Resolves the entry budget for a sorted index-only scan. Normally the driving match yields entries already in
-    /// ORDER BY order, so the first <c>take</c> (= pageSize + start) survivors ARE the answer and the scan can stop
-    /// early. Two situations break that assumption and require streaming the whole sorted tree (TakeAll):
-    /// <list type="bullet">
-    /// <item>A server-side <c>filter</c> clause is applied AFTER the index produces results, so an entry the tree
-    /// yields is only a *candidate* — the index must keep streaming until the filter has accepted enough (bounded
-    /// server-side by FilterLimit), else filtered+sorted queries truncate before reaching matching documents.</item>
-    /// <item>The client requested statistics (<c>SkipStatistics == false</c>) or this is a count query: the read
-    /// operation needs the exact <c>TotalResults</c>, which it derives by draining the match. Early-stopping at
-    /// <c>take</c> would report only the page-sized prefix as the total. For a no-residual full scan this drain
-    /// reads no entries (it just enumerates ids), matching the old SortingMatch behaviour.</item>
-    /// </list>
-    /// </summary>
+    // Compute how many results a direct scan needs to provide. Ideally, we can stoke at Take items, but we may
+    // have a filter post query, or need to provide the total result count, etc - that requires more work on our part.
     private static int ResolveSortedScanTake(QueryBuilderParameters builderParams)
     {
-        // Early-stopping at the page limit is only safe when nothing forces a full drain: no post-index filter to
-        // satisfy, and no exact total to report. Either one means stream the whole sorted tree.
         if (HasServerSideFilter(builderParams) || ConsumesExactTotal(builderParams))
             return Constants.IndexSearcher.TakeAll;
 
         return builderParams?.Take ?? Constants.IndexSearcher.TakeAll;
     }
 
-    /// <summary>
-    /// Whether the up-front known-total optimisation (resolving TotalResults from posting-list headers / O(1)
-    /// metadata instead of draining the scan to count it) is applicable for this read, independent of the plan
-    /// shape. It pays off only when the read actually <see cref="ConsumesExactTotal">consumes the total</see> and
-    /// stays correct only when there is no <see cref="HasServerSideFilter">server-side filter</see> (which would
-    /// make the header count overcount the survivors). When false, the total must come from draining the scan.
-    /// </summary>
+    // if we need to know the tota AND we have a filter, we *must* read the whole query results
     private static bool CanResolveKnownTotal(QueryBuilderParameters builderParams)
         => ConsumesExactTotal(builderParams) && HasServerSideFilter(builderParams) == false;
 
-    /// <summary>
-    /// The read operation needs the exact <c>TotalResults</c>: it answers a count query, or it reports statistics
-    /// (<c>SkipStatistics == false</c>, the default). When false the page bound is the only limit that matters, so
-    /// neither does a sorted scan have to drain past it nor is an up-front total worth computing.
-    /// </summary>
     private static bool ConsumesExactTotal(QueryBuilderParameters builderParams)
         => builderParams?.Query is { IsCountQuery: true } or { SkipStatistics: false };
 
-    /// <summary>
-    /// A server-side <c>filter</c> clause runs AFTER the index produces results, so an index hit is only a
-    /// candidate until the filter accepts it. That makes any index-side count (e.g. posting-list headers) an
-    /// overcount of the surviving documents, and forces a sorted scan to keep streaming until the filter has
-    /// accepted enough (bounded server-side by FilterLimit).
-    /// </summary>
     private static bool HasServerSideFilter(QueryBuilderParameters builderParams)
         => builderParams?.Metadata?.Query?.Filter != null;
 
-    /// <summary>
-    /// Runs the header-only <see cref="IAggregationProvider.CountPostingsInRange"/> probe on a throwaway
-    /// <paramref name="countMatch"/> provider (which it disposes), timing the walk and reporting how many in-range
-    /// terms it visited. Returns the summed posting total, or -1 when the match is not a countable aggregation
-    /// provider. The probe exhausts the provider's iterator, so <paramref name="countMatch"/> must be a fresh
-    /// instance — never the one feeding the scan, which still has to read.
-    /// </summary>
-    private static long ProbeCountPostingsInRange(IQueryMatch countMatch, out long probeTicks, out int probeTerms)
+    private static long TryCountPostingsInRange(IQueryMatch countMatch, out long probeTicks, out int probeTerms)
     {
         probeTicks = -1; // -1 ticks marks "no probe ran" (the match was not countable).
         probeTerms = 0;
         try
         {
-            if (countMatch is TermsProviderMatch { Provider: IAggregationProvider agg })
-            {
-                long t0 = Stopwatch.GetTimestamp();
-                var stats = agg.CountPostingsInRange(0);
-                probeTicks = Stopwatch.GetTimestamp() - t0;
-                probeTerms = stats.Terms;
-                return stats.Postings;
-            }
+            if (countMatch is not TermsProviderMatch { Provider: IAggregationProvider agg }) 
+                return -1;
+            
+            long t0 = Stopwatch.GetTimestamp();
+            var stats = agg.CountPostingsInRange(0);
+            probeTicks = Stopwatch.GetTimestamp() - t0;
+            probeTerms = stats.Terms;
+            return stats.Postings;
 
-            return -1;
         }
         finally
         {
@@ -754,20 +667,11 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    /// <summary>
-    /// The page size the residual-DirectScan cost model is allowed to assume. A residual scan only
-    /// early-terminates at the page boundary when the executor's take is page-bounded; <see cref="ResolveSortedScanTake"/>
-    /// returns <c>TakeAll</c> whenever a total-result count must be reported (<c>SkipStatistics == false</c>, the
-    /// default), the query is a count query, or a post-filter is present. In those cases the scan enumerates every
-    /// matching entry — doing a stored-entry read per entry — so the page no longer bounds the work. Modelling the
-    /// page bound there would let the cost gate price a handful of reads when the scan actually reads the whole
-    /// driving tree, so report the full matching set (<see cref="long.MaxValue"/>, clamped to the driving
-    /// cardinality by the caller) instead.
-    /// </summary>
+    // if we need to read everything anyway, the cost of doing entry scanning is very high, reflect that
     private static long ResolveEffectiveScanPageSize(QueryBuilderParameters builderParams)
     {
         return ResolveSortedScanTake(builderParams) == Constants.IndexSearcher.TakeAll
-            ? long.MaxValue
+            ? long.MaxValue // we have to scan everything, the cost is too high
             : builderParams.Query.PageSize;
     }
 
@@ -782,15 +686,17 @@ internal static partial class QueryPlanBuilder
         };
     }
 
-    private static IQueryMatch BuildSortedDrivingWithTieBreakMatch(InstCtx ctx, ITermsProvider provider, LowLevelTransaction llt, NullsSortMode indexDefaultNullsSortMode,
+    private static IQueryMatch BuildSortedDrivingWithTieBreakMatch(InstantiateContext ctx, ITermsProvider provider, LowLevelTransaction llt, NullsSortMode indexDefaultNullsSortMode,
         IndexSearcher indexSearcher, bool nullFirst, int take)
     {
         bool secondaryNullIsSmallest = (ctx.OrderByFields[1].NullsSortMode ?? indexDefaultNullsSortMode) == NullsSortMode.NullsSmallest;
-        return new SortedDrivingWithTieBreakMatch(
-            provider, llt, ctx.PlanParams.Allocator, indexSearcher,
-            ctx.OrderByFields[0].Field, ctx.OrderByFields[1].Field,
-            ctx.OrderByFields[1].FieldType, secondaryDescending: !ctx.OrderByFields[1].Ascending,
-            nullFirst: nullFirst, nullIsSmallest: secondaryNullIsSmallest,
+        return new SortedDrivingWithTieBreakMatch(provider, llt, ctx.PlanParams.Allocator, indexSearcher,
+            ctx.OrderByFields[0].Field, 
+            ctx.OrderByFields[1].Field,
+            ctx.OrderByFields[1].FieldType, 
+            secondaryDescending: ctx.OrderByFields[1].Ascending is false,
+            nullFirst: nullFirst, 
+            nullIsSmallest: secondaryNullIsSmallest,
             take: take);
     }
 
@@ -814,10 +720,8 @@ internal static partial class QueryPlanBuilder
         return (matchList.ToArray(), leafList.ToArray());
     }
 
-    // forward defaults to true for the bitmap/unsorted resolve path; the sorted direct-scan path passes the
-    // ORDER BY direction so a sentinel-rewritten BETWEEN (>= / <=) drives its provider in the right direction.
     private static IQueryMatch ResolveSentinelRewrittenBetween(ClauseExecution exec, FieldMetadata fieldMeta,
-        IndexSearcher indexSearcher, QueryExecution queryExec, bool forward = true)
+        IndexSearcher indexSearcher, QueryExecution queryExec, bool forward)
     {
         if (exec.SentinelRewriteType == ClauseType.Exists)
             return indexSearcher.AllEntries();
@@ -826,7 +730,7 @@ internal static partial class QueryPlanBuilder
 
         Debug.Assert(exec.SentinelRewriteType == ClauseType.GreaterThanOrEqual);
         IQueryMatch rangeMatch = exec.PackedParamValue.RangeQuery(ClauseType.GreaterThanOrEqual, fieldMeta, indexSearcher, queryExec, forward);
-        if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _) is false) 
+        if (indexSearcher.TryGetPostingListForNull(in fieldMeta, out _) is false) // no null in this field, we can do a tree scan directly
             return rangeMatch;
         
         // BETWEEN low AND 'NULL' must include null-valued docs (Lucene parity)
@@ -853,19 +757,14 @@ internal static partial class QueryPlanBuilder
             hasBoost: builderParams.HasBoost, forceDefaultSearchAnalyzer: forceSearchAnalyzer);
     }
 
-    private static bool IsClauseBoosted(ClauseExecution exec)
-        => exec.Clause.HasBoost || exec.BoostFactor > 0;
+    private static bool IsClauseBoosted(ClauseExecution exec) => exec.Clause.HasBoost || exec.BoostFactor > 0;
 
     private static void EncodeNumericValue(Span<byte> dest, int valueType, int paramIdx, QueryExecution exec, long numericXorMask)
     {
-        // The double path is order-preserving via DoubleToSortableLong; only the raw signed-long path needs the
-        // sign-flip mask, which must mirror the indexer (CoraxDocumentConverterBase) for the queried index.
         long raw = valueType == PackedParam.TypeDouble
             ? Bits.DoubleToSortableLong(exec.DoubleValues[paramIdx])
             : exec.LongValues[paramIdx] ^ numericXorMask;
-        // Must produce byte-for-byte the key the indexer wrote. CoraxDocumentConverterBase.AppendLong stores
-        // `SwapBytes(l ^ mask)` little-endian (i.e. big-endian/sortable order of `l ^ mask`); mirror it exactly —
-        // a big-endian write here would re-swap the bytes and the seek would never match (zero rows).
+        // CoraxDocumentConverterBase.AppendLong stores `SwapBytes(l ^ mask)` - ensuring the right lexical sort order on the bytes 
         BinaryPrimitives.WriteInt64LittleEndian(dest, Bits.SwapBytes(raw));
     }
 
@@ -877,7 +776,7 @@ internal static partial class QueryPlanBuilder
         public int Size;
     }
 
-    private static bool TryGetCompoundFieldEncoding(ref InstCtx ctx, string fieldName, PackedParam packed, int paramSlot, out CompoundFieldEncoding encoding)
+    private static bool TryGetCompoundFieldEncoding(ref InstantiateContext ctx, string fieldName, PackedParam packed, int paramSlot, out CompoundFieldEncoding encoding)
     {
         encoding = default;
         encoding.Packed = packed;
@@ -910,14 +809,10 @@ internal static partial class QueryPlanBuilder
         EncodeNumericValue(dest, encoding.Packed.ValueType, encoding.SourceSlot, exec, numericXorMask);
     }
 
-    /// <summary>TreeScan-eligible: multi-term clauses with a direct ITermsProvider (StartsWith,
-    /// EndsWith, Exists, Regex, ranges, BETWEEN). Boosted clauses go through QueryMatch for scoring.
-    /// Sentinel-rewritten BETWEEN is handled by GetDispatch, not here, because it needs the
-    /// per-execution SentinelRewriteType.</summary>
     internal static bool IsTreeScanEligibleClause(ClauseInfo clause)
     {
         if (clause.HasBoost)
-            return false;
+            return false; // need scoring, cannot just scan
 
         return clause.ClauseType is ClauseType.StartsWith or ClauseType.EndsWith
             or ClauseType.Exists or ClauseType.Regex
@@ -926,11 +821,6 @@ internal static partial class QueryPlanBuilder
             or ClauseType.Between;
     }
 
-    /// <summary>Resolve the <see cref="MatchDispatch"/> mode for a clause execution at plan-build time.
-    /// Equals / NotEquals (unboosted) → <c>PostingList</c>. Multi-term (unboosted) → <c>TreeScan</c>.
-    /// All other clause types → <c>QueryMatch</c>. A sentinel-rewritten BETWEEN ("*"/"NULL" bounds)
-    /// always takes the QueryMatch path: ResolveSentinelRewrittenBetween reads SentinelRewriteType at
-    /// resolve time and may fold in the null posting list, so it cannot be expressed as a plain TreeScan.</summary>
     internal static MatchDispatch GetDispatch(ClauseExecution exec)
     {
         var clause = exec.Clause;
@@ -950,9 +840,7 @@ internal static partial class QueryPlanBuilder
     {
         if (idx is PackedParam.NoParamValue)
             return null;
-        // An IN clause with all-null terms records InTermCount=0 and writes no values
-        // to the typed arrays, but the packed Param1 still points at the (empty) slot.
-        // Bounds-check before indexing — return null to indicate "no displayable value".
+        // An IN clause with all-null terms records InTermCount=0. the packed Param1 still points at the (empty) slot.
         return packed.ValueType switch
         {
             PackedParam.TypeLong => idx < exec.LongValues.Length ? exec.LongValues[idx].ToString() : null,

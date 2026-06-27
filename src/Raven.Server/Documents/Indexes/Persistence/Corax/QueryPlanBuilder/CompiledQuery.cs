@@ -5,6 +5,11 @@ using Corax.Utils;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
+// This is a value type that is preserved across the result-enumerator's `yield` boundaries (it lives in the
+// iterator state machine), so it cannot be a `ref struct`. There is exactly one dispose owner — the
+// `using var ___ = compileResult;` in CoraxIndexReadOperation's query loop. Every other use (the inspection
+// graph builders, sorting setup) takes a read-only by-value copy and never disposes. Do not add a second
+// dispose site: copies share the same QueryMatch reference, so disposing a copy would double-free it.
 internal readonly record struct CompiledQuery(
     IQueryMatch QueryMatch,
     IQueryMatch ExecutedMatch,
@@ -14,17 +19,13 @@ internal readonly record struct CompiledQuery(
     OrderMetadata[] OrderByFields) : IDisposable
 {
     /// <summary>
-    /// True when no SortingMatch wrapper will surface similarity scores into the scores buffer: a single vector
-    /// post-filter streams its HNSW output in score order, so the wrapper was skipped. The read loop must then
-    /// call <see cref="IQueryMatch.Score"/> per Fill batch to repopulate IndexScore for the entries it returns.
+    /// Vector  post-filter streams its HNSW output in score order, we skipped adding SortingMatch (which does scoring)
+    /// so we need to explicitly Score() after the Fill() call
     /// </summary>
     public bool ScoresProducedDuringFill => Execution is { VectorPostFilterProvidesScoreOrder: true };
 
     public void Dispose()
     {
-        // SortingWrapper is always either null or the SAME instance as QueryMatch (see BuildSortedQuery), and
-        // ExecutedMatch is the inner match that QueryMatch wraps and disposes in turn — so disposing QueryMatch
-        // releases everything.
         (QueryMatch as IDisposable)?.Dispose();
     }
 }

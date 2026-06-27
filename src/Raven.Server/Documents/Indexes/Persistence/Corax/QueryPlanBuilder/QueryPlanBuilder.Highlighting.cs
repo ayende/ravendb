@@ -38,9 +38,7 @@ internal static partial class QueryPlanBuilder
         {
             if (exec.PackedParamValue.IsNone || // ignore null values that are == / != 
                 (exec.PackedParamValue.ValueType == PackedParam.TypeString && queryExec.StringValues[exec.PackedParamValue.Param1] == null))
-            {
                 return;
-            }
         }
 
         if (highlightingTerms.TryGetValue(clause.FieldName, out var existingTerm))

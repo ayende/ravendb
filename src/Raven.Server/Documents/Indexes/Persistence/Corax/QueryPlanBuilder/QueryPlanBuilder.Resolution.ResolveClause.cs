@@ -5,7 +5,6 @@ using Corax.Querying.Planning;
 using Raven.Client.Documents.Indexes.Spatial;
 using Raven.Server.Documents.Queries;
 using Spatial4n.Shapes;
-using Constants = Corax.Constants;
 using RavenConstants = Raven.Client.Constants;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 
@@ -43,13 +42,12 @@ internal static partial class QueryPlanBuilder
 
             case ClauseType.Between:
                 if (cur.SentinelRewriteType != null)
-                    return ResolveSentinelRewrittenBetween(cur, fieldMeta, indexSearcher, root);
+                    return ResolveSentinelRewrittenBetween(cur, fieldMeta, indexSearcher, root, forward: true);
                 return packed.BetweenQuery(fieldMeta, indexSearcher, root);
 
             case ClauseType.In:
             case ClauseType.AllIn:
-                throw new InvalidOperationException(
-                    "In/AllIn should be expanded by ResolveMatches (per-term slot loop), not resolved as a single clause.");
+                throw new InvalidOperationException($"In/AllIn should be expanded by {nameof(ResolveLeafIntoAll)} (per-term slot loop), not resolved as a single clause.");
 
             case ClauseType.Exists:
                 return indexSearcher.ExistsQuery(fieldMeta);
@@ -70,23 +68,20 @@ internal static partial class QueryPlanBuilder
                 return HandleSpatial(clause.SpatialMethodType);
 
             case ClauseType.Vector:
-                // A vector clause resolved here is an ordinary pipeline leaf (e.g. inside an OR branch), not a
-                // top-level post-filter — the planner only lifts vector clauses to post-filters in an AND context
-                // via ApplyPostFilters. Pass isPostFilter:false so inspection reports the correct role.
+                // A vector clause resolved here is running as part of the query (e.g. inside an OR branch), not as a post filter.
+                // Pass isPostFilter:false so inspection reports the correct role.
                 return HandleVector(builderParams, cur).Materialize(null, isPostFilter: false);
             case ClauseType.OrGroup:
-                throw new InvalidOperationException(
-                    "OrGroup should be expanded by ResolveMatches, not resolved as a single clause.");
+                throw new InvalidOperationException($"OrGroup should be expanded by {nameof(ResolveLeafIntoAll)}, not resolved as a single clause.");
 
             case ClauseType.AndGroup:
-                throw new InvalidOperationException(
-                    "AndGroup should be expanded by ResolveMatches, not resolved as a single clause.");
+                throw new InvalidOperationException($"AndGroup should be expanded by {nameof(ResolveLeafIntoAll)}, not resolved as a single clause.");
 
             default:
                 throw new InvalidOperationException($"Unexpected ClauseType {clause.ClauseType} in ResolveClause.");
         }
 
-        IQueryMatch HandleSpatial(SpatialOperationType spatialMethod)
+        IQueryMatch HandleSpatial(global::Corax.Utils.Spatial.SpatialRelation spatialMethod)
         {
             var index = builderParams.Index;
             var allocator = builderParams.Allocator;
@@ -119,7 +114,7 @@ internal static partial class QueryPlanBuilder
                 throw new InvalidOperationException("Spatial clause has no pre-resolved shape parameters.");
             }
 
-            return builderParams.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), (global::Corax.Utils.Spatial.SpatialRelation)spatialMethod, token: builderParams.Token);
+            return builderParams.IndexSearcher.SpatialQuery(fieldMetadata, distanceErrorPct, shape, spatialField.GetContext(), spatialMethod, token: builderParams.Token);
         }
         
         IQueryMatch HandleSearch()
@@ -144,7 +139,7 @@ internal static partial class QueryPlanBuilder
 
             return indexSearcher.SearchQuery(searchMeta,
                 QueryBuilderHelper.SplitSearchValue(searchTerm),
-                (Constants.Search.Operator)clause.SearchOperator,
+                clause.SearchOperator,
                 builderParams.Index.CoraxSearchQueryOptions);
         }
     }

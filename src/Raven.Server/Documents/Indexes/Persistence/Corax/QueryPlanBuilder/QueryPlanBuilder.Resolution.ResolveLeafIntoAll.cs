@@ -78,9 +78,11 @@ internal static partial class QueryPlanBuilder
                 default: 
                     matches.Add(null);
                     LeafResolveInfo ret = clauseExec.HasNullTerm is false
-                        ? new LeafResolveInfo
+                        ? new LeafResolveInfo // we don't have a null here, but there is a slot for it, mark it as noop
                         {
-                            Kind = clauseExec.ClauseType == ClauseType.AllIn ? LeafResolveKind.AllPosting : LeafResolveKind.EmptyPosting
+                            Kind = clauseExec.ClauseType == ClauseType.AllIn 
+                                ? LeafResolveKind.AllPosting     // ALL IN → AND → identity is "everything"
+                                : LeafResolveKind.EmptyPosting   // IN     → OR  → identity is "nothing"
                         }
                         : new LeafResolveInfo
                         {
@@ -119,9 +121,6 @@ internal static partial class QueryPlanBuilder
                     break;
                 case MatchDispatch.TreeScan:
                     matches.Add(null);
-                    // Only the range/StartsWith tree-scans carry an EstimateMatchesInRange prediction worth
-                    // calibrating; the other tree-scan shapes (Exists / EndsWith / Regex) estimate to the whole
-                    // index, so they get no calibration handle and never feed Observe back.
                     bool calibrated = IsCalibratedRangeClause(clauseExec.ClauseType);
                     leaves.Add(new LeafResolveInfo
                     {
@@ -130,9 +129,7 @@ internal static partial class QueryPlanBuilder
                         Packed = clauseExec.PackedParamValue,
                         FieldMeta = ResolveFieldMetadata(clauseExec.Clause, walkerCtx),
                         RangeCalibration = calibrated ? clauseExec.Clause.RangeEstimateCalibration : null,
-                        // Feed the PRE-calibration estimate as "predicted" so the EWMA learns actual/RawEstimate -
-                        // the exact multiplier that makes next run's (RawEstimate * multiplier) converge to actual.
-                        // (Feeding the post-multiplier Cardinality would only sqrt-converge.)
+                        // Feed the PRE-calibration estimate as "predicted" so the EWMA learns actual/RawEstimate
                         RangeEstimate = calibrated ? (clauseExec.RangeEstimate?.RawEstimate ?? clauseExec.Cardinality) : 0
                     });
                     break;
@@ -146,6 +143,7 @@ internal static partial class QueryPlanBuilder
             ClauseType.GreaterThan or ClauseType.GreaterThanOrEqual
                 or ClauseType.LessThan or ClauseType.LessThanOrEqual
                 or ClauseType.Between or ClauseType.StartsWith => true,
+            // EndsWith / Regex / etc - all have to estimate the whole index, no calibration to handle
             _ => false
         };
     }

@@ -3,7 +3,7 @@ using Corax.Utils;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax.QueryPlanBuilder;
 
-internal ref struct InstCtx(CompiledPlan plan, QueryExecution exec, OrderMetadata[] orderByFields, PlanParameters planParams, QueryBuilderParameters builderParams, bool wantTimings)
+internal ref struct InstantiateContext(CompiledPlan plan, QueryExecution exec, OrderMetadata[] orderByFields, PlanParameters planParams, QueryBuilderParameters builderParams, bool wantTimings)
 {
     public readonly CompiledPlan Plan = plan;
     public readonly QueryExecution Exec = exec;
