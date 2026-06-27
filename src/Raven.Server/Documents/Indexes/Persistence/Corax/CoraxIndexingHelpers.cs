@@ -41,6 +41,11 @@ public static class CoraxIndexingHelpers
         if (definition.CompoundFields is not { Count: > 0 })
             return;
 
+        // Don't fault indexes that predate this validation: an upgraded index keeps its stored version,
+        // so anything below the gate was built (and works) under the old, unvalidated behavior.
+        if (index.Definition.Version < IndexDefinitionBaseServerSide.IndexVersion.CoraxCompoundFieldFirstFieldValidation)
+            return;
+
         bool ignoreInvalid = index.Configuration.CoraxIgnoreInvalidTokenizedCompoundFields;
 
         foreach (string[] compoundField in definition.CompoundFields)

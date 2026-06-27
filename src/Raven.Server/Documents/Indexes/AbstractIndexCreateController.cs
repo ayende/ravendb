@@ -241,6 +241,13 @@ public abstract class AbstractIndexCreateController
         if (definition.CompoundFields is not { Count: > 0 })
             return;
 
+        // Version gate: a brand-new index is created at CurrentVersion (>= the gate) and is validated, but an
+        // update of an index that predates this validation keeps its older stored version, so we leave it alone
+        // rather than start rejecting a definition that was previously accepted.
+        IndexInformationHolder existing = GetIndex(definition.Name);
+        if (existing != null && existing.Definition.Version < IndexDefinitionBaseServerSide.IndexVersion.CoraxCompoundFieldFirstFieldValidation)
+            return;
+
         RavenConfiguration databaseConfiguration = GetDatabaseConfiguration();
 
         bool ignoreInvalid = databaseConfiguration.Indexing.CoraxIgnoreInvalidTokenizedCompoundFields;
