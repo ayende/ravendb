@@ -59,10 +59,6 @@ public sealed class ShardedCoraxIndexReadOperation : CoraxIndexReadOperation
     {
         var result = ShardedQueryResultDocument.From(queryResult);
 
-        // The loop below cross-walks the RQL order-by (query.Metadata.OrderBy) against the Corax order metadata
-        // (orderByFields). Either can be absent here — e.g. a projection query whose ordering is resolved
-        // elsewhere, or a result with no materialized Corax order fields — in which case there is nothing to ship
-        // to the coordinator. Bail out instead of dereferencing a null array.
         if (query.Metadata.OrderBy is null || orderByFields is null)
             return result;
 

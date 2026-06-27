@@ -54,32 +54,22 @@ namespace Raven.Server.Documents.Queries
 
 
         /// <summary>
-        /// Holds the resolved Corax plan bucket for this query so we skip the structural-key dictionary lookup on
-        /// the hot path. The bucket carries the parse template plus every compiled plan variant for this query.
+        /// Cached Corax plan memory - for _really_ hot paths :-) 
         /// </summary>
         public PlanMemo CachedPlanMemo { get; set; }
 
         /// <summary>
-        /// Memoized per-query slot-binding vector — the value-bearing bindings collected by the canonical WHERE
-        /// walk (<see cref="QueryPlanBuilder.ExtractSlotBindings"/>), indexed by
-        /// <see cref="ParameterBinding.ValueOrdinal"/>. It is a pure function of the query text/AST (independent of
-        /// parameter values and of the target index), so it is safe to cache here for the lifetime of this
-        /// QueryMetadata and never needs invalidation. Only set for the main WHERE path; an MLT sub-expression
-        /// override builds its own vector fresh and does not touch this field.
+        /// Cached the bindings between each query clause and its relevant parameters (saved lookup time)
         /// </summary>
-        public Corax.Querying.Planning.ParameterBinding[] CachedSlotBindings { get; set; }
+        public ParameterBinding[] CachedSlotBindings { get; set; }
 
-        public sealed class PlanMemo(long planCacheGeneration, Corax.Querying.Planning.PlanCache.PerQueryPlans bucket)
+        public sealed class PlanMemo(long planCacheGeneration, PlanCache.PerQueryPlans bucket)
         {
             /// <summary>
-            /// The <see cref="PlanCache.GenerationIdx"/> observed when this bucket was resolved.
-            /// The memo is valid only while the live cache's generation still equals it: a different value means
-            /// either the index instance was swapped or an index-state input that can change plan selection (e.g. a
-            /// field flipping to multi-valued) has changed, so the memoized bucket can no longer be trusted and the
-            /// plan must be re-resolved against the structural key.
+            /// Generations change when the index is reset, or a field HasMultipleTermsInField() is changed, etc. 
             /// </summary>
             public readonly long PlanCacheGeneration = planCacheGeneration;
-            public readonly WeakReference<Corax.Querying.Planning.PlanCache.PerQueryPlans> Bucket = new(bucket);
+            public readonly WeakReference<PlanCache.PerQueryPlans> Bucket = new(bucket);
         }
 
         public QueryMetadata(string query, BlittableJsonReaderObject parameters, ulong cacheKey, bool addSpatialProperties = false, QueryType queryType = QueryType.Select)
@@ -462,7 +452,7 @@ function execute(doc, args){
                     }
                     else if (order.Expression is FieldExpression fe)
                     {
-                        OrderBy[i] = new OrderByField(GetIndexFieldName(fe, parameters), order.FieldType, order.Ascending, nullsOrdering: order.NullsOrdering);
+                        OrderBy[i] = new OrderByField(GetIndexFieldName(fe, parameters), order.FieldType, order.Ascending, NullsOrdering: order.NullsOrdering);
                     }
                     else
                     {
@@ -1171,7 +1161,7 @@ function execute(doc, args){
                 {
                     case OrderByFieldType.AlphaNumeric:
                     case OrderByFieldType.String:
-                        return new OrderByField(new QueryFieldName(Constants.Documents.Indexing.Fields.DocumentIdFieldName, false), orderingType, asc, MethodType.Id, nullsOrdering: nullsOrdering);
+                        return new OrderByField(new QueryFieldName(Constants.Documents.Indexing.Fields.DocumentIdFieldName, false), orderingType, asc, MethodType.Id, NullsOrdering: nullsOrdering);
 
                     default:
                         throw new InvalidQueryException("Invalid ORDER BY 'id()' call, this field can only be sorted as a string or alphanumeric value, but got " + orderingType, QueryText, parameters);
@@ -1208,7 +1198,7 @@ function execute(doc, args){
                 HasOrderByRandom = true;
 
                 if (me.Arguments == null || me.Arguments.Count == 0)
-                    return new OrderByField(null, OrderByFieldType.Random, asc, nullsOrdering: nullsOrdering);
+                    return new OrderByField(null, OrderByFieldType.Random, asc, NullsOrdering: nullsOrdering);
 
                 if (me.Arguments.Count > 1)
                     throw new InvalidQueryException("Invalid ORDER BY 'random()' call, expected zero to one arguments, got " + me.Arguments.Count,
@@ -1234,7 +1224,7 @@ function execute(doc, args){
             if (me.Name.Equals("score", StringComparison.OrdinalIgnoreCase))
             {
                 if (me.Arguments == null || me.Arguments.Count == 0)
-                    return new OrderByField(null, OrderByFieldType.Score, asc, nullsOrdering: nullsOrdering);
+                    return new OrderByField(null, OrderByFieldType.Score, asc, NullsOrdering: nullsOrdering);
 
                 throw new InvalidQueryException("Invalid ORDER BY 'score()' call, expected zero arguments, got " + me.Arguments.Count, QueryText,
                     parameters);
@@ -1331,7 +1321,7 @@ function execute(doc, args){
                 if (me.Name.Equals("count", StringComparison.OrdinalIgnoreCase))
                 {
                     if (me.Arguments == null || me.Arguments.Count == 0)
-                        return new OrderByField(QueryFieldName.Count, OrderByFieldType.Long, asc, nullsOrdering: nullsOrdering)
+                        return new OrderByField(QueryFieldName.Count, OrderByFieldType.Long, asc, NullsOrdering: nullsOrdering)
                         {
                             AggregationOperation = AggregationOperation.Count
                         };
@@ -1357,7 +1347,7 @@ function execute(doc, args){
                         orderingType = OrderByFieldType.Double;
                     }
 
-                    return new OrderByField(new QueryFieldName(sumFieldToken.FieldValue, sumFieldToken.IsQuoted), orderingType, asc, nullsOrdering: nullsOrdering)
+                    return new OrderByField(new QueryFieldName(sumFieldToken.FieldValue, sumFieldToken.IsQuoted), orderingType, asc, NullsOrdering: nullsOrdering)
                     {
                         AggregationOperation = AggregationOperation.Sum
                     };
@@ -2355,11 +2345,7 @@ function execute(doc, args){
                             ThrowIncompatibleTypesOfVariables(fieldName, QueryText, parameters, values.ToArray());
                     }
 
-                    // When the binding is a parameter that resolves to an array, walk every
-                    // array element pair-wise — peeking array[0] (the unwrapArrays:true path
-                    // below) hides mixed-type arrays like $p = [1L, "Shalom"]. This is the
-                    // centralised IN type check; engine-side IN walkers (Lucene's GetValues,
-                    // Corax v2's TryEmitInTermValue) no longer re-validate.
+                    // validates IN args has the same type, rejecting: $p = [1L, "Shalom"]. 
                     if (value.Value == ValueTokenType.Parameter
                         && parameters != null
                         && parameters.TryGetMember(value.Token, out var paramValue)

@@ -38,11 +38,7 @@ public sealed class QueryBuilderParameters
     public readonly bool IsVectorSingleClause;
     public readonly QueryTimeScope QueryTime;
 
-    /// <summary>Direct-planner test constructor. Used by tests that exercise <c>QueryPlanBuilder</c>
-    /// without a full <see cref="Index"/> / <see cref="IndexQueryServerSide"/> stack. The supplied
-    /// <see cref="IndexFieldsMapping"/> is required so resolvers (<c>ResolveFieldMetadata</c>,
-    /// compound-exact / compound-field branches) can route through
-    /// <see cref="QueryBuilderHelper.GetFieldMetadata"/> uniformly — there is no null-mapping branch.</summary>
+    // used for tests
     internal QueryBuilderParameters(IndexSearcher searcher, ByteStringContext allocator, QueryMetadata metadata, BlittableJsonReaderObject queryParameters, IndexFieldsMapping indexFieldsMapping, bool hasBoost = false)
     {
         IndexSearcher = searcher;
@@ -58,7 +54,7 @@ public sealed class QueryBuilderParameters
 
     internal QueryBuilderParameters(IndexSearcher searcher, ByteStringContext allocator, TransactionOperationContext serverContext, DocumentsOperationContext documentsContext,
         IndexQueryServerSide query, Index index, BlittableJsonReaderObject queryParameters, QueryBuilderFactories factories, IndexFieldsMapping indexFieldsMapping,
-        FieldsToFetch fieldsToFetch, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, int take, bool deduplicationDisabled, IndexReadOperationBase indexReadOperation = null, List<string> buildSteps = null, QueryTimeScope queryTime = null, CancellationToken token = default)
+        FieldsToFetch fieldsToFetch, Dictionary<string, CoraxHighlightingTermIndex> highlightingTerms, int take, IndexReadOperationBase indexReadOperation = null, List<string> buildSteps = null, QueryTimeScope queryTime = null, CancellationToken token = default)
     {
         QueryTime = queryTime;
         IndexSearcher = searcher;

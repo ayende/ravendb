@@ -241,6 +241,13 @@ public abstract class AbstractIndexCreateController
         if (definition.CompoundFields is not { Count: > 0 })
             return;
 
+        // Version gate: a brand-new index is created at CurrentVersion (>= the gate) and is validated, but an
+        // update of an index that predates this validation keeps its older stored version, so we leave it alone
+        // rather than start rejecting a definition that was previously accepted.
+        IndexInformationHolder existing = GetIndex(definition.Name);
+        if (existing != null && existing.Definition.Version < IndexDefinitionBaseServerSide.IndexVersion.CoraxCompoundFieldFirstFieldValidation)
+            return;
+
         RavenConfiguration databaseConfiguration = GetDatabaseConfiguration();
 
         bool ignoreInvalid = databaseConfiguration.Indexing.CoraxIgnoreInvalidTokenizedCompoundFields;
@@ -293,15 +300,14 @@ public abstract class AbstractIndexCreateController
         IndexFieldOptions options = null;
         definition.Fields?.TryGetValue(fieldName, out options);
 
-        string analyzerString = options?.Analyzer;
-        if (string.IsNullOrWhiteSpace(analyzerString))
-            analyzerString = allFieldsOptions?.Analyzer;
-
         FieldIndexing? indexing = options?.Indexing ?? allFieldsOptions?.Indexing;
 
-        if (string.IsNullOrWhiteSpace(analyzerString) == false)
-            return $"uses a user-defined analyzer '{analyzerString}' which is not compatible with compound fields";
-
+        // We only reject the cases that are decidable from the definition alone. Whether a *named* analyzer
+        // is compound-compatible depends on its concrete tokenizer/transformers, which only exist on a built
+        // Analyzer instance — so a non-tokenizing analyzer such as KeywordAnalyzer must not be rejected here.
+        // The authoritative analyzer compatibility check runs at write time in
+        // CoraxIndexingHelpers.ValidateCompoundFieldAnalyzers, where the analyzer is actually instantiated and
+        // its IsCompoundFieldCompatible flag is available.
         if (indexing == FieldIndexing.Search)
             return $"is configured with '{nameof(FieldIndexing)}.{FieldIndexing.Search}' which uses a tokenizing analyzer that is not compatible with compound fields";
 

@@ -32,15 +32,8 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
     private readonly RavenLogger _logger;
     private readonly CoraxDocumentConverterBase _converter;
 
-    /// <summary>Shared plan cache across all queries for this index instance.
-    /// Compiled IL delegates and plan templates are reused across transactions,
-    /// amortizing JIT costs. Thread-safe (ConcurrentDictionary + SIMD SoA lookup).
-    /// GC'd when the index instance is replaced (e.g., on index reset/rebuild).</summary>
     internal readonly global::Corax.Querying.Planning.PlanCache SharedPlanCache;
 
-    // Above this many multi-valued fields (e.g. an index with very many multi-valued dynamic fields) we stop
-    // snapshotting and leave the set null, so callers fall back to a live per-call tree lookup. Bounds the
-    // resident memory the snapshot can hold.
     private const int MaxFieldsWithMultipleTermsToCache = 512;
 
     private Dictionary<Slice, HnswIndexCache> _hnswCaches;
@@ -247,9 +240,7 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
         return BuildCurrentCache(fields);
     }
 
-    // Reads the MultipleTermsInField tree into a string set. The set is monotonic (write side only ever adds),
-    // so when the entry count is unchanged we reuse the previous instance instead of rebuilding. Above the cap
-    // we return null, signalling consumers to fall back to a live per-call tree lookup.
+    // Cache MultipleTermsInField tree into a set. Write side only ever adds, so count tells when it changed.
     private static HashSet<string> ReadFieldsWithMultipleTerms(Transaction tx, HashSet<string> previous)
     {
         var tree = tx.ReadTree(global::Corax.Constants.IndexWriter.MultipleTermsInField);
@@ -278,9 +269,6 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
         return set;
     }
 
-    // Single construction point for the per-tx cache so the vector caches and the multi-valued field snapshot
-    // never clobber one another: every writer of _currentCache routes through here. The snapshot is passed in
-    // (callers preserving it read the current value back from _currentCache.FieldsWithMultipleTerms).
     private IndexTransactionCache BuildCurrentCache(HashSet<string> fieldsWithMultipleTerms)
     {
         if (_hnswCaches is null && fieldsWithMultipleTerms is null)
@@ -311,7 +299,6 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
             if (_hnswCaches != null)
             {
                 Volatile.Write(ref _hnswCaches, null);
-                // Drop only the vector caches; keep publishing the multi-valued field snapshot if we have one.
                 Volatile.Write(ref _currentCache, BuildCurrentCache(_currentCache?.FieldsWithMultipleTerms));
             }
             return;

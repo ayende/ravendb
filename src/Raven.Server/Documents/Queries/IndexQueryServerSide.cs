@@ -288,11 +288,7 @@ namespace Raven.Server.Documents.Queries
                 }
 
                 ulong metadataHash = 0;
-                QueryMetadata metadata = null;
-                // TryGetMetadata sets `out metadata` to null on every false return (probe miss and hash collision
-                // alike), so it never leaks a mismatched slot — but the bool must still be honored as the source of
-                // truth for a cache hit. See the sibling path above.
-                if (cache == null || cache.TryGetMetadata(result, addSpatialProperties, out metadataHash, out metadata) == false)
+                if (cache == null || cache.TryGetMetadata(result, addSpatialProperties, out metadataHash, out QueryMetadata metadata) == false)
                     metadata = new QueryMetadata(result.Query, result.QueryParameters, metadataHash, addSpatialProperties);
 
                 result.Metadata = metadata;

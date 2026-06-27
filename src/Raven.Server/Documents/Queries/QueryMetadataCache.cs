@@ -48,9 +48,7 @@ namespace Raven.Server.Documents.Queries
             }
             else
             {
-                // Hash collision (same slot, different query text): drop the colliding entry so callers that only
-                // null-check `out metadata` can't execute against another query's metadata. See IndexQueryServerSide.Create.
-                metadata = null;
+                metadata = null; // Try-contract: a false return must not leak a non-matching slot through `out metadata`.
             }
             return shouldUseCachedItem;
         }

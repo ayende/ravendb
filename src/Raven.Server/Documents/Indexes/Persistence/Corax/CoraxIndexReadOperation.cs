@@ -42,6 +42,7 @@ using CoraxConstants = Corax.Constants;
 using IndexSearcher = Corax.Querying.IndexSearcher;
 using CoraxSpatialResult = Corax.Utils.Spatial.SpatialResult;
 using Sparrow.Server.Logging;
+using Voron.Data.CompactTrees;
 using Voron.Data.Graphs;
 using IndexFieldType = Raven.Server.Documents.Indexes.Debugging.IndexFieldType;
 
@@ -620,20 +621,13 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             bool runQuery = true;
             // Loop-invariant: depends only on index type / fields / query.
             bool willAlwaysIncludeInResults = WillAlwaysIncludeInResults(_index.Type, fieldsToFetch, query);
-            // Reuse a single CompactKey across the whole result loop. With no key supplied, GetEntryTermsReader
-            // allocates a fresh CompactKey per entry and rents pool buffers that are never returned (the reader
-            // is discarded without Reset), so the thread-static pool stays empty and every entry allocates anew.
-            // EntryTermsReader's Set() restarts the key arena per entry, so reuse is safe and bounded.
-            // `using` so the iterator state machine disposes the key on early termination (yield break / the
-            // consumer abandoning enumeration), not only when the loop runs to completion.
-            using var entryReaderKey = new Voron.Data.CompactTrees.CompactKey();
-            entryReaderKey.Initialize(_lowLevelTransaction);
+            
+            // Reuse a single CompactKey across the whole result loop. EntryTermsReader's Set() restarts the key arena per entry, so reuse is safe and bounded.
+            using var entryKeyScope = new CompactKeyCacheScope(_lowLevelTransaction); 
             while (runQuery)
             {
                 QueryPlanBuilder.CompiledQuery compileResult;
-                // Exact total known from O(1) metadata for single-posting / all-entries plans (see
-                // QueryExecution.KnownExactTotal). When set, we source TotalResults from it and skip the
-                // count-draining loop below. -1 means "must scan to count".
+                // Exact total known from O(1) metadata for single-posting / all-entries plans - to avoid counting throught them
                 long knownExactTotal = -1;
                 var coraxScope = queryTimings?.For(nameof(QueryTimingsScope.Names.Corax), start: false);
                 using (coraxScope?.Start())
@@ -643,8 +637,8 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     using var __ = serverContext?.OpenReadTransaction();
 
                     var builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, serverContext, documentsContext, query, _index,
-                        query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take, 
-                        deduplicationDisabled: false, indexReadOperation: this, token: token, queryTime: queryTime);
+                        query.QueryParameters, QueryBuilderFactories, _fieldMappings, fieldsToFetch, highlightings.Terms, (int)take,
+                        indexReadOperation: this, token: token, queryTime: queryTime);
 
                     var planParams = new QueryPlanBuilder.PlanParameters
                     {
@@ -658,8 +652,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         DynamicFields = builderParameters.DynamicFields,
                         HasBoost = builderParameters.HasBoost
                     };
-                    // Plan build + IL compile (template build, delegate emit, first-call JIT) is otherwise
-                    // invisible — fold into the Corax scope as its own span so introspection can attribute it.
+                    // we scope here the _building of the query, not its execution (below)
                     using (coraxScope?.For(nameof(QueryTimingsScope.Names.Optimizer))?.Start())
                     {
                         compileResult = QueryPlanBuilder.QueryPlanBuilder.BuildSortedQuery(
@@ -668,29 +661,18 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     }
 
                     if (compileResult.OrderByFields == null && query.Metadata.IsDistinct == false
-                        && query.Metadata.Query.Filter == null
-                        && compileResult.QueryMatch is CompiledQueryMatch compiledMatch)
+                                                            && query.Metadata.Query.Filter == null
+                                                            && compileResult.QueryMatch is CompiledQueryMatch compiledMatch)
                     {
                         // Single-posting / all-entries plans know their exact total from O(1) metadata
-                        // (PostingList/index NumberOfEntries) — no full materialization needed to count.
                         knownExactTotal = compiledMatch.Exec.KnownExactTotal;
 
-                        // No ORDER BY, no DISTINCT, no FILTER — enable limit-aware bitmap accumulation so
-                        // the bitmap is truncated to the page instead of materializing the whole posting
-                        // list. We can do this when the client doesn't need the exact total (SkipStatistics),
-                        // or when we already know it cheaply (knownExactTotal) and supply it below.
-                        // Fan-out indexes produce multiple entries per document; after dedup the page would
-                        // come up short if we truncated to exactly `take`. Inflate by the observed max
-                        // outputs-per-document so the bitmap contains enough entries to fill the page even
-                        // in the worst-case dedup scenario.
-                        if (take > 0 && (query.SkipStatistics || knownExactTotal >= 0))
-                            compiledMatch.Limit = (int)Math.Min((long)take * _maxNumberOfOutputsPerDocument, int.MaxValue);
+                        // we try to avoid counting the entire result set, if the count is known, or the caller doesn't care, we can do that
+                        if (take > 0 && builderParameters.HasBoost == false && (query.SkipStatistics || knownExactTotal >= 0))
+                            compiledMatch.Limit = (int)Math.Min(take * _maxNumberOfOutputsPerDocument, int.MaxValue);
                     }
                     else if (compileResult.QueryMatch is DirectScanMatchBase { KnownExactTotal: >= 0 } directScan)
                     {
-                        // No-residual sorted scan over a single-valued field: the exact total equals the
-                        // driving provider's posting count, resolved up front (O(distinct terms)) at plan
-                        // build instead of draining the page-bounded Fill to recount below.
                         knownExactTotal = directScan.KnownExactTotal;
                     }
                 }
@@ -710,13 +692,6 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 // We don't need to do any processing for the query beyond counting if we are getting a count.
                 long totalResultsBefore = totalResults.Value;
 
-                // Time the Fill calls only — not the surrounding yield loop, which would also count document
-                // retrieval/serialization the consumer does between MoveNext calls. Resuming coraxScope folds
-                // search time into the Corax total; the Execute child isolates it from Optimizer (plan build).
-                // Sorting is not a separate stage: the SortingMatch wrapper sorts inside QueryMatch.Fill, under
-                // Execute. Retrieval/projection is timed by the retriever's own scopes. Score (per-batch BM25
-                // during Fill) and Paging (RegisterDuplicates dedup + pagination reshuffle) are the remaining
-                // CPU stages, broken out as their own Corax children.
                 var executeScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Execute), start: false);
                 var scoreScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Score), start: false);
                 var pagingScope = coraxScope?.For(nameof(QueryTimingsScope.Names.Paging), start: false);
@@ -732,9 +707,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     if (read == 0)
                         goto Done;
 
-                    // When the scores buffer is filled by Fill (not by a SortingMatch wrapper), replicate the
-                    // wrapper's scoring call here per Fill batch — before RegisterDuplicates reshuffles the
-                    // skipped pagination prefix — so IndexScore is still populated for the entries we return.
+                    // We need to deal with sorting in Fill, so have to call them on a per batch level
                     if (sortingData.IncludeScores && compileResult.ScoresProducedDuringFill)
                     {
                         var scoresForBatch = sortingData.ScoresBuffer.AsSpan(0, read);
@@ -749,7 +722,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     long i;
                     using (coraxScope?.Start())
                     using (pagingScope?.Start())
+                    {
                         i = identityTracker.RegisterDuplicates(ref hasProjections, totalResults.Value, ids.AsSpan(0, read), token);
+                    }
                     totalResults.Value += read; // important that this is *after* RegisterDuplicates
 
                     // Now for every document that was selected. document it. 
@@ -784,7 +759,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                         CoraxSpatialResult? documentDistance = hasOrderByDistance ? sortingData.DistancesBuffer[i] : null;
 
                         var key = _documentIdReader.GetTermFor(indexEntryId);
-                        EntryTermsReader entryTermsReader = IndexSearcher.GetEntryTermsReader(indexEntryId, ref page, entryReaderKey);
+                        EntryTermsReader entryTermsReader = IndexSearcher.GetEntryTermsReader(indexEntryId, ref page, entryKeyScope.Key);
                         var retrieverInput = new RetrieverInput(IndexSearcher, _fieldMappings, in entryTermsReader, key, _index.IndexFieldsPersistence.HasTimeValues, documentScore, documentDistance);
 
                         var filterResult = queryFilter.Apply(ref retrieverInput, key);
@@ -840,12 +815,9 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 // If we are going to just return count() then we don't care about anything else than memoize the results.
                 if (query.IsCountQuery || query.SkipStatistics == false)
                 {
-                    if (knownExactTotal >= 0)
+                    if (knownExactTotal >= 0) // we already know what the totals are, can just skip the Fill work below
                     {
-                        // Single-posting / all-entries plan: the exact total is known from O(1) metadata, so
-                        // there is no need to drain the (limit-truncated) bitmap to recount. Overwrites the
-                        // partial count the page loop accumulated above.
-                        totalResults.Value = (int)Math.Min(knownExactTotal, int.MaxValue);
+                        totalResults.Value = knownExactTotal;
                     }
                     else
                     {
@@ -905,6 +877,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     identityTracker.QueryStart = totalResults.Value;
                 }
             }
+            
 
             if (isDistinctCount)
                 totalResults.Value -= skippedResults.Value;
@@ -1178,7 +1151,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 using (closeServerTransaction)
                 {
                     builderParameters = new(IndexSearcher, _allocator, serverContext, context, query, _index, query.QueryParameters, QueryBuilderFactories,
-                        _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled: true, indexReadOperation: this, token: token);
+                        _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, indexReadOperation: this, token: token);
                     moreLikeThisQuery = BuildMoreLikeThisQuery(builderParameters, query.Metadata.Query.Where);
                 }
             }
@@ -1205,7 +1178,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             }
 
             builderParameters = new(IndexSearcher, _allocator, null, context, query, _index, query.QueryParameters, QueryBuilderFactories,
-                _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, deduplicationDisabled:true, indexReadOperation: this, token: token);
+                _fieldMappings, null, null /* allow highlighting? */, global::Corax.Constants.IndexSearcher.TakeAll, indexReadOperation: this, token: token);
             using var mlt = new RavenRavenMoreLikeThis(builderParameters, options);
             long? baseDocId = null;
 
@@ -1267,18 +1240,16 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
 
             // Materialize into bitmap via OR
             Voron.Data.RoaringBitmaps.RoaringBitmap mltBitmapData = new(_allocator);
-            // Hoisted out of the try so the finally can release them even when the iterator exits early
-            // (yield break at query.Limit) or the consumer abandons enumeration.
             long[] ids = null;
             Voron.Data.RoaringBitmaps.RoaringBitmapIterator mltIterator = default;
             try
             {
-                long[] fillBuf = new long[4096];
+                Span<long> fillBuf = stackalloc long[4096];
                 foreach (var termMatch in mltTerms)
                 {
                     int termRead;
                     while ((termRead = termMatch.Fill(fillBuf)) > 0)
-                        mltBitmapData.AddRange(fillBuf.AsSpan(0, termRead));
+                        mltBitmapData.AddRange(fillBuf[..termRead]);
                 }
 
                 // AND with filter query if present
@@ -1290,14 +1261,12 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     {
                         int filterRead;
                         while ((filterRead = filterMatch.Fill(fillBuf)) > 0)
-                            filterBitmapData.AddRange(fillBuf.AsSpan(0, filterRead));
+                            filterBitmapData.AddRange(fillBuf[..filterRead]);
                         mltBitmapData.AndWith(ref filterBitmapData);
                     }
                     finally
                     {
                         filterBitmapData.Dispose();
-                        // FilterQuery can be a CompiledQueryMatch (IDisposable), fully materialized above and unused
-                        // afterward — release its bitmap/iterator allocations promptly.
                         (filterMatch as IDisposable)?.Dispose();
                     }
                 }
@@ -1387,7 +1356,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             
             var builderParameters = new QueryBuilderParameters(IndexSearcher, _allocator, null,
                 documentsContext, query, _index, query.QueryParameters, QueryBuilderFactories,
-                _fieldMappings, null, null, (int)take, deduplicationDisabled: false,
+                _fieldMappings, null, null, (int)take,
                 indexReadOperation: this, token: token);
 
             // Route through the sorted pipeline so the raw-entries view honors ORDER BY, matching Lucene.
@@ -1597,7 +1566,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                 HasBoost = builderParameters.HasBoost
             };
             return QueryPlanBuilder.QueryPlanBuilder.BuildFilterMatch(
-                planParams, builderParameters, out _, highlightingTerms: null, wantTimings: false, builderParameters.Token);
+                planParams, builderParameters, highlightingTerms: null, wantTimings: false, builderParameters.Token);
         }
     }
 }

@@ -214,10 +214,16 @@ namespace Raven.Server.Documents.Indexes
             // resetting/rebuilding an index upgrades it to the fixed encoding.
             public const long OrderPreservingCompoundNumericEncoding = 72_001; // RavenDB-26831
 
+            // RavenDB-25281: Corax rejects a compound field whose first source field is tokenized/non-keyword
+            // (it cannot produce the order-preserving prefix a compound field needs). Gated by version so indexes
+            // created before this validation existed keep working after an upgrade; only indexes at this version
+            // or higher are validated.
+            public const long CoraxCompoundFieldFirstFieldValidation = 72_002; // RavenDB-25281
+
             /// <summary>
             /// Remember to bump this
             /// </summary>
-            public const long CurrentVersion = OrderPreservingCompoundNumericEncoding;
+            public const long CurrentVersion = CoraxCompoundFieldFirstFieldValidation;
             
             public static bool IsLowerCasedReferencesSupported(long indexVersion)
             {

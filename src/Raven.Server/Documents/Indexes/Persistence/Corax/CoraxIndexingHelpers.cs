@@ -30,7 +30,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 public static class CoraxIndexingHelpers
 {
-    private static readonly ConcurrentDictionary<Type, bool> NotForQuerying = new ConcurrentDictionary<Type, bool>();
+    private static readonly ConcurrentDictionary<Type, bool> NotForQuerying = new();
 
     private static readonly RavenLogger Logger =
         RavenLogManager.Instance.GetLoggerForServer(typeof(CoraxIndexingHelpers));
@@ -39,6 +39,11 @@ public static class CoraxIndexingHelpers
     {
         IndexDefinition definition = mapIndexDefinition.IndexDefinition;
         if (definition.CompoundFields is not { Count: > 0 })
+            return;
+
+        // Don't fault indexes that predate this validation: an upgraded index keeps its stored version,
+        // so anything below the gate was built (and works) under the old, unvalidated behavior.
+        if (index.Definition.Version < IndexDefinitionBaseServerSide.IndexVersion.CoraxCompoundFieldFirstFieldValidation)
             return;
 
         bool ignoreInvalid = index.Configuration.CoraxIgnoreInvalidTokenizedCompoundFields;
@@ -55,13 +60,8 @@ public static class CoraxIndexingHelpers
             if (mapping.TryGetByFieldName(firstField, out IndexFieldBinding binding) == false)
                 continue;
 
-            // Numeric field1 bypasses the analyzer pipeline on both indexing and query sides
-            // (CoraxDocumentConverterBase.AppendFieldValue uses Bits.SwapBytes directly for
-            // long/double; QueryPlanBuilder.Resolution mirrors that on the query side). The
-            // byte-stable raw encoding is safe to use as the leading bytes of a compound key,
-            // regardless of what string-side analyzer the field happens to have configured.
             if (binding.FieldNameLong.HasValue || binding.FieldNameDouble.HasValue)
-                continue;
+                continue; // numerics has no analyzers
 
             CoraxAnalyzer analyzer = binding.Analyzer;
             if (analyzer == null)
@@ -264,9 +264,6 @@ public static class CoraxIndexingHelpers
 
         IndexFieldsMapping mapping = mappingBuilder.Build();
 
-        // Defense-in-depth: any analyzer that survived the static index-definition validation
-        // (e.g. via a custom-analyzer Type that ultimately produces a tokenizing pipeline) is rechecked
-        // here against actual Analyzer instances. Skip when validation is suppressed via configuration.
         if (forQuerying == false && indexDefinition is MapIndexDefinition mapIndexDefinition)
         {
             ValidateCompoundFieldAnalyzers(index, mapIndexDefinition, mapping);
