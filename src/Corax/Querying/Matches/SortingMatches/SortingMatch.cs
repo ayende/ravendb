@@ -266,11 +266,11 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         match.StreamScanEstimateRaw = estimatedScan;
 
         double inflationFactor = 1;
-        if (bitmapMatch is CompiledQueryMatch { CompiledPlan.StreamScanInflation: { } scanInflation })
+        if (bitmapMatch is CompiledQueryMatch { CompiledPlan: { } cp })
         {
             // Correct the uniform-distribution estimate by what this plan has actually scanned in the past.
             // Self-correcting by inflating / deflating estimation with prior queries' results 
-            var inflation = scanInflation.Factor;
+            var inflation = cp.GetOrCreateStreamScanInflation().Factor;
             if (inflation > 0)
             {
                 inflationFactor = inflation;
@@ -339,7 +339,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         }
     }
     
-    internal struct SortedIndexReader<TDirection> : IDisposable
+    internal ref struct SortedIndexReader<TDirection> : IDisposable
         where TDirection : struct, ILookupIterator
     {
         private PostingList.Iterator _postListIt;
@@ -595,7 +595,7 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
         bool forceUsingOnlyIndex = match.ForcedStrategy == CoraxSortingStrategy.IndexOrderStreaming;
 
         // Per-plan learning: record (entries actually scanned / the gate's uniform estimate) so a future query for this plan can have a better estimate
-        var scanInflation = forceUsingOnlyIndex is false && bitmapMatch is CompiledQueryMatch { CompiledPlan.StreamScanInflation: { } si } ? si : null;
+        var scanInflation = forceUsingOnlyIndex is false && bitmapMatch is CompiledQueryMatch { CompiledPlan: { } cp } ? cp.GetOrCreateStreamScanInflation() : null;
 
         using var sortedIdsScope = allocator.Allocate(sizeof(long) * SortBatchSize, out ByteString bs);
         Span<long> sortedIdBuffer = new(bs.Ptr, SortBatchSize);

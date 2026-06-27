@@ -507,7 +507,8 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
         Debug.Assert(secondarySpan.Length >= n);
         Debug.Assert(indexesSpan.Length >= n);
-        Debug.Assert(termsSpan.Length >= n);
+        // _groupTerms (hence termsSpan) is only allocated for the Sequence path, so its length is asserted
+        // inside that branch — Integer/Floating tie-breaks never touch termsSpan.
 
         RoaringBitmap.InitializeIndices(indexesSpan, n);
         var idxs = indexesSpan[..n];
@@ -537,6 +538,7 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
                 MemoryMarshal.Cast<long, double>(secondarySpan[..n]).Sort(idxs);
                 break;
             case MatchCompareFieldType.Sequence:
+                Debug.Assert(termsSpan.Length >= n);
                 SortingHelpers.ReplaceNullAndNonExistingTermIds(secondarySpan[..n], _nonExistingTermContainerId, _nullTermContainerId, SortingHelpers.MissingTermId);
                 Container.GetAllSortedByPage(_llt, secondarySpan[..n], termsSpan[..n], _llt.PageLocator);
                 fixed (UnmanagedSpan* termsPtr = termsSpan)
