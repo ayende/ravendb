@@ -342,7 +342,7 @@ public abstract class AbstractShardedQueryProcessor<TCommand, TResult, TCombined
                     continue;
 
                 orderByExpressions.Add((new FieldExpression(new List<StringSegment> { groupByField }), OrderByFieldType.Implicit, Ascending: true, NullsOrdering: NullsOrderingType.Implicit));
-                orderByFields.Add(new OrderByField(new QueryFieldName(groupByField, isQuoted: false), OrderByFieldType.Implicit, ascending: true));
+                orderByFields.Add(new OrderByField(new QueryFieldName(groupByField, isQuoted: false), OrderByFieldType.Implicit, Ascending: true));
             }
 
             clone.OrderBy = orderByExpressions;
@@ -480,7 +480,7 @@ public abstract class AbstractShardedQueryProcessor<TCommand, TResult, TCombined
         if (queryChanges.HasFlag(QueryChanges.AddOrderByScoreForVectorSearch))
         {
             clone.OrderBy = [(new MethodExpression("score", new List<QueryExpression>()), OrderByFieldType.Score, true, NullsOrderingType.Implicit)];
-            Query.Metadata.OrderBy = [new OrderByField(null, OrderByFieldType.Score, ascending: true)];
+            Query.Metadata.OrderBy = [new OrderByField(null, OrderByFieldType.Score, Ascending: true)];
         }
 
         modifications[nameof(IndexQuery.Query)] = clone.ToString();
