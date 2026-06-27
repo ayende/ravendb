@@ -255,9 +255,7 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
     private void HandleNullOrNonExistent()
     {
-        // A null/non-existing posting list can span multiple Fill batches. If one is still mid-drain,
-        // leave _pendingLargeIterator alone and let the drain in Fill finish it first; queuing the next
-        // iterator here would overwrite the live one and silently drop its undrained entries.
+        // A null/non-existing posting list can span multiple Fill batches, let it finish first.
         if (_hasPendingLargeIterator)
             return;
 
