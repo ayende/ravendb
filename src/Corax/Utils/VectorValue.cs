@@ -11,9 +11,8 @@ public struct VectorValue : IDisposable
     private int _length;
     public int Length => _length;
 
-    // Source (pre-packing) dimension count when known; 0 means unknown. Bit-packed Binary embeddings lose the
-    // exact dimension count (ceil(dims/8) is not injective), so callers that still hold the source element count
-    // record it here to allow an exact dimensionality check later.
+    // Bit-packed Binary embeddings lose the exact dimension count (ceil(dims/8) loses accuracy when not exactly 8 bits
+    // 0 means uknown
     private int _sourceDimensions;
     public int SourceDimensions => _sourceDimensions;
 
@@ -28,10 +27,6 @@ public struct VectorValue : IDisposable
     public Memory<byte> GetEmbeddingMemory()
     {
         return _memory.Slice(0, _length);
-    }
-
-    public VectorValue()
-    {
     }
     
     private VectorValue(bool isNull)
