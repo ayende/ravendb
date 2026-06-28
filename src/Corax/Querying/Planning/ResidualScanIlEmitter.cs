@@ -18,8 +18,9 @@ public static class ResidualScanIlEmitter
         Span<long> entryIds,
         Span<int> originalIndexes);
 
-    /// <summary>Emit a residual-scan delegate that evaluates <paramref name="predicates"/> against each reader in the batch.
-    /// Passing entry IDs and (optionally) original indexes are compacted to the front of their spans. Returns the count of survivors.</summary>
+    /// <summary>Emit a residual-scan delegate that evaluates <paramref name="predicates"/> against each <see cref="EntryTermsReader"/> in the batch.
+    /// Surviving entry IDs (and their original indexes) are compacted to the front of <c>entryIds</c>/<c>originalIndexes</c>; the return value is the count of survivors.
+    /// <paramref name="csharpSource"/> receives an equivalent C# source rendering of the emitted IL for debugging.</summary>
     public static ResidualScanPredicate EmitDelegate(Span<ScanPredicateInfo> predicates, out string csharpSource)
     {
         if (predicates.IsEmpty)
