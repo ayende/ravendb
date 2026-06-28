@@ -69,7 +69,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     // ScorePresentSorted (the sorted-batch scoring fast path used by the in-memory score sort) must produce exactly
     // the same scores as the scalar per-entry Contains loop, across all container types (Array / Bitmap / Range) and
     // including absent containers (whole runs skipped). Also verifies it ACCUMULATES onto existing scores.
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void ScorePresentSorted_MatchesScalarContains_AcrossContainerTypes()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -123,7 +123,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void CanAddAndContainsSingleValue()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -136,7 +136,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void CanAddManyValuesInSameContainer()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -153,7 +153,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void CanAddValuesAcrossMultipleContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -175,7 +175,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void CanAddAndContainsValuesLargerThan32Bits()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -206,7 +206,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void ArrayToBitmapConversionOnThreshold()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -226,7 +226,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void FullContainerAsRange()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -243,7 +243,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void DuplicateAddIsIdempotent()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -256,7 +256,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void CanHandle64BitValues()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -272,7 +272,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
     #region Set Operations
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndIntersection()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -302,7 +302,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void OrUnion()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -327,7 +327,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndNotDifference()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -357,7 +357,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithDisjointBitmaps()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -384,7 +384,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void SetOpsWithDenseBitmapContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -412,7 +412,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void SetOpsWithMixedContainerTypes()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -449,7 +449,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         }
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void SetOpsAcrossMultipleContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -496,7 +496,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
     #region Iterator Tests
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void IteratorReturnsAllValuesInOrder()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -517,7 +517,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void IteratorWorksWithSmallBuffer()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -546,7 +546,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void IteratorHandlesBitmapContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -575,7 +575,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void IteratorHandlesFullContainer()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -597,7 +597,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void IteratorHandlesMultipleContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -619,7 +619,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void EmptyBitmapIteratorReturnsZero()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -637,7 +637,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
     #region Range Container Tests
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void RangeContainerCreatedForSequentialAdds()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -654,7 +654,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void RangeContainerFullContainer()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -671,7 +671,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void RangeContainerIteratesCorrectly()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -693,7 +693,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void SetOpsWithRangeContainers()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -743,7 +743,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     }
 
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void RangeContainerGapConvertsToArrayOrBitmap()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -770,7 +770,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
     #region Stress / Large Scale Tests
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void LargeScaleAddAndIterate()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -807,7 +807,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void SetOpsCorrectnessAgainstHashSet()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -859,7 +859,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
     #region WP1: New methods (Clear, Count, AddRange, OrWith, RepairAfterLazy)
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void Count_ReturnsCorrectValue()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -877,7 +877,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void Clear_ResetsToEmpty()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -900,7 +900,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void Clear_RepeatedClearAndReuse()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -918,7 +918,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AddRange_SortedValues()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -938,7 +938,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AddRange_MatchesIndividualAdds()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -984,7 +984,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmapSingle.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AddRange_EmptySpan()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -994,7 +994,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         bitmap.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void OrWith_ComputesCorrectCardinalityAfterRepair()
     {
         using var bsc = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1021,7 +1021,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
     #region AndWith Edge Cases (replacement for RavenDB-21052 SortHelper.FindMatches)
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithGapBetweenContainers()
     {
         // Two bitmaps with no overlapping containers — gap between key ranges.
@@ -1054,7 +1054,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithMatchAtFirstElement()
     {
         // Match is the first element of the right array.
@@ -1081,7 +1081,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithMatchAtLastElement()
     {
         // Match is the last element of the right array.
@@ -1108,7 +1108,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithSubset()
     {
         // One bitmap is a subset of the other — AND should return the subset.
@@ -1134,7 +1134,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         large.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithEmptyBitmap()
     {
         // AND with empty bitmap should produce empty result.
@@ -1154,7 +1154,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         empty.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithContainerBoundaryValues()
     {
         // Test values at container boundaries: first (0) and last (65535) within a container.
@@ -1183,7 +1183,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithCrossContainerTypes()
     {
         // Force different container types: sparse (Array) vs dense (Bitmap) vs Range.
@@ -1236,7 +1236,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
     #region SIMD Boundary Tests (replacement for RavenDB-21471 vectorized AND out-of-bounds)
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void SimdAndWithSmallArraysDoesNotProduceFalsePositives()
     {
         // Small arrays (1-2 elements) where SIMD Vector256 reads past live data.
@@ -1268,7 +1268,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void SimdAndWithSingleElementArrays()
     {
         // Minimal arrays: 1 element each. SIMD reads a full vector (16 ushorts)
@@ -1300,7 +1300,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         c.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void SimdAndNotWithSmallArraysDoesNotProduceFalseExclusions()
     {
         // ANDNOT with small arrays — verify no false exclusions from padding.
@@ -1335,7 +1335,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     /// <summary>Verify AND/OR/ANDNOT produce correct results for every combination of
     /// container types (empty, sparse array, dense bitmap, range, cross-container).
     /// Uses a reference HashSet to compare against RoaringBitmap set operations.</summary>
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void ExhaustiveSetOpCompatibility()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1442,7 +1442,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         return ok;
     }
 
-    [RavenTheory(RavenTestCategory.Corax)]
+    [RavenTheory(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     [InlineDataWithRandomSeed]
     public void ExhaustiveSetOpCompatibility_RandomSeed(int seed)
     {
@@ -1476,7 +1476,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
     /// <summary>Targeted regression test for the (ArrayUnsorted, Range) dangling stack pointer bug.
     /// LazyOrContainerInPlace materialized Range into a stack buffer, then (Array, Bitmap) stole
     /// the pointer — dangling after stack unwind. Fixed by converting Array to heap Bitmap first.</summary>
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void OrWithArrayAndRange_NoDanglingPointer()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1525,7 +1525,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
 
     private static long Entry(int containerKey, int offset) => (long)containerKey * ContainerSize + offset;
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithRange_IntersectsOnlyContainersInKeyRange()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1569,7 +1569,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithRange_DoesNotConsumeOther_SoItCanBeReusedAcrossCalls()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1604,7 +1604,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithRange_ClampsKeyBoundsAndTreatsEmptyRangeAsNoOp()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1637,7 +1637,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         b.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithRange_TailPassDropsCandidateContainersTheTermNeverReached()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1673,7 +1673,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         term.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void RemoveContainersFrom_DropsContainersAtOrAboveKeyAndKeepsThePrefix()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1697,7 +1697,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         a.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void RemoveContainersFrom_ZeroClearsAll_BeyondMaxIsNoOp()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1719,7 +1719,7 @@ public unsafe class RoaringBitmapTests : NoDisposalNeeded
         a.Dispose();
     }
 
-    [RavenFact(RavenTestCategory.Corax)]
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Voron)]
     public void AndWithRange_SettledPrefixPlusTailEqualsFullAndWith()
     {
         using var ctx = new ByteStringContext(SharedMultipleUseFlag.None);
