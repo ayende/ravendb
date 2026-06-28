@@ -143,7 +143,7 @@ internal static partial class QueryPlanBuilder
 
         if (exec.Clause is { HasBoost: true, Bindings.Length: > 0 })
         {
-            ResolveBoostFactor(exec, slotBindings, queryParameters);
+            ResolveBoostFactor(exec, slotBindings, queryParameters, builderParameters);
         }
 
         switch (exec.Clause.ClauseType) // Spatial and vector resolve via their binding array.
@@ -268,9 +268,9 @@ internal static partial class QueryPlanBuilder
         }
     }
 
-    private static void ResolveBoostFactor(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters)
+    private static void ResolveBoostFactor(ClauseExecution exec, ParameterBinding[] slotBindings, BlittableJsonReaderObject queryParameters, QueryBuilderParameters builderParameters)
     {
-        var (boostVal, boostType) = ResolveBindingScalar(exec.Clause.Bindings[^1], slotBindings, queryParameters, builderParameters: null);
+        var (boostVal, boostType) = ResolveBindingScalar(exec.Clause.Bindings[^1], slotBindings, queryParameters, builderParameters);
         if (boostVal == null) return;
 
         exec.BoostFactor = boostType switch
