@@ -348,8 +348,7 @@ internal static partial class QueryPlanBuilder
                 return ParseMethod(method, walkerCtx);
 
             case NegatedExpression negated:
-                ParseNegated(negated, walkerCtx);
-                return BooleanOp.Leaf;
+                return ParseNegated(negated, walkerCtx);
 
             case TrueExpression:
                 return BooleanOp.True;
@@ -537,18 +536,63 @@ internal static partial class QueryPlanBuilder
         });
     }
 
-    private static void ParseNegated(NegatedExpression negated, ResolutionContext walkerCtx)
+    // not(...) must distribute over its operands (De Morgan), otherwise a conjunction/disjunction
+    // under a NOT is silently dropped. e.g. negated-Any emits `not (Name != $p0 and Name != $p1)`,
+    // which has to become `Name = $p0 or Name = $p1` — a real OR — so that null/empty docs (which a
+    // bare `Name != x and Name != y` excludes) are matched. We push the negation to negation-normal
+    // form on the AST, then parse the rewritten tree: connectives flip (and<->or) and equality flips
+    // its operator (= <-> !=) into canonical clause form; other leaves (range/method/IN/BETWEEN) keep
+    // their NOT and are complemented via IsNegated by ParseNegatedLeaf.
+    private static BooleanOp ParseNegated(NegatedExpression negated, ResolutionContext walkerCtx)
+    {
+        QueryExpression inner = negated.Expression;
+        switch (inner)
+        {
+            case BinaryExpression { Operator: OperatorType.And or OperatorType.Or
+                                       or OperatorType.Equal or OperatorType.NotEqual }:
+            case NegatedExpression:
+                return ParseExpression(NegationNormalForm(inner), walkerCtx);
+            default:
+                return ParseNegatedLeaf(inner, walkerCtx);
+        }
+    }
+
+    // Pure AST rewrite: pushes a logical NOT down to the leaves. Boolean connectives flip via De Morgan
+    // and recurse; equality comparisons flip their operator; double negation cancels; every other leaf
+    // is wrapped in NegatedExpression so ParseExpression routes it to ParseNegatedLeaf for complementing.
+    private static QueryExpression NegationNormalForm(QueryExpression expr)
+    {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
+        switch (expr)
+        {
+            case BinaryExpression { Operator: OperatorType.And } be:
+                return new BinaryExpression(NegationNormalForm(be.Left), NegationNormalForm(be.Right), OperatorType.Or) { Parenthesis = true };
+            case BinaryExpression { Operator: OperatorType.Or } be:
+                return new BinaryExpression(NegationNormalForm(be.Left), NegationNormalForm(be.Right), OperatorType.And) { Parenthesis = true };
+            case BinaryExpression { Operator: OperatorType.Equal } be:
+                return new BinaryExpression(be.Left, be.Right, OperatorType.NotEqual);
+            case BinaryExpression { Operator: OperatorType.NotEqual } be:
+                return new BinaryExpression(be.Left, be.Right, OperatorType.Equal);
+            case NegatedExpression neg:
+                return neg.Expression; // not(not(x)) == x
+            default:
+                return new NegatedExpression(expr);
+        }
+    }
+
+    private static BooleanOp ParseNegatedLeaf(QueryExpression inner, ResolutionContext walkerCtx)
     {
         List<ClauseInfo> saved = walkerCtx.Clauses;
         walkerCtx.Clauses = [];
-        ParseExpression(negated.Expression, walkerCtx);
+        ParseExpression(inner, walkerCtx);
         List<ClauseInfo> innerClauses = walkerCtx.Clauses;
         walkerCtx.Clauses = saved;
-        foreach (ClauseInfo inner in innerClauses)
+        foreach (ClauseInfo clause in innerClauses)
         {
-            inner.IsNegated = true;
-            walkerCtx.Clauses.Add(inner);
+            clause.IsNegated = !clause.IsNegated;
+            walkerCtx.Clauses.Add(clause);
         }
+        return BooleanOp.Leaf;
     }
 
     private delegate BooleanOp MethodHandler(MethodExpression method, ResolutionContext walkerCtx);
