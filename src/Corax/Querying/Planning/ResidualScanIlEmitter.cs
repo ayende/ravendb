@@ -226,10 +226,6 @@ public static class ResidualScanIlEmitter
     private static bool ConsumesFieldRootPage(in ScanPredicateInfo pred) =>
         pred.CompareOp is not (ScanCompareOp.AlwaysTrue or ScanCompareOp.AlwaysFalse);
 
-    // A leaf consumes a scalar comparison param (Param1, plus Param2 for Between) iff it is a real
-    // value comparison. IN/AllIn read a per-execution ResidualInSets entry (inSetIdx), Exists and the
-    // collapsed MatchAll/MatchNothing sentinels read no value — none of those advance the param slot.
-    // Kept in lockstep with ScanParamExtractor, which appends one ResidualParamSlot entry per such leaf.
     private static bool ConsumesScalarParam(in ScanPredicateInfo pred) =>
         pred.SubPredicates == null &&
         pred.CompareOp is not (ScanCompareOp.AlwaysTrue or ScanCompareOp.AlwaysFalse
@@ -527,14 +523,14 @@ public static class ResidualScanIlEmitter
                     d.LoadSliceSpan(paramSlot);
                     d.CallStatic(IlEmitterShared.SequenceCompareTo);
                     d.PushConstInt(0);
-                    d.BranchLT(fail);
+                    d.BranchLt(fail);
 
                     // a.SequenceCompareTo(high) > 0 → fail
                     d.LoadReaderDecodedSlice(readerRefLocal);
                     d.LoadSliceSpan(paramSlot, second: true);
                     d.CallStatic(IlEmitterShared.SequenceCompareTo);
                     d.PushConstInt(0);
-                    d.BranchGT(fail);
+                    d.BranchGt(fail);
 
                     EmitBetweenTail(ref d, fail, done);
                     break;
@@ -597,11 +593,11 @@ public static class ResidualScanIlEmitter
 
         d.LoadReaderCurrentLong(readerRefLocal);
         d.LoadLongParam(paramSlot);
-        d.BranchLT(fail);
+        d.BranchLt(fail);
 
         d.LoadReaderCurrentLong(readerRefLocal);
         d.LoadLongParam(paramSlot, second: true);
-        d.BranchGT(fail);
+        d.BranchGt(fail);
 
         EmitBetweenTail(ref d, fail, done);
     }
@@ -613,11 +609,11 @@ public static class ResidualScanIlEmitter
 
         d.LoadReaderCurrentDouble(readerRefLocal);
         d.LoadDoubleParam(paramSlot);
-        d.BranchLTUnsigned(fail);
+        d.BranchLtDouble(fail);
 
         d.LoadReaderCurrentDouble(readerRefLocal);
         d.LoadDoubleParam(paramSlot, second: true);
-        d.BranchGTUnsigned(fail);
+        d.BranchGtUnsigned(fail);
 
         EmitBetweenTail(ref d, fail, done);
     }

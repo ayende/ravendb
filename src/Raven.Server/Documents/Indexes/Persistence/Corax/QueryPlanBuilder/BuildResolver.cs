@@ -447,25 +447,22 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         _builder.Append(execs.Count, 16); // length prefixed to ensure consistency
         foreach (var e in execs)
         {
-            // Clauses are sorted cheapest-first. We key each sorted POSITION by its order-agnostic
-            // op-signature (operation kind, value-type dispatch, negation, single/multi-valued) rather
-            // than the clause's OriginalIndex. Field identity and param indices are resolved per-execution
-            // (FieldRootPages / ResidualParamSlot*), so two queries that differ only by a cardinality
-            // reordering of structurally-interchangeable clauses (e.g. three Equals on same-multiplicity
-            // string fields) collapse onto ONE compiled plan, while a reordering that puts a different
-            // op-kind / value-type / multiplicity at a position re-plans. (RavenDB-25281)
+            // Clauses are sorted cheapest-first - but for the cache key, we care about the _type_, not exact order
+            // Two queries that differ only by a cardinality reordering of structurally-interchangeable clauses will use the same query\
+            // where Genres = 'Drama' and Lang = 'en' generates:
+            //
+            // * FillFromPostingList (Genres / Lang)
+            // * AndFromPostingList  (Lang / Genres)
+            //
+            // we don't need to care in which order, they are served by the same cached plan
             AppendOpSignature(e);
         }
 
-        // Driving-clause sorted positions. The direct-scan and compound-field residual sets bake
-        // ClauseIndices that SKIP the driving clause(s) by POSITION (BuildResidualSet). The op-signature
-        // loop above is order-agnostic, so two executions can share an op-signature yet place the driving
-        // clause at different sorted positions — which would make a shared plan's baked ClauseIndices scan
-        // the wrong residual clauses. Keying the driving positions forces a re-plan when they move, while
-        // entry-scan-only queries (no ORDER BY) leave all roles null → all -1 → full collapse. (RavenDB-25281)
-        AppendRolePosition(execs, _exec.SortDrivingClause);
-        AppendRolePosition(execs, _exec.CompoundFieldDrivingClause);
-        AppendRolePosition(execs, _exec.CompoundFieldField2Range);
+        // Driving-clause sorted positions does matter for those sorts of query, so we take them into account in
+        // the cache key and generate separate plans for them if needed
+        AppendClauseIndex(_exec.SortDrivingClause);
+        AppendClauseIndex(_exec.CompoundFieldDrivingClause);
+        AppendClauseIndex(_exec.CompoundFieldField2Range);
 
         // Boost + cardinality-cliff flags: queries on either side of the cliff get distinct plans.
         int flags = planParams.HasBoost.ToInt32() << 1 |
@@ -489,20 +486,11 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         return _builder.ToHash();
     }
 
-    // Encodes the sorted position of a residual driving clause (0 = absent, else index+1). ClauseExecution
-    // is a reference type with no Equals override, so IndexOf is reference identity — exactly the test
-    // BuildResidualSet uses to skip the driving clause.
-    private void AppendRolePosition(List<ClauseExecution> execs, ClauseExecution role)
-    {
-        int pos = role is null ? 0 : execs.IndexOf(role) + 1;
-        _builder.Append(pos, 16);
-    }
+    void AppendClauseIndex(ClauseExecution clauseWrapper) => _builder.Append((clauseWrapper?.Clause.OriginalIndex ?? 0) << 1 | (clauseWrapper != null).ToInt32(), 17);
 
-    // Order-agnostic structural fingerprint of one clause (recursing groups in SubExecutions order, the
-    // same order the plan/residual emitters walk). Captures every per-clause input that changes the
-    // EMITTED code — but NOT field identity or param index, which the de-baked residual scan resolves
-    // per-execution. Single/multi-valued is load-bearing: a single-valued residual scan does one read,
-    // so reusing it for a multi-valued field would miss later terms.
+    // Captures the *interesting* aspects of a clause (type, negation, multi/single, etc)
+    // Explicitly allows for the same plan to serve:  where Genres = 'Drama' and Lang = 'en'
+    // Where we'll first evaluate Genres -> Lang and vice versa
     private void AppendOpSignature(ClauseExecution e)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
@@ -510,16 +498,13 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         _builder.Append((byte)e.ClauseType, 8);
 
         bool singleValued = e.Clause.FieldName is { } fieldName && _indexSearcher.HasMultipleTermsInField(fieldName) == false;
-        int bits = (e.IsNegated ? 0b0001 : 0)
-                   | (singleValued ? 0b0010 : 0)
+        int bits = (e.IsNegated ? 0b0001 : 0b0000)
+                   | (singleValued ? 0b0010 : 0b0000)
                    | (e.PackedParamValue.ValueType << 2); // value-type dispatch: Long/Double/String/None
         _builder.Append(bits, 4);
 
-        var subs = e.SubExecutions;
-        _builder.Append(subs?.Count ?? 0, 8);
-        if (subs is null)
-            return;
-        foreach (var sub in subs)
+        _builder.Append(e.SubExecutions?.Count ?? 0, 8);
+        foreach (var sub in e.SubExecutions ?? [])
             AppendOpSignature(sub);
     }
 }

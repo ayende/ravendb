@@ -28,11 +28,6 @@ public class QueryExecution
     public CompiledPlan Plan;
     
     public long[] FieldRootPages;
-    // Per-execution residual-scan param-index remap, leaf-positional (parallel to FieldRootPages).
-    // The residual IL is compiled once per shared plan and consumes its scalar comparison values
-    // through these arrays so it can be reused across cardinality orderings: residual leaf position p
-    // resolves to THIS execution's param indices (Param1 / Param2 of the clause now at that position),
-    // rather than the indices baked from whichever execution first compiled the plan.
     public int[] ResidualParamSlot1;
     public int[] ResidualParamSlot2;
     public int[] InRangeCounts;

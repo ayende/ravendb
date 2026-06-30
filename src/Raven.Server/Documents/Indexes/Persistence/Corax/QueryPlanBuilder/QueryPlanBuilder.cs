@@ -536,48 +536,37 @@ internal static partial class QueryPlanBuilder
         });
     }
 
-    // not(...) must distribute over its operands (De Morgan), otherwise a conjunction/disjunction
-    // under a NOT is silently dropped. e.g. negated-Any emits `not (Name != $p0 and Name != $p1)`,
-    // which has to become `Name = $p0 or Name = $p1` — a real OR — so that null/empty docs (which a
-    // bare `Name != x and Name != y` excludes) are matched. We push the negation to negation-normal
-    // form on the AST, then parse the rewritten tree: connectives flip (and<->or) and equality flips
-    // its operator (= <-> !=) into canonical clause form; other leaves (range/method/IN/BETWEEN) keep
-    // their NOT and are complemented via IsNegated by ParseNegatedLeaf.
+    // not(...) must distribute over its operands (De Morgan):
+    // not (Name != $p0 and Name != $p1) -> (Name = $p0 or Name = $p1), not(A = 1 or B = 2) -> A !=1 AND B != 2, etc
     private static BooleanOp ParseNegated(NegatedExpression negated, ResolutionContext walkerCtx)
     {
-        QueryExpression inner = negated.Expression;
-        switch (inner)
+        return negated.Expression switch
         {
-            case BinaryExpression { Operator: OperatorType.And or OperatorType.Or
-                                       or OperatorType.Equal or OperatorType.NotEqual }:
-            case NegatedExpression:
-                return ParseExpression(NegationNormalForm(inner), walkerCtx);
-            default:
-                return ParseNegatedLeaf(inner, walkerCtx);
-        }
+            NegatedExpression or BinaryExpression
+                {
+                    Operator: OperatorType.And or OperatorType.Or or OperatorType.Equal or OperatorType.NotEqual
+                } => 
+                    ParseExpression(NegationNormalForm(negated.Expression), walkerCtx),
+            _ => ParseNegatedLeaf(negated.Expression, walkerCtx)
+        };
     }
 
-    // Pure AST rewrite: pushes a logical NOT down to the leaves. Boolean connectives flip via De Morgan
-    // and recurse; equality comparisons flip their operator; double negation cancels; every other leaf
-    // is wrapped in NegatedExpression so ParseExpression routes it to ParseNegatedLeaf for complementing.
     private static QueryExpression NegationNormalForm(QueryExpression expr)
     {
         RuntimeHelpers.EnsureSufficientExecutionStack();
-        switch (expr)
+        return expr switch
         {
-            case BinaryExpression { Operator: OperatorType.And } be:
-                return new BinaryExpression(NegationNormalForm(be.Left), NegationNormalForm(be.Right), OperatorType.Or) { Parenthesis = true };
-            case BinaryExpression { Operator: OperatorType.Or } be:
-                return new BinaryExpression(NegationNormalForm(be.Left), NegationNormalForm(be.Right), OperatorType.And) { Parenthesis = true };
-            case BinaryExpression { Operator: OperatorType.Equal } be:
-                return new BinaryExpression(be.Left, be.Right, OperatorType.NotEqual);
-            case BinaryExpression { Operator: OperatorType.NotEqual } be:
-                return new BinaryExpression(be.Left, be.Right, OperatorType.Equal);
-            case NegatedExpression neg:
-                return neg.Expression; // not(not(x)) == x
-            default:
-                return new NegatedExpression(expr);
-        }
+            BinaryExpression { Operator: OperatorType.And } be =>
+                new BinaryExpression(NegationNormalForm(be.Left), NegationNormalForm(be.Right), OperatorType.Or) { Parenthesis = true },
+            BinaryExpression { Operator: OperatorType.Or } be => 
+                new BinaryExpression(NegationNormalForm(be.Left), NegationNormalForm(be.Right), OperatorType.And) { Parenthesis = true },
+            BinaryExpression { Operator: OperatorType.Equal } be => 
+                new BinaryExpression(be.Left, be.Right, OperatorType.NotEqual),
+            BinaryExpression { Operator: OperatorType.NotEqual } be => 
+                new BinaryExpression(be.Left, be.Right, OperatorType.Equal),
+            NegatedExpression neg => neg.Expression, // not(not(x)) == x
+            _ => new NegatedExpression(expr)
+        };
     }
 
     private static BooleanOp ParseNegatedLeaf(QueryExpression inner, ResolutionContext walkerCtx)

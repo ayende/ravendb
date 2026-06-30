@@ -21,9 +21,7 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
 
     private readonly List<long> _roots = [];
     private readonly List<ResidualInValues> _inSets = [];
-    // Per-execution scalar-param-index remap, one entry per scalar comparison leaf in walk order.
-    // The residual IL is shared across cardinality orderings, so it resolves its comparison values
-    // through these (this execution's clause at each leaf position), not the baked first-build indices.
+    // The residual IL is shared across cardinality orderings, resolves via indirection by the leaf position to the actual entry
     private readonly List<int> _paramSlot1 = [];
     private readonly List<int> _paramSlot2 = [];
 
@@ -75,8 +73,6 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
         if (pred.CompareOp is ScanCompareOp.AlwaysTrue or ScanCompareOp.AlwaysFalse)
             return;
 
-        // Field identity is resolved from THIS execution's clause (not the baked predicate) so a plan
-        // shared across cardinality orderings scans the field that actually sits at this leaf position.
         _roots.Add(indexSearcher.FieldCache.GetLookupRootPage(cur.Clause.FieldName));
 
         if (pred.CompareOp is ScanCompareOp.In or ScanCompareOp.AllIn)
@@ -85,12 +81,9 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
             return;
         }
 
-        // Exists carries no comparison value; it consumes a root page but no param slot
-        // (matches ResidualScanIlEmitter.ConsumesScalarParam, which excludes Exists).
         if (pred.CompareOp == ScanCompareOp.Exists)
-            return;
+            return; // no more work here...
 
-        // Scalar comparison leaf: record this execution's param indices in leaf order.
         _paramSlot1.Add(cur.PackedParamValue.Param1);
         _paramSlot2.Add(cur.PackedParamValue.Param2);
 
@@ -98,7 +91,6 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
             pred.ValueType is not (ScanValueType.Slice or ScanValueType.SliceLong))
             return;
 
-        // ensure that the relevant slices are analyzed
         FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(cur.Clause, walkerCtx);
         exec.GetAnalyzedSlice(indexSearcher, fieldMeta, cur.PackedParamValue.Param1);
         if (cur.PackedParamValue.Param2 != PackedParam.NoParamValue)

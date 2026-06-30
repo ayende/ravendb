@@ -89,14 +89,14 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
 
     public void PushTempName(string name) => CsStack.Push(name);
 
-    public LocalBuilder DeclareLocal(System.Type type, string csName)
+    public LocalBuilder DeclareLocal(Type type, string csName)
     {
         var local = Il.DeclareLocal(type);
         _locals[local] = csName;
         return local;
     }
 
-    public LocalBuilder DeclareLocalRef(System.Type type, string csName)
+    public LocalBuilder DeclareLocalRef(Type type, string csName)
     {
         var local = Il.DeclareLocal(type.MakeByRefType());
         _locals[local] = csName;
@@ -195,46 +195,42 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsStack.Push("reader.Current.Decoded()");
     }
 
-    // Push THIS execution's param index for residual leaf position `slot`: exec.ResidualParamSlotN[slot].
-    // The residual scan is compiled once per shared plan; resolving the index at runtime (instead of
-    // baking it) lets the same delegate be reused across cardinality orderings (RavenDB-25281).
-    private void EmitResidualParamIndex(int slot, bool second)
+    private string EmitResidualParamIndex(int slot, bool second)
     {
         LoadContextArg();
         Il.Emit(OpCodes.Ldfld, second ? IlEmitterShared.ResidualParamSlot2 : IlEmitterShared.ResidualParamSlot1);
         IlEmitterShared.EmitLdcI4(Il, slot);
         Il.Emit(OpCodes.Ldelem_I4);
-    }
 
-    private string ParamSlotExpr(int slot, bool second) =>
-        $"{ContextArgName}.{(second ? "ResidualParamSlot2" : "ResidualParamSlot1")}[{slot}]";
+        return $"{ContextArgName}.{(second ? "ResidualParamSlot2" : "ResidualParamSlot1")}[{slot}]";
+    }
 
     public void LoadLongParam(int slot, bool second = false)
     {
         LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualLongs);
-        EmitResidualParamIndex(slot, second);
+        var expr = EmitResidualParamIndex(slot, second);
         Il.Emit(OpCodes.Ldelem_I8);
-        CsStack.Push($"{ContextArgName}.LongValues[{ParamSlotExpr(slot, second)}]");
+        CsStack.Push($"{ContextArgName}.LongValues[{expr}]");
     }
 
     public void LoadDoubleParam(int slot, bool second = false)
     {
         LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualDoubles);
-        EmitResidualParamIndex(slot, second);
+        var expr = EmitResidualParamIndex(slot, second);
         Il.Emit(OpCodes.Ldelem_R8);
-        CsStack.Push($"{ContextArgName}.DoubleValues[{ParamSlotExpr(slot, second)}]");
+        CsStack.Push($"{ContextArgName}.DoubleValues[{expr}]");
     }
 
     public void LoadSliceSpan(int slot, bool second = false)
     {
         LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.AnalyzedSlices);
-        EmitResidualParamIndex(slot, second);
+        var expr = EmitResidualParamIndex(slot, second);
         Il.Emit(OpCodes.Ldelema, typeof(Slice));
         Il.Emit(OpCodes.Call, IlEmitterShared.SliceAsReadOnlySpan);
-        CsStack.Push($"{ContextArgName}.AnalyzedSlices[{ParamSlotExpr(slot, second)}].AsReadOnlySpan()");
+        CsStack.Push($"{ContextArgName}.AnalyzedSlices[{expr}].AsReadOnlySpan()");
     }
 
     public void LoadFieldRootPage(int rootIdx)
@@ -275,10 +271,10 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
     {
         LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualStringValues);
-        EmitResidualParamIndex(slot, second: false);
+        var expr = EmitResidualParamIndex(slot, second: false);
         Il.Emit(OpCodes.Ldelem_Ref);
         Il.Emit(OpCodes.Brtrue, l.Il);
-        CsLine($"if ({ContextArgName}.StringValues[{ParamSlotExpr(slot, false)}] != null) goto {l.Name};");
+        CsLine($"if ({ContextArgName}.StringValues[{expr}] != null) goto {l.Name};");
     }
 
     private void EmitLoadInSetField(int idx, FieldInfo field)
@@ -347,7 +343,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         return args;
     }
 
-    public void BranchLT(LabelPair l)
+    public void BranchLt(LabelPair l)
     {
         Il.Emit(OpCodes.Blt, l.Il);
         var b = CsStack.Pop();
@@ -355,7 +351,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsLine($"if ({a} < {b}) goto {l.Name};");
     }
 
-    public void BranchLTUnsigned(LabelPair l)
+    public void BranchLtDouble(LabelPair l)
     {
         Il.Emit(OpCodes.Blt_Un, l.Il);
         var b = CsStack.Pop();
@@ -363,7 +359,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsLine($"if ({a} < {b}) goto {l.Name};");
     }
 
-    public void BranchGT(LabelPair l)
+    public void BranchGt(LabelPair l)
     {
         Il.Emit(OpCodes.Bgt, l.Il);
         var b = CsStack.Pop();
@@ -371,7 +367,7 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsLine($"if ({a} > {b}) goto {l.Name};");
     }
 
-    public void BranchGTUnsigned(LabelPair l)
+    public void BranchGtUnsigned(LabelPair l)
     {
         Il.Emit(OpCodes.Bgt_Un, l.Il);
         var b = CsStack.Pop();

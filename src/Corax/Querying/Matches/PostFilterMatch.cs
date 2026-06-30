@@ -122,9 +122,8 @@ public sealed class PostFilterMatch : IQueryMatch
                 parameters["Inner_ms"] = (_innerTicks / tickFreq).ToString("F3");
             parameters["InnerEmitted"] = _innerEmitted.ToString();
 
-            // Final survivor count: the last post-filter's survivors, or the inner emission when there are none.
             long matched = _postFilters.Length == 0 ? _innerEmitted : _filterSurvivors[^1];
-            parameters[Corax.Constants.QueryInspectionNode.MatchedResults] = matched.ToString("N0");
+            parameters[Constants.QueryInspectionNode.MatchedResults] = matched.ToString("N0");
 
             for (int i = 0; i < _postFilters.Length; i++)
             {

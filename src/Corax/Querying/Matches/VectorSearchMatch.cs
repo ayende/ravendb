@@ -291,7 +291,6 @@ public struct VectorSearchMatch : IPostFilterMatch
             distances.Results.Sort(matches.Results);
         }
 
-        // Final matched count, captured before Score() disposes _matches, so Inspect() can surface it.
         Count = _matches.Count;
 
         Dispose();

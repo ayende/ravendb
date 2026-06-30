@@ -205,9 +205,6 @@ internal static partial class QueryPlanBuilder
             var matchInspection = result.ExecutedMatch.Inspect();
             AppendPostFilterNodes(matchInspection, root);
 
-            // Post-filter plans (spatial PostFilterMatch / vector VectorSearchMatch) don't run through
-            // OverlayTimings (that bails unless ExecutedMatch is CompiledQueryMatch), so the Result node
-            // would otherwise show no output. The match surfaces its final survivor count as MatchedResults.
             if (matchInspection.Parameters.TryGetValue("MatchedResults", out var matched))
                 root.Parameters["Output"] = matched;
         }

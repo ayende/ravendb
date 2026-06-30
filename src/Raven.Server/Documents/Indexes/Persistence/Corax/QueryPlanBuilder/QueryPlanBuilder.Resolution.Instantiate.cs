@@ -256,8 +256,6 @@ internal static partial class QueryPlanBuilder
 
             return effective;
 
-            // entries_to_scan = results_wanted ÷ pass_rate; surface both so a large scan estimate is self-explanatory
-            // (a low pass rate inflates it, and an unbounded Take makes results_wanted the whole driving cardinality).
             string Derivation()
             {
                 string unbounded = unboundedReason is null ? null : $", page unbounded: {unboundedReason}";

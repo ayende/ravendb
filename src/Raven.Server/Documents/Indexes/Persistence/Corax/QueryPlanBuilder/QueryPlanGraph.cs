@@ -35,8 +35,6 @@ internal static class QueryPlanGraph
     private const string SortOp = "Sort";
     private const string BoostOp = "Boost";
 
-    // Entry-scan control-flow node names. MaybeEntryScan is emitted from PlanOpKind.ToString() (Inspection),
-    // so it is tied to the enum via nameof. EntryScan is a synthetic node produced by Inspection, shared here.
     private const string MaybeEntryScanOp = nameof(PlanOpKind.MaybeEntryScan);
     internal const string EntryScanOp = "EntryScan";
 
