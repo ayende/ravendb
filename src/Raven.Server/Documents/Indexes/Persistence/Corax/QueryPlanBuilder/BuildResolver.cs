@@ -486,8 +486,8 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         return _builder.ToHash();
     }
 
-    void AppendClauseIndex(ClauseExecution clauseWrapper) 
-        => _builder.Append(clauseWrapper  == null ?  1 << 16 : _exec.Executions.IndexOf(clauseWrapper), 17);
+    void AppendClauseIndex(ClauseExecution clauseWrapper)
+        => _builder.Append(clauseWrapper == null ? 1 << 16 : _exec.Executions.IndexOf(clauseWrapper), 17);
 
     // Captures the *interesting* aspects of a clause (type, negation, multi/single, etc)
     // Explicitly allows for the same plan to serve:  where Genres = 'Drama' and Lang = 'en'
