@@ -95,8 +95,6 @@ public static class QueryIlEmitter
                 opLimitArmed = true;
             }
 
-            // Timing: record start tick before each op. Pure control-flow ops (the empty/entry-scan/done
-            // branches) do no measurable bitmap work, so timing them is noise — skip the instrumentation.
             bool timeThisOp = IsTimedOp(op.Kind);
             if (timeThisOp)
                 EmitTimingStart(ref d, startTickLocal, i);
@@ -237,18 +235,15 @@ public static class QueryIlEmitter
                     break;
             }
 
-            // Timing: record elapsed time and result count after each op
             if (timeThisOp)
                 EmitTimingEnd(ref d, i, op.BitmapLocal, startTickLocal);
         }
 
-        // Done label
         d.MarkLabel(doneLabel);
         if (needsLazyRepair)
             d.EmitBitmapUnaryCall(0, IlEmitterShared.RepairAfterLazy);
         d.EmitRetVoid();
 
-        // EntryScan tail
         if (hasEntryScan)
             EmitEntryScanTail(ref d, entryScanLabel, cursorVar);
         else
@@ -321,10 +316,8 @@ public static class QueryIlEmitter
         d.CsLine($"Span<long> {d.GetLocalName(bufferLocal)} = stackalloc long[{QueryPrimitives.FillBufferSize}];");
     }
 
-    // Control-flow-only ops (branch tests) perform no bitmap work, so they carry no meaningful timing or
-    // result count — exclude them from the per-op metrics instrumentation.
-    private static bool IsTimedOp(PlanOpKind kind) =>
-        kind is not (PlanOpKind.GotoDoneIfEmpty or PlanOpKind.MaybeEntryScan or PlanOpKind.GotoDone);
+    private static bool IsTimedOp(PlanOpKind kind) => // these require no timing
+        kind is not (PlanOpKind.GotoDoneIfEmpty or PlanOpKind.MaybeEntryScan or PlanOpKind.GotoDone or PlanOpKind.ClearBitmap);
 
     /// <summary>startTick = Stopwatch.GetTimestamp()</summary>
     private static void EmitTimingStart(ref DualEmit d, LocalBuilder startTickLocal, int opIndex)
