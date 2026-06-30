@@ -49,8 +49,6 @@ public sealed class PostFilterMatch : IQueryMatch
 
     public long Count => _inner.Count;
     public bool IsBoosting => _inner.IsBoosting;
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => _inner.DuplicatesOccurrenceStatus;
-
 
     public int Fill(Span<long> matches)
     {

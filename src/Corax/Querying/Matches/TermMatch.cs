@@ -25,9 +25,7 @@ namespace Corax.Querying.Matches
         private FastPForBufferedReader _containerReader;
         public bool IsBoosting => _scoreFunc != null;
         public long Count => _totalResults;
-        
-        public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
-        
+
 #if DEBUG
         public string Term;
 #endif

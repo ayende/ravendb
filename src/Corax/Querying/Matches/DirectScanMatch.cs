@@ -69,7 +69,6 @@ public abstract class DirectScanMatchBase : IQueryMatch, IDisposable
 
     public long Count => TotalMatched;
     public bool IsBoosting => false;
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
     public abstract int Fill(Span<long> matches);
 

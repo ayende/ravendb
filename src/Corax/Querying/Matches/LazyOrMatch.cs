@@ -25,8 +25,6 @@ public sealed class LazyOrMatch(ByteStringContext allocator, IQueryMatch left, I
         }
     }
 
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
-
     public long MinEntryId
     {
         get

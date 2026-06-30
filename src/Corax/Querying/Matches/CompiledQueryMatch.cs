@@ -100,8 +100,6 @@ public class CompiledQueryMatch(
         }
     }
 
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
-
     public long MinEntryId
     {
         get

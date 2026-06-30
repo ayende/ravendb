@@ -187,7 +187,6 @@ public sealed unsafe class SortedDrivingWithTieBreakMatch : IQueryMatch, IDispos
 
     public long Count => -1;
     public bool IsBoosting => false;
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
 
     [SkipLocalsInit]
     public int Fill(Span<long> matches)

@@ -29,7 +29,6 @@ public struct BitmapMatch(ByteStringContext allocator) : IBitmapQueryMatch, IDis
 
     public long Count => _bitmapState.ComputeCount();
     public bool IsBoosting => false;
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 
     public long MinEntryId
     {

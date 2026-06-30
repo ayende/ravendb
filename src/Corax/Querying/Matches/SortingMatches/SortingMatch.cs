@@ -60,8 +60,6 @@ public sealed unsafe partial class SortingMatch<TInner> : SortingMatch
     /// <summary>The scan estimate  computed when it chose IndexOrderStreaming.</summary>
     private double _rawStreamScanEstimate;
 
-    public override DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
-
     public SortingMatch(IndexSearcher searcher, in TInner inner, OrderMetadata orderMetadata, in CancellationToken cancellationToken, NullsSortMode defaultNullsSortMode, int take = -1)
     {
         _searcher = searcher;

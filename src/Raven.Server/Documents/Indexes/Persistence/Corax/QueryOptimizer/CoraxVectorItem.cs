@@ -99,9 +99,6 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
 
     public QueryInspectionNode Inspect() => throw new NotSupportedException(IQueryMatchUsageException);
 
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus { get => throw new NotSupportedException(IQueryMatchUsageException); }
-
-
     private const string IQueryMatchUsageException = $"You tried to use {nameof(CoraxVectorItem)} as normal querying function. This class is only for type-relaxation inside QueryPlanBuilder to build query.";
 
     #endregion

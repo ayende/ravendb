@@ -25,7 +25,6 @@ public abstract class SortingMultiMatch : IQueryMatch, IDisposable, IRequireSort
     public long SortingTimeInTicks;
 
     public abstract bool IsBoosting { get; }
-    public abstract DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
     public abstract long Count { get; }
     public abstract int Fill(Span<long> buffer);
     // Top-level sort: its own Score is a no-op (never nested in another match's score chain), so ScoreSorted mirrors it.

@@ -72,7 +72,6 @@ public abstract class SortingMatch : IQueryMatch, IDisposable, IRequireSortingDa
     public double GateThreshold;
 
     public abstract bool IsBoosting { get; }
-    public abstract DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
     public abstract long Count { get; }
     public abstract int Fill(Span<long> buffer);
 
