@@ -21,6 +21,11 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
 
     private readonly List<long> _roots = [];
     private readonly List<ResidualInValues> _inSets = [];
+    // Per-execution scalar-param-index remap, one entry per scalar comparison leaf in walk order.
+    // The residual IL is shared across cardinality orderings, so it resolves its comparison values
+    // through these (this execution's clause at each leaf position), not the baked first-build indices.
+    private readonly List<int> _paramSlot1 = [];
+    private readonly List<int> _paramSlot2 = [];
 
     private void ExtractAll(ScanPredicateInfo[] predicates, int[] clauseIndices)
     {
@@ -32,6 +37,8 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
 
         exec.FieldRootPages = _roots.Count > 0 ? _roots.ToArray() : null;
         exec.ResidualInSets = _inSets.Count > 0 ? _inSets.ToArray() : null;
+        exec.ResidualParamSlot1 = _paramSlot1.Count > 0 ? _paramSlot1.ToArray() : null;
+        exec.ResidualParamSlot2 = _paramSlot2.Count > 0 ? _paramSlot2.ToArray() : null;
     }
 
     private ResidualInValues BuildInSet(ScanPredicateInfo pred, ClauseExecution exec1)
@@ -68,13 +75,24 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
         if (pred.CompareOp is ScanCompareOp.AlwaysTrue or ScanCompareOp.AlwaysFalse)
             return;
 
-        _roots.Add(indexSearcher.FieldCache.GetLookupRootPage(pred.FieldName));
+        // Field identity is resolved from THIS execution's clause (not the baked predicate) so a plan
+        // shared across cardinality orderings scans the field that actually sits at this leaf position.
+        _roots.Add(indexSearcher.FieldCache.GetLookupRootPage(cur.Clause.FieldName));
 
         if (pred.CompareOp is ScanCompareOp.In or ScanCompareOp.AllIn)
         {
             _inSets.Add(BuildInSet(pred, cur));
             return;
         }
+
+        // Exists carries no comparison value; it consumes a root page but no param slot
+        // (matches ResidualScanIlEmitter.ConsumesScalarParam, which excludes Exists).
+        if (pred.CompareOp == ScanCompareOp.Exists)
+            return;
+
+        // Scalar comparison leaf: record this execution's param indices in leaf order.
+        _paramSlot1.Add(cur.PackedParamValue.Param1);
+        _paramSlot2.Add(cur.PackedParamValue.Param2);
 
         if (cur.PackedParamValue.IsNone ||
             pred.ValueType is not (ScanValueType.Slice or ScanValueType.SliceLong))

@@ -195,32 +195,46 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsStack.Push("reader.Current.Decoded()");
     }
 
-    public void LoadLongParam(int idx)
+    // Push THIS execution's param index for residual leaf position `slot`: exec.ResidualParamSlotN[slot].
+    // The residual scan is compiled once per shared plan; resolving the index at runtime (instead of
+    // baking it) lets the same delegate be reused across cardinality orderings (RavenDB-25281).
+    private void EmitResidualParamIndex(int slot, bool second)
+    {
+        LoadContextArg();
+        Il.Emit(OpCodes.Ldfld, second ? IlEmitterShared.ResidualParamSlot2 : IlEmitterShared.ResidualParamSlot1);
+        IlEmitterShared.EmitLdcI4(Il, slot);
+        Il.Emit(OpCodes.Ldelem_I4);
+    }
+
+    private string ParamSlotExpr(int slot, bool second) =>
+        $"{ContextArgName}.{(second ? "ResidualParamSlot2" : "ResidualParamSlot1")}[{slot}]";
+
+    public void LoadLongParam(int slot, bool second = false)
     {
         LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualLongs);
-        IlEmitterShared.EmitLdcI4(Il, idx);
+        EmitResidualParamIndex(slot, second);
         Il.Emit(OpCodes.Ldelem_I8);
-        CsStack.Push($"{ContextArgName}.LongValues[{idx}]");
+        CsStack.Push($"{ContextArgName}.LongValues[{ParamSlotExpr(slot, second)}]");
     }
 
-    public void LoadDoubleParam(int idx)
+    public void LoadDoubleParam(int slot, bool second = false)
     {
         LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualDoubles);
-        IlEmitterShared.EmitLdcI4(Il, idx);
+        EmitResidualParamIndex(slot, second);
         Il.Emit(OpCodes.Ldelem_R8);
-        CsStack.Push($"{ContextArgName}.DoubleValues[{idx}]");
+        CsStack.Push($"{ContextArgName}.DoubleValues[{ParamSlotExpr(slot, second)}]");
     }
 
-    public void LoadSliceSpan(int idx)
+    public void LoadSliceSpan(int slot, bool second = false)
     {
         LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.AnalyzedSlices);
-        IlEmitterShared.EmitLdcI4(Il, idx);
+        EmitResidualParamIndex(slot, second);
         Il.Emit(OpCodes.Ldelema, typeof(Slice));
         Il.Emit(OpCodes.Call, IlEmitterShared.SliceAsReadOnlySpan);
-        CsStack.Push($"{ContextArgName}.AnalyzedSlices[{idx}].AsReadOnlySpan()");
+        CsStack.Push($"{ContextArgName}.AnalyzedSlices[{ParamSlotExpr(slot, second)}].AsReadOnlySpan()");
     }
 
     public void LoadFieldRootPage(int rootIdx)
@@ -256,15 +270,15 @@ internal ref partial struct DualEmit(ILGenerator il, StringBuilder cs)
         CsStack.Push($"{ContextArgName}.ResidualInSets[{idx}].HasNull");
     }
 
-    // if (exec.StringValues[idx] != null) goto label;
-    public void BranchIfStringTargetNotNull(int idx, LabelPair l)
+    // if (exec.StringValues[exec.ResidualParamSlot1[slot]] != null) goto label;
+    public void BranchIfStringTargetNotNull(int slot, LabelPair l)
     {
         LoadContextArg();
         Il.Emit(OpCodes.Ldfld, IlEmitterShared.ResidualStringValues);
-        IlEmitterShared.EmitLdcI4(Il, idx);
+        EmitResidualParamIndex(slot, second: false);
         Il.Emit(OpCodes.Ldelem_Ref);
         Il.Emit(OpCodes.Brtrue, l.Il);
-        CsLine($"if ({ContextArgName}.StringValues[{idx}] != null) goto {l.Name};");
+        CsLine($"if ({ContextArgName}.StringValues[{ParamSlotExpr(slot, false)}] != null) goto {l.Name};");
     }
 
     private void EmitLoadInSetField(int idx, FieldInfo field)

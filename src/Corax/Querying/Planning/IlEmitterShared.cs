@@ -103,6 +103,10 @@ public static class IlEmitterShared
         typeof(QueryExecution).GetField(nameof(QueryExecution.StringValues))!;
     public static readonly FieldInfo ResidualFieldRootPages =
         typeof(QueryExecution).GetField(nameof(QueryExecution.FieldRootPages))!;
+    public static readonly FieldInfo ResidualParamSlot1 =
+        typeof(QueryExecution).GetField(nameof(QueryExecution.ResidualParamSlot1))!;
+    public static readonly FieldInfo ResidualParamSlot2 =
+        typeof(QueryExecution).GetField(nameof(QueryExecution.ResidualParamSlot2))!;
 
     public static readonly MethodInfo ReaderReset =
         typeof(EntryTermsReader).GetMethod(nameof(EntryTermsReader.Reset));
