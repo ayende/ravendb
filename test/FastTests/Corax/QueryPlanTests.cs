@@ -170,8 +170,9 @@ public class QueryPlanTests(ITestOutputHelper output) : RavenTestBase(output)
         // uniform op tree
         Assert.Contains(compiledRoot.Children, c => c.Operation == "FillFromMatch");
         Assert.Contains(compiledRoot.Children, c => c.Operation.Contains("Spatial"));
-        // no timing telemetry overlaid (no CompiledQueryMatch ran)
-        Assert.False(compiledRoot.Parameters.ContainsKey("Output"));
+        // The post-filter match surfaces its final survivor count as the Result output (1 stored doc),
+        // even though no CompiledQueryMatch ran. But per-op timing telemetry is still NOT overlaid:
+        Assert.Equal("1", compiledRoot.Parameters["Output"]);
         var fill = compiledRoot.Children.First(c => c.Operation == "FillFromMatch");
         Assert.False(fill.Parameters.ContainsKey("Ms"));
         Assert.False(fill.Parameters.ContainsKey("Output"));

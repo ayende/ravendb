@@ -241,6 +241,7 @@ public struct VectorSearchMatch : IPostFilterMatch
         
         read = Sorting.SortAndMinOnDuplicates(matches[..read], distancesBuffer[..read]);
         distancesBuffer[..read].Sort(matches[..read]);
+        Count += read;
         return read;
     }
 
@@ -289,7 +290,10 @@ public struct VectorSearchMatch : IPostFilterMatch
         {
             distances.Results.Sort(matches.Results);
         }
-        
+
+        // Final matched count, captured before Score() disposes _matches, so Inspect() can surface it.
+        Count = _matches.Count;
+
         Dispose();
     }
     
@@ -377,7 +381,8 @@ public struct VectorSearchMatch : IPostFilterMatch
                 { "NumberOfCandidatesScanned", (_vectorSearchRetriever.CandidatesProcessed).ToString("N0")},
                 { "VectorComparisons", (_vectorSearchRetriever.VectorComparisons).ToString("N0")},
                 { "InitMs", _initDurationMs.ToString("F3", CultureInfo.InvariantCulture) },
-                { "SearchMs", _searchDurationMs.ToString("F3", CultureInfo.InvariantCulture) }
+                { "SearchMs", _searchDurationMs.ToString("F3", CultureInfo.InvariantCulture) },
+                { Constants.QueryInspectionNode.MatchedResults, Count.ToString("N0") }
             })
         {
             // Reflects the lifting decision recorded on this match, not the type: a vector leaf inside an OR is
@@ -391,7 +396,8 @@ public struct VectorSearchMatch : IPostFilterMatch
                 children: new List<QueryInspectionNode> { _filterQuery.Inspect(), vsInspect },
                 parameters: new Dictionary<string, string>()
                 {
-                    {"VectorSearchAndOperation", "true"}
+                    {"VectorSearchAndOperation", "true"},
+                    { Constants.QueryInspectionNode.MatchedResults, Count.ToString("N0") }
                 });
         }
         

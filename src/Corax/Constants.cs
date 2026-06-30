@@ -214,6 +214,12 @@ namespace Corax
             /// Count of documents from primitive.
             /// </summary>
             internal const string Count = nameof(Count);
+
+            /// <summary>
+            /// Final number of results a post-filter match (spatial/vector) actually produced,
+            /// surfaced so the query-plan graph's Result node can show output=N.
+            /// </summary>
+            internal const string MatchedResults = nameof(MatchedResults);
             
             /// <summary>
             /// Boost factor for boost(InnerQuery, BoostFactor)

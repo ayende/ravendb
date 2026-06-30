@@ -154,7 +154,7 @@ internal static partial class QueryPlanBuilder
         if (hasEntryScanGate)
         {
             var entryScanParams = new Dictionary<string, string> { ["DestSlot"] = "0", ["SourceSlot"] = "0" };
-            entryScanNode = new QueryInspectionNode("EntryScan", parameters: entryScanParams);
+            entryScanNode = new QueryInspectionNode(QueryPlanGraph.EntryScanOp, parameters: entryScanParams);
             if (compiledPlan.EntryScanSet is { HasPredicates: true } entryScan)
             {
                 foreach (var predicate in entryScan.Predicates)
@@ -204,6 +204,12 @@ internal static partial class QueryPlanBuilder
         {
             var matchInspection = result.ExecutedMatch.Inspect();
             AppendPostFilterNodes(matchInspection, root);
+
+            // Post-filter plans (spatial PostFilterMatch / vector VectorSearchMatch) don't run through
+            // OverlayTimings (that bails unless ExecutedMatch is CompiledQueryMatch), so the Result node
+            // would otherwise show no output. The match surfaces its final survivor count as MatchedResults.
+            if (matchInspection.Parameters.TryGetValue("MatchedResults", out var matched))
+                root.Parameters["Output"] = matched;
         }
 
         if (result.SortingWrapper == null)
