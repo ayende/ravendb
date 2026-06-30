@@ -140,6 +140,19 @@ internal sealed class PlanEmitter
 
     private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions, bool scanEligible)
     {
+        // MatchNothing ∧ anything = MatchNothing: a single statically-empty clause (empty IN, contradictory
+        // BETWEEN, WHEN(false) under OR, …) annihilates the whole AND. Emit one ClearBitmap and skip every other
+        // clause — its AndInto would only intersect into an already-empty set. Each MatchNothing pattern is keyed
+        // distinctly via AppendSentinelCodes, so this just produces a clean single-op plan for an already-distinct key.
+        for (int i = 0; i < executions.Count; i++)
+        {
+            if (executions[i].ClauseType == ClauseType.MatchNothing)
+            {
+                _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 0 });
+                return Complete();
+            }
+        }
+
         var e0 = executions[0];
         if (e0.IsNegated)
             _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries });
