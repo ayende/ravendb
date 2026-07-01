@@ -446,9 +446,23 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
 
         _builder.Append(execs.Count, 16); // length prefixed to ensure consistency
         foreach (var e in execs)
-        {   // the clauses are sorted, and this encodes their relative ordering by cardinality
-            _builder.Append(e.Clause.OriginalIndex, 16);
+        {
+            // Clauses are sorted cheapest-first - but for the cache key, we care about the _type_, not exact order
+            // Two queries that differ only by a cardinality reordering of structurally-interchangeable clauses will use the same query\
+            // where Genres = 'Drama' and Lang = 'en' generates:
+            //
+            // * FillFromPostingList (Genres / Lang)
+            // * AndFromPostingList  (Lang / Genres)
+            //
+            // we don't need to care in which order, they are served by the same cached plan
+            AppendOpSignature(e);
         }
+
+        // Driving-clause sorted positions does matter for those sorts of query, so we take them into account in
+        // the cache key and generate separate plans for them if needed
+        AppendClauseIndex(_exec.SortDrivingClause);
+        AppendClauseIndex(_exec.CompoundFieldDrivingClause);
+        AppendClauseIndex(_exec.CompoundFieldField2Range);
 
         // Boost + cardinality-cliff flags: queries on either side of the cliff get distinct plans.
         int flags = planParams.HasBoost.ToInt32() << 1 |
@@ -470,5 +484,28 @@ ref struct BuildResolver(PlanTemplate template, PlanParameters planParams, Query
         }
 
         return _builder.ToHash();
+    }
+
+    void AppendClauseIndex(ClauseExecution clauseWrapper)
+        => _builder.Append(clauseWrapper == null ? 1 << 16 : _exec.Executions.IndexOf(clauseWrapper), 17);
+
+    // Captures the *interesting* aspects of a clause (type, negation, multi/single, etc)
+    // Explicitly allows for the same plan to serve:  where Genres = 'Drama' and Lang = 'en'
+    // Where we'll first evaluate Genres -> Lang and vice versa
+    private void AppendOpSignature(ClauseExecution e)
+    {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
+
+        _builder.Append((byte)e.ClauseType, 8);
+
+        bool singleValued = e.Clause.FieldName is { } fieldName && _indexSearcher.HasMultipleTermsInField(fieldName) == false;
+        int bits = (e.IsNegated ? 0b0001 : 0b0000)
+                   | (singleValued ? 0b0010 : 0b0000)
+                   | (e.PackedParamValue.ValueType << 2); // value-type dispatch: Long/Double/String/None
+        _builder.Append(bits, 4);
+
+        _builder.Append(e.SubExecutions?.Count ?? 0, 8);
+        foreach (var sub in e.SubExecutions ?? [])
+            AppendOpSignature(sub);
     }
 }

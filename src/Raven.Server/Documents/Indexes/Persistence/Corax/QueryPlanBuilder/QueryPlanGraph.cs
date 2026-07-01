@@ -35,6 +35,9 @@ internal static class QueryPlanGraph
     private const string SortOp = "Sort";
     private const string BoostOp = "Boost";
 
+    private const string MaybeEntryScanOp = nameof(PlanOpKind.MaybeEntryScan);
+    internal const string EntryScanOp = "EntryScan";
+
     // Operation names that wraps the compiled query
     private static readonly HashSet<string> ResultWrapperOps = ["SortingMatch", "SortingMultiMatch", "BoostingMatch"];
 
@@ -114,10 +117,10 @@ internal static class QueryPlanGraph
         {
             switch (ops[i].Operation)
             {
-                case "EntryScan":
+                case EntryScanOp:
                     entryScanTailId = i;
                     break;
-                case "EntryScanCheck":
+                case MaybeEntryScanOp:
                     gateOpIds.Add(i);
                     break;
             }
@@ -149,8 +152,8 @@ internal static class QueryPlanGraph
         bool NodeTaken(int i)
             => ops[i].Operation switch
             {
-                "EntryScan" => entryScanTaken,
-                "EntryScanCheck" => GateReached(i),
+                EntryScanOp => entryScanTaken,
+                MaybeEntryScanOp => GateReached(i),
                 _ => OpExecuted(i)
             };
 
@@ -209,9 +212,9 @@ internal static class QueryPlanGraph
             QueryInspectionNode op = ops[i];
             switch (op.Operation)
             {
-                case "EntryScan":
+                case EntryScanOp:
                     continue;
-                case "EntryScanCheck":
+                case MaybeEntryScanOp:
                 {
                     if (lastWriter.TryGetValue(0, out int gateSrc))
                     {
@@ -334,8 +337,8 @@ internal static class QueryPlanGraph
         // An invisible edge forces the second to rank below the first.
         for (int i = 0; i + 1 < ops.Count; i++)
         {
-            if (ops[i].Operation is "EntryScan" or "EntryScanCheck" &&   // Entry-scan nodes are skipped — their branch edges already express the (conditional) ordering.
-                ops[i + 1].Operation is "EntryScan" or "EntryScanCheck")
+            if (ops[i].Operation is EntryScanOp or MaybeEntryScanOp &&   // Entry-scan nodes are skipped — their branch edges already express the (conditional) ordering.
+                ops[i + 1].Operation is EntryScanOp or MaybeEntryScanOp)
                 continue;
             
             if (realEdges.Contains((i, i + 1)))

@@ -348,8 +348,7 @@ internal static partial class QueryPlanBuilder
                 return ParseMethod(method, walkerCtx);
 
             case NegatedExpression negated:
-                ParseNegated(negated, walkerCtx);
-                return BooleanOp.Leaf;
+                return ParseNegated(negated, walkerCtx);
 
             case TrueExpression:
                 return BooleanOp.True;
@@ -537,18 +536,52 @@ internal static partial class QueryPlanBuilder
         });
     }
 
-    private static void ParseNegated(NegatedExpression negated, ResolutionContext walkerCtx)
+    // not(...) must distribute over its operands (De Morgan):
+    // not (Name != $p0 and Name != $p1) -> (Name = $p0 or Name = $p1), not(A = 1 or B = 2) -> A !=1 AND B != 2, etc
+    private static BooleanOp ParseNegated(NegatedExpression negated, ResolutionContext walkerCtx)
+    {
+        return negated.Expression switch
+        {
+            NegatedExpression or BinaryExpression
+                {
+                    Operator: OperatorType.And or OperatorType.Or or OperatorType.Equal or OperatorType.NotEqual
+                } => 
+                    ParseExpression(NegationNormalForm(negated.Expression), walkerCtx),
+            _ => ParseNegatedLeaf(negated.Expression, walkerCtx)
+        };
+    }
+
+    private static QueryExpression NegationNormalForm(QueryExpression expr)
+    {
+        RuntimeHelpers.EnsureSufficientExecutionStack();
+        return expr switch
+        {
+            BinaryExpression { Operator: OperatorType.And } be =>
+                new BinaryExpression(NegationNormalForm(be.Left), NegationNormalForm(be.Right), OperatorType.Or) { Parenthesis = true },
+            BinaryExpression { Operator: OperatorType.Or } be => 
+                new BinaryExpression(NegationNormalForm(be.Left), NegationNormalForm(be.Right), OperatorType.And) { Parenthesis = true },
+            BinaryExpression { Operator: OperatorType.Equal } be => 
+                new BinaryExpression(be.Left, be.Right, OperatorType.NotEqual),
+            BinaryExpression { Operator: OperatorType.NotEqual } be => 
+                new BinaryExpression(be.Left, be.Right, OperatorType.Equal),
+            NegatedExpression neg => neg.Expression, // not(not(x)) == x
+            _ => new NegatedExpression(expr)
+        };
+    }
+
+    private static BooleanOp ParseNegatedLeaf(QueryExpression inner, ResolutionContext walkerCtx)
     {
         List<ClauseInfo> saved = walkerCtx.Clauses;
         walkerCtx.Clauses = [];
-        ParseExpression(negated.Expression, walkerCtx);
+        ParseExpression(inner, walkerCtx);
         List<ClauseInfo> innerClauses = walkerCtx.Clauses;
         walkerCtx.Clauses = saved;
-        foreach (ClauseInfo inner in innerClauses)
+        foreach (ClauseInfo clause in innerClauses)
         {
-            inner.IsNegated = true;
-            walkerCtx.Clauses.Add(inner);
+            clause.IsNegated = !clause.IsNegated;
+            walkerCtx.Clauses.Add(clause);
         }
+        return BooleanOp.Leaf;
     }
 
     private delegate BooleanOp MethodHandler(MethodExpression method, ResolutionContext walkerCtx);
