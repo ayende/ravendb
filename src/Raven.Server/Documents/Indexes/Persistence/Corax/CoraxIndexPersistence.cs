@@ -32,17 +32,23 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
     private readonly RavenLogger _logger;
     private readonly CoraxDocumentConverterBase _converter;
 
+    internal readonly global::Corax.Querying.Planning.PlanCache SharedPlanCache;
+
+    private const int MaxFieldsWithMultipleTermsToCache = 512;
+
     private Dictionary<Slice, HnswIndexCache> _hnswCaches;
     private IndexTransactionCache _currentCache;
     private StorageEnvironment _environment;
     private Action<LowLevelTransaction> _newTransactionCreatedHandler;
-    internal IndexWriter ActiveWriter;
     internal Dictionary<Slice, HashSet<long>> PendingDirtyVectorSets;
 
     public CoraxIndexPersistence(Index index, IIndexReadOperationFactory indexReadOperationFactory) : base(index, indexReadOperationFactory)
     {
         _logger = RavenLogManager.Instance.GetLoggerForIndex<CoraxIndexPersistence>(index);
         _converter = CreateConverter(index);
+        SharedPlanCache = new global::Corax.Querying.Planning.PlanCache(
+            index.Configuration.CoraxMaxPlansPerQuery,
+            index.Configuration.CoraxMaxDistinctQueryPlans);
     }
 
     private int GetMaxNodesForVectorCache()
@@ -209,8 +215,10 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
     public override void Initialize(StorageEnvironment environment)
     {
         using (var roTx = environment.ReadTransaction())
+        {
             WarmInitialCaches(roTx);
-        _currentCache = BuildSnapshotWrapper();
+            _currentCache = BuildCurrentCache(ReadFieldsWithMultipleTerms(roTx, previous: null));
+        }
 
         _environment = environment;
         _newTransactionCreatedHandler = tx => tx.ImmutableExternalState = Volatile.Read(ref _currentCache);
@@ -219,11 +227,58 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
 
     public override void PublishIndexCacheToNewTransactions(IndexTransactionCache transactionCache)
     {
+        Volatile.Write(ref _currentCache, transactionCache);
     }
 
     internal override IndexTransactionCache BuildStreamCacheAfterTx(Transaction tx)
     {
-        return null;
+        // Refresh the multi-valued field snapshot (rebuilt only if the tree actually grew) and hand it to the cache
+        var previous = _currentCache?.FieldsWithMultipleTerms;
+        var fields = ReadFieldsWithMultipleTerms(tx, previous);
+        if (fields != previous) // if changed, touch the plan cache, to refresh the plans
+            ((CoraxIndexPersistence)_index.IndexPersistence).SharedPlanCache.TouchGeneration();
+        return BuildCurrentCache(fields);
+    }
+
+    // Cache MultipleTermsInField tree into a set. Write side only ever adds, so count tells when it changed.
+    private static HashSet<string> ReadFieldsWithMultipleTerms(Transaction tx, HashSet<string> previous)
+    {
+        var tree = tx.ReadTree(global::Corax.Constants.IndexWriter.MultipleTermsInField);
+        long count = tree?.State.Header.NumberOfEntries ?? 0;
+        if (count == 0)
+            return null;
+
+        // Unchanged since last build: the previous snapshot (or previous null, when over the cap) still holds.
+        if (previous != null && previous.Count == count)
+            return previous;
+        if (count > MaxFieldsWithMultipleTermsToCache)
+            return null;
+
+        var set = new HashSet<string>((int)count, StringComparer.Ordinal);
+        using (var it = tree!.Iterate(prefetch: false))
+        {
+            if (it.Seek(Slices.BeforeAllKeys))
+            {
+                do
+                {
+                    set.Add(it.CurrentKey.ToString());
+                } while (it.MoveNext());
+            }
+        }
+
+        return set;
+    }
+
+    private IndexTransactionCache BuildCurrentCache(HashSet<string> fieldsWithMultipleTerms)
+    {
+        if (_hnswCaches is null && fieldsWithMultipleTerms is null)
+            return null;
+
+        return new IndexTransactionCache
+        {
+            VectorNodeCaches = _hnswCaches,
+            FieldsWithMultipleTerms = fieldsWithMultipleTerms
+        };
     }
 
     internal override void RecreateSearcher(Transaction asOfTx)
@@ -243,8 +298,8 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
             // memory via finalization once those transactions complete.
             if (_hnswCaches != null)
             {
-                Volatile.Write(ref _currentCache, null);
                 Volatile.Write(ref _hnswCaches, null);
+                Volatile.Write(ref _currentCache, BuildCurrentCache(_currentCache?.FieldsWithMultipleTerms));
             }
             return;
         }
@@ -278,7 +333,7 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
             grown[kv.Key] = kv.Value;
 
         Volatile.Write(ref _hnswCaches, grown);
-        Volatile.Write(ref _currentCache, new IndexTransactionCache { VectorNodeCaches = grown });
+        Volatile.Write(ref _currentCache, BuildCurrentCache(_currentCache?.FieldsWithMultipleTerms));
     }
 
     private void WarmInitialCaches(Transaction tx)
@@ -296,7 +351,7 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
         var llt = tx.LowLevelTransaction;
         foreach (var fieldName in vectorFieldNames)
         {
-            Debug.Assert(fieldName.HasValue && fieldName.Size > 0,
+            Debug.Assert(fieldName is { HasValue: true, Size: > 0 },
                 "Vector field name must be allocated and non-empty for cache keying");
             var cache = HnswIndexCache.WarmFromScratch(llt, fieldName, maxNodes);
             if (cache is null)
@@ -304,13 +359,6 @@ public sealed class CoraxIndexPersistence : IndexPersistenceBase
             _hnswCaches ??= new Dictionary<Slice, HnswIndexCache>(SliceComparer.Instance);
             _hnswCaches[fieldName] = cache;
         }
-    }
-
-    private IndexTransactionCache BuildSnapshotWrapper()
-    {
-        return _hnswCaches is null
-            ? null
-            : new IndexTransactionCache { VectorNodeCaches = _hnswCaches };
     }
 
     internal override void RecreateSuggestionsSearchers(Transaction asOfTx)
