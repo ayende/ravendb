@@ -1,51 +1,53 @@
-#pragma warning disable CS1998 // Async method lacks 'await' operators and will run synchronously
+#pragma warning disable CS1998
 using System;
 using System.Diagnostics;
 using System.Diagnostics.Tracing;
-using System.IO;
 using System.Linq;
 using System.Threading.Tasks;
 using Tests.Infrastructure;
 using Raven.Server.Utils;
 using Xunit;
 using FastTests;
-using FastTests.Client;
-using Raven.Client.Documents.Operations.AI;
 
 namespace Tryouts.Fast;
 
 public static class Program
 {
-    static Program()
-    {
-        // XunitLogging removed in xUnit v3 migration
-    }
-
     public static async Task Main(string[] args)
     {
-        Console.WriteLine(Process.GetCurrentProcess().Id);
+        Console.WriteLine($"PID: {Process.GetCurrentProcess().Id}");
         var sources = EventSource.GetSources();
         var runtime = sources.FirstOrDefault(x => x.Name == "System.Runtime");
         runtime?.Dispose();
-        for (int i = 0; i < 1; i++)
+
+        // Run many Corax tests to trigger the SIGABRT crash
+        var methods = typeof(FastTests.Corax.IndexSearcherTest).GetMethods()
+            .Where(m => m.GetCustomAttributes(typeof(RavenFactAttribute), false).Length > 0
+                     || m.GetCustomAttributes(typeof(RavenTheoryAttribute), false).Length > 0)
+            .Where(m => m.GetParameters().Length == 0)
+            .ToArray();
+
+        Console.WriteLine($"Found {methods.Length} parameterless test methods");
+
+        for (int run = 0; run < 3; run++)
         {
-            Console.WriteLine($"Starting to run {i}");
-            
-            try
+            Console.WriteLine($"\n=== Run {run} ===");
+            foreach (var method in methods)
             {
-                using (var testOutputHelper = new ConsoleTestOutputHelper())
-                await using (var test = new CRUD(testOutputHelper))
+                try
                 {
+                    using var testOutputHelper = new ConsoleTestOutputHelper();
+                    await using var test = new FastTests.Corax.IndexSearcherTest(testOutputHelper);
                     DebuggerAttachedTimeout.DisableLongTimespan = true;
-                    test.CRUD_Operations(RavenTestBase.Options.ForMode(RavenDatabaseMode.Single), true);
+                    method.Invoke(test, null);
+                    Console.Write(".");
+                }
+                catch (Exception e)
+                {
+                    Console.WriteLine($"\nFAIL {method.Name}: {e}");
                 }
             }
-            catch (Exception e)
-            {
-                Console.ForegroundColor = ConsoleColor.Red;
-                Console.WriteLine(e);
-                Console.ForegroundColor = ConsoleColor.White;
-            }
         }
+        Console.WriteLine("\nDone — no crash");
     }
 }
