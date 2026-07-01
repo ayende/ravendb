@@ -28,6 +28,8 @@ public class QueryExecution
     public CompiledPlan Plan;
     
     public long[] FieldRootPages;
+    public int[] ResidualParamSlot1;
+    public int[] ResidualParamSlot2;
     public int[] InRangeCounts;
     public long[] Cardinalities;
     

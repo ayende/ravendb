@@ -83,10 +83,11 @@ public static class ResidualScanIlEmitter
 
         int rootIdx = 0;
         int inSetIdx = 0;
+        int paramSlotIdx = 0;
         for (int p = 0; p < predicates.Length; p++)
         {
             d.CsLine("");
-            EmitPredicate(ref d, in predicates[p], rejected.Il, ref rootIdx, ref inSetIdx, readerRefLocal, p);
+            EmitPredicate(ref d, in predicates[p], rejected.Il, ref rootIdx, ref inSetIdx, ref paramSlotIdx, readerRefLocal, p);
         }
 
         // All passed: entryIds[writeIdx] = entryIds[i]
@@ -176,13 +177,15 @@ public static class ResidualScanIlEmitter
     }
 
     /// <summary>If the predicate failed, we jump to the failLabel, success means falling from the end </summary>
-    private static void EmitPredicate(ref DualEmit d, in ScanPredicateInfo pred, Label failLabel, ref int rootIdx, ref int inSetIdx, LocalBuilder readerRefLocal, int pIdx)
+    private static void EmitPredicate(ref DualEmit d, in ScanPredicateInfo pred, Label failLabel, ref int rootIdx, ref int inSetIdx, ref int paramSlotIdx, LocalBuilder readerRefLocal, int pIdx)
     {
         if (pred.SubPredicates == null)
         {
-            EmitLeafPredicate(ref d, in pred, failLabel, ContinueTarget, rootIdx, ref inSetIdx, readerRefLocal);
+            EmitLeafPredicate(ref d, in pred, failLabel, ContinueTarget, rootIdx, ref inSetIdx, paramSlotIdx, readerRefLocal);
             if (ConsumesFieldRootPage(in pred))
                 rootIdx++;
+            if (ConsumesScalarParam(in pred))
+                paramSlotIdx++;
             return;
         }
 
@@ -192,12 +195,14 @@ public static class ResidualScanIlEmitter
             foreach (var predicate in pred.SubPredicates)
             {
                 var nextSub = d.DefineLabelPair("nextBranch");
-                EmitLeafPredicate(ref d, in predicate, nextSub.Il, nextSub.Name, rootIdx, ref inSetIdx, readerRefLocal);
+                EmitLeafPredicate(ref d, in predicate, nextSub.Il, nextSub.Name, rootIdx, ref inSetIdx, paramSlotIdx, readerRefLocal);
                 // Branch succeeded — skip remaining alternatives.
                 d.GotoAlways(groupPassed);
                 d.MarkLabel(nextSub);
                 if (ConsumesFieldRootPage(in predicate))
                     rootIdx++;
+                if (ConsumesScalarParam(in predicate))
+                    paramSlotIdx++;
             }
 
             // All branches fell through → group fails.
@@ -209,9 +214,11 @@ public static class ResidualScanIlEmitter
         {
             foreach (var predicate in pred.SubPredicates)
             {
-                EmitLeafPredicate(ref d, in predicate, failLabel, ContinueTarget, rootIdx, ref inSetIdx, readerRefLocal);
+                EmitLeafPredicate(ref d, in predicate, failLabel, ContinueTarget, rootIdx, ref inSetIdx, paramSlotIdx, readerRefLocal);
                 if (ConsumesFieldRootPage(in predicate))
                     rootIdx++;
+                if (ConsumesScalarParam(in predicate))
+                    paramSlotIdx++;
             }
         }
     }
@@ -219,7 +226,12 @@ public static class ResidualScanIlEmitter
     private static bool ConsumesFieldRootPage(in ScanPredicateInfo pred) =>
         pred.CompareOp is not (ScanCompareOp.AlwaysTrue or ScanCompareOp.AlwaysFalse);
 
-    private static void EmitLeafPredicate(ref DualEmit d, in ScanPredicateInfo pred, Label failIl, string failName, int rootIdx, ref int inSetIdx, LocalBuilder readerRefLocal)
+    private static bool ConsumesScalarParam(in ScanPredicateInfo pred) =>
+        pred.SubPredicates == null &&
+        pred.CompareOp is not (ScanCompareOp.AlwaysTrue or ScanCompareOp.AlwaysFalse
+            or ScanCompareOp.In or ScanCompareOp.AllIn or ScanCompareOp.Exists);
+
+    private static void EmitLeafPredicate(ref DualEmit d, in ScanPredicateInfo pred, Label failIl, string failName, int rootIdx, ref int inSetIdx, int paramSlot, LocalBuilder readerRefLocal)
     {
         // Sentinel leaves (collapsed MatchAll / MatchNothing inside a group) carry no field and consume no fieldRootPage slot
         if (pred.CompareOp == ScanCompareOp.AlwaysTrue)
@@ -246,21 +258,21 @@ public static class ResidualScanIlEmitter
 
         if (pred.ValueType is ScanValueType.Slice or ScanValueType.SliceLong && pred.CompareOp is ScanCompareOp.Equals or ScanCompareOp.NotEquals)
         {
-            EmitNullableEquality(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, readerRefLocal);
+            EmitNullableEquality(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, paramSlot, readerRefLocal);
             return;
         }
 
-        EmitLeafComparison(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, readerRefLocal);
+        EmitLeafComparison(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, paramSlot, readerRefLocal);
     }
 
-    private static void EmitNullableEquality(ref DualEmit d, in ScanPredicateInfo pred, Label failIl, string failName, int rootIdx, ref int inSetIdx, LocalBuilder readerRefLocal)
+    private static void EmitNullableEquality(ref DualEmit d, in ScanPredicateInfo pred, Label failIl, string failName, int rootIdx, ref int inSetIdx, int paramSlot, LocalBuilder readerRefLocal)
     {
         bool isNotEqual = pred.CompareOp == ScanCompareOp.NotEquals;
         var concrete = d.DefineLabelPair("concreteTarget");
         var leafDone = d.DefineLabelPair("nullCmpDone");
 
         // if (StringValues[ParamIndex] != null) goto concrete;  — concrete target uses ordinary term comparison
-        d.BranchIfStringTargetNotNull(pred.ParamIndex, concrete);
+        d.BranchIfStringTargetNotNull(paramSlot, concrete);
 
         // Null target: decide on reader.IsNull alone (Current is stale, no term comparison possible).
         EmitFindNext(ref d, readerRefLocal, rootIdx);
@@ -288,11 +300,11 @@ public static class ResidualScanIlEmitter
         }
 
         d.MarkLabel(concrete);
-        EmitLeafComparison(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, readerRefLocal);
+        EmitLeafComparison(ref d, in pred, failIl, failName, rootIdx, ref inSetIdx, paramSlot, readerRefLocal);
         d.MarkLabel(leafDone);
     }
 
-    private static void EmitLeafComparison(ref DualEmit d, in ScanPredicateInfo pred, Label failIl, string failName, int rootIdx, ref int inSetIdx, LocalBuilder readerRefLocal)
+    private static void EmitLeafComparison(ref DualEmit d, in ScanPredicateInfo pred, Label failIl, string failName, int rootIdx, ref int inSetIdx, int paramSlot, LocalBuilder readerRefLocal)
     {
         switch (pred.CompareOp)
         {
@@ -328,7 +340,7 @@ public static class ResidualScanIlEmitter
                 d.Il.Emit(OpCodes.Ldloc, readerRefLocal);
                 d.CsStack.Push("ref reader");
                 d.LoadFieldRootPage(rootIdx);
-                d.LoadSliceSpan(pred.ParamIndex);
+                d.LoadSliceSpan(paramSlot);
                 d.CallStatic(helper);
                 // Fail if helper returned false.
                 EmitBranchFalse(ref d, failIl, failName);
@@ -359,7 +371,7 @@ public static class ResidualScanIlEmitter
                 d.Il.Emit(OpCodes.Brtrue, singlePass.Il);
                 d.CsLine(JumpIf("reader.IsNonExisting", singlePass.Name)); // non-existing term (stale Current) → pass
 
-                EmitTypedComparison(ref d, in pred, readerRefLocal);
+                EmitTypedComparison(ref d, in pred, paramSlot, readerRefLocal);
                 EmitBranchTrue(ref d, failIl, failName);                        // term equals → fail
 
                 d.Il.MarkLabel(singlePass.Il);
@@ -391,7 +403,7 @@ public static class ResidualScanIlEmitter
                 d.CsLine("if (reader.IsNonExisting) continue;"); // stale Current for non-existing markers
 
                 // if (term == target) goto fail;  — this reject sits INSIDE the term-scan while, cannot just continue
-                EmitTypedComparison(ref d, in pred, readerRefLocal);
+                EmitTypedComparison(ref d, in pred, paramSlot, readerRefLocal);
                 EmitBranchTrue(ref d, failIl, failName == ContinueTarget ? RejectedLabel : failName);      // term equals → fail
 
                 d.Il.Emit(OpCodes.Br, loopHead.Il);           // not equal → next term
@@ -419,7 +431,7 @@ public static class ResidualScanIlEmitter
                     d.Il.Emit(OpCodes.Brtrue, failIl);
                     d.CsLine(JumpIf("reader.IsNonExisting", failName));  // non-existing term (stale Current) → fail
 
-                    EmitTypedComparison(ref d, in pred, readerRefLocal);
+                    EmitTypedComparison(ref d, in pred, paramSlot, readerRefLocal);
                     EmitBranchFalse(ref d, failIl, failName);     // comparison false → fail
                     // fall through → pass
                     return;
@@ -447,7 +459,7 @@ public static class ResidualScanIlEmitter
                 d.CsLine("if (reader.IsNonExisting) continue;"); // stale Current for non-existing markers
 
                 // if (<cmp>) goto pass;
-                EmitTypedComparison(ref d, in pred, readerRefLocal);
+                EmitTypedComparison(ref d, in pred, paramSlot, readerRefLocal);
                 EmitBranchTrue(ref d, pass.Il, pass.Name);    // term satisfies → pass
 
                 d.Il.Emit(OpCodes.Br, loopHead.Il);           // not satisfied → next term
@@ -471,29 +483,29 @@ public static class ResidualScanIlEmitter
         d.CallInstance(IlEmitterShared.ReaderFindNext);
     }
 
-    private static void EmitTypedComparison(ref DualEmit d, in ScanPredicateInfo pred, LocalBuilder readerRefLocal)
+    private static void EmitTypedComparison(ref DualEmit d, in ScanPredicateInfo pred, int paramSlot, LocalBuilder readerRefLocal)
     {
         switch (pred.ValueType)
         {
             case ScanValueType.Long:
                 if (pred.CompareOp == ScanCompareOp.Between)
                 {
-                    EmitLongBetween(ref d, readerRefLocal, pred.ParamIndex, pred.ParamIndex2);
+                    EmitLongBetween(ref d, readerRefLocal, paramSlot);
                     break;
                 }
                 d.LoadReaderCurrentLong(readerRefLocal);
-                d.LoadLongParam(pred.ParamIndex);
+                d.LoadLongParam(paramSlot);
                 EmitNumericCompareOp(ref d, pred.CompareOp);
                 break;
 
             case ScanValueType.Double:
                 if (pred.CompareOp == ScanCompareOp.Between)
                 {
-                    EmitDoubleBetween(ref d, readerRefLocal, pred.ParamIndex, pred.ParamIndex2);
+                    EmitDoubleBetween(ref d, readerRefLocal, paramSlot);
                     break;
                 }
                 d.LoadReaderCurrentDouble(readerRefLocal);
-                d.LoadDoubleParam(pred.ParamIndex);
+                d.LoadDoubleParam(paramSlot);
                 EmitNumericCompareOp(ref d, pred.CompareOp);
                 break;
 
@@ -508,17 +520,17 @@ public static class ResidualScanIlEmitter
 
                     // a.SequenceCompareTo(low) < 0 → fail
                     d.LoadReaderDecodedSlice(readerRefLocal);
-                    d.LoadSliceSpan(pred.ParamIndex);
+                    d.LoadSliceSpan(paramSlot);
                     d.CallStatic(IlEmitterShared.SequenceCompareTo);
                     d.PushConstInt(0);
-                    d.BranchLT(fail);
+                    d.BranchLt(fail);
 
                     // a.SequenceCompareTo(high) > 0 → fail
                     d.LoadReaderDecodedSlice(readerRefLocal);
-                    d.LoadSliceSpan(pred.ParamIndex2);
+                    d.LoadSliceSpan(paramSlot, second: true);
                     d.CallStatic(IlEmitterShared.SequenceCompareTo);
                     d.PushConstInt(0);
-                    d.BranchGT(fail);
+                    d.BranchGt(fail);
 
                     EmitBetweenTail(ref d, fail, done);
                     break;
@@ -526,13 +538,13 @@ public static class ResidualScanIlEmitter
                 if (pred.CompareOp is ScanCompareOp.Equals or ScanCompareOp.NotEquals)
                 {
                     d.LoadReaderDecodedSlice(readerRefLocal);
-                    d.LoadSliceSpan(pred.ParamIndex);
+                    d.LoadSliceSpan(paramSlot);
                     d.CallStatic(IlEmitterShared.SequenceEqual);
                     break;
                 }
                 // Relational: compare SequenceCompareTo result against 0 using the same op.
                 d.LoadReaderDecodedSlice(readerRefLocal);
-                d.LoadSliceSpan(pred.ParamIndex);
+                d.LoadSliceSpan(paramSlot);
                 d.CallStatic(IlEmitterShared.SequenceCompareTo);
                 d.PushConstInt(0);
                 EmitNumericCompareOp(ref d, pred.CompareOp);
@@ -574,34 +586,34 @@ public static class ResidualScanIlEmitter
         }
     }
 
-    private static void EmitLongBetween(ref DualEmit d, LocalBuilder readerRefLocal, int loIdx, int hiIdx)
+    private static void EmitLongBetween(ref DualEmit d, LocalBuilder readerRefLocal, int paramSlot)
     {
         var fail = d.DefineLabelPair("betweenFail");
         var done = d.DefineLabelPair("betweenDone");
 
         d.LoadReaderCurrentLong(readerRefLocal);
-        d.LoadLongParam(loIdx);
-        d.BranchLT(fail);
+        d.LoadLongParam(paramSlot);
+        d.BranchLt(fail);
 
         d.LoadReaderCurrentLong(readerRefLocal);
-        d.LoadLongParam(hiIdx);
-        d.BranchGT(fail);
+        d.LoadLongParam(paramSlot, second: true);
+        d.BranchGt(fail);
 
         EmitBetweenTail(ref d, fail, done);
     }
 
-    private static void EmitDoubleBetween(ref DualEmit d, LocalBuilder readerRefLocal, int loIdx, int hiIdx)
+    private static void EmitDoubleBetween(ref DualEmit d, LocalBuilder readerRefLocal, int paramSlot)
     {
         var fail = d.DefineLabelPair("betweenFail");
         var done = d.DefineLabelPair("betweenDone");
 
         d.LoadReaderCurrentDouble(readerRefLocal);
-        d.LoadDoubleParam(loIdx);
-        d.BranchLTUnsigned(fail);
+        d.LoadDoubleParam(paramSlot);
+        d.BranchLtDouble(fail);
 
         d.LoadReaderCurrentDouble(readerRefLocal);
-        d.LoadDoubleParam(hiIdx);
-        d.BranchGTUnsigned(fail);
+        d.LoadDoubleParam(paramSlot, second: true);
+        d.BranchGtUnsigned(fail);
 
         EmitBetweenTail(ref d, fail, done);
     }

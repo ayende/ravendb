@@ -95,8 +95,9 @@ public static class QueryIlEmitter
                 opLimitArmed = true;
             }
 
-            // Timing: record start tick before each op
-            EmitTimingStart(ref d, startTickLocal, i);
+            bool timeThisOp = IsTimedOp(op.Kind);
+            if (timeThisOp)
+                EmitTimingStart(ref d, startTickLocal, i);
 
             switch (op.Kind)
             {
@@ -234,17 +235,15 @@ public static class QueryIlEmitter
                     break;
             }
 
-            // Timing: record elapsed time and result count after each op
-            EmitTimingEnd(ref d, i, op.BitmapLocal, startTickLocal);
+            if (timeThisOp)
+                EmitTimingEnd(ref d, i, op.BitmapLocal, startTickLocal);
         }
 
-        // Done label
         d.MarkLabel(doneLabel);
         if (needsLazyRepair)
             d.EmitBitmapUnaryCall(0, IlEmitterShared.RepairAfterLazy);
         d.EmitRetVoid();
 
-        // EntryScan tail
         if (hasEntryScan)
             EmitEntryScanTail(ref d, entryScanLabel, cursorVar);
         else
@@ -316,6 +315,9 @@ public static class QueryIlEmitter
         d.Il.Emit(OpCodes.Stloc, bufferLocal);
         d.CsLine($"Span<long> {d.GetLocalName(bufferLocal)} = stackalloc long[{QueryPrimitives.FillBufferSize}];");
     }
+
+    private static bool IsTimedOp(PlanOpKind kind) => // these require no timing
+        kind is not (PlanOpKind.GotoDoneIfEmpty or PlanOpKind.MaybeEntryScan or PlanOpKind.GotoDone or PlanOpKind.ClearBitmap);
 
     /// <summary>startTick = Stopwatch.GetTimestamp()</summary>
     private static void EmitTimingStart(ref DualEmit d, LocalBuilder startTickLocal, int opIndex)
