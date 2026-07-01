@@ -49,8 +49,6 @@ public sealed class PostFilterMatch : IQueryMatch
 
     public long Count => _inner.Count;
     public bool IsBoosting => _inner.IsBoosting;
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => _inner.DuplicatesOccurrenceStatus;
-
 
     public int Fill(Span<long> matches)
     {
@@ -121,6 +119,9 @@ public sealed class PostFilterMatch : IQueryMatch
             if (_innerTicks > 0)
                 parameters["Inner_ms"] = (_innerTicks / tickFreq).ToString("F3");
             parameters["InnerEmitted"] = _innerEmitted.ToString();
+
+            long matched = _postFilters.Length == 0 ? _innerEmitted : _filterSurvivors[^1];
+            parameters[Constants.QueryInspectionNode.MatchedResults] = matched.ToString("N0");
 
             for (int i = 0; i < _postFilters.Length; i++)
             {

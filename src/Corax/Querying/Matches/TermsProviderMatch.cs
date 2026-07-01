@@ -61,9 +61,6 @@ public sealed class TermsProviderMatch(ITermsProvider provider, LowLevelTransact
         }
     }
 
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
-
-
     public int Fill(Span<long> matches)
     {
         Initialize();

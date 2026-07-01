@@ -306,6 +306,4 @@ public struct MultiVectorSearchMatch : IPostFilterMatch
         
         return mvsInspect;
     }
-
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 }

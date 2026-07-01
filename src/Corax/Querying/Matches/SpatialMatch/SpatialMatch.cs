@@ -72,8 +72,6 @@ public sealed class SpatialMatch<TBoosting> : IPostFilterMatch
         _fieldRootPage = _indexSearcher.FieldCache.GetLookupRootPage(field.FieldName);
     }
 
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
-    
     private bool GoNextMatch()
     {
         if (_termGenerator.MoveNext())

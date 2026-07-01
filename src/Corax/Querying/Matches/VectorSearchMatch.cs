@@ -241,6 +241,7 @@ public struct VectorSearchMatch : IPostFilterMatch
         
         read = Sorting.SortAndMinOnDuplicates(matches[..read], distancesBuffer[..read]);
         distancesBuffer[..read].Sort(matches[..read]);
+        Count += read;
         return read;
     }
 
@@ -289,7 +290,9 @@ public struct VectorSearchMatch : IPostFilterMatch
         {
             distances.Results.Sort(matches.Results);
         }
-        
+
+        Count = _matches.Count;
+
         Dispose();
     }
     
@@ -377,7 +380,8 @@ public struct VectorSearchMatch : IPostFilterMatch
                 { "NumberOfCandidatesScanned", (_vectorSearchRetriever.CandidatesProcessed).ToString("N0")},
                 { "VectorComparisons", (_vectorSearchRetriever.VectorComparisons).ToString("N0")},
                 { "InitMs", _initDurationMs.ToString("F3", CultureInfo.InvariantCulture) },
-                { "SearchMs", _searchDurationMs.ToString("F3", CultureInfo.InvariantCulture) }
+                { "SearchMs", _searchDurationMs.ToString("F3", CultureInfo.InvariantCulture) },
+                { Constants.QueryInspectionNode.MatchedResults, Count.ToString("N0") }
             })
         {
             // Reflects the lifting decision recorded on this match, not the type: a vector leaf inside an OR is
@@ -391,7 +395,8 @@ public struct VectorSearchMatch : IPostFilterMatch
                 children: new List<QueryInspectionNode> { _filterQuery.Inspect(), vsInspect },
                 parameters: new Dictionary<string, string>()
                 {
-                    {"VectorSearchAndOperation", "true"}
+                    {"VectorSearchAndOperation", "true"},
+                    { Constants.QueryInspectionNode.MatchedResults, Count.ToString("N0") }
                 });
         }
         
@@ -399,16 +404,6 @@ public struct VectorSearchMatch : IPostFilterMatch
     }
 
     public string DebugView => Inspect().ToString();
-    
-    // We have to perform deduplication in two cases:
-    // a) when vector search is the only condition in the WHERE statement, we do not fulfill the IQueryMatch.Fill guarantee
-    // about deduplication and sorted IDs on purpose to return results ordered by score without additional sorting, since
-    // HNSW returns results ordered by distance.
-    // b) when the query field explicitly has no boost, then we stream the results in bulks (instead of memoizing them), so
-    // we need to track previously returned IDs to avoid duplicates.
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => _singleVectorSearchDoNotSort || IsBoosting == false
-        ? DuplicatesOccurrence.Possible 
-        : DuplicatesOccurrence.NotPossible;
     
     public long Count { get; private set; }
 
