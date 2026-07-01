@@ -181,9 +181,10 @@ internal static partial class QueryPlanBuilder
             }
 
             // Residual present: read each entry's fields for the residual, may over-scan
-            entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
+            entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCardinality, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher, out long resultsWanted, out double passRate);
             bitmapCost += SurvivorSortCost(EstimateSurvivors(execs, indexSearcher)); // add the bitmap's survivor-sort cost
-            return IsDirectScanCostEffective(entriesToScan, bitmapCost, ctx.WantTimings, unboundedReason: null, out reason);
+            string unboundedReason = ctx.WantTimings ? DescribeUnboundedScanTake(ctx.BuilderParams) : null;
+            return IsDirectScanCostEffective(entriesToScan, bitmapCost, resultsWanted, passRate, ctx.WantTimings, unboundedReason, out reason);
         }
         
         static bool DirectScanCostEffective(ref InstantiateContext ctx, bool isFullScan, out string directScanReason)
@@ -220,10 +221,10 @@ internal static partial class QueryPlanBuilder
 
             // Residual present: scan reads scanned entry's fields and over-scans. Estimate the over-scan amount for the costs
             long drivingCard = drivingExec.GetEffectiveCardinality(indexSearcher);
-            var entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher);
+            var entriesToScan = ComputeNumberOfEntriesQueryLikelyToScan(execs, drivingExec, drivingCard, ResolveEffectiveScanPageSize(ctx.BuilderParams), indexSearcher, out long resultsWanted, out double passRate);
 
             string unboundedReason = ctx.WantTimings ? DescribeUnboundedScanTake(ctx.BuilderParams) : null;
-            return IsDirectScanCostEffective(entriesToScan, bitmapCost, ctx.WantTimings, unboundedReason, out directScanReason);
+            return IsDirectScanCostEffective(entriesToScan, bitmapCost, resultsWanted, passRate, ctx.WantTimings, unboundedReason, out directScanReason);
         }
         
         static long CalculateDirectCost(long entriesToScan)
@@ -233,14 +234,14 @@ internal static partial class QueryPlanBuilder
                 : entriesToScan * QueryPrimitives.EntryScanCostMultiplier;
         }
 
-        static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost, bool wantTimings, string unboundedReason, out string reason)
+        static bool IsDirectScanCostEffective(long entriesToScan, long bitmapCost, long resultsWanted, double passRate, bool wantTimings, string unboundedReason, out string reason)
         {
             reason = null;
             if (entriesToScan > QueryPrimitives.EntryScanCountThreshold)
             {
                 if (wantTimings)
                 {
-                    reason = $"entries_to_scan({entriesToScan}) > cap({QueryPrimitives.EntryScanCountThreshold}) → bitmap{GetSuffix()}";
+                    reason = $"entries_to_scan({entriesToScan:N0}) > cap({QueryPrimitives.EntryScanCountThreshold:N0}) → bitmap{Derivation()}";
                 }
                 return false;
             }
@@ -252,16 +253,20 @@ internal static partial class QueryPlanBuilder
             {
                 reason = effective ? FormatScanReason() : FormatBitmapReason();
             }
-            
+
             return effective;
 
-            string GetSuffix() => unboundedReason is null ? null : $", [page unbounded: {unboundedReason}]";
+            string Derivation()
+            {
+                string unbounded = unboundedReason is null ? null : $", page unbounded: {unboundedReason}";
+                return $" [results_wanted={resultsWanted:N0}, pass_rate={passRate:P2}{unbounded}]";
+            }
 
-            string FormatScanReason() => 
-                $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} < bitmap_cost({bitmapCost}) → scan{GetSuffix()}";
+            string FormatScanReason() =>
+                $"entries_to_scan({entriesToScan:N0}) × {QueryPrimitives.EntryScanCostMultiplier:N0} = {directCost:N0} < bitmap_cost({bitmapCost:N0}) → scan{Derivation()}";
 
-            string FormatBitmapReason() => 
-                $"entries_to_scan({entriesToScan}) × {QueryPrimitives.EntryScanCostMultiplier} = {directCost} >= bitmap_cost({bitmapCost}) → bitmap{GetSuffix()}";
+            string FormatBitmapReason() =>
+                $"entries_to_scan({entriesToScan:N0}) × {QueryPrimitives.EntryScanCostMultiplier:N0} = {directCost:N0} >= bitmap_cost({bitmapCost:N0}) → bitmap{Derivation()}";
         }
         
         // Independence (product) estimate of the AND intersection: N * Π(card_i / N), clamped to [0, N]. 
@@ -285,9 +290,11 @@ internal static partial class QueryPlanBuilder
                 : survivors * QueryPrimitives.EntryScanSurvivorSortFactor;
 
         static long  ComputeNumberOfEntriesQueryLikelyToScan(List<ClauseExecution> execs,
-            ClauseExecution drivingClause, long drivingCard, long pageSize, IndexSearcher indexSearcher)
+            ClauseExecution drivingClause, long drivingCard, long pageSize, IndexSearcher indexSearcher,
+            out long resultsWanted, out double passRate)
         {
-            long resultsWanted = Math.Min(drivingCard, pageSize);
+            resultsWanted = Math.Min(drivingCard, pageSize);
+            passRate = 1.0; // no selective residual narrows the walk
 
             long minResidual = long.MaxValue;
             foreach (var exec in execs)
@@ -299,7 +306,7 @@ internal static partial class QueryPlanBuilder
             if (minResidual > 0 && minResidual < indexSearcher.NumberOfEntries)
             {
                 // here we check what is the pass rate of the most selective residual clause (i.e, 1% of entries matched, etc)
-                double passRate = (double)minResidual / indexSearcher.NumberOfEntries; // pass rate is (0 .. 1) - ensured by if above
+                passRate = (double)minResidual / indexSearcher.NumberOfEntries; // pass rate is (0 .. 1) - ensured by if above
                 if (passRate > 0)
                 {
                     // if the pass rate is 1%, we have to scan through 10_000 entries to get 100, inflate the results by the pass rate to esitmate.

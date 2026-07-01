@@ -140,6 +140,16 @@ internal sealed class PlanEmitter
 
     private (PlanOp[] Ops, int RequiredBitmaps) EmitAndPlan(List<ClauseExecution> executions, bool scanEligible)
     {
+        foreach (var cur in executions)
+        {
+            if (cur.ClauseType == ClauseType.MatchNothing)
+            {
+                // MatchNothing ∧ anything = MatchNothing
+                _ops.Add(new PlanOp { Kind = PlanOpKind.ClearBitmap, BitmapLocal = 0 });
+                return Complete();
+            }
+        }
+
         var e0 = executions[0];
         if (e0.IsNegated)
             _ops.Add(new PlanOp { Kind = PlanOpKind.FillAllEntries });

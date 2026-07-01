@@ -21,6 +21,9 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
 
     private readonly List<long> _roots = [];
     private readonly List<ResidualInValues> _inSets = [];
+    // The residual IL is shared across cardinality orderings, resolves via indirection by the leaf position to the actual entry
+    private readonly List<int> _paramSlot1 = [];
+    private readonly List<int> _paramSlot2 = [];
 
     private void ExtractAll(ScanPredicateInfo[] predicates, int[] clauseIndices)
     {
@@ -32,6 +35,8 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
 
         exec.FieldRootPages = _roots.Count > 0 ? _roots.ToArray() : null;
         exec.ResidualInSets = _inSets.Count > 0 ? _inSets.ToArray() : null;
+        exec.ResidualParamSlot1 = _paramSlot1.Count > 0 ? _paramSlot1.ToArray() : null;
+        exec.ResidualParamSlot2 = _paramSlot2.Count > 0 ? _paramSlot2.ToArray() : null;
     }
 
     private ResidualInValues BuildInSet(ScanPredicateInfo pred, ClauseExecution exec1)
@@ -68,7 +73,7 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
         if (pred.CompareOp is ScanCompareOp.AlwaysTrue or ScanCompareOp.AlwaysFalse)
             return;
 
-        _roots.Add(indexSearcher.FieldCache.GetLookupRootPage(pred.FieldName));
+        _roots.Add(indexSearcher.FieldCache.GetLookupRootPage(cur.Clause.FieldName));
 
         if (pred.CompareOp is ScanCompareOp.In or ScanCompareOp.AllIn)
         {
@@ -76,11 +81,16 @@ internal sealed class ScanParamExtractor(QueryExecution exec, IndexSearcher inde
             return;
         }
 
+        if (pred.CompareOp == ScanCompareOp.Exists)
+            return; // no more work here...
+
+        _paramSlot1.Add(cur.PackedParamValue.Param1);
+        _paramSlot2.Add(cur.PackedParamValue.Param2);
+
         if (cur.PackedParamValue.IsNone ||
             pred.ValueType is not (ScanValueType.Slice or ScanValueType.SliceLong))
             return;
 
-        // ensure that the relevant slices are analyzed
         FieldMetadata fieldMeta = QueryPlanBuilder.ResolveFieldMetadata(cur.Clause, walkerCtx);
         exec.GetAnalyzedSlice(indexSearcher, fieldMeta, cur.PackedParamValue.Param1);
         if (cur.PackedParamValue.Param2 != PackedParam.NoParamValue)
