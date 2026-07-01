@@ -43,8 +43,6 @@ public struct PhraseMatch<TInner> : IQueryMatch
     }
 
     public long Count => _inner.Count;
-    
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
 
 
     public bool IsBoosting => _inner.IsBoosting;

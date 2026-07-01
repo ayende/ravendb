@@ -30,8 +30,6 @@ namespace Corax.Querying.Matches
         public bool IsBoosting => false;
         public long Count => _count;
 
-        public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
-
         public int Fill(Span<long> matches)
         {
             return _entriesPagesIt.FillKeys(matches);
