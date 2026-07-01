@@ -121,7 +121,6 @@ public sealed unsafe class SortedDrivingMatch : IQueryMatch, IDisposable
 
     public long Count => -1;
     public bool IsBoosting => false;
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
 
     [SkipLocalsInit]
     public int Fill(Span<long> matches)

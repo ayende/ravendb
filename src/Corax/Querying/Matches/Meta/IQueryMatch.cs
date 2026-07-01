@@ -38,8 +38,6 @@ public interface IQueryMatch
     QueryInspectionNode Inspect();
 
     string DebugView => Inspect().ToString();
-    
-    DuplicatesOccurrence DuplicatesOccurrenceStatus { get; }
 }
 
 /// <summary>
@@ -58,12 +56,6 @@ public interface IBitmapQueryMatch : IQueryMatch
     /// </summary>
     [System.Diagnostics.CodeAnalysis.UnscopedRef]
     ref Voron.Data.RoaringBitmaps.RoaringBitmap BitmapState { get; }
-}
-
-public enum DuplicatesOccurrence
-{
-    Possible,
-    NotPossible
 }
 
 /// <summary>

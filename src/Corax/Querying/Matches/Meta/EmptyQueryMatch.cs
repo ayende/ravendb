@@ -19,6 +19,4 @@ public class EmptyQueryMatch : IQueryMatch
     }
 
     public QueryInspectionNode Inspect() => new("Empty");
-
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.NotPossible;
 }
