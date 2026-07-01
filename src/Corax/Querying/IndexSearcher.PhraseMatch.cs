@@ -20,7 +20,7 @@ public partial class IndexSearcher
     {
         var compactTree = _fieldsTree?.CompactTreeFor(field.FieldName);
         if (compactTree is null)
-            return TermMatch.CreateEmpty(this, this.Allocator);
+            return EmptyQueryMatch.Instance;
 
         Allocator.Allocate(terms.Length * sizeof(long), out var sequenceBuffer);
         Span<long> sequence = sequenceBuffer.ToSpan<long>();
@@ -28,7 +28,7 @@ public partial class IndexSearcher
         var termsVectorFieldName = field.GetPhraseQueryContainerName(Allocator);
 
         if (TryGetRootPageByFieldName(termsVectorFieldName, out var vectorRootPage) == false || TryGetRootPageByFieldName(field.FieldName, out var rootPage) == false)
-            return TermMatch.CreateEmpty(this, Allocator);
+            return EmptyQueryMatch.Instance;
         
         for (var i = 0; i < terms.Length; ++i)
         {
@@ -38,7 +38,7 @@ public partial class IndexSearcher
 
             // When the term doesn't exist, that means no document matches our query (phrase query is performing "AND" between them).
             if (compactTree.TryGetTermContainerId(termKey, out var termContainerId) == false)
-                return TermMatch.CreateEmpty(this, Allocator);
+                return EmptyQueryMatch.Instance;
 
             sequence[i] = termContainerId;
         }

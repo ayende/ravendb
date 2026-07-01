@@ -43,16 +43,8 @@ public struct PhraseMatch<TInner> : IQueryMatch
     }
 
     public long Count => _inner.Count;
-    
-    public DuplicatesOccurrence DuplicatesOccurrenceStatus => DuplicatesOccurrence.Possible;
 
-    public SkipSortingResult AttemptToSkipSorting()
-    {
-        //Filter only, not changing order.
-        return _inner.AttemptToSkipSorting();
-    }
 
-    public QueryCountConfidence Confidence => QueryCountConfidence.Normal;
     public bool IsBoosting => _inner.IsBoosting;
     public int Fill(Span<long> matches)
     {
@@ -61,12 +53,6 @@ public struct PhraseMatch<TInner> : IQueryMatch
         return ScanDocumentsTermsEntries(matches.Slice(0, results));
     }
 
-    public int AndWith(Span<long> buffer, int matches)
-    {
-        var results = _inner.AndWith(buffer, matches);
-        return ScanDocumentsTermsEntries(buffer.Slice(0, results));
-    }
-    
     private int ScanDocumentsTermsEntries(Span<long> matches)
     {
         int currentId = 0;
@@ -195,13 +181,18 @@ public struct PhraseMatch<TInner> : IQueryMatch
         _inner.Score(matches, scores, boostFactor);
     }
 
+    public void ScoreSorted(Span<long> matches, Span<float> scores, float boostFactor)
+    {
+        _inner.ScoreSorted(matches, scores, boostFactor);
+    }
+
     public QueryInspectionNode Inspect()
     {
         return new QueryInspectionNode(nameof(PhraseMatch<TInner>),
             parameters: new Dictionary<string, string>()
             {
                 { nameof(IsBoosting), IsBoosting.ToString() },
-                { nameof(Count), $"{Count} [{Confidence}]" }
+                { nameof(Count), $"{Count}" }
             },
             children: [_inner.Inspect()]);
     }
