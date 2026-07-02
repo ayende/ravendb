@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using Corax.Querying.Matches.Meta;
@@ -8,10 +9,14 @@ namespace Corax.Querying.Matches;
 /// <summary>
 /// Chains an inner IQueryMatch through one or more additional filter matches.
 /// On Fill(), retrieves entries from the inner match, then applies each
-/// filter's AndWith() to narrow the results. Currently only used to apply
-/// spatial predicates after the bitmap filter phase builds the candidate set,
-/// but the construct itself is just an AndWith-chain — nothing here is
-/// spatial-specific.
+/// filter to narrow the candidate set: a positive filter keeps the entries it
+/// matches (AndWith); a negated filter (<c>not spatial.within(...)</c>) keeps the
+/// entries it does NOT match. A negated filter still runs against the current
+/// candidate span — so the per-entry predicate only ever evaluates the survivors,
+/// preserving the post-filter optimization — and its matches are then subtracted
+/// from the candidates rather than materializing the whole index and complementing.
+/// Currently only used to apply spatial predicates after the bitmap filter phase
+/// builds the candidate set, but the construct itself is filter-agnostic.
 ///
 /// When timing capture is enabled, records per-call wall time and survivor counts for the inner Fill
 /// and each post-filter AndWith; when disabled, those writes are skipped.
@@ -20,6 +25,10 @@ public sealed class PostFilterMatch : IQueryMatch
 {
     private readonly IQueryMatch _inner;
     private readonly IQueryMatch[] _postFilters;
+
+    // Parallel to _postFilters: filter i keeps its non-matches (candidates \ matches) instead of its matches.
+    // Null when no filter is negated (the common case), so positive-only queries pay nothing.
+    private readonly bool[] _negated;
 
     // True when introspection timing capture was requested. Gates all counter writes.
     private readonly bool _wantTimings;
@@ -35,9 +44,16 @@ public sealed class PostFilterMatch : IQueryMatch
     private readonly long[] _filterRejected;    // rejections (input - survivors)
 
     public PostFilterMatch(IQueryMatch inner, IQueryMatch[] postFilters, bool wantTimings)
+        : this(inner, postFilters, negated: null, wantTimings)
     {
+    }
+
+    public PostFilterMatch(IQueryMatch inner, IQueryMatch[] postFilters, bool[] negated, bool wantTimings)
+    {
+        Debug.Assert(negated is null || negated.Length == postFilters.Length, "negated flags must be parallel to postFilters");
         _inner = inner;
         _postFilters = postFilters;
+        _negated = negated is not null && Array.IndexOf(negated, true) >= 0 ? negated : null;
         _wantTimings = wantTimings;
         if (wantTimings)
         {
@@ -73,7 +89,9 @@ public sealed class PostFilterMatch : IQueryMatch
         {
             int input = count;
             long ti = _wantTimings ? Stopwatch.GetTimestamp() : 0;
-            count = FilterSpan(_postFilters[i], buffer, count);
+            count = _negated is not null && _negated[i]
+                ? FilterSpanNegated(_postFilters[i], buffer, count)
+                : FilterSpan(_postFilters[i], buffer, count);
             if (_wantTimings)
             {
                 _filterTicks[i] += Stopwatch.GetTimestamp() - ti;
@@ -94,9 +112,49 @@ public sealed class PostFilterMatch : IQueryMatch
         {
             IPostFilterMatch postFilter => postFilter.AndWith(buffer, count),
             IBitmapQueryMatch bitmapMatch => bitmapMatch.BitmapState.AndWith(buffer, count),
-            EmptyQueryMatch => 0, 
+            EmptyQueryMatch => 0,
             _ => throw new InvalidOperationException($"Unexpected post-filter match type {filter.GetType().Name}; only spatial post-filters (per-entry, bitmap, or empty) are expected.")
         };
+    }
+
+    /// <summary>Negated filter: keep the candidates the filter does NOT match. We run the filter against a copy
+    /// of the current candidate span (so the predicate still only sees survivors — the optimization is preserved),
+    /// producing the matching subset, then subtract that subset from the candidates. No index-wide complement.</summary>
+    private static int FilterSpanNegated(IQueryMatch filter, Span<long> buffer, int count)
+    {
+        long[] scratch = ArrayPool<long>.Shared.Rent(count);
+        try
+        {
+            var matched = scratch.AsSpan(0, count);
+            buffer[..count].CopyTo(matched);
+            int matchedCount = FilterSpan(filter, matched, count); // matched[..matchedCount] ⊆ candidates, still sorted
+            return SubtractSorted(buffer, count, matched[..matchedCount]);
+        }
+        finally
+        {
+            ArrayPool<long>.Shared.Return(scratch);
+        }
+    }
+
+    /// <summary>Remove <paramref name="removed"/> (a sorted subset of <paramref name="buffer"/>[..count]) from
+    /// buffer in place, returning the surviving count. Both inputs are ascending entry ids — the same ordering
+    /// the AndWith filters consume and produce.</summary>
+    private static int SubtractSorted(Span<long> buffer, int count, ReadOnlySpan<long> removed)
+    {
+        int w = 0, r = 0;
+        for (int read = 0; read < count; read++)
+        {
+            long v = buffer[read];
+            while (r < removed.Length && removed[r] < v)
+                r++;
+            if (r < removed.Length && removed[r] == v)
+            {
+                r++;
+                continue; // v is matched by the filter → excluded by negation
+            }
+            buffer[w++] = v;
+        }
+        return w;
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)

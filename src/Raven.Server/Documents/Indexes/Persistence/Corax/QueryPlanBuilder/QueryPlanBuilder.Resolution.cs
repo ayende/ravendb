@@ -364,9 +364,39 @@ internal static partial class QueryPlanBuilder
                     postFilter.IsPostFilter = true;
             }
 
-            result = result is null
-                ? new PostFilterMatch(spatialMatches[0], spatialMatches.Length is 1 ? [] : spatialMatches[1..], wantTimings)
-                : new PostFilterMatch(result, spatialMatches, wantTimings);
+            // A `not spatial.within(...)` clause keeps its IsNegated flag on the pulled-out spatial ClauseInfo;
+            // the post-filter subtracts its matches instead of intersecting them. Build the parallel flag array.
+            bool[] negated = null;
+            for (int sf = 0; sf < spatialMatches.Length; sf++)
+            {
+                if (exec.SpatialFilters[sf].Clause.IsNegated == false)
+                    continue;
+                negated ??= new bool[spatialMatches.Length];
+                negated[sf] = true;
+            }
+
+            if (result is not null)
+            {
+                result = new PostFilterMatch(result, spatialMatches, negated, wantTimings);
+            }
+            else
+            {
+                // No driving WHERE clause: the candidate universe is every entry. A positive spatial clause drives
+                // directly off its own scan; only if every spatial clause is negated do we fall back to an
+                // AllEntries driver so the negated filters have a universe to subtract from.
+                int driverIdx = negated is null ? 0 : Array.IndexOf(negated, false);
+                if (driverIdx < 0)
+                {
+                    result = new PostFilterMatch(builderParameters.IndexSearcher.AllEntries(), spatialMatches, negated, wantTimings);
+                }
+                else
+                {
+                    var driver = spatialMatches[driverIdx];
+                    var rest = RemoveAt(spatialMatches, driverIdx);
+                    var restNegated = negated is null ? null : RemoveAt(negated, driverIdx);
+                    result = new PostFilterMatch(driver, rest, restNegated, wantTimings);
+                }
+            }
         }
 
         if (exec.VectorSelects is { Length: > 0 })
@@ -380,8 +410,16 @@ internal static partial class QueryPlanBuilder
         return result;
     }
 
+    private static T[] RemoveAt<T>(T[] source, int index)
+    {
+        var result = new T[source.Length - 1];
+        Array.Copy(source, 0, result, 0, index);
+        Array.Copy(source, index + 1, result, index, source.Length - index - 1);
+        return result;
+    }
+
     /// <summary>
-    /// Bypass path for queries with no real WHERE clauses — only spatial filters and/or  vector selects. 
+    /// Bypass path for queries with no real WHERE clauses — only spatial filters and/or  vector selects.
     /// </summary>
     private static IQueryMatch InstantiateAllEntriesPostFilter(QueryExecution exec, QueryBuilderParameters builderParameters, ResolutionContext walkerCtx, bool wantTimings)
     {
