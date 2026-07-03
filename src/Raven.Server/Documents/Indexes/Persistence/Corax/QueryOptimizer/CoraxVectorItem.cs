@@ -18,6 +18,9 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
     private readonly bool _isVectorSingleClause = parameters.IsVectorSingleClause;
     public float? Boosting { get; set; }
 
+    /// <summary>True for `not vector.search(...)`: the match returns the candidates the search does NOT match.</summary>
+    public bool IsNegated { get; set; }
+
     public static CoraxVectorItem BuildForDocVector(QueryBuilderParameters parameters, FieldMetadata field, string documentId, in int numberOfCandidates, in float minimumDistance, in bool isExact)
     {
         return new(parameters)
@@ -64,20 +67,22 @@ public sealed class CoraxVectorItem(QueryBuilderParameters parameters) : IQueryM
         if (_isEmpty)
             return parameters.IndexSearcher.EmptyMatch();
 
-        bool singleVectorSearch = _isVectorSingleClause || streamScoreOrder;
+        // A negated match must materialize its matches sorted by entry id (for the R \ M set-difference), so it
+        // cannot take the score-order streaming path — force singleVectorSearch off when negated.
+        bool singleVectorSearch = IsNegated == false && (_isVectorSingleClause || streamScoreOrder);
 
         IQueryMatch vs;
         if (_documentId != null)
         {
-            vs = parameters.IndexSearcher.VectorSearch(_field, _documentId, _minimumDistance, _numberOfCandidates, _isExact, singleVectorSearch, inner, parameters.Index.Configuration.CoraxVectorSearchScanningThreshold);
+            vs = parameters.IndexSearcher.VectorSearch(_field, _documentId, _minimumDistance, _numberOfCandidates, _isExact, singleVectorSearch, inner, parameters.Index.Configuration.CoraxVectorSearchScanningThreshold, isNegated: IsNegated);
         }
         else if (_vectorsToSearch is not null)
         {
-            vs = parameters.IndexSearcher.MultiVectorSearch(_field, _vectorsToSearch, _minimumDistance, _numberOfCandidates, _isExact, singleVectorSearch, inner, parameters.Index.Configuration.CoraxVectorSearchScanningThreshold);
+            vs = parameters.IndexSearcher.MultiVectorSearch(_field, _vectorsToSearch, _minimumDistance, _numberOfCandidates, _isExact, singleVectorSearch, inner, parameters.Index.Configuration.CoraxVectorSearchScanningThreshold, isNegated: IsNegated);
         }
         else
         {
-            vs = parameters.IndexSearcher.VectorSearch(_field, _vectorToSearch, _minimumDistance, _numberOfCandidates, _isExact, singleVectorSearch, inner, parameters.Index.Configuration.CoraxVectorSearchScanningThreshold);
+            vs = parameters.IndexSearcher.VectorSearch(_field, _vectorToSearch, _minimumDistance, _numberOfCandidates, _isExact, singleVectorSearch, inner, parameters.Index.Configuration.CoraxVectorSearchScanningThreshold, isNegated: IsNegated);
         }
 
         if (vs is IPostFilterMatch pf)

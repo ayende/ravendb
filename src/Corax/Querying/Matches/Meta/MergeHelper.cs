@@ -7,6 +7,28 @@ namespace Corax.Querying.Matches.Meta
 {
     internal static unsafe class MergeHelper
     {
+        /// <summary>Remove <paramref name="removed"/> (a sorted subset of <paramref name="buffer"/>[..count]) from
+        /// buffer in place, returning the surviving count. Both inputs are ascending entry ids — the ordering the
+        /// AndWith filters and vector matches consume and produce. Used to apply a negated post-filter as a
+        /// set-difference (candidates \ matches) without materializing an index-wide complement.</summary>
+        public static int AndNot(Span<long> buffer, int count, ReadOnlySpan<long> removed)
+        {
+            int w = 0, r = 0;
+            for (int read = 0; read < count; read++)
+            {
+                long v = buffer[read];
+                while (r < removed.Length && removed[r] < v)
+                    r++;
+                if (r < removed.Length && removed[r] == v)
+                {
+                    r++;
+                    continue; // v is matched → excluded by negation
+                }
+                buffer[w++] = v;
+            }
+            return w;
+        }
+
         /// <summary>
         /// dst and left *may* be the same thing; we can assume that dst is at least as large as the smallest of those
         /// </summary>

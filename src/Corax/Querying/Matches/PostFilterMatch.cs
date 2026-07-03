@@ -128,33 +128,12 @@ public sealed class PostFilterMatch : IQueryMatch
             var matched = scratch.AsSpan(0, count);
             buffer[..count].CopyTo(matched);
             int matchedCount = FilterSpan(filter, matched, count); // matched[..matchedCount] ⊆ candidates, still sorted
-            return SubtractSorted(buffer, count, matched[..matchedCount]);
+            return MergeHelper.AndNot(buffer, count, matched[..matchedCount]);
         }
         finally
         {
             ArrayPool<long>.Shared.Return(scratch);
         }
-    }
-
-    /// <summary>Remove <paramref name="removed"/> (a sorted subset of <paramref name="buffer"/>[..count]) from
-    /// buffer in place, returning the surviving count. Both inputs are ascending entry ids — the same ordering
-    /// the AndWith filters consume and produce.</summary>
-    private static int SubtractSorted(Span<long> buffer, int count, ReadOnlySpan<long> removed)
-    {
-        int w = 0, r = 0;
-        for (int read = 0; read < count; read++)
-        {
-            long v = buffer[read];
-            while (r < removed.Length && removed[r] < v)
-                r++;
-            if (r < removed.Length && removed[r] == v)
-            {
-                r++;
-                continue; // v is matched by the filter → excluded by negation
-            }
-            buffer[w++] = v;
-        }
-        return w;
     }
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)

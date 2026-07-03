@@ -79,7 +79,11 @@ internal static partial class QueryPlanBuilder
         var items = new List<CoraxVectorItem>(exec.VectorSelects.Length);
         foreach (var vec in exec.VectorSelects)
         {
-            items.Add(HandleVector(builderParams, vec));
+            var item = HandleVector(builderParams, vec);
+            // `not vector.search(...)`: the clause keeps its IsNegated flag; the vector match returns the
+            // candidates it does NOT match (post-filter over the candidate set, not an index-wide complement).
+            item.IsNegated = vec.IsNegated;
+            items.Add(item);
         }
         return items;
     }
