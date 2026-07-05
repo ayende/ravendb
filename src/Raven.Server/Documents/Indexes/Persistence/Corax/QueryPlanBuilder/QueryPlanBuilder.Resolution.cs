@@ -407,7 +407,6 @@ internal static partial class QueryPlanBuilder
                     {
                         // CoraxVectorItem.IsNegated is the routing signal only; the wrapper does the subtraction,
                         // so the clause itself must materialize its positive (matching) results scoped to filter.
-                        vec.IsNegated = false;
                         return vec.Materialize(filter, isPostFilter: true);
                     });
                 }

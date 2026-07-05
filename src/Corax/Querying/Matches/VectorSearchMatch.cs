@@ -66,13 +66,6 @@ public struct VectorSearchMatch : IPostFilterMatch
     private IQueryMatch _filterQuery;
     private bool _filterQueryLoaded;
 
-    // Negated vector post-filter (not vector.search(...)): keep the candidates the search does NOT match.
-    // We snapshot the candidate set R at init (before the retriever consumes _filterResults), run the search
-    // to find the matches M ⊆ R, then stream R \ M. A negated match has no score order (see CanStreamResults).
-    private readonly bool _negated;
-    private GrowableBuffer<long, Constant<long>> _negatedCandidates;
-    private bool _negatedComplementComputed;
-
     // Diagnostics surfaced via Inspect() so the query-plan graph can attribute the vector
     // post-filter's cost: the filter candidate set size, and how long the (lazy) one-time
     // InitializeVectorSearch took (filter materialization + seed sampling + HNSW retriever setup).
@@ -84,23 +77,19 @@ public struct VectorSearchMatch : IPostFilterMatch
     // distinct from the one-time InitMs setup (filter materialization + seed sampling + retriever construction).
     private double _searchDurationMs;
 
-    // A negated match streams R \ M in entry-id order — there is no similarity ordering to preserve, and it must
-    // take the persist path (so M is materialized for the set-difference), never the score-streaming shortcut.
-    private bool CanStreamResults => _negated == false && IsBoosting == false && _singleVectorSearchDoNotSort;
+    private bool CanStreamResults => IsBoosting == false && _singleVectorSearchDoNotSort;
 
-    public VectorSearchMatch(IndexSearcher searcher, 
-        in FieldMetadata metadata, 
+    public VectorSearchMatch(IndexSearcher searcher,
+        in FieldMetadata metadata,
         VectorValue vectorToSearch,
-        in float minimumMatch, 
-        in int numberOfCandidates, 
-        in bool isExact, 
+        in float minimumMatch,
+        in int numberOfCandidates,
+        in bool isExact,
         in bool singleVectorSearchDoNotSort,
         IQueryMatch filterQuery,
         int scanningThreshold = ScanningThreshold,
-        Random random = null,
-        in bool isNegated = false)
+        Random random = null)
     {
-        _negated = isNegated;
         _singleVectorSearchDoNotSort = singleVectorSearchDoNotSort;
         _filterQuery = filterQuery;
         _metadata = metadata;
@@ -137,11 +126,6 @@ public struct VectorSearchMatch : IPostFilterMatch
                 _filterResults = IndexSearcher.VectorSearchUtils.LoadFilterMatches(_indexSearcher, ref _filterQuery, out _ownsFilterResults);
                 _hasFilterResults = true;
                 _filterEntriesCount = _filterResults.ComputeCount();
-
-                // For a negated match, snapshot the candidate set R now — the retriever consumes/disposes
-                // _filterResults during the search, and we need R intact to compute R \ M afterwards.
-                if (_negated)
-                    SnapshotNegatedCandidates();
 
                 // Shortcut for empty filter
                 if (_filterEntriesCount == 0)
@@ -195,9 +179,6 @@ public struct VectorSearchMatch : IPostFilterMatch
         if (_vectorRetrieverInitialized == false)
             InitializeVectorSearch();
 
-        if (_negated)
-            return FillNegated(matches);
-
         if (_isEmpty)
             return 0;
 
@@ -220,32 +201,10 @@ public struct VectorSearchMatch : IPostFilterMatch
         return amountToCopy;
     }
 
-    // Streams the negated complement R \ M in entry-id order, reusing _positionOnPersistedValues as the cursor.
-    private int FillNegated(Span<long> matches)
-    {
-        EnsureNegatedComplement();
-
-        var resultsLeft = _negatedCandidates.Count - _positionOnPersistedValues;
-        if (resultsLeft <= 0)
-            return 0;
-
-        var amountToCopy = Math.Min(resultsLeft, matches.Length);
-        _negatedCandidates.Results.Slice(_positionOnPersistedValues, amountToCopy).CopyTo(matches.Slice(0, amountToCopy));
-        _positionOnPersistedValues += amountToCopy;
-        return amountToCopy;
-    }
-
     public int AndWith(Span<long> buffer, int matches)
     {
         if (_vectorRetrieverInitialized == false)
             InitializeVectorSearch();
-
-        if (_negated)
-        {
-            EnsureNegatedComplement();
-            // buffer ∩ (R \ M): candidates that are not matched by the vector search.
-            return MergeHelper.And(buffer[..matches], buffer[..matches], _negatedCandidates.Results);
-        }
 
         if (_isEmpty)
             return 0;
@@ -255,56 +214,6 @@ public struct VectorSearchMatch : IPostFilterMatch
 
         var results = _matches.Results;
         return MergeHelper.And(buffer[..matches], buffer[..matches], results);
-    }
-
-    // Snapshot the candidate set R (a clone, so the retriever's later consumption of _filterResults can't corrupt
-    // it) into an entry-id-sorted buffer that we later subtract the vector matches from.
-    private void SnapshotNegatedCandidates()
-    {
-        _negatedCandidates.Init(_indexSearcher.Allocator, 128);
-        var candidates = _filterResults.Clone();
-        try
-        {
-            candidates.PrepareForReading();
-            var iterator = candidates.GetIterator();
-            int read;
-            do
-            {
-                var space = _negatedCandidates.GetSpace();
-                read = iterator.Fill(ref candidates, space);
-                _negatedCandidates.AddUsage(read);
-            } while (read > 0);
-        }
-        finally
-        {
-            candidates.Dispose();
-        }
-    }
-
-    // Turn the candidate snapshot R into the complement R \ M. Runs the vector search once to find the matches M
-    // (unless there are none to exclude), then removes them from R. Idempotent.
-    private void EnsureNegatedComplement()
-    {
-        if (_negatedComplementComputed)
-            return;
-        _negatedComplementComputed = true;
-
-        // No candidates (empty/absent filter) → empty complement.
-        if (_negatedCandidates.IsInitialized == false || _negatedCandidates.Count == 0)
-            return;
-
-        // _isEmpty means the search has nothing to exclude (empty retriever / no indexed nodes for the filter
-        // docs) → nothing is "near" → the whole candidate set survives. Leave R as the complement.
-        if (_isEmpty)
-            return;
-
-        if (_resultsPersisted == false)
-            FillAndPersistResults(); // M (matches within R), sorted by entry id, in _matches
-
-        int survivors = MergeHelper.AndNot(_negatedCandidates.Results, _negatedCandidates.Count, _matches.Results);
-        _negatedCandidates.Truncate(survivors);
-        _matches.Dispose();
-        _distances.Dispose();
     }
 
     private int FillDiscardSimilarity(Span<long> matches)
@@ -392,10 +301,6 @@ public struct VectorSearchMatch : IPostFilterMatch
 
     public void Score(Span<long> matches, Span<float> scores, float boostFactor)
     {
-        // A negated match ("not near") carries no similarity score — it never persists distances.
-        if (_negated)
-            return;
-
         if (_isEmpty || _resultsPersisted == false)
         {
             // The caller may invoke Score even when this match was not evaluated (e.g. the other
