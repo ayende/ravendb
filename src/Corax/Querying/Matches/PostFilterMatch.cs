@@ -8,18 +8,8 @@ namespace Corax.Querying.Matches;
 
 /// <summary>
 /// Chains an inner IQueryMatch through one or more additional filter matches.
-/// On Fill(), retrieves entries from the inner match, then applies each
-/// filter to narrow the candidate set: a positive filter keeps the entries it
-/// matches (AndWith); a negated filter (<c>not spatial.within(...)</c>) keeps the
-/// entries it does NOT match. A negated filter still runs against the current
-/// candidate span — so the per-entry predicate only ever evaluates the survivors,
-/// preserving the post-filter optimization — and its matches are then subtracted
-/// from the candidates rather than materializing the whole index and complementing.
-/// Currently only used to apply spatial predicates after the bitmap filter phase
-/// builds the candidate set, but the construct itself is filter-agnostic.
-///
-/// When timing capture is enabled, records per-call wall time and survivor counts for the inner Fill
-/// and each post-filter AndWith; when disabled, those writes are skipped.
+/// On Fill(), applies each filter to narrow the candidate set, using that as an
+/// optimization hint.
 /// </summary>
 public sealed class PostFilterMatch : IQueryMatch
 {
@@ -66,8 +56,6 @@ public sealed class PostFilterMatch : IQueryMatch
     public long Count => _inner.Count;
     public bool IsBoosting => _inner.IsBoosting;
 
-    /// <summary>The wrapped match. Exposed so a score-sorting SortingMatch can reach the underlying
-    /// CompiledQueryMatch (its ScoreSorted delegates to this inner) to set PreserveLeavesForScoring.</summary>
     internal IQueryMatch InnerMatch => _inner;
 
     public int Fill(Span<long> matches)
