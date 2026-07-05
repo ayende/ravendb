@@ -16,12 +16,21 @@ using SpatialRelation = Spatial4n.Shapes.SpatialRelation;
 
 namespace Corax.Querying.Matches.SpatialMatch;
 
-public sealed class SpatialMatch<TBoosting> : IPostFilterMatch
+public sealed class SpatialMatch<TBoosting> : IPostFilterMatch, ISpatialFilterQuery
     where TBoosting : IBoostingMarker
 {
     /// <summary>Set by <c>QueryPlanBuilder.ApplyPostFilters</c> when this spatial match was lifted to a top-level
     /// post-filter. Left false when it is an ordinary leaf inside an OR branch.</summary>
     public bool IsPostFilter { get; set; }
+
+    /// <summary>When set, this spatial match drives off the candidate set instead of enumerating the shape:
+    /// every entry the filter yields is geo-tested and non-candidates are never touched. Set by
+    /// NegatedPostFilterMatch to scope a `not spatial.within(...)` clause to the candidate universe.</summary>
+    public IQueryMatch FilterQuery
+    {
+        get => _filterQuery;
+        set => _filterQuery = value;
+    }
 
     private readonly Querying.IndexSearcher _indexSearcher;
     private readonly SpatialContext _spatialContext;
@@ -43,7 +52,7 @@ public sealed class SpatialMatch<TBoosting> : IPostFilterMatch
     private SpatialScore _spatialScore;
     private double _xShapeCenter;
     private double _yShapeCenter;
-    
+    private IQueryMatch _filterQuery;
 
     public SpatialMatch(Querying.IndexSearcher indexSearcher, ByteStringContext allocator, SpatialContext spatialContext, in FieldMetadata field, IShape shape,
         CompactTree tree,
@@ -94,6 +103,9 @@ public sealed class SpatialMatch<TBoosting> : IPostFilterMatch
 
     public int Fill(Span<long> matches)
     {
+        if (_filterQuery != null)
+            return FillFromFilter(matches);
+
         int currentIdx = 0;
         do
         {
@@ -126,6 +138,32 @@ public sealed class SpatialMatch<TBoosting> : IPostFilterMatch
         } while (currentIdx != matches.Length);
 
         return currentIdx;
+    }
+
+    // Candidate-driven fill: pull a page of candidate ids from the filter and keep only those inside the shape.
+    // Non-candidate ids are never geo-tested (the discard-before-test optimization). Returns 0 only when the
+    // filter is exhausted; a page with no survivors pulls the next page rather than signalling completion.
+    private int FillFromFilter(Span<long> matches)
+    {
+        while (true)
+        {
+            int read = _filterQuery.Fill(matches);
+            if (read == 0)
+                return 0;
+
+            int w = 0;
+            for (int i = 0; i < read; ++i)
+            {
+                if ((i & 1023) == 0)
+                    _token.ThrowIfCancellationRequested();
+
+                if (CheckEntryManually(matches[i]))
+                    matches[w++] = matches[i];
+            }
+
+            if (w > 0)
+                return w;
+        }
     }
 
     private bool CheckEntryManually(long id)

@@ -356,46 +356,42 @@ internal static partial class QueryPlanBuilder
     {
         IQueryMatch result = source;
 
+        // Negated post-filters (spatial and vector) are collected as factories: given the materialized candidate
+        // universe R, each returns its positive clause scoped to R. NegatedPostFilterMatch subtracts them globally.
+        List<Func<IQueryMatch, IQueryMatch>> negatedFactories = null;
+
         if (spatialMatches is { Length: > 0 })
         {
-            foreach (var spatialMatch in spatialMatches)
-            {
-                if (spatialMatch is IPostFilterMatch postFilter)
-                    postFilter.IsPostFilter = true;
-            }
-
-            // A `not spatial.within(...)` clause keeps its IsNegated flag on the pulled-out spatial ClauseInfo;
-            // the post-filter subtracts its matches instead of intersecting them. Build the parallel flag array.
-            bool[] negated = null;
+            List<IQueryMatch> positiveSpatial = null;
             for (int sf = 0; sf < spatialMatches.Length; sf++)
             {
-                if (exec.SpatialFilters[sf].Clause.IsNegated == false)
-                    continue;
-                negated ??= new bool[spatialMatches.Length];
-                negated[sf] = true;
-            }
+                var sm = spatialMatches[sf];
+                if (sm is IPostFilterMatch postFilter)
+                    postFilter.IsPostFilter = true;
 
-            if (result is not null)
-            {
-                result = new PostFilterMatch(result, spatialMatches, negated, wantTimings);
-            }
-            else
-            {
-                // No driving WHERE clause: the candidate universe is every entry. A positive spatial clause drives
-                // directly off its own scan; only if every spatial clause is negated do we fall back to an
-                // AllEntries driver so the negated filters have a universe to subtract from.
-                int driverIdx = negated is null ? 0 : Array.IndexOf(negated, false);
-                if (driverIdx < 0)
+                if (exec.SpatialFilters[sf].Clause.IsNegated)
                 {
-                    result = new PostFilterMatch(builderParameters.IndexSearcher.AllEntries(), spatialMatches, negated, wantTimings);
+                    negatedFactories ??= new List<Func<IQueryMatch, IQueryMatch>>();
+                    var spatial = sm; // capture per-iteration
+                    negatedFactories.Add(filter =>
+                    {
+                        ((ISpatialFilterQuery)spatial).FilterQuery = filter;
+                        return spatial;
+                    });
                 }
                 else
                 {
-                    var driver = spatialMatches[driverIdx];
-                    var rest = RemoveAt(spatialMatches, driverIdx);
-                    var restNegated = negated is null ? null : RemoveAt(negated, driverIdx);
-                    result = new PostFilterMatch(driver, rest, restNegated, wantTimings);
+                    positiveSpatial ??= new List<IQueryMatch>();
+                    positiveSpatial.Add(sm);
                 }
+            }
+
+            if (positiveSpatial is { Count: > 0 })
+            {
+                var arr = positiveSpatial.ToArray();
+                result = result is null
+                    ? new PostFilterMatch(arr[0], arr.Length == 1 ? [] : arr[1..], wantTimings)
+                    : new PostFilterMatch(result, arr, wantTimings);
             }
         }
 
@@ -403,18 +399,32 @@ internal static partial class QueryPlanBuilder
         {
             foreach (var item in ResolveVectorItems(exec, builderParameters))
             {
-                result = item.Materialize(result, isPostFilter: true, streamScoreOrder: exec.VectorPostFilterProvidesScoreOrder);
+                if (item.IsNegated)
+                {
+                    negatedFactories ??= new List<Func<IQueryMatch, IQueryMatch>>();
+                    var vec = item; // capture per-iteration
+                    negatedFactories.Add(filter =>
+                    {
+                        // CoraxVectorItem.IsNegated is the routing signal only; the wrapper does the subtraction,
+                        // so the clause itself must materialize its positive (matching) results scoped to filter.
+                        vec.IsNegated = false;
+                        return vec.Materialize(filter, isPostFilter: true);
+                    });
+                }
+                else
+                {
+                    result = item.Materialize(result, isPostFilter: true, streamScoreOrder: exec.VectorPostFilterProvidesScoreOrder);
+                }
             }
         }
 
-        return result;
-    }
+        if (negatedFactories is { Count: > 0 })
+        {
+            // A pure-negated query has no positive universe — subtract from every entry.
+            result ??= builderParameters.IndexSearcher.AllEntries();
+            result = new NegatedPostFilterMatch(builderParameters.IndexSearcher, result, negatedFactories.ToArray(), builderParameters.Token);
+        }
 
-    private static T[] RemoveAt<T>(T[] source, int index)
-    {
-        var result = new T[source.Length - 1];
-        Array.Copy(source, 0, result, 0, index);
-        Array.Copy(source, index + 1, result, index, source.Length - index - 1);
         return result;
     }
 
