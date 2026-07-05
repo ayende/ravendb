@@ -96,6 +96,25 @@ public class RavenDB_25281_NegatedSpatialPostFilter : RavenTestBase
         Assert.Equal(new[] { "Outside-Keep", "Outside-Other" }, Names(results));
     }
 
+    [RavenFact(RavenTestCategory.Corax | RavenTestCategory.Querying)]
+    public void Pure_negated_spatial_with_no_positive_clause_falls_back_to_all_entries_universe()
+    {
+        // RQL has no leading unary NOT (negation only exists as "AND NOT" / "OR NOT"), so "true and not ..." is
+        // the only way to express a query with no positive clause besides the negated spatial predicate. The
+        // leading `true` parses to BooleanOp.True, not a bitmap-pipeline clause, so exec.IsAllEntries stays true
+        // and ApplyPostFilters is invoked with source==null: there is no bitmap-pipeline driver to serve as the
+        // candidate universe, so the routing falls back to builderParameters.IndexSearcher.AllEntries() before
+        // wrapping in NegatedPostFilterMatch. This exercises that AllEntries() universe fallback specifically.
+        using var store = PopulateStore(this);
+        using var session = store.OpenSession();
+        var results = session.Advanced.RawQuery<Place>(
+                $"from index 'PlacesIndex' where true and not spatial.within(Location, {OriginCircle})")
+            .WaitForNonStaleResults()
+            .ToList();
+
+        Assert.Equal(new[] { "Outside-Keep", "Outside-Other" }, Names(results));
+    }
+
     private class PlacesIndex : AbstractIndexCreationTask<Place>
     {
         public PlacesIndex()

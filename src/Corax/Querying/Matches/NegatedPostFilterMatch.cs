@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using Corax.Querying.Matches.Meta;
 using Corax.Querying.Primitives;
@@ -24,6 +25,9 @@ public sealed class NegatedPostFilterMatch : IQueryMatch, IDisposable
     private RoaringBitmap _temp;
     private bool _initialized;
 
+    // The clauses built by _negatedFactories, retained solely so Inspect() can report them; populated in EnsureInitialized.
+    private readonly List<IQueryMatch> _builtClauses = new();
+
     public NegatedPostFilterMatch(Querying.IndexSearcher searcher, IQueryMatch universe, Func<IQueryMatch, IQueryMatch>[] negatedFactories, CancellationToken token = default)
     {
         _searcher = searcher;
@@ -32,6 +36,9 @@ public sealed class NegatedPostFilterMatch : IQueryMatch, IDisposable
         _token = token;
     }
 
+    // Intentional upper-bound estimate: the true surviving count is |universe| minus whatever the negated
+    // clauses subtract, and can be far smaller once the universe is AllEntries(). Corax treats Count as an
+    // estimate used for sizing, not an exact value, so this is left unrefined.
     public long Count => _universe.Count;
     public bool IsBoosting => false;
 
@@ -60,6 +67,7 @@ public sealed class NegatedPostFilterMatch : IQueryMatch, IDisposable
         foreach (var factory in _negatedFactories)
         {
             var clause = factory(_result); // filter query = R (borrowed via LoadFilterMatches, no copy)
+            _builtClauses.Add(clause);
             QueryPrimitives.AndNotWithMatch(clause, ref _result.BitmapState, ref _temp, _token);
         }
 
@@ -81,7 +89,25 @@ public sealed class NegatedPostFilterMatch : IQueryMatch, IDisposable
     {
     }
 
-    public QueryInspectionNode Inspect() => new(nameof(NegatedPostFilterMatch));
+    // Side-effect free: must not call EnsureInitialized, since Inspect() can run without the match ever executing.
+    public QueryInspectionNode Inspect()
+    {
+        var parameters = new Dictionary<string, string> { ["IsNegated"] = "true" };
+
+        if (_initialized == false)
+        {
+            return new QueryInspectionNode(nameof(NegatedPostFilterMatch), parameters: parameters,
+                children: new List<QueryInspectionNode> { _universe.Inspect() });
+        }
+
+        parameters[Constants.QueryInspectionNode.MatchedResults] = _result.Count.ToString("N0");
+
+        var children = new List<QueryInspectionNode>(_builtClauses.Count + 1) { _universe.Inspect() };
+        foreach (var clause in _builtClauses)
+            children.Add(clause.Inspect());
+
+        return new QueryInspectionNode(nameof(NegatedPostFilterMatch), parameters: parameters, children: children);
+    }
 
     public void Dispose()
     {
