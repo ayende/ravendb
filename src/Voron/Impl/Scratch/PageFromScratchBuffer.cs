@@ -40,20 +40,36 @@ namespace Voron.Impl.Scratch
         int NumberOfPages
     )
     {
-        internal PageFromScratchBuffer Older;
-
-        public bool IsRemoved { get; internal init; }
-
-        
-        // Set on free-after-flush tombstones only: scratch pool free must not be undone by rollbacks (RavenDB-27166)
-        public bool SurvivesRollback { get; internal init; }
-
-        internal static PageFromScratchBuffer CreateTombstone(long pageNumberInDataFile, long asOfTxId, bool survivesRollback)
+        // The state of this page in the scratch table - 16 bytes, no padding
+        internal struct ScratchTableState
         {
-            return new PageFromScratchBuffer(null, null, asOfTxId, -1, pageNumberInDataFile, default, 0, 0)
+            // next older version of the same page, in descending Seq order
+            internal PageFromScratchBuffer Older;
+
+            // Visibility stamp: the ScratchPagesTable publish sequence of the write session that
+            // created this node. Distinct from AllocatedInTransaction (journal provenance, used by
+            // the flusher) - the sequence advances on every published record, including book-keeping
+            // commits that do not consume a transaction id.
+            internal long Seq;
+        }
+
+        internal ScratchTableState Chain;
+
+        // Tombstones are the only nodes without a scratch position; the tombstone kind rides on
+        // AllocatedInTransaction, which has no journal meaning for them
+        private const long TombstoneTx = -1;
+        private const long SurvivingTombstoneTx = -2;
+
+        internal bool IsRemoved => File == null;
+
+        // free-after-flush tombstones only: the matching scratch pool free is not undone by a rollback (RavenDB-27166)
+        internal bool SurvivesRollback => AllocatedInTransaction == SurvivingTombstoneTx;
+
+        internal static PageFromScratchBuffer CreateTombstone(long pageNumberInDataFile, long seq, bool survivesRollback)
+        {
+            return new PageFromScratchBuffer(null, null, survivesRollback ? SurvivingTombstoneTx : TombstoneTx, -1, pageNumberInDataFile, default, 0, 0)
             {
-                IsRemoved = true,
-                SurvivesRollback = survivesRollback
+                Chain = new() { Seq = seq }
             };
         }
 

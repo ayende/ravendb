@@ -1777,8 +1777,8 @@ namespace Voron
             // we may want to update the state of the transaction (scratch table, data pager state, etc)
             // without incrementing the transaction id, since we didn't commit a transaction to the journal.
             var publishedTransactionId = tx.WrittenToJournalNumber == -1 ? currentStateRecord.TransactionId - 1 : currentStateRecord.TransactionId;
-            Debug.Assert(tx.ScratchTableSnapshot.VisibleAsOfTxId <= publishedTransactionId,
-                "The scratch table snapshot must never expose versions above the published transaction id");
+            Debug.Assert(tx.ScratchTableSnapshot.VisibleAsOfSeq > currentStateRecord.ScratchPagesTable.VisibleAsOfSeq,
+                "Every published record must carry a strictly higher scratch publish sequence than its predecessor");
             var updatedState = currentStateRecord with
             {
                 TransactionId = publishedTransactionId,
