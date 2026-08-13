@@ -1707,6 +1707,27 @@ namespace Voron
         {
             Journal.TryReduceSizeOfCompressionBufferIfNeeded();
             ScratchBufferPool.Cleanup();
+            CleanupScratchPagesTable();
+        }
+
+        private void CleanupScratchPagesTable()
+        {
+            if (ScratchPagesTable.IdleCleanupRequired == false)
+                return;
+
+            try
+            {
+                // a book-keeping commit: publishes a record with the rebuilt (compacted) slot array
+                using (var txw = NewLowLevelTransaction(new TransactionPersistentContext(), TransactionFlags.ReadWrite, timeout: TimeSpan.Zero))
+                {
+                    ScratchPagesTable.IdleCleanup();
+                    txw.Commit();
+                }
+            }
+            catch (TimeoutException)
+            {
+                // the environment is not actually idle, the next idle round will retry
+            }
         }
 
         public override string ToString()

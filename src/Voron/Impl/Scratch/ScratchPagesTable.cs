@@ -136,6 +136,38 @@ namespace Voron.Impl.Scratch
 
         public bool ContainsKey(long pageNumber) => TryGetValue(pageNumber, out _);
 
+        /// <summary>
+        /// Dead keys (chains that collapsed to nothing, or to a tombstone every snapshot can see) are
+        /// reclaimed only by a rebuild, and rebuilds are otherwise triggered only by growth - a burst
+        /// of writes that then goes quiet leaves them claimed indefinitely, costing probe length and
+        /// held node memory. The environment calls this from idle cleanup, under a write transaction.
+        /// May be probed without the write lock (racy but benign); IdleCleanup re-checks under it.
+        /// </summary>
+        public bool IdleCleanupRequired
+        {
+            get
+            {
+                var slots = _slots;
+                var usedSlots = _usedSlots;
+
+                // tombstone-headed and empty chains dominate the claimed keys
+                var deadKeys = usedSlots - _visibleCount;
+                if (deadKeys > usedSlots / 2 && usedSlots > InitialSize / 2)
+                    return true;
+
+                // oversized for what is visible - each rebuild steps the array down by one, so
+                // repeated idle passes converge
+                var targetSize = Math.Max(InitialSize, (int)BitOperations.RoundUpToPowerOf2((uint)(_visibleCount * 2 + 1)));
+                return targetSize < slots.Length;
+            }
+        }
+
+        public void IdleCleanup()
+        {
+            if (IdleCleanupRequired)
+                Rebuild();
+        }
+
         public void Set(long pageNumber, PageFromScratchBuffer value)
         {
             Debug.Assert(value.IsRemoved == false, "Set() must not be used to push tombstones");
