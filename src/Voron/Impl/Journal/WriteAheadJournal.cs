@@ -1506,16 +1506,18 @@ namespace Voron.Impl.Journal
                 var dataPager = _waj._env.DataPager;
                 var currentStateRecord = _waj._env.CurrentStateRecord;
                 var dataPagerState = currentStateRecord.DataPagerState;
-                var record = state.Record;
+                int pagesFlushed = 0;
                 using (var meter = options.IoMetrics.MeterIoRate(dataPager.FileName, IoMetrics.MeterType.DataFlush, 0))
                 {
-                    var pagesBuffer = ArrayPool<Pal.page_to_write>.Shared.Rent(record.ScratchPagesTable.Count);
+                    var pagesBuffer = ArrayPool<Pal.page_to_write>.Shared.Rent(state.Buffers.Count);
                     Pager.PagerTransactionState txState = default;
                     try
                     {
-                        Span<Pal.page_to_write> pages = GetSortedPages(ref txState, record, pagesBuffer, out written);
+                        Span<Pal.page_to_write> pages = GetSortedPages(ref txState, state, pagesBuffer, out written);
                         if (pages.IsEmpty)
                             return dataPagerState;
+
+                        pagesFlushed = pages.Length;
 
                         if (flushedPageRanges != null)
                         {
@@ -1545,9 +1547,9 @@ namespace Voron.Impl.Journal
                 }
 
                 if (_waj._logger.IsDebugEnabled)
-                    _waj._logger.Debug($"Flushed {record.ScratchPagesTable.Count:#,#} pages to {dataPager.FileName} with {new Size(written, SizeUnit.Bytes)} in {sp.Elapsed}.");
+                    _waj._logger.Debug($"Flushed {pagesFlushed:#,#} pages to {dataPager.FileName} with {new Size(written, SizeUnit.Bytes)} in {sp.Elapsed}.");
                 else if (_waj._logger.IsWarnEnabled && sp.Elapsed > options.LongRunningFlushingWarning)
-                    _waj._logger.Warn($"Very long data flushing. It took {sp.Elapsed} to flush {record.ScratchPagesTable.Count:#,#} pages to {dataPager.FileName} with {new Size(written, SizeUnit.Bytes)}.");
+                    _waj._logger.Warn($"Very long data flushing. It took {sp.Elapsed} to flush {pagesFlushed:#,#} pages to {dataPager.FileName} with {new Size(written, SizeUnit.Bytes)}.");
 
                 Interlocked.Add(ref _totalWrittenButUnsyncedBytes, written);
 
@@ -1659,33 +1661,53 @@ namespace Voron.Impl.Journal
                 }
             }
 
-            private Span<Pal.page_to_write> GetSortedPages(ref Pager.PagerTransactionState txState, EnvironmentStateRecord record,
+            private Span<Pal.page_to_write> GetSortedPages(ref Pager.PagerTransactionState txState, ApplyLogsToDataFileState state,
                 Pal.page_to_write[] pagesBuffer, out long written)
             {
-                int index = 0;
                 written = 0;
                 var lastFlushedTx = _lastFlushed.TransactionId;
-                foreach (var (pageNum, pageValue) in record.ScratchPagesTable)
-                {
-                    if (lastFlushedTx >= pageValue.AllocatedInTransaction)
-                        continue; // We already wrote those pages to disk in a previous flush... 
+                var record = state.Record;
 
-                    Debug.Assert(pageValue.AllocatedInTransaction <= record.TransactionId, "pageValue.AllocatedInTransaction <= record.TransactionId");
-                    
-                    var page = PreparePage(ref txState, pageValue);
-                    int countOfPages = page.GetNumberOfPages();
-                    written += countOfPages * Constants.Storage.PageSize;
-                    pagesBuffer[index++] = new Pal.page_to_write
+                var candidates = ArrayPool<long>.Shared.Rent(state.Buffers.Count);
+                try
+                {
+                    var candidateCount = 0;
+                    foreach (var buffer in state.Buffers)
+                        candidates[candidateCount++] = buffer.PageNumberInDataFile;
+
+                    candidateCount = Sorting.SortAndRemoveDuplicates(candidates.AsSpan(0, candidateCount));
+
+                    int index = 0;
+                    for (var i = 0; i < candidateCount; i++)
                     {
-                        page_num = page.PageNumber,
-                        ptr = page.Pointer,
-                        count_of_pages = countOfPages
-                    };
-                    Debug.Assert(pageNum == page.PageNumber, "pageNum == page.PageNumber");
+                        var pageNum = candidates[i];
+                        if (record.ScratchPagesTable.TryGetValue(pageNum, out var pageValue) == false)
+                            continue; // freed again within the flushed range, nothing to write
+
+                        // we clean the table lazily, we already flushed this (and this may point to a freed scratch page), so we skip it
+                        if (lastFlushedTx >= pageValue.AllocatedInTransaction)
+                            continue;
+
+                        Debug.Assert(pageValue.AllocatedInTransaction <= record.TransactionId, "pageValue.AllocatedInTransaction <= record.TransactionId");
+
+                        var page = PreparePage(ref txState, pageValue);
+                        int countOfPages = page.GetNumberOfPages();
+                        written += countOfPages * Constants.Storage.PageSize;
+                        pagesBuffer[index++] = new Pal.page_to_write
+                        {
+                            page_num = page.PageNumber,
+                            ptr = page.Pointer,
+                            count_of_pages = countOfPages
+                        };
+                        Debug.Assert(pageNum == page.PageNumber, "pageNum == page.PageNumber");
+                    }
+
+                    return new Span<Pal.page_to_write>(pagesBuffer, 0, index);
                 }
-                var pages = new Span<Pal.page_to_write>(pagesBuffer, 0, index);
-                pages.Sort();
-                return pages;
+                finally
+                {
+                    ArrayPool<long>.Shared.Return(candidates);
+                }
             }
 
             private Page PreparePage(ref Pager.PagerTransactionState txState, PageFromScratchBuffer pageValue)
