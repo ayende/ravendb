@@ -72,6 +72,10 @@ namespace Voron.Impl.Scratch
         private readonly List<long> _activeSnapshots = new();
         private bool _activeSnapshotsFetched;
 
+        // The lowest sequence any prune has used as its floor. Only written by the write session, read by
+        // read transactions creating concurrently, and only to assert the reader-never-below-floor invariant.
+        private long _prunedUpToSeq;
+
         // Pages whose chains the current transaction touched, in mutation order, possibly with duplicates - to make rollbacks easier
         private readonly List<long> _undo = [];
 
@@ -93,6 +97,50 @@ namespace Voron.Impl.Scratch
         }
 
         /// <summary>
+        /// Pruning drops versions that no active snapshot can observe, and it decides that from a racy
+        /// enumeration of the active transactions plus the last published sequence as a sentinel. That is
+        /// only sound because a reader always snapshots at the latest published record, so it can never
+        /// adopt a sequence below the floor we prune against. This asserts that invariant where readers
+        /// take their snapshot: if a path ever hands a reader an older sequence, pruning silently starts
+        /// dropping versions that reader still needs and it reads stale pages from the data file.
+        /// </summary>
+        [Conditional("DEBUG")]
+        internal void AssertReaderSnapshotIsNotBelowPruneFloor(long snapshotSeq)
+        {
+            // read transactions are created without the write lock, so this reads a floor that a write
+            // session may be advancing concurrently - volatile keeps it a coherent value rather than a torn one
+            var floor = Volatile.Read(ref _prunedUpToSeq);
+
+            Debug.Assert(snapshotSeq >= floor,
+                $"A read transaction adopted scratch snapshot sequence {snapshotSeq}, below the prune floor {floor}. " +
+                "Versions it needs may already have been pruned.");
+        }
+
+        /// <summary>
+        /// _visibleCount is maintained by hand across Set, RemoveInternal, RollbackCurrentTransaction and
+        /// Rebuild, and snapshots carry it as their count. A single missed adjustment makes the count
+        /// disagree with what enumeration actually yields, so recount and compare while debugging.
+        /// </summary>
+        [Conditional("DEBUG")]
+        private void AssertVisibleCountMatches()
+        {
+            var actual = 0;
+            foreach (var slot in _slots)
+            {
+                if (slot.KeyPlusOne == 0)
+                    continue;
+
+                var head = slot.Head;
+                if (head != null && head.IsRemoved == false)
+                    actual++;
+            }
+
+            Debug.Assert(actual == _visibleCount,
+                $"Scratch pages table reports {_visibleCount} visible pages but the slots hold {actual}");
+        }
+
+
+        /// <summary>
         /// O(1): the snapshot is the live slot array plus this session's sequence as the visibility
         /// bound. Works identically for journal-written and book-keeping commits - the sequence
         /// advanced at BeginWriteTransaction either way, so this record's readers (and only they) see
@@ -101,6 +149,7 @@ namespace Voron.Impl.Scratch
         /// </summary>
         public ScratchPagesSnapshot CaptureSnapshot()
         {
+            AssertVisibleCountMatches();
             return new ScratchPagesSnapshot(_slots, _seq, _visibleCount);
         }
 
@@ -396,6 +445,8 @@ namespace Voron.Impl.Scratch
 
             var unique = Sorting.SortAndRemoveDuplicates(CollectionsMarshal.AsSpan(_activeSnapshots));
             CollectionsMarshal.SetCount(_activeSnapshots, unique);
+
+            Volatile.Write(ref _prunedUpToSeq, _activeSnapshots[0]);
         }
 
         private bool TryFindSlot(long pageNumber, out int index)
