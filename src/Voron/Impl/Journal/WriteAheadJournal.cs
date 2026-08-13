@@ -700,7 +700,14 @@ namespace Voron.Impl.Journal
             private readonly object _flushingLock = new();
             private readonly SemaphoreSlim _fsyncLock = new(1);
             private readonly WriteAheadJournal _waj;
-            private readonly ManualResetEventSlim _onWriteTransactionCompleted = new();
+            /// <summary>
+            /// Wakes the flusher while it is waiting for its journal state update to be applied. It is only a
+            /// hint: the flusher re-reads the authoritative state after every wake, so an extra or a swallowed
+            /// signal costs at most one loop iteration. Two things raise it - the update being applied by a
+            /// committing write transaction, and a write transaction releasing the lock (which lets the flusher
+            /// try to run the update in its own transaction instead).
+            /// </summary>
+            private readonly ManualResetEventSlim _flusherShouldRecheckJournalState = new();
             private readonly LockTaskResponsible _flushLockTaskResponsible;
 
             public int FlushInProgress;
@@ -749,12 +756,21 @@ namespace Voron.Impl.Journal
                 if (tx.Committed && tx.AppliedJournalStateAfterFlush)
                 {
                     _updateJournalStateAfterFlush = null;
+
+                    // Wake the flusher, which is waiting for exactly this. It cannot rely on
+                    // AfterTransactionWriteLockReleased here: a transaction that commits asynchronously hands
+                    // the write lock to the next transaction rather than releasing it, so that path is never
+                    // reached while a chain of async commits is running, and the flusher would instead
+                    // discover its work was done only when its wait times out.
+                    // The slot is cleared above before we signal, so the flusher sees the work as done and
+                    // leaves, rather than waking to retry for a write lock this transaction still holds.
+                    _flusherShouldRecheckJournalState.Set();
                 }
             }
 
             public void AfterTransactionWriteLockReleased()
             {
-                _onWriteTransactionCompleted.Set();
+                _flusherShouldRecheckJournalState.Set();
             }
 
             public long LastFlushedTransactionId => _lastFlushed.TransactionId;
@@ -950,7 +966,7 @@ namespace Voron.Impl.Journal
                 // we don't actually have to do that in our own transaction, what we'll do is to setup things so if there is a running
                 // write transaction, we'll piggy back on its commit to complete our process, without interrupting its work
                 var transactionPersistentContext = new TransactionPersistentContext(true);
-                _onWriteTransactionCompleted.Reset();
+                _flusherShouldRecheckJournalState.Reset();
                 ExceptionDispatchInfo edi = null;
                 var sp = Stopwatch.StartNew();
 
@@ -1023,14 +1039,14 @@ namespace Voron.Impl.Journal
                             // - we got a notification that the transaction is over (for any reason)
                             //   and we'll try to acquire the write tx lock again
 
-                            var satisfiedIndex = WaitHandle.WaitAny(new[] { _onWriteTransactionCompleted.WaitHandle, token.WaitHandle }, TimeSpan.FromMilliseconds(250));
+                            var satisfiedIndex = WaitHandle.WaitAny(new[] { _flusherShouldRecheckJournalState.WaitHandle, token.WaitHandle }, TimeSpan.FromMilliseconds(250));
 
                             switch (satisfiedIndex)
                             {
                                 case 0:
-                                    // once we get a signal (_onWriteTransactionCompleted), we should be able to acquire the write tx lock since we prevent new write transactions.
+                                    // once we get a signal (_flusherShouldRecheckJournalState), we should be able to acquire the write tx lock since we prevent new write transactions.
                                     // this is just a precaution in order to prevent a loop here if the implementation will change in the future.
-                                    _onWriteTransactionCompleted.Reset();
+                                    _flusherShouldRecheckJournalState.Reset();
                                     continue;
 
                                 case 1:
