@@ -89,8 +89,48 @@ namespace Voron.Impl.Scratch
                 _survivingRemovalsUpToTxId = 0; // a published record's bound covers them now
         }
 
+        /// <summary>
+        /// Pruning drops versions that no active snapshot can observe, and it decides that from a racy
+        /// enumeration of the active transactions plus the last committed id as a sentinel. That is only
+        /// sound because a reader always snapshots at the latest published record, so it can never adopt an
+        /// id below the floor we prune against. This asserts that invariant where readers take their
+        /// snapshot: if a path ever hands a reader an older id, pruning silently starts dropping versions
+        /// that reader still needs and it reads stale pages from the data file.
+        /// </summary>
+        [Conditional("DEBUG")]
+        internal void AssertReaderSnapshotIsNotBelowPruneFloor(long snapshotTxId)
+        {
+            Debug.Assert(snapshotTxId >= _pruneFloor,
+                $"A read transaction adopted snapshot {snapshotTxId}, below the prune floor {_pruneFloor}. " +
+                "Versions it needs may already have been pruned.");
+        }
+
+        /// <summary>
+        /// _visibleCount is maintained by hand across Set, RemoveInternal, RollbackCurrentTransaction and
+        /// Rebuild, and snapshots carry it as their count. A single missed adjustment makes the count
+        /// disagree with what enumeration actually yields, so recount and compare while debugging.
+        /// </summary>
+        [Conditional("DEBUG")]
+        private void AssertVisibleCountMatches()
+        {
+            var actual = 0;
+            foreach (var slot in _slots)
+            {
+                if (slot.KeyPlusOne == 0)
+                    continue;
+
+                var head = slot.Head;
+                if (head != null && head.IsRemoved == false)
+                    actual++;
+            }
+
+            Debug.Assert(actual == _visibleCount,
+                $"Scratch pages table reports {_visibleCount} visible pages but the slots hold {actual}");
+        }
+
         public ScratchPagesSnapshot CaptureSnapshot(long visibleAsOfTxId)
         {
+            AssertVisibleCountMatches();
             return new ScratchPagesSnapshot(_slots, visibleAsOfTxId, _visibleCount);
         }
 

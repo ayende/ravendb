@@ -296,6 +296,7 @@ namespace Voron.Impl
             if (flags != TransactionFlags.ReadWrite)
             {
                 _id = _envRecord.TransactionId;
+                _env.ScratchPagesTable.AssertReaderSnapshotIsNotBelowPruneFloor(_id);
                 _scratchPagesForReads = _envRecord.ScratchPagesTable;
                 _getPageMethod = _scratchPagesForReads.Count > 0 ? GetPageMethod.ReadScratchFirst : GetPageMethod.DataFile;
                 InitializeRoots();
