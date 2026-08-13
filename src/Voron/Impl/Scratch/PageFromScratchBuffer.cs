@@ -40,6 +40,28 @@ namespace Voron.Impl.Scratch
         int NumberOfPages
     )
     {
+        internal PageFromScratchBuffer Older;
+
+        public bool IsRemoved { get; internal init; }
+
+        
+        // Set on free-after-flush tombstones only: scratch pool free must not be undone by rollbacks (RavenDB-27166)
+        public bool SurvivesRollback { get; internal init; }
+
+        internal static PageFromScratchBuffer CreateTombstone(long pageNumberInDataFile, long asOfTxId, bool survivesRollback)
+        {
+            return new PageFromScratchBuffer(null, null, asOfTxId, -1, pageNumberInDataFile, default, 0, 0)
+            {
+                IsRemoved = true,
+                SurvivesRollback = survivesRollback
+            };
+        }
+
+        // Instances are version-chain nodes with *reference* identity not structural equality
+        public bool Equals(PageFromScratchBuffer other) => ReferenceEquals(this, other);
+
+        public override int GetHashCode() => RuntimeHelpers.GetHashCode(this);
+
         public unsafe Page ReadPage(LowLevelTransaction tx)
         {
             return new Page(Read(ref tx.PagerTransactionState));
