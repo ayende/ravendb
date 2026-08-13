@@ -78,6 +78,8 @@ namespace Voron.Impl
 
         public ScratchPagesSnapshot ScratchTableSnapshot;
 
+        internal long ScratchSnapshotSeq;
+
         internal sealed class WriteTransactionPool
         {
 #if DEBUG
@@ -182,6 +184,7 @@ namespace Voron.Impl
             _disposeAllocator = allocator == null;
             _isValidationEnabled = _env.Options.Encryption.IsEnabled == false;
             _scratchPagesForReads = previous._scratchPagesForReads;
+            ScratchSnapshotSeq = previous.ScratchSnapshotSeq;
             _getPageMethod = previous._getPageMethod;
 
             Flags = TransactionFlags.Read;
@@ -247,7 +250,8 @@ namespace Voron.Impl
             _allocator.RegisterListener(this);
             _isValidationEnabled = _env.Options.Encryption.IsEnabled == false;
             _scratchPagesInUse = previous._scratchPagesInUse;
-            _scratchPagesInUse.BeginWriteTransaction(_id, env.CurrentStateRecord.TransactionId);
+            ScratchSnapshotSeq = env.CurrentStateRecord.ScratchPagesTable.VisibleAsOfSeq;
+            _scratchPagesInUse.BeginWriteTransaction(ScratchSnapshotSeq);
             _getPageMethod = GetPageMethod.WriteScratchFirst;
 
             Flags = TransactionFlags.ReadWrite;
@@ -297,6 +301,7 @@ namespace Voron.Impl
             {
                 _id = _envRecord.TransactionId;
                 _scratchPagesForReads = _envRecord.ScratchPagesTable;
+                ScratchSnapshotSeq = _scratchPagesForReads.VisibleAsOfSeq;
                 _getPageMethod = _scratchPagesForReads.Count > 0 ? GetPageMethod.ReadScratchFirst : GetPageMethod.DataFile;
                 InitializeRoots();
 
@@ -309,7 +314,8 @@ namespace Voron.Impl
             _env.WriteTransactionPool.Reset();
             _dirtyPages = _env.WriteTransactionPool.DirtyPagesPool;
             _scratchPagesInUse = _env.ScratchPagesTable;
-            _scratchPagesInUse.BeginWriteTransaction(_id, _id - 1);
+            ScratchSnapshotSeq = _envRecord.ScratchPagesTable.VisibleAsOfSeq;
+            _scratchPagesInUse.BeginWriteTransaction(ScratchSnapshotSeq);
             _transactionPages = new HashSet<PageFromScratchBuffer>(PageFromScratchBufferEqualityComparer.Instance);
             _pagesToFreeOnCommit = new Stack<long>();
 
@@ -1243,10 +1249,8 @@ namespace Voron.Impl
             else
                 _writeToJournalState = WriteToJournalState.Skip;
 
-            // O(1): the snapshot is the live slot array
-            ScratchTableSnapshot = _writeToJournalState == WriteToJournalState.ModifiedPages
-                ? _scratchPagesInUse.CaptureSnapshot(_id) //  this transaction's id as the upper bound
-                : _scratchPagesInUse.CaptureSnapshotWithoutCurrentTransaction(_id - 1); // the _previous_ tx id, since we didn't increment it
+            // O(1) operation to capture the current state of the scratch table
+            ScratchTableSnapshot = _scratchPagesInUse.CaptureSnapshot();
         }
 
 

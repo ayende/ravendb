@@ -17,12 +17,20 @@ namespace Voron.Impl.Scratch
     /// visibility so that a single writer can publish new state without copying while any number of
     /// concurrent readers keep consistent snapshots.
     ///
+    /// Versioning is by the table's own publish sequence, not by transaction id: the sequence advances
+    /// on every write session and is never reused, so every published state record gets a strictly
+    /// higher visibility bound - including book-keeping commits that publish at an unchanged
+    /// transaction id (the journal flush-state update). Their free-after-flush removals become visible
+    /// exactly on the record that also carries the post-flush data pager state, older records do not see them. 
+    /// Transaction ids remain on the live versions (PageFromScratchBuffer.AllocatedInTransaction) as journal 
+    /// provenance for the flusher; they play no role in visibility.
+    ///
     /// Concurrency model:
     /// - There is a single writer at any time (the write transaction, serialized by the environment's
     ///   write lock). All mutation methods assume that.
     /// - Readers are wait-free. They never observe a version newer than their snapshot because every
-    ///   version is stamped with the transaction that created it, and a reader's snapshot id is always
-    ///   a committed transaction id - strictly older than anything the current writer creates.
+    ///   version is stamped with the sequence of the session that created it, and a reader's snapshot
+    ///   bound is always a published sequence - strictly older than anything the current writer creates.
     /// - Versions become unreachable only when no active or future snapshot can observe them
     ///   (see PruneChain / PruneChainPrecise), so unlinking is safe while readers traverse.
     /// </summary>
@@ -37,7 +45,7 @@ namespace Voron.Impl.Scratch
             // Ordered linked list of versions, newest first. The head is always the version that the writer sees as current.
             internal PageFromScratchBuffer Head;
         }
-        
+
         private const int InitialSize = 1024;
 
         // A longer chain would require a the more expensive precise prune.
@@ -51,22 +59,21 @@ namespace Voron.Impl.Scratch
         // Count of non tombstone pages, for snapshot enumeration.
         private int _visibleCount;
 
-        private long _txId;
-        private long _lastCommittedTxId;
+        // Monotone counter of write sessions - bumped on every BeginWriteTransaction and never reused,
+        // whether the session publishes or rolls back. _seq stamps everything the current session
+        // creates; _lastPublishedSeq is the bound of the latest published record.
+        private long _seqCounter;
+        private long _seq;
+        private long _lastPublishedSeq;
 
-        private long _pruneFloor;
-
-        // Sorted ids of the active snapshots (plus the last committed id as a sentinel for readers
-        // that are registering concurrently). Fetched lazily, at most once per write transaction,
-        // only when a deep chain actually needs the precise prune.
+        // Sorted sequence bounds of the active snapshots (plus the last published sequence as a
+        // sentinel for readers that are registering concurrently). Fetched lazily, at most once per
+        // write session, the first time a prune needs it; its minimum is the prune floor.
         private readonly List<long> _activeSnapshots = new();
         private bool _activeSnapshotsFetched;
 
         // Pages whose chains the current transaction touched, in mutation order, possibly with duplicates - to make rollbacks easier
         private readonly List<long> _undo = [];
-
-        private bool _hasSurvivingRemovalsInCurrentTx;
-        private long _survivingRemovalsUpToTxId;
 
         public ScratchPagesTable(ActiveTransactions activeTransactions)
         {
@@ -75,46 +82,26 @@ namespace Voron.Impl.Scratch
 
         public int VisibleCount => _visibleCount;
 
-        public void BeginWriteTransaction(long txId, long lastCommittedTxId)
+        public void BeginWriteTransaction(long lastPublishedSeq)
         {
+            Debug.Assert(lastPublishedSeq <= _seqCounter, "a published bound cannot come from a session that never began");
+
             _undo.Clear();
-            _hasSurvivingRemovalsInCurrentTx = false;
-            _txId = txId;
-            _lastCommittedTxId = lastCommittedTxId;
-            var oldestActive = _activeTransactions.OldestTransaction;
-            _pruneFloor = oldestActive == 0 ? lastCommittedTxId : Math.Min(lastCommittedTxId, oldestActive);
+            _seq = ++_seqCounter;
+            _lastPublishedSeq = lastPublishedSeq;
             _activeSnapshotsFetched = false;
-
-            if (_survivingRemovalsUpToTxId != 0 && _survivingRemovalsUpToTxId <= lastCommittedTxId)
-                _survivingRemovalsUpToTxId = 0; // a published record's bound covers them now
-        }
-
-        public ScratchPagesSnapshot CaptureSnapshot(long visibleAsOfTxId)
-        {
-            return new ScratchPagesSnapshot(_slots, visibleAsOfTxId, _visibleCount);
         }
 
         /// <summary>
-        /// Captures a snapshot for a transaction whose state record publishes without consuming a
-        /// transaction id (a book-keeping commit - typically the one applying a journal flush). Such a
-        /// transaction has no page modifications of its own; its only changes are free-after-flush
-        /// tombstones, which are stamped with the current (never published) id and would stay invisible
-        /// at the unchanged visibility bound. Those keys are dropped from a compacted copy of the slot
-        /// array instead: records published earlier keep the old array and continue resolving the
-        /// flushed pages to scratch, while this record's readers see them gone - atomically with the
-        /// data pager state that covers their new location in the data file.
+        /// O(1): the snapshot is the live slot array plus this session's sequence as the visibility
+        /// bound. Works identically for journal-written and book-keeping commits - the sequence
+        /// advanced at BeginWriteTransaction either way, so this record's readers (and only they) see
+        /// everything the session did, including free-after-flush removals, atomically with the rest
+        /// of the record.
         /// </summary>
-        public ScratchPagesSnapshot CaptureSnapshotWithoutCurrentTransaction(long visibleAsOfTxId)
+        public ScratchPagesSnapshot CaptureSnapshot()
         {
-            // _survivingRemovalsUpToTxId: a rolled-back transaction left surviving removals stamped
-            // with what is now our own (reused) id - they need the same compaction our own would
-            if (_undo.Count > 0 || _hasSurvivingRemovalsInCurrentTx || _survivingRemovalsUpToTxId != 0)
-            {
-                Rebuild(dropKeysRemovedByCurrentTransaction: true);
-                _survivingRemovalsUpToTxId = 0;
-            }
-
-            return new ScratchPagesSnapshot(_slots, visibleAsOfTxId, _visibleCount);
+            return new ScratchPagesSnapshot(_slots, _seq, _visibleCount);
         }
 
         public bool TryGetValue(long pageNumber, out PageFromScratchBuffer value)
@@ -151,25 +138,24 @@ namespace Voron.Impl.Scratch
 
         public void Set(long pageNumber, PageFromScratchBuffer value)
         {
-            Debug.Assert(value.AllocatedInTransaction == _txId,
-                $"Set(page: {pageNumber}) with a version allocated in tx {value.AllocatedInTransaction}, current write tx is {_txId}");
             Debug.Assert(value.IsRemoved == false, "Set() must not be used to push tombstones");
 
+            value.Chain.Seq = _seq;
             ref var slot = ref GetSlotForWrite(pageNumber);
             var head = slot.Head;
             _undo.Add(pageNumber);
 
-            if (head != null && head.AllocatedInTransaction == _txId && head.SurvivesRollback == false)
+            if (head != null && head.Chain.Seq == _seq && head.SurvivesRollback == false)
             {
-                // re-modification within the same transaction, the chain holds at most one version per transaction 
-                value.Older = head.Older;
+                // re-modification within the same session, the chain holds at most one version per session (except free from flush).
+                value.Chain.Older = head.Chain.Older;
                 if (head.IsRemoved)
                     _visibleCount++;
                 Volatile.Write(ref slot.Head, value);
                 return;
             }
 
-            value.Older = head;
+            value.Chain.Older = head;
             if (head == null || head.IsRemoved)
                 _visibleCount++;
             // the Older link must be in place before the node becomes reachable
@@ -179,7 +165,7 @@ namespace Voron.Impl.Scratch
 
         public bool Remove(long pageNumber, out PageFromScratchBuffer removed)
         {
-            return RemoveInternal(pageNumber, _txId, survivesRollback: false, out removed);
+            return RemoveInternal(pageNumber, survivesRollback: false, out removed);
         }
 
         /// <summary>
@@ -189,12 +175,12 @@ namespace Voron.Impl.Scratch
         /// </summary>
         public void RemoveFlushed(long pageNumber)
         {
-            RemoveInternal(pageNumber, _txId, survivesRollback: true, out var removed);
-            Debug.Assert(removed == null || removed.AllocatedInTransaction != _txId,
-                "A journal flush must never remove a version created by the transaction applying it");
+            RemoveInternal(pageNumber, survivesRollback: true, out var removed);
+            Debug.Assert(removed == null || removed.Chain.Seq != _seq,
+                "A journal flush must never remove a version created by the session applying it");
         }
 
-        private bool RemoveInternal(long pageNumber, long tombstoneTxId, bool survivesRollback, out PageFromScratchBuffer removed)
+        private bool RemoveInternal(long pageNumber, bool survivesRollback, out PageFromScratchBuffer removed)
         {
             if (TryFindSlot(pageNumber, out var index) == false)
             {
@@ -211,15 +197,13 @@ namespace Voron.Impl.Scratch
             }
 
             removed = head;
-            if (survivesRollback)
-                _hasSurvivingRemovalsInCurrentTx = true;
-            else
+            if (survivesRollback == false)
                 _undo.Add(pageNumber);
             _visibleCount--;
 
-            if (head.AllocatedInTransaction == _txId)
+            if (head.Chain.Seq == _seq)
             {
-                var older = head.Older;
+                var older = head.Chain.Older;
                 if (older == null || older.IsRemoved)
                 {
                     // if we have no older version or it is already a tombstone, we can just drop the head
@@ -227,14 +211,14 @@ namespace Voron.Impl.Scratch
                     return true;
                 }
 
-                var replacement = PageFromScratchBuffer.CreateTombstone(pageNumber, tombstoneTxId, survivesRollback);
-                replacement.Older = older;
+                var replacement = PageFromScratchBuffer.CreateTombstone(pageNumber, _seq, survivesRollback);
+                replacement.Chain.Older = older;
                 Volatile.Write(ref slot.Head, replacement);
                 return true;
             }
 
-            var tombstone = PageFromScratchBuffer.CreateTombstone(pageNumber, tombstoneTxId, survivesRollback);
-            tombstone.Older = head;
+            var tombstone = PageFromScratchBuffer.CreateTombstone(pageNumber, _seq, survivesRollback);
+            tombstone.Chain.Older = head;
             Volatile.Write(ref slot.Head, tombstone);
             PruneChain(tombstone);
             return true;
@@ -242,14 +226,6 @@ namespace Voron.Impl.Scratch
 
         public void RollbackCurrentTransaction()
         {
-            if (_hasSurvivingRemovalsInCurrentTx)
-            {
-                // the flush removals stay, stamped with an id that was never published - remember to
-                // compact them into any record published at the unchanged transaction id
-                _survivingRemovalsUpToTxId = _txId;
-                _hasSurvivingRemovalsInCurrentTx = false;
-            }
-
             var pages = CollectionsMarshal.AsSpan(_undo);
             for (var i = 0; i < pages.Length; i++)
             {
@@ -260,8 +236,8 @@ namespace Voron.Impl.Scratch
                 ref var slot = ref _slots[index];
                 var head = slot.Head;
                 var restored = head;
-                while (restored != null && restored.AllocatedInTransaction == _txId && restored.SurvivesRollback == false)
-                    restored = restored.Older;
+                while (restored != null && restored.Chain.Seq == _seq && restored.SurvivesRollback == false)
+                    restored = restored.Chain.Older;
 
                 if (ReferenceEquals(restored, head))
                     continue;
@@ -277,16 +253,19 @@ namespace Voron.Impl.Scratch
 
         private void PruneChain(PageFromScratchBuffer head)
         {
-            var node = head.Older;
+            var node = head.Chain.Older;
             if (node == null)
                 return;
 
+            EnsureActiveSnapshotsFetched();
+            var pruneFloor = _activeSnapshots[0];
+
             var prev = head;
             var depth = 1;
-            while (node.AllocatedInTransaction > _pruneFloor)
+            while (node.Chain.Seq > pruneFloor)
             {
                 prev = node;
-                node = node.Older;
+                node = node.Chain.Older;
                 depth++;
                 if (node == null)
                     return;
@@ -304,46 +283,46 @@ namespace Voron.Impl.Scratch
             if (node.IsRemoved)
             {
                 // a tombstone at the end of a chain is indistinguishable from the chain simply ending
-                Volatile.Write(ref prev.Older, null);
+                Volatile.Write(ref prev.Chain.Older, null);
                 return;
             }
 
             // nothing can see this, we can drop it
-            Volatile.Write(ref node.Older, null);
+            Volatile.Write(ref node.Chain.Older, null);
         }
 
         /// <summary>
-        /// This is here to handle the case of a single long running transaction that keeps a snapshot open while the writer churns through many versions of a page. 
+        /// This is here to handle the case of a single long running transaction that keeps a snapshot open while the writer churns through many versions of a page.
         /// For example, a backup running for an hour. We want to prune all the versions that has no active transactions reading that, while not touching the page
-        /// version that the backup is reading. More expensive than normal prune, but only called if we detect a long chain of page versions. 
+        /// version that the backup is reading. More expensive than normal prune, but only called if we detect a long chain of page versions.
         /// </summary>
         private void PruneChainPrecise(PageFromScratchBuffer head)
         {
             EnsureActiveSnapshotsFetched();
 
             var keep = head;
-            while (keep.Older != null && keep.Older.AllocatedInTransaction > _lastCommittedTxId)
-                keep = keep.Older;
+            while (keep.Chain.Older != null && keep.Chain.Older.Chain.Seq > _lastPublishedSeq)
+                keep = keep.Chain.Older;
 
-            var node = keep.Older;
+            var node = keep.Chain.Older;
             var activeSnapshots = CollectionsMarshal.AsSpan(_activeSnapshots);
             var snapshotIndex = activeSnapshots.Length - 1;
             while (node != null)
             {
-                if (snapshotIndex < 0 || (node.AllocatedInTransaction > activeSnapshots[snapshotIndex] && node.IsRemoved == false))
+                if (snapshotIndex < 0 || (node.Chain.Seq > activeSnapshots[snapshotIndex] && node.IsRemoved == false))
                 {
                     // no active snapshot can see this version, drop it from the chain
-                    node = node.Older;
-                    Volatile.Write(ref keep.Older, node);
+                    node = node.Chain.Older;
+                    Volatile.Write(ref keep.Chain.Older, node);
                     continue;
                 }
 
                 // the current snapshot can see this version, let's check older ones
-                while (snapshotIndex >= 0 && activeSnapshots[snapshotIndex] >= node.AllocatedInTransaction)
+                while (snapshotIndex >= 0 && activeSnapshots[snapshotIndex] >= node.Chain.Seq)
                     snapshotIndex--;
 
                 keep = node;
-                node = node.Older;
+                node = node.Chain.Older;
             }
 
             TrimTrailingTombstones(head);
@@ -354,13 +333,13 @@ namespace Voron.Impl.Scratch
             // everything below the last live node is a run of tombstones ending the chain - cutting
             // the whole run in one write keeps every bound absent exactly as the tombstones said
             var lastLive = head;
-            for (var node = head.Older; node != null; node = node.Older)
+            for (var node = head.Chain.Older; node != null; node = node.Chain.Older)
             {
                 if (node.IsRemoved == false)
                     lastLive = node;
             }
 
-            Volatile.Write(ref lastLive.Older, null);
+            Volatile.Write(ref lastLive.Chain.Older, null);
         }
 
         private void EnsureActiveSnapshotsFetched()
@@ -372,16 +351,16 @@ namespace Voron.Impl.Scratch
             _activeSnapshots.Clear();
             foreach (var tx in _activeTransactions.Enumerate())
             {
-                var id = tx.Id;
-                if (id > _lastCommittedTxId)
-                    continue; // covered by the keep-everything-newer-than-committed rule
+                var seq = tx.ScratchSnapshotSeq;
+                if (seq > _lastPublishedSeq)
+                    continue; // covered by the keep-everything-newer-than-published rule
 
-                _activeSnapshots.Add(id);
+                _activeSnapshots.Add(seq);
             }
 
             // a reader that started registering after the scan above always snapshots at the latest
-            // published id - the sentinel keeps the newest committed version of every chain reachable
-            _activeSnapshots.Add(_lastCommittedTxId);
+            // published bound - the sentinel keeps the newest published version of every chain reachable
+            _activeSnapshots.Add(_lastPublishedSeq);
 
             var unique = Sorting.SortAndRemoveDuplicates(CollectionsMarshal.AsSpan(_activeSnapshots));
             CollectionsMarshal.SetCount(_activeSnapshots, unique);
@@ -446,7 +425,7 @@ namespace Voron.Impl.Scratch
             }
         }
 
-        private void Rebuild(bool dropKeysRemovedByCurrentTransaction = false)
+        private void Rebuild()
         {
             EnsureActiveSnapshotsFetched();
 
@@ -458,9 +437,6 @@ namespace Voron.Impl.Scratch
                 if (slot.KeyPlusOne == 0 || slot.Head == null)
                     continue;
 
-                if (ShouldDropKey(ref slot, dropKeysRemovedByCurrentTransaction))
-                    continue;
-
                 PruneChainPrecise(slot.Head);
                 if (IsDeadChain(slot.Head))
                     continue;
@@ -469,17 +445,15 @@ namespace Voron.Impl.Scratch
             }
 
             // sized on what actually survives - a table that is mostly tombstones after a large flush
-            // shrinks here instead of doubling
+            // shrinks here instead of doubling, but by at most one step per rebuild to avoid oscillation
             var newSize = Math.Max(InitialSize, (int)BitOperations.RoundUpToPowerOf2((uint)(live * 2 + 1)));
+            newSize = Math.Max(newSize, oldSlots.Length / 2);
             var newSlots = new ScratchTableSlot[newSize];
             var newMask = newSize - 1;
             for (var i = 0; i < oldSlots.Length; i++)
             {
                 ref var slot = ref oldSlots[i];
                 if (slot.KeyPlusOne == 0 || slot.Head == null || IsDeadChain(slot.Head))
-                    continue;
-
-                if (ShouldDropKey(ref slot, dropKeysRemovedByCurrentTransaction))
                     continue;
 
                 var j = GetIndex(newSlots, slot.KeyPlusOne - 1);
@@ -496,25 +470,10 @@ namespace Voron.Impl.Scratch
             _usedSlots = live;
         }
 
-        private bool ShouldDropKey(ref ScratchTableSlot slot, bool dropKeysRemovedByCurrentTransaction)
-        {
-            if (dropKeysRemovedByCurrentTransaction == false)
-                return false;
-
-            var head = slot.Head;
-            if (head.AllocatedInTransaction != _txId)
-                return false;
-
-            // a book-keeping transaction cannot have page modifications - its only changes are
-            // free-after-flush tombstones
-            Debug.Assert(head.IsRemoved, "A transaction publishing at an unchanged id must not own live scratch versions");
-            return head.IsRemoved;
-        }
-
         private static bool IsDeadChain(PageFromScratchBuffer head)
         {
             // a lone tombstone reads as "absent" for every snapshot, same as no chain at all
-            return head.IsRemoved && head.Older == null;
+            return head.IsRemoved && head.Chain.Older == null;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -531,20 +490,20 @@ namespace Voron.Impl.Scratch
 
     /// <summary>
     /// A consistent point-in-time view over <see cref="ScratchPagesTable"/>: the slot array as
-    /// published at a commit plus the transaction id that bounds visibility. Cheap to capture (no
+    /// published at a commit plus the publish sequence that bounds visibility. Cheap to capture (no
     /// copying) and valid forever - versions it can observe are never pruned while a transaction at
-    /// this snapshot id is registered as active.
+    /// this snapshot bound is registered as active.
     /// </summary>
     public readonly struct ScratchPagesSnapshot : IEnumerable<KeyValuePair<long, PageFromScratchBuffer>>
     {
         private readonly ScratchPagesTable.ScratchTableSlot[] _slots;
-        public readonly long VisibleAsOfTxId;
+        public readonly long VisibleAsOfSeq;
         public readonly int Count;
 
-        internal ScratchPagesSnapshot(ScratchPagesTable.ScratchTableSlot[] slots, long visibleAsOfTxId, int count)
+        internal ScratchPagesSnapshot(ScratchPagesTable.ScratchTableSlot[] slots, long visibleAsOfSeq, int count)
         {
             _slots = slots;
-            VisibleAsOfTxId = visibleAsOfTxId;
+            VisibleAsOfSeq = visibleAsOfSeq;
             Count = count;
         }
 
@@ -571,8 +530,8 @@ namespace Voron.Impl.Scratch
                 if (k == keyPlusOne)
                 {
                     var node = Volatile.Read(ref slot.Head);
-                    while (node != null && node.AllocatedInTransaction > VisibleAsOfTxId)
-                        node = Volatile.Read(ref node.Older);
+                    while (node != null && node.Chain.Seq > VisibleAsOfSeq)
+                        node = Volatile.Read(ref node.Chain.Older);
 
                     if (node == null || node.IsRemoved)
                         break;
@@ -625,8 +584,8 @@ namespace Voron.Impl.Scratch
                         continue;
 
                     var node = Volatile.Read(ref slot.Head);
-                    while (node != null && node.AllocatedInTransaction > _snapshot.VisibleAsOfTxId)
-                        node = Volatile.Read(ref node.Older);
+                    while (node != null && node.Chain.Seq > _snapshot.VisibleAsOfSeq)
+                        node = Volatile.Read(ref node.Chain.Older);
 
                     if (node == null || node.IsRemoved)
                         continue;
