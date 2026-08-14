@@ -118,7 +118,7 @@ namespace Voron.Impl.Scratch
 
         public bool TryGettingFromAllocatedBuffer(LowLevelTransaction tx, int numberOfPages, int size, long pageNumber, Page previousVersion, out PageFromScratchBuffer result)
         {
-            result = null;
+            result = default;
 
             if (_freePagesBySize.TryGetValue(size, out LinkedList<PendingPage> list) == false || list.Count <= 0)
                 return false;
@@ -303,7 +303,7 @@ namespace Voron.Impl.Scratch
                     if (_parent._allocatedPages.TryGetValue(key, out var pageFromScratchBuffer) == false)
                         continue;
 
-                    if (pageFromScratchBuffer == null)
+                    if (pageFromScratchBuffer.File == null)
                         continue;
 
                     pages.Add(pageFromScratchBuffer);

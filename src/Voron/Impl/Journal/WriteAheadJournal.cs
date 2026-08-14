@@ -1150,13 +1150,13 @@ namespace Voron.Impl.Journal
                 for (var i = 0; i < bufferOfPageFromScratchBuffersToFree.Count; i++)
                 {
                     var pageFromScratchBuffer = bufferOfPageFromScratchBuffersToFree[i];
-                    if (pageFromScratchBuffer == null)
-                        continue; // it could be already freed in a previous (partial) execution of this action
+                    // a freed slot is cleared to default, so an absent file is how a previous (partial)
+                    // execution of this action marks what it already freed
                     if (pageFromScratchBuffer.File == null)
-                        throw new ArgumentNullException(nameof(pageFromScratchBuffer.File));
+                        continue;
 
                     scratchBufferPool.Free(txw, pageFromScratchBuffer.File.Number, pageFromScratchBuffer.PositionInScratchBuffer);
-                    bufferOfPageFromScratchBuffersToFree[i] = null;
+                    bufferOfPageFromScratchBuffersToFree[i] = default; // marks it freed for a partial re-execution
 
 #if DEBUG
                     freedUpToTx = long.Max(freedUpToTx, pageFromScratchBuffer.AllocatedInTransaction);
