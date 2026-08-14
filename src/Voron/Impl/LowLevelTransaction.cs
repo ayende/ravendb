@@ -44,6 +44,10 @@ namespace Voron.Impl
         private readonly StorageEnvironment _env;
         private readonly ByteStringContext _allocator;
         internal readonly PageLocator _pageLocator;
+
+        // Set when the locator was handed to the next transaction's pool at async-commit time. Freeing it again
+        // on dispose would put the same instance in a pool twice and let two transactions share one cache.
+        private bool _pageLocatorReleasedToPool;
         private readonly bool _disposeAllocator;
         private readonly bool _isValidationEnabled;
         private ScratchPagesTable _scratchPagesInUse;
@@ -859,7 +863,8 @@ namespace Voron.Impl
 
                 _txStatus |= TxStatus.Disposed;
 
-                FreePageLocator(_pageLocator);
+                if (_pageLocatorReleasedToPool == false)
+                    FreePageLocator(_pageLocator);
             }
             finally
             {
@@ -1052,6 +1057,14 @@ namespace Voron.Impl
 
             Debug.Assert(_writeToJournalState is not WriteToJournalState.None, "_writeToJournalState is not WriteToJournalState.None");
             bool writeToJournalIsRequired = _writeToJournalState is not WriteToJournalState.Skip;
+
+            // This transaction is done reading pages - everything past CommitStage1 is the journal write (which
+            // never touches the locator), the commit-finalization callbacks (in-memory bookkeeping) and dispose.
+            // Holding the locator until dispose means the transaction we are about to start cannot reuse it: it
+            // takes a different operation context, finds that context's pool empty, and allocates a fresh 1024-entry
+            // cache. Handing it to that context now lets the new transaction pop it instead.
+            persistentContext.FreePageLocator(_pageLocator);
+            _pageLocatorReleasedToPool = true;
 
             var nextTx = new LowLevelTransaction(this, persistentContext,
                 writeToJournalIsRequired ? Id + 1 : Id
