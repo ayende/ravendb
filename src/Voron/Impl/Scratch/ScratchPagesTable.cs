@@ -72,8 +72,10 @@ namespace Voron.Impl.Scratch
         private readonly List<long> _activeSnapshots = new();
         private bool _activeSnapshotsFetched;
 
-        // The lowest sequence any prune has used as its floor. Only written by the write session, read by
-        // read transactions creating concurrently, and only to assert the reader-never-below-floor invariant.
+        // The latest floor any prune has used - floors never decrease (every active snapshot was either
+        // counted in the previous minimum or opened at a later published bound), so this is also the
+        // highest, making the assertion against it the strongest. Only written by the write session, read
+        // by read transactions created concurrently, and only to assert the reader-never-below-floor invariant.
         private long _prunedUpToSeq;
 
         // Pages whose chains the current transaction touched, in mutation order, possibly with duplicates - to make rollbacks easier
