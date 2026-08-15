@@ -67,8 +67,17 @@ namespace Voron.Impl.Scratch
         // reading whatever the slot was recycled into. No real version can carry it: sequences start at 1.
         internal const long FreeSeq = long.MinValue;
 
-        private const int InitialSize = 1024;
-        private const int InitialEntries = 1024;
+        // Arrays at or above this go straight to the large object heap, which is gen2 from birth and is
+        // never compacted - so they are not copied by a collection. Below it they start in gen0 and get
+        // copied on every collection until they age out, and at this size that copy is the pause.
+        private const int LohThresholdBytes = 85_000;
+
+        private static readonly int MinSlots = BitOperations.RoundUpToPowerOf2(
+            (uint)(LohThresholdBytes / Unsafe.SizeOf<ScratchTableSlot>()) + 1) is var s && s > 1024 ? (int)s : 1024;
+
+        private static readonly int MinEntries = BitOperations.RoundUpToPowerOf2(
+            (uint)(LohThresholdBytes / Unsafe.SizeOf<ScratchEntry>()) + 1) is var e && e > 1024 ? (int)e : 1024;
+
         private const int InitialRefs = 16;
 
         // A longer chain would require a the more expensive precise prune.
@@ -76,10 +85,10 @@ namespace Voron.Impl.Scratch
 
         private readonly ActiveTransactions _activeTransactions;
 
-        private ScratchTableSlot[] _slots = NewSlots(InitialSize);
+        private ScratchTableSlot[] _slots = NewSlots(MinSlots);
         private int _usedSlots;
 
-        private ScratchEntry[] _entries = new ScratchEntry[InitialEntries];
+        private ScratchEntry[] _entries = new ScratchEntry[MinEntries];
         private int _usedEntries;
 
         // Entries unlinked from their chains, threaded through OlderIndex. Recycling is immediate because
@@ -116,6 +125,15 @@ namespace Voron.Impl.Scratch
 
         // Pages whose chains the current transaction touched, in mutation order, possibly with duplicates - to make rollbacks easier
         private readonly List<long> _undo = [];
+
+        // Generations a rebuild replaced, tagged with the sequence at which they stopped being current.
+        // A snapshot only ever holds the generation that was current when it was taken, so once the prune
+        // floor passes that tag no reader can be holding these and the arrays can be handed out again
+        // rather than reallocated - at steady state the entries array is tens of megabytes, and rebuilding
+        // it from scratch each time is exactly the kind of allocation we are trying to stop making.
+        private readonly List<(long RetiredAtSeq, ScratchTableSlot[] Slots, ScratchEntry[] Entries)> _retiredGenerations = [];
+        private readonly List<ScratchTableSlot[]> _slotPool = [];
+        private readonly List<ScratchEntry[]> _entryPool = [];
 
         public ScratchPagesTable(ActiveTransactions activeTransactions)
         {
@@ -265,17 +283,17 @@ namespace Voron.Impl.Scratch
 
                 // tombstone-headed and empty chains dominate the claimed keys
                 var deadKeys = usedSlots - _visibleCount;
-                if (deadKeys > usedSlots / 2 && usedSlots > InitialSize / 2)
+                if (deadKeys > usedSlots / 2 && usedSlots > MinSlots / 2)
                     return true;
 
                 // dead versions accumulate in the entries array between rebuilds even when the slot
                 // count is stable - a page rewritten over and over claims a fresh entry each time
-                if (_usedEntries - _freeEntries > Math.Max(InitialEntries, _visibleCount * 4))
+                if (_usedEntries - _freeEntries > Math.Max(MinEntries, _visibleCount * 4))
                     return true;
 
                 // oversized for what is visible - each rebuild steps the array down by one, so
                 // repeated idle passes converge
-                var targetSize = Math.Max(InitialSize, (int)BitOperations.RoundUpToPowerOf2((uint)(_visibleCount * 2 + 1)));
+                var targetSize = Math.Max(MinSlots, (int)BitOperations.RoundUpToPowerOf2((uint)(_visibleCount * 2 + 1)));
                 return targetSize < slots.Length;
             }
         }
@@ -567,6 +585,55 @@ namespace Voron.Impl.Scratch
             CollectionsMarshal.SetCount(_activeSnapshots, unique);
 
             Volatile.Write(ref _prunedUpToSeq, _activeSnapshots[0]);
+
+            ReclaimRetiredGenerations(_activeSnapshots[0]);
+        }
+
+        private void ReclaimRetiredGenerations(long floor)
+        {
+            for (var i = _retiredGenerations.Count - 1; i >= 0; i--)
+            {
+                var retired = _retiredGenerations[i];
+                if (retired.RetiredAtSeq > floor)
+                    continue; // a reader may still hold this generation
+
+                _slotPool.Add(retired.Slots);
+                _entryPool.Add(retired.Entries);
+                _retiredGenerations.RemoveAt(i);
+            }
+        }
+
+        private ScratchTableSlot[] RentSlots(int size)
+        {
+            for (var i = 0; i < _slotPool.Count; i++)
+            {
+                if (_slotPool[i].Length != size)
+                    continue;
+
+                var slots = _slotPool[i];
+                _slotPool.RemoveAt(i);
+                Array.Clear(slots);
+                for (var j = 0; j < slots.Length; j++)
+                    slots[j].HeadIndex = NoEntry;
+                return slots;
+            }
+
+            return NewSlots(size);
+        }
+
+        private ScratchEntry[] RentEntries(int size)
+        {
+            for (var i = 0; i < _entryPool.Count; i++)
+            {
+                if (_entryPool[i].Length != size)
+                    continue;
+
+                var entries = _entryPool[i];
+                _entryPool.RemoveAt(i);
+                return entries; // every slot is written before it is read, so no clearing needed
+            }
+
+            return new ScratchEntry[size];
         }
 
         /// <summary>
@@ -743,14 +810,14 @@ namespace Voron.Impl.Scratch
 
             // sized on what actually survives - a table that is mostly tombstones after a large flush
             // shrinks here instead of doubling, but by at most one step per rebuild to avoid oscillation
-            var newSize = Math.Max(InitialSize, (int)BitOperations.RoundUpToPowerOf2((uint)(live * 2 + 1)));
+            var newSize = Math.Max(MinSlots, (int)BitOperations.RoundUpToPowerOf2((uint)(live * 2 + 1)));
             newSize = Math.Max(newSize, oldSlots.Length / 2);
-            var newSlots = NewSlots(newSize);
+            var newSlots = RentSlots(newSize);
             var newMask = newSize - 1;
 
             // room to grow before the next rebuild, and never smaller than what is live
-            var newEntriesSize = Math.Max(InitialEntries, (int)BitOperations.RoundUpToPowerOf2((uint)(liveEntries * 2 + 1)));
-            var newEntries = new ScratchEntry[newEntriesSize];
+            var newEntriesSize = Math.Max(MinEntries, (int)BitOperations.RoundUpToPowerOf2((uint)(liveEntries * 2 + 1)));
+            var newEntries = RentEntries(newEntriesSize);
             var newRefs = new ScratchRef[_refs.Length];
             var refMap = new int[_usedRefs];
             for (var i = 0; i < refMap.Length; i++)
@@ -800,6 +867,9 @@ namespace Voron.Impl.Scratch
                     previous = target;
                 }
             }
+
+            // the generation we are leaving is still reachable through any snapshot taken against it
+            _retiredGenerations.Add((_seq, oldSlots, oldEntries));
 
             _slots = newSlots;
             _entries = newEntries;
