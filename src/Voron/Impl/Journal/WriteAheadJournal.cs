@@ -1106,6 +1106,9 @@ namespace Voron.Impl.Journal
                 List<PageFromScratchBuffer> bufferOfPageFromScratchBuffersToFree,
                 EnvironmentStateRecord flushedRecord)
             {
+                var stallSw = Stopwatch.StartNew(); // TEMP-STALL-27168
+                var stallFreeCount = bufferOfPageFromScratchBuffersToFree.Count; // TEMP-STALL-27168
+
                 _forTestingPurposes?.OnUpdateJournalStateUnderWriteTransactionLock?.Invoke();
 
                 JournalFile journalFile = _waj._files.FirstOrDefault(x => x.Number == flushedRecord.FlushedToJournal);
@@ -1201,6 +1204,10 @@ namespace Voron.Impl.Journal
                     scratchBufferFile.AssertNoPagesAllocatedInTransactionOlderThan(freedUpToTx);
                 }
 #endif
+
+                // TEMP-STALL-27168
+                if (stallSw.ElapsedMilliseconds > 100)
+                    Console.WriteLine($"[stall] {DateTime.UtcNow:HH:mm:ss.fff} JRNL-STATE-UPDATE {stallSw.ElapsedMilliseconds}ms freed={stallFreeCount}");
             }
 
             public void WaitForSyncToCompleteOnDispose()
@@ -1385,7 +1392,11 @@ namespace Voron.Impl.Journal
                     var dataPager = parent._waj._env.DataPager;
                     var currentStateRecord = parent._waj._env.CurrentStateRecord;
                     var dataPagerState = currentStateRecord.DataPagerState;
-                    dataPager.Sync(dataPagerState, Interlocked.Read(ref parent._totalWrittenButUnsyncedBytes));
+                    var unsyncedBytes = Interlocked.Read(ref parent._totalWrittenButUnsyncedBytes); // TEMP-STALL-27168
+                    dataPager.Sync(dataPagerState, unsyncedBytes);
+                    // TEMP-STALL-27168
+                    if (sp.ElapsedMilliseconds > 100)
+                        Console.WriteLine($"[stall] {DateTime.UtcNow:HH:mm:ss.fff} SYNC {sp.ElapsedMilliseconds}ms unsynced={unsyncedBytes / 1024 / 1024}MB file={dataPager.FileName}");
                     if (parent._waj._logger.IsDebugEnabled)
                     {
                         var sizeInKb = (dataPagerState.NumberOfAllocatedPages * Constants.Storage.PageSize) / Constants.Size.Kilobyte;
@@ -1585,6 +1596,10 @@ namespace Voron.Impl.Journal
                     meter.SetFileSize(dataPagerState.TotalAllocatedSize);
                     meter.IncrementSize(written);
                 }
+
+                // TEMP-STALL-27168
+                if (sp.ElapsedMilliseconds > 100)
+                    Console.WriteLine($"[stall] {DateTime.UtcNow:HH:mm:ss.fff} FLUSH {sp.ElapsedMilliseconds}ms pages={pagesFlushed} written={written / 1024 / 1024}MB file={dataPager.FileName}");
 
                 if (_waj._logger.IsDebugEnabled)
                     _waj._logger.Debug($"Flushed {pagesFlushed:#,#} pages to {dataPager.FileName} with {new Size(written, SizeUnit.Bytes)} in {sp.Elapsed}.");

@@ -713,6 +713,9 @@ namespace Voron.Impl.Scratch
 
         private void Rebuild()
         {
+            var stallSw = System.Diagnostics.Stopwatch.StartNew(); // TEMP-STALL-27168
+            var stallOldUsedEntries = _usedEntries; // TEMP-STALL-27168
+
             EnsureActiveSnapshotsFetched();
 
             var oldKeys = _keys;
@@ -799,6 +802,9 @@ namespace Voron.Impl.Scratch
             _usedRefs = usedRefs;
             _freeHead = NoEntry;
             _freeEntries = 0;
+
+            // TEMP-STALL-27168
+            Console.WriteLine($"[stall] {DateTime.UtcNow:HH:mm:ss.fff} REBUILD {stallSw.ElapsedMilliseconds}ms oldSlots={oldKeys.Length} oldEntries={stallOldUsedEntries} live={live} liveEntries={liveEntries} newSlots={newSize} newEntries={newEntriesSize}");
         }
 
         private bool IsDeadChain(int headIndex)
