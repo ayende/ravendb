@@ -734,6 +734,7 @@ namespace Voron.Impl.Journal
 
                 public Pal.page_to_write[] Pages;
                 public long[] Candidates;
+                public int[] Order;
                 private int _underusedStreak;
 
                 public void EnsureCapacity(int required)
@@ -760,6 +761,7 @@ namespace Voron.Impl.Journal
                 {
                     Pages = GC.AllocateUninitializedArray<Pal.page_to_write>(size);
                     Candidates = GC.AllocateUninitializedArray<long>(size);
+                    Order = GC.AllocateUninitializedArray<int>(size);
                     _underusedStreak = 0;
                 }
             }
@@ -1704,27 +1706,42 @@ namespace Voron.Impl.Journal
             {
                 written = 0;
                 var lastFlushedTx = _lastFlushed.TransactionId;
-                var record = state.Record;
 
+                // The flush works from the page values the flushed transactions recorded at commit, never from
+                // the scratch table: the table only guarantees visibility for registered readers, and versions a
+                // pending flush still needs may be pruned once newer transactions overwrite the same pages
+                // (RavenDB-27168). The values pin their own scratch positions - they are freed only by this
+                // flush's own journal-state update, after the writes below completed.
+                var buffers = CollectionsMarshal.AsSpan(state.Buffers);
                 var pagesBuffer = _flushBuffers.Pages;
                 var candidates = _flushBuffers.Candidates;
-                var candidateCount = 0;
-                foreach (ref readonly var buffer in CollectionsMarshal.AsSpan(state.Buffers))
-                    candidates[candidateCount++] = buffer.PageNumberInDataFile;
+                var order = _flushBuffers.Order;
+                for (var i = 0; i < buffers.Length; i++)
+                {
+                    candidates[i] = buffers[i].PageNumberInDataFile;
+                    order[i] = i;
+                }
 
-                candidateCount = Sorting.SortAndRemoveDuplicates(candidates.AsSpan(0, candidateCount));
+                candidates.AsSpan(0, buffers.Length).Sort(order.AsSpan(0, buffers.Length));
 
                 int index = 0;
-                for (var i = 0; i < candidateCount; i++)
+                for (var i = 0; i < buffers.Length;)
                 {
                     var pageNum = candidates[i];
-                    if (record.ScratchPagesTable.TryGetValue(pageNum, out var pageValue) == false)
-                        continue;
 
+                    // the same page may appear in several flushed transactions - only the newest version matters
+                    var newest = order[i];
+                    for (i++; i < buffers.Length && candidates[i] == pageNum; i++)
+                    {
+                        if (buffers[order[i]].AllocatedInTransaction > buffers[newest].AllocatedInTransaction)
+                            newest = order[i];
+                    }
+
+                    ref readonly var pageValue = ref buffers[newest];
                     if (lastFlushedTx >= pageValue.AllocatedInTransaction)
                         continue; // We already wrote those pages to disk in a previous flush...
 
-                    Debug.Assert(pageValue.AllocatedInTransaction <= record.TransactionId, "pageValue.AllocatedInTransaction <= record.TransactionId");
+                    Debug.Assert(pageValue.AllocatedInTransaction <= state.Record.TransactionId, "pageValue.AllocatedInTransaction <= state.Record.TransactionId");
 
                     var page = PreparePage(ref txState, pageValue);
                     int countOfPages = page.GetNumberOfPages();
