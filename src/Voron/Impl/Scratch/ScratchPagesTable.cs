@@ -192,6 +192,11 @@ namespace Voron.Impl.Scratch
 
         public int VisibleCount => _visibleCount;
 
+        internal (int UsedSlots, int VisibleCount, int UsedEntries, int FreeEntries) GetStateForTests() =>
+            (_usedSlots, _visibleCount, _usedEntries, _freeEntries);
+
+        internal void ForceRebuildForTests() => Rebuild();
+
         public void BeginWriteTransaction(long lastPublishedSeq)
         {
             Debug.Assert(lastPublishedSeq <= _seqCounter, "a published bound cannot come from a session that never began");
@@ -491,50 +496,79 @@ namespace Voron.Impl.Scratch
             FreeChainFrom(stranded);
         }
 
+        // A published entry survives only while it is the *visible* entry (the newest at or below the
+        // bound) for some active snapshot bound. An entry shadowed by a newer entry that every remaining
+        // bound already sees - including a tombstone - is unreachable and can go. When the visible entry
+        // for the lowest remaining bounds is a tombstone, everything below it goes too: for those readers
+        // a chain that simply ends is indistinguishable from the tombstone they were reading.
         private void PruneChainPrecise(int headIndex)
         {
             EnsureActiveSnapshotsFetched();
 
-            var keep = headIndex;
-            while (_entries[keep].OlderIndex != NoEntry && _entries[_entries[keep].OlderIndex].Seq > _lastPublishedSeq)
-                keep = _entries[keep].OlderIndex;
+            var bounds = CollectionsMarshal.AsSpan(_activeSnapshots); // ascending, all <= _lastPublishedSeq
+            var si = bounds.Length - 1;
 
-            var node = _entries[keep].OlderIndex;
-            var activeSnapshots = CollectionsMarshal.AsSpan(_activeSnapshots);
-            var snapshotIndex = activeSnapshots.Length - 1;
+            // the current session's unpublished suffix of the chain is always kept
+            var prev = headIndex;
+            while (_entries[prev].Seq > _lastPublishedSeq && _entries[prev].OlderIndex != NoEntry &&
+                   _entries[_entries[prev].OlderIndex].Seq > _lastPublishedSeq)
+                prev = _entries[prev].OlderIndex;
+
+            int node;
+            if (_entries[prev].Seq > _lastPublishedSeq)
+            {
+                node = _entries[prev].OlderIndex;
+            }
+            else
+            {
+                // the head itself is published: it is the visible entry for every bound at or above its seq,
+                // and it can never be unlinked - only consumed against the bounds
+                Debug.Assert(prev == headIndex, "a published entry below the head must enter the loop, not be skipped");
+                var headSeq = _entries[headIndex].Seq;
+                while (si >= 0 && bounds[si] >= headSeq)
+                    si--;
+
+                node = _entries[headIndex].OlderIndex;
+
+                if (_entries[headIndex].IsRemoved && si < 0)
+                {
+                    Volatile.Write(ref _entries[headIndex].OlderIndex, NoEntry);
+                    FreeChainFrom(node);
+                    return;
+                }
+            }
+
             while (node != NoEntry)
             {
-                if (snapshotIndex < 0 || (_entries[node].Seq > activeSnapshots[snapshotIndex] && _entries[node].IsRemoved == false))
+                var seq = _entries[node].Seq;
+
+                if (si < 0 || bounds[si] < seq)
                 {
+                    // every remaining bound is below this entry's seq, so every reader skips it
                     var dropped = node;
                     node = _entries[node].OlderIndex;
-                    Volatile.Write(ref _entries[keep].OlderIndex, node);
+                    Volatile.Write(ref _entries[prev].OlderIndex, node);
                     FreeEntry(dropped);
                     continue;
                 }
 
-                while (snapshotIndex >= 0 && activeSnapshots[snapshotIndex] >= _entries[node].Seq)
-                    snapshotIndex--;
+                // this entry is the visible one for every remaining bound in [seq, bounds[si]]
+                while (si >= 0 && bounds[si] >= seq)
+                    si--;
 
-                keep = node;
+                if (_entries[node].IsRemoved && si < 0)
+                {
+                    // the tombstone itself stays linked - a reader may be standing on it right now, it is
+                    // the entry readers at the consumed bounds stop at; only what hides below it can go
+                    var stranded = _entries[node].OlderIndex;
+                    Volatile.Write(ref _entries[node].OlderIndex, NoEntry);
+                    FreeChainFrom(stranded);
+                    return;
+                }
+
+                prev = node;
                 node = _entries[node].OlderIndex;
             }
-
-            TrimTrailingTombstones(headIndex);
-        }
-
-        private void TrimTrailingTombstones(int headIndex)
-        {
-            var lastLive = headIndex;
-            for (var node = _entries[headIndex].OlderIndex; node != NoEntry; node = _entries[node].OlderIndex)
-            {
-                if (_entries[node].IsRemoved == false)
-                    lastLive = node;
-            }
-
-            var stranded = _entries[lastLive].OlderIndex;
-            Volatile.Write(ref _entries[lastLive].OlderIndex, NoEntry);
-            FreeChainFrom(stranded);
         }
 
         private void EnsureActiveSnapshotsFetched()

@@ -153,6 +153,64 @@ public class RavenDB_27168 : StorageTest
         AssertAllReadable(expected);
     }
 
+    // A page that was flushed and freed leaves a tombstone-headed chain in the scratch table. Once no
+    // active snapshot can see below the tombstone, the whole chain is unreachable and must be reclaimed -
+    // otherwise an append-only workload grows the table by one slot and two entries per flushed page,
+    // and every rebuild doubles, holding the write lock for seconds.
+    [RavenFact(RavenTestCategory.Voron)]
+    public void ScratchTableMustNotRetainFlushedPages()
+    {
+        RequireFileBasedPager();
+
+        var expected = new Dictionary<string, string>();
+
+        for (var round = 0; round < 12; round++)
+        {
+            WriteUniqueKeysRound(round, expected);
+
+            Env.FlushLogToDataFile();
+            using (var sync = new WriteAheadJournal.JournalApplicator.SyncOperation(Env.Journal.Applicator))
+                sync.SyncDataFile();
+        }
+
+        // a compaction pass under the write lock - this is what reclaims dead chains
+        using (var txw = Env.WriteTransaction())
+        {
+            Env.ScratchPagesTable.ForceRebuildForTests();
+            txw.Commit();
+        }
+
+        var (usedSlots, visibleCount, usedEntries, freeEntries) = Env.ScratchPagesTable.GetStateForTests();
+        var deadChains = usedSlots - visibleCount;
+        var retainedEntries = usedEntries - freeEntries;
+
+        Assert.True(deadChains <= 64,
+            $"The table retains {deadChains} dead chains for pages that were flushed and freed " +
+            $"(usedSlots={usedSlots} visible={visibleCount} entries={retainedEntries})");
+        Assert.True(retainedEntries <= visibleCount * 2 + 64,
+            $"The table retains {retainedEntries} entries for {visibleCount} visible pages");
+
+        AssertAllReadable(expected);
+    }
+
+    private void WriteUniqueKeysRound(int round, Dictionary<string, string> expected)
+    {
+        var value = new string((char)('a' + round % 26), 1500);
+
+        using (var tx = Env.WriteTransaction())
+        {
+            var tree = tx.CreateTree("tree");
+            for (var i = 0; i < 400; i++)
+            {
+                var key = $"unique/{round:D3}/{i:D4}";
+                tree.Add(key, value);
+                expected[key] = value;
+            }
+
+            tx.Commit();
+        }
+    }
+
     private void WriteRoundWithAsyncCommits(int round, Dictionary<string, string> expected)
     {
         var value = new string((char)('a' + round % 26), 1500);
