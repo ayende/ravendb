@@ -1203,6 +1203,31 @@ namespace Voron.Impl.Journal
 #endif
             }
 
+            // Start kernel writeback of the flushed pages right away, so the data file sync that
+            // eventually runs finds almost nothing left to drain, instead of paying for the whole
+            // accumulated backlog in one multi-second fsync. Not durable by itself - the fsync is
+            // still what allows journal deletion.
+            private int _dataFileWritebackFd = -2; // -2 = not opened yet, -1 = unsupported/failed
+            private void ScheduleDataFileWriteback(Pager dataPager)
+            {
+                if (PlatformDetails.RunningOnPosix == false || _dataFileWritebackFd == -1)
+                    return;
+
+                if (_dataFileWritebackFd == -2)
+                {
+                    _dataFileWritebackFd = Sparrow.Server.Platform.Posix.Syscall.open(dataPager.FileName,
+                        Sparrow.Server.Platform.Posix.OpenFlags.O_WRONLY, 0);
+                    if (_dataFileWritebackFd < 0)
+                    {
+                        _dataFileWritebackFd = -1;
+                        return;
+                    }
+                }
+
+                Sparrow.Server.Platform.Posix.Syscall.sync_file_range(_dataFileWritebackFd, 0, 0,
+                    Sparrow.Server.Platform.Posix.SyncFileRangeFlags.SYNC_FILE_RANGE_WRITE);
+            }
+
             public void WaitForSyncToCompleteOnDispose()
             {
                 if (Monitor.IsEntered(_flushingLock) == false)
@@ -1593,6 +1618,8 @@ namespace Voron.Impl.Journal
 
                 Interlocked.Add(ref _totalWrittenButUnsyncedBytes, written);
 
+                ScheduleDataFileWriteback(dataPager);
+
                 return dataPagerState;
             }
 
@@ -1826,6 +1853,12 @@ namespace Voron.Impl.Journal
 
             public void Dispose()
             {
+                if (_dataFileWritebackFd >= 0)
+                {
+                    Sparrow.Server.Platform.Posix.Syscall.close(_dataFileWritebackFd);
+                    _dataFileWritebackFd = -1;
+                }
+
                 foreach (var journalFile in _journalsToDelete)
                 {
                     // we need to release all unused journals
