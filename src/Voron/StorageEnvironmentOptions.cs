@@ -1266,6 +1266,8 @@ namespace Voron
         public long PrefetchResetThreshold { get; set; }
         public long SyncJournalsCountThreshold { get; set; }
 
+        public long MaxUnsyncedBytesBeforeSync { get; set; } = 256 * Constants.Size.Megabyte;
+
         internal bool SimulateFailureOnDbCreation { get; set; }
         internal bool ManualSyncing { get; set; } = false;
         public bool? IgnoreInvalidJournalErrors { get; set; }

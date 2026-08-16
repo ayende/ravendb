@@ -116,6 +116,11 @@ namespace Sparrow.Server.Platform.Posix
         [DllImport(LIBC_6, SetLastError = true)]
         public static extern int fcntl(int fd, FcntlCommands cmd, IntPtr args);
 
+        // sync_file_range(2): initiate writeback of a file range without waiting and without flushing
+        // metadata. offset=0, nbytes=0 covers from the start of the file to EOF.
+        [DllImport(LIBC_6, SetLastError = true)]
+        public static extern int sync_file_range(int fd, long offset, long nbytes, SyncFileRangeFlags flags);
+
         public static int FSync(int fd)
         {
             if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
