@@ -700,7 +700,14 @@ namespace Voron.Impl.Journal
             private readonly object _flushingLock = new();
             private readonly SemaphoreSlim _fsyncLock = new(1);
             private readonly WriteAheadJournal _waj;
-            private readonly ManualResetEventSlim _onWriteTransactionCompleted = new();
+            /// <summary>
+            /// Wakes the flusher while it is waiting for its journal state update to be applied. It is only a
+            /// hint: the flusher re-reads the authoritative state after every wake, so an extra or a swallowed
+            /// signal costs at most one loop iteration. Two things raise it - the update being applied by a
+            /// committing write transaction, and a write transaction releasing the lock (which lets the flusher
+            /// try to run the update in its own transaction instead).
+            /// </summary>
+            private readonly ManualResetEventSlim _flusherShouldRecheckJournalState = new();
             private readonly LockTaskResponsible _flushLockTaskResponsible;
 
             public int FlushInProgress;
@@ -749,12 +756,21 @@ namespace Voron.Impl.Journal
                 if (tx.Committed && tx.AppliedJournalStateAfterFlush)
                 {
                     _updateJournalStateAfterFlush = null;
+
+                    // Wake the flusher, which is waiting for exactly this. It cannot rely on
+                    // AfterTransactionWriteLockReleased here: a transaction that commits asynchronously hands
+                    // the write lock to the next transaction rather than releasing it, so that path is never
+                    // reached while a chain of async commits is running, and the flusher would instead
+                    // discover its work was done only when its wait times out.
+                    // The slot is cleared above before we signal, so the flusher sees the work as done and
+                    // leaves, rather than waking to retry for a write lock this transaction still holds.
+                    _flusherShouldRecheckJournalState.Set();
                 }
             }
 
             public void AfterTransactionWriteLockReleased()
             {
-                _onWriteTransactionCompleted.Set();
+                _flusherShouldRecheckJournalState.Set();
             }
 
             public long LastFlushedTransactionId => _lastFlushed.TransactionId;
@@ -950,7 +966,7 @@ namespace Voron.Impl.Journal
                 // we don't actually have to do that in our own transaction, what we'll do is to setup things so if there is a running
                 // write transaction, we'll piggy back on its commit to complete our process, without interrupting its work
                 var transactionPersistentContext = new TransactionPersistentContext(true);
-                _onWriteTransactionCompleted.Reset();
+                _flusherShouldRecheckJournalState.Reset();
                 ExceptionDispatchInfo edi = null;
                 var sp = Stopwatch.StartNew();
 
@@ -1023,14 +1039,14 @@ namespace Voron.Impl.Journal
                             // - we got a notification that the transaction is over (for any reason)
                             //   and we'll try to acquire the write tx lock again
 
-                            var satisfiedIndex = WaitHandle.WaitAny(new[] { _onWriteTransactionCompleted.WaitHandle, token.WaitHandle }, TimeSpan.FromMilliseconds(250));
+                            var satisfiedIndex = WaitHandle.WaitAny(new[] { _flusherShouldRecheckJournalState.WaitHandle, token.WaitHandle }, TimeSpan.FromMilliseconds(250));
 
                             switch (satisfiedIndex)
                             {
                                 case 0:
-                                    // once we get a signal (_onWriteTransactionCompleted), we should be able to acquire the write tx lock since we prevent new write transactions.
+                                    // once we get a signal (_flusherShouldRecheckJournalState), we should be able to acquire the write tx lock since we prevent new write transactions.
                                     // this is just a precaution in order to prevent a loop here if the implementation will change in the future.
-                                    _onWriteTransactionCompleted.Reset();
+                                    _flusherShouldRecheckJournalState.Reset();
                                     continue;
 
                                 case 1:
@@ -1134,13 +1150,13 @@ namespace Voron.Impl.Journal
                 for (var i = 0; i < bufferOfPageFromScratchBuffersToFree.Count; i++)
                 {
                     var pageFromScratchBuffer = bufferOfPageFromScratchBuffersToFree[i];
-                    if (pageFromScratchBuffer == null)
-                        continue; // it could be already freed in a previous (partial) execution of this action
+                    // a freed slot is cleared to default, so an absent file is how a previous (partial)
+                    // execution of this action marks what it already freed
                     if (pageFromScratchBuffer.File == null)
-                        throw new ArgumentNullException(nameof(pageFromScratchBuffer.File));
+                        continue;
 
                     scratchBufferPool.Free(txw, pageFromScratchBuffer.File.Number, pageFromScratchBuffer.PositionInScratchBuffer);
-                    bufferOfPageFromScratchBuffersToFree[i] = null;
+                    bufferOfPageFromScratchBuffersToFree[i] = default; // marks it freed for a partial re-execution
 
 #if DEBUG
                     freedUpToTx = long.Max(freedUpToTx, pageFromScratchBuffer.AllocatedInTransaction);
@@ -1506,16 +1522,18 @@ namespace Voron.Impl.Journal
                 var dataPager = _waj._env.DataPager;
                 var currentStateRecord = _waj._env.CurrentStateRecord;
                 var dataPagerState = currentStateRecord.DataPagerState;
-                var record = state.Record;
+                int pagesFlushed = 0;
                 using (var meter = options.IoMetrics.MeterIoRate(dataPager.FileName, IoMetrics.MeterType.DataFlush, 0))
                 {
-                    var pagesBuffer = ArrayPool<Pal.page_to_write>.Shared.Rent(record.ScratchPagesTable.Count);
+                    var pagesBuffer = ArrayPool<Pal.page_to_write>.Shared.Rent(state.Buffers.Count);
                     Pager.PagerTransactionState txState = default;
                     try
                     {
-                        Span<Pal.page_to_write> pages = GetSortedPages(ref txState, record, pagesBuffer, out written);
+                        Span<Pal.page_to_write> pages = GetSortedPages(ref txState, state, pagesBuffer, out written);
                         if (pages.IsEmpty)
                             return dataPagerState;
+
+                        pagesFlushed = pages.Length;
 
                         if (flushedPageRanges != null)
                         {
@@ -1545,9 +1563,9 @@ namespace Voron.Impl.Journal
                 }
 
                 if (_waj._logger.IsDebugEnabled)
-                    _waj._logger.Debug($"Flushed {record.ScratchPagesTable.Count:#,#} pages to {dataPager.FileName} with {new Size(written, SizeUnit.Bytes)} in {sp.Elapsed}.");
+                    _waj._logger.Debug($"Flushed {pagesFlushed:#,#} pages to {dataPager.FileName} with {new Size(written, SizeUnit.Bytes)} in {sp.Elapsed}.");
                 else if (_waj._logger.IsWarnEnabled && sp.Elapsed > options.LongRunningFlushingWarning)
-                    _waj._logger.Warn($"Very long data flushing. It took {sp.Elapsed} to flush {record.ScratchPagesTable.Count:#,#} pages to {dataPager.FileName} with {new Size(written, SizeUnit.Bytes)}.");
+                    _waj._logger.Warn($"Very long data flushing. It took {sp.Elapsed} to flush {pagesFlushed:#,#} pages to {dataPager.FileName} with {new Size(written, SizeUnit.Bytes)}.");
 
                 Interlocked.Add(ref _totalWrittenButUnsyncedBytes, written);
 
@@ -1659,33 +1677,53 @@ namespace Voron.Impl.Journal
                 }
             }
 
-            private Span<Pal.page_to_write> GetSortedPages(ref Pager.PagerTransactionState txState, EnvironmentStateRecord record,
+            private Span<Pal.page_to_write> GetSortedPages(ref Pager.PagerTransactionState txState, ApplyLogsToDataFileState state,
                 Pal.page_to_write[] pagesBuffer, out long written)
             {
-                int index = 0;
                 written = 0;
                 var lastFlushedTx = _lastFlushed.TransactionId;
-                foreach (var (pageNum, pageValue) in record.ScratchPagesTable)
-                {
-                    if (lastFlushedTx >= pageValue.AllocatedInTransaction)
-                        continue; // We already wrote those pages to disk in a previous flush... 
+                var record = state.Record;
 
-                    Debug.Assert(pageValue.AllocatedInTransaction <= record.TransactionId, "pageValue.AllocatedInTransaction <= record.TransactionId");
-                    
-                    var page = PreparePage(ref txState, pageValue);
-                    int countOfPages = page.GetNumberOfPages();
-                    written += countOfPages * Constants.Storage.PageSize;
-                    pagesBuffer[index++] = new Pal.page_to_write
+                var candidates = ArrayPool<long>.Shared.Rent(state.Buffers.Count);
+                try
+                {
+                    var candidateCount = 0;
+                    foreach (var buffer in state.Buffers)
+                        candidates[candidateCount++] = buffer.PageNumberInDataFile;
+
+                    candidateCount = Sorting.SortAndRemoveDuplicates(candidates.AsSpan(0, candidateCount));
+
+                    int index = 0;
+                    for (var i = 0; i < candidateCount; i++)
                     {
-                        page_num = page.PageNumber,
-                        ptr = page.Pointer,
-                        count_of_pages = countOfPages
-                    };
-                    Debug.Assert(pageNum == page.PageNumber, "pageNum == page.PageNumber");
+                        var pageNum = candidates[i];
+                        if (record.ScratchPagesTable.TryGetValue(pageNum, out var pageValue) == false)
+                            continue; // freed again within the flushed range, nothing to write
+
+                        // we clean the table lazily, we already flushed this (and this may point to a freed scratch page), so we skip it
+                        if (lastFlushedTx >= pageValue.AllocatedInTransaction)
+                            continue;
+
+                        Debug.Assert(pageValue.AllocatedInTransaction <= record.TransactionId, "pageValue.AllocatedInTransaction <= record.TransactionId");
+
+                        var page = PreparePage(ref txState, pageValue);
+                        int countOfPages = page.GetNumberOfPages();
+                        written += countOfPages * Constants.Storage.PageSize;
+                        pagesBuffer[index++] = new Pal.page_to_write
+                        {
+                            page_num = page.PageNumber,
+                            ptr = page.Pointer,
+                            count_of_pages = countOfPages
+                        };
+                        Debug.Assert(pageNum == page.PageNumber, "pageNum == page.PageNumber");
+                    }
+
+                    return new Span<Pal.page_to_write>(pagesBuffer, 0, index);
                 }
-                var pages = new Span<Pal.page_to_write>(pagesBuffer, 0, index);
-                pages.Sort();
-                return pages;
+                finally
+                {
+                    ArrayPool<long>.Shared.Return(candidates);
+                }
             }
 
             private Page PreparePage(ref Pager.PagerTransactionState txState, PageFromScratchBuffer pageValue)

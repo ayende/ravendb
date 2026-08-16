@@ -94,6 +94,8 @@ namespace Voron
 
         public readonly ActiveTransactions ActiveTransactions = new ActiveTransactions();
 
+        internal ScratchPagesTable ScratchPagesTable { get; }
+
         private readonly Pager _dataPager;
 
         public Pager DataPager => _dataPager;
@@ -152,6 +154,7 @@ namespace Voron
                 SelfReference.WeekReference = new WeakReference<StorageEnvironment>(this);
                 _log = RavenLogManager.Instance.GetLoggerForVoron<StorageEnvironment>(options, options.BasePath.FullPath);
                 _options = options;
+                ScratchPagesTable = new ScratchPagesTable(ActiveTransactions);
                 (_dataPager, var dataPagerState) = options.InitializeDataPager();
                 _freeSpaceHandling = new FreeSpaceHandling(options.DisableSparseRegions);
                 _headerAccessor = new HeaderAccessor(this);
@@ -161,10 +164,11 @@ namespace Voron
                     dataPagerState,
                     0,
                     -1,
-                    ImmutableDictionary<long, PageFromScratchBuffer>.Empty, 
-                    default(TreeRootHeader), 
+                    ScratchPagesSnapshot.Empty,
+                    default(TreeRootHeader),
                     -1,
                     (-1, -1),
+                    [],
                     null,
                     null);
                 
@@ -1494,7 +1498,7 @@ namespace Voron
             }
         }
 
-        private InMemoryStorageState.ScratchTableDetails GetScratchTableSummary(ImmutableDictionary<long, PageFromScratchBuffer> scratchTable)
+        private InMemoryStorageState.ScratchTableDetails GetScratchTableSummary(ScratchPagesSnapshot scratchTable)
         {
             var maxAllocatedInTransaction = long.MinValue;
             var minAllocatedInTransaction = long.MaxValue;
@@ -1706,6 +1710,27 @@ namespace Voron
         {
             Journal.TryReduceSizeOfCompressionBufferIfNeeded();
             ScratchBufferPool.Cleanup();
+            CleanupScratchPagesTable();
+        }
+
+        private void CleanupScratchPagesTable()
+        {
+            if (ScratchPagesTable.IdleCleanupRequired == false)
+                return;
+
+            try
+            {
+                // a book-keeping commit: publishes a record with the rebuilt (compacted) slot array
+                using (var txw = NewLowLevelTransaction(new TransactionPersistentContext(), TransactionFlags.ReadWrite, timeout: TimeSpan.Zero))
+                {
+                    ScratchPagesTable.IdleCleanup();
+                    txw.Commit();
+                }
+            }
+            catch (TimeoutException)
+            {
+                // the environment is not actually idle, the next idle round will retry
+            }
         }
 
         public override string ToString()
@@ -1770,15 +1795,20 @@ namespace Voron
         {
             // we must be running under the write lock
             Debug.Assert(tx.Flags is TransactionFlags.ReadWrite,"tx.Flags is TransactionFlags.ReadWrite");
-            Debug.Assert(tx.ModifiedPagesInTransaction != null, "tx.ModifiedPagesInTransaction != null");
+            Debug.Assert(tx.ScratchTableSnapshot.IsValid, "tx.ScratchTableSnapshot.IsValid");
             EnvironmentStateRecord currentStateRecord = tx.CurrentStateRecord;
+
+            // we may want to update the state of the transaction (scratch table, data pager state, etc)
+            // without incrementing the transaction id, since we didn't commit a transaction to the journal.
+            var publishedTransactionId = tx.WrittenToJournalNumber == -1 ? currentStateRecord.TransactionId - 1 : currentStateRecord.TransactionId;
+            Debug.Assert(tx.ScratchTableSnapshot.VisibleAsOfSeq > currentStateRecord.ScratchPagesTable.VisibleAsOfSeq,
+                "Every published record must carry a strictly higher scratch publish sequence than its predecessor");
             var updatedState = currentStateRecord with
             {
-                // we may want to update the state of the transaction (scratch table, data pager state, etc)
-                // without incrementing the transaction id, since we didn't commit a transaction to the journal
-                TransactionId = tx.WrittenToJournalNumber == -1 ? currentStateRecord.TransactionId-1 : currentStateRecord.TransactionId,
+                TransactionId = publishedTransactionId,
                 FlushedToJournal = tx.WrittenToJournalNumber == -1 ? currentStateRecord.FlushedToJournal : tx.WrittenToJournalNumber,
-                ScratchPagesTable = tx.ModifiedPagesInTransaction,
+                ScratchPagesTable = tx.ScratchTableSnapshot,
+                PagesAllocatedInTransaction = tx.WrittenToJournalNumber == -1 ? [] : tx.GetPagesAllocatedInTransaction(),
                 NextPageNumber = tx.GetNextPageNumber(),
                 Root = tx.RootObjects.ReadHeader(),
                 DataPagerState = tx.DataPagerState,
@@ -1858,10 +1888,10 @@ namespace Voron
                     sparseRegions.AddRange(record.SparseRegions);
                 }
 
-                foreach (var (_, pageFromScratch) in record.ScratchPagesTable)
+                foreach (var pageFromScratch in record.PagesAllocatedInTransaction)
                 {
-                    if (pageFromScratch.AllocatedInTransaction != record.TransactionId)
-                        continue;
+                    Debug.Assert(pageFromScratch.AllocatedInTransaction == record.TransactionId,
+                        "pageFromScratch.AllocatedInTransaction == record.TransactionId");
                     scratchBuffers.Add(pageFromScratch);
                 }
 
