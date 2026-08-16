@@ -193,6 +193,11 @@ namespace Voron
                 if (value < 0)
                     throw new InvalidOperationException($"Cannot set {nameof(MaxScratchBufferSize)} to negative value: {value}");
 
+                const long maxSupportedScratchBufferSize = (long)uint.MaxValue * Constants.Storage.PageSize;
+                if (value > maxSupportedScratchBufferSize)
+                    throw new InvalidOperationException(
+                        $"Cannot set {nameof(MaxScratchBufferSize)} to {value:#,#} bytes: a position inside a scratch buffer must fit in 32 bits (as pages), so the maximum supported value is {maxSupportedScratchBufferSize:#,#} bytes");
+
                 if (_forceUsing32BitsPager && _maxScratchBufferSize > 0)
                 {
                     _maxScratchBufferSize = Math.Min(value, _maxScratchBufferSize);
