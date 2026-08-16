@@ -88,7 +88,7 @@ namespace Voron.Impl.Scratch
         private ScratchTableSlot[] _slots = NewSlots(MinSlots);
         private int _usedSlots;
 
-        private ScratchEntry[] _entries = new ScratchEntry[MinEntries];
+        private ScratchEntry[] _entries = GC.AllocateUninitializedArray<ScratchEntry>(MinEntries);
         private int _usedEntries;
 
         // Entries unlinked from their chains, threaded through OlderIndex. Recycling is immediate because
@@ -137,6 +137,15 @@ namespace Voron.Impl.Scratch
 
         public ScratchPagesTable(ActiveTransactions activeTransactions)
         {
+            // The entries and slot arrays exist to keep page versions out of the object graph: holding no
+            // references is what lets the GC mark each array as a single object without scanning millions of
+            // interior slots. Adding a reference-typed field to either would quietly undo that, so it is
+            // asserted rather than left as a property of the field list.
+            Debug.Assert(RuntimeHelpers.IsReferenceOrContainsReferences<ScratchEntry>() == false,
+                "ScratchEntry must stay blittable - a reference field would put every page version back into the GC's scan");
+            Debug.Assert(RuntimeHelpers.IsReferenceOrContainsReferences<ScratchTableSlot>() == false,
+                "ScratchTableSlot must stay blittable");
+
             _activeTransactions = activeTransactions;
         }
 
@@ -633,7 +642,9 @@ namespace Voron.Impl.Scratch
                 return entries; // every slot is written before it is read, so no clearing needed
             }
 
-            return new ScratchEntry[size];
+            // every entry is written before it is read, so the zeroing the runtime would otherwise do
+            // over a couple of hundred megabytes on each rebuild buys nothing
+            return GC.AllocateUninitializedArray<ScratchEntry>(size);
         }
 
         /// <summary>
