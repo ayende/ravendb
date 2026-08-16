@@ -469,6 +469,7 @@ namespace Voron.Impl
 
         private void AddTransactionPage(in PageFromScratchBuffer page)
         {
+
             _transactionPagesIndex.Add(TransactionPageKey(page), _transactionPages.Count);
             _transactionPages.Add(page);
             _pagesCountIncludingAllOverflowPages += page.NumberOfPages;
