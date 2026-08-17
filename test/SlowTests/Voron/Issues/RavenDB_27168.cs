@@ -193,6 +193,136 @@ public class RavenDB_27168 : StorageTest
         AssertAllReadable(expected);
     }
 
+    // The scratch table's version chains are walked by wait-free readers while the write transaction
+    // prunes them. A reader whose snapshot is older than an entry walks *through* that entry - it loads
+    // the link to it, then its sequence, then its next link. If pruning recycles the entry inside that
+    // window, the reader follows a rewritten link into another page's chain and resolves the wrong
+    // scratch page for the page number it asked for.
+    [RavenFact(RavenTestCategory.Voron)]
+    public unsafe void ConcurrentReadersMustNeverResolveAWrongScratchPage()
+    {
+        RequireFileBasedPager();
+
+        const int pageCount = 64;
+        var pages = new long[pageCount];
+
+        using (var tx = Env.WriteTransaction())
+        {
+            var llt = tx.LowLevelTransaction;
+            for (var i = 0; i < pageCount; i++)
+            {
+                var page = llt.AllocatePage(1);
+                pages[i] = page.PageNumber;
+                *(long*)page.DataPointer = page.PageNumber;
+            }
+
+            tx.Commit();
+        }
+
+        Exception failure = null;
+        void Fail(Exception e) => Interlocked.CompareExchange(ref failure, e, null);
+
+        using (var stop = new CancellationTokenSource(TimeSpan.FromSeconds(30)))
+        {
+            var token = stop.Token;
+
+            var writer = new Thread(() =>
+            {
+                try
+                {
+                    var rng = new Random(1);
+                    var tempPage = -1L;
+                    for (var iteration = 0L; token.IsCancellationRequested == false; iteration++)
+                    {
+                        using (var tx = Env.WriteTransaction())
+                        {
+                            var llt = tx.LowLevelTransaction;
+                            for (var i = 0; i < 16; i++)
+                            {
+                                var pageNumber = pages[rng.Next(pageCount)];
+                                var page = llt.ModifyPage(pageNumber);
+                                *(long*)page.DataPointer = pageNumber;
+                                *((long*)page.DataPointer + 1) = iteration;
+                            }
+
+                            // allocate-then-free churn, so remove tombstones flow through the chains too
+                            if (tempPage != -1)
+                                llt.FreePage(tempPage);
+                            tempPage = llt.AllocatePage(1).PageNumber;
+
+                            // a rebuild prunes and re-packs every chain while readers keep walking the
+                            // previous generation
+                            if (iteration % 512 == 511)
+                                Env.ScratchPagesTable.ForceRebuildForTests();
+
+                            tx.Commit();
+                        }
+
+                        if (iteration % 64 == 0)
+                            Env.FlushLogToDataFile();
+                    }
+                }
+                catch (Exception e)
+                {
+                    Fail(e);
+                }
+            });
+
+            // heavy oversubscription on purpose: the race window is the two loads between following a
+            // chain link and reading the entry's sequence, and it only opens wide when a reader gets
+            // preempted right there - which is how the indexing workload that found this bug behaves
+            var readers = new Thread[Environment.ProcessorCount * 4];
+            for (var r = 0; r < readers.Length; r++)
+            {
+                // staggered snapshot ages: long-held transactions keep old bounds alive, so pruning runs
+                // against a mix of bounds and takes the precise, entry-dropping path
+                var seed = r;
+                var holdReads = 1024 << (r % 6);
+                readers[r] = new Thread(() =>
+                {
+                    try
+                    {
+                        var rng = new Random(17 + holdReads + seed);
+                        while (token.IsCancellationRequested == false)
+                        {
+                            using (var tx = Env.ReadTransaction())
+                            {
+                                for (var i = 0; i < holdReads; i++)
+                                {
+                                    var pageNumber = pages[rng.Next(pageCount)];
+
+                                    // bypass the transaction's page cache - every read must resolve
+                                    // through the scratch table snapshot, the code under test
+                                    var page = tx.LowLevelTransaction.GetPageWithoutCache(pageNumber);
+                                    var stamp = *(long*)page.DataPointer;
+                                    if (page.PageNumber != pageNumber || stamp != pageNumber)
+                                        throw new InvalidOperationException(
+                                            $"Asked for page {pageNumber} but the snapshot resolved a page " +
+                                            $"with header {page.PageNumber} and stamp {stamp}");
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception e)
+                    {
+                        Fail(e);
+                    }
+                });
+            }
+
+            writer.Start();
+            foreach (var reader in readers)
+                reader.Start();
+
+            writer.Join();
+            foreach (var reader in readers)
+                reader.Join();
+        }
+
+        if (failure != null)
+            throw failure;
+    }
+
     private void WriteUniqueKeysRound(int round, Dictionary<string, string> expected)
     {
         var value = new string((char)('a' + round % 26), 1500);

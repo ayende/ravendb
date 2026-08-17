@@ -52,9 +52,17 @@ namespace Voron.Impl.Scratch
     /// all volatile) makes a half-inserted version indistinguishable from an absent one. 
     /// 
     /// 
-    /// Versions are unlinked and recycled only when no active or future snapshot can observe them: the prune 
-    /// floor is the minimum over the active transactions' bounds, with the last published sequence as a sentinel
-    /// covering readers that are registering concurrently.
+    /// Versions are unlinked only when no active or future snapshot can observe them: the prune floor is
+    /// the minimum over the active transactions' bounds, with the last published sequence as a sentinel
+    /// covering readers that are registering concurrently. Unlinking alone is not enough to recycle,
+    /// though: a reader whose bound is below an entry's sequence walks *through* that entry - it loads the
+    /// link to it, then its sequence, then its next link - and there is a window where the reader stands on
+    /// an entry the pruner has just unlinked. Rewriting the entry there would send the reader into another
+    /// page's chain. So an unlinked entry is never freed directly: it is parked untouched, tagged with the
+    /// unlinking session's sequence, and moves to the free list only once the prune floor passes that
+    /// sequence - the same rule retired generations follow. This covers the session's own entries too:
+    /// they hang off published chain heads, and a reader skipping them by sequence transits them the
+    /// same way.
     ///
     /// On the hot paths this buys: O(1) commit capture, rollback proportional to what the transaction
     /// actually touched, flushing proportional to the delta, and reads that cost one probe run over a
@@ -106,6 +114,8 @@ namespace Voron.Impl.Scratch
         private bool _activeSnapshotsFetched;
 
         private long _prunedUpToSeq;
+
+        private readonly Queue<(long Seq, int Index)> _pendingFree = new();
 
         private readonly List<long> _undo = [];
 
@@ -340,7 +350,7 @@ namespace Voron.Impl.Scratch
                 if (_entries[head].IsRemoved)
                     _visibleCount++;
                 Volatile.Write(ref _heads[slotIndex], entryIndex);
-                FreeEntry(head);
+                ParkEntry(head);
                 return;
             }
 
@@ -392,12 +402,13 @@ namespace Voron.Impl.Scratch
                 if (older == NoEntry || _entries[older].IsRemoved)
                 {
                     Volatile.Write(ref _heads[index], older);
-                    FreeEntry(head);
+                    ParkEntry(head);
                     return true;
                 }
 
                 var replacement = CreateTombstone(pageNumber, survivesRollback, older);
                 Volatile.Write(ref _heads[index], replacement);
+                ParkEntry(head);
                 return true;
             }
 
@@ -450,7 +461,7 @@ namespace Voron.Impl.Scratch
                 for (var node = head; node != restored; )
                 {
                     var next = _entries[node].OlderIndex;
-                    FreeEntry(node);
+                    ParkEntry(node);
                     node = next;
                 }
             }
@@ -487,13 +498,13 @@ namespace Voron.Impl.Scratch
             if (_entries[node].IsRemoved)
             {
                 Volatile.Write(ref _entries[prev].OlderIndex, NoEntry);
-                FreeChainFrom(node);
+                ParkChainFrom(node);
                 return;
             }
 
             var stranded = _entries[node].OlderIndex;
             Volatile.Write(ref _entries[node].OlderIndex, NoEntry);
-            FreeChainFrom(stranded);
+            ParkChainFrom(stranded);
         }
 
         // A published entry survives only while it is the *visible* entry (the newest at or below the
@@ -533,7 +544,7 @@ namespace Voron.Impl.Scratch
                 if (_entries[headIndex].IsRemoved && si < 0)
                 {
                     Volatile.Write(ref _entries[headIndex].OlderIndex, NoEntry);
-                    FreeChainFrom(node);
+                    ParkChainFrom(node);
                     return;
                 }
             }
@@ -544,11 +555,12 @@ namespace Voron.Impl.Scratch
 
                 if (si < 0 || bounds[si] < seq)
                 {
-                    // every remaining bound is below this entry's seq, so every reader skips it
+                    // every remaining bound is below this entry's seq, so every reader skips it - but
+                    // skipping means walking through it, so it is parked with its links intact, not freed
                     var dropped = node;
                     node = _entries[node].OlderIndex;
                     Volatile.Write(ref _entries[prev].OlderIndex, node);
-                    FreeEntry(dropped);
+                    ParkEntry(dropped);
                     continue;
                 }
 
@@ -562,7 +574,7 @@ namespace Voron.Impl.Scratch
                     // the entry readers at the consumed bounds stop at; only what hides below it can go
                     var stranded = _entries[node].OlderIndex;
                     Volatile.Write(ref _entries[node].OlderIndex, NoEntry);
-                    FreeChainFrom(stranded);
+                    ParkChainFrom(stranded);
                     return;
                 }
 
@@ -595,6 +607,7 @@ namespace Voron.Impl.Scratch
             Volatile.Write(ref _prunedUpToSeq, _activeSnapshots[0]);
 
             _buffers.ReclaimRetiredGenerations(_activeSnapshots[0]);
+            ReclaimParkedEntries(_activeSnapshots[0]);
         }
 
         private void EnsureRoomForOneMoreEntry()
@@ -627,13 +640,32 @@ namespace Voron.Impl.Scratch
             _freeEntries++;
         }
 
-        private void FreeChainFrom(int index)
+        // Parking an unlinked entry leaves every field intact - a reader that loaded a link to it before
+        // the unlink still sees a coherent sequence and next link and walks on to the right place. This
+        // covers the current session's own entries too: they hang off published chain heads, so a reader
+        // skipping them by sequence is transiting them just the same. The entry becomes recyclable only
+        // once the prune floor passes the session that unlinked it.
+        private void ParkEntry(int index)
+        {
+            Debug.Assert(_entries[index].Seq != FreeSeq, "an entry cannot be parked twice");
+            _pendingFree.Enqueue((_seq, index));
+        }
+
+        private void ParkChainFrom(int index)
         {
             while (index != NoEntry)
             {
-                var next = _entries[index].OlderIndex;
-                FreeEntry(index);
-                index = next;
+                ParkEntry(index);
+                index = _entries[index].OlderIndex;
+            }
+        }
+
+        private void ReclaimParkedEntries(long floor)
+        {
+            while (_pendingFree.TryPeek(out var parked) && parked.Seq <= floor)
+            {
+                _pendingFree.Dequeue();
+                FreeEntry(parked.Index);
             }
         }
 
@@ -789,6 +821,7 @@ namespace Voron.Impl.Scratch
             }
 
             _buffers.Retire(_seq, oldKeys, oldHeads, oldEntries);
+            _pendingFree.Clear(); // parked entries live in the retired arrays; the generation floor now covers them
 
             _keys = newKeys;
             _heads = newHeads;
