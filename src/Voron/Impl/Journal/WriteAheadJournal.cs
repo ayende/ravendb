@@ -1768,6 +1768,14 @@ namespace Voron.Impl.Journal
                     if (lastFlushedTx >= pageValue.AllocatedInTransaction)
                         continue; // We already wrote those pages to disk in a previous flush...
 
+                    // a version is also stale if a later flushed transaction freed the page: the freed
+                    // range may have been handed to another page's overflow, and writing the old version
+                    // on top of it would corrupt that page (a value's whole range is freed with it, so
+                    // checking the head page covers the entire span)
+                    if (state.FreedPages.TryGetValue(pageNum, out var freedInTx) &&
+                        freedInTx > pageValue.AllocatedInTransaction)
+                        continue;
+
                     Debug.Assert(pageValue.AllocatedInTransaction <= state.Record.TransactionId, "pageValue.AllocatedInTransaction <= state.Record.TransactionId");
 
                     var page = PreparePage(ref txState, pageValue);
@@ -2400,18 +2408,30 @@ namespace Voron.Impl.Journal
             var pagesRequired = (transactionHeaderPageOverhead + pagesCountIncludingAllOverflowPages + overheadInPages);
             
             var freedPages = tx.GetFreedPages();
-            
+
             if (freedPages is { Count: > 0 })
             {
-                // we need to remove the freed pages that were reused and modified later on during the transaction
+                // we need to remove the freed pages that were reused and modified later on during the
+                // transaction - but on a copy: the transaction's own set must keep them, the flush relies
+                // on it to skip stale versions of pages that changed hands (the reused range may now sit
+                // inside another page's overflow)
+                HashSet<long> refined = null;
                 foreach (ref readonly var page in txPages)
                 {
                     for (int i = 0; i < page.NumberOfPages; i++)
                     {
-                        freedPages.Remove(page.PageNumberInDataFile + i);
+                        var reused = page.PageNumberInDataFile + i;
+                        if (freedPages.Contains(reused))
+                        {
+                            refined ??= new HashSet<long>(freedPages);
+                            refined.Remove(reused);
+                        }
                     }
-                } 
-                
+                }
+
+                if (refined != null)
+                    freedPages = refined;
+
                 if (freedPages.Count > 0)
                 {
                     var freePagesOverhead = freedPages.Count * sizeof(long) * 2; // twice as much as the number of pages guarantees enough space for the encoding
