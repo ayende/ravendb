@@ -761,6 +761,9 @@ namespace Voron
 
                 ActiveTransactions.Add(tx);
 
+                if (flags == TransactionFlags.Read)
+                    tx.EnsureReadSnapshotIsNotBelowPruneFloor();
+
                 InvokeNewTransactionCreated(tx);
 
                 return tx;

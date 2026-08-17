@@ -7,6 +7,7 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 using CollectionsMarshal = System.Runtime.InteropServices.CollectionsMarshal;
+using System.Threading;
 using System.Threading.Tasks;
 using Sparrow;
 using Sparrow.Platform;
@@ -48,10 +49,10 @@ namespace Voron.Impl
         private readonly bool _disposeAllocator;
         private readonly bool _isValidationEnabled;
         private ScratchPagesTable _scratchPagesInUse;
-        private readonly ScratchPagesSnapshot _scratchPagesForReads;
+        private ScratchPagesSnapshot _scratchPagesForReads;
         private HashSet<long> _sparsePageRanges;
-        private readonly GetPageMethod _getPageMethod;
-        private readonly long _id;
+        private GetPageMethod _getPageMethod;
+        private long _id;
 
         internal long DecompressedBufferBytes;
         internal TestingStuff _forTestingPurposes;
@@ -315,7 +316,8 @@ namespace Voron.Impl
                 _id = _envRecord.TransactionId;
                 _scratchPagesForReads = _envRecord.ScratchPagesTable;
                 ScratchSnapshotSeq = _scratchPagesForReads.VisibleAsOfSeq;
-                _env.ScratchPagesTable.AssertReaderSnapshotIsNotBelowPruneFloor(ScratchSnapshotSeq);
+                // the snapshot may transiently sit below the prune floor here - the transaction is not
+                // registered yet; EnsureReadSnapshotIsNotBelowPruneFloor re-adopts after registration
                 _getPageMethod = _scratchPagesForReads.Count > 0 ? GetPageMethod.ReadScratchFirst : GetPageMethod.DataFile;
                 InitializeRoots();
 
@@ -398,6 +400,34 @@ namespace Voron.Impl
                 _envRecord.Root.RootObjectType is not RootObjectType.None)
             {
                 _root = Tree.GetRoot(this, Constants.RootTreeNameSlice, _envRecord.Root);
+            }
+        }
+
+        // A read transaction adopts the current state record in its constructor, but only becomes visible
+        // to the pruner when it is added to the active transactions list - and the prune floor covers only
+        // registered readers plus the latest published sequence. If newer transactions published inside
+        // that window, the floor may already have passed the adopted snapshot and reclaimed entries or
+        // whole generations it needs. Called right after registration: from that point on the floor cannot
+        // pass this transaction's bound, so a snapshot that validates once stays valid for the
+        // transaction's lifetime.
+        internal void EnsureReadSnapshotIsNotBelowPruneFloor()
+        {
+            Debug.Assert(Flags == TransactionFlags.Read, "only fresh read transactions race with the pruner during registration");
+
+            // the registration store must be visible before the floor is read, or a pruner that missed us
+            // could have advanced the floor without us noticing
+            Interlocked.MemoryBarrier();
+
+            while (ScratchSnapshotSeq < _env.ScratchPagesTable.PrunedUpToSeq)
+            {
+                _envRecord = _env.CurrentStateRecord;
+                DataPagerState = _envRecord.DataPagerState;
+                _id = _envRecord.TransactionId;
+                _scratchPagesForReads = _envRecord.ScratchPagesTable;
+                ScratchSnapshotSeq = _scratchPagesForReads.VisibleAsOfSeq;
+                _getPageMethod = _scratchPagesForReads.Count > 0 ? GetPageMethod.ReadScratchFirst : GetPageMethod.DataFile;
+                _root = null;
+                InitializeRoots();
             }
         }
 

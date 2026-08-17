@@ -205,6 +205,8 @@ namespace Voron.Impl.Scratch
         internal (int UsedSlots, int VisibleCount, int UsedEntries, int FreeEntries) GetStateForTests() =>
             (_usedSlots, _visibleCount, _usedEntries, _freeEntries);
 
+        internal long PrunedUpToSeq => Volatile.Read(ref _prunedUpToSeq);
+
         internal void ForceRebuildForTests() => Rebuild();
 
         public void BeginWriteTransaction(long lastPublishedSeq)
@@ -215,16 +217,6 @@ namespace Voron.Impl.Scratch
             _seq = ++_seqCounter;
             _lastPublishedSeq = lastPublishedSeq;
             _activeSnapshotsFetched = false;
-        }
-
-        [Conditional("DEBUG")]
-        internal void AssertReaderSnapshotIsNotBelowPruneFloor(long snapshotSeq)
-        {
-            var floor = Volatile.Read(ref _prunedUpToSeq);
-
-            Debug.Assert(snapshotSeq >= floor,
-                $"A read transaction adopted scratch snapshot sequence {snapshotSeq}, below the prune floor {floor}. " +
-                "Versions it needs may already have been pruned.");
         }
 
         [Conditional("DEBUG")]
