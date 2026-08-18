@@ -10,7 +10,7 @@ namespace Sparrow.Server.Platform
 {
     public static unsafe class Pal
     {
-        public const int PAL_VER = 70889; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70890; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -103,6 +103,17 @@ namespace Sparrow.Server.Platform
             DoNotConsiderMemoryLockFailureAsCatastrophicError = 1 << 7,
             CopyOnWrite = 1 << 8,
             DoNotMap = 1 << 9,
+            TrackDirtyRanges = 1 << 10,
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct WritebackStats
+        {
+            public long BytesWritten;
+            public long RangesWritten;
+            public long SetBitsRemaining;
+            public long TotalWaitMicros;
+            public long MaxRangeWaitMicros;
         }
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
@@ -159,6 +170,25 @@ namespace Sparrow.Server.Platform
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_sync_pager(
             void* handle, out Int32 errorCode);
+
+        /// <summary>
+        /// Pushes the pager's tracked dirty ranges (OpenFileFlags.TrackDirtyRanges) to the device as a
+        /// pipelined stream of block-sized writebacks. Purely scheduling - rvn_sync_pager remains the
+        /// durability barrier. Any failure MUST be treated as a sync failure: the kernel may consume the
+        /// writeback error here, letting the following fdatasync succeed silently (fsync-gate).
+        /// </summary>
+        [DllImport(LIBRVNPAL, SetLastError = true)]
+        public static extern PalFlags.FailCodes rvn_pager_writeback_dirty(
+            void* handle,
+            Int64 maxBytes,
+            Int32 pipelineDepth,
+            Int32 blockSizeBytes,
+            out WritebackStats stats,
+            out Int32 errorCode);
+
+        [DllImport(LIBRVNPAL, SetLastError = true)]
+        public static extern PalFlags.FailCodes rvn_pager_get_device_id(
+            void* handle, out UInt64 deviceId, out Int32 errorCode);
 
         public static PalFlags.FailCodes rvn_init_pager(
             string filename,

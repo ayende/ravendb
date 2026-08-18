@@ -473,14 +473,16 @@ namespace Voron
 
             public override (Pager Pager, Pager.State State) InitializeDataPager()
             {
-                var flags = Pal.OpenFileFlags.None;
+                var flags = Pal.OpenFileFlags.TrackDirtyRanges;
                 if(Encryption.IsEnabled)
                     flags |= Pal.OpenFileFlags.Encrypted;
                 if (ForceUsing32BitsPager || PlatformDetails.Is32Bits)
                     flags |= Pal.OpenFileFlags.DoNotMap;
-                return Pager.Create(this, FilePath.FullPath,
+                var result = Pager.Create(this, FilePath.FullPath,
                     InitialFileSize ?? 0,
                     flags);
+                InitializeWritebackBudget(result.State);
+                return result;
             }
 
             public override string ToString()
@@ -1267,6 +1269,24 @@ namespace Voron
         public long SyncJournalsCountThreshold { get; set; }
 
         public long MaxUnsyncedBytesBeforeSync { get; set; } = 256 * Constants.Size.Megabyte;
+
+        /// <summary>
+        /// Block size for paced data-file writeback during sync (RavenDB-27375).
+        /// 0 disables the pacing entirely, falling back to a monolithic fdatasync.
+        /// </summary>
+        public int SyncWritebackBlockSizeInMb { get; set; } = 32;
+
+        /// <summary>
+        /// The writeback budget shared by every environment whose data file resides on the
+        /// same physical device; null when the device cannot be identified (pacing disabled).
+        /// </summary>
+        internal WritebackDeviceBudget WritebackBudget { get; private set; }
+
+        private protected unsafe void InitializeWritebackBudget(Pager.State state)
+        {
+            if (Pal.rvn_pager_get_device_id(state.Handle, out var deviceId, out _) == PalFlags.FailCodes.Success)
+                WritebackBudget = WritebackDeviceBudget.GetForDevice(deviceId);
+        }
 
         internal bool SimulateFailureOnDbCreation { get; set; }
         internal bool ManualSyncing { get; set; } = false;

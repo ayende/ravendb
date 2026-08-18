@@ -117,6 +117,11 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(2)]
         [ConfigurationEntry("Storage.SyncJournalsCountThreshold", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int SyncJournalsCountThreshold { get; set; }
+
+        [Description("Block size in megabytes for paced data-file writeback during sync. The dirty ranges are pushed to the device in blocks of this size before the durability barrier, so journal writes are not stuck behind a monolithic flush. Set to 0 to disable the pacing (monolithic fsync).")]
+        [DefaultValue(32)]
+        [ConfigurationEntry("Storage.SyncWritebackBlockSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public int SyncWritebackBlockSizeInMb { get; set; }
         
         [Description("EXPERT: Determine the acceleration level that Voron will use when compressing journals.")]
         [DefaultValue(1)]

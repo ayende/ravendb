@@ -26,6 +26,89 @@
 
 extern struct rvn_configuration g_cfg;
 
+#include "../pager_writeback.inl"
+
+PRIVATE int32_t
+_writeback_supported(struct handle *handle_ptr)
+{
+#if __APPLE__
+    /* msync needs a mapping; the F_FULLFSYNC barrier is unaffected either way */
+    return handle_ptr->read_address != NULL || handle_ptr->write_address != NULL;
+#else
+    (void)handle_ptr;
+    return true;
+#endif
+}
+
+PRIVATE int32_t
+_writeback_range_start(struct handle *handle_ptr, int64_t offset, int64_t length, int32_t *detailed_error_code)
+{
+#if __APPLE__
+    if ((uint64_t)offset >= handle_ptr->allocation_size)
+        return SUCCESS;
+    length = rvn_min(length, (int64_t)handle_ptr->allocation_size - offset);
+    char *address = (char *)(handle_ptr->write_address != NULL ? handle_ptr->write_address : handle_ptr->read_address) + offset;
+    if (msync(address, (size_t)length, MS_ASYNC))
+    {
+        *detailed_error_code = errno;
+        return FAIL_SYNC_FILE;
+    }
+    return SUCCESS;
+#else
+    int rc;
+    do
+    {
+        rc = sync_file_range(handle_ptr->file_fd, offset, length, SYNC_FILE_RANGE_WRITE);
+    } while (rc != 0 && errno == EINTR);
+    if (rc != 0)
+    {
+        *detailed_error_code = errno;
+        return FAIL_SYNC_FILE;
+    }
+    return SUCCESS;
+#endif
+}
+
+PRIVATE int32_t
+_writeback_range_complete(struct handle *handle_ptr, int64_t offset, int64_t length, int32_t *detailed_error_code)
+{
+#if __APPLE__
+    /* MS_ASYNC has no completion to wait on */
+    (void)handle_ptr;
+    (void)offset;
+    (void)length;
+    (void)detailed_error_code;
+    return SUCCESS;
+#else
+    int rc;
+    do
+    {
+        rc = sync_file_range(handle_ptr->file_fd, offset, length,
+                             SYNC_FILE_RANGE_WAIT_BEFORE | SYNC_FILE_RANGE_WRITE | SYNC_FILE_RANGE_WAIT_AFTER);
+    } while (rc != 0 && errno == EINTR);
+    if (rc != 0)
+    {
+        *detailed_error_code = errno;
+        return FAIL_SYNC_FILE;
+    }
+    return SUCCESS;
+#endif
+}
+
+EXPORT int32_t
+rvn_pager_get_device_id(void *handle, uint64_t *device_id, int32_t *detailed_error_code)
+{
+    struct handle *handle_ptr = handle;
+    struct stat st;
+    if (fstat(handle_ptr->file_fd, &st) == -1)
+    {
+        *detailed_error_code = errno;
+        return FAIL_STAT_FILE;
+    }
+    *device_id = (uint64_t)st.st_dev;
+    return SUCCESS;
+}
+
 int32_t rvn_lock_memory(struct handle *handle, void *mem, int64_t size, int32_t *detailed_error_code)
 {
     int32_t rc = SUCCESS;
@@ -199,6 +282,7 @@ void delete_global_state(struct handle_global_state *global_state)
         close(global_state->fsync_dir_arena.eventfd);
     free(global_state->writes_arena.arena);
     free(global_state->fsync_dir_arena.arena);
+    _free_dirty_bitmaps(global_state->dirty_bitmap);
     free(global_state->file_path);
     pthread_mutex_destroy(&global_state->writes_arena.lock);
     pthread_mutex_destroy(&global_state->fsync_dir_arena.lock);
@@ -588,6 +672,7 @@ int32_t rvn_write_file_io(
         if (rc != SUCCESS)
             return rc;
     }
+    _mark_dirty_pages(handle, buffers, count);
     return SUCCESS;
 }
 
@@ -604,6 +689,7 @@ int32_t rvn_write_mmap(
         int64_t size = (int64_t)buffers[i].count_of_pages * VORON_PAGE_SIZE;
         memcpy((char *)handle_ptr->write_address + offset, buffers[i].ptr, (size_t)size);
     }
+    _mark_dirty_pages(handle, buffers, count);
     return SUCCESS;
 }
 

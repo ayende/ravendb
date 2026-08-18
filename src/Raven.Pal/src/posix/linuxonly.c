@@ -152,6 +152,7 @@ int32_t rvn_write_vectored_file_io(
         if (rc != SUCCESS)
             return rc;
     }
+    _mark_dirty_pages(handle, buffers, count);
     return SUCCESS;
 }
 

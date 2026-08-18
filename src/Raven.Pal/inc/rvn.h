@@ -34,7 +34,8 @@ enum
     OPEN_FILE_LOCK_MEMORY = (1 << 6),
     OPEN_FILE_DO_NOT_CONSIDER_MEMORY_LOCK_FAILURE_AS_CATASTROPHIC_ERROR = (1 << 7),
     OPEN_FILE_COPY_ON_WRITE = (1 << 8),
-    OPEN_FILE_DO_NOT_MAP = (1<<9)
+    OPEN_FILE_DO_NOT_MAP = (1<<9),
+    OPEN_FILE_TRACK_DIRTY_RANGES = (1 << 10)
 };
 
 enum
@@ -168,6 +169,44 @@ rvn_close_pager(
 
 EXPORT int32_t
 rvn_sync_pager(void* handle,
+    int32_t* detailed_error_code);
+
+/* Dirty-range writeback (OPEN_FILE_TRACK_DIRTY_RANGES pagers).
+   One dirty bit covers WRITEBACK_BYTES_PER_BIT of the file; a set bit is a
+   pacing hint only - rvn_sync_pager remains the sole durability barrier. */
+#define WRITEBACK_BYTES_PER_BIT (1024 * 1024)
+#define WRITEBACK_DEFAULT_BLOCK_SIZE (32 * 1024 * 1024)
+#define WRITEBACK_MAX_PIPELINE_DEPTH 16
+
+struct rvn_writeback_stats
+{
+    int64_t bytes_written;
+    int64_t ranges_written;
+    int64_t set_bits_remaining;
+    int64_t total_wait_micros;
+    int64_t max_range_wait_micros;
+};
+
+/* Walks the pager's dirty bitmap, snapshot-and-clears the bits (atomic
+   exchange per word) and pushes the corresponding ranges to the device as a
+   pipelined stream: up to pipeline_depth blocks of block_size_bytes are
+   initiated ahead of the completion wait. Blocking; returns once max_bytes
+   (<= 0: everything currently set) has been pushed AND completed.
+   Any failure must be treated by the caller as a sync failure: the kernel may
+   consume the writeback error here, letting the following fdatasync succeed. */
+EXPORT int32_t
+rvn_pager_writeback_dirty(void* handle,
+    int64_t max_bytes,
+    int32_t pipeline_depth,
+    int32_t block_size_bytes,
+    struct rvn_writeback_stats* stats,
+    int32_t* detailed_error_code);
+
+/* st_dev on posix, volume serial number on windows - groups pagers that share
+   a physical device so the caller can budget writeback per device. */
+EXPORT int32_t
+rvn_pager_get_device_id(void* handle,
+    uint64_t* device_id,
     int32_t* detailed_error_code);
 
 EXPORT int32_t

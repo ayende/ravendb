@@ -962,6 +962,12 @@ namespace Voron.Impl.Journal
                     }
 
                     _waj._env.SuggestSyncDataFile();
+
+                    // half-full hint: start pushing the accumulated dirty ranges before the sync
+                    // threshold trips, so the epoch's cold majority is already clean by sync time.
+                    // Purely scheduling (no fsync lock, no barrier, no journal accounting).
+                    if (TotalWrittenButUnsyncedBytes > _waj._env.Options.MaxUnsyncedBytesBeforeSync / 2)
+                        GlobalFlushingBehavior.GlobalFlusher.Value.SuggestPacedWriteback(_waj._env);
                 }
                 finally
                 {
@@ -1201,61 +1207,70 @@ namespace Voron.Impl.Journal
 #endif
             }
 
-            private int _dataFileWritebackFd = -2;
-            private static readonly bool DisableWritebackPacing =
-                Environment.GetEnvironmentVariable("VORON_DISABLE_WRITEBACK_PACING") == "1";
+            private bool _writebackNotSupported;
 
-            private void ScheduleDataFileWriteback(Pager dataPager, Span<Pal.page_to_write> pages)
+            /// <summary>
+            /// Paced writeback of the data file's dirty ranges (RavenDB-27375): pushes the pages the
+            /// flushes dirtied since the last sync to the device in bounded blocks, budgeted per physical
+            /// device, so the closing fdatasync finds an almost-clean file instead of flooding the device
+            /// queue with a multi-GB avalanche that journal writes must wait behind. Purely scheduling -
+            /// losing a drain changes nothing about durability. A drain FAILURE however must fail the
+            /// sync: the kernel may consume a writeback error here and let the fdatasync succeed.
+            /// </summary>
+            internal void WritebackDirtyRanges(long maxBytes = -1)
             {
-                if (DisableWritebackPacing || PlatformDetails.RunningOnPosix == false || _dataFileWritebackFd == -1)
+                var options = _waj._env.Options;
+                var budget = options.WritebackBudget;
+                if (_writebackNotSupported || budget == null || options.SyncWritebackBlockSizeInMb <= 0)
                     return;
 
-                if (_waj._env.Options.RootJournal != null)
-                    return;
+                var dataPager = _waj._env.DataPager;
+                var dataPagerState = _waj._env.CurrentStateRecord.DataPagerState;
 
-                if (_dataFileWritebackFd == -2)
+                using (budget.EnterDrain(out var depth))
                 {
-                    _dataFileWritebackFd = Sparrow.Server.Platform.Posix.Syscall.open(dataPager.FileName,
-                        Sparrow.Server.Platform.Posix.OpenFlags.O_WRONLY, 0);
-                    if (_dataFileWritebackFd < 0)
+                    var rc = Pal.rvn_pager_writeback_dirty(dataPagerState.Handle, maxBytes, depth,
+                        options.SyncWritebackBlockSizeInMb * Constants.Size.Megabyte, out var stats, out var error);
+
+                    if (rc == PalFlags.FailCodes.FailWritebackNotSupported)
                     {
-                        _dataFileWritebackFd = -1;
+                        _writebackNotSupported = true;
                         return;
                     }
-                }
 
-                const long mergeGap = 2 * 1024 * 1024;
-                const int maxCalls = 64;
-                long start = -1, end = 0;
-                var calls = 0;
-                foreach (ref readonly var page in pages)
-                {
-                    var offset = page.page_num * Constants.Storage.PageSize;
-                    var length = (long)page.count_of_pages * Constants.Storage.PageSize;
-                    if (start == -1)
+                    if (rc != PalFlags.FailCodes.Success)
+                        PalHelper.ThrowLastError(rc, error, $"Failed to writeback dirty ranges of {dataPager.FileName}");
+
+                    if (_waj._logger.IsDebugEnabled && stats.BytesWritten > 0)
                     {
-                        start = offset;
-                        end = offset + length;
-                        continue;
+                        _waj._logger.Debug(
+                            $"Writeback of {stats.BytesWritten / Constants.Size.Kilobyte:#,#0} kb in {stats.RangesWritten:#,#} ranges " +
+                            $"(depth {depth}, waited {stats.TotalWaitMicros / 1000:#,#0} ms, max range {stats.MaxRangeWaitMicros / 1000:#,#0} ms, " +
+                            $"{stats.SetBitsRemaining:#,#0} dirty chunks remain) for {dataPager.FileName}");
                     }
-
-                    if (offset - end <= mergeGap || calls >= maxCalls)
-                    {
-                        end = offset + length;
-                        continue;
-                    }
-
-                    Sparrow.Server.Platform.Posix.Syscall.sync_file_range(_dataFileWritebackFd, start, end - start,
-                        Sparrow.Server.Platform.Posix.SyncFileRangeFlags.SYNC_FILE_RANGE_WRITE);
-                    calls++;
-                    start = offset;
-                    end = offset + length;
                 }
+            }
 
-                if (start != -1)
+            /// <summary>
+            /// Standalone (between-syncs) flavor of <see cref="WritebackDirtyRanges"/>: holds the fsync
+            /// lock so the environment cannot dispose the pager state under us; if a sync is running
+            /// right now there is nothing to do - it drains the very same bitmap.
+            /// </summary>
+            internal void PacedWritebackOnly()
+            {
+                if (_fsyncLock.Wait(0) == false)
+                    return;
+
+                try
                 {
-                    Sparrow.Server.Platform.Posix.Syscall.sync_file_range(_dataFileWritebackFd, start, end - start,
-                        Sparrow.Server.Platform.Posix.SyncFileRangeFlags.SYNC_FILE_RANGE_WRITE);
+                    if (_waj._env.Disposed || _waj._env.IsDisposing)
+                        return;
+
+                    WritebackDirtyRanges();
+                }
+                finally
+                {
+                    _fsyncLock.Release();
                 }
             }
 
@@ -1441,6 +1456,9 @@ namespace Voron.Impl.Journal
                     var dataPager = parent._waj._env.DataPager;
                     var currentStateRecord = parent._waj._env.CurrentStateRecord;
                     var dataPagerState = currentStateRecord.DataPagerState;
+                    // push the epoch's dirty ranges in paced blocks first, so the barrier below
+                    // finds an almost-clean file instead of flooding the device queue
+                    parent.WritebackDirtyRanges();
                     dataPager.Sync(dataPagerState, Interlocked.Read(ref parent._totalWrittenButUnsyncedBytes));
                     if (parent._waj._logger.IsDebugEnabled)
                     {
@@ -1633,7 +1651,6 @@ namespace Voron.Impl.Journal
                             }
                         }
 
-                        ScheduleDataFileWriteback(dataPager, pages);
                     }
                     finally
                     {
@@ -1893,12 +1910,6 @@ namespace Voron.Impl.Journal
 
             public void Dispose()
             {
-                if (_dataFileWritebackFd >= 0)
-                {
-                    Sparrow.Server.Platform.Posix.Syscall.close(_dataFileWritebackFd);
-                    _dataFileWritebackFd = -1;
-                }
-
                 foreach (var journalFile in _journalsToDelete)
                 {
                     // we need to release all unused journals

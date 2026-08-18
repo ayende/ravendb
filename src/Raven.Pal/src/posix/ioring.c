@@ -555,6 +555,10 @@ int32_t rvn_write_io_ring(
     {
         rc = FAIL_IO_RING_WRITE_RESULT;
     }
+    else if (rc == SUCCESS)
+    {
+        _mark_dirty_pages(handle, buffers, count);
+    }
 
     int unlock_rc = pthread_mutex_unlock(&handle_ptr->global_state->writes_arena.lock);
     if (unlock_rc && rc == SUCCESS)
