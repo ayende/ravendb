@@ -34,7 +34,12 @@ public abstract class MergedTransactionCommand<TOperationContext, TTransaction> 
     public abstract IReplayableCommandDto<TOperationContext, TTransaction, MergedTransactionCommand<TOperationContext, TTransaction>> ToDto(TOperationContext context);
 
     [JsonIgnore]
-    public readonly TaskCompletionSource<object> TaskCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    // Deliberately NOT RunContinuationsAsynchronously: completions are raised from thread pool workers
+    // in bounded shards (see AbstractTransactionOperationsMerger.NotifyOnThreadPool), and the awaiting
+    // request continuations run inline on those workers - one less queue hop per operation, and the
+    // batch's completion wave flows through the workers' local queues instead of landing on the global
+    // queue as one impulse.
+    public readonly TaskCompletionSource<object> TaskCompletionSource = new();
 
     public Exception Exception;
 

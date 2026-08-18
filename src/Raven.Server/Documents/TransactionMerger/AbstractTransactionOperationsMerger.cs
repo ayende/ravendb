@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -898,7 +899,71 @@ namespace Raven.Server.Documents.TransactionMerger
             if (commands == null)
                 return;
 
-            TaskExecutor.Execute(DoCommandsNotification, commands);
+            // Completions run inline on the notifying workers (the TCS is not RunContinuationsAsynchronously),
+            // so a single worker walking the whole batch would serialize every response behind its
+            // predecessors. Shard the batch across workers in bounded segments; small batches keep the
+            // single-item path, which also recycles the list.
+            var n = commands.Count;
+            var cores = Environment.ProcessorCount;
+            var shardSize = Math.Min(2 * cores, (n + cores - 1) / cores);
+            if (n <= shardSize)
+            {
+                TaskExecutor.Execute(DoCommandsNotification, commands);
+                return;
+            }
+
+            // the caller's list is pooled and gets recycled as soon as we copied out of it
+            var array = ArrayPool<MergedTransactionCommand<TOperationContext, TTransaction>>.Shared.Rent(n);
+            commands.CopyTo(array);
+            commands.Clear();
+            _opsBuffers.Enqueue(commands);
+
+            var sharded = new ShardedNotification(array, n, shardSize);
+            var workers = (n + shardSize - 1) / shardSize;
+
+            // one runner goes through TaskExecutor: its dedicated thread guarantees progress even when
+            // the thread pool is starved, and the work-claiming loop lets it drain every segment alone
+            // in that case; the rest are ordinary pool items feeding the workers' local queues
+            TaskExecutor.Execute(static s => ((ShardedNotification)s).Run(), sharded);
+            for (var i = 1; i < workers; i++)
+                ThreadPool.UnsafeQueueUserWorkItem(static s => s.Run(), sharded, preferLocal: false);
+        }
+
+        private sealed class ShardedNotification
+        {
+            private readonly MergedTransactionCommand<TOperationContext, TTransaction>[] _commands;
+            private readonly int _total;
+            private readonly int _shardSize;
+            private int _next;
+            private int _completed;
+
+            public ShardedNotification(MergedTransactionCommand<TOperationContext, TTransaction>[] commands, int total, int shardSize)
+            {
+                _commands = commands;
+                _total = total;
+                _shardSize = shardSize;
+            }
+
+            public void Run()
+            {
+                while (true)
+                {
+                    var start = Interlocked.Add(ref _next, _shardSize) - _shardSize;
+                    if (start >= _total)
+                        return;
+
+                    var end = Math.Min(start + _shardSize, _total);
+                    for (var i = start; i < end; i++)
+                        DoCommandNotification(_commands[i]);
+
+                    if (Interlocked.Add(ref _completed, end - start) == _total)
+                    {
+                        // references must not linger in the pool
+                        ArrayPool<MergedTransactionCommand<TOperationContext, TTransaction>>.Shared.Return(_commands, clearArray: true);
+                        return;
+                    }
+                }
+            }
         }
 
         private void RunEachOperationIndependently(List<MergedTransactionCommand<TOperationContext, TTransaction>> pendingOps)
@@ -986,7 +1051,9 @@ namespace Raven.Server.Documents.TransactionMerger
 
             while (_operations.TryDequeue(out MergedTransactionCommand<TOperationContext, TTransaction> result))
             {
-                result.TaskCompletionSource.TrySetCanceled();
+                // without RunContinuationsAsynchronously the awaiter would unwind inline on this
+                // (disposing) thread - keep shutdown cancellations on the pool
+                TaskExecutor.Execute(static s => ((MergedTransactionCommand<TOperationContext, TTransaction>)s).TaskCompletionSource.TrySetCanceled(), result);
             }
         }
 
