@@ -1213,7 +1213,7 @@ namespace Voron.Impl.Journal
             private static readonly bool DisableWritebackPacing =
                 Environment.GetEnvironmentVariable("VORON_DISABLE_WRITEBACK_PACING") == "1";
 
-            private void ScheduleDataFileWriteback(Pager dataPager)
+            private void ScheduleDataFileWriteback(Pager dataPager, Span<Pal.page_to_write> pages)
             {
                 if (DisableWritebackPacing || PlatformDetails.RunningOnPosix == false || _dataFileWritebackFd == -1)
                     return;
@@ -1229,8 +1229,43 @@ namespace Voron.Impl.Journal
                     }
                 }
 
-                Sparrow.Server.Platform.Posix.Syscall.sync_file_range(_dataFileWritebackFd, 0, 0,
-                    Sparrow.Server.Platform.Posix.SyncFileRangeFlags.SYNC_FILE_RANGE_WRITE);
+                // writeback only what this flush wrote: a whole-file sync_file_range makes the kernel
+                // walk every dirty page of the data file, and with a dozen index environments flushing
+                // dozens of times a second the device queue never empties - every durable journal write
+                // then pays queueing latency behind it, which is what capped the indexed-writes ramp
+                const long mergeGap = 2 * 1024 * 1024;
+                const int maxCalls = 64;
+                long start = -1, end = 0;
+                var calls = 0;
+                foreach (ref readonly var page in pages)
+                {
+                    var offset = page.page_num * Constants.Storage.PageSize;
+                    var length = (long)page.count_of_pages * Constants.Storage.PageSize;
+                    if (start == -1)
+                    {
+                        start = offset;
+                        end = offset + length;
+                        continue;
+                    }
+
+                    if (offset - end <= mergeGap || calls >= maxCalls)
+                    {
+                        end = offset + length;
+                        continue;
+                    }
+
+                    Sparrow.Server.Platform.Posix.Syscall.sync_file_range(_dataFileWritebackFd, start, end - start,
+                        Sparrow.Server.Platform.Posix.SyncFileRangeFlags.SYNC_FILE_RANGE_WRITE);
+                    calls++;
+                    start = offset;
+                    end = offset + length;
+                }
+
+                if (start != -1)
+                {
+                    Sparrow.Server.Platform.Posix.Syscall.sync_file_range(_dataFileWritebackFd, start, end - start,
+                        Sparrow.Server.Platform.Posix.SyncFileRangeFlags.SYNC_FILE_RANGE_WRITE);
+                }
             }
 
             public void WaitForSyncToCompleteOnDispose()
@@ -1606,6 +1641,8 @@ namespace Voron.Impl.Journal
                                 Pager.RaiseError(dataPager.FileName, errorCode, rc, dataPagerState.TotalAllocatedSize);
                             }
                         }
+
+                        ScheduleDataFileWriteback(dataPager, pages);
                     }
                     finally
                     {
@@ -1622,8 +1659,6 @@ namespace Voron.Impl.Journal
                     _waj._logger.Warn($"Very long data flushing. It took {sp.Elapsed} to flush {pagesFlushed:#,#} pages to {dataPager.FileName} with {new Size(written, SizeUnit.Bytes)}.");
 
                 Interlocked.Add(ref _totalWrittenButUnsyncedBytes, written);
-
-                ScheduleDataFileWriteback(dataPager);
 
                 return dataPagerState;
             }
