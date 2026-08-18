@@ -1218,6 +1218,14 @@ namespace Voron.Impl.Journal
                 if (DisableWritebackPacing || PlatformDetails.RunningOnPosix == false || _dataFileWritebackFd == -1)
                     return;
 
+                // pace only root environments: a database with a couple dozen index environments flushing
+                // together generates hundreds of MB/s of eager writeback, and the device queue never
+                // empties - every durable journal write then pays queueing latency behind it, capping the
+                // transaction merger's cycle. The environments the pacing protects from sync avalanches
+                // are the client-facing ones, and those are roots; branches keep the avalanche-style sync
+                if (_waj._env.Options.RootJournal != null)
+                    return;
+
                 if (_dataFileWritebackFd == -2)
                 {
                     _dataFileWritebackFd = Sparrow.Server.Platform.Posix.Syscall.open(dataPager.FileName,
