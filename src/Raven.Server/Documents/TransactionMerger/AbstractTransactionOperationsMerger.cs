@@ -120,6 +120,7 @@ namespace Raven.Server.Documents.TransactionMerger
                 throw new InvalidOperationException($"Tx Merger for '{_resourceName}' is not initialized.");
 
             _edi?.Throw();
+            cmd.DiagEnqueuedAt = Stopwatch.GetTimestamp(); // TEMP latency-diag
             _operations.Enqueue(cmd);
             _waitHandle.Set();
 
@@ -129,6 +130,8 @@ namespace Raven.Server.Documents.TransactionMerger
             try
             {
                 await cmd.TaskCompletionSource.Task.ConfigureAwait(false);
+                MergerStageTimings.Record(cmd.DiagEnqueuedAt, cmd.DiagExecStartAt, cmd.DiagExecEndAt,
+                    cmd.DiagDurableAt, cmd.DiagNotifyAt, Stopwatch.GetTimestamp()); // TEMP latency-diag
             }
             finally
             {
@@ -314,6 +317,9 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private static void DoCommandNotification(MergedTransactionCommand<TOperationContext, TTransaction> cmd)
         {
+            if (cmd.DiagDurableAt == 0)
+                cmd.DiagDurableAt = cmd.DiagNotifyAt; // single-command path has no separate submit stamp
+            cmd.DiagNotifyAt = Stopwatch.GetTimestamp(); // TEMP latency-diag
             if (cmd.Exception != null)
             {
                 cmd.TaskCompletionSource.TrySetException(cmd.Exception);
@@ -730,7 +736,9 @@ namespace Raven.Server.Documents.TransactionMerger
                 }
 
                 meter.IncrementCounter(1);
+                op.DiagExecStartAt = Stopwatch.GetTimestamp(); // TEMP latency-diag
                 meter.IncrementCommands(op.Execute(context, _recording.State));
+                op.DiagExecEndAt = Stopwatch.GetTimestamp(); // TEMP latency-diag
                 if (op.UpdateAccessTime)
                     UpdateLastAccessTime(_time.GetUtcNow());
 
@@ -903,6 +911,10 @@ namespace Raven.Server.Documents.TransactionMerger
             // so a single worker walking the whole batch would serialize every response behind its
             // predecessors. Shard the batch across workers in bounded segments; small batches keep the
             // single-item path, which also recycles the list.
+            var durableTs = Stopwatch.GetTimestamp(); // TEMP latency-diag
+            for (var i = 0; i < commands.Count; i++)
+                commands[i].DiagDurableAt = durableTs;
+
             var n = commands.Count;
             var cores = Environment.ProcessorCount;
             var shardSize = Math.Min(2 * cores, (n + cores - 1) / cores);

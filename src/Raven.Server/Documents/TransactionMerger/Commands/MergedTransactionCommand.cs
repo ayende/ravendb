@@ -41,6 +41,9 @@ public abstract class MergedTransactionCommand<TOperationContext, TTransaction> 
     // queue as one impulse.
     public readonly TaskCompletionSource<object> TaskCompletionSource = new();
 
+    // TEMP latency-diag stamps (Stopwatch ticks): enqueue, exec start/end, durable (notify submit), notify (TrySetResult)
+    public long DiagEnqueuedAt, DiagExecStartAt, DiagExecEndAt, DiagDurableAt, DiagNotifyAt;
+
     public Exception Exception;
 
     public bool RetryOnError = false;
