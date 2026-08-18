@@ -179,27 +179,27 @@ namespace Voron.Impl
 
             _txHeader = TxHeaderInitializerTemplate;
             _env = previous._env;
+            _journal = previous._journal;
+            _id = previous._id;
+            _envRecord = previous._envRecord;
+            _freeSpaceHandling = previous._freeSpaceHandling;
+            _allocator = allocator ?? new ByteStringContext(SharedMultipleUseFlag.None);
+            _allocator.RegisterListener(this);
+            _disposeAllocator = allocator == null;
+            _isValidationEnabled = _env.Options.Encryption.IsEnabled == false;
+            _scratchPagesForReads = previous._scratchPagesForReads;
+            ScratchSnapshotSeq = previous.ScratchSnapshotSeq;
+            _getPageMethod = previous._getPageMethod;
 
-            // registration precedes adopting state, matching the main constructor - although here the
-            // adopted snapshot is inherently safe: `previous` is still registered and pins the floor
+            Flags = TransactionFlags.Read;
+
+            // unlike the main constructor, registration can come after the state is inherited: `previous`
+            // is still registered and pins both the prune floor and the oldest-transaction marker - and
+            // the id must be set first anyway, scanners must never observe id 0
             _env.ActiveTransactions.Add(this);
 
             try
             {
-                _journal = previous._journal;
-                _id = previous._id;
-                _envRecord = previous._envRecord;
-                _freeSpaceHandling = previous._freeSpaceHandling;
-                _allocator = allocator ?? new ByteStringContext(SharedMultipleUseFlag.None);
-                _allocator.RegisterListener(this);
-                _disposeAllocator = allocator == null;
-                _isValidationEnabled = _env.Options.Encryption.IsEnabled == false;
-                _scratchPagesForReads = previous._scratchPagesForReads;
-                ScratchSnapshotSeq = previous.ScratchSnapshotSeq;
-                _getPageMethod = previous._getPageMethod;
-
-                Flags = TransactionFlags.Read;
-
                 _pageLocator = AllocatePageLocator();
 
                 InitializeRoots();
@@ -306,13 +306,26 @@ namespace Voron.Impl
             }
 
             _env = env;
+            PersistentContext = transactionPersistentContext;
+            Flags = flags;
+
+            // The id is set from a provisional record read *before* registration: scanners must never
+            // observe a transaction with id 0 - the oldest-transaction marker treats 0 as "no active
+            // transactions" (see ActiveTransactions.Add / ScanOldest), and the flusher takes that as
+            // permission to flush and free past everything. For a write transaction the provisional id is
+            // exact, commits are serialized by the write lock we already hold. For a read transaction a
+            // commit may publish between this read and the adoption below - the id is then re-read from
+            // the adopted record, and the momentarily lower value scanners may have seen only makes the
+            // oldest-transaction machinery more conservative.
+            var provisionalRecord = env.CurrentStateRecord;
+            _id = flags == TransactionFlags.ReadWrite ? provisionalRecord.TransactionId + 1 : provisionalRecord.TransactionId;
 
             // Registration must precede adopting the state record: the prune floor covers registered
             // transactions plus the latest published sequence, so a record adopted after registration can
             // never sit below a floor computed at any earlier point. Adopting first opens a window where
             // newer transactions publish, the floor passes the adopted snapshot, and its entries get
-            // reclaimed under us. Until the snapshot is adopted this transaction presents a zero bound,
-            // which pins pruning - a conservative, nanoseconds-long state.
+            // reclaimed under us. Until the snapshot is adopted this transaction presents a zero scratch
+            // bound, which pins pruning - a conservative, nanoseconds-long state.
             env.ActiveTransactions.Add(this);
 
             try
@@ -330,9 +343,6 @@ namespace Voron.Impl
 
                 _isValidationEnabled = _env.Options.Encryption.IsEnabled == false;
 
-                PersistentContext = transactionPersistentContext;
-                Flags = flags;
-
                 _pageLocator = transactionPersistentContext.AllocatePageLocator();
 
                 if (flags != TransactionFlags.ReadWrite)
@@ -346,7 +356,8 @@ namespace Voron.Impl
                     return;
                 }
 
-                _id = _envRecord.TransactionId + 1;
+                Debug.Assert(_envRecord.TransactionId == provisionalRecord.TransactionId,
+                    "the write lock serializes commits, so the record cannot advance under a write transaction");
                 _envRecord = _envRecord with { TransactionId = _id };
                 _getPageMethod = GetPageMethod.WriteScratchFirst;
                 _env.WriteTransactionPool.Reset();
