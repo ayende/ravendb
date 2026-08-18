@@ -19,8 +19,4 @@ public record EnvironmentStateRecord(
     (long Number, long Last4KWritePosition) Journal,
     List<(long Start, long Count)> SparseRegions,
     IReadOnlyCollection<PageFromScratchBuffer> PagesAllocatedInTransaction,
-    // Page numbers this transaction freed, before any same-transaction reuse is taken into account. The
-    // flush uses this to skip stale versions of pages that changed hands - a freed range may have been
-    // reallocated into another page's overflow, and writing the old version would corrupt it.
-    HashSet<long> PagesFreedInTransaction,
     object ClientState);

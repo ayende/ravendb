@@ -170,7 +170,6 @@ namespace Voron
                     (-1, -1),
                     [],
                     null,
-                    null,
                     null);
                 
                 _lastValidPageAfterLoad = dataPagerState.NumberOfAllocatedPages;
@@ -681,8 +680,6 @@ namespace Voron
 
                 LowLevelTransaction tx = new(previous.LowLevelTransaction, transactionPersistentContext, context);
 
-                ActiveTransactions.Add(tx);
-
                 return new Transaction(tx);
             }
             catch (Exception)
@@ -759,11 +756,8 @@ namespace Voron
                     _currentWriteTransactionIdHolder : 
                     Environment.CurrentManagedThreadId;
 
-                ActiveTransactions.Add(tx);
-
-                if (flags == TransactionFlags.Read)
-                    tx.EnsureReadSnapshotIsNotBelowPruneFloor();
-
+                // the transaction registered itself in ActiveTransactions inside its constructor,
+                // before adopting the state record - see the constructor for why the order matters
                 InvokeNewTransactionCreated(tx);
 
                 return tx;
@@ -1806,7 +1800,6 @@ namespace Voron
                 FlushedToJournal = tx.WrittenToJournalNumber == -1 ? currentStateRecord.FlushedToJournal : tx.WrittenToJournalNumber,
                 ScratchPagesTable = tx.ScratchTableSnapshot,
                 PagesAllocatedInTransaction = tx.WrittenToJournalNumber == -1 ? [] : tx.GetTransactionPages(),
-                PagesFreedInTransaction = tx.WrittenToJournalNumber == -1 ? null : tx.GetFreedPages(),
                 NextPageNumber = tx.GetNextPageNumber(),
                 Root = tx.RootObjects.ReadHeader(),
                 DataPagerState = tx.DataPagerState,
@@ -1824,7 +1817,6 @@ namespace Voron
         }
 
         private readonly List<PageFromScratchBuffer> _cachedScratchBuffers = [];
-        private readonly Dictionary<long, long> _cachedFreedPages = [];
         private EnvironmentStateRecord _lastPeekedRecord = null;
 
         private bool TryPeekNextRecordToFlush(long uptoTxIdExclusive, out EnvironmentStateRecord record)
@@ -1859,8 +1851,6 @@ namespace Voron
             List<(long Start, long Count)> sparseRegions = null;
             var scratchBuffers = _cachedScratchBuffers;
             scratchBuffers.Clear();
-            var freedPages = _cachedFreedPages;
-            freedPages.Clear();
             bool found = false;
             EnvironmentStateRecord record = null;
             while (true)
@@ -1877,7 +1867,7 @@ namespace Voron
                         MergeSparseRegions(sparseRegions);
                     }
 
-                    return new ApplyLogsToDataFileState(scratchBuffers, freedPages, sparseRegions, record);
+                    return new ApplyLogsToDataFileState(scratchBuffers, sparseRegions, record);
                 }
                 Debug.Assert(mabye is not null && mabye.TransactionId < uptoTxIdExclusive);
                 
@@ -1894,14 +1884,6 @@ namespace Voron
                     Debug.Assert(pageFromScratch.AllocatedInTransaction == record.TransactionId,
                         "pageFromScratch.AllocatedInTransaction == record.TransactionId");
                     scratchBuffers.Add(pageFromScratch);
-                }
-
-                if (record.PagesFreedInTransaction != null)
-                {
-                    // records are consumed in transaction order, so the last write wins with the newest
-                    // freeing transaction for each page
-                    foreach (var freedPage in record.PagesFreedInTransaction)
-                        freedPages[freedPage] = record.TransactionId;
                 }
 
                 found = true;

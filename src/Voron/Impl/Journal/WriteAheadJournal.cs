@@ -1800,6 +1800,8 @@ namespace Voron.Impl.Journal
                 candidates.AsSpan(0, buffers.Length).Sort(order.AsSpan(0, buffers.Length));
 
                 int index = 0;
+                long lastEndPage = -1;
+                long lastTx = -1;
                 for (var i = 0; i < buffers.Length;)
                 {
                     var pageNum = candidates[i];
@@ -1816,18 +1818,31 @@ namespace Voron.Impl.Journal
                     if (lastFlushedTx >= pageValue.AllocatedInTransaction)
                         continue; // We already wrote those pages to disk in a previous flush...
 
-                    // a version is also stale if a later flushed transaction freed the page: the freed
-                    // range may have been handed to another page's overflow, and writing the old version
-                    // on top of it would corrupt that page (a value's whole range is freed with it, so
-                    // checking the head page covers the entire span)
-                    if (state.FreedPages.TryGetValue(pageNum, out var freedInTx) &&
-                        freedInTx > pageValue.AllocatedInTransaction)
-                        continue;
-
                     Debug.Assert(pageValue.AllocatedInTransaction <= state.Record.TransactionId, "pageValue.AllocatedInTransaction <= state.Record.TransactionId");
 
                     var page = PreparePage(ref txState, pageValue);
                     int countOfPages = page.GetNumberOfPages();
+                    Debug.Assert(pageNum == page.PageNumber, "pageNum == page.PageNumber");
+
+                    // Versions whose spans overlap describe pages that changed hands: freespace only hands a
+                    // range out after the whole prior allocation was freed, so of two overlapping spans the
+                    // older one is dead - and since we write in page-number order, not transaction order,
+                    // letting it through would lay stale bytes over the newer allocation's pages (an old
+                    // freed overflow starting inside a newer, larger one). The dropped value's pages that
+                    // nothing re-allocated are freed space, where not writing is equivalent.
+                    if (pageNum < lastEndPage)
+                    {
+                        Debug.Assert(pageValue.AllocatedInTransaction != lastTx, "spans within one transaction are disjoint");
+                        if (pageValue.AllocatedInTransaction < lastTx)
+                            continue; // the older span loses
+
+                        // the previously emitted span is the older one - retract it. A single retraction
+                        // suffices: emitted spans are disjoint, so the one before it ends at or before the
+                        // retracted span's start, which is at or before this span's start.
+                        index--;
+                        written -= (long)pagesBuffer[index].count_of_pages * Constants.Storage.PageSize;
+                    }
+
                     written += countOfPages * Constants.Storage.PageSize;
                     pagesBuffer[index++] = new Pal.page_to_write
                     {
@@ -1835,7 +1850,8 @@ namespace Voron.Impl.Journal
                         ptr = page.Pointer,
                         count_of_pages = countOfPages
                     };
-                    Debug.Assert(pageNum == page.PageNumber, "pageNum == page.PageNumber");
+                    lastEndPage = page.PageNumber + countOfPages;
+                    lastTx = pageValue.AllocatedInTransaction;
                 }
 
                 return new Span<Pal.page_to_write>(pagesBuffer, 0, index);
@@ -2459,26 +2475,14 @@ namespace Voron.Impl.Journal
 
             if (freedPages is { Count: > 0 })
             {
-                // we need to remove the freed pages that were reused and modified later on during the
-                // transaction - but on a copy: the transaction's own set must keep them, the flush relies
-                // on it to skip stale versions of pages that changed hands (the reused range may now sit
-                // inside another page's overflow)
-                HashSet<long> refined = null;
+                // we need to remove the freed pages that were reused and modified later on during the transaction
                 foreach (ref readonly var page in txPages)
                 {
                     for (int i = 0; i < page.NumberOfPages; i++)
                     {
-                        var reused = page.PageNumberInDataFile + i;
-                        if (freedPages.Contains(reused))
-                        {
-                            refined ??= new HashSet<long>(freedPages);
-                            refined.Remove(reused);
-                        }
+                        freedPages.Remove(page.PageNumberInDataFile + i);
                     }
                 }
-
-                if (refined != null)
-                    freedPages = refined;
 
                 if (freedPages.Count > 0)
                 {
