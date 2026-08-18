@@ -49,10 +49,10 @@ namespace Voron.Impl
         private readonly bool _disposeAllocator;
         private readonly bool _isValidationEnabled;
         private ScratchPagesTable _scratchPagesInUse;
-        private ScratchPagesSnapshot _scratchPagesForReads;
+        private readonly ScratchPagesSnapshot _scratchPagesForReads;
         private HashSet<long> _sparsePageRanges;
-        private GetPageMethod _getPageMethod;
-        private long _id;
+        private readonly GetPageMethod _getPageMethod;
+        private readonly long _id;
 
         internal long DecompressedBufferBytes;
         internal TestingStuff _forTestingPurposes;
@@ -179,23 +179,36 @@ namespace Voron.Impl
 
             _txHeader = TxHeaderInitializerTemplate;
             _env = previous._env;
-            _journal = previous._journal;
-            _id = previous._id;
-            _envRecord = previous._envRecord;
-            _freeSpaceHandling = previous._freeSpaceHandling;
-            _allocator = allocator ?? new ByteStringContext(SharedMultipleUseFlag.None);
-            _allocator.RegisterListener(this);
-            _disposeAllocator = allocator == null;
-            _isValidationEnabled = _env.Options.Encryption.IsEnabled == false;
-            _scratchPagesForReads = previous._scratchPagesForReads;
-            ScratchSnapshotSeq = previous.ScratchSnapshotSeq;
-            _getPageMethod = previous._getPageMethod;
 
-            Flags = TransactionFlags.Read;
+            // registration precedes adopting state, matching the main constructor - although here the
+            // adopted snapshot is inherently safe: `previous` is still registered and pins the floor
+            _env.ActiveTransactions.Add(this);
 
-            _pageLocator = AllocatePageLocator();
+            try
+            {
+                _journal = previous._journal;
+                _id = previous._id;
+                _envRecord = previous._envRecord;
+                _freeSpaceHandling = previous._freeSpaceHandling;
+                _allocator = allocator ?? new ByteStringContext(SharedMultipleUseFlag.None);
+                _allocator.RegisterListener(this);
+                _disposeAllocator = allocator == null;
+                _isValidationEnabled = _env.Options.Encryption.IsEnabled == false;
+                _scratchPagesForReads = previous._scratchPagesForReads;
+                ScratchSnapshotSeq = previous.ScratchSnapshotSeq;
+                _getPageMethod = previous._getPageMethod;
 
-            InitializeRoots();
+                Flags = TransactionFlags.Read;
+
+                _pageLocator = AllocatePageLocator();
+
+                InitializeRoots();
+            }
+            catch
+            {
+                _env.ActiveTransactions.TryRemove(this);
+                throw;
+            }
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -292,52 +305,68 @@ namespace Voron.Impl
                 PagerTransactionState.IsWriteTransaction = true;
             }
 
-            _envRecord = env.CurrentStateRecord;
-            DataPagerState = _envRecord.DataPagerState;
-            DataPager = env.DataPager;
-
             _env = env;
-            _journal = env.Journal;
-            _freeSpaceHandling = freeSpaceHandling;
 
-            _allocator = context ?? new ByteStringContext(SharedMultipleUseFlag.None);
-            _allocator.RegisterListener(this);
-            _disposeAllocator = context == null;
+            // Registration must precede adopting the state record: the prune floor covers registered
+            // transactions plus the latest published sequence, so a record adopted after registration can
+            // never sit below a floor computed at any earlier point. Adopting first opens a window where
+            // newer transactions publish, the floor passes the adopted snapshot, and its entries get
+            // reclaimed under us. Until the snapshot is adopted this transaction presents a zero bound,
+            // which pins pruning - a conservative, nanoseconds-long state.
+            env.ActiveTransactions.Add(this);
 
-            _isValidationEnabled = _env.Options.Encryption.IsEnabled == false;
-
-            PersistentContext = transactionPersistentContext;
-            Flags = flags;
-
-            _pageLocator = transactionPersistentContext.AllocatePageLocator();
-
-            if (flags != TransactionFlags.ReadWrite)
+            try
             {
-                _id = _envRecord.TransactionId;
-                _scratchPagesForReads = _envRecord.ScratchPagesTable;
-                ScratchSnapshotSeq = _scratchPagesForReads.VisibleAsOfSeq;
-                // the snapshot may transiently sit below the prune floor here - the transaction is not
-                // registered yet; EnsureReadSnapshotIsNotBelowPruneFloor re-adopts after registration
-                _getPageMethod = _scratchPagesForReads.Count > 0 ? GetPageMethod.ReadScratchFirst : GetPageMethod.DataFile;
+                _envRecord = env.CurrentStateRecord;
+                DataPagerState = _envRecord.DataPagerState;
+                DataPager = env.DataPager;
+
+                _journal = env.Journal;
+                _freeSpaceHandling = freeSpaceHandling;
+
+                _allocator = context ?? new ByteStringContext(SharedMultipleUseFlag.None);
+                _allocator.RegisterListener(this);
+                _disposeAllocator = context == null;
+
+                _isValidationEnabled = _env.Options.Encryption.IsEnabled == false;
+
+                PersistentContext = transactionPersistentContext;
+                Flags = flags;
+
+                _pageLocator = transactionPersistentContext.AllocatePageLocator();
+
+                if (flags != TransactionFlags.ReadWrite)
+                {
+                    _id = _envRecord.TransactionId;
+                    _scratchPagesForReads = _envRecord.ScratchPagesTable;
+                    ScratchSnapshotSeq = _scratchPagesForReads.VisibleAsOfSeq;
+                    _getPageMethod = _scratchPagesForReads.Count > 0 ? GetPageMethod.ReadScratchFirst : GetPageMethod.DataFile;
+                    InitializeRoots();
+
+                    return;
+                }
+
+                _id = _envRecord.TransactionId + 1;
+                _envRecord = _envRecord with { TransactionId = _id };
+                _getPageMethod = GetPageMethod.WriteScratchFirst;
+                _env.WriteTransactionPool.Reset();
+                _dirtyPages = _env.WriteTransactionPool.DirtyPagesPool;
+                _scratchPagesInUse = _env.ScratchPagesTable;
+                ScratchSnapshotSeq = _envRecord.ScratchPagesTable.VisibleAsOfSeq;
+                _scratchPagesInUse.BeginWriteTransaction(ScratchSnapshotSeq);
+                _transactionPages = new List<PageFromScratchBuffer>();
+                _transactionPagesIndex = new Dictionary<long, int>();
+                _pagesToFreeOnCommit = new Stack<long>();
+
                 InitializeRoots();
-
-                return;
+                InitTransactionHeader();
             }
-
-            _id = _envRecord.TransactionId + 1;
-            _envRecord = _envRecord with { TransactionId = _id };
-            _getPageMethod = GetPageMethod.WriteScratchFirst;
-            _env.WriteTransactionPool.Reset();
-            _dirtyPages = _env.WriteTransactionPool.DirtyPagesPool;
-            _scratchPagesInUse = _env.ScratchPagesTable;
-            ScratchSnapshotSeq = _envRecord.ScratchPagesTable.VisibleAsOfSeq;
-            _scratchPagesInUse.BeginWriteTransaction(ScratchSnapshotSeq);
-            _transactionPages = new List<PageFromScratchBuffer>();
-            _transactionPagesIndex = new Dictionary<long, int>();
-            _pagesToFreeOnCommit = new Stack<long>();
-
-            InitializeRoots();
-            InitTransactionHeader();
+            catch
+            {
+                // the caller never got a reference, so nobody else can unregister us
+                env.ActiveTransactions.TryRemove(this);
+                throw;
+            }
         }
 
         internal EnvironmentStateRecord CurrentStateRecord => _envRecord;
@@ -400,34 +429,6 @@ namespace Voron.Impl
                 _envRecord.Root.RootObjectType is not RootObjectType.None)
             {
                 _root = Tree.GetRoot(this, Constants.RootTreeNameSlice, _envRecord.Root);
-            }
-        }
-
-        // A read transaction adopts the current state record in its constructor, but only becomes visible
-        // to the pruner when it is added to the active transactions list - and the prune floor covers only
-        // registered readers plus the latest published sequence. If newer transactions published inside
-        // that window, the floor may already have passed the adopted snapshot and reclaimed entries or
-        // whole generations it needs. Called right after registration: from that point on the floor cannot
-        // pass this transaction's bound, so a snapshot that validates once stays valid for the
-        // transaction's lifetime.
-        internal void EnsureReadSnapshotIsNotBelowPruneFloor()
-        {
-            Debug.Assert(Flags == TransactionFlags.Read, "only fresh read transactions race with the pruner during registration");
-
-            // the registration store must be visible before the floor is read, or a pruner that missed us
-            // could have advanced the floor without us noticing
-            Interlocked.MemoryBarrier();
-
-            while (ScratchSnapshotSeq < _env.ScratchPagesTable.PrunedUpToSeq)
-            {
-                _envRecord = _env.CurrentStateRecord;
-                DataPagerState = _envRecord.DataPagerState;
-                _id = _envRecord.TransactionId;
-                _scratchPagesForReads = _envRecord.ScratchPagesTable;
-                ScratchSnapshotSeq = _scratchPagesForReads.VisibleAsOfSeq;
-                _getPageMethod = _scratchPagesForReads.Count > 0 ? GetPageMethod.ReadScratchFirst : GetPageMethod.DataFile;
-                _root = null;
-                InitializeRoots();
             }
         }
 

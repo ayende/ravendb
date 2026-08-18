@@ -205,8 +205,6 @@ namespace Voron.Impl.Scratch
         internal (int UsedSlots, int VisibleCount, int UsedEntries, int FreeEntries) GetStateForTests() =>
             (_usedSlots, _visibleCount, _usedEntries, _freeEntries);
 
-        internal long PrunedUpToSeq => Volatile.Read(ref _prunedUpToSeq);
-
         internal void ForceRebuildForTests() => Rebuild();
 
         public void BeginWriteTransaction(long lastPublishedSeq)
