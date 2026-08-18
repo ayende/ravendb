@@ -1208,9 +1208,14 @@ namespace Voron.Impl.Journal
             // accumulated backlog in one multi-second fsync. Not durable by itself - the fsync is
             // still what allows journal deletion.
             private int _dataFileWritebackFd = -2; // -2 = not opened yet, -1 = unsupported/failed
+            // diagnostic kill switch: eager writeback keeps the device queue non-empty, and every
+            // durable journal write then pays queueing latency behind it - set to measure that cost
+            private static readonly bool DisableWritebackPacing =
+                Environment.GetEnvironmentVariable("VORON_DISABLE_WRITEBACK_PACING") == "1";
+
             private void ScheduleDataFileWriteback(Pager dataPager)
             {
-                if (PlatformDetails.RunningOnPosix == false || _dataFileWritebackFd == -1)
+                if (DisableWritebackPacing || PlatformDetails.RunningOnPosix == false || _dataFileWritebackFd == -1)
                     return;
 
                 if (_dataFileWritebackFd == -2)
