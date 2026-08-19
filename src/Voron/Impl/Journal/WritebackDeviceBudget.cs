@@ -99,7 +99,8 @@ namespace Voron.Impl.Journal
 
             public void Dispose()
             {
-                Interlocked.Decrement(ref _parent._activeDrains);
+                if (_parent != null)
+                    Interlocked.Decrement(ref _parent._activeDrains);
             }
         }
     }

@@ -1212,6 +1212,11 @@ namespace Voron.Impl.Journal
             private static readonly bool EagerWritebackHint =
                 Environment.GetEnvironmentVariable("VORON_WRITEBACK_EAGER_HINT") != "0";
 
+            // experiment knob: pin the writeback pipeline depth and bypass the AIMD budget entirely
+            private static readonly int? PinnedWritebackDepth =
+                int.TryParse(Environment.GetEnvironmentVariable("VORON_WRITEBACK_DEPTH"), out var pinned) && pinned >= 1
+                    ? pinned : null;
+
             private bool _writebackNotSupported;
 
             /// <summary>
@@ -1232,7 +1237,14 @@ namespace Voron.Impl.Journal
                 var dataPager = _waj._env.DataPager;
                 var dataPagerState = _waj._env.CurrentStateRecord.DataPagerState;
 
-                using (budget.EnterDrain(out var depth))
+                int depth;
+                WritebackDeviceBudget.DrainScope scope = default;
+                if (PinnedWritebackDepth is int pinned)
+                    depth = pinned; // experiment: fixed depth, no controller
+                else
+                    scope = budget.EnterDrain(out depth);
+
+                using (scope)
                 {
                     var rc = Pal.rvn_pager_writeback_dirty(dataPagerState.Handle, maxBytes, depth,
                         options.SyncWritebackBlockSizeInMb * Constants.Size.Megabyte, out var stats, out var error);
