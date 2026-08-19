@@ -123,10 +123,15 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.SyncWritebackBlockSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int SyncWritebackBlockSizeInMb { get; set; }
 
-        [Description("The sync-barrier cost (in milliseconds, as a moving average per physical device) beyond which data-file writeback switches from trickling on flush to paced draining before the barrier. A healthy barrier measures single-digit milliseconds; a device drowning in dirty pages measures hundreds. The default sits an order of magnitude above healthy, roughly where a monolithic barrier starts to visibly tax the latency of journal writes sharing the device.")]
+        [Description("The sync-barrier cost (in milliseconds, as a moving average per physical device) that selects paced draining before the barrier. This is the secondary trigger: it covers devices without queue-depth data and devices whose speed changed (burst credits). A healthy barrier measures single-digit milliseconds; a device that drowns in dirty pages measures hundreds.")]
         [DefaultValue(100)]
         [ConfigurationEntry("Storage.SyncWritebackBarrierCostThresholdInMs", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int SyncWritebackBarrierCostThresholdInMs { get; set; }
+
+        [Description("The time-weighted device queue depth (the iostat 'aqu-sz' number, sampled each second per physical device) that switches data-file writeback from trickling on flush to paced draining before the sync barrier. A device with headroom measures 0-4; a congested device measures 6 and more. Writeback returns to trickle mode when the queue stays below 60% of this value for 30 seconds.")]
+        [DefaultValue(5)]
+        [ConfigurationEntry("Storage.SyncWritebackDrainQueueDepthThreshold", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public int SyncWritebackDrainQueueDepthThreshold { get; set; }
         
         [Description("EXPERT: Determine the acceleration level that Voron will use when compressing journals.")]
         [DefaultValue(1)]

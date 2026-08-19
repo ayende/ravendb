@@ -90,16 +90,10 @@ namespace Voron.Impl.Journal
             {
                 using var metrics = _options.IoMetrics.MeterIoRate(FileName.FullPath, IoMetrics.MeterType.JournalWrite,
                     totalNumberOf4Kbs * Constants.Storage.JournalPageSize);
-                var gate = _options.WritebackGate;
-                var writeStart = gate != null ? Stopwatch.GetTimestamp() : 0;
                 var result = Pal.rvn_write_journal(_writeHandle, pEntries, entries.Length, posBy4Kb * Constants.Storage.JournalPageSize, out var error);
                 if (result != PalFlags.FailCodes.Success)
                     PalHelper.ThrowLastError(result, error,
                         $"Attempted to write to journal file - Path: {FileName.FullPath} Size: {totalNumberOf4Kbs * Constants.Storage.JournalPageSize}, numberOf4Kb={totalNumberOf4Kbs}");
-
-                // journal latency is the signal that flips the writeback gate out of trickle
-                // mode: an eager-writeback flood shows up here, never in the barrier cost
-                gate?.RecordJournalWrite(Stopwatch.GetElapsedTime(writeStart).Ticks);
 
                 if (error == ERROR_WORKING_SET_QUOTA && _log.IsDebugEnabled && _workingSetQuotaLogged == false)
                 {

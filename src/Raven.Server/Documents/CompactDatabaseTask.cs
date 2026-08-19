@@ -210,6 +210,7 @@ namespace Raven.Server.Documents
             options.SyncJournalsCountThreshold = documentDatabase.Configuration.Storage.SyncJournalsCountThreshold;
             options.SyncWritebackBlockSizeInMb = documentDatabase.Configuration.Storage.SyncWritebackBlockSizeInMb;
             options.SyncWritebackBarrierCostThresholdInMs = documentDatabase.Configuration.Storage.SyncWritebackBarrierCostThresholdInMs;
+            options.SyncWritebackDrainQueueDepthThreshold = documentDatabase.Configuration.Storage.SyncWritebackDrainQueueDepthThreshold;
             options.SkipChecksumValidationOnDatabaseLoading = documentDatabase.Configuration.Storage.SkipChecksumValidationOnDatabaseLoading;
         }
 

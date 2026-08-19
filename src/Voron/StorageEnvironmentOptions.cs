@@ -481,7 +481,7 @@ namespace Voron
                 var result = Pager.Create(this, FilePath.FullPath,
                     InitialFileSize ?? 0,
                     flags);
-                InitializeWritebackGate(result.State);
+                InitializeWritebackGate(result.State, FilePath.FullPath);
                 return result;
             }
 
@@ -1278,16 +1278,22 @@ namespace Voron
         public int SyncWritebackBlockSizeInMb { get; set; } = 32;
 
         /// <summary>
-        /// The barrier-cost threshold that flips a device from trickle mode (initiate-only
-        /// writeback on flush, plain fdatasync on sync) to drain mode (paced, waited writeback
-        /// before the fdatasync). A healthy barrier measures single-digit milliseconds; the
-        /// avalanche regime measures hundreds - 100ms sits an order of magnitude above healthy
-        /// and is roughly where a monolithic barrier starts to visibly tax the p99 of journal
-        /// writes sharing the device.
+        /// The barrier-cost threshold, a secondary trigger for drain mode. It covers devices
+        /// with no queue-depth data and devices whose speed changed (burst credits). A healthy
+        /// barrier measures single-digit milliseconds; a device that drowns in dirty pages
+        /// measures hundreds.
         /// </summary>
         public int SyncWritebackBarrierCostThresholdInMs { get; set; } = 100;
 
         internal long SyncWritebackBarrierCostThresholdTicks => SyncWritebackBarrierCostThresholdInMs * TimeSpan.TicksPerMillisecond;
+
+        /// <summary>
+        /// The primary trigger for drain mode: the time-weighted device queue depth (the iostat
+        /// "aqu-sz" number). Calibration on a gp3 volume: the trickle-correct region shows
+        /// ~2.3-3.8, the drain-correct region shows ~6.4-11; 5 sits in the gap. The gate leaves
+        /// drain mode below 60% of this value, after 30 quiet seconds.
+        /// </summary>
+        public int SyncWritebackDrainQueueDepthThreshold { get; set; } = 5;
 
         /// <summary>
         /// The writeback gate shared by every environment whose data file resides on the
@@ -1295,10 +1301,10 @@ namespace Voron
         /// </summary>
         internal WritebackPacingGate WritebackGate { get; private set; }
 
-        private protected unsafe void InitializeWritebackGate(Pager.State state)
+        private protected unsafe void InitializeWritebackGate(Pager.State state, string dataFilePath)
         {
             if (Pal.rvn_pager_get_device_id(state.Handle, out var deviceId, out _) == PalFlags.FailCodes.Success)
-                WritebackGate = WritebackPacingGate.GetForDevice(deviceId);
+                WritebackGate = WritebackPacingGate.GetForDevice(deviceId, dataFilePath);
         }
 
         internal bool SimulateFailureOnDbCreation { get; set; }

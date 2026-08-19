@@ -1,57 +1,67 @@
+using System;
 using System.Collections.Concurrent;
+using System.Diagnostics;
 using System.Threading;
+using Sparrow.Logging;
+using Sparrow.Server.Logging;
+using Sparrow.Server.Utils;
+using Voron.Logging;
 
 namespace Voron.Impl.Journal
 {
     /// <summary>
-    /// Per-physical-device signal for the data-file writeback mode (RavenDB-27375): an EWMA of
-    /// the measured cost of the sync barrier path, in TimeSpan ticks. While the barrier is cheap
-    /// the kernel's background writeback (helped by the per-flush trickle) is keeping up, and any
-    /// waiting writeback we add only taxes journal writes sharing the device - so flushes trickle
-    /// (initiate-only) and syncs are a plain fdatasync. Once the barrier turns expensive (the
-    /// avalanche regime), the trickle stops and syncs drain the dirty ranges in bounded, waited
-    /// blocks first.
+    /// Per-physical-device selector for the data-file writeback mode (RavenDB-27375).
+    /// Two modes exist. Trickle: each flush starts writeback of its dirty ranges (initiate only)
+    /// and the sync barrier is a plain fdatasync - correct while the device has headroom.
+    /// Drain: flushes do not start writeback; the sync pushes the dirty ranges in bounded,
+    /// waited blocks before the barrier - correct while the device is congested.
     ///
-    /// To keep the mode from oscillating, the recorded cost is the WHOLE barrier path
-    /// (drain + fdatasync): when draining, that total still reflects what a monolithic sync
-    /// would have cost for the same bytes, so the drain mode persists until the backlog itself
-    /// subsides. The threshold comes from the caller (Storage.SyncWritebackBarrierCostThresholdInMs)
-    /// because environments sharing a device may be configured differently.
+    /// The trigger is the time-weighted device queue depth (the iostat "aqu-sz" number), sampled
+    /// at most once each second through one handle that stays open. Calibration on gp3
+    /// (RavenDB-27375): the trickle region shows a queue of ~2.3-3.8; the drain region shows
+    /// ~6.4-11; the default threshold of 5 sits in the gap. The signal is passive - no test
+    /// traffic, no injected latency. The barrier cost is a second trigger: it covers devices
+    /// with no queue data (macOS, containers) and devices whose speed changed (burst credits).
+    /// The gate returns to trickle mode after the queue stays below 60% of the threshold, and
+    /// the barrier stays cheap, for 30 seconds.
     /// </summary>
     public sealed class WritebackPacingGate
     {
         private static readonly ConcurrentDictionary<ulong, WritebackPacingGate> DevicesById = new();
+        private static readonly RavenLogger Log = RavenLogManager.Instance.GetLoggerForGlobalVoron<WritebackPacingGate>();
 
-        public static WritebackPacingGate GetForDevice(ulong deviceId)
+        public static WritebackPacingGate GetForDevice(ulong deviceId, string pathOnDevice)
         {
-            return DevicesById.GetOrAdd(deviceId, static _ => new WritebackPacingGate());
+            return DevicesById.GetOrAdd(deviceId, static (id, path) => new WritebackPacingGate(id, path), pathOnDevice);
         }
 
-        // A trickling device can never look expensive through the barrier alone - the trickle
-        // is what keeps the barrier cheap, and when it floods the device the damage lands on
-        // journal write latency instead (the RavenDB-27168 failure mode). So the mode flip
-        // watches both: journal degradation (vs the device's own best-ever baseline) ENTERS
-        // drain mode, and the barrier cost (drain + fdatasync, which is large exactly while a
-        // backlog exists) HOLDS it until the backlog subsides.
-        private const long JournalDegradedFactor = 2;
+        private const int TrickleMode = 0;
+        private const int DrainMode = 1;
+        private static readonly long SampleIntervalTimestamps = Stopwatch.Frequency; // one second
+        private static readonly long ExitQuietTimestamps = Stopwatch.Frequency * 30; // thirty seconds
 
+        private readonly DeviceQueueDepthReader _queueReader; // null = no signal on this platform
         private long _barrierCostTicksEwma;
-        private long _journalCostTicksEwma;
-        private long _journalBaselineTicks = long.MaxValue;
+        private double _queueDepthEwma;
+        private long _lastSampleTimestamp;
+        private long _lastBusyTimestamp;
+        private int _mode = TrickleMode;
+
+        private WritebackPacingGate(ulong deviceId, string pathOnDevice)
+        {
+            _queueReader = DeviceQueueDepthReader.TryCreate(pathOnDevice, deviceId);
+            _lastSampleTimestamp = Stopwatch.GetTimestamp();
+        }
+
+        internal WritebackPacingGate(DeviceQueueDepthReader readerForTests)
+        {
+            _queueReader = readerForTests;
+            _lastSampleTimestamp = Stopwatch.GetTimestamp();
+        }
 
         public long BarrierCostTicks => Volatile.Read(ref _barrierCostTicksEwma);
-        public long JournalCostTicks => Volatile.Read(ref _journalCostTicksEwma);
-        public long JournalBaselineTicks => Volatile.Read(ref _journalBaselineTicks);
-
-        public bool ShouldDrain(long barrierThresholdTicks)
-        {
-            if (Volatile.Read(ref _barrierCostTicksEwma) > barrierThresholdTicks)
-                return true;
-
-            var baseline = Volatile.Read(ref _journalBaselineTicks);
-            return baseline != long.MaxValue &&
-                   Volatile.Read(ref _journalCostTicksEwma) > baseline * JournalDegradedFactor;
-        }
+        public double QueueDepth => Volatile.Read(ref _queueDepthEwma);
+        public bool HasQueueSignal => _queueReader != null;
 
         public void RecordBarrierCost(long ticks)
         {
@@ -60,16 +70,60 @@ namespace Voron.Impl.Journal
             Volatile.Write(ref _barrierCostTicksEwma, current == 0 ? ticks : current + (ticks - current) / 4);
         }
 
-        public void RecordJournalWrite(long ticks)
+        public bool ShouldDrain(long barrierThresholdTicks, int queueDepthThreshold)
         {
-            var current = Volatile.Read(ref _journalCostTicksEwma);
-            var next = current == 0 ? ticks : current + (ticks - current) / 8;
-            Volatile.Write(ref _journalCostTicksEwma, next);
+            MaybeSampleQueue();
 
-            // the smallest sustained journal cost this device ever showed is its healthy
-            // baseline - no quiet-window bookkeeping needed
-            if (next < Volatile.Read(ref _journalBaselineTicks))
-                Volatile.Write(ref _journalBaselineTicks, next);
+            var now = Stopwatch.GetTimestamp();
+            var busy = Volatile.Read(ref _queueDepthEwma) > (Volatile.Read(ref _mode) == DrainMode
+                           ? queueDepthThreshold * 0.6 // hysteresis: leave only well below the entry point
+                           : queueDepthThreshold)
+                       || Volatile.Read(ref _barrierCostTicksEwma) > barrierThresholdTicks;
+
+            if (busy)
+            {
+                Volatile.Write(ref _lastBusyTimestamp, now);
+                if (Interlocked.Exchange(ref _mode, DrainMode) == TrickleMode && Log.IsDebugEnabled)
+                    Log.Debug($"Writeback gate -> drain (queue {QueueDepth:0.0}, barrier {BarrierCostTicks / TimeSpan.TicksPerMillisecond}ms)");
+                return true;
+            }
+
+            if (Volatile.Read(ref _mode) == DrainMode)
+            {
+                if (now - Volatile.Read(ref _lastBusyTimestamp) < ExitQuietTimestamps)
+                    return true;
+
+                if (Interlocked.Exchange(ref _mode, TrickleMode) == DrainMode && Log.IsDebugEnabled)
+                    Log.Debug($"Writeback gate -> trickle (queue {QueueDepth:0.0})");
+            }
+
+            return false;
+        }
+
+        private void MaybeSampleQueue()
+        {
+            if (_queueReader == null)
+                return;
+
+            var now = Stopwatch.GetTimestamp();
+            var last = Volatile.Read(ref _lastSampleTimestamp);
+            if (now - last < SampleIntervalTimestamps)
+                return;
+            if (Interlocked.CompareExchange(ref _lastSampleTimestamp, now, last) != last)
+                return; // another thread samples
+
+            double value;
+            try
+            {
+                value = _queueReader.Read();
+            }
+            catch
+            {
+                return; // a torn read is a lost sample, nothing more
+            }
+
+            var current = Volatile.Read(ref _queueDepthEwma);
+            Volatile.Write(ref _queueDepthEwma, current == 0 ? value : current + (value - current) / 4);
         }
     }
 }

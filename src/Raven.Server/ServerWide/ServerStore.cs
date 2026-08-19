@@ -860,6 +860,7 @@ namespace Raven.Server.ServerWide
             options.SyncJournalsCountThreshold = Configuration.Storage.SyncJournalsCountThreshold;
             options.SyncWritebackBlockSizeInMb = Configuration.Storage.SyncWritebackBlockSizeInMb;
             options.SyncWritebackBarrierCostThresholdInMs = Configuration.Storage.SyncWritebackBarrierCostThresholdInMs;
+            options.SyncWritebackDrainQueueDepthThreshold = Configuration.Storage.SyncWritebackDrainQueueDepthThreshold;
             options.IgnoreInvalidJournalErrors = Configuration.Storage.IgnoreInvalidJournalErrors;
             options.SkipChecksumValidationOnDatabaseLoading = Configuration.Storage.SkipChecksumValidationOnDatabaseLoading;
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = Configuration.Storage.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions;
