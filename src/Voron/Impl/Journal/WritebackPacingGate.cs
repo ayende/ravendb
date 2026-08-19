@@ -27,13 +27,30 @@ namespace Voron.Impl.Journal
             return DevicesById.GetOrAdd(deviceId, static _ => new WritebackPacingGate());
         }
 
+        // A trickling device can never look expensive through the barrier alone - the trickle
+        // is what keeps the barrier cheap, and when it floods the device the damage lands on
+        // journal write latency instead (the RavenDB-27168 failure mode). So the mode flip
+        // watches both: journal degradation (vs the device's own best-ever baseline) ENTERS
+        // drain mode, and the barrier cost (drain + fdatasync, which is large exactly while a
+        // backlog exists) HOLDS it until the backlog subsides.
+        private const long JournalDegradedFactor = 2;
+
         private long _barrierCostTicksEwma;
+        private long _journalCostTicksEwma;
+        private long _journalBaselineTicks = long.MaxValue;
 
         public long BarrierCostTicks => Volatile.Read(ref _barrierCostTicksEwma);
+        public long JournalCostTicks => Volatile.Read(ref _journalCostTicksEwma);
+        public long JournalBaselineTicks => Volatile.Read(ref _journalBaselineTicks);
 
-        public bool IsBarrierExpensive(long thresholdTicks)
+        public bool ShouldDrain(long barrierThresholdTicks)
         {
-            return Volatile.Read(ref _barrierCostTicksEwma) > thresholdTicks;
+            if (Volatile.Read(ref _barrierCostTicksEwma) > barrierThresholdTicks)
+                return true;
+
+            var baseline = Volatile.Read(ref _journalBaselineTicks);
+            return baseline != long.MaxValue &&
+                   Volatile.Read(ref _journalCostTicksEwma) > baseline * JournalDegradedFactor;
         }
 
         public void RecordBarrierCost(long ticks)
@@ -41,6 +58,18 @@ namespace Voron.Impl.Journal
             // approximate EWMA (alpha = 1/4); a racy update just loses a sample
             var current = Volatile.Read(ref _barrierCostTicksEwma);
             Volatile.Write(ref _barrierCostTicksEwma, current == 0 ? ticks : current + (ticks - current) / 4);
+        }
+
+        public void RecordJournalWrite(long ticks)
+        {
+            var current = Volatile.Read(ref _journalCostTicksEwma);
+            var next = current == 0 ? ticks : current + (ticks - current) / 8;
+            Volatile.Write(ref _journalCostTicksEwma, next);
+
+            // the smallest sustained journal cost this device ever showed is its healthy
+            // baseline - no quiet-window bookkeeping needed
+            if (next < Volatile.Read(ref _journalBaselineTicks))
+                Volatile.Write(ref _journalBaselineTicks, next);
         }
     }
 }
