@@ -149,6 +149,16 @@ _mark_dirty_pages(void *handle, struct page_to_write *buffers, int32_t count);
 PRIVATE void
 _free_dirty_bitmaps(struct dirty_bitmap *bm);
 
+/* platform halves of rvn_pager_writeback_dirty: linuxonly.c / maconly.c */
+PRIVATE int32_t
+_writeback_supported(struct handle *handle_ptr);
+
+PRIVATE int32_t
+_writeback_range_start(struct handle *handle_ptr, int64_t offset, int64_t length, int32_t *detailed_error_code);
+
+PRIVATE int32_t
+_writeback_range_complete(struct handle *handle_ptr, int64_t offset, int64_t length, int32_t *detailed_error_code);
+
 PRIVATE int32_t /* different impl for linux and mac */
 _flush_file(int32_t fd);
 

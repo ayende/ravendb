@@ -1,18 +1,28 @@
 /* Dirty-range tracking + paced writeback, shared between the posix and win
    pagers. Included from posix/pager.c and win/pager.c AFTER the platform
    headers, so `struct handle` / `struct handle_global_state` (which share the
-   relevant field names) are already defined. Each pager.c supplies:
+   relevant field names) are already defined. The platform supplies:
 
      _writeback_supported(handle)               - can this pager push ranges?
      _writeback_range_start(handle, off, len)   - initiate writeback of a range
      _writeback_range_complete(handle, off, len)- wait for it (no-op where the
                                                   start call is synchronous)
+   (linux: linuxonly.c, mac: maconly.c, windows: win/pager.c)
 
-   The bitmap is a pacing hint, never a durability structure: a lost bit only
-   means the range rides the final fdatasync unpaced, so every race below is
-   benign by construction. Bits are set by the writers (single writer thread
-   per file, guaranteed by Voron) and consumed by rvn_pager_writeback_dirty
-   (any thread) via atomic exchange - concurrent drains self-partition. */
+   Tracking is inferred from the open flags: every writable, persistent file is
+   tracked (which covers recovery-time writes to the data file for free);
+   temporary and read-only/copy-on-write pagers are not. The bitmap only
+   materializes on the first write, so pagers that never write cost nothing.
+
+   The bitmap is a pacing hint, never a durability structure: a lost or stale
+   bit only means the range rides the final fdatasync unpaced, so the racy
+   plain read-modify-write below is safe by construction. Bits are set by the
+   writers (single writer thread per file, guaranteed by Voron) and consumed by
+   rvn_pager_writeback_dirty (any thread) via atomic exchange - the exchange is
+   the one op that must be atomic, so concurrent drains self-partition and a
+   drain never pushes a range twice. A marker racing the exchange can at worst
+   resurrect a just-consumed bit (one redundant push) or lose a fresh bit to a
+   concurrent put-back (the page stays dirty and the barrier still covers it). */
 
 #if !defined(_WIN32)
 #include <time.h>
@@ -20,9 +30,7 @@
 
 #if defined(_MSC_VER)
 #include <intrin.h>
-#define rvn_atomic_or64(p, v) InterlockedOr64((volatile LONG64 *)(p), (LONG64)(v))
 #define rvn_atomic_xchg64(p, v) InterlockedExchange64((volatile LONG64 *)(p), (LONG64)(v))
-#define rvn_atomic_load64(p) ((uint64_t)InterlockedCompareExchange64((volatile LONG64 *)(p), 0, 0))
 #define rvn_atomic_load_ptr(p) InterlockedCompareExchangePointer((PVOID volatile *)(p), NULL, NULL)
 #define rvn_atomic_store_ptr(p, v) InterlockedExchangePointer((PVOID volatile *)(p), (v))
 static int32_t _wb_ctz64(uint64_t v)
@@ -33,9 +41,7 @@ static int32_t _wb_ctz64(uint64_t v)
 }
 #define _wb_popcnt64(v) ((int32_t)__popcnt64(v))
 #else
-#define rvn_atomic_or64(p, v) __atomic_fetch_or((p), (v), __ATOMIC_RELAXED)
 #define rvn_atomic_xchg64(p, v) __atomic_exchange_n((p), (v), __ATOMIC_ACQ_REL)
-#define rvn_atomic_load64(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
 #define rvn_atomic_load_ptr(p) __atomic_load_n((p), __ATOMIC_ACQUIRE)
 #define rvn_atomic_store_ptr(p, v) __atomic_store_n((p), (v), __ATOMIC_RELEASE)
 #define _wb_ctz64(v) ((int32_t)__builtin_ctzll(v))
@@ -60,6 +66,12 @@ _writeback_range_start(struct handle *handle_ptr, int64_t offset, int64_t length
 PRIVATE int32_t
 _writeback_range_complete(struct handle *handle_ptr, int64_t offset, int64_t length, int32_t *detailed_error_code);
 
+static bool
+_should_track_dirty_ranges(int32_t open_flags)
+{
+    return (open_flags & (OPEN_FILE_TEMPORARY | OPEN_FILE_READ_ONLY | OPEN_FILE_COPY_ON_WRITE)) == 0;
+}
+
 PRIVATE void
 _free_dirty_bitmaps(struct dirty_bitmap *bm)
 {
@@ -75,10 +87,18 @@ static int64_t
 _wb_now_micros(void)
 {
 #if defined(_WIN32)
-    LARGE_INTEGER counter, freq;
+    static int64_t frequency; /* fixed at boot; benign to race the init */
+    if (frequency == 0)
+    {
+        LARGE_INTEGER freq;
+        QueryPerformanceFrequency(&freq);
+        frequency = freq.QuadPart;
+    }
+    LARGE_INTEGER counter;
     QueryPerformanceCounter(&counter);
-    QueryPerformanceFrequency(&freq);
-    return (int64_t)(counter.QuadPart / (freq.QuadPart / 1000000));
+    /* split to avoid both truncation (freq / 1e6 first) and the int64
+       overflow of counter * 1e6 (~10 days of uptime at 10MHz) */
+    return (counter.QuadPart / frequency) * 1000000 + (counter.QuadPart % frequency) * 1000000 / frequency;
 #else
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
@@ -104,13 +124,31 @@ _grow_dirty_bitmap(struct handle_global_state *global_state, struct dirty_bitmap
     bm->prev = current;
     if (current != NULL)
     {
-        /* a bit the drainer clears after we copied it stays set in the new
-           generation - a redundant, idempotent push on the next drain */
-        for (int64_t i = 0; i < current->number_of_words; i++)
-            bm->words[i] = rvn_atomic_load64(&current->words[i]);
+        /* racy against a concurrent drain clearing words - a bit consumed after
+           we copied it stays set in the new generation, which is a redundant,
+           idempotent push on the next drain */
+        memcpy(bm->words, (void *)current->words, (size_t)current->number_of_words * sizeof(uint64_t));
     }
     rvn_atomic_store_ptr(&global_state->dirty_bitmap, bm);
     return bm;
+}
+
+/* plain read-modify-write: the only concurrent mutator is the drain's exchange,
+   and every interleaving is benign (see the header comment) */
+static void
+_set_dirty_bits(struct dirty_bitmap *bm, int64_t start_bit, int64_t bit_count)
+{
+    for (int64_t bit = start_bit; bit < start_bit + bit_count;)
+    {
+        int64_t word = bit >> 6;
+        int32_t bit_in_word = (int32_t)(bit & 63);
+        int64_t bits_in_this_word = rvn_min(64 - bit_in_word, start_bit + bit_count - bit);
+        uint64_t mask = bits_in_this_word == 64
+                            ? ~0ULL
+                            : (((1ULL << bits_in_this_word) - 1) << bit_in_word);
+        bm->words[word] |= mask;
+        bit += bits_in_this_word;
+    }
 }
 
 PRIVATE void
@@ -118,17 +156,12 @@ _mark_dirty_pages(void *handle, struct page_to_write *buffers, int32_t count)
 {
     struct handle *handle_ptr = handle;
     struct handle_global_state *global_state = handle_ptr->global_state;
-    if (!(global_state->open_flags & OPEN_FILE_TRACK_DIRTY_RANGES) || count <= 0)
+    if (count <= 0 || !_should_track_dirty_ranges(global_state->open_flags))
         return;
 
-    int64_t max_bit = 0;
-    for (int32_t i = 0; i < count; i++)
-    {
-        int64_t last_byte = (buffers[i].page_num + buffers[i].count_of_pages) * VORON_PAGE_SIZE - 1;
-        int64_t last_bit = last_byte / WRITEBACK_BYTES_PER_BIT;
-        if (last_bit > max_bit)
-            max_bit = last_bit;
-    }
+    /* the writers require sorted buffers (their run-merging depends on it),
+       so the last buffer holds the highest page */
+    int64_t max_bit = ((buffers[count - 1].page_num + buffers[count - 1].count_of_pages) * VORON_PAGE_SIZE - 1) / WRITEBACK_BYTES_PER_BIT;
 
     struct dirty_bitmap *bm = rvn_atomic_load_ptr(&global_state->dirty_bitmap);
     if (bm == NULL || max_bit >= bm->number_of_words * 64)
@@ -140,33 +173,7 @@ _mark_dirty_pages(void *handle, struct page_to_write *buffers, int32_t count)
     {
         int64_t first_bit = (buffers[i].page_num * VORON_PAGE_SIZE) / WRITEBACK_BYTES_PER_BIT;
         int64_t last_bit = ((buffers[i].page_num + buffers[i].count_of_pages) * VORON_PAGE_SIZE - 1) / WRITEBACK_BYTES_PER_BIT;
-        for (int64_t bit = first_bit; bit <= last_bit;)
-        {
-            int64_t word = bit >> 6;
-            int32_t bit_in_word = (int32_t)(bit & 63);
-            int64_t bits_in_this_word = rvn_min(64 - bit_in_word, last_bit - bit + 1);
-            uint64_t mask = bits_in_this_word == 64
-                                ? ~0ULL
-                                : (((1ULL << bits_in_this_word) - 1) << bit_in_word);
-            rvn_atomic_or64(&bm->words[word], mask);
-            bit += bits_in_this_word;
-        }
-    }
-}
-
-static void
-_wb_put_back_bits(struct dirty_bitmap *bm, int64_t start_bit, int64_t bit_count)
-{
-    for (int64_t bit = start_bit; bit < start_bit + bit_count;)
-    {
-        int64_t word = bit >> 6;
-        int32_t bit_in_word = (int32_t)(bit & 63);
-        int64_t bits_in_this_word = rvn_min(64 - bit_in_word, start_bit + bit_count - bit);
-        uint64_t mask = bits_in_this_word == 64
-                            ? ~0ULL
-                            : (((1ULL << bits_in_this_word) - 1) << bit_in_word);
-        rvn_atomic_or64(&bm->words[word], mask);
-        bit += bits_in_this_word;
+        _set_dirty_bits(bm, first_bit, last_bit - first_bit + 1);
     }
 }
 
@@ -242,7 +249,7 @@ _wb_emit_run(struct writeback_ctx *ctx, struct dirty_bitmap *bm, int64_t start_b
     {
         if (ctx->budget_exhausted)
         {
-            _wb_put_back_bits(bm, start_bit, bit_count);
+            _set_dirty_bits(bm, start_bit, bit_count);
             return SUCCESS;
         }
         int64_t bits = rvn_min(bit_count, block_bits);
@@ -280,7 +287,7 @@ rvn_pager_writeback_dirty(void *handle,
     if (pipeline_depth > WRITEBACK_MAX_PIPELINE_DEPTH)
         pipeline_depth = WRITEBACK_MAX_PIPELINE_DEPTH;
     if (block_size_bytes < WRITEBACK_BYTES_PER_BIT)
-        block_size_bytes = WRITEBACK_DEFAULT_BLOCK_SIZE;
+        block_size_bytes = WRITEBACK_BYTES_PER_BIT;
     int64_t block_bits = block_size_bytes / WRITEBACK_BYTES_PER_BIT;
 
     struct writeback_ctx ctx = {
@@ -296,7 +303,12 @@ rvn_pager_writeback_dirty(void *handle,
 
     for (int64_t w = 0; w < bm->number_of_words && !ctx.budget_exhausted; w++)
     {
-        uint64_t bits = rvn_atomic_xchg64(&bm->words[w], 0);
+        /* plain pre-check first: most words are zero and skipping them must not
+           cost a locked op; only claim a word that actually has bits */
+        uint64_t bits = bm->words[w];
+        if (bits != 0)
+            bits = rvn_atomic_xchg64(&bm->words[w], 0);
+
         int64_t word_base = w * 64;
 
         if (bits == 0)
@@ -349,7 +361,7 @@ rvn_pager_writeback_dirty(void *handle,
             if (ctx.budget_exhausted)
             {
                 if (bits != 0)
-                    rvn_atomic_or64(&bm->words[w], bits);
+                    bm->words[w] |= bits; /* put back what we did not process */
                 break;
             }
         }
@@ -371,11 +383,11 @@ done:
             rc = wait_rc;
     }
 
+    /* racy diagnostic count - plain loads, let it vectorize */
     for (int64_t w = 0; w < bm->number_of_words; w++)
     {
-        uint64_t remaining = rvn_atomic_load64(&bm->words[w]);
-        if (remaining != 0)
-            stats->set_bits_remaining += _wb_popcnt64(remaining);
+        if (bm->words[w] != 0)
+            stats->set_bits_remaining += _wb_popcnt64(bm->words[w]);
     }
     return rc;
 }

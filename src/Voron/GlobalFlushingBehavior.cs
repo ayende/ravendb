@@ -47,11 +47,6 @@ namespace Voron
 
         private readonly ConcurrentQueue<EnvSyncReq> _storageEnvironments = new ConcurrentQueue<EnvSyncReq>();
 
-        // writeback-only requests (paced push of dirty data-file ranges, no durability barrier),
-        // deduplicated per environment while one is still queued
-        private readonly ConcurrentQueue<EnvSyncReq> _writebackQueue = new ConcurrentQueue<EnvSyncReq>();
-        private readonly ConcurrentDictionary<StorageEnvironment.IndirectReference, byte> _writebackQueued = new ConcurrentDictionary<StorageEnvironment.IndirectReference, byte>();
-
         private static readonly RavenLogger _log = RavenLogManager.Instance.GetLoggerForGlobalVoron<GlobalFlushingBehavior>();
 
         public bool HasLowNumberOfFlushingResources => _concurrentFlushesAvailable.CurrentCount <= _lowNumberOfFlushingResources;
@@ -136,7 +131,7 @@ namespace Voron
                 _storageEnvironments.Enqueue(envSyncReq.Value);
             }
 
-            int parallelSyncsPerIo = Math.Min(NumberOfConcurrentSyncs, _storageEnvironments.Count + _writebackQueue.Count);
+            int parallelSyncsPerIo = Math.Min(NumberOfConcurrentSyncs, _storageEnvironments.Count);
 
             for (int i = 0; i < parallelSyncsPerIo; i++)
             {
@@ -146,46 +141,10 @@ namespace Voron
 
         private void DrainSyncQueue(object state)
         {
-            while (true)
+            while (_storageEnvironments.TryDequeue(out var req))
             {
-                if (_storageEnvironments.TryDequeue(out var req))
-                {
-                    SyncEnvironment(req);
-                    _envsToSync.TryRemove(req.Reference, out _);
-                    continue;
-                }
-
-                if (_writebackQueue.TryDequeue(out var writebackReq))
-                {
-                    _writebackQueued.TryRemove(writebackReq.Reference, out _);
-                    WritebackEnvironment(writebackReq);
-                    continue;
-                }
-
-                return;
-            }
-        }
-
-        private void WritebackEnvironment(EnvSyncReq req)
-        {
-            var storageEnvironment = req.Env;
-            if (storageEnvironment == null || storageEnvironment.IsDisposing || storageEnvironment.Disposed || storageEnvironment.Options.ManualSyncing)
-                return;
-
-            try
-            {
-                storageEnvironment.Journal.Applicator.PacedWritebackOnly();
-            }
-            catch (Exception e)
-            {
-                if (storageEnvironment.IsDisposing || storageEnvironment.Disposed)
-                    return;
-
-                // a writeback failure is a sync failure: the kernel may have consumed the error,
-                // so the next fdatasync could succeed without ever reporting it (fsync-gate)
-                if (_log.IsFatalEnabled)
-                    _log.Fatal($"Failed to writeback data file ranges for {storageEnvironment.Options.BasePath}", e);
-                storageEnvironment.Options.SetCatastrophicFailure(ExceptionDispatchInfo.Capture(e));
+                SyncEnvironment(req);
+                _envsToSync.TryRemove(req.Reference, out _);
             }
         }
 
@@ -307,21 +266,6 @@ namespace Voron
         public void SuggestSyncEnvironment(StorageEnvironment env)
         {
             AddEnvironmentSyncRequest(env, false);
-        }
-
-        public void SuggestPacedWriteback(StorageEnvironment env)
-        {
-            if (env.Options.ManualSyncing)
-                return;
-
-            if (_writebackQueued.TryAdd(env.SelfReference, 0) == false)
-                return; // already queued
-
-            _writebackQueue.Enqueue(new EnvSyncReq
-            {
-                Reference = env.SelfReference,
-            });
-            _flushWriterEvent.Set();
         }
 
         private void AddEnvironmentSyncRequest(StorageEnvironment env, bool required)

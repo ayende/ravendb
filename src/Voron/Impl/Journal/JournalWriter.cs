@@ -90,15 +90,10 @@ namespace Voron.Impl.Journal
             {
                 using var metrics = _options.IoMetrics.MeterIoRate(FileName.FullPath, IoMetrics.MeterType.JournalWrite,
                     totalNumberOf4Kbs * Constants.Storage.JournalPageSize);
-                var writebackBudget = _options.WritebackBudget;
-                var writeStartTimestamp = writebackBudget != null ? Stopwatch.GetTimestamp() : 0;
                 var result = Pal.rvn_write_journal(_writeHandle, pEntries, entries.Length, posBy4Kb * Constants.Storage.JournalPageSize, out var error);
                 if (result != PalFlags.FailCodes.Success)
                     PalHelper.ThrowLastError(result, error,
                         $"Attempted to write to journal file - Path: {FileName.FullPath} Size: {totalNumberOf4Kbs * Constants.Storage.JournalPageSize}, numberOf4Kb={totalNumberOf4Kbs}");
-
-                // the guard signal for paced data-file writeback: journal commit latency on this device
-                writebackBudget?.RecordJournalWrite((Stopwatch.GetTimestamp() - writeStartTimestamp) * 1_000_000 / Stopwatch.Frequency);
 
                 if (error == ERROR_WORKING_SET_QUOTA && _log.IsDebugEnabled && _workingSetQuotaLogged == false)
                 {

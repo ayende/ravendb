@@ -473,7 +473,7 @@ namespace Voron
 
             public override (Pager Pager, Pager.State State) InitializeDataPager()
             {
-                var flags = Pal.OpenFileFlags.TrackDirtyRanges;
+                var flags = Pal.OpenFileFlags.None;
                 if(Encryption.IsEnabled)
                     flags |= Pal.OpenFileFlags.Encrypted;
                 if (ForceUsing32BitsPager || PlatformDetails.Is32Bits)
@@ -481,7 +481,7 @@ namespace Voron
                 var result = Pager.Create(this, FilePath.FullPath,
                     InitialFileSize ?? 0,
                     flags);
-                InitializeWritebackBudget(result.State);
+                InitializeWritebackGate(result.State);
                 return result;
             }
 
@@ -1277,15 +1277,15 @@ namespace Voron
         public int SyncWritebackBlockSizeInMb { get; set; } = 32;
 
         /// <summary>
-        /// The writeback budget shared by every environment whose data file resides on the
+        /// The writeback gate shared by every environment whose data file resides on the
         /// same physical device; null when the device cannot be identified (pacing disabled).
         /// </summary>
-        internal WritebackDeviceBudget WritebackBudget { get; private set; }
+        internal WritebackPacingGate WritebackGate { get; private set; }
 
-        private protected unsafe void InitializeWritebackBudget(Pager.State state)
+        private protected unsafe void InitializeWritebackGate(Pager.State state)
         {
             if (Pal.rvn_pager_get_device_id(state.Handle, out var deviceId, out _) == PalFlags.FailCodes.Success)
-                WritebackBudget = WritebackDeviceBudget.GetForDevice(deviceId);
+                WritebackGate = WritebackPacingGate.GetForDevice(deviceId);
         }
 
         internal bool SimulateFailureOnDbCreation { get; set; }

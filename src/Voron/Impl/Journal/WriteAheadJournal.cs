@@ -962,14 +962,6 @@ namespace Voron.Impl.Journal
                     }
 
                     _waj._env.SuggestSyncDataFile();
-
-                    // half-full hint: start pushing the accumulated dirty ranges before the sync
-                    // threshold trips, so the epoch's cold majority is already clean by sync time.
-                    // Purely scheduling (no fsync lock, no barrier, no journal accounting). The cost
-                    // is write amplification on throughput-capped devices: chunks re-dirtied after an
-                    // early push reach the device twice per epoch (VORON_WRITEBACK_EAGER_HINT=0 to A/B).
-                    if (EagerWritebackHint && TotalWrittenButUnsyncedBytes > _waj._env.Options.MaxUnsyncedBytesBeforeSync / 2)
-                        GlobalFlushingBehavior.GlobalFlusher.Value.SuggestPacedWriteback(_waj._env);
                 }
                 finally
                 {
@@ -1209,10 +1201,11 @@ namespace Voron.Impl.Journal
 #endif
             }
 
-            private static readonly bool EagerWritebackHint =
-                Environment.GetEnvironmentVariable("VORON_WRITEBACK_EAGER_HINT") != "0";
+            // enough to hide the per-block completion round-trips; the device-pressure bound is
+            // depth * block size, still orders of magnitude below the avalanche this replaces
+            private const int WritebackPipelineDepth = 4;
 
-            // experiment knob: pin the writeback pipeline depth and bypass the AIMD budget entirely
+            // experiment knob: override the pipeline depth
             private static readonly int? PinnedWritebackDepth =
                 int.TryParse(Environment.GetEnvironmentVariable("VORON_WRITEBACK_DEPTH"), out var pinned) && pinned >= 1
                     ? pinned : null;
@@ -1221,73 +1214,40 @@ namespace Voron.Impl.Journal
 
             /// <summary>
             /// Paced writeback of the data file's dirty ranges (RavenDB-27375): pushes the pages the
-            /// flushes dirtied since the last sync to the device in bounded blocks, budgeted per physical
-            /// device, so the closing fdatasync finds an almost-clean file instead of flooding the device
-            /// queue with a multi-GB avalanche that journal writes must wait behind. Purely scheduling -
-            /// losing a drain changes nothing about durability. A drain FAILURE however must fail the
-            /// sync: the kernel may consume a writeback error here and let the fdatasync succeed.
+            /// flushes dirtied since the last sync to the device in bounded blocks, so the closing
+            /// fdatasync finds an almost-clean file instead of flooding the device queue with a
+            /// multi-GB avalanche that journal writes must wait behind. Purely scheduling - losing a
+            /// drain changes nothing about durability. A drain FAILURE however must fail the sync:
+            /// the kernel may consume a writeback error here and let the fdatasync succeed.
             /// </summary>
-            internal void WritebackDirtyRanges(long maxBytes = -1)
+            private void WritebackDirtyRanges()
             {
                 var options = _waj._env.Options;
-                var budget = options.WritebackBudget;
-                if (_writebackNotSupported || budget == null || options.SyncWritebackBlockSizeInMb <= 0)
+                if (_writebackNotSupported)
                     return;
 
                 var dataPager = _waj._env.DataPager;
                 var dataPagerState = _waj._env.CurrentStateRecord.DataPagerState;
+                var depth = PinnedWritebackDepth ?? WritebackPipelineDepth;
 
-                int depth;
-                WritebackDeviceBudget.DrainScope scope = default;
-                if (PinnedWritebackDepth is int pinned)
-                    depth = pinned; // experiment: fixed depth, no controller
-                else
-                    scope = budget.EnterDrain(out depth);
+                var rc = Pal.rvn_pager_writeback_dirty(dataPagerState.Handle, -1, depth,
+                    options.SyncWritebackBlockSizeInMb * Constants.Size.Megabyte, out var stats, out var error);
 
-                using (scope)
+                if (rc == PalFlags.FailCodes.FailWritebackNotSupported)
                 {
-                    var rc = Pal.rvn_pager_writeback_dirty(dataPagerState.Handle, maxBytes, depth,
-                        options.SyncWritebackBlockSizeInMb * Constants.Size.Megabyte, out var stats, out var error);
-
-                    if (rc == PalFlags.FailCodes.FailWritebackNotSupported)
-                    {
-                        _writebackNotSupported = true;
-                        return;
-                    }
-
-                    if (rc != PalFlags.FailCodes.Success)
-                        PalHelper.ThrowLastError(rc, error, $"Failed to writeback dirty ranges of {dataPager.FileName}");
-
-                    if (_waj._logger.IsDebugEnabled && stats.BytesWritten > 0)
-                    {
-                        _waj._logger.Debug(
-                            $"Writeback of {stats.BytesWritten / Constants.Size.Kilobyte:#,#0} kb in {stats.RangesWritten:#,#} ranges " +
-                            $"(depth {depth}, waited {stats.TotalWaitMicros / 1000:#,#0} ms, max range {stats.MaxRangeWaitMicros / 1000:#,#0} ms, " +
-                            $"{stats.SetBitsRemaining:#,#0} dirty chunks remain) for {dataPager.FileName}");
-                    }
-                }
-            }
-
-            /// <summary>
-            /// Standalone (between-syncs) flavor of <see cref="WritebackDirtyRanges"/>: holds the fsync
-            /// lock so the environment cannot dispose the pager state under us; if a sync is running
-            /// right now there is nothing to do - it drains the very same bitmap.
-            /// </summary>
-            internal void PacedWritebackOnly()
-            {
-                if (_fsyncLock.Wait(0) == false)
+                    _writebackNotSupported = true;
                     return;
-
-                try
-                {
-                    if (_waj._env.Disposed || _waj._env.IsDisposing)
-                        return;
-
-                    WritebackDirtyRanges();
                 }
-                finally
+
+                if (rc != PalFlags.FailCodes.Success)
+                    PalHelper.ThrowLastError(rc, error, $"Failed to writeback dirty ranges of {dataPager.FileName}");
+
+                if (_waj._logger.IsDebugEnabled && stats.BytesWritten > 0)
                 {
-                    _fsyncLock.Release();
+                    _waj._logger.Debug(
+                        $"Writeback of {stats.BytesWritten / Constants.Size.Kilobyte:#,#0} kb in {stats.RangesWritten:#,#} ranges " +
+                        $"(depth {depth}, waited {stats.TotalWaitMicros / 1000:#,#0} ms, max range {stats.MaxRangeWaitMicros / 1000:#,#0} ms, " +
+                        $"{stats.SetBitsRemaining:#,#0} dirty chunks remain) for {dataPager.FileName}");
                 }
             }
 
@@ -1473,10 +1433,19 @@ namespace Voron.Impl.Journal
                     var dataPager = parent._waj._env.DataPager;
                     var currentStateRecord = parent._waj._env.CurrentStateRecord;
                     var dataPagerState = currentStateRecord.DataPagerState;
-                    // push the epoch's dirty ranges in paced blocks first, so the barrier below
-                    // finds an almost-clean file instead of flooding the device queue
-                    parent.WritebackDirtyRanges();
+                    var options = parent._waj._env.Options;
+                    var gate = options.SyncWritebackBlockSizeInMb > 0 ? options.WritebackGate : null;
+
+                    // While the kernel's background writeback keeps up, the barrier is cheap and
+                    // pre-draining only taxes journal writes on the same device - so we drain the
+                    // epoch's dirty ranges in paced blocks only once the barrier has turned
+                    // expensive (the avalanche regime). The gate is fed the WHOLE barrier cost
+                    // (drain + fdatasync) so a successful drain does not flip it back off while
+                    // the backlog persists.
+                    if (gate?.ShouldDrainBeforeSync == true)
+                        parent.WritebackDirtyRanges();
                     dataPager.Sync(dataPagerState, Interlocked.Read(ref parent._totalWrittenButUnsyncedBytes));
+                    gate?.RecordBarrierCost(sp.Elapsed.Ticks / 10);
                     if (parent._waj._logger.IsDebugEnabled)
                     {
                         var sizeInKb = (dataPagerState.NumberOfAllocatedPages * Constants.Storage.PageSize) / Constants.Size.Kilobyte;

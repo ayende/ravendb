@@ -34,8 +34,7 @@ enum
     OPEN_FILE_LOCK_MEMORY = (1 << 6),
     OPEN_FILE_DO_NOT_CONSIDER_MEMORY_LOCK_FAILURE_AS_CATASTROPHIC_ERROR = (1 << 7),
     OPEN_FILE_COPY_ON_WRITE = (1 << 8),
-    OPEN_FILE_DO_NOT_MAP = (1<<9),
-    OPEN_FILE_TRACK_DIRTY_RANGES = (1 << 10)
+    OPEN_FILE_DO_NOT_MAP = (1<<9)
 };
 
 enum
@@ -171,9 +170,11 @@ EXPORT int32_t
 rvn_sync_pager(void* handle,
     int32_t* detailed_error_code);
 
-/* Dirty-range writeback (OPEN_FILE_TRACK_DIRTY_RANGES pagers).
-   One dirty bit covers WRITEBACK_BYTES_PER_BIT of the file; a set bit is a
-   pacing hint only - rvn_sync_pager remains the sole durability barrier. */
+/* Dirty-range writeback. Tracking is inferred: every writable persistent pager
+   is tracked (temporary / read-only / copy-on-write ones are not), and the
+   bitmap only materializes on the first write. One dirty bit covers
+   WRITEBACK_BYTES_PER_BIT of the file; a set bit is a pacing hint only -
+   rvn_sync_pager remains the sole durability barrier. */
 #define WRITEBACK_BYTES_PER_BIT (1024 * 1024)
 #define WRITEBACK_DEFAULT_BLOCK_SIZE (32 * 1024 * 1024)
 #define WRITEBACK_MAX_PIPELINE_DEPTH 16

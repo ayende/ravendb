@@ -10,7 +10,7 @@ namespace Sparrow.Server.Platform
 {
     public static unsafe class Pal
     {
-        public const int PAL_VER = 70890; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70891; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -103,7 +103,6 @@ namespace Sparrow.Server.Platform
             DoNotConsiderMemoryLockFailureAsCatastrophicError = 1 << 7,
             CopyOnWrite = 1 << 8,
             DoNotMap = 1 << 9,
-            TrackDirtyRanges = 1 << 10,
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -172,10 +171,11 @@ namespace Sparrow.Server.Platform
             void* handle, out Int32 errorCode);
 
         /// <summary>
-        /// Pushes the pager's tracked dirty ranges (OpenFileFlags.TrackDirtyRanges) to the device as a
-        /// pipelined stream of block-sized writebacks. Purely scheduling - rvn_sync_pager remains the
-        /// durability barrier. Any failure MUST be treated as a sync failure: the kernel may consume the
-        /// writeback error here, letting the following fdatasync succeed silently (fsync-gate).
+        /// Pushes the pager's tracked dirty ranges to the device as a pipelined stream of block-sized
+        /// writebacks. Tracking is inferred by the PAL: every writable persistent pager is tracked
+        /// (temporary/read-only/copy-on-write ones are not). Purely scheduling - rvn_sync_pager remains
+        /// the durability barrier. Any failure MUST be treated as a sync failure: the kernel may consume
+        /// the writeback error here, letting the following fdatasync succeed silently (fsync-gate).
         /// </summary>
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_pager_writeback_dirty(
