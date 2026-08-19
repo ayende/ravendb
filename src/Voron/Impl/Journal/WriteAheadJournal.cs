@@ -965,8 +965,10 @@ namespace Voron.Impl.Journal
 
                     // half-full hint: start pushing the accumulated dirty ranges before the sync
                     // threshold trips, so the epoch's cold majority is already clean by sync time.
-                    // Purely scheduling (no fsync lock, no barrier, no journal accounting).
-                    if (TotalWrittenButUnsyncedBytes > _waj._env.Options.MaxUnsyncedBytesBeforeSync / 2)
+                    // Purely scheduling (no fsync lock, no barrier, no journal accounting). The cost
+                    // is write amplification on throughput-capped devices: chunks re-dirtied after an
+                    // early push reach the device twice per epoch (VORON_WRITEBACK_EAGER_HINT=0 to A/B).
+                    if (EagerWritebackHint && TotalWrittenButUnsyncedBytes > _waj._env.Options.MaxUnsyncedBytesBeforeSync / 2)
                         GlobalFlushingBehavior.GlobalFlusher.Value.SuggestPacedWriteback(_waj._env);
                 }
                 finally
@@ -1206,6 +1208,9 @@ namespace Voron.Impl.Journal
                 }
 #endif
             }
+
+            private static readonly bool EagerWritebackHint =
+                Environment.GetEnvironmentVariable("VORON_WRITEBACK_EAGER_HINT") != "0";
 
             private bool _writebackNotSupported;
 
