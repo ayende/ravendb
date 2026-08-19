@@ -1272,9 +1272,22 @@ namespace Voron
 
         /// <summary>
         /// Block size for paced data-file writeback during sync (RavenDB-27375).
-        /// 0 disables the pacing entirely, falling back to a monolithic fdatasync.
+        /// 0 disables the writeback machinery entirely (no trickle, no drain),
+        /// falling back to a monolithic fdatasync.
         /// </summary>
         public int SyncWritebackBlockSizeInMb { get; set; } = 32;
+
+        /// <summary>
+        /// The barrier-cost threshold that flips a device from trickle mode (initiate-only
+        /// writeback on flush, plain fdatasync on sync) to drain mode (paced, waited writeback
+        /// before the fdatasync). A healthy barrier measures single-digit milliseconds; the
+        /// avalanche regime measures hundreds - 100ms sits an order of magnitude above healthy
+        /// and is roughly where a monolithic barrier starts to visibly tax the p99 of journal
+        /// writes sharing the device.
+        /// </summary>
+        public int SyncWritebackBarrierCostThresholdInMs { get; set; } = 100;
+
+        internal long SyncWritebackBarrierCostThresholdTicks => SyncWritebackBarrierCostThresholdInMs * TimeSpan.TicksPerMillisecond;
 
         /// <summary>
         /// The writeback gate shared by every environment whose data file resides on the

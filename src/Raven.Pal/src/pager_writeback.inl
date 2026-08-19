@@ -183,6 +183,7 @@ struct writeback_ctx
     struct rvn_writeback_stats *stats;
     int64_t max_bytes;
     int32_t depth;
+    bool initiate_only; /* trickle mode: start writeback, never wait on it */
     int32_t pending_count;
     int32_t pending_head;
     bool budget_exhausted;
@@ -214,7 +215,7 @@ _wb_complete_oldest(struct writeback_ctx *ctx, int32_t *detailed_error_code)
 static int32_t
 _wb_emit(struct writeback_ctx *ctx, int64_t offset, int64_t length, int32_t *detailed_error_code)
 {
-    if (ctx->pending_count == ctx->depth)
+    if (!ctx->initiate_only && ctx->pending_count == ctx->depth)
     {
         int32_t rc = _wb_complete_oldest(ctx, detailed_error_code);
         if (rc != SUCCESS)
@@ -226,11 +227,14 @@ _wb_emit(struct writeback_ctx *ctx, int64_t offset, int64_t length, int32_t *det
     if (rc != SUCCESS)
         return rc;
 
-    int32_t slot = (ctx->pending_head + ctx->pending_count) % WRITEBACK_MAX_PIPELINE_DEPTH;
-    ctx->pending[slot].offset = offset;
-    ctx->pending[slot].length = length;
-    ctx->pending[slot].busy_micros = _wb_now_micros() - before;
-    ctx->pending_count++;
+    if (!ctx->initiate_only)
+    {
+        int32_t slot = (ctx->pending_head + ctx->pending_count) % WRITEBACK_MAX_PIPELINE_DEPTH;
+        ctx->pending[slot].offset = offset;
+        ctx->pending[slot].length = length;
+        ctx->pending[slot].busy_micros = _wb_now_micros() - before;
+        ctx->pending_count++;
+    }
 
     ctx->stats->bytes_written += length;
     ctx->stats->ranges_written++;
@@ -282,6 +286,8 @@ rvn_pager_writeback_dirty(void *handle,
     if (!_writeback_supported(handle_ptr))
         return FAIL_WRITEBACK_NOT_SUPPORTED;
 
+    /* depth 0 = trickle: initiate writeback and return without ever waiting on it */
+    bool initiate_only = pipeline_depth == 0;
     if (pipeline_depth < 1)
         pipeline_depth = 1;
     if (pipeline_depth > WRITEBACK_MAX_PIPELINE_DEPTH)
@@ -295,6 +301,7 @@ rvn_pager_writeback_dirty(void *handle,
         .stats = stats,
         .max_bytes = max_bytes <= 0 ? INT64_MAX : max_bytes,
         .depth = pipeline_depth,
+        .initiate_only = initiate_only,
     };
 
     int32_t rc = SUCCESS;
@@ -309,8 +316,6 @@ rvn_pager_writeback_dirty(void *handle,
         if (bits != 0)
             bits = rvn_atomic_xchg64(&bm->words[w], 0);
 
-        int64_t word_base = w * 64;
-
         if (bits == 0)
         {
             if (run_start_bit >= 0)
@@ -324,11 +329,15 @@ rvn_pager_writeback_dirty(void *handle,
             continue;
         }
 
+        int64_t word_base = w * 64;
+
         while (bits != 0)
         {
             int32_t first = _wb_ctz64(bits);
             uint64_t shifted = bits >> first;
-            int32_t segment = ~shifted == 0 ? 64 - first : _wb_ctz64(~shifted);
+            /* the bit-63 sentinel keeps ctz defined for the all-ones word; the run
+               then measures 63 and its last bit just extends it next iteration */
+            int32_t segment = _wb_ctz64(~shifted | (1ULL << 63));
             int64_t segment_start = word_base + first;
 
             if (run_start_bit >= 0 && segment_start != run_start_bit + run_bits)

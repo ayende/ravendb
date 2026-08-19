@@ -118,10 +118,15 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.SyncJournalsCountThreshold", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int SyncJournalsCountThreshold { get; set; }
 
-        [Description("Block size in megabytes for paced data-file writeback during sync. The dirty ranges are pushed to the device in blocks of this size before the durability barrier, so journal writes are not stuck behind a monolithic flush. Set to 0 to disable the pacing (monolithic fsync).")]
+        [Description("Block size in megabytes for paced data-file writeback during sync. The dirty ranges are pushed to the device in blocks of this size before the durability barrier, so journal writes are not stuck behind a monolithic flush. Set to 0 to disable the writeback machinery entirely (monolithic fsync).")]
         [DefaultValue(32)]
         [ConfigurationEntry("Storage.SyncWritebackBlockSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int SyncWritebackBlockSizeInMb { get; set; }
+
+        [Description("The sync-barrier cost (in milliseconds, as a moving average per physical device) beyond which data-file writeback switches from trickling on flush to paced draining before the barrier. A healthy barrier measures single-digit milliseconds; a device drowning in dirty pages measures hundreds. The default sits an order of magnitude above healthy, roughly where a monolithic barrier starts to visibly tax the latency of journal writes sharing the device.")]
+        [DefaultValue(100)]
+        [ConfigurationEntry("Storage.SyncWritebackBarrierCostThresholdInMs", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public int SyncWritebackBarrierCostThresholdInMs { get; set; }
         
         [Description("EXPERT: Determine the acceleration level that Voron will use when compressing journals.")]
         [DefaultValue(1)]

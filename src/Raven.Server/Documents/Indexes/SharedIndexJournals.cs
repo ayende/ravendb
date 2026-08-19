@@ -47,6 +47,7 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
         options.PrefetchResetThreshold = documentDatabase.Configuration.Storage.PrefetchResetThreshold.GetValue(SizeUnit.Bytes);
         options.SyncJournalsCountThreshold = documentDatabase.Configuration.Storage.SyncJournalsCountThreshold;
         options.SyncWritebackBlockSizeInMb = documentDatabase.Configuration.Storage.SyncWritebackBlockSizeInMb;
+        options.SyncWritebackBarrierCostThresholdInMs = documentDatabase.Configuration.Storage.SyncWritebackBarrierCostThresholdInMs;
         options.IgnoreInvalidJournalErrors = documentDatabase.Configuration.Storage.IgnoreInvalidJournalErrors;
         options.SkipChecksumValidationOnDatabaseLoading = documentDatabase.Configuration.Storage.SkipChecksumValidationOnDatabaseLoading;
         options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = documentDatabase.Configuration.Storage.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions;

@@ -4,16 +4,19 @@ using System.Threading;
 namespace Voron.Impl.Journal
 {
     /// <summary>
-    /// Per-physical-device gate for paced data-file writeback (RavenDB-27375), keyed on the
-    /// directly measured cost of the exact operation the pacing exists to avoid: the sync
-    /// barrier. While the kernel's background writeback keeps up, fdatasync is cheap and
-    /// pre-draining only taxes journal writes - so we don't. Once the barrier turns expensive
-    /// (the avalanche regime), we drain the dirty ranges in bounded blocks first.
+    /// Per-physical-device signal for the data-file writeback mode (RavenDB-27375): an EWMA of
+    /// the measured cost of the sync barrier path, in TimeSpan ticks. While the barrier is cheap
+    /// the kernel's background writeback (helped by the per-flush trickle) is keeping up, and any
+    /// waiting writeback we add only taxes journal writes sharing the device - so flushes trickle
+    /// (initiate-only) and syncs are a plain fdatasync. Once the barrier turns expensive (the
+    /// avalanche regime), the trickle stops and syncs drain the dirty ranges in bounded, waited
+    /// blocks first.
     ///
-    /// To keep the gate from oscillating, the recorded cost is the WHOLE barrier path
+    /// To keep the mode from oscillating, the recorded cost is the WHOLE barrier path
     /// (drain + fdatasync): when draining, that total still reflects what a monolithic sync
-    /// would have cost for the same bytes, so the gate stays open until the backlog itself
-    /// subsides.
+    /// would have cost for the same bytes, so the drain mode persists until the backlog itself
+    /// subsides. The threshold comes from the caller (Storage.SyncWritebackBarrierCostThresholdInMs)
+    /// because environments sharing a device may be configured differently.
     /// </summary>
     public sealed class WritebackPacingGate
     {
@@ -24,21 +27,20 @@ namespace Voron.Impl.Journal
             return DevicesById.GetOrAdd(deviceId, static _ => new WritebackPacingGate());
         }
 
-        // above this the barrier is hurting whoever shares the device with it; the regimes we
-        // measured sit an order of magnitude apart (healthy: ~5ms, avalanche: hundreds of ms)
-        private const long DrainWhenBarrierCostExceedsMicros = 100_000;
+        private long _barrierCostTicksEwma;
 
-        private long _barrierCostMicrosEwma;
+        public long BarrierCostTicks => Volatile.Read(ref _barrierCostTicksEwma);
 
-        public bool ShouldDrainBeforeSync => Volatile.Read(ref _barrierCostMicrosEwma) > DrainWhenBarrierCostExceedsMicros;
+        public bool IsBarrierExpensive(long thresholdTicks)
+        {
+            return Volatile.Read(ref _barrierCostTicksEwma) > thresholdTicks;
+        }
 
-        public long BarrierCostMicrosEwma => Volatile.Read(ref _barrierCostMicrosEwma);
-
-        public void RecordBarrierCost(long micros)
+        public void RecordBarrierCost(long ticks)
         {
             // approximate EWMA (alpha = 1/4); a racy update just loses a sample
-            var current = Volatile.Read(ref _barrierCostMicrosEwma);
-            Volatile.Write(ref _barrierCostMicrosEwma, current == 0 ? micros : current + (micros - current) / 4);
+            var current = Volatile.Read(ref _barrierCostTicksEwma);
+            Volatile.Write(ref _barrierCostTicksEwma, current == 0 ? ticks : current + (ticks - current) / 4);
         }
     }
 }

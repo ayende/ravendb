@@ -193,6 +193,8 @@ struct rvn_writeback_stats
    pipelined stream: up to pipeline_depth blocks of block_size_bytes are
    initiated ahead of the completion wait. Blocking; returns once max_bytes
    (<= 0: everything currently set) has been pushed AND completed.
+   pipeline_depth == 0 is the trickle mode: initiate the writeback and return
+   without waiting on any of it (per-flush background cleaning).
    Any failure must be treated by the caller as a sync failure: the kernel may
    consume the writeback error here, letting the following fdatasync succeed. */
 EXPORT int32_t

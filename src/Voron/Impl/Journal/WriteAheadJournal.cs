@@ -1251,6 +1251,47 @@ namespace Voron.Impl.Journal
                 }
             }
 
+            /// <summary>
+            /// Trickle mode (RavenDB-27375): after each flush, initiate-only writeback of the
+            /// freshly accumulated dirty ranges - the successor of the per-flush
+            /// ScheduleDataFileWriteback pacing, fed from the PAL bitmap instead of a second fd.
+            /// This keeps the file continuously clean while the device has headroom, so the sync
+            /// barrier stays at single-digit milliseconds and journal writes see an empty pipe
+            /// (worth +50% mid-curve on throughput-capped devices). Root environments only, like
+            /// its predecessor: a dozen index environments trickling in concert is exactly the
+            /// device flood that RavenDB-27168 diagnosed. The moment the barrier turns expensive
+            /// the trickle stops - eager pushing is the wrong strategy precisely when bytes are
+            /// scarce - and the sync-time paced drain takes over (see CallPagerSync).
+            /// </summary>
+            private void TrickleWriteback(Pager dataPager, Pager.State dataPagerState)
+            {
+                var options = _waj._env.Options;
+                if (_writebackNotSupported || options.SyncWritebackBlockSizeInMb <= 0)
+                    return;
+
+                if (PlatformDetails.RunningOnPosix == false)
+                    return; // FlushViewOfFile has no initiate-only form - it would stall the flush
+
+                if (options.RootJournal != null)
+                    return; // non-root (shared-journal) environments never trickle
+
+                var gate = options.WritebackGate;
+                if (gate != null && gate.IsBarrierExpensive(options.SyncWritebackBarrierCostThresholdTicks))
+                    return; // drain mode - the sync owns the writeback now
+
+                var rc = Pal.rvn_pager_writeback_dirty(dataPagerState.Handle, -1, pipelineDepth: 0 /* initiate only */,
+                    options.SyncWritebackBlockSizeInMb * Constants.Size.Megabyte, out _, out var error);
+
+                if (rc == PalFlags.FailCodes.FailWritebackNotSupported)
+                {
+                    _writebackNotSupported = true;
+                    return;
+                }
+
+                if (rc != PalFlags.FailCodes.Success)
+                    PalHelper.ThrowLastError(rc, error, $"Failed to trickle writeback of {dataPager.FileName}");
+            }
+
             public void WaitForSyncToCompleteOnDispose()
             {
                 if (Monitor.IsEntered(_flushingLock) == false)
@@ -1436,16 +1477,17 @@ namespace Voron.Impl.Journal
                     var options = parent._waj._env.Options;
                     var gate = options.SyncWritebackBlockSizeInMb > 0 ? options.WritebackGate : null;
 
-                    // While the kernel's background writeback keeps up, the barrier is cheap and
-                    // pre-draining only taxes journal writes on the same device - so we drain the
-                    // epoch's dirty ranges in paced blocks only once the barrier has turned
-                    // expensive (the avalanche regime). The gate is fed the WHOLE barrier cost
-                    // (drain + fdatasync) so a successful drain does not flip it back off while
-                    // the backlog persists.
-                    if (gate?.ShouldDrainBeforeSync == true)
+                    // While the barrier is cheap, the per-flush trickle plus the kernel's own
+                    // background writeback are keeping the file clean, and waited writeback here
+                    // would only tax journal writes on the same device. Once the barrier turns
+                    // expensive (the avalanche regime; the trickle has stopped, see
+                    // TrickleWriteback), drain the epoch's dirty ranges in paced blocks first.
+                    // The gate is fed the WHOLE barrier cost (drain + fdatasync) so a successful
+                    // drain does not flip the mode back while the backlog persists.
+                    if (gate?.IsBarrierExpensive(options.SyncWritebackBarrierCostThresholdTicks) == true)
                         parent.WritebackDirtyRanges();
                     dataPager.Sync(dataPagerState, Interlocked.Read(ref parent._totalWrittenButUnsyncedBytes));
-                    gate?.RecordBarrierCost(sp.Elapsed.Ticks / 10);
+                    gate?.RecordBarrierCost(sp.Elapsed.Ticks);
                     if (parent._waj._logger.IsDebugEnabled)
                     {
                         var sizeInKb = (dataPagerState.NumberOfAllocatedPages * Constants.Storage.PageSize) / Constants.Size.Kilobyte;
@@ -1637,6 +1679,7 @@ namespace Voron.Impl.Journal
                             }
                         }
 
+                        TrickleWriteback(dataPager, dataPagerState);
                     }
                     finally
                     {

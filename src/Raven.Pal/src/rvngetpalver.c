@@ -1,3 +1,3 @@
 #include <sys/types.h>
 #include "rvn.h"
-EXPORT int32_t rvn_get_pal_ver() { return  70891 ; }
+EXPORT int32_t rvn_get_pal_ver() { return  70892 ; }
