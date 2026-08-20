@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
@@ -1162,6 +1162,87 @@ namespace Voron.Impl.Journal
 #endif
             }
 
+<<<<<<< HEAD
+=======
+            private const int DefaultWritebackPipelineDepth = 4;
+
+            private static readonly int? PinnedWritebackDepth =
+                int.TryParse(Environment.GetEnvironmentVariable("VORON_WRITEBACK_DEPTH"), out var pinned) && pinned >= 1
+                    ? pinned : null;
+
+            private bool _writebackNotSupported;
+
+            /// <summary>
+            /// Push data to the drive, in a paced manner, so if we have 1GB to write, we won't push that all at once. 
+            /// We send it in blocks, and that avoids saturating the I/O channels, so journal writes aren't "stuck in a traffic jam".
+            /// </summary>
+            private void WritebackDirtyRanges()
+            {
+                var options = _waj._env.Options;
+                if (_writebackNotSupported)
+                    return;
+
+                var dataPager = _waj._env.DataPager;
+                var dataPagerState = _waj._env.CurrentStateRecord.DataPagerState;
+                var depth = PinnedWritebackDepth ?? DefaultWritebackPipelineDepth;
+
+                var rc = Pal.rvn_pager_writeback_dirty(dataPagerState.Handle, depth,
+                    options.SyncWritebackBlockSizeInMb * Constants.Size.Megabyte, out var stats, out var error);
+
+                if (rc == PalFlags.FailCodes.FailWritebackNotSupported)
+                {
+                    _writebackNotSupported = true;
+                    return;
+                }
+
+                if (rc != PalFlags.FailCodes.Success)
+                    PalHelper.ThrowLastError(rc, error, $"Failed to writeback dirty ranges of {dataPager.FileName}");
+
+                if (_waj._logger.IsDebugEnabled && stats.BytesWritten > 0)
+                {
+                    _waj._logger.Debug(
+                        $"Writeback of {stats.BytesWritten / Constants.Size.Kilobyte:#,#0} kb in {stats.RangesWritten:#,#} ranges " +
+                        $"(depth {depth}, waited {TimeSpan.FromTicks(stats.TotalWaitTicks).TotalMilliseconds:#,#0} ms, max range {TimeSpan.FromTicks(stats.MaxRangeWaitTicks).TotalMilliseconds:#,#0} ms, " +
+                        $"{stats.SetBitsRemaining:#,#0} dirty chunks remain) for {dataPager.FileName}");
+                }
+            }
+
+            /// <summary>
+            /// After each flush, initiate-only writeback of the freshly accumulated dirty ranges to the drive.
+            /// This trickle the writes to the disk on a roughly constant basis, so we don't have a huge writeback at the end of 
+            /// a long flush, which would stall journal writes. Under load, this will be deferred to the explict sync to avoid 
+            /// slowing down journal writes.
+            /// </summary>
+            private void TrickleWriteback(Pager dataPager, Pager.State dataPagerState)
+            {
+                var options = _waj._env.Options;
+                if (_writebackNotSupported || options.SyncWritebackBlockSizeInMb <= 0)
+                    return;
+
+                if (PlatformDetails.RunningOnPosix == false)
+                    return; // FlushViewOfFile has no initiate-only form - it would stall the flush
+
+                if (options.RootJournal != null)
+                    return; // non-root (shared-journal) environments never trickle
+
+                var gate = options.WritebackGate;
+                if (gate != null && gate.ShouldDrain())
+                    return; // drain mode - the sync owns the writeback now
+
+                var rc = Pal.rvn_pager_writeback_dirty(dataPagerState.Handle, pipelineDepth: 0 /* initiate only */,
+                    options.SyncWritebackBlockSizeInMb * Constants.Size.Megabyte, out _, out var error);
+
+                if (rc == PalFlags.FailCodes.FailWritebackNotSupported)
+                {
+                    _writebackNotSupported = true;
+                    return;
+                }
+
+                if (rc != PalFlags.FailCodes.Success)
+                    PalHelper.ThrowLastError(rc, error, $"Failed to trickle writeback of {dataPager.FileName}");
+            }
+
+>>>>>>> e15ac769b36 (RavenDB-27375 Add adaptive data-file writeback pacing)
             public void WaitForSyncToCompleteOnDispose()
             {
                 if (Monitor.IsEntered(_flushingLock) == false)
@@ -1344,7 +1425,15 @@ namespace Voron.Impl.Journal
                     var dataPager = parent._waj._env.DataPager;
                     var currentStateRecord = parent._waj._env.CurrentStateRecord;
                     var dataPagerState = currentStateRecord.DataPagerState;
+                    var options = parent._waj._env.Options;
+                    var gate = options.SyncWritebackBlockSizeInMb > 0 ? options.WritebackGate : null;
+
+                    // In trickle mode, we already initiated the writeback, so we don't need to do it again here. 
+                    // In drain mode, we drain first to avoid big I/O hitting all at once, causing congestion.
+                    if (gate?.ShouldDrain() == true)
+                        parent.WritebackDirtyRanges();
                     dataPager.Sync(dataPagerState, Interlocked.Read(ref parent._totalWrittenButUnsyncedBytes));
+                    gate?.RecordSyncCost(sp.Elapsed.Ticks);
                     if (parent._waj._logger.IsDebugEnabled)
                     {
                         var sizeInKb = (dataPagerState.NumberOfAllocatedPages * Constants.Storage.PageSize) / Constants.Size.Kilobyte;
@@ -1533,6 +1622,11 @@ namespace Voron.Impl.Journal
                                 Pager.RaiseError(dataPager.FileName, errorCode, rc, dataPagerState.TotalAllocatedSize);
                             }
                         }
+<<<<<<< HEAD
+=======
+
+                        TrickleWriteback(dataPager, dataPagerState);
+>>>>>>> e15ac769b36 (RavenDB-27375 Add adaptive data-file writeback pacing)
                     }
                     finally
                     {

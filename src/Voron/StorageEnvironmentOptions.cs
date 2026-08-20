@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -473,9 +473,11 @@ namespace Voron
                     flags |= Pal.OpenFileFlags.Encrypted;
                 if (ForceUsing32BitsPager || PlatformDetails.Is32Bits)
                     flags |= Pal.OpenFileFlags.DoNotMap;
-                return Pager.Create(this, FilePath.FullPath,
+                var result = Pager.Create(this, FilePath.FullPath,
                     InitialFileSize ?? 0,
                     flags);
+                InitializeWritebackGate(result.State, FilePath.FullPath);
+                return result;
             }
 
             public override string ToString()
@@ -1261,6 +1263,30 @@ namespace Voron
         public long PrefetchResetThreshold { get; set; }
         public long SyncJournalsCountThreshold { get; set; }
 
+<<<<<<< HEAD
+=======
+        public long MaxUnsyncedBytesBeforeSync { get; set; } = 256 * Constants.Size.Megabyte;
+
+        public int SyncWritebackBlockSizeInMb { get; set; } = 32;
+
+        public int SyncWritebackBarrierCostThresholdInMs { get; set; } = 100;
+
+        internal long SyncWritebackBarrierCostThresholdTicks => SyncWritebackBarrierCostThresholdInMs * TimeSpan.TicksPerMillisecond;
+
+        public int SyncWritebackDrainQueueDepthThreshold { get; set; } = 5;
+
+        internal WritebackPacingGate WritebackGate { get; private set; }
+
+        private protected unsafe void InitializeWritebackGate(Pager.State state, string dataFilePath)
+        {
+            if (Pal.rvn_pager_get_device_id(state.Handle, out var deviceId, out _) != PalFlags.FailCodes.Success)
+                return;
+                
+            WritebackGate = WritebackPacingGate.GetForDevice(deviceId, dataFilePath,
+                SyncWritebackBarrierCostThresholdTicks, SyncWritebackDrainQueueDepthThreshold);
+        }
+
+>>>>>>> e15ac769b36 (RavenDB-27375 Add adaptive data-file writeback pacing)
         internal bool SimulateFailureOnDbCreation { get; set; }
         internal bool ManualSyncing { get; set; } = false;
         public bool? IgnoreInvalidJournalErrors { get; set; }
