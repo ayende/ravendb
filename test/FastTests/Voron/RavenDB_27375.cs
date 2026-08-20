@@ -46,21 +46,20 @@ namespace FastTests.Voron
         [Fact]
         public void WritebackGate_selects_drain_mode_and_returns_to_trickle()
         {
-            var gate = new global::Voron.Impl.Journal.WritebackPacingGate(readerForTests: null);
-
-            var barrierThreshold = TimeSpan.FromMilliseconds(100).Ticks;
+            var gate = new global::Voron.Impl.Journal.WritebackPacingGate(queueReader: null, pathOnDevice: "test",
+                barrierCostThresholdTicks: TimeSpan.FromMilliseconds(100).Ticks, queueDepthThreshold: 5);
 
             // healthy barrier: trickle mode
             gate.RecordBarrierCost(TimeSpan.FromMilliseconds(5).Ticks);
-            Assert.False(gate.ShouldDrain(barrierThreshold, queueDepthThreshold: 5));
+            Assert.False(gate.ShouldDrain());
 
             // expensive barrier: drain mode (the queue signal is absent, the barrier decides)
             for (var i = 0; i < 8; i++)
                 gate.RecordBarrierCost(TimeSpan.FromMilliseconds(800).Ticks);
-            Assert.True(gate.ShouldDrain(barrierThreshold, queueDepthThreshold: 5));
+            Assert.True(gate.ShouldDrain());
 
             // still busy: stays in drain mode
-            Assert.True(gate.ShouldDrain(barrierThreshold, queueDepthThreshold: 5));
+            Assert.True(gate.ShouldDrain());
         }
     }
 }

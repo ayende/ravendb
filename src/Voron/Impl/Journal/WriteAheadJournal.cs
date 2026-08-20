@@ -1276,7 +1276,7 @@ namespace Voron.Impl.Journal
                     return; // non-root (shared-journal) environments never trickle
 
                 var gate = options.WritebackGate;
-                if (gate != null && gate.ShouldDrain(options.SyncWritebackBarrierCostThresholdTicks, options.SyncWritebackDrainQueueDepthThreshold))
+                if (gate != null && gate.ShouldDrain())
                     return; // drain mode - the sync owns the writeback now
 
                 var rc = Pal.rvn_pager_writeback_dirty(dataPagerState.Handle, -1, pipelineDepth: 0 /* initiate only */,
@@ -1484,7 +1484,7 @@ namespace Voron.Impl.Journal
                     // stopped, see TrickleWriteback), push the epoch's dirty ranges in paced
                     // blocks first. The gate gets the WHOLE barrier cost (drain + fdatasync) so
                     // a successful drain does not flip the mode back while the backlog persists.
-                    if (gate?.ShouldDrain(options.SyncWritebackBarrierCostThresholdTicks, options.SyncWritebackDrainQueueDepthThreshold) == true)
+                    if (gate?.ShouldDrain() == true)
                         parent.WritebackDirtyRanges();
                     dataPager.Sync(dataPagerState, Interlocked.Read(ref parent._totalWrittenButUnsyncedBytes));
                     gate?.RecordBarrierCost(sp.Elapsed.Ticks);

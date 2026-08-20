@@ -1304,7 +1304,8 @@ namespace Voron
         private protected unsafe void InitializeWritebackGate(Pager.State state, string dataFilePath)
         {
             if (Pal.rvn_pager_get_device_id(state.Handle, out var deviceId, out _) == PalFlags.FailCodes.Success)
-                WritebackGate = WritebackPacingGate.GetForDevice(deviceId, dataFilePath);
+                WritebackGate = WritebackPacingGate.GetForDevice(deviceId, dataFilePath,
+                    SyncWritebackBarrierCostThresholdTicks, SyncWritebackDrainQueueDepthThreshold);
         }
 
         internal bool SimulateFailureOnDbCreation { get; set; }

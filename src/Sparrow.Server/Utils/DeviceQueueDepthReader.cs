@@ -41,13 +41,14 @@ namespace Sparrow.Server.Utils
         {
             private readonly SafeFileHandle _handle;
             private readonly byte[] _buffer = new byte[512];
-            private long _previousTimestamp;
+            private readonly Stopwatch _clock = Stopwatch.StartNew();
+            private long _previousElapsedMs;
             private long _previousQueueMs;
 
             private LinuxSysfsReader(SafeFileHandle handle)
             {
                 _handle = handle;
-                _previousTimestamp = Stopwatch.GetTimestamp();
+                _previousElapsedMs = _clock.ElapsedMilliseconds;
                 _previousQueueMs = ReadQueueMs();
             }
 
@@ -75,14 +76,14 @@ namespace Sparrow.Server.Utils
             public override double Read()
             {
                 var queueMs = ReadQueueMs();
-                var now = Stopwatch.GetTimestamp();
+                var nowMs = _clock.ElapsedMilliseconds;
 
-                var elapsedMs = (now - _previousTimestamp) * 1000.0 / Stopwatch.Frequency;
+                var elapsedMs = nowMs - _previousElapsedMs;
                 var value = queueMs < 0 || elapsedMs <= 0
                     ? 0
-                    : (queueMs - _previousQueueMs) / elapsedMs;
+                    : (queueMs - _previousQueueMs) / (double)elapsedMs;
 
-                _previousTimestamp = now;
+                _previousElapsedMs = nowMs;
                 if (queueMs >= 0)
                     _previousQueueMs = queueMs;
                 return value;
@@ -95,23 +96,26 @@ namespace Sparrow.Server.Utils
                 var read = RandomAccess.Read(_handle, _buffer, 0);
                 var span = new ReadOnlySpan<byte>(_buffer, 0, read);
 
-                var field = 0;
-                var index = 0;
-                while (index < span.Length)
+                for (var field = 0; field < 10; field++)
                 {
-                    while (index < span.Length && span[index] == (byte)' ')
-                        index++;
-                    var start = index;
-                    while (index < span.Length && span[index] != (byte)' ' && span[index] != (byte)'\n')
-                        index++;
-                    if (index == start)
-                        break;
-                    if (field == 10)
-                        return long.TryParse(span[start..index], out var value) ? value : -1;
-                    field++;
+                    var start = span.IndexOfAnyExcept((byte)' ');
+                    if (start < 0)
+                        return -1;
+                    var end = span[start..].IndexOf((byte)' ');
+                    if (end < 0)
+                        return -1;
+                    span = span[(start + end)..];
                 }
 
-                return -1;
+                var tokenStart = span.IndexOfAnyExcept((byte)' ');
+                if (tokenStart < 0)
+                    return -1;
+                span = span[tokenStart..];
+                var tokenEnd = span.IndexOfAny((byte)' ', (byte)'\n');
+                if (tokenEnd >= 0)
+                    span = span[..tokenEnd];
+
+                return long.TryParse(span, out var value) ? value : -1;
             }
 
             public override void Dispose()
