@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
@@ -2221,6 +2221,7 @@ namespace Voron.Impl.Journal
                         var start = Stopwatch.GetTimestamp();
                         var entry = PrepareToWriteToJournal(tx, ref tempTxState, out numberOfUncompressedPages, out var numberOfUsedCompressionBufferPages);
                         branchCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        tx.DurableCommit = branchCommit.Task;
                         numberOf4Kbs = entry.NumberOf4Kbs;
                         var pendingJournalStateRecord = new PendingJournalStateRecord(tx, branchCommit, entry);
                         journalStateRecord = pendingJournalStateRecord.JournalStateRecord;

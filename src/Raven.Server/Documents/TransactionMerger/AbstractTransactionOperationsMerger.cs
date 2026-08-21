@@ -542,11 +542,13 @@ namespace Raven.Server.Documents.TransactionMerger
                         var transactionMeter = TransactionPerformanceMetrics.MeterPerformanceRate();
                         try
                         {
-                            // accumulate operations into the current transaction while the journal pipeline is still busy at its head
-                            var oldestInFlightJournalWrite = _asyncCommittedTransactions.Peek().Context.Transaction.InnerTransaction.LowLevelTransaction.AsyncCommit;
+                            // accumulate operations into the current transaction while the journal pipeline is still
+                            // busy at its head. The window must stretch to the write becoming DURABLE - AsyncCommit
+                            // completes at submit, and batching against it collapses the group commit
+                            var oldestInFlight = _asyncCommittedTransactions.Peek().Context.Transaction.InnerTransaction.LowLevelTransaction;
                             result = ExecutePendingOperationsInTransaction(
                                 currentPendingOps, current,
-                                oldestInFlightJournalWrite, ref transactionMeter);
+                                oldestInFlight.DurableCommit ?? oldestInFlight.AsyncCommit, ref transactionMeter);
                             UpdateGlobalReplicationInfoBeforeCommit(current);
                         }
                         finally

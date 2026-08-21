@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -1149,6 +1149,10 @@ namespace Voron.Impl
         }
 
         internal Task<bool> AsyncCommit;
+
+        // completes when this transaction's journal write is durable (the pipeline ack), unlike
+        // AsyncCommit, which completes when the write is submitted
+        internal Task DurableCommit;
         private LowLevelTransaction _asyncCommitNextTransaction;
         private LowLevelTransaction _asyncCommitPreviousTransaction;
         private bool _asyncCommitSubmissionEnded;
