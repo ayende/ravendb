@@ -1704,6 +1704,8 @@ namespace Voron
 =======
         public long MaxUnsyncedBytesBeforeSync { get; set; } = 256 * Constants.Size.Megabyte;
 
+        public long MaxUnsyncedBytesBeforeMandatorySync { get; set; } = 2L * Constants.Size.Gigabyte;
+
         public int SyncWritebackBlockSizeInMb { get; set; } = 32;
 
         public int SyncWritebackMinContiguousSizeInKb { get; set; } = 64;

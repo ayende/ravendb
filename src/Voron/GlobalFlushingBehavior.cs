@@ -119,7 +119,13 @@ namespace Voron
                     continue;
 
                 if (force == false && envSyncReq.Value.IsRequired == false &&
+<<<<<<< HEAD
                     env.Journal.Files.Count + env.Journal.Applicator.JournalsToDeleteCount <= env.Options.SyncJournalsCountThreshold)
+=======
+                    env.Journal.Files.Count + env.Journal.Applicator.JournalsToDeleteCount <= env.Options.SyncJournalsCountThreshold &&
+                    (env.Journal.Applicator.TotalWrittenButUnsyncedBytes <= env.Options.MaxUnsyncedBytesBeforeSync ||
+                     env.ShouldDelaySyncToConsolidateWrites()))
+>>>>>>> 2de3bbf241b (RavenDB-27375 Defer the sync while the dirty set is too sparse to merge)
                     continue;
 
                 var isSyncRun = Interlocked.CompareExchange(ref envSyncReq.Value.IsSyncRun, 1, 0);
