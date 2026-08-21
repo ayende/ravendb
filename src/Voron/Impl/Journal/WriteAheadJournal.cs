@@ -2153,7 +2153,7 @@ namespace Voron.Impl.Journal
 
             public void SetLastFlushed(long lastTransactionId, JournalFile journalFile, List<JournalFile> journalFiles, List<string> pathsToSync)
             {
-                var lastFlushedTxHeader = journalFile.GetLastReadTxHeader(lastTransactionId);
+                var lastFlushedTxHeader = journalFile.GetLastReadTxHeader(lastTransactionId, _waj._env.HeaderAccessor.JournalId);
          
                 var newState = new LastFlushState(lastTransactionId, 
                     journalFile, journalFiles, pathsToSync,
