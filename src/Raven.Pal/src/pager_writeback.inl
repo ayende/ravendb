@@ -233,32 +233,72 @@ _writeback_finish_run(struct writeback_ctx *ctx, int64_t start_bit, int64_t bit_
 
 EXPORT int32_t
 rvn_pager_dirty_stats(void *handle,
+                      int32_t min_run_size_bytes,
                       int64_t *dirty_bytes,
                       int64_t *run_count,
+                      int64_t *long_run_bytes,
                       int32_t *detailed_error_code)
 {
     struct handle *handle_ptr = handle;
     struct handle_global_state *global_state = handle_ptr->global_state;
     *dirty_bytes = 0;
     *run_count = 0;
+    *long_run_bytes = 0;
     *detailed_error_code = 0;
 
     struct dirty_bitmap *bm = rvn_atomic_load_ptr(&global_state->dirty_bitmap);
     if (bm == NULL)
         return SUCCESS;
 
+    int64_t min_bits = min_run_size_bytes > 0 ? min_run_size_bytes / WRITEBACK_BYTES_PER_BIT : 0;
+
     /* racy plain loads by design - this feeds a pacing heuristic, not durability */
-    int64_t pages = 0, runs = 0;
-    uint64_t carry = 0; /* msb of the previous word, to not double-count a run crossing words */
+    int64_t pages = 0, runs = 0, long_pages = 0;
+    int64_t run_len = 0, run_end = -1;
     for (int64_t w = 0; w < bm->number_of_words; w++)
     {
         uint64_t bits = bm->words[w];
-        pages += rvn_popcnt64(bits);
-        runs += rvn_popcnt64(bits & ~((bits << 1) | carry));
-        carry = bits >> 63;
+        if (bits == 0)
+            continue;
+
+        int64_t word_base = w * 64;
+        while (bits != 0)
+        {
+            int32_t first = rvn_ctz64(bits);
+            uint64_t shifted = bits >> first;
+            int32_t segment = rvn_ctz64(~shifted);
+            int64_t start = word_base + first;
+
+            pages += segment;
+            if (start != run_end)
+            {
+                if (run_len > 0)
+                {
+                    runs++;
+                    if (run_len >= min_bits)
+                        long_pages += run_len;
+                }
+                run_len = 0;
+            }
+            run_len += segment;
+            run_end = start + segment;
+
+            if (first + segment >= 64)
+                bits = 0;
+            else
+                bits &= ~(((1ULL << segment) - 1) << first);
+        }
     }
+    if (run_len > 0)
+    {
+        runs++;
+        if (run_len >= min_bits)
+            long_pages += run_len;
+    }
+
     *dirty_bytes = pages * WRITEBACK_BYTES_PER_BIT;
     *run_count = runs;
+    *long_run_bytes = long_pages * WRITEBACK_BYTES_PER_BIT;
     return SUCCESS;
 }
 

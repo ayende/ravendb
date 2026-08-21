@@ -1,4 +1,4 @@
-using Sparrow;
+﻿using Sparrow;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
@@ -1563,11 +1563,15 @@ namespace Voron
             if (_journal.Applicator.TotalWrittenButUnsyncedBytes > options.MaxUnsyncedBytesBeforeMandatorySync)
                 return false;
 
-            var rc = Pal.rvn_pager_dirty_stats(CurrentStateRecord.DataPagerState.Handle, out var dirtyBytes, out var runCount, out _);
+            var rc = Pal.rvn_pager_dirty_stats(CurrentStateRecord.DataPagerState.Handle,
+                options.SyncWritebackMinContiguousSizeInKb * Constants.Size.Kilobyte,
+                out _, out var runCount, out var longRunBytes, out _);
             if (rc != PalFlags.FailCodes.Success || runCount == 0)
                 return false; // untracked pager (in-memory, temp) or nothing dirty - keep the old behavior
 
-            return dirtyBytes / runCount < options.SyncWritebackMinContiguousSizeInKb * Constants.Size.Kilobyte;
+            // the mergeable payload alone already justifies a sync at the regular cadence; delaying
+            // further only batches an efficient writeback into a stall. Only scattered pages earn a delay.
+            return longRunBytes < options.MaxUnsyncedBytesBeforeSync;
         }
 
         internal void BackgroundFlushWritesToDataFile()

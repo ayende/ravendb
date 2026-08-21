@@ -182,8 +182,10 @@ struct rvn_writeback_stats
 
 EXPORT int32_t
 rvn_pager_dirty_stats(void* handle,
+    int32_t min_run_size_bytes,
     int64_t* dirty_bytes,
     int64_t* run_count,
+    int64_t* long_run_bytes,
     int32_t* detailed_error_code);
 
 /* Walks the pager's dirty pages and pushes the corresponding ranges to the device as a pipelined stream:

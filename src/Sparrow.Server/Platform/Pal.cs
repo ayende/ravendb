@@ -10,7 +10,7 @@ namespace Sparrow.Server.Platform
 {
     public static unsafe class Pal
     {
-        public const int PAL_VER = 70897; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70898; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -175,8 +175,10 @@ namespace Sparrow.Server.Platform
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_pager_dirty_stats(
             void* handle,
+            Int32 minRunSizeBytes,
             out Int64 dirtyBytes,
             out Int64 runCount,
+            out Int64 longRunBytes,
             out Int32 errorCode);
 
         // This is advisory in general, for performance. but any failure MUST be treated as a sync failure (see fsync-gate)
