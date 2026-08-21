@@ -1,4 +1,4 @@
-using Raven.Server.Config;
+﻿using Raven.Server.Config;
 using Sparrow;
 using Voron;
 
@@ -24,6 +24,7 @@ namespace Raven.Server.Utils
             options.PrefetchSegmentSize = configuration.Storage.PrefetchBatchSize.GetValue(SizeUnit.Bytes);
             options.PrefetchResetThreshold = configuration.Storage.PrefetchResetThreshold.GetValue(SizeUnit.Bytes);
             options.SyncJournalsCountThreshold = configuration.Storage.SyncJournalsCountThreshold;
+            options.MaxConcurrentJournalWrites = configuration.Storage.MaxConcurrentJournalWrites;
             options.SyncWritebackBlockSizeInMb = configuration.Storage.SyncWritebackBlockSizeInMb;
             options.SyncWritebackMinContiguousSizeInKb = configuration.Storage.SyncWritebackMinContiguousSizeInKb;
             options.SyncWritebackBarrierCostThresholdInMs = configuration.Storage.SyncWritebackBarrierCostThresholdInMs;

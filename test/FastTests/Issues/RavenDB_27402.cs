@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Raven.Server.Utils;
@@ -28,6 +28,7 @@ namespace FastTests.Issues
             nameof(StorageEnvironmentOptions.PrefetchSegmentSize),
             nameof(StorageEnvironmentOptions.PrefetchResetThreshold),
             nameof(StorageEnvironmentOptions.SyncJournalsCountThreshold),
+            nameof(StorageEnvironmentOptions.MaxConcurrentJournalWrites),
             nameof(StorageEnvironmentOptions.SyncWritebackBlockSizeInMb),
             nameof(StorageEnvironmentOptions.SyncWritebackMinContiguousSizeInKb),
             nameof(StorageEnvironmentOptions.SyncWritebackBarrierCostThresholdInMs),
