@@ -1705,7 +1705,7 @@ namespace Voron
         public long PrefetchResetThreshold { get; set; }
         public long SyncJournalsCountThreshold { get; set; }
 
-        public long MaxUnsyncedBytesBeforeSync { get; set; } = 256 * Constants.Size.Megabyte;
+        public long MaxUnsyncedBytesBeforeSync { get; set; } = 4L * Constants.Size.Gigabyte;
 
         public int SyncWritebackBlockSizeInMb { get; set; } = 32;
 
