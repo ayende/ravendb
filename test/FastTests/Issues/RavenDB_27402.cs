@@ -1,4 +1,4 @@
-using System.Collections.Generic;
+﻿using System.Collections.Generic;
 using System.Linq;
 using System.Reflection;
 using Raven.Server.Utils;
@@ -31,6 +31,7 @@ namespace FastTests.Issues
             nameof(StorageEnvironmentOptions.MaxUnsyncedBytesBeforeSync),
             nameof(StorageEnvironmentOptions.MaxUnsyncedBytesBeforeMandatorySync),
             nameof(StorageEnvironmentOptions.MaxConcurrentJournalWrites),
+            nameof(StorageEnvironmentOptions.PipelineJournalWritesAboveLatencyInTicks),
             nameof(StorageEnvironmentOptions.SyncWritebackBlockSizeInMb),
             nameof(StorageEnvironmentOptions.SyncWritebackMinContiguousSizeInKb),
             nameof(StorageEnvironmentOptions.SyncWritebackBarrierCostThresholdInMs),

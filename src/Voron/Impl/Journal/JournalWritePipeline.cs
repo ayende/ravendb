@@ -19,6 +19,10 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private const int MaxPipelinedBatch4Kbs = MaxPipelinedBatchSizeInBytes / Constants.Storage.JournalPageSize;
 
+    // only writes up to this size sample the device latency: a large group-commit write is slow
+    // because of its size, not the device, and would read as a slow device on fast hardware
+    private const int MaxLatencySample4Kbs = 32;
+
     internal readonly record struct Ack(StorageEnvironment Environment, long TransactionId, TaskCompletionSource CommitCompleted);
 
     private sealed class PendingWrite(JournalWritePipeline pipeline) : IThreadPoolWorkItem, IDisposable
@@ -63,6 +67,8 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     private readonly ulong _allSlots;
     private ulong _completedSlots;
     private long _nextSequence;    // submitter only, serialized by the journal write lock
+    private long _writeLatencyEwmaTicks;
+    private readonly long _pipelineAboveLatencyTicks;
     private long _reapedSequence;  // claimed by reapers with a CAS
     private long _lowestFailedSequence = long.MaxValue;
     private ExceptionDispatchInfo _failure;
@@ -76,13 +82,18 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         _maxConcurrentWrites = Math.Clamp(env.Options.MaxConcurrentJournalWrites, 1, StorageEnvironmentOptions.MaxSupportedConcurrentJournalWrites);
         _slots = new PendingWrite[_maxConcurrentWrites];
         _allSlots = _maxConcurrentWrites == 64 ? ulong.MaxValue : (1UL << _maxConcurrentWrites) - 1;
+        _pipelineAboveLatencyTicks = env.Options.PipelineJournalWritesAboveLatencyInTicks;
     }
 
     public bool IsPipelining => _maxConcurrentWrites > 1;
 
     public int MaxConcurrentWrites => _maxConcurrentWrites;
 
-    public bool CanPipeline(long totalNumberOf4Kbs) => IsPipelining && totalNumberOf4Kbs <= MaxPipelinedBatch4Kbs;
+    // pipelining trades group-commit batching for overlap, which only pays off when the write
+    // latency is what bounds the commit rate - a fast device loses more to the smaller batches
+    // than it gains from the overlap
+    public bool CanPipeline(long totalNumberOf4Kbs) => IsPipelining && totalNumberOf4Kbs <= MaxPipelinedBatch4Kbs &&
+                                                       Volatile.Read(ref _writeLatencyEwmaTicks) >= _pipelineAboveLatencyTicks;
 
     public void SubmitPipelined(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<Ack> acks)
     {
@@ -138,7 +149,12 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
             NoteSubmitted(write);
 
             if (IsAfterFailure(write.Sequence) == false) // otherwise, Complete will raise the error
+            {
+                var start = Stopwatch.GetTimestamp();
                 file.Write(posBy4Kb, entries, write.Context);
+                if (totalNumberOf4Kbs <= MaxLatencySample4Kbs)
+                    NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
+            }
         }
         catch (Exception e)
         {
@@ -192,6 +208,12 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private bool IsAfterFailure(long sequence) => sequence > Volatile.Read(ref _lowestFailedSequence);
 
+    private void NoteWriteLatency(long ticks)
+    {
+        var current = Volatile.Read(ref _writeLatencyEwmaTicks);
+        Volatile.Write(ref _writeLatencyEwmaTicks, current == 0 ? ticks : current + (ticks - current) / 8);
+    }
+
     private void Execute(PendingWrite write)
     {
         try
@@ -199,7 +221,10 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
             if (IsAfterFailure(write.Sequence) == false)
             {
                 var entry = new Pal.journal_entry { Base = write.Buffer, NumberOf4Kbs = write.NumberOf4Kbs };
+                var start = Stopwatch.GetTimestamp();
                 write.File.Write(write.PosBy4Kb, MemoryMarshal.CreateSpan(ref entry, 1), write.Context);
+                if (write.NumberOf4Kbs <= MaxLatencySample4Kbs)
+                    NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
             }
             else
             {

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using Microsoft.Extensions.Configuration;
@@ -64,6 +64,11 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(4)]
         [ConfigurationEntry("Storage.MaxConcurrentJournalWrites", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int MaxConcurrentJournalWrites { get; set; }
+
+        [Description("Journal write latency (in ticks, 10,000 per millisecond) above which concurrent journal writes engage. On devices writing faster than this, pipelining costs more in lost write batching than it gains in overlap. Set to 0 to always pipeline.")]
+        [DefaultValue(10_000)]
+        [ConfigurationEntry("Storage.PipelineJournalWritesAboveLatencyInTicks", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public long PipelineJournalWritesAboveLatencyInTicks { get; set; }
 
         [Description("Time to sync after flush in seconds")]
         [DefaultValue(30)]

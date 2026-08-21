@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -1720,6 +1720,8 @@ namespace Voron
         public int SyncWritebackDrainQueueDepthThreshold { get; set; } = 5;
 
         public const int MaxSupportedConcurrentJournalWrites = 64;
+
+        public long PipelineJournalWritesAboveLatencyInTicks { get; set; } = TimeSpan.TicksPerMillisecond;
 
         private int _maxConcurrentJournalWrites = 4;
 
