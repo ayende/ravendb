@@ -127,6 +127,22 @@ error_clean_With_error:
 }
 
 EXPORT int32_t
+rvn_create_journal_write_context(void** context, int32_t* detailed_error_code)
+{
+    // nothing to do here
+    *context = NULL;
+    return SUCCESS;
+}
+
+EXPORT int32_t
+rvn_free_journal_write_context(void* context, int32_t* detailed_error_code)
+{
+    (void)context;
+    (void)detailed_error_code;
+    return SUCCESS;
+}
+
+EXPORT int32_t
 rvn_close_journal(void *handle, int32_t *detailed_error_code)
 {
     int32_t rc;
@@ -251,12 +267,12 @@ rvn_move_file_durable(const char *src, const char *dst, int32_t *detailed_error_
     return _sync_directory_for(src, detailed_error_code);
 }
 
+// This will land in the .bss, so these all will be mapped to the same physical page (zero).
+static char _zeroed_file_buffer[1024 * 1024] __attribute__((aligned(4096)));
+
 static int32_t
 _open_file_for_zeroing(const char *path, int32_t *detailed_error_code)
 {
-    // This will land in the .bss, so these all will be mapped to the same physical page (zero). 
-    static char _zeroed_file_buffer[1024 * 1024] __attribute__((aligned(4096)));
-
     // we intentionally skip the page cache with O_DIRECT, to avoid polluting it with lot of nonesense.
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_DIRECT, S_IWUSR | S_IRUSR);
     if (fd == -1)
@@ -288,7 +304,7 @@ rvn_create_zeroed_file(const char *path, int64_t size, int32_t *detailed_error_c
     int64_t offset = 0;
     while (offset < size)
     {
-        int64_t len = size - offset < ZEROED_FILE_CHUNK ? size - offset : ZEROED_FILE_CHUNK;
+        int64_t len = size - offset < (int64_t)sizeof(_zeroed_file_buffer) ? size - offset : (int64_t)sizeof(_zeroed_file_buffer);
         rc = _pwrite(fd, (void *)_zeroed_file_buffer, (uint64_t)len, (uint64_t)offset, detailed_error_code);
         if (rc != SUCCESS)
             goto error;

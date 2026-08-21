@@ -209,6 +209,7 @@ namespace Raven.Server.Documents
             options.SyncWritebackBlockSizeInMb = DocumentDatabase.Configuration.Storage.SyncWritebackBlockSizeInMb;
             options.SyncWritebackBarrierCostThresholdInMs = DocumentDatabase.Configuration.Storage.SyncWritebackBarrierCostThresholdInMs;
             options.SyncWritebackDrainQueueDepthThreshold = DocumentDatabase.Configuration.Storage.SyncWritebackDrainQueueDepthThreshold;
+            options.MaxConcurrentJournalWrites = DocumentDatabase.Configuration.Storage.MaxConcurrentJournalWrites;
             options.IgnoreInvalidJournalErrors = DocumentDatabase.Configuration.Storage.IgnoreInvalidJournalErrors;
             options.SkipChecksumValidationOnDatabaseLoading = DocumentDatabase.Configuration.Storage.SkipChecksumValidationOnDatabaseLoading;
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = DocumentDatabase.Configuration.Storage.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions;
