@@ -323,6 +323,8 @@ namespace Voron.Impl.Journal
 
         internal bool IsCommitLatencyBound => _writePipeline.IsCommitLatencyBound;
 
+        public long WriteLatencyEwmaTicks => _writePipeline.WriteLatencyEwmaTicks;
+
         private JournalFile NextFile(long numberOf4Kbs)
         {
             var now = DateTime.UtcNow;

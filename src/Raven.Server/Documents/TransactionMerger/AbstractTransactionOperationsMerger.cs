@@ -60,6 +60,8 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private readonly double _maxTimeToWaitForPreviousTxInMs;
         private readonly long _maxTxSizeInBytes;
+        private bool _consolidatingBatches;
+        private int _consecutiveEmptyConsolidationWaits;
         private readonly double _maxTimeToWaitForPreviousTxBeforeRejectingInMs;
 
         private bool _isEncrypted;
@@ -759,13 +761,6 @@ namespace Raven.Server.Documents.TransactionMerger
                                 ? (Task)newestInFlight.AsyncCommit
                                 : Task.WhenAll(newestInFlight.AsyncCommit, newestInFlight.DurableCommit);
 
-                            // the group commit size is a feedback loop: small batches produce short writes, whose
-                            // acks release the clients in small groups, which refill the queue in dribbles that
-                            // close the next batch small again. In the bandwidth-bound regime a minimum window
-                            // forces the accumulation back to the large-batch fixed point; client latency there is
-                            // two orders of magnitude above the floor, so nobody sees the wait
-                            if (_env.Journal.IsCommitLatencyBound == false)
-                                batchingWindow = Task.WhenAll(batchingWindow, Task.Delay(TimeSpan.FromMilliseconds(20)));
                             result = ExecutePendingOperationsInTransaction(
                                 currentPendingOps, current,
                                 batchingWindow, ref transactionMeter);
@@ -1004,10 +999,38 @@ namespace Raven.Server.Documents.TransactionMerger
                 var canCloseCurrentTx = previousOperation == null || previousOperation.IsCompleted;
                 if (canCloseCurrentTx || _is32Bits)
                 {
-                    if (_operations.IsEmpty)
-                        break; // nothing remaining to do, let's us close this work
+                    var writeEwmaMs = _env.Journal.WriteLatencyEwmaTicks / TimeSpan.TicksPerMillisecond;
+                    if (_consolidatingBatches == false)
+                        _consolidatingBatches = writeEwmaMs >= 8 && _env.Journal.IsCommitLatencyBound;
+                    else if (writeEwmaMs < 4)
+                        _consolidatingBatches = false;
+                    var consolidationWindowMs = _is32Bits || _consolidatingBatches == false
+                        ? _maxTimeToWaitForPreviousTxInMs
+                        : Math.Max(_maxTimeToWaitForPreviousTxInMs, Math.Min(50, 2 * writeEwmaMs));
+                    var consolidationSize = Math.Min(_maxTxSizeInBytes, 128 * Constants.Size.Megabyte);
 
-                    if (sp.ElapsedMilliseconds > _maxTimeToWaitForPreviousTxInMs)
+                    if (_operations.IsEmpty)
+                    {
+                        if (modifiedSize < consolidationSize &&
+                            sp.ElapsedMilliseconds < consolidationWindowMs)
+                        {
+                            _waitHandle.Reset();
+                            if (_operations.IsEmpty && _waitHandle.Wait(millisecondsTimeout: 1, _shutdown) == false &&
+                                ++_consecutiveEmptyConsolidationWaits >= 2)
+                            {
+                                _consecutiveEmptyConsolidationWaits = 0;
+                                break;
+                            }
+                            if (_operations.IsEmpty == false)
+                                _consecutiveEmptyConsolidationWaits = 0;
+                            continue;
+                        }
+
+                        _consecutiveEmptyConsolidationWaits = 0;
+                        break; // nothing remaining to do, let's us close this work
+                    }
+
+                    if (sp.ElapsedMilliseconds > consolidationWindowMs)
                         break; // too much time
 
                     if (modifiedSize > _maxTxSizeInBytes)
