@@ -86,13 +86,15 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     // the observed device latency says pipelining would engage for the next writes
     internal bool WouldPipelineNow => IsPipelining && Volatile.Read(ref _writeLatencyEwmaTicks) >= _pipelineAboveLatencyTicks;
 
-    // measured, and fast enough that trading CPU for smaller writes does not pay
+    // measured, and fast enough that trading CPU for smaller writes does not pay. Half the pipelining
+    // gate: a network volume writes small batches just under the gate (1.3-1.9ms on gp3), and treating
+    // it as fast strips the compression its bandwidth cap depends on
     internal bool IsMeasuredFastDevice
     {
         get
         {
             var ewma = Volatile.Read(ref _writeLatencyEwmaTicks);
-            return ewma != 0 && ewma < _pipelineAboveLatencyTicks;
+            return ewma != 0 && ewma < _pipelineAboveLatencyTicks / 2;
         }
     }
 
