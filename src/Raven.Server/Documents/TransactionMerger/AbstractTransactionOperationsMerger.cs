@@ -60,6 +60,7 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private readonly double _maxTimeToWaitForPreviousTxInMs;
         private readonly long _maxTxSizeInBytes;
+        private int _consecutiveEmptyConsolidationWaits;
         private readonly double _maxTimeToWaitForPreviousTxBeforeRejectingInMs;
 
         private bool _isEncrypted;
@@ -1004,7 +1005,10 @@ namespace Raven.Server.Documents.TransactionMerger
                 var canCloseCurrentTx = previousOperation == null || previousOperation.IsCompleted;
                 if (canCloseCurrentTx || _is32Bits)
                 {
-                    var consolidationWindowMs = _is32Bits ? 0 : Math.Max(_maxTimeToWaitForPreviousTxInMs, 50);
+                    var writeEwmaMs = _env.Journal.WriteLatencyEwmaTicks / TimeSpan.TicksPerMillisecond;
+                    var consolidationWindowMs = _is32Bits || writeEwmaMs < 8
+                        ? _maxTimeToWaitForPreviousTxInMs
+                        : Math.Max(_maxTimeToWaitForPreviousTxInMs, Math.Min(50, 2 * writeEwmaMs));
                     var consolidationSize = Math.Min(_maxTxSizeInBytes, 128 * Constants.Size.Megabyte);
 
                     if (_operations.IsEmpty)
@@ -1013,12 +1017,18 @@ namespace Raven.Server.Documents.TransactionMerger
                             sp.ElapsedMilliseconds < consolidationWindowMs)
                         {
                             _waitHandle.Reset();
-                            if (_operations.IsEmpty)
-                                _waitHandle.Wait(millisecondsTimeout: 1, _shutdown);
+                            if (_operations.IsEmpty && _waitHandle.Wait(millisecondsTimeout: 1, _shutdown) == false &&
+                                ++_consecutiveEmptyConsolidationWaits >= 2)
+                            {
+                                _consecutiveEmptyConsolidationWaits = 0;
+                                break;
+                            }
                             if (_operations.IsEmpty == false)
-                                continue;
+                                _consecutiveEmptyConsolidationWaits = 0;
+                            continue;
                         }
 
+                        _consecutiveEmptyConsolidationWaits = 0;
                         break; // nothing remaining to do, let's us close this work
                     }
 
