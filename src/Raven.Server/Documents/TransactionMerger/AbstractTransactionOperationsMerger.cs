@@ -1006,7 +1006,7 @@ namespace Raven.Server.Documents.TransactionMerger
                 if (canCloseCurrentTx || _is32Bits)
                 {
                     var writeEwmaMs = _env.Journal.WriteLatencyEwmaTicks / TimeSpan.TicksPerMillisecond;
-                    var consolidationWindowMs = _is32Bits || writeEwmaMs < 8
+                    var consolidationWindowMs = _is32Bits || writeEwmaMs < 8 || _env.Journal.IsCommitLatencyBound == false
                         ? _maxTimeToWaitForPreviousTxInMs
                         : Math.Max(_maxTimeToWaitForPreviousTxInMs, Math.Min(50, 2 * writeEwmaMs));
                     var consolidationSize = Math.Min(_maxTxSizeInBytes, 128 * Constants.Size.Megabyte);
