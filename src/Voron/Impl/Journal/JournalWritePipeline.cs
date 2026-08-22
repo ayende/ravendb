@@ -140,6 +140,14 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         // we mustn't have anything else concurrently running with us
         Drain(throwOnFailure: false);
 
+        // with nothing in flight and no failure to order against, the slot machinery buys nothing -
+        // write and acknowledge directly, exactly as the pre-pipelining code did
+        if (Volatile.Read(ref _lowestFailedSequence) == long.MaxValue && _disposed == false)
+        {
+            WriteDirect(file, posBy4Kb, entries, totalNumberOf4Kbs, acks);
+            return;
+        }
+
         var write = RentWrite(file, posBy4Kb, checked((int)totalNumberOf4Kbs), acks);
 
         file.AddRef();
@@ -164,6 +172,42 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         Complete(write);
 
         Volatile.Read(ref _failure)?.Throw();
+    }
+
+    private SafeJournalWriteContext _inlineContext;
+
+    private void WriteDirect(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<Ack> acks)
+    {
+        foreach (var ack in acks)
+            ack.Environment.NoteJournalWriteSubmitted(ack.TransactionId);
+
+        try
+        {
+            _inlineContext ??= SafeJournalWriteContext.Create();
+
+            var start = Stopwatch.GetTimestamp();
+            file.Write(posBy4Kb, entries, _inlineContext);
+            if (totalNumberOf4Kbs <= MaxLatencySample4Kbs)
+                NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
+        }
+        catch (Exception e)
+        {
+            var error = ExceptionDispatchInfo.Capture(e);
+            Interlocked.CompareExchange(ref _failure, error, null);
+            MarkFailed(_env, Volatile.Read(ref _failure));
+            foreach (var ack in acks)
+            {
+                MarkFailed(ack.Environment, Volatile.Read(ref _failure));
+                ack.CommitCompleted?.TrySetException(e);
+            }
+            throw;
+        }
+
+        foreach (var ack in acks)
+        {
+            ack.Environment.MarkJournalWriteDurable(ack.TransactionId);
+            ack.CommitCompleted?.TrySetResult();
+        }
     }
 
     public void Drain(bool throwOnFailure = true)
@@ -445,5 +489,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
         foreach (var write in _slots)
             write?.Dispose();
+
+        _inlineContext?.Dispose();
     }
 }
