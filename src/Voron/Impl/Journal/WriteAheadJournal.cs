@@ -873,8 +873,6 @@ namespace Voron.Impl.Journal
                 }
             }
             private long _totalWrittenButUnsyncedBytes;
-            private long _writebackDenseBytesSinceSync;
-            private long _writebackSparseBytesSinceSync;
             private bool _ignoreLockAlreadyTaken;
             private Action<LowLevelTransaction> _updateJournalStateAfterFlush;
             private DateTime _lastFlushTime;
@@ -1346,8 +1344,6 @@ namespace Voron.Impl.Journal
                 if (rc != PalFlags.FailCodes.Success)
                     PalHelper.ThrowLastError(rc, error, $"Failed to writeback dirty ranges of {dataPager.FileName}");
 
-                NoteWritebackShape(stats.BytesWritten, stats.BytesSkipped);
-
                 if (_waj._logger.IsDebugEnabled && stats.BytesWritten > 0)
                 {
                     _waj._logger.Debug(
@@ -1364,18 +1360,6 @@ namespace Voron.Impl.Journal
             /// a long flush, which would stall journal writes. Under load, this will be deferred to the explict sync to avoid 
             /// slowing down journal writes.
             /// </summary>
-            private void NoteWritebackShape(long denseBytes, long sparseBytes)
-            {
-                if (denseBytes > 0)
-                    Interlocked.Add(ref _writebackDenseBytesSinceSync, denseBytes);
-                if (sparseBytes > 0)
-                    Interlocked.Add(ref _writebackSparseBytesSinceSync, sparseBytes);
-            }
-
-            // scattered pages dominate the dirty set - waiting lets them merge; dense sets sync at the regular cadence
-            internal bool WritebackIsScatterDominated =>
-                Interlocked.Read(ref _writebackSparseBytesSinceSync) > Interlocked.Read(ref _writebackDenseBytesSinceSync);
-
             private void TrickleWriteback(Pager dataPager, Pager.State dataPagerState)
             {
                 var options = _waj._env.Options;
@@ -1394,7 +1378,7 @@ namespace Voron.Impl.Journal
 
                 var rc = Pal.rvn_pager_writeback_dirty(dataPagerState.Handle, pipelineDepth: 0 /* initiate only */,
                     options.SyncWritebackBlockSizeInMb * Constants.Size.Megabyte,
-                    options.SyncWritebackMinContiguousSizeInKb * Constants.Size.Kilobyte, out var stats, out var error);
+                    options.SyncWritebackMinContiguousSizeInKb * Constants.Size.Kilobyte, out _, out var error);
 
                 if (rc == PalFlags.FailCodes.FailWritebackNotSupported)
                 {
@@ -1404,8 +1388,6 @@ namespace Voron.Impl.Journal
 
                 if (rc != PalFlags.FailCodes.Success)
                     PalHelper.ThrowLastError(rc, error, $"Failed to trickle writeback of {dataPager.FileName}");
-
-                NoteWritebackShape(stats.BytesWritten, stats.BytesSkipped);
             }
 
             public void WaitForSyncToCompleteOnDispose()
@@ -1542,8 +1524,6 @@ namespace Voron.Impl.Journal
                     parent.ApplyPendingSparseRegions();
 
                     Interlocked.Add(ref parent._totalWrittenButUnsyncedBytes, -_currentTotalWrittenBytes);
-                    Interlocked.Exchange(ref parent._writebackDenseBytesSinceSync, 0);
-                    Interlocked.Exchange(ref parent._writebackSparseBytesSinceSync, 0);
 
                     var ignoreLastSyncJournalMissing = false;
                     foreach (var item in _lastFlushed.JournalsToDelete)
