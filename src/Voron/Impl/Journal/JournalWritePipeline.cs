@@ -96,6 +96,11 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     {
         get
         {
+            // sub-millisecond completion of tiny writes says nothing about the device - a network
+            // volume looks fast until the batches grow. Only low latency on substantial writes counts.
+            if (Volatile.Read(ref _writeSizeEwma4Kbs) < 64)
+                return false;
+
             var ewma = Volatile.Read(ref _writeLatencyEwmaTicks);
             return ewma != 0 && ewma < _pipelineAboveLatencyTicks / 2;
         }
