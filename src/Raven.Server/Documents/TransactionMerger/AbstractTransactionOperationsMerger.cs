@@ -831,6 +831,15 @@ namespace Raven.Server.Documents.TransactionMerger
 
                     switch (result)
                     {
+                        case PendingOperations.CompletedAll when currentPendingOps.Count > 0:
+                            // the queue went momentarily dry after real work - finishing synchronously here parks
+                            // this thread for a full pipeline drain on every gap between client round-trips, which
+                            // profiling showed costing half the merger at high concurrency on a slow volume. Keep
+                            // the chain alive instead: the next round's batching window absorbs the wait while
+                            // accepting whatever arrives, and the chain ends on the first round that executes nothing
+                            previousPendingOps = currentPendingOps;
+                            break;
+
                         case PendingOperations.CompletedAll:
                             try
                             {
