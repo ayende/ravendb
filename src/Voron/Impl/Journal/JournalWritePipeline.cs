@@ -19,10 +19,6 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private const int MaxPipelinedBatch4Kbs = MaxPipelinedBatchSizeInBytes / Constants.Storage.JournalPageSize;
 
-    // only writes up to this size sample the device latency: a large group-commit write is slow
-    // because of its size, not the device, and would read as a slow device on fast hardware
-    private const int MaxLatencySample4Kbs = 32;
-
     internal readonly record struct Ack(StorageEnvironment Environment, long TransactionId, TaskCompletionSource CommitCompleted);
 
     private sealed class PendingWrite(JournalWritePipeline pipeline) : IThreadPoolWorkItem, IDisposable
@@ -163,8 +159,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
             {
                 var start = Stopwatch.GetTimestamp();
                 file.Write(posBy4Kb, entries, write.Context);
-                if (totalNumberOf4Kbs <= MaxLatencySample4Kbs)
-                    NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
+                NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
             }
         }
         catch (Exception e)
@@ -190,8 +185,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
             var start = Stopwatch.GetTimestamp();
             file.Write(posBy4Kb, entries, _inlineContext);
-            if (totalNumberOf4Kbs <= MaxLatencySample4Kbs)
-                NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
+            NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
         }
         catch (Exception e)
         {
@@ -270,8 +264,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
                 var entry = new Pal.journal_entry { Base = write.Buffer, NumberOf4Kbs = write.NumberOf4Kbs };
                 var start = Stopwatch.GetTimestamp();
                 write.File.Write(write.PosBy4Kb, MemoryMarshal.CreateSpan(ref entry, 1), write.Context);
-                if (write.NumberOf4Kbs <= MaxLatencySample4Kbs)
-                    NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
+                NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
             }
             else
             {
