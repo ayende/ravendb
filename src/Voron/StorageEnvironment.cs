@@ -1,4 +1,4 @@
-using Sparrow;
+﻿using Sparrow;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
@@ -343,7 +343,6 @@ namespace Voron
                 NextPageNumber = nextPageNumber,
                 FlushedToJournal = lastJournalNumber
             };
-            _durableTransactionId = _currentStateRecord.TransactionId;
             var transactionPersistentContext = new TransactionPersistentContext(true);
             using (var tx = NewLowLevelTransaction(transactionPersistentContext, TransactionFlags.ReadWrite))
             using (var writeTx = new Transaction(tx))
@@ -1553,6 +1552,24 @@ namespace Voron
             }
         }
 
+        // bisectG shims: the watermark plumbing reverted to pre-27377; the pipeline's calls become
+        // cheap no-op bookkeeping so the write flow compiles unchanged
+        private long _durableTransactionId;
+        internal long DurableTransactionId => Volatile.Read(ref _durableTransactionId) is var v && v > 0 ? v : 1;
+        internal void NoteJournalWriteSubmitted(long transactionId) { }
+        internal void MarkJournalWriteDurable(long transactionId)
+        {
+            var current = Volatile.Read(ref _durableTransactionId);
+            while (transactionId > current)
+            {
+                var seen = Interlocked.CompareExchange(ref _durableTransactionId, transactionId, current);
+                if (seen == current) break;
+                current = seen;
+            }
+        }
+        internal void MarkJournalWriteFailed(System.Runtime.ExceptionServices.ExceptionDispatchInfo error) { }
+        internal void WaitForCommitDurability(long gateTransactionId) { }
+
         internal void BackgroundFlushWritesToDataFile()
         {
             try
@@ -1822,78 +1839,6 @@ namespace Voron
                 _transactionsToFlush.Enqueue(updatedState);
             }
         }
-
-        private readonly object _durabilityLock = new();
-        private long _durableTransactionId;
-        private long _submittedJournalTransactionId = -1;
-        private int _durabilityWaiters;
-        private ExceptionDispatchInfo _durabilityFailure;
-
-        internal long DurableTransactionId => Volatile.Read(ref _durableTransactionId);
-
-        internal void NoteJournalWriteSubmitted(long transactionId) =>
-            ThreadingHelper.InterlockedExchangeMax(ref _submittedJournalTransactionId, transactionId);
-
-        internal void MarkJournalWriteDurable(long transactionId)
-        {
-            if (ThreadingHelper.InterlockedExchangeMax(ref _durableTransactionId, transactionId) == false)
-                return; // a later transaction is already durable, so there is nothing to announce
-
-            // paired with the increment in WaitForCommitDurabilityBlocking - each side fences between publishing
-            // its own value and reading the other's, so we cannot both miss and leave a waiter parked
-            if (Volatile.Read(ref _durabilityWaiters) == 0)
-                return;
-
-            lock (_durabilityLock)
-                Monitor.PulseAll(_durabilityLock);
-        }
-
-        internal void MarkJournalWriteFailed(ExceptionDispatchInfo error)
-        {
-            lock (_durabilityLock)
-            {
-                _durabilityFailure ??= error;
-
-                Monitor.PulseAll(_durabilityLock);
-            }
-        }
-
-        internal void WaitForCommitDurability(long gateTransactionId)
-        {
-            // by far the common case - the journal write covering this transaction is already on disk
-            if (Volatile.Read(ref _durableTransactionId) >= gateTransactionId)
-                return;
-
-            WaitForCommitDurabilityBlocking(gateTransactionId);
-        }
-
-        private void WaitForCommitDurabilityBlocking(long gateTransactionId)
-        {
-            Interlocked.Increment(ref _durabilityWaiters);
-            try
-            {
-                lock (_durabilityLock)
-                {
-                    while (IsCommitDurable(gateTransactionId) == false)
-                    {
-                        _durabilityFailure?.Throw();
-
-                        Monitor.Wait(_durabilityLock);
-                    }
-
-                    if (Volatile.Read(ref _durableTransactionId) < gateTransactionId)
-                        _durabilityFailure?.Throw();
-                }
-            }
-            finally
-            {
-                Interlocked.Decrement(ref _durabilityWaiters);
-            }
-        }
-
-        private bool IsCommitDurable(long gateTransactionId) =>
-            Volatile.Read(ref _durableTransactionId) >= gateTransactionId ||
-            Volatile.Read(ref _submittedJournalTransactionId) < gateTransactionId;
 
         private readonly List<PageFromScratchBuffer> _cachedScratchBuffers = [];
         private EnvironmentStateRecord _lastPeekedRecord = null;
