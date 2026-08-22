@@ -86,6 +86,16 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     // the observed device latency says pipelining would engage for the next writes
     internal bool WouldPipelineNow => IsPipelining && Volatile.Read(ref _writeLatencyEwmaTicks) >= _pipelineAboveLatencyTicks;
 
+    // measured, and fast enough that trading CPU for smaller writes does not pay
+    internal bool IsMeasuredFastDevice
+    {
+        get
+        {
+            var ewma = Volatile.Read(ref _writeLatencyEwmaTicks);
+            return ewma != 0 && ewma < _pipelineAboveLatencyTicks;
+        }
+    }
+
     public int MaxConcurrentWrites => _maxConcurrentWrites;
 
     // pipelining trades group-commit batching for overlap, which only pays off when the write

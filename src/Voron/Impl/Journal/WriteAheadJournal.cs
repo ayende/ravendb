@@ -59,6 +59,8 @@ namespace Voron.Impl.Journal
             public JournalStateRecord JournalStateRecord => new JournalStateRecord(Transaction, Tcs, Entry);
         }
 
+        private const int FastDeviceCompressTxAboveSizeInBytes = 512 * Constants.Size.Kilobyte;
+
         private long _currentJournalFileSize;
         private DateTime _lastFile;
 
@@ -2749,7 +2751,13 @@ namespace Voron.Impl.Journal
             // PERF: Before v7.0 we would avoid doing the diff if the amount of pages was big, however,
             // the speed of diffing is roughly that of a memory copy, which is so fast that the benefit of always doing
             // it is big enough to just do it every time. 
-            var performCompression = totalSizeWritten > _env.Options.CompressTxAboveSizeInBytes;
+            // compressing a small transaction trades merger CPU for journal bytes, which pays only when
+            // the device is slow enough for the bytes to matter (RavenDB-23148 lowered the threshold with
+            // network volumes in mind) - on a measured-fast device the raw write is cheaper than the LZ4 pass
+            var compressTxAboveSizeInBytes = _env.Options.CompressTxAboveSizeInBytes;
+            if (_writePipeline.IsMeasuredFastDevice)
+                compressTxAboveSizeInBytes = Math.Max(compressTxAboveSizeInBytes, FastDeviceCompressTxAboveSizeInBytes);
+            var performCompression = totalSizeWritten > compressTxAboveSizeInBytes;
             if (performCompression)
             {
                 var outputBufferSize = LZ4.MaximumOutputLength(totalSizeWritten);
