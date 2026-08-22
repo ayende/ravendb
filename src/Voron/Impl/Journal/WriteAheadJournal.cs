@@ -313,6 +313,8 @@ namespace Voron.Impl.Journal
 
         internal int MaxConcurrentJournalWrites => _writePipeline.MaxConcurrentWrites;
 
+        internal bool WouldPipelineJournalWrites => _writePipeline.WouldPipelineNow;
+
         private JournalFile NextFile(long numberOf4Kbs)
         {
             var now = DateTime.UtcNow;

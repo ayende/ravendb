@@ -493,6 +493,210 @@ namespace Raven.Server.Documents.TransactionMerger
         }
 
         private void MergeTransactionsWithAsyncCommit(
+            ref TOperationContext context,
+            ref IDisposable returnContext,
+            List<MergedTransactionCommand<TOperationContext, TTransaction>> pendingOps)
+        {
+            // the queue flow exists to overlap pipelined journal writes; when the device is fast the
+            // gate keeps the pipeline off and the queue only costs - take the sequential path there
+            if (_env.Journal.WouldPipelineJournalWrites)
+                MergeTransactionsWithAsyncCommitPipelined(ref context, ref returnContext, pendingOps);
+            else
+                MergeTransactionsWithAsyncCommitSequential(ref context, ref returnContext, pendingOps);
+        }
+
+        private void MergeTransactionsWithAsyncCommitSequential(
+            ref TOperationContext previous,
+            ref IDisposable returnPreviousContext,
+            List<MergedTransactionCommand<TOperationContext, TTransaction>> previousPendingOps)
+        {
+            TOperationContext current = null;
+            IDisposable currentReturnContext = null;
+            try
+            {
+                while (true)
+                {
+                    if (_log.IsDebugEnabled)
+                        _log.Debug($"BeginAsyncCommit on {previous.Transaction.InnerTransaction.LowLevelTransaction.Id} with {_operations.Count} additional operations pending");
+
+                    currentReturnContext = _contextPool.AllocateOperationContext(out current);
+
+                    try
+                    {
+                        _recording.State?.TryRecord(current, TxInstruction.BeginAsyncCommitAndStartNewTransaction);
+                        current.Transaction = BeginAsyncCommitAndStartNewTransaction(previous.Transaction, current);
+                    }
+                    catch (Exception e)
+                    {
+                        foreach (var op in previousPendingOps)
+                        {
+                            op.Exception = e;
+                        }
+                        NotifyOnThreadPool(previousPendingOps);
+
+                        if (e is OutOfMemoryException)
+                        {
+                            try
+                            {
+                                //already throwing, attempt to complete previous tx
+                                CompletePreviousTransaction(previous, returnPreviousContext, ref previousPendingOps, throwOnError: false);
+                            }
+                            finally
+                            {
+                                current.Transaction?.Dispose();
+                                currentReturnContext.Dispose();
+                            }
+                        }
+
+                        return;
+                    }
+
+                    var currentPendingOps = GetBufferForPendingOps();
+                    PendingOperations result;
+                    bool calledCompletePreviousTx = false;
+                    try
+                    {
+                        var transactionMeter = TransactionPerformanceMetrics.MeterPerformanceRate();
+                        try
+                        {
+                            result = ExecutePendingOperationsInTransaction(
+                                currentPendingOps, current,
+                                previous.Transaction.InnerTransaction.LowLevelTransaction.AsyncCommit, ref transactionMeter);
+                            UpdateGlobalReplicationInfoBeforeCommit(current);
+                        }
+                        finally
+                        {
+                            transactionMeter.Dispose();
+                        }
+                        calledCompletePreviousTx = true;
+                        CompletePreviousTransaction(previous, previous.Transaction, ref previousPendingOps, throwOnError: true);
+                    }
+                    catch (Exception e)
+                    {
+                        using (current.Transaction)
+                        using (currentReturnContext)
+                        {
+                            if (calledCompletePreviousTx == false)
+                            {
+                                CompletePreviousTransaction(
+                                    previous,
+                                    previous.Transaction,
+                                    ref previousPendingOps,
+                                    // if this previous threw, it won't throw again
+                                    throwOnError: false);
+                            }
+                            else
+                            {
+                                throw;
+                            }
+                        }
+
+                        if (e is HighDirtyMemoryException highDirtyMemoryException)
+                        {
+                            if (_log.IsInfoEnabled)
+                            {
+                                var errorMessage = $"{currentPendingOps.Count:#,#0} operations were cancelled because of high dirty memory, details: {highDirtyMemoryException.Message}";
+                                _log.Info(errorMessage, highDirtyMemoryException);
+                            }
+
+                            NotifyHighDirtyMemoryFailure(currentPendingOps, highDirtyMemoryException);
+                        }
+                        else
+                        {
+                            if (_log.IsInfoEnabled)
+                            {
+                                _log.Info($"Failed to run merged transaction with {currentPendingOps.Count:#,#0} operations in async manner, will retry independently", e);
+                            }
+
+                            NotifyTransactionFailureAndRerunIndependently(currentPendingOps, e);
+                        }
+
+                        return;
+                    }
+
+                    previous = current;
+                    returnPreviousContext = currentReturnContext;
+
+                    switch (result)
+                    {
+                        case PendingOperations.CompletedAll:
+                            try
+                            {
+                                _recording.State?.TryRecord(current, TxInstruction.Commit);
+                                previous.Transaction.Commit();
+                            }
+                            catch (Exception e)
+                            {
+                                foreach (var op in currentPendingOps)
+                                {
+                                    op.Exception = e;
+                                }
+                            }
+                            NotifyOnThreadPool(currentPendingOps);
+                            return;
+
+                        case PendingOperations.HasMore:
+                            previousPendingOps = currentPendingOps;
+                            break;
+
+                        default:
+                            Debug.Assert(false);
+                            return;
+                    }
+                }
+            }
+            catch
+            {
+                if (current?.Transaction != null)
+                {
+                    _recording.State?.TryRecord(current, TxInstruction.DisposeTx, current.Transaction.Disposed == false);
+                    current.Transaction.Dispose();
+                }
+                currentReturnContext?.Dispose();
+                throw;
+            }
+        }
+
+        private void CompletePreviousTransaction(
+            TOperationContext previous,
+            IDisposable returnPreviousContext,
+            ref List<MergedTransactionCommand<TOperationContext, TTransaction>> previousPendingOps,
+            bool throwOnError)
+        {
+            try
+            {
+                _recording.State?.TryRecord(previous, TxInstruction.EndAsyncCommit);
+                previous.Transaction.EndAsyncCommit();
+
+                if (_log.IsDebugEnabled)
+                    _log.Debug($"EndAsyncCommit on {previous.Transaction.InnerTransaction.LowLevelTransaction.Id}");
+                
+                _recording.State?.TryRecord(previous, TxInstruction.DisposePrevTx, previous.Disposed == false);
+                
+                previous.Transaction.Dispose();
+                returnPreviousContext.Dispose();
+                
+                NotifyOnThreadPool(previousPendingOps);
+            }
+            catch (Exception e)
+            {
+                foreach (var op in previousPendingOps)
+                {
+                    op.Exception = e;
+                }
+
+                // it's safe to call this twice
+                previous.Transaction.Dispose();
+                returnPreviousContext.Dispose();
+                
+                NotifyOnThreadPool(previousPendingOps);
+                previousPendingOps = null; // RavenDB-7417
+                if (throwOnError)
+                    throw;
+            }
+        }
+
+        private void MergeTransactionsWithAsyncCommitPipelined(
             ref TOperationContext previous,
             ref IDisposable returnPreviousContext,
             List<MergedTransactionCommand<TOperationContext, TTransaction>> previousPendingOps)
