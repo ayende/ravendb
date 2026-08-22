@@ -66,7 +66,7 @@ namespace Raven.Server.Config.Categories
         public int MaxConcurrentJournalWrites { get; set; }
 
         [Description("Journal write latency (in ticks, 10,000 per millisecond) above which concurrent journal writes engage. On devices writing faster than this, pipelining costs more in lost write batching than it gains in overlap. Set to 0 to always pipeline.")]
-        [DefaultValue(10_000)]
+        [DefaultValue(20_000)]
         [ConfigurationEntry("Storage.PipelineJournalWritesAboveLatencyInTicks", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public long PipelineJournalWritesAboveLatencyInTicks { get; set; }
 

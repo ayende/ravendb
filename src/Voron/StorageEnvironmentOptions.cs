@@ -1721,7 +1721,7 @@ namespace Voron
 
         public const int MaxSupportedConcurrentJournalWrites = 64;
 
-        public long PipelineJournalWritesAboveLatencyInTicks { get; set; } = TimeSpan.TicksPerMillisecond;
+        public long PipelineJournalWritesAboveLatencyInTicks { get; set; } = 2 * TimeSpan.TicksPerMillisecond;
 
         private int _maxConcurrentJournalWrites = 4;
 
