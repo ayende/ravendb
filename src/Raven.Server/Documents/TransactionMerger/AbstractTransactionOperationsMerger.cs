@@ -543,12 +543,16 @@ namespace Raven.Server.Documents.TransactionMerger
                         try
                         {
                             // accumulate operations into the current transaction while the journal pipeline is still
-                            // busy at its head. The window must stretch to the write becoming DURABLE - AsyncCommit
-                            // completes at submit, and batching against it collapses the group commit
+                            // busy at its head. The window must stretch to the LATER of submission and durability:
+                            // batching against submission alone collapses the group commit when writes are pipelined,
+                            // and batching against durability alone parks EndAsyncCommit on the submission tail
                             var oldestInFlight = _asyncCommittedTransactions.Peek().Context.Transaction.InnerTransaction.LowLevelTransaction;
+                            var batchingWindow = oldestInFlight.DurableCommit == null
+                                ? (Task)oldestInFlight.AsyncCommit
+                                : Task.WhenAll(oldestInFlight.AsyncCommit, oldestInFlight.DurableCommit);
                             result = ExecutePendingOperationsInTransaction(
                                 currentPendingOps, current,
-                                oldestInFlight.DurableCommit ?? oldestInFlight.AsyncCommit, ref transactionMeter);
+                                batchingWindow, ref transactionMeter);
                             UpdateGlobalReplicationInfoBeforeCommit(current);
                         }
                         finally
