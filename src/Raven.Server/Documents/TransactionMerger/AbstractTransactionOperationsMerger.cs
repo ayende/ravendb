@@ -757,9 +757,7 @@ namespace Raven.Server.Documents.TransactionMerger
                             // writes. Overlap is not lost - when operations are abundant, the size cap closes the
                             // batch long before this window does
                             var newestInFlight = previous.Transaction.InnerTransaction.LowLevelTransaction;
-                            var batchingWindow = newestInFlight.DurableCommit == null
-                                ? (Task)newestInFlight.AsyncCommit
-                                : Task.WhenAll(newestInFlight.AsyncCommit, newestInFlight.DurableCommit);
+                            var batchingWindow = (Task)newestInFlight.AsyncCommit;
 
                             result = ExecutePendingOperationsInTransaction(
                                 currentPendingOps, current,
@@ -999,14 +997,14 @@ namespace Raven.Server.Documents.TransactionMerger
                 var canCloseCurrentTx = previousOperation == null || previousOperation.IsCompleted;
                 if (canCloseCurrentTx || _is32Bits)
                 {
-                    var writeEwmaMs = _env.Journal.WriteLatencyEwmaTicks / TimeSpan.TicksPerMillisecond;
+                    var writeEwmaTicks = _env.Journal.WriteLatencyEwmaTicks;
                     if (_consolidatingBatches == false)
-                        _consolidatingBatches = writeEwmaMs >= 8 && _env.Journal.IsCommitLatencyBound;
-                    else if (writeEwmaMs < 4)
+                        _consolidatingBatches = writeEwmaTicks >= TimeSpan.TicksPerMillisecond && _env.Journal.IsCommitLatencyBound;
+                    else if (writeEwmaTicks < TimeSpan.TicksPerMillisecond / 2)
                         _consolidatingBatches = false;
                     var consolidationWindowMs = _is32Bits || _consolidatingBatches == false
                         ? _maxTimeToWaitForPreviousTxInMs
-                        : Math.Max(_maxTimeToWaitForPreviousTxInMs, Math.Min(50, 2 * writeEwmaMs));
+                        : Math.Max(_maxTimeToWaitForPreviousTxInMs, Math.Min(50, 4 * writeEwmaTicks / TimeSpan.TicksPerMillisecond));
                     var consolidationSize = Math.Min(_maxTxSizeInBytes, 128 * Constants.Size.Megabyte);
 
                     if (_operations.IsEmpty)
