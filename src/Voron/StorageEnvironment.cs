@@ -1582,6 +1582,8 @@ namespace Voron
             return Volatile.Read(ref _concurrentWritePressure) < 256;
         }
 
+        public bool UnderConcurrentWritePressure => Volatile.Read(ref _concurrentWritePressure) >= 256;
+
         internal void BackgroundFlushWritesToDataFile()
         {
             try

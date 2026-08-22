@@ -1005,7 +1005,21 @@ namespace Raven.Server.Documents.TransactionMerger
                 if (canCloseCurrentTx || _is32Bits)
                 {
                     if (_operations.IsEmpty)
+                    {
+                        if (_is32Bits == false &&
+                            modifiedSize < 8 * Constants.Size.Megabyte &&
+                            sp.ElapsedMilliseconds < 50 &&
+                            _env.UnderConcurrentWritePressure)
+                        {
+                            _waitHandle.Reset();
+                            if (_operations.IsEmpty)
+                                _waitHandle.Wait(millisecondsTimeout: 1, _shutdown);
+                            if (_operations.IsEmpty == false)
+                                continue;
+                        }
+
                         break; // nothing remaining to do, let's us close this work
+                    }
 
                     if (sp.ElapsedMilliseconds > _maxTimeToWaitForPreviousTxInMs)
                         break; // too much time
