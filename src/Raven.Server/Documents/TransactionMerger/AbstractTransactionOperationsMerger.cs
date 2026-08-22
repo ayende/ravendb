@@ -1008,8 +1008,7 @@ namespace Raven.Server.Documents.TransactionMerger
                     {
                         if (_is32Bits == false &&
                             modifiedSize < 8 * Constants.Size.Megabyte &&
-                            sp.ElapsedMilliseconds < 50 &&
-                            _env.UnderConcurrentWritePressure)
+                            sp.ElapsedMilliseconds < 50)
                         {
                             _waitHandle.Reset();
                             if (_operations.IsEmpty)
