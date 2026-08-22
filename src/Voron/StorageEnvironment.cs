@@ -1563,15 +1563,11 @@ namespace Voron
             if (_journal.Applicator.TotalWrittenButUnsyncedBytes > options.MaxUnsyncedBytesBeforeMandatorySync)
                 return false;
 
-            var rc = Pal.rvn_pager_dirty_stats(CurrentStateRecord.DataPagerState.Handle,
-                options.SyncWritebackMinContiguousSizeInKb * Constants.Size.Kilobyte,
-                out _, out var runCount, out var longRunBytes, out _);
-            if (rc != PalFlags.FailCodes.Success || runCount == 0)
-                return false; // untracked pager (in-memory, temp) or nothing dirty - keep the old behavior
-
-            // the mergeable payload alone already justifies a sync at the regular cadence; delaying
-            // further only batches an efficient writeback into a stall. Only scattered pages earn a delay.
-            return longRunBytes < options.MaxUnsyncedBytesBeforeSync;
+            // the bitmap empties on every writeback pass, so it cannot say how the unsynced set is shaped -
+            // the writeback itself can: it reports what it wrote (dense runs) and what it left to the kernel
+            // (scattered pages). Only a scatter-dominated set earns a delay; dense data batching into a
+            // multi-gigabyte barrier is a stall, not a saving.
+            return _journal.Applicator.WritebackIsScatterDominated;
         }
 
         internal void BackgroundFlushWritesToDataFile()
