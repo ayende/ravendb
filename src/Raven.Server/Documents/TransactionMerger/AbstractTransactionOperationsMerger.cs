@@ -756,6 +756,14 @@ namespace Raven.Server.Documents.TransactionMerger
                             var batchingWindow = newestInFlight.DurableCommit == null
                                 ? (Task)newestInFlight.AsyncCommit
                                 : Task.WhenAll(newestInFlight.AsyncCommit, newestInFlight.DurableCommit);
+
+                            // the group commit size is a feedback loop: small batches produce short writes, whose
+                            // acks release the clients in small groups, which refill the queue in dribbles that
+                            // close the next batch small again. In the bandwidth-bound regime a minimum window
+                            // forces the accumulation back to the large-batch fixed point; client latency there is
+                            // two orders of magnitude above the floor, so nobody sees the wait
+                            if (_env.Journal.IsCommitLatencyBound == false)
+                                batchingWindow = Task.WhenAll(batchingWindow, Task.Delay(TimeSpan.FromMilliseconds(20)));
                             result = ExecutePendingOperationsInTransaction(
                                 currentPendingOps, current,
                                 batchingWindow, ref transactionMeter);
