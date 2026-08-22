@@ -746,14 +746,16 @@ namespace Raven.Server.Documents.TransactionMerger
                         var transactionMeter = TransactionPerformanceMetrics.MeterPerformanceRate();
                         try
                         {
-                            // accumulate operations into the current transaction while the journal pipeline is still
-                            // busy at its head. The window must stretch to the LATER of submission and durability:
-                            // batching against submission alone collapses the group commit when writes are pipelined,
-                            // and batching against durability alone parks EndAsyncCommit on the submission tail
-                            var oldestInFlight = _asyncCommittedTransactions.Peek().Context.Transaction.InnerTransaction.LowLevelTransaction;
-                            var batchingWindow = oldestInFlight.DurableCommit == null
-                                ? (Task)oldestInFlight.AsyncCommit
-                                : Task.WhenAll(oldestInFlight.AsyncCommit, oldestInFlight.DurableCommit);
+                            // accumulate operations into the current transaction while the JUST-SUBMITTED write is
+                            // still in flight. The window must be the newest write, at the later of its submission and
+                            // durability: the oldest of several pipelined writes is always nearly done, so its window
+                            // closes on every momentary gap in the ops queue and the group commit collapses into small
+                            // writes. Overlap is not lost - when operations are abundant, the size cap closes the
+                            // batch long before this window does
+                            var newestInFlight = previous.Transaction.InnerTransaction.LowLevelTransaction;
+                            var batchingWindow = newestInFlight.DurableCommit == null
+                                ? (Task)newestInFlight.AsyncCommit
+                                : Task.WhenAll(newestInFlight.AsyncCommit, newestInFlight.DurableCommit);
                             result = ExecutePendingOperationsInTransaction(
                                 currentPendingOps, current,
                                 batchingWindow, ref transactionMeter);
