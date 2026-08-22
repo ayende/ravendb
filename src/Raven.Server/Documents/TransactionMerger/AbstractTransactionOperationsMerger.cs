@@ -1004,11 +1004,13 @@ namespace Raven.Server.Documents.TransactionMerger
                 var canCloseCurrentTx = previousOperation == null || previousOperation.IsCompleted;
                 if (canCloseCurrentTx || _is32Bits)
                 {
+                    var consolidationWindowMs = _is32Bits ? 0 : Math.Max(_maxTimeToWaitForPreviousTxInMs, 50);
+                    var consolidationSize = Math.Min(_maxTxSizeInBytes, 128 * Constants.Size.Megabyte);
+
                     if (_operations.IsEmpty)
                     {
-                        if (_is32Bits == false &&
-                            modifiedSize < 8 * Constants.Size.Megabyte &&
-                            sp.ElapsedMilliseconds < 50)
+                        if (modifiedSize < consolidationSize &&
+                            sp.ElapsedMilliseconds < consolidationWindowMs)
                         {
                             _waitHandle.Reset();
                             if (_operations.IsEmpty)
@@ -1020,7 +1022,7 @@ namespace Raven.Server.Documents.TransactionMerger
                         break; // nothing remaining to do, let's us close this work
                     }
 
-                    if (sp.ElapsedMilliseconds > _maxTimeToWaitForPreviousTxInMs)
+                    if (sp.ElapsedMilliseconds > consolidationWindowMs)
                         break; // too much time
 
                     if (modifiedSize > _maxTxSizeInBytes)
