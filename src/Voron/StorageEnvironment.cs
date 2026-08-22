@@ -1554,19 +1554,10 @@ namespace Voron
 
         // bisectG shims: the watermark plumbing reverted to pre-27377; the pipeline's calls become
         // cheap no-op bookkeeping so the write flow compiles unchanged
-        private long _durableTransactionId;
-        internal long DurableTransactionId => Volatile.Read(ref _durableTransactionId) is var v && v > 0 ? v : 1;
+        // watermark reported as unknown - recovery treats holes conservatively, which is the safe direction
+        internal long DurableTransactionId => 0;
         internal void NoteJournalWriteSubmitted(long transactionId) { }
-        internal void MarkJournalWriteDurable(long transactionId)
-        {
-            var current = Volatile.Read(ref _durableTransactionId);
-            while (transactionId > current)
-            {
-                var seen = Interlocked.CompareExchange(ref _durableTransactionId, transactionId, current);
-                if (seen == current) break;
-                current = seen;
-            }
-        }
+        internal void MarkJournalWriteDurable(long transactionId) { }
         internal void MarkJournalWriteFailed(System.Runtime.ExceptionServices.ExceptionDispatchInfo error) { }
         internal void WaitForCommitDurability(long gateTransactionId) { }
 
