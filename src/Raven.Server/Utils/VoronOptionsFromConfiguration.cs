@@ -38,6 +38,7 @@ namespace Raven.Server.Utils
             options.MaxNumberOfRecyclableJournals = configuration.Storage.MaxNumberOfRecyclableJournals;
             options.DisableSparseRegions = configuration.Storage.DisableSparseRegions;
             options.JournalsCompressionAcceleration = configuration.Storage.JournalsCompressionAcceleration;
+            options.JournalCompressionAlgorithm = configuration.Storage.JournalsCompressionAlgorithm;
             options.MinimumSharedJournalsMergeCount = configuration.Indexing.MinimumSharedJournalsMergeCount;
             options.MaxLogFileSize = configuration.Storage.MaxJournalFileSize.GetValue(SizeUnit.Bytes);
         }

@@ -64,6 +64,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     private ulong _completedSlots;
     private long _nextSequence;    // submitter only, serialized by the journal write lock
     private long _writeLatencyEwmaTicks;
+    private long _writeSizeEwma4Kbs;
     private readonly long _pipelineAboveLatencyTicks;
     private long _reapedSequence;  // claimed by reapers with a CAS
     private long _lowestFailedSequence = long.MaxValue;
@@ -171,7 +172,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
             {
                 var start = Stopwatch.GetTimestamp();
                 file.Write(posBy4Kb, entries, write.Context);
-                NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
+                NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks, totalNumberOf4Kbs);
             }
         }
         catch (Exception e)
@@ -197,7 +198,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
             var start = Stopwatch.GetTimestamp();
             file.Write(posBy4Kb, entries, _inlineContext);
-            NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
+            NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks, totalNumberOf4Kbs);
         }
         catch (Exception e)
         {
@@ -261,11 +262,18 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private bool IsAfterFailure(long sequence) => sequence > Volatile.Read(ref _lowestFailedSequence);
 
-    private void NoteWriteLatency(long ticks)
+    private void NoteWriteLatency(long ticks, long numberOf4Kbs)
     {
         var current = Volatile.Read(ref _writeLatencyEwmaTicks);
         Volatile.Write(ref _writeLatencyEwmaTicks, current == 0 ? ticks : current + (ticks - current) / 8);
+
+        var size = Volatile.Read(ref _writeSizeEwma4Kbs);
+        Volatile.Write(ref _writeSizeEwma4Kbs, size == 0 ? numberOf4Kbs : size + (numberOf4Kbs - size) / 8);
     }
+
+    // small group commits mean the commit latency, not the device bandwidth, bounds the throughput -
+    // the regime where the journal competes with scattered writeback and consolidating the sync pays
+    internal bool IsCommitLatencyBound => Volatile.Read(ref _writeSizeEwma4Kbs) < 64;
 
     private void Execute(PendingWrite write)
     {
@@ -276,7 +284,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
                 var entry = new Pal.journal_entry { Base = write.Buffer, NumberOf4Kbs = write.NumberOf4Kbs };
                 var start = Stopwatch.GetTimestamp();
                 write.File.Write(write.PosBy4Kb, MemoryMarshal.CreateSpan(ref entry, 1), write.Context);
-                NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks);
+                NoteWriteLatency(Stopwatch.GetElapsedTime(start).Ticks, write.NumberOf4Kbs);
             }
             else
             {

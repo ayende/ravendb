@@ -1750,6 +1750,8 @@ namespace Voron
         public bool DiscardVirtualMemory { get; set; } = true;
         public bool DisableSparseRegions { get; set; }
         public int JournalsCompressionAcceleration { get; set; } = 1;
+
+        public JournalCompressionAlgorithm JournalCompressionAlgorithm { get; set; } = JournalCompressionAlgorithm.Lz4;
         public int MinimumSharedJournalsMergeCount { get; set; } = 8;
         public bool UseSequentialReadAheadHintForJournalRecovery { get; set; } = true;
 

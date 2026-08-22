@@ -25,6 +25,7 @@ using Sparrow.Server.LowMemory;
 using Sparrow.Server.Meters;
 using Sparrow.Server.Platform;
 using Sparrow.Server.Utils;
+using Sparrow.Utils;
 using Sparrow.Server.Utils.VxSort;
 using Sparrow.Threading;
 using Voron.Data.BTrees;
@@ -60,6 +61,9 @@ namespace Voron.Impl.Journal
         }
 
         private const int FastDeviceCompressTxAboveSizeInBytes = 512 * Constants.Size.Kilobyte;
+
+        // fast zstd level: better ratio than LZ4 at a comparable cost, for the bandwidth-bound devices
+        private const int ZstdJournalCompressionLevel = 1;
 
         private long _currentJournalFileSize;
         private DateTime _lastFile;
@@ -316,6 +320,8 @@ namespace Voron.Impl.Journal
         internal int MaxConcurrentJournalWrites => _writePipeline.MaxConcurrentWrites;
 
         internal bool WouldPipelineJournalWrites => _writePipeline.WouldPipelineNow;
+
+        internal bool IsCommitLatencyBound => _writePipeline.IsCommitLatencyBound;
 
         private JournalFile NextFile(long numberOf4Kbs)
         {
@@ -2758,9 +2764,12 @@ namespace Voron.Impl.Journal
             if (_writePipeline.IsMeasuredFastDevice)
                 compressTxAboveSizeInBytes = Math.Max(compressTxAboveSizeInBytes, FastDeviceCompressTxAboveSizeInBytes);
             var performCompression = totalSizeWritten > compressTxAboveSizeInBytes;
+            var compressionAlgorithm = _env.Options.JournalCompressionAlgorithm;
             if (performCompression)
             {
-                var outputBufferSize = LZ4.MaximumOutputLength(totalSizeWritten);
+                var outputBufferSize = compressionAlgorithm == JournalCompressionAlgorithm.Zstd
+                    ? ZstdLib.GetMaxCompression(totalSizeWritten)
+                    : LZ4.MaximumOutputLength(totalSizeWritten);
                 int outputBufferInPages = checked((int)((outputBufferSize + sizeof(TransactionHeader)) / Constants.Storage.PageSize +
                                                         ((outputBufferSize + sizeof(TransactionHeader)) % Constants.Storage.PageSize == 0 ? 0 : 1)));
 
@@ -2794,6 +2803,7 @@ namespace Voron.Impl.Journal
 
                 _compressionPager.EnsureMapped(_compressionPagerState, ref tx.PagerTransactionState, pagesWritten, outputBufferInPages);
 
+                var rawTxHeaderPtr = txHeaderPtr;
                 txHeaderPtr = _compressionPager.MakeWritable(_compressionPagerState,
                     _compressionPager.AcquireRawPagePointer(_compressionPagerState, ref tx.PagerTransactionState, pagesWritten)
                 );
@@ -2803,14 +2813,24 @@ namespace Voron.Impl.Journal
                 using (var metrics = _env.Options.IoMetrics.MeterIoRate(path, IoMetrics.MeterType.Compression, 0)) // Note that the last journal may be replaced if we switch journals, however it doesn't affect web graph
                 {
                     int compressionAcceleration = _env.Options.JournalsCompressionAcceleration;
-                    compressedLen = LZ4.Encode64LongBuffer(
-                        txPageInfoPtr,
-                        compressionBuffer,
-                        totalSizeWritten,
-                        outputBufferSize,
-                        compressionAcceleration);
+                    compressedLen = compressionAlgorithm == JournalCompressionAlgorithm.Zstd
+                        ? ZstdLib.CompressWithLevel(txPageInfoPtr, totalSizeWritten, compressionBuffer, outputBufferSize, ZstdJournalCompressionLevel)
+                        : LZ4.Encode64LongBuffer(
+                            txPageInfoPtr,
+                            compressionBuffer,
+                            totalSizeWritten,
+                            outputBufferSize,
+                            compressionAcceleration);
 
                     metrics.SetCompressionResults(totalSizeWritten, compressedLen, compressionAcceleration);
+                }
+
+                if (compressedLen >= totalSizeWritten - (totalSizeWritten >> 3))
+                {
+                    // the compression saved less than an eighth - the raw layout is still intact one header
+                    // back, so storing it costs nothing and the recovery skips a pointless decompression
+                    txHeaderPtr = rawTxHeaderPtr;
+                    performCompression = false;
                 }
             }
             else
@@ -2834,6 +2854,8 @@ namespace Voron.Impl.Journal
             var reportedCompressionLength = performCompression ? compressedLen : -1;
 
             txHeader.CompressedSize = reportedCompressionLength;
+            if (performCompression && compressionAlgorithm == JournalCompressionAlgorithm.Zstd)
+                txHeader.TxMarker |= TransactionMarker.ZstdCompressed;
             txHeader.UncompressedSize = totalSizeWritten;
             txHeader.PageCount = numberOfPages;
             txHeader.JournalId = _headerAccessor.JournalId;

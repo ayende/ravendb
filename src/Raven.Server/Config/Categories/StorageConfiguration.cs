@@ -9,6 +9,8 @@ using Sparrow;
 using Sparrow.Platform;
 using Sparrow.Server.Platform;
 
+using Voron;
+
 namespace Raven.Server.Config.Categories
 {
     [ConfigurationCategory(ConfigurationCategoryType.Storage)]
@@ -165,6 +167,11 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(1)]
         [ConfigurationEntry("Storage.JournalsCompressionAcceleration", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int JournalsCompressionAcceleration { get; set; }
+
+        [Description("EXPERT: Compression algorithm for journal transactions. Zstd compresses better at a comparable cost, which pays on bandwidth-capped volumes.")]
+        [DefaultValue(JournalCompressionAlgorithm.Lz4)]
+        [ConfigurationEntry("Storage.JournalsCompressionAlgorithm", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public JournalCompressionAlgorithm JournalsCompressionAlgorithm { get; set; }
 
         /// <summary>
         /// Specifies the time interval between each IoMetrics Cleaner run

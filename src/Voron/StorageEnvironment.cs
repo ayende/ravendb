@@ -1563,15 +1563,11 @@ namespace Voron
             if (_journal.Applicator.TotalWrittenButUnsyncedBytes > options.MaxUnsyncedBytesBeforeMandatorySync)
                 return false;
 
-            var rc = Pal.rvn_pager_dirty_stats(CurrentStateRecord.DataPagerState.Handle,
-                options.SyncWritebackMinContiguousSizeInKb * Constants.Size.Kilobyte,
-                out _, out var runCount, out var longRunBytes, out _);
-            if (rc != PalFlags.FailCodes.Success || runCount == 0)
-                return false; // untracked pager (in-memory, temp) or nothing dirty - keep the old behavior
-
-            // the mergeable payload alone already justifies a sync at the regular cadence; delaying
-            // further only batches an efficient writeback into a stall. Only scattered pages earn a delay.
-            return longRunBytes < options.MaxUnsyncedBytesBeforeSync;
+            // small group commits mean the throughput is bound by the commit latency, which the scattered
+            // writeback inflates - there the delayed, consolidated sync pays for itself. Large group
+            // commits mean the device bandwidth is the bound, and delaying only turns the steady sync
+            // cadence into a multi-gigabyte stall that starves the journal.
+            return _journal.IsCommitLatencyBound;
         }
 
         internal void BackgroundFlushWritesToDataFile()
