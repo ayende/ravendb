@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -1181,7 +1181,7 @@ namespace Voron.Impl
             _asyncCommitNextTransaction = nextTx;
             nextTx._asyncCommitPreviousTransaction = this;
             AsyncCommit = writeToJournalIsRequired
-                  ? Task.Run(() => { CommitStage2_WriteToJournal(waitForDurability: false); return true; })
+                  ? Task.Run(() => { CommitStage2_WriteToJournal(waitForDurability: true); return true; })
                   : NoWriteToJournalRequiredTask;
 
             var usageIncremented = false;
