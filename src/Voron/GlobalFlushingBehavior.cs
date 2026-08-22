@@ -203,6 +203,16 @@ namespace Voron
                 if (envToFlush.Journal.Applicator.ShouldFlush == false)
                     continue; // nothing to do
 
+                if (envToFlush.Journal.WriteLatencyEwmaTicks >= envToFlush.Options.PipelineJournalWritesAboveLatencyInTicks * 2 &&
+                    numberOfNewPagesSinceLastFlush < 16 * envToFlush.Options.MaxNumberOfPagesInJournalBeforeFlush)
+                {
+                    // the journal is queuing on the device; giving the writeback the remaining bandwidth
+                    // would throttle every commit, so let the journal have the device until it drains or
+                    // the backlog forces our hand
+                    _maybeNeedToFlush.Enqueue(req);
+                    continue;
+                }
+
                 if (numberOfNewPagesSinceLastFlush < envToFlush.Options.MaxNumberOfPagesInJournalBeforeFlush)
                 {
                     // we haven't reached the point where we have to flush, but we might want to, if we have enough 
