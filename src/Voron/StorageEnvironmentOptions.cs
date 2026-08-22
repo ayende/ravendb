@@ -286,7 +286,7 @@ namespace Voron
             MaxScratchBufferSize = ((shouldConfigPagersRunInLimitedMemoryEnvironment ? 32 : 256) * Constants.Size.Megabyte);
 
             MaxNumberOfPagesInJournalBeforeFlush =
-                ((shouldConfigPagersRunInLimitedMemoryEnvironment ? 4 : 32) * Constants.Size.Megabyte) / Constants.Storage.PageSize;
+                ((shouldConfigPagersRunInLimitedMemoryEnvironment ? 4 : 512) * Constants.Size.Megabyte) / Constants.Storage.PageSize;
 
             IdleFlushTimeout = 5000; // 5 seconds
 
