@@ -151,7 +151,7 @@ namespace Raven.Server.Config.Categories
         public Size MaxUnsyncedSizeBeforeSync { get; set; }
 
         [Description("Hard bound on delaying the sync of the data file. A sparse dirty set may delay the sync past Storage.MaxUnsyncedSizeBeforeSyncInMb to consolidate scattered writes, but never past this.")]
-        [DefaultValue(2048)]
+        [DefaultValue(768)]
         [SizeUnit(SizeUnit.Megabytes)]
         [ConfigurationEntry("Storage.MaxUnsyncedSizeBeforeMandatorySyncInMb", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public Size MaxUnsyncedSizeBeforeMandatorySync { get; set; }
