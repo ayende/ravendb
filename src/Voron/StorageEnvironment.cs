@@ -1554,7 +1554,17 @@ namespace Voron
             }
         }
 
-        internal unsafe bool ShouldDelaySyncToConsolidateWrites()
+        private long _concurrentWritePressure;
+
+        // the write-request backlog reported by the transaction merger - the one regime signal the
+        // storage cannot compute for itself, and the one a write-shape pathology cannot poison
+        public void NoteConcurrentWritePressure(long pendingWrites)
+        {
+            var current = Volatile.Read(ref _concurrentWritePressure);
+            Volatile.Write(ref _concurrentWritePressure, current == 0 ? pendingWrites : current + (pendingWrites - current) / 8);
+        }
+
+        internal bool ShouldDelaySyncToConsolidateWrites()
         {
             var options = Options;
             if (options.SyncWritebackMinContiguousSizeInKb <= 0 || options.ForceUsing32BitsPager)
@@ -1563,11 +1573,13 @@ namespace Voron
             if (_journal.Applicator.TotalWrittenButUnsyncedBytes > options.MaxUnsyncedBytesBeforeMandatorySync)
                 return false;
 
-            // small group commits mean the throughput is bound by the commit latency, which the scattered
-            // writeback inflates - there the delayed, consolidated sync pays for itself. Large group
-            // commits mean the device bandwidth is the bound, and delaying only turns the steady sync
-            // cadence into a multi-gigabyte stall that starves the journal.
-            return _journal.IsCommitLatencyBound;
+            // consolidating the sync pays when few writers wait per commit: their latency is what the
+            // scattered writeback inflates, and the accumulation phases run far above the steady state.
+            // Under a deep write backlog the throughput is bandwidth-bound, every journal write is
+            // already large, and the deferred multi-gigabyte barrier only starves the backlog for its
+            // whole duration. Write size and batch size cannot make this call - the stall they would
+            // prevent is exactly what shrinks them.
+            return Volatile.Read(ref _concurrentWritePressure) < 256;
         }
 
         internal void BackgroundFlushWritesToDataFile()

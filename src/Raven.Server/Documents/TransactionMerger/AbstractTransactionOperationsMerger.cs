@@ -331,6 +331,8 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private void MergeTransactionsOnce()
         {
+            _env.NoteConcurrentWritePressure(_operations.Count);
+
             TOperationContext context = null;
             IDisposable returnContext = null;
             TTransaction tx = null;
