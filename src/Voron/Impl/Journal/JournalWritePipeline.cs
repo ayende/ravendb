@@ -85,7 +85,10 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     public bool IsPipelining => _maxConcurrentWrites > 1;
 
     // the observed device latency says pipelining would engage for the next writes
-    internal bool WouldPipelineNow => IsPipelining && Volatile.Read(ref _writeLatencyEwmaTicks) >= _pipelineAboveLatencyTicks;
+    // pipelining overlaps the device latency of small commits; once the batches are large the write
+    // itself owns the device, and the pipelined batching window - which waits for the newest write in
+    // flight - would charge every commit the whole queue depth of latency
+    internal bool WouldPipelineNow => IsPipelining && Volatile.Read(ref _writeLatencyEwmaTicks) >= _pipelineAboveLatencyTicks && IsCommitLatencyBound;
 
     internal long WriteLatencyEwmaTicks => Volatile.Read(ref _writeLatencyEwmaTicks);
 
