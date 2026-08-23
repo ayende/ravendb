@@ -9,6 +9,7 @@ namespace Raven.Server.Utils
         public static void Apply(StorageEnvironmentOptions options, RavenConfiguration configuration)
         {
             options.InitialLogFileSize = 128 * 1024 * 1024;
+            options.InitialFileSize = 8L * 1024 * 1024 * 1024;
 
             // Must be assigned first: this setter overwrites MaxLogFileSize, MaxScratchBufferSize and
             // MaxNumberOfPagesInJournalBeforeFlush, and while it is on, the MaxScratchBufferSize setter
