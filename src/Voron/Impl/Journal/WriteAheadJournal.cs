@@ -321,6 +321,8 @@ namespace Voron.Impl.Journal
 
         internal bool WouldPipelineJournalWrites => _writePipeline.WouldPipelineNow;
 
+        internal bool ShouldPipelineJournalNow => _writePipeline.WouldPipelineNow;
+
         internal bool IsCommitLatencyBound => _writePipeline.IsCommitLatencyBound;
 
         public long WriteLatencyEwmaTicks => _writePipeline.WriteLatencyEwmaTicks;

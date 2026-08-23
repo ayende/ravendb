@@ -60,8 +60,81 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private readonly double _maxTimeToWaitForPreviousTxInMs;
         private readonly long _maxTxSizeInBytes;
-        private bool _consolidatingBatches;
+
+        // On a slow device the group-commit equilibrium can collapse into tiny batches: short writes release few clients, next requests dribbles and we have small batches
+        // result: volume IOPS bound at a fraction of its bandwidth. We intentionally increase transaction time here, to batch more
+        private const long EnterBatchConsolidationAtLatencyTicks = 8 * TimeSpan.TicksPerMillisecond;   // the device is queuing under the write traffic
+        private const long ExitBatchConsolidationAtLatencyTicks = 4 * TimeSpan.TicksPerMillisecond;    // consolidation grows the writes, and must not turn itself off too quickly
+        private const long BatchConsolidationWindowLatencyFactor = 2;                                  // hold for up to this many write durations...
+        private const long MaxBatchConsolidationWindowInMs = 50;                                     // ...but never longer than this
+        private const long MaxBatchConsolidationSizeInBytes = 128 * Constants.Size.Megabyte;
         private int _consecutiveEmptyConsolidationWaits;
+
+        // two empty one-millisecond waits in a row mean the arrivals dried up - every writer is already
+        // aboard this batch, and holding it any longer is pure added latency for them
+        private const int MaxConsecutiveEmptyConsolidationWaits = 2;
+
+        private bool _consolidatingBatches;
+
+        // Is the batch is still worth waiting for more operations to arrive?
+        // Even though we have async commits, we want to keep the *current* transaction alive for a bit longer
+        //
+        // This is an issue because gp3 drives, for example, has both IOPS and bandwidth limits. If we have a lot of 
+        // small writes, we burned through that budget, and start queuing. And we end in a meta-stable slow state.
+        // 
+        // Batch size is whatever arrives during one write, so tiny writes -> the device goes IOPS bound at a fraction of its bandwidth 
+        // -> queuing inflates every op's latency -> clients cycle slowly -> few arrivals per write -> tiny writes again. 
+        // 
+        // Holding the batch open for a couple of write-durations flips it to few large writes: the device becomes bandwidth
+        // // bound, the queuing disappears, and per-op latency drops even though we waited (measured on gp3: 8.4k -> 12.9k ops/s at 1,531 clients, p50 down). 
+        // 
+        // The hold only engages when both symptoms are present (writes queuing AND batches collapsed), exits within ~2ms once every writer is already 
+        // aboard, and never engages on a fast device - a flat hold measurably hurts healthy workloads
+        private bool TryWaitForMoreOperationsToConsolidate(long modifiedSize, long consolidationSize, Stopwatch sp, double consolidationWindowMs)
+        {
+            if (_consolidatingBatches == false || // not relevant unless in consolidation regine
+                modifiedSize >= consolidationSize ||
+                sp.ElapsedMilliseconds >= consolidationWindowMs)
+            {
+                _consecutiveEmptyConsolidationWaits = 0;
+                return false;
+            }
+
+            _waitHandle.Reset();
+
+            if (_operations.IsEmpty == false || // an operation arrived between the queue check and the reset
+                _waitHandle.Wait(millisecondsTimeout: 1, _shutdown)) // or was enqueued while we waited
+            {
+                _consecutiveEmptyConsolidationWaits = 0;
+                return true;
+            }
+
+            if (++_consecutiveEmptyConsolidationWaits >= MaxConsecutiveEmptyConsolidationWaits)
+            {
+                _consecutiveEmptyConsolidationWaits = 0;
+                return false;
+            }
+
+            return true;
+        }
+
+        private double GetBatchingWindowDurationInMs()
+        {
+            if (_is32Bits)
+                return _maxTimeToWaitForPreviousTxInMs;
+
+            var writeLatencyTicks = _env.Journal.WriteLatencyEwmaTicks;
+
+            _consolidatingBatches = _consolidatingBatches
+                ? writeLatencyTicks >= ExitBatchConsolidationAtLatencyTicks
+                : writeLatencyTicks >= EnterBatchConsolidationAtLatencyTicks && _env.Journal.IsCommitLatencyBound;
+
+            if (_consolidatingBatches == false)
+                return _maxTimeToWaitForPreviousTxInMs;
+
+            var windowMs = BatchConsolidationWindowLatencyFactor * writeLatencyTicks / TimeSpan.TicksPerMillisecond;
+            return Math.Max(_maxTimeToWaitForPreviousTxInMs, Math.Min(MaxBatchConsolidationWindowInMs, windowMs));
+        }
         private readonly double _maxTimeToWaitForPreviousTxBeforeRejectingInMs;
 
         private bool _isEncrypted;
@@ -333,8 +406,6 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private void MergeTransactionsOnce()
         {
-            _env.NoteConcurrentWritePressure(_operations.Count);
-
             TOperationContext context = null;
             IDisposable returnContext = null;
             TTransaction tx = null;
@@ -497,25 +568,15 @@ namespace Raven.Server.Documents.TransactionMerger
         }
 
         private void MergeTransactionsWithAsyncCommit(
-            ref TOperationContext context,
-            ref IDisposable returnContext,
-            List<MergedTransactionCommand<TOperationContext, TTransaction>> pendingOps)
-        {
-            // the queue flow exists to overlap pipelined journal writes; when the device is fast the
-            // gate keeps the pipeline off and the queue only costs - take the sequential path there
-            if (_env.Journal.WouldPipelineJournalWrites)
-                MergeTransactionsWithAsyncCommitPipelined(ref context, ref returnContext, pendingOps);
-            else
-                MergeTransactionsWithAsyncCommitSequential(ref context, ref returnContext, pendingOps);
-        }
-
-        private void MergeTransactionsWithAsyncCommitSequential(
             ref TOperationContext previous,
             ref IDisposable returnPreviousContext,
             List<MergedTransactionCommand<TOperationContext, TTransaction>> previousPendingOps)
         {
             TOperationContext current = null;
             IDisposable currentReturnContext = null;
+
+            Debug.Assert(_asyncCommittedTransactions.Count == 0, "every async committed transaction of the previous chain must have been completed");
+
             try
             {
                 while (true)
@@ -532,65 +593,79 @@ namespace Raven.Server.Documents.TransactionMerger
                     }
                     catch (Exception e)
                     {
-                        foreach (var op in previousPendingOps)
+                        using (currentReturnContext)
                         {
-                            op.Exception = e;
-                        }
-                        NotifyOnThreadPool(previousPendingOps);
+                            foreach (var op in previousPendingOps)
+                            {
+                                op.Exception = e;
+                            }
 
-                        if (e is OutOfMemoryException)
-                        {
+                            // complete whatever the chain already has in flight
+                            CompleteAsyncCommittedTransactions(keep: 0, throwOnError: false);
+
                             try
                             {
-                                //already throwing, attempt to complete previous tx
+                                // already throwing, complete the previous tx, whose own async commit may have started before the failure
+                                // leaving it open would keep the write lock held forever
                                 CompletePreviousTransaction(previous, returnPreviousContext, ref previousPendingOps, throwOnError: false);
                             }
                             finally
                             {
                                 current.Transaction?.Dispose();
-                                currentReturnContext.Dispose();
                             }
                         }
 
                         return;
                     }
 
+                    _asyncCommittedTransactions.Enqueue((previous, previousPendingOps));
+
                     var currentPendingOps = GetBufferForPendingOps();
                     PendingOperations result;
-                    bool calledCompletePreviousTx = false;
+                    bool startedCompletingInFlight = false;
                     try
                     {
                         var transactionMeter = TransactionPerformanceMetrics.MeterPerformanceRate();
                         try
                         {
+                            // accumulate operations into the current transaction while the previous one is in flight
+                            var previousInFlight = previous.Transaction.InnerTransaction.LowLevelTransaction;
+                            Task batchingWindow = previousInFlight.DurableCommit ?? previousInFlight.AsyncCommit;
+
                             result = ExecutePendingOperationsInTransaction(
                                 currentPendingOps, current,
-                                previous.Transaction.InnerTransaction.LowLevelTransaction.AsyncCommit, ref transactionMeter);
+                                batchingWindow, ref transactionMeter);
                             UpdateGlobalReplicationInfoBeforeCommit(current);
                         }
                         finally
                         {
                             transactionMeter.Dispose();
                         }
-                        calledCompletePreviousTx = true;
-                        CompletePreviousTransaction(previous, previous.Transaction, ref previousPendingOps, throwOnError: true);
+                        startedCompletingInFlight = true;
+                        // depending on the size of journal writes, we may want to keep writes to the jounral in flight (pipelined).
+                        // that doesn't make sense if we have large journal writes, since then we are bandwidth bound anyway
+                        var keepInFlight = _env.Journal.ShouldPipelineJournalNow ? _maxConcurrentJournalWrites - 1 : 0;
+                        CompleteAsyncCommittedTransactions(keep: keepInFlight, throwOnError: true);
                     }
                     catch (Exception e)
                     {
                         using (current.Transaction)
                         using (currentReturnContext)
                         {
-                            if (calledCompletePreviousTx == false)
+                            if (startedCompletingInFlight == false)
                             {
-                                CompletePreviousTransaction(
-                                    previous,
-                                    previous.Transaction,
-                                    ref previousPendingOps,
-                                    // if this previous threw, it won't throw again
-                                    throwOnError: false);
+                                // the current transaction failed, but previous ones should be completed (CompleteAsyncCommittedTransactions not called yet)
+                                CompleteAsyncCommittedTransactions(keep: 0, throwOnError: false);
                             }
                             else
                             {
+                                // a previous transaction failed, therefore _we_ failed, and need to report this to our callers
+                                foreach (var op in currentPendingOps)
+                                {
+                                    op.Exception = e;
+                                }
+                                NotifyOnThreadPool(currentPendingOps);
+
                                 throw;
                             }
                         }
@@ -626,6 +701,8 @@ namespace Raven.Server.Documents.TransactionMerger
                         case PendingOperations.CompletedAll:
                             try
                             {
+                                CompleteAsyncCommittedTransactions(keep: 0, throwOnError: true);
+
                                 _recording.State?.TryRecord(current, TxInstruction.Commit);
                                 previous.Transaction.Commit();
                             }
@@ -651,6 +728,8 @@ namespace Raven.Server.Documents.TransactionMerger
             }
             catch
             {
+                CompleteAsyncCommittedTransactions(keep: 0, throwOnError: false);
+
                 if (current?.Transaction != null)
                 {
                     _recording.State?.TryRecord(current, TxInstruction.DisposeTx, current.Transaction.Disposed == false);
@@ -697,183 +776,6 @@ namespace Raven.Server.Documents.TransactionMerger
                 previousPendingOps = null; // RavenDB-7417
                 if (throwOnError)
                     throw;
-            }
-        }
-
-        private void MergeTransactionsWithAsyncCommitPipelined(
-            ref TOperationContext previous,
-            ref IDisposable returnPreviousContext,
-            List<MergedTransactionCommand<TOperationContext, TTransaction>> previousPendingOps)
-        {
-            TOperationContext current = null;
-            IDisposable currentReturnContext = null;
-
-            Debug.Assert(_asyncCommittedTransactions.Count == 0, "every async committed transaction of the previous chain must have been completed");
-
-            try
-            {
-                while (true)
-                {
-                    if (_log.IsDebugEnabled)
-                        _log.Debug($"BeginAsyncCommit on {previous.Transaction.InnerTransaction.LowLevelTransaction.Id} with {_operations.Count} additional operations pending");
-
-                    currentReturnContext = _contextPool.AllocateOperationContext(out current);
-
-                    try
-                    {
-                        _recording.State?.TryRecord(current, TxInstruction.BeginAsyncCommitAndStartNewTransaction);
-                        current.Transaction = BeginAsyncCommitAndStartNewTransaction(previous.Transaction, current);
-                    }
-                    catch (Exception e)
-                    {
-                        using (currentReturnContext)
-                        {
-                            foreach (var op in previousPendingOps)
-                            {
-                                op.Exception = e;
-                            }
-                            NotifyOnThreadPool(previousPendingOps);
-
-                            //already throwing, attempt to complete previous txs
-                            CompleteAsyncCommittedTransactions(keep: 0, throwOnError: false);
-                        }
-                        return;
-                    }
-
-                    _asyncCommittedTransactions.Enqueue((previous, previousPendingOps));
-
-                    var currentPendingOps = GetBufferForPendingOps();
-                    PendingOperations result;
-                    bool startedCompletingInFlight = false;
-                    try
-                    {
-                        var transactionMeter = TransactionPerformanceMetrics.MeterPerformanceRate();
-                        try
-                        {
-                            // accumulate operations into the current transaction while the JUST-SUBMITTED write is
-                            // still in flight. The window must be the newest write, at the later of its submission and
-                            // durability: the oldest of several pipelined writes is always nearly done, so its window
-                            // closes on every momentary gap in the ops queue and the group commit collapses into small
-                            // writes. Overlap is not lost - when operations are abundant, the size cap closes the
-                            // batch long before this window does
-                            var newestInFlight = previous.Transaction.InnerTransaction.LowLevelTransaction;
-                            var batchingWindow = newestInFlight.DurableCommit == null
-                                ? (Task)newestInFlight.AsyncCommit
-                                : Task.WhenAll(newestInFlight.AsyncCommit, newestInFlight.DurableCommit);
-
-                            result = ExecutePendingOperationsInTransaction(
-                                currentPendingOps, current,
-                                batchingWindow, ref transactionMeter);
-                            UpdateGlobalReplicationInfoBeforeCommit(current);
-                        }
-                        finally
-                        {
-                            transactionMeter.Dispose();
-                        }
-                        startedCompletingInFlight = true;
-                        CompleteAsyncCommittedTransactions(keep: _maxConcurrentJournalWrites - 1, throwOnError: true);
-                    }
-                    catch (Exception e)
-                    {
-                        using (current.Transaction)
-                        using (currentReturnContext)
-                        {
-                            if (startedCompletingInFlight == false)
-                            {
-                                // we didn't get to the previous CompleteAsyncCommittedTransactions, so let's ensure that
-                                // we complete the in flight transactions, then handle raising the error to the ops below
-                                CompleteAsyncCommittedTransactions(keep: 0, throwOnError: false);
-                            }
-                            else
-                            {
-                                // we already started completing the in flight transactions, but a previous transaction failed,
-                                // therefor, _we_ failed, and need to report this to our callers
-                                foreach (var op in currentPendingOps)
-                                {
-                                    op.Exception = e;
-                                }
-                                NotifyOnThreadPool(currentPendingOps);
-
-                                throw;
-                            }
-                        }
-
-                        if (e is HighDirtyMemoryException highDirtyMemoryException)
-                        {
-                            if (_log.IsInfoEnabled)
-                            {
-                                var errorMessage = $"{currentPendingOps.Count:#,#0} operations were cancelled because of high dirty memory, details: {highDirtyMemoryException.Message}";
-                                _log.Info(errorMessage, highDirtyMemoryException);
-                            }
-
-                            NotifyHighDirtyMemoryFailure(currentPendingOps, highDirtyMemoryException);
-                        }
-                        else
-                        {
-                            if (_log.IsInfoEnabled)
-                            {
-                                _log.Info($"Failed to run merged transaction with {currentPendingOps.Count:#,#0} operations in async manner, will retry independently", e);
-                            }
-
-                            NotifyTransactionFailureAndRerunIndependently(currentPendingOps, e);
-                        }
-
-                        return;
-                    }
-
-                    previous = current;
-                    returnPreviousContext = currentReturnContext;
-
-                    switch (result)
-                    {
-                        case PendingOperations.CompletedAll when currentPendingOps.Count > 0:
-                            // the queue went momentarily dry after real work - finishing synchronously here parks
-                            // this thread for a full pipeline drain on every gap between client round-trips, which
-                            // profiling showed costing half the merger at high concurrency on a slow volume. Keep
-                            // the chain alive instead: the next round's batching window absorbs the wait while
-                            // accepting whatever arrives, and the chain ends on the first round that executes nothing
-                            previousPendingOps = currentPendingOps;
-                            break;
-
-                        case PendingOperations.CompletedAll:
-                            try
-                            {
-                                CompleteAsyncCommittedTransactions(keep: 0, throwOnError: true);
-
-                                _recording.State?.TryRecord(current, TxInstruction.Commit);
-                                previous.Transaction.Commit();
-                            }
-                            catch (Exception e)
-                            {
-                                foreach (var op in currentPendingOps)
-                                {
-                                    op.Exception = e;
-                                }
-                            }
-                            NotifyOnThreadPool(currentPendingOps);
-                            return;
-
-                        case PendingOperations.HasMore:
-                            previousPendingOps = currentPendingOps;
-                            break;
-
-                        default:
-                            Debug.Assert(false);
-                            return;
-                    }
-                }
-            }
-            catch
-            {
-                CompleteAsyncCommittedTransactions(keep: 0, throwOnError: false);
-
-                if (current?.Transaction != null)
-                {
-                    _recording.State?.TryRecord(current, TxInstruction.DisposeTx, current.Transaction.Disposed == false);
-                    current.Transaction.Dispose();
-                }
-                currentReturnContext?.Dispose();
-                throw;
             }
         }
 
@@ -999,34 +901,12 @@ namespace Raven.Server.Documents.TransactionMerger
                 var canCloseCurrentTx = previousOperation == null || previousOperation.IsCompleted;
                 if (canCloseCurrentTx || _is32Bits)
                 {
-                    var writeEwmaMs = _env.Journal.WriteLatencyEwmaTicks / TimeSpan.TicksPerMillisecond;
-                    if (_consolidatingBatches == false)
-                        _consolidatingBatches = writeEwmaMs >= 8 && _env.Journal.IsCommitLatencyBound;
-                    else if (writeEwmaMs < 4)
-                        _consolidatingBatches = false;
-                    var consolidationWindowMs = _is32Bits || _consolidatingBatches == false
-                        ? _maxTimeToWaitForPreviousTxInMs
-                        : Math.Max(_maxTimeToWaitForPreviousTxInMs, Math.Min(50, 2 * writeEwmaMs));
-                    var consolidationSize = Math.Min(_maxTxSizeInBytes, 128 * Constants.Size.Megabyte);
+                    var consolidationWindowMs = GetBatchingWindowDurationInMs();
+                    var consolidationSize = Math.Min(_maxTxSizeInBytes, MaxBatchConsolidationSizeInBytes);
 
-                    if (_operations.IsEmpty)
+                    if (_operations.IsEmpty && 
+                        TryWaitForMoreOperationsToConsolidate(modifiedSize, consolidationSize, sp, consolidationWindowMs) is false)
                     {
-                        if (modifiedSize < consolidationSize &&
-                            sp.ElapsedMilliseconds < consolidationWindowMs)
-                        {
-                            _waitHandle.Reset();
-                            if (_operations.IsEmpty && _waitHandle.Wait(millisecondsTimeout: 1, _shutdown) == false &&
-                                ++_consecutiveEmptyConsolidationWaits >= 2)
-                            {
-                                _consecutiveEmptyConsolidationWaits = 0;
-                                break;
-                            }
-                            if (_operations.IsEmpty == false)
-                                _consecutiveEmptyConsolidationWaits = 0;
-                            continue;
-                        }
-
-                        _consecutiveEmptyConsolidationWaits = 0;
                         break; // nothing remaining to do, let's us close this work
                     }
 
