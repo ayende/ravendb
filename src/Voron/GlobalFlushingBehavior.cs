@@ -186,7 +186,7 @@ namespace Voron
                 // if there is high traffic into the queue, we want to abort after 
                 // we processed whatever was already in there, to avoid holding up
                 // the rest of the operations
-                limit > 0 &&
+                limit-- > 0 &&
                 _maybeNeedToFlush.TryDequeue(out req))
             {
                 var envToFlush = req.Env;
@@ -207,6 +207,16 @@ namespace Voron
                 if (envToFlush.Journal.Applicator.ShouldFlush == false)
                     continue; // nothing to do
 
+                if (// journal writes are user facing, high latency there effects the user, so we want to prioritize that over flushing
+                    envToFlush.Journal.WriteLatencyEwmaTicks >= envToFlush.Options.PipelineJournalWritesAboveLatencyInTicks * 2 &&
+                    // on the other hand, we have to flush _sometimes_, we can't starve the flusher indefinitely, and too high a limit will 
+                    // cause the *journals writes* to suffer high latency, so we have to balance not flushing too often and not saturating the I/O
+                    numberOfNewPagesSinceLastFlush < 4 * envToFlush.Options.MaxNumberOfPagesInJournalBeforeFlush)
+                {
+                    _maybeNeedToFlush.Enqueue(req);
+                    continue;
+                }
+
                 if (numberOfNewPagesSinceLastFlush < envToFlush.Options.MaxNumberOfPagesInJournalBeforeFlush)
                 {
                     // we haven't reached the point where we have to flush, but we might want to, if we have enough 
@@ -224,7 +234,6 @@ namespace Voron
                 envToFlush.LastFlushTime = DateTime.UtcNow;
 
                 _concurrentFlushesAvailable.Wait();
-                limit--;
 
                 ThreadPool.QueueUserWorkItem(env =>
                 {
