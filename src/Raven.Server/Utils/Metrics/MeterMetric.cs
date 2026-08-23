@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Globalization;
 using System.Threading;
@@ -91,11 +91,34 @@ namespace Raven.Server.Utils.Metrics
                 Interlocked.Add(ref _count, value);
         }
 
+        private int _singleThreadedLastIndex = -1;
+        private long _singleThreadedLastStart;
+
         public void MarkSingleThreaded(long value, long duration = 0)
         {
-            // Callers with single-threaded guarantees take this path today; forward to the main implementation
-            // to avoid diverging semantics and keep JIT optimisations focused in one place.
-            Mark(value, duration);
+            if (value == 0 && duration == 0)
+                return;
+
+            var now = _now();
+            var quantum = now / BucketDurationNanoseconds;
+            var index = (int)(quantum % BucketCount);
+
+            // single writer: once this quantum's bucket is initialized, plain adds are enough - the
+            // readers tolerate a torn quantum the same way they tolerate the boundary bias
+            if (index == _singleThreadedLastIndex && _buckets![index].Start == _singleThreadedLastStart)
+            {
+                _buckets[index].Count += value;
+                _buckets[index].DurationSum += duration;
+                _count += value;
+                return;
+            }
+
+            AddToBucket(now, value, duration);
+            if (value != 0)
+                Interlocked.Add(ref _count, value);
+
+            _singleThreadedLastIndex = index;
+            _singleThreadedLastStart = quantum * BucketDurationNanoseconds;
         }
 
         public double GetMeanRate(double elapsed)
