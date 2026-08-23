@@ -1275,8 +1275,6 @@ namespace Voron.Impl.Journal
 #endif
             }
 
-<<<<<<< HEAD
-=======
             private const int DefaultWritebackPipelineDepth = 4;
 
             private static readonly int? PinnedWritebackDepth =
@@ -1358,7 +1356,6 @@ namespace Voron.Impl.Journal
                     PalHelper.ThrowLastError(rc, error, $"Failed to trickle writeback of {dataPager.FileName}");
             }
 
->>>>>>> e15ac769b36 (RavenDB-27375 Add adaptive data-file writeback pacing)
             public void WaitForSyncToCompleteOnDispose()
             {
                 if (Monitor.IsEntered(_flushingLock) == false)
@@ -1740,11 +1737,8 @@ namespace Voron.Impl.Journal
                                 Pager.RaiseError(dataPager.FileName, errorCode, rc, dataPagerState.TotalAllocatedSize);
                             }
                         }
-<<<<<<< HEAD
-=======
 
                         TrickleWriteback(dataPager, dataPagerState);
->>>>>>> e15ac769b36 (RavenDB-27375 Add adaptive data-file writeback pacing)
                     }
                     finally
                     {

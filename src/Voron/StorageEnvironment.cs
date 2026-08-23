@@ -1722,31 +1722,9 @@ namespace Voron
         {
             Journal.TryReduceSizeOfCompressionBufferIfNeeded();
             ScratchBufferPool.Cleanup();
-<<<<<<< HEAD
-=======
-            CleanupScratchPagesTable();
 
             if (tryCleanupRecycledJournals)
                 Options.TryCleanupRecycledJournals();
-        }
-
-        private void CleanupScratchPagesTable()
-        {
-            if (ScratchPagesTable.RacyIdleCleanupRequired() == false)
-                return;
-
-            try
-            {
-                using (var txw = NewLowLevelTransaction(new TransactionPersistentContext(), TransactionFlags.ReadWrite, timeout: TimeSpan.Zero))
-                {
-                    ScratchPagesTable.IdleCleanup();
-                    txw.Commit();
-                }
-            }
-            catch (TimeoutException)
-            {
-            }
->>>>>>> d52ce33243e (RavenDB-27397 Restore journal recycling, gated by link count)
         }
 
         public override string ToString()

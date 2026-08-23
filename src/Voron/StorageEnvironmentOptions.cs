@@ -1700,8 +1700,6 @@ namespace Voron
         public long PrefetchResetThreshold { get; set; }
         public long SyncJournalsCountThreshold { get; set; }
 
-<<<<<<< HEAD
-=======
         public long MaxUnsyncedBytesBeforeSync { get; set; } = 256 * Constants.Size.Megabyte;
 
         public long MaxUnsyncedBytesBeforeMandatorySync { get; set; } = 768L * Constants.Size.Megabyte;
@@ -1739,7 +1737,6 @@ namespace Voron
                 SyncWritebackBarrierCostThresholdTicks, SyncWritebackDrainQueueDepthThreshold);
         }
 
->>>>>>> e15ac769b36 (RavenDB-27375 Add adaptive data-file writeback pacing)
         internal bool SimulateFailureOnDbCreation { get; set; }
         internal bool ManualSyncing { get; set; } = false;
         public bool? IgnoreInvalidJournalErrors { get; set; }
