@@ -204,7 +204,7 @@ namespace Voron
                     continue; // nothing to do
 
                 if (envToFlush.Journal.WriteLatencyEwmaTicks >= envToFlush.Options.PipelineJournalWritesAboveLatencyInTicks * 2 &&
-                    numberOfNewPagesSinceLastFlush < 16 * envToFlush.Options.MaxNumberOfPagesInJournalBeforeFlush)
+                    numberOfNewPagesSinceLastFlush < 4 * envToFlush.Options.MaxNumberOfPagesInJournalBeforeFlush)
                 {
                     // the journal is queuing on the device; giving the writeback the remaining bandwidth
                     // would throttle every commit, so let the journal have the device until it drains or
