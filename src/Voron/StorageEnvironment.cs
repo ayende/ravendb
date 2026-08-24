@@ -1786,6 +1786,10 @@ namespace Voron
         internal PersistentDictionaryLocator DictionaryLocator { get; } = new PersistentDictionaryLocator(1024);
         public bool IsFlushInProgress => Journal.Applicator.FlushInProgress != 0;
 
+        internal long LastJournalRollTimestamp; // probe: hiccup attribution
+
+        internal bool IsSyncInProgress => Journal.Applicator.SyncInProgress;
+
         // Must check both the queue and _lastPeekedRecord, since TryPeekNextRecordToFlush
         // may dequeue a record into _lastPeekedRecord without consuming it
         public bool HasAdditionalTransactionsToFlush => _transactionsToFlush.IsEmpty is false || _lastPeekedRecord is not null;

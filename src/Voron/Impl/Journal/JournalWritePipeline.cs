@@ -187,9 +187,10 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         {
             _inlineContext ??= SafeJournalWriteContext.Create();
 
+            var pauseBefore = GC.GetTotalPauseDuration();
             var start = Stopwatch.GetTimestamp();
             file.Write(posBy4Kb, entries, _inlineContext);
-            RecordWriteLatency(Stopwatch.GetElapsedTime(start).Ticks, totalNumberOf4Kbs);
+            RecordWriteLatency(Stopwatch.GetElapsedTime(start).Ticks, totalNumberOf4Kbs, pauseBefore, inline: true);
         }
         catch (Exception e)
         {
@@ -258,9 +259,21 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private bool IsAfterFailure(long sequence) => sequence > Volatile.Read(ref _lowestFailedSequence);
 
-    private void RecordWriteLatency(long ticks, long numberOf4Kbs)
+    private void RecordWriteLatency(long ticks, long numberOf4Kbs, TimeSpan pauseBefore, bool inline)
     {
-        Volatile.Write(ref _lastWriteActivityTimestamp, Stopwatch.GetTimestamp());
+        var ewma = _writeLatencyTicks.Current;
+        // probe: attribute tail-latency hiccups - a write 4x the running average and above 2ms
+        if (ewma != 0 && ticks > 4 * ewma && ticks > 2 * TimeSpan.TicksPerMillisecond)
+        {
+            var pauseDelta = GC.GetTotalPauseDuration() - pauseBefore;
+            var sinceRollMs = Stopwatch.GetElapsedTime(Volatile.Read(ref _env.LastJournalRollTimestamp)).TotalMilliseconds;
+            Console.WriteLine($"HICCUP ts={DateTime.UtcNow:HH:mm:ss.fff} lat_ms={ticks / (double)TimeSpan.TicksPerMillisecond:F2} " +
+                              $"ewma_ms={ewma / (double)TimeSpan.TicksPerMillisecond:F2} size4kb={numberOf4Kbs} inline={(inline ? 1 : 0)} " +
+                              $"gcpause_ms={pauseDelta.TotalMilliseconds:F2} flush={(_env.IsFlushInProgress ? 1 : 0)} " +
+                              $"sync={(_env.IsSyncInProgress ? 1 : 0)} prep={(_env.Options.JournalPoolPreparationInFlight ? 1 : 0)} " +
+                              $"sinceRoll_ms={sinceRollMs:F0} env={System.IO.Path.GetFileName(_env.Options.BasePath.FullPath)}");
+        }
+
         _writeLatencyTicks.Update(ticks);
         _writeSizeBytes.Update(numberOf4Kbs * 4 * Constants.Size.Kilobyte);
     }
@@ -277,9 +290,10 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
             if (IsAfterFailure(write.Sequence) == false)
             {
                 var entry = new Pal.journal_entry { Base = write.Buffer, NumberOf4Kbs = write.NumberOf4Kbs };
+                var pauseBefore = GC.GetTotalPauseDuration();
                 var start = Stopwatch.GetTimestamp();
                 write.File.Write(write.PosBy4Kb, MemoryMarshal.CreateSpan(ref entry, 1), write.Context);
-                RecordWriteLatency(Stopwatch.GetElapsedTime(start).Ticks, write.NumberOf4Kbs);
+                RecordWriteLatency(Stopwatch.GetElapsedTime(start).Ticks, write.NumberOf4Kbs, pauseBefore, inline: false);
             }
             else
             {

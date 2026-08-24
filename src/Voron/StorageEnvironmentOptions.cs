@@ -242,6 +242,8 @@ namespace Voron
 
         public bool EnableJournalPoolPrewarming { get; set; } = true;
 
+        public virtual bool JournalPoolPreparationInFlight => false; // probe: hiccup attribution
+
         public abstract JournalWriter CreateReadOnlyJournalWriter(long journalNumber, long journalSize);
 
         public abstract JournalWriter CreateJournalWriterForBranchEnvironment(long journalNumber, string fileName, JournalFile journalFile);
@@ -585,6 +587,7 @@ namespace Voron
 
             private long _currentJournalSizeHint;
             private int _journalPoolPreparationInFlight;
+            public override bool JournalPoolPreparationInFlight => Volatile.Read(ref _journalPoolPreparationInFlight) != 0;
 
             // paths in _journalsForReuse whose zeroing was interrupted, and how far it got - guarded by _journalsForReuse.
             // a partially zeroed file is strictly better than a fresh fallocate (the zeroed prefix already has its
