@@ -956,6 +956,7 @@ namespace Voron.Impl
         public string CallerName { get; set; }
 
         internal bool AppliedJournalStateAfterFlush { get; set; }
+        internal Action<LowLevelTransaction> AppliedJournalStateAction;
 
         public void Dispose()
         {
