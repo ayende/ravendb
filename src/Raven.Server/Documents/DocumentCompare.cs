@@ -120,19 +120,47 @@ namespace Raven.Server.Documents
             throw new InvalidOperationException("Illegal modifications of '@attachments' detected");
         }
         
-        private static bool IsSignificantMetadataProperty(string property, in DocumentCompareOptions options)
+        // UTF-8 views of the metadata property names, all lowercase - the comparisons below fold ASCII case
+        private static ReadOnlySpan<byte> MetadataKeyU8 => "@metadata"u8;
+        private static ReadOnlySpan<byte> AttachmentsU8 => "@attachments"u8;
+        private static ReadOnlySpan<byte> CountersU8 => "@counters"u8;
+        private static ReadOnlySpan<byte> TimeSeriesU8 => "@timeseries"u8;
+        private static ReadOnlySpan<byte> CollectionU8 => "@collection"u8;
+        private static ReadOnlySpan<byte> ExpiresU8 => "@expires"u8;
+        private static ReadOnlySpan<byte> RefreshU8 => "@refresh"u8;
+        private static ReadOnlySpan<byte> ArchiveAtU8 => "@archive-at"u8;
+        private static ReadOnlySpan<byte> ArchivedU8 => "@archived"u8;
+
+        private static bool EqualsIgnoreCaseAscii(ReadOnlySpan<byte> name, ReadOnlySpan<byte> lowerCaseConstant)
         {
-            if (property.Equals(Constants.Documents.Metadata.Collection, StringComparison.OrdinalIgnoreCase) ||
-                property.Equals(Constants.Documents.Metadata.Expires, StringComparison.OrdinalIgnoreCase) ||
-                property.Equals(Constants.Documents.Metadata.Refresh, StringComparison.OrdinalIgnoreCase))
+            if (name.Length != lowerCaseConstant.Length)
+                return false;
+
+            for (int i = 0; i < name.Length; i++)
+            {
+                var c = name[i];
+                if ((uint)(c - 'A') <= 'Z' - 'A')
+                    c = (byte)(c + ('a' - 'A'));
+                if (c != lowerCaseConstant[i])
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static bool IsSignificantMetadataProperty(ReadOnlySpan<byte> property, in DocumentCompareOptions options)
+        {
+            if (EqualsIgnoreCaseAscii(property, CollectionU8) ||
+                EqualsIgnoreCaseAscii(property, ExpiresU8) ||
+                EqualsIgnoreCaseAscii(property, RefreshU8))
             {
                 return true;
             }
 
             // Archival properties are significant only when the option is enabled
             if (options.CompareDataArchivalMetadata &&
-                (property.Equals(Constants.Documents.Metadata.ArchiveAt, StringComparison.OrdinalIgnoreCase) ||
-                 property.Equals(Constants.Documents.Metadata.Archived, StringComparison.OrdinalIgnoreCase)))
+                (EqualsIgnoreCaseAscii(property, ArchiveAtU8) ||
+                 EqualsIgnoreCaseAscii(property, ArchivedU8)))
             {
                 return true;
             }
@@ -150,91 +178,102 @@ namespace Raven.Server.Documents
             var resolvedCountersConflict = false;
             var resolvedTimeSeriesConflict = false;
 
-            var properties = new HashSet<string>(current.GetPropertyNames());
-            foreach (var propertyName in modified.GetPropertyNames())
+            // Two passes over the raw property tables instead of materializing every name into a
+            // HashSet<string>: pass 0 walks `current` and compares values against `modified`, pass 1
+            // walks `modified` only to catch properties that exist there alone - anything found in
+            // `current` was already handled. Names stay as UTF-8 spans and flat values compare raw.
+            for (var pass = 0; pass < 2; pass++)
             {
-                properties.Add(propertyName);
-            }
+                var doc = pass == 0 ? current : modified;
+                var other = pass == 0 ? modified : current;
+                var count = doc.Count;
 
-            foreach (var property in properties)
-            {
-                if (property[0] == '@')
+                for (var i = 0; i < count; i++)
                 {
-                    if (isMetadata)
+                    var property = doc.GetPropertyNameByIndexAsSpan(i);
+                    var indexInOther = other.GetPropertyIndex(property);
+
+                    if (pass == 1 && indexInOther != -1)
+                        continue; // both sides have it - pass 0 already dealt with it
+
+                    var existsInBoth = indexInOther != -1;
+
+                    if (property.Length > 0 && property[0] == (byte)'@')
                     {
-                        if (property.Equals(Constants.Documents.Metadata.Attachments, StringComparison.OrdinalIgnoreCase))
+                        if (isMetadata)
                         {
-                            if (options.TryMergeMetadataConflicts)
+                            if (EqualsIgnoreCaseAscii(property, AttachmentsU8))
                             {
-                                if (current.TryGetMember(property, out object _) == false ||
-                                    modified.TryGetMember(property, out object _) == false)
+                                if (options.TryMergeMetadataConflicts)
                                 {
-                                    // Resolve when just 1 document have attachments
-                                    resolvedAttachmentConflict = true;
-                                    continue;
-                                }
+                                    if (existsInBoth == false)
+                                    {
+                                        // Resolve when just 1 document have attachments
+                                        resolvedAttachmentConflict = true;
+                                        continue;
+                                    }
 
-                                resolvedAttachmentConflict = ShouldResolveAttachmentsConflict(current, modified, options);
-                                if (resolvedAttachmentConflict)
-                                    continue;
+                                    resolvedAttachmentConflict = ShouldResolveAttachmentsConflict(current, modified, options);
+                                    if (resolvedAttachmentConflict)
+                                        continue;
 
-                                if (options.ThrowOnAttachmentModifications)
-                                {
-                                    ThrowAttachmentsModificationsDetected();
+                                    if (options.ThrowOnAttachmentModifications)
+                                    {
+                                        ThrowAttachmentsModificationsDetected();
+                                    }
+                                    return DocumentCompareResult.NotEqual;
                                 }
-                                return DocumentCompareResult.NotEqual;
                             }
-                        }
-                        else if (property.Equals(Constants.Documents.Metadata.Counters, StringComparison.OrdinalIgnoreCase))
-                        {
-                            if (options.TryMergeMetadataConflicts)
+                            else if (EqualsIgnoreCaseAscii(property, CountersU8))
                             {
-                                if (current.TryGetMember(property, out object _) == false ||
-                                    modified.TryGetMember(property, out object _) == false)
+                                if (options.TryMergeMetadataConflicts)
                                 {
-                                    // Resolve when just 1 document have counters
-                                    resolvedCountersConflict = true;
+                                    if (existsInBoth == false)
+                                    {
+                                        // Resolve when just 1 document have counters
+                                        resolvedCountersConflict = true;
+                                        continue;
+                                    }
+
+                                    resolvedCountersConflict = ShouldResolveCountersConflict(current, modified);
                                     continue;
                                 }
+                            }
+                            else if (EqualsIgnoreCaseAscii(property, TimeSeriesU8))
+                            {
+                                if (options.TryMergeMetadataConflicts)
+                                {
+                                    if (existsInBoth == false)
+                                    {
+                                        // Resolve when just 1 document have time-series
+                                        resolvedTimeSeriesConflict = true;
+                                        continue;
+                                    }
 
-                                resolvedCountersConflict = ShouldResolveCountersConflict(current, modified);
+                                    resolvedTimeSeriesConflict = ShouldResolveTimeSeriesConflict(current, modified);
+                                    continue;
+                                }
+                            }
+                            else if (IsSignificantMetadataProperty(property, options) == false)
                                 continue;
-                            }
                         }
-                        else if (property.Equals(Constants.Documents.Metadata.TimeSeries, StringComparison.OrdinalIgnoreCase))
+                        else if (EqualsIgnoreCaseAscii(property, MetadataKeyU8))
                         {
-                            if (options.TryMergeMetadataConflicts)
-                            {
-                                if (current.TryGetMember(property, out object _) == false ||
-                                    modified.TryGetMember(property, out object _) == false)
-                                {
-                                    // Resolve when just 1 document have time-series
-                                    resolvedTimeSeriesConflict = true;
-                                    continue;
-                                }
-
-                                resolvedTimeSeriesConflict = ShouldResolveTimeSeriesConflict(current, modified);
-                                continue;
-                            }
-                        }
-                        else if (IsSignificantMetadataProperty(property, options) == false)
                             continue;
+                        }
                     }
-                    else if (property.Equals(Constants.Documents.Metadata.Key, StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-                }
 
-                if (current.TryGetMember(property, out object currentProperty) == false ||
-                    modified.TryGetMember(property, out object modifiedProperty) == false)
-                {
-                    return DocumentCompareResult.NotEqual;
-                }
+                    if (existsInBoth == false)
+                        return DocumentCompareResult.NotEqual;
 
-                if (Equals(currentProperty, modifiedProperty) == false)
-                {
-                    return DocumentCompareResult.NotEqual;
+                    if (pass == 1)
+                        continue; // unreachable (pass 1 only sees one-sided properties), kept for clarity
+
+                    if (BlittableJsonReaderObject.TryCompareValuesByIndex(doc, i, other, indexInOther, out var equal) == false)
+                        equal = Equals(doc.GetValueByIndex(i), other.GetValueByIndex(indexInOther));
+
+                    if (equal == false)
+                        return DocumentCompareResult.NotEqual;
                 }
             }
 

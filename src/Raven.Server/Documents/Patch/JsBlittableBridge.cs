@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Reflection;
@@ -430,7 +430,6 @@ namespace Raven.Server.Documents.Patch
 
         private unsafe void WriteBlittableInstance(BlittableObjectInstance obj, bool isRoot, bool filterProperties)
         {
-            HashSet<string> modifiedProperties = null;
             if (obj.DocumentId != null &&
                 _usageMode == BlittableJsonDocumentBuilder.UsageMode.None)
             {
@@ -446,22 +445,42 @@ namespace Raven.Server.Documents.Patch
                     var propIndex = propertiesByInsertionOrder.Properties[i];
                     obj.Blittable.GetPropertyByIndex(propIndex, ref prop);
 
+                    // the JS-touched property sets are tiny (usually a field or two), while the
+                    // document can have many properties - scan them with allocation-free
+                    // LazyStringValue comparisons instead of materializing a string per property
                     BlittableObjectInstance.BlittableObjectProperty modifiedValue = default;
-                    string key = prop.Name.ToString();
-                    var existInObject = obj.OwnValues?
-                        .TryGetValue(key, out modifiedValue) == true;
-
-                    if (existInObject == false && obj.Deletes?.Contains(key) == true)
-                        continue;
-
-                    if (existInObject)
+                    string key = null;
+                    var existInObject = false;
+                    if (obj.OwnValues != null)
                     {
-                        modifiedProperties ??= new HashSet<string>();
-
-                        modifiedProperties.Add(key);
+                        foreach (var kvp in obj.OwnValues)
+                        {
+                            if (prop.Name == kvp.Key)
+                            {
+                                key = kvp.Key;
+                                modifiedValue = kvp.Value;
+                                existInObject = true;
+                                break;
+                            }
+                        }
                     }
 
-                    if (ShouldFilterProperty(filterProperties, key))
+                    if (existInObject == false && obj.Deletes != null)
+                    {
+                        var deleted = false;
+                        foreach (var del in obj.Deletes)
+                        {
+                            if (prop.Name == del)
+                            {
+                                deleted = true;
+                                break;
+                            }
+                        }
+                        if (deleted)
+                            continue;
+                    }
+
+                    if (ShouldFilterProperty(filterProperties, prop.Name))
                         continue;
 
                     _writer.WritePropertyName(prop.Name);
@@ -483,7 +502,7 @@ namespace Raven.Server.Documents.Patch
             foreach (var modificationKvp in obj.OwnValues)
             {
                 //We already iterated through those properties while iterating the original properties set.
-                if (modifiedProperties != null && modifiedProperties.Contains(modificationKvp.Key))
+                if (obj.Blittable != null && obj.Blittable.GetPropertyIndex(modificationKvp.Key) != -1)
                     continue;
 
                 var propertyName = modificationKvp.Key;
@@ -498,6 +517,23 @@ namespace Raven.Server.Documents.Patch
                 var blittableObjectProperty = modificationKvp.Value;
                 WriteJsonValue(obj, isRoot, propertyNameAsString, blittableObjectProperty.Value);
             }
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static bool ShouldFilterProperty(bool filterProperties, LazyStringValue property)
+        {
+            if (filterProperties == false)
+                return false;
+
+            return property == Constants.Documents.Indexing.Fields.ReduceKeyHashFieldName ||
+                   property == Constants.Documents.Indexing.Fields.DocumentIdFieldName ||
+                   property == Constants.Documents.Indexing.Fields.SourceDocumentIdFieldName ||
+                   property == Constants.Documents.Metadata.Id ||
+                   property == Constants.Documents.Metadata.LastModified ||
+                   property == Constants.Documents.Metadata.IndexScore ||
+                   property == Constants.Documents.Metadata.ChangeVector ||
+                   property == Constants.Documents.Metadata.Flags;
+
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
