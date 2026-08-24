@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -236,7 +236,7 @@ namespace Voron
 
         public abstract JournalWriter CreateNewJournalWriter(long journalNumber, long minRequiredSize, long preferredSize, Pal.journal_entry journalHeaderRecord);
 
-        public virtual void PrepareRecyclableJournalInBackground(long size)
+        public virtual void PrepareRecyclableJournalInBackground(long size, Func<bool> isJournalWriteActive = null)
         {
         }
 
@@ -586,24 +586,32 @@ namespace Voron
             private long _currentJournalSizeHint;
             private int _journalPoolPreparationInFlight;
 
-            public override void PrepareRecyclableJournalInBackground(long size)
+            // paths in _journalsForReuse whose zeroing was interrupted, and how far it got - guarded by _journalsForReuse.
+            // a partially zeroed file is strictly better than a fresh fallocate (the zeroed prefix already has its
+            // extents written), so it stays usable; we just keep paying down the remainder when the journal is quiet
+            private readonly Dictionary<string, long> _partiallyZeroedJournals = new();
+
+            private const int JournalZeroingChunkSize = Constants.Size.Megabyte;
+            private const int MaxJournalZeroingStallMs = 500; // waited this long for a quiet journal? bank progress, retry on the next trigger
+
+            public override void PrepareRecyclableJournalInBackground(long size, Func<bool> isJournalWriteActive = null)
             {
                 if (EnableJournalPoolPrewarming == false || Disposed)
                     return;
 
                 size = Math.Min(size, MaxLogFileSize);
 
-                if (HasAdequateRecyclableJournal(size))
+                if (HasAdequateRecyclableJournal(size) && HasPartiallyZeroedJournal() == false)
                     return;
 
                 if (Interlocked.CompareExchange(ref _journalPoolPreparationInFlight, 1, 0) != 0)
                     return;
 
-                Task.Run(() =>
+                Task.Factory.StartNew(() =>
                 {
                     try
                     {
-                        PrepareRecyclableJournal(size);
+                        PrepareRecyclableJournal(size, isJournalWriteActive);
                     }
                     catch (Exception ex)
                     {
@@ -614,36 +622,126 @@ namespace Voron
                     {
                         Volatile.Write(ref _journalPoolPreparationInFlight, 0);
                     }
-                });
+                }, CancellationToken.None, TaskCreationOptions.LongRunning, TaskScheduler.Default);
             }
 
-            private void PrepareRecyclableJournal(long size)
+            private bool HasPartiallyZeroedJournal()
             {
-                var path = Path.Combine(JournalPath.FullPath, RecyclableJournalName(Interlocked.Increment(ref _reuseCounter)));
+                lock (_journalsForReuse)
+                    return _partiallyZeroedJournals.Count > 0;
+            }
+
+            private void PrepareRecyclableJournal(long size, Func<bool> isJournalWriteActive)
+            {
+                // finish a partially zeroed pool file before creating a new one
+                string path = null;
+                long offset = 0;
+                var resuming = false;
+                lock (_journalsForReuse)
+                {
+                    foreach (var (partialPath, zeroedUpTo) in _partiallyZeroedJournals)
+                    {
+                        path = partialPath;
+                        offset = zeroedUpTo;
+                        resuming = true;
+                        // hold the file out of the pool while we write to it, a roll must not grab it mid-write
+                        var idx = _journalsForReuse.IndexOfValue(path);
+                        if (idx >= 0)
+                            _journalsForReuse.RemoveAt(idx);
+                        break;
+                    }
+                }
+
+                path ??= Path.Combine(JournalPath.FullPath, RecyclableJournalName(Interlocked.Increment(ref _reuseCounter)));
+
                 try
                 {
-                    var rc = Pal.rvn_create_zeroed_file(path, size, out var errorCode);
-                    if (rc != PalFlags.FailCodes.Success)
-                        PalHelper.ThrowLastError(rc, errorCode, $"Failed to create a zeroed pool journal {path} of size {size}");
+                    long length;
+                    bool completed;
+                    using (var fs = new FileStream(path, new FileStreamOptions
+                           {
+                               Mode = resuming ? FileMode.Open : FileMode.CreateNew,
+                               Access = FileAccess.Write,
+                               Share = FileShare.None,
+                               Options = FileOptions.WriteThrough, // paced, bounded device usage - not a page cache dump
+                               BufferSize = 0,
+                               PreallocationSize = resuming ? 0 : size
+                           }))
+                    {
+                        if (resuming == false)
+                            fs.SetLength(size); // the unzeroed tail is allocated-but-unwritten, exactly a fresh fallocate
+
+                        length = fs.Length;
+                        completed = ZeroJournalChunks(fs, path, offset, length, isJournalWriteActive, ref offset);
+                        fs.Flush(flushToDisk: true);
+                    }
 
                     lock (_journalsForReuse)
                     {
                         if (Disposed)
                         {
+                            _partiallyZeroedJournals.Remove(path);
                             TryDelete(path);
                             return;
                         }
 
+                        if (completed && offset >= length)
+                            _partiallyZeroedJournals.Remove(path);
+                        else
+                            _partiallyZeroedJournals[path] = offset;
+
                         var ticks = new FileInfo(path).LastWriteTimeUtc.Ticks;
-                        while (_journalsForReuse.TryAdd(ticks, path) is false)
-                            ticks++;
+                        if (_journalsForReuse.ContainsValue(path) == false)
+                        {
+                            while (_journalsForReuse.TryAdd(ticks, path) is false)
+                                ticks++;
+                        }
                     }
                 }
                 catch
                 {
+                    lock (_journalsForReuse)
+                    {
+                        _partiallyZeroedJournals.Remove(path);
+                        var idx = _journalsForReuse.IndexOfValue(path);
+                        if (idx >= 0)
+                            _journalsForReuse.RemoveAt(idx);
+                    }
                     TryDelete(path);
                     throw;
                 }
+            }
+
+            private bool ZeroJournalChunks(FileStream fs, string path, long from, long length, Func<bool> isJournalWriteActive, ref long offset)
+            {
+                var zeros = new byte[JournalZeroingChunkSize];
+                var stalledMs = 0;
+                fs.Position = from;
+                for (offset = from; offset < length; )
+                {
+                    // the device being busy with our own zeroing is fine - what we must not do is delay a journal write,
+                    // those are user facing. between chunks, stand down while the journal is (or just was) writing
+                    while (isJournalWriteActive?.Invoke() == true)
+                    {
+                        if (Disposed)
+                            return false;
+                        if (stalledMs >= MaxJournalZeroingStallMs)
+                            return false; // no quiet gap - bank what we have, the next trigger resumes
+
+                        Thread.Sleep(1);
+                        stalledMs++;
+                    }
+
+                    if (Disposed)
+                        return false;
+
+                    var len = (int)Math.Min(JournalZeroingChunkSize, length - offset);
+                    using (IoMetrics.MeterIoRate(path, Sparrow.Server.Meters.IoMetrics.MeterType.JournalWrite, len))
+                        fs.Write(zeros, 0, len);
+                    offset += len;
+                }
+
+                return true;
             }
 
             private bool HasAdequateRecyclableJournal(long size)
@@ -883,12 +981,14 @@ namespace Voron
                         var fileInfo = new FileInfo(_journalsForReuse.Values[0]);
                         if (fileInfo.Exists == false)
                         {
+                            _partiallyZeroedJournals.Remove(_journalsForReuse.Values[0]);
                             _journalsForReuse.RemoveAt(0);
                             continue;
                         }
 
                         if (now - fileInfo.LastWriteTimeUtc.Ticks > maxAgeTicks)
                         {
+                            _partiallyZeroedJournals.Remove(_journalsForReuse.Values[0]);
                             _journalsForReuse.RemoveAt(0);
                             TryDelete(fileInfo.FullName);
                             continue;
@@ -898,6 +998,7 @@ namespace Voron
                     {
                         // explicitly ignoring all file errors, we don't care, we want to prune them
                         var path = _journalsForReuse.Values[0];
+                        _partiallyZeroedJournals.Remove(path);
                         _journalsForReuse.RemoveAt(0);
                         TryDelete(path);
                         continue;
@@ -969,8 +1070,27 @@ namespace Voron
 
                     while (_journalsForReuse.Count > 0)
                     {
-                        var filename = _journalsForReuse.Values[_journalsForReuse.Count - 1];
-                        _journalsForReuse.RemoveAt(_journalsForReuse.Count - 1);
+                        // prefer the entry with the most extents already written - a fully prepared (or previously
+                        // used) journal beats a partially zeroed one, which still beats a fresh fallocate
+                        var best = _journalsForReuse.Count - 1;
+                        var bestZeroed = long.MaxValue;
+                        for (var i = _journalsForReuse.Count - 1; i >= 0; i--)
+                        {
+                            if (_partiallyZeroedJournals.TryGetValue(_journalsForReuse.Values[i], out var zeroedUpTo) == false)
+                            {
+                                best = i; // not partial - fully written, take it
+                                break;
+                            }
+                            if (bestZeroed == long.MaxValue || zeroedUpTo > bestZeroed)
+                            {
+                                best = i;
+                                bestZeroed = zeroedUpTo;
+                            }
+                        }
+
+                        var filename = _journalsForReuse.Values[best];
+                        _journalsForReuse.RemoveAt(best);
+                        _partiallyZeroedJournals.Remove(filename);
 
                         try
                         {
@@ -1042,6 +1162,7 @@ namespace Voron
                     }
 
                     _journalsForReuse.Clear();
+                    _partiallyZeroedJournals.Clear();
                 }
                 finally
                 {

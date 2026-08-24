@@ -93,6 +93,14 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     internal long WriteLatencyEwmaTicks => _writeLatencyTicks.Current;
 
+    private long _lastWriteActivityTimestamp;
+
+    // journal writes are user facing - background work (pool zeroing, etc.) uses this to stand down
+    // while a write is running or another is likely imminent
+    internal bool JournalWriteRecentlyActive =>
+        Volatile.Read(ref _nextSequence) - Volatile.Read(ref _reapedSequence) > 0 ||
+        Stopwatch.GetElapsedTime(Volatile.Read(ref _lastWriteActivityTimestamp)).TotalMilliseconds < 3;
+
     internal bool IsMeasuredFastDevice
     {
         get
@@ -169,6 +177,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private void WriteDirect(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<Ack> acks)
     {
+        Volatile.Write(ref _lastWriteActivityTimestamp, Stopwatch.GetTimestamp());
         RecordSubmitted(acks);
 
         try
@@ -248,6 +257,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private void RecordWriteLatency(long ticks, long numberOf4Kbs)
     {
+        Volatile.Write(ref _lastWriteActivityTimestamp, Stopwatch.GetTimestamp());
         _writeLatencyTicks.Update(ticks);
         _writeSizeBytes.Update(numberOf4Kbs * 4 * Constants.Size.Kilobyte);
     }
