@@ -85,11 +85,14 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     public bool PipeliningEnabled => _maxConcurrentWrites > 1;
 
     internal bool ShouldPipelineNow =>
-        PipeliningEnabled &&                                          
-        // the device is slow enough that overlapping writes pays for the smaller batches
-        _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks &&   
+        PipeliningEnabled &&
         // if we are bounded by device bandwidth, pipelining won't help
-        IsCommitLatencyBound;                                         
+        IsCommitLatencyBound &&
+        // the device is slow enough that overlapping writes pays for the smaller batches - or a fast
+        // device is hiccuping: at queue depth one a single stalled write is the whole p999, and
+        // overlapping absorbs the stall
+        (_writeLatencyTicks.Current >= _pipelineAboveLatencyTicks ||
+         _slowWriteRate.Current >= SlowWriteRateToPipeline);                                         
 
     internal long WriteLatencyEwmaTicks => _writeLatencyTicks.Current;
 
