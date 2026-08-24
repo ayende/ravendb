@@ -249,8 +249,16 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private bool IsAfterFailure(long sequence) => sequence > Volatile.Read(ref _lowestFailedSequence);
 
+    // a write is a hiccup when it takes 4x the running average; the rate is per-mille of recent
+    // writes, so 250 means a quarter of them stalled
+    private const int SlowWriteRateToPipeline = 250;
+    private SimpleEwma _slowWriteRate = new(smoothing: 8);
+
     private void RecordWriteLatency(long ticks, long numberOf4Kbs)
     {
+        var average = _writeLatencyTicks.Current;
+        _slowWriteRate.Update(average != 0 && ticks > 4 * average ? 1000 : 0);
+
         _writeLatencyTicks.Update(ticks);
         _writeSizeBytes.Update(numberOf4Kbs * 4 * Constants.Size.Kilobyte);
     }
