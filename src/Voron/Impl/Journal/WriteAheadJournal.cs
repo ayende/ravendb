@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
@@ -322,6 +322,8 @@ namespace Voron.Impl.Journal
 
         public long WriteLatencyEwmaTicks => _writePipeline.WriteLatencyEwmaTicks;
 
+        public bool IsJournalWriteActive => _writePipeline.JournalWriteRecentlyActive;
+
         private JournalFile NextFile(long numberOf4Kbs)
         {
             var now = DateTime.UtcNow;
@@ -387,7 +389,7 @@ namespace Voron.Impl.Journal
                 ? _currentJournalFileSize
                 : Math.Min(_currentJournalFileSize * 2, _env.Options.MaxLogFileSize);
 
-            _env.Options.PrepareRecyclableJournalInBackground(size);
+            _env.Options.PrepareRecyclableJournalInBackground(size, () => _env.Journal.IsJournalWriteActive);
         }
 
         public bool RecoverDatabase(TransactionHeader* txHeader, Action<LogLevel, string> addToInitLog, out long lastJournalNumber, out bool skippedInvalidJournals)
