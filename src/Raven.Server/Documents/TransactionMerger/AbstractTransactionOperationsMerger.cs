@@ -632,9 +632,15 @@ namespace Raven.Server.Documents.TransactionMerger
                             var previousInFlight = previous.Transaction.InnerTransaction.LowLevelTransaction;
                             Task batchingWindow = previousInFlight.DurableCommit ?? previousInFlight.AsyncCommit;
 
+                            var winSp = System.Diagnostics.Stopwatch.StartNew();
                             result = ExecutePendingOperationsInTransaction(
                                 currentPendingOps, current,
                                 batchingWindow, ref transactionMeter);
+                            if (winSp.ElapsedMilliseconds > 250)
+                                Console.WriteLine($"ABSORB ts={DateTime.UtcNow:HH:mm:ss.fff} took_ms={winSp.ElapsedMilliseconds} " +
+                                                  $"ops={currentPendingOps.Count} winDone={batchingWindow?.IsCompleted} winFaulted={batchingWindow?.IsFaulted} " +
+                                                  $"usedDurable={previousInFlight.DurableCommit != null} asyncDone={previousInFlight.AsyncCommit?.IsCompleted} " +
+                                                  $"prevTx={previousInFlight.Id} result={result}");
                             UpdateGlobalReplicationInfoBeforeCommit(current);
                         }
                         finally
