@@ -259,7 +259,8 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
                               $"ewma_ms={ewma / (double)TimeSpan.TicksPerMillisecond:F2} size4kb={numberOf4Kbs} inline={(inline ? 1 : 0)} " +
                               $"gcpause_ms={pauseDelta.TotalMilliseconds:F2} flush={(_env.IsFlushInProgress ? 1 : 0)} " +
                               $"sync={(_env.IsSyncInProgress ? 1 : 0)} prep={(_env.Options.JournalPoolPreparationInFlight ? 1 : 0)} " +
-                              $"sinceRoll_ms={sinceRollMs:F0} env={System.IO.Path.GetFileName(_env.Options.BasePath.FullPath)}");
+                              $"sinceRoll_ms={sinceRollMs:F0} gc0={GC.CollectionCount(0)} gc1={GC.CollectionCount(1)} gc2={GC.CollectionCount(2)} " +
+                              $"env={System.IO.Path.GetFileName(_env.Options.BasePath.FullPath)}");
         }
 
         _writeLatencyTicks.Update(ticks);
