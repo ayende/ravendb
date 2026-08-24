@@ -893,14 +893,22 @@ namespace Voron.Impl.Journal
             public void OnTransactionCommitted(LowLevelTransaction tx)
             {
                 var action = _updateJournalStateAfterFlush;
-                action?.Invoke(tx);
+                if (action == null)
+                    return;
+                action.Invoke(tx);
+                // with async commits, a transaction commits well before it completes - several transactions
+                // may see (and invoke) the same posted action before the first of them completes. Remember
+                // WHICH action this tx applied, so a stale flag from a previous flush cycle cannot clear the
+                // next cycle's action without running it (that killed the environment as unrecoverable)
+                tx.AppliedJournalStateAction = action;
             }
 
             public void OnTransactionCompleted(LowLevelTransaction tx)
             {
                 // we are getting the transaction here just to verify that the write lock is held
                 Debug.Assert(tx.Flags is TransactionFlags.ReadWrite);
-                if (tx.Committed && tx.AppliedJournalStateAfterFlush)
+                if (tx.Committed && tx.AppliedJournalStateAfterFlush &&
+                    ReferenceEquals(tx.AppliedJournalStateAction, _updateJournalStateAfterFlush))
                 {
                     _updateJournalStateAfterFlush = null;
                     _flusherShouldRecheckJournalState.Set();
@@ -1113,6 +1121,9 @@ namespace Voron.Impl.Journal
 
                 var applied = WaitForJournalStateToBeUpdated(token, transactionPersistentContext, txw =>
                 {
+                    if (executedSuccessfully)
+                        return; // a previous transaction in the async chain already applied this cycle
+
                     try
                     {
                         txw.AppliedJournalStateAfterFlush = true;
