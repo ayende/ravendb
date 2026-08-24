@@ -125,9 +125,7 @@ namespace Raven.Server.Documents.TransactionMerger
 
             var writeLatencyTicks = _env.Journal.WriteLatencyEwmaTicks;
 
-            _consolidatingBatches = _consolidatingBatches
-                ? writeLatencyTicks >= ExitBatchConsolidationAtLatencyTicks
-                : writeLatencyTicks >= EnterBatchConsolidationAtLatencyTicks && _env.Journal.IsCommitLatencyBound;
+            _consolidatingBatches = false; // probe: consolidation fully disabled
 
             if (_consolidatingBatches == false)
                 return _maxTimeToWaitForPreviousTxInMs;
