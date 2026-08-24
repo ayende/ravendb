@@ -65,7 +65,7 @@ namespace Raven.Server.Documents.TransactionMerger
         // result: volume IOPS bound at a fraction of its bandwidth. We intentionally increase transaction time here, to batch more
         private const long EnterBatchConsolidationAtLatencyTicks = 8 * TimeSpan.TicksPerMillisecond;   // the device is queuing under the write traffic
         private const long ExitBatchConsolidationAtLatencyTicks = 4 * TimeSpan.TicksPerMillisecond;    // consolidation grows the writes, and must not turn itself off too quickly
-        private const long BatchConsolidationWindowLatencyFactor = 2;                                  // hold for up to this many write durations...
+        private const long BatchConsolidationWindowLatencyFactor = 1;                                  // hold for up to this many write durations...
         private const long MaxBatchConsolidationWindowInMs = 50;                                     // ...but never longer than this
         private const long MaxBatchConsolidationSizeInBytes = 128 * Constants.Size.Megabyte;
         private int _consecutiveEmptyConsolidationWaits;
