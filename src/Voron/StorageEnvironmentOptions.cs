@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -241,6 +241,8 @@ namespace Voron
         }
 
         public bool EnableJournalPoolPrewarming { get; set; } = true;
+
+        public virtual bool JournalPoolPreparationInFlight => false; // probe: hiccup attribution
 
         public abstract JournalWriter CreateReadOnlyJournalWriter(long journalNumber, long journalSize);
 
@@ -585,6 +587,7 @@ namespace Voron
 
             private long _currentJournalSizeHint;
             private int _journalPoolPreparationInFlight;
+            public override bool JournalPoolPreparationInFlight => Volatile.Read(ref _journalPoolPreparationInFlight) != 0;
 
             public override void PrepareRecyclableJournalInBackground(long size)
             {

@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
@@ -812,6 +812,7 @@ namespace Voron.Impl.Journal
             private readonly ConcurrentDictionary<long, JournalFile> _journalsToDelete = new();
             private readonly object _flushingLock = new();
             private readonly SemaphoreSlim _fsyncLock = new(1);
+            public bool SyncInProgress => _fsyncLock.CurrentCount == 0;
             private readonly WriteAheadJournal _waj;
             private readonly ManualResetEventSlim _flusherShouldRecheckJournalState = new();
             private readonly LockTaskResponsible _flushLockTaskResponsible;
@@ -2374,6 +2375,7 @@ namespace Voron.Impl.Journal
             {
                 CurrentFileIsDone();
                 CurrentFile = NextFile(requiredSizeIn4Kbs + JournalHeaderRecord.SizeIn4Kb);
+                Volatile.Write(ref _env.LastJournalRollTimestamp, Stopwatch.GetTimestamp());
                 if (_logger.IsDebugEnabled)
                     _logger.Debug($"New journal file created {CurrentFile.Number:D19} with size {CurrentFile.JournalSize}");
             }

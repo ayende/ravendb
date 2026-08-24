@@ -1,4 +1,4 @@
-using Sparrow;
+﻿using Sparrow;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
@@ -1781,6 +1781,10 @@ namespace Voron
         // We create a single thread-safe persistent dictionary locator with enough state to deal with almost any scenario.
         internal PersistentDictionaryLocator DictionaryLocator { get; } = new PersistentDictionaryLocator(1024);
         public bool IsFlushInProgress => Journal.Applicator.FlushInProgress != 0;
+
+        internal long LastJournalRollTimestamp; // probe: hiccup attribution
+
+        internal bool IsSyncInProgress => Journal.Applicator.SyncInProgress;
 
         // Must check both the queue and _lastPeekedRecord, since TryPeekNextRecordToFlush
         // may dequeue a record into _lastPeekedRecord without consuming it
