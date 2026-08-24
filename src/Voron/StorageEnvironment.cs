@@ -1,4 +1,4 @@
-using Sparrow;
+﻿using Sparrow;
 using System;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
@@ -1553,6 +1553,10 @@ namespace Voron
                 };
             }
         }
+
+        // set by the transaction merger while it is deliberately growing batches - pipelining would
+        // split the very write stream the consolidation is trying to merge, so it stands down
+        internal volatile bool BatchConsolidationActive;
 
         internal bool ShouldDelaySyncToConsolidateWrites()
         {

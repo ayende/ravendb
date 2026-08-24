@@ -85,7 +85,9 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     public bool PipeliningEnabled => _maxConcurrentWrites > 1;
 
     internal bool ShouldPipelineNow =>
-        PipeliningEnabled &&                                          
+        PipeliningEnabled &&
+        // the merger is growing batches - overlapping writes would split the stream it is merging
+        _env.BatchConsolidationActive == false &&                                          
         // the device is slow enough that overlapping writes pays for the smaller batches
         _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks &&   
         // if we are bounded by device bandwidth, pipelining won't help
@@ -110,7 +112,8 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     public int MaxConcurrentWrites => _maxConcurrentWrites;
 
     public bool CanPipeline(long totalNumberOf4Kbs) =>
-        PipeliningEnabled &&                                          
+        PipeliningEnabled &&
+        _env.BatchConsolidationActive == false &&                                          
         // < 1MB, otherwise we'll be copying to our own buffer, then we have large write, etc. Doesn't pay off. 
         totalNumberOf4Kbs <= MaxPipelinedBatch4Kbs &&                 
         // the device is slow enough that overlapping writes pays for the smaller batches
