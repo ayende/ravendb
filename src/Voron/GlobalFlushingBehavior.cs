@@ -204,7 +204,10 @@ namespace Voron
                     continue; // nothing to do
 
                 if (// journal writes are user facing, high latency there effects the user, so we want to prioritize that over flushing
-                    envToFlush.Journal.WriteLatencyEwmaTicks >= envToFlush.Options.PipelineJournalWritesAboveLatencyInTicks * 2 &&
+                    (envToFlush.Journal.WriteLatencyEwmaTicks >= envToFlush.Options.PipelineJournalWritesAboveLatencyInTicks * 2 ||
+                     // a fast device never crosses the latency gate, but if journal writes are hiccuping right now,
+                     // odds are our flushes are colliding with them - stand down until the writes smooth out
+                     envToFlush.Journal.SlowWriteRatePerMille >= 125) &&
                     // on the other hand, we have to flush _sometimes_, we can't starve the flusher indefinitely, and too high a limit will 
                     // cause the *journals writes* to suffer high latency, so we have to balance not flushing too often and not saturating the I/O
                     numberOfNewPagesSinceLastFlush < 4 * envToFlush.Options.MaxNumberOfPagesInJournalBeforeFlush)

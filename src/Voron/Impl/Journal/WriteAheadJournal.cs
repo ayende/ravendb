@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
@@ -321,6 +321,8 @@ namespace Voron.Impl.Journal
         internal bool IsCommitLatencyBound => _writePipeline.IsCommitLatencyBound;
 
         public long WriteLatencyEwmaTicks => _writePipeline.WriteLatencyEwmaTicks;
+
+        public long SlowWriteRatePerMille => _writePipeline.SlowWriteRatePerMille;
 
         private JournalFile NextFile(long numberOf4Kbs)
         {

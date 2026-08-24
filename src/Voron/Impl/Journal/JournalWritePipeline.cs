@@ -93,6 +93,9 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     internal long WriteLatencyEwmaTicks => _writeLatencyTicks.Current;
 
+    // per-mille of recent writes that took 4x the running average - a fast device that is hiccuping
+    internal long SlowWriteRatePerMille => _slowWriteRate.Current;
+
     internal bool IsMeasuredFastDevice
     {
         get
@@ -246,8 +249,12 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private bool IsAfterFailure(long sequence) => sequence > Volatile.Read(ref _lowestFailedSequence);
 
+    private SimpleEwma _slowWriteRate = new(smoothing: 8);
+
     private void RecordWriteLatency(long ticks, long numberOf4Kbs)
     {
+        var average = _writeLatencyTicks.Current;
+        _slowWriteRate.Update(average != 0 && ticks > 4 * average ? 1000 : 0);
         _writeLatencyTicks.Update(ticks);
         _writeSizeBytes.Update(numberOf4Kbs * 4 * Constants.Size.Kilobyte);
     }
