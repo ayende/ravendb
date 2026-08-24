@@ -133,7 +133,7 @@ namespace Raven.Server.Documents.TransactionMerger
             if (_consolidatingBatches == false)
                 return _maxTimeToWaitForPreviousTxInMs;
 
-            var windowMs = BatchConsolidationWindowLatencyFactor * writeLatencyTicks / TimeSpan.TicksPerMillisecond;
+            var windowMs = writeLatencyTicks / 2.0 / TimeSpan.TicksPerMillisecond;
             return Math.Max(_maxTimeToWaitForPreviousTxInMs, Math.Min(MaxBatchConsolidationWindowInMs, windowMs));
         }
         private readonly double _maxTimeToWaitForPreviousTxBeforeRejectingInMs;
