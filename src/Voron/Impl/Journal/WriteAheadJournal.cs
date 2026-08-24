@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Frozen;
@@ -2215,7 +2215,7 @@ namespace Voron.Impl.Journal
                 Pager.PagerTransactionState tempTxState = new() { IsWriteTransaction = true };
                 long numberOfUncompressedPages = 0;
                 long numberOf4Kbs = 0;
-                TaskCompletionSource branchCommit = null;
+                TaskCompletionSource branchCommit = tx.PreparedDurableCommit;
                 try
                 {
                     var rootJournal = _env.Options.RootJournal ?? this;
@@ -2229,7 +2229,7 @@ namespace Voron.Impl.Journal
                     {
                         var start = Stopwatch.GetTimestamp();
                         var entry = PrepareToWriteToJournal(tx, ref tempTxState, out numberOfUncompressedPages, out var numberOfUsedCompressionBufferPages);
-                        branchCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                        branchCommit ??= new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
                         tx.DurableCommit = branchCommit.Task;
                         numberOf4Kbs = entry.NumberOf4Kbs;
                         var pendingJournalStateRecord = new PendingJournalStateRecord(tx, branchCommit, entry);

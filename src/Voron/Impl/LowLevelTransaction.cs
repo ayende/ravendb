@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Frozen;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -1152,6 +1152,9 @@ namespace Voron.Impl
         internal Task<bool> AsyncCommit;
         // This task completes when the journal write for this transaction is durably stored on disk.
         internal Task DurableCommit;
+        // created at async-commit begin so DurableCommit is observable the moment BeginAsyncCommitAndStartNewTransaction
+        // returns - the transaction merger uses it as the batching window, and stage2 assigns it far too late for that
+        internal TaskCompletionSource PreparedDurableCommit;
         private LowLevelTransaction _asyncCommitNextTransaction;
         private LowLevelTransaction _asyncCommitPreviousTransaction;
         private bool _asyncCommitSubmissionEnded;
@@ -1176,6 +1179,12 @@ namespace Voron.Impl
             Debug.Assert(_writeToJournalState is not WriteToJournalState.None, "_writeToJournalState is not WriteToJournalState.None");
             bool writeToJournalIsRequired = _writeToJournalState is not WriteToJournalState.Skip;
             bool writesOwnJournalRecord = _writeToJournalState is WriteToJournalState.ModifiedPages;
+
+            if (writesOwnJournalRecord)
+            {
+                PreparedDurableCommit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                DurableCommit = PreparedDurableCommit.Task;
+            }
 
             FreePageLocator(persistentContext, ref _pageLocator);
 
@@ -1277,6 +1286,8 @@ namespace Voron.Impl
                 // state of the journal is. We have to shut down and run recovery to 
                 // come to a known good state
                 _txStatus |= TxStatus.Errored;
+                // stage2 may have died before reaching the journal - nothing else will complete the window task
+                PreparedDurableCommit?.TrySetException(e);
                 _env.Options.SetCatastrophicFailure(ExceptionDispatchInfo.Capture(e));
 
                 throw;
