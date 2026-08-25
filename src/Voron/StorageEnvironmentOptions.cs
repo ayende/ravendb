@@ -598,6 +598,17 @@ namespace Voron
                 public static unsafe int JournalZeroingPacing(void* state)
                 {
                     var pacing = (JournalZeroingPacingState)GCHandle.FromIntPtr((IntPtr)state).Target;
+
+                    // zero-filling prepays the filesystem extent-conversion cost, which is only worth
+                    // buying on fast local devices. On bandwidth-budgeted volumes (cloud disks) the fill
+                    // competes with the journal and the data-file writeback for the whole budget -
+                    // measured on gp3 at high write concurrency it cost 8-17% of sustained throughput,
+                    // while skipping it entirely put us ahead of not having a pool at all. The file is
+                    // still created and fallocated, so the roll gets its journal without paying for the
+                    // creation inside the write lock - it just is not pre-zeroed.
+                    if (pacing.Journal.IsMeasuredFastDevice == false)
+                        return -1;
+
                     if (pacing.Journal.IsJournalWriteActive == false)
                         return 0; // write the next chunk immediately
 
