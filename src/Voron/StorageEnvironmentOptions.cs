@@ -240,7 +240,7 @@ namespace Voron
         {
         }
 
-        public bool EnableJournalPoolPrewarming { get; set; } = true;
+        public bool EnableJournalPoolPrewarming { get; set; } = string.IsNullOrEmpty(Environment.GetEnvironmentVariable("VORON_DISABLE_JOURNAL_PREWARM")); // probe: env kill-switch
 
         public abstract JournalWriter CreateReadOnlyJournalWriter(long journalNumber, long journalSize);
 
