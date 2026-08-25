@@ -75,8 +75,13 @@ namespace Voron.Impl.Journal
         internal JournalFile CurrentFile;
 
         private readonly HeaderAccessor _headerAccessor;
-        private Pager _compressionPager;
-        private Pager.State _compressionPagerState;
+        // two compression buffer regions: an async commit prepares (compresses) its journal entry
+        // into one region while the previous transaction's journal write is still reading from the
+        // other (RavenDB-27409). The async chain guarantees at most one prepare and one write in
+        // flight, alternating regions; the second region is created lazily on first use
+        private readonly Pager[] _compressionPagers = new Pager[2];
+        private readonly Pager.State[] _compressionPagerStates = new Pager.State[2];
+        private int _activeCompressionBuffer;
         private long _compressionPagerCounter;
 
         private readonly DiffPages _diffPage = new DiffPages();
@@ -279,7 +284,7 @@ namespace Voron.Impl.Journal
             _currentJournalFileSize = env.Options.InitialLogFileSize;
             _headerAccessor = env.HeaderAccessor;
 
-            (_compressionPager, _compressionPagerState) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
+            (_compressionPagers[0], _compressionPagerStates[0]) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
             _journalApplicator = new WriteAheadJournal.JournalApplicator(this);
             _writePipeline = new JournalWritePipeline(_env);
 
@@ -289,7 +294,8 @@ namespace Voron.Impl.Journal
 
                 _writePipeline.Dispose();
 
-                _compressionPager.Dispose();
+                _compressionPagers[0].Dispose();
+                _compressionPagers[1]?.Dispose();
 
                 _journalApplicator.Dispose();
                 if (_env.Options.OwnsPagers)
@@ -323,6 +329,14 @@ namespace Voron.Impl.Journal
         public long WriteLatencyEwmaTicks => _writePipeline.WriteLatencyEwmaTicks;
 
         public bool IsJournalWriteActive => _writePipeline.JournalWriteRecentlyActive;
+
+        // the compression-overlap regime (RavenDB-27409): sequential large-batch writes on a
+        // stream-bound device - the batch's compression is the only thing keeping the device idle
+        // between journal writes. In the pipelined or latency-bound regimes the batching window
+        // must stay durability-based (a submission-time window collapses batch formation).
+        public bool ShouldOverlapCompression =>
+            ShouldPipelineJournalNow == false &&
+            IsCommitLatencyBound == false;
 
         public bool IsMeasuredFastDevice => _writePipeline.IsMeasuredFastDevice;
 
@@ -2220,75 +2234,102 @@ namespace Voron.Impl.Journal
 
         public (long NumberOfUncompressedPages, long NumberOf4Kbs) WriteToJournal(LowLevelTransaction tx)
         {
-            lock (_writeLock)
+            // RavenDB-12854: in 32 bits locking/unlocking the memory is done separately for each mapping
+            // we use temp tx for dealing with compression buffers pager to avoid locking (zeroing) it's content during tx dispose
+            // because we might have another transaction already using it
+            Pager.PagerTransactionState tempTxState = new() { IsWriteTransaction = true };
+            long numberOfUncompressedPages = 0;
+            long numberOf4Kbs = 0;
+            TaskCompletionSource branchCommit = tx.PreparedDurableCommit;
+            var compressionBufferIndex = _activeCompressionBuffer;
+            try
             {
-                // RavenDB-12854: in 32 bits locking/unlocking the memory is done separately for each mapping
-                // we use temp tx for dealing with compression buffers pager to avoid locking (zeroing) it's content during tx dispose
-                // because we might have another transaction already using it
-                Pager.PagerTransactionState tempTxState = new() { IsWriteTransaction = true };
-                long numberOfUncompressedPages = 0;
-                long numberOf4Kbs = 0;
-                TaskCompletionSource branchCommit = tx.PreparedDurableCommit;
-                try
+                var rootJournal = _env.Options.RootJournal ?? this;
+                if (_env.Options.RootJournal != null && rootJournal._rootJournalMergedCommitsCts is null)
                 {
-                    var rootJournal = _env.Options.RootJournal ?? this;
-                    if (_env.Options.RootJournal != null && rootJournal._rootJournalMergedCommitsCts is null)
+                    throw new InvalidOperationException("Unable to commit as a branch if the root journal I'm associated with is not within a shared journal scope");
+                }
+
+                JournalStateRecord journalStateRecord = null;
+                PendingJournalStateRecord pendingJournalStateRecord = null;
+                if (tx.ShouldWriteTransactionChangesToJournal)
+                {
+                    // RavenDB-27409: preparation (which includes the compression) runs OUTSIDE the write
+                    // lock and BEFORE waiting for the previous transaction, so this batch compresses while
+                    // the previous batch's journal write is still in flight - the device never idles
+                    // waiting for CPU work that could have run during the previous write. An async commit
+                    // alternates between two compression buffer regions, since the previous write may
+                    // still be reading from the other one; everything else keeps a single region.
+                    if (tx.IsAsyncCommit && _is32Bit == false)
                     {
-                        throw new InvalidOperationException("Unable to commit as a branch if the root journal I'm associated with is not within a shared journal scope");
+                        compressionBufferIndex = _activeCompressionBuffer ^= 1;
+                        if (_compressionPagers[compressionBufferIndex] == null)
+                            (_compressionPagers[compressionBufferIndex], _compressionPagerStates[compressionBufferIndex]) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
                     }
 
-                    JournalStateRecord journalStateRecord = null;
-                    if (tx.ShouldWriteTransactionChangesToJournal)
+                    var start = Stopwatch.GetTimestamp();
+                    var entry = PrepareToWriteToJournal(tx, compressionBufferIndex, ref tempTxState, out numberOfUncompressedPages, out var numberOfUsedCompressionBufferPages);
+                    Debug.Assert(branchCommit != null, "stage 1 creates PreparedDurableCommit for every ModifiedPages commit");
+                    numberOf4Kbs = entry.NumberOf4Kbs;
+                    pendingJournalStateRecord = new PendingJournalStateRecord(tx, branchCommit, entry);
+                    journalStateRecord = pendingJournalStateRecord.JournalStateRecord;
+
+                    _numberOfUsedCompressionBufferPagesSinceZeroing = Math.Max(_numberOfUsedCompressionBufferPagesSinceZeroing, numberOfUsedCompressionBufferPages);
+
+                    if (_logger.IsDebugEnabled)
                     {
-                        var start = Stopwatch.GetTimestamp();
-                        var entry = PrepareToWriteToJournal(tx, ref tempTxState, out numberOfUncompressedPages, out var numberOfUsedCompressionBufferPages);
-                        Debug.Assert(branchCommit != null, "stage 1 creates PreparedDurableCommit for every ModifiedPages commit");
-                        numberOf4Kbs = entry.NumberOf4Kbs;
-                        var pendingJournalStateRecord = new PendingJournalStateRecord(tx, branchCommit, entry);
-                        journalStateRecord = pendingJournalStateRecord.JournalStateRecord;
-                        if (this != rootJournal)
-                        {
-                            rootJournal.SharedJournalState.Enqueue(pendingJournalStateRecord);
-                        }
-                        
-                        _numberOfUsedCompressionBufferPagesSinceZeroing = Math.Max(_numberOfUsedCompressionBufferPagesSinceZeroing, numberOfUsedCompressionBufferPages);
-
-                        if (_logger.IsDebugEnabled)
-                        {
-                            var elapsed = Stopwatch.GetElapsedTime(start);
-                            _logger.Debug(
-                                $"Preparing to write tx {tx.Id} to journal with {numberOfUncompressedPages:#,#} pages ({new Size(numberOfUncompressedPages * Constants.Storage.PageSize, SizeUnit.Bytes)}) in {elapsed} with {new Size(entry.NumberOf4Kbs * 4, SizeUnit.Kilobytes)} compressed.");
-                        }
+                        var elapsed = Stopwatch.GetElapsedTime(start);
+                        _logger.Debug(
+                            $"Preparing to write tx {tx.Id} to journal with {numberOfUncompressedPages:#,#} pages ({new Size(numberOfUncompressedPages * Constants.Storage.PageSize, SizeUnit.Bytes)}) in {elapsed} with {new Size(entry.NumberOf4Kbs * 4, SizeUnit.Kilobytes)} compressed.");
                     }
+                }
 
-                    if (this == rootJournal)
+                // adopt the previous transaction's journal position - this is also the write-order
+                // barrier: our journal write may only start once the previous one has fully submitted
+                tx.WaitForPreviousTxToBeginJournalWrite();
+
+                if (this == rootJournal)
+                {
+                    lock (_writeLock)
                     {
                         WriteBuffersToJournal(tx, journalStateRecord);
-                    }
-                    else
-                    {
-                        Debug.Assert(tx.ShouldWriteTransactionChangesToJournal, "ShouldWriteTransactionChangesToJournal must be true for branch commit");
-                        rootJournal.SubmitBranchJournalEntry(branchCommit?.Task);
-                    }
 
-                    if (_env.Options.Encryption.IsEnabled && _env.Options.Encryption.HasExternalJournalCompressionBufferHandlerRegistration == false)
-                    {
-                        ZeroCompressionBuffer(ref tempTxState);
+                        if (_env.Options.Encryption.IsEnabled && _env.Options.Encryption.HasExternalJournalCompressionBufferHandlerRegistration == false)
+                        {
+                            ZeroCompressionBuffer(ref tempTxState, compressionBufferIndex);
+                        }
+
+                        ReduceSizeOfCompressionBufferIfNeeded(compressionBufferIndex);
                     }
-
-                    ReduceSizeOfCompressionBufferIfNeeded();
-
-                    return (numberOfUncompressedPages, numberOf4Kbs);
                 }
-                catch (Exception e)
+                else
                 {
-                    branchCommit?.TrySetException(e);
-                    throw;
+                    Debug.Assert(tx.ShouldWriteTransactionChangesToJournal, "ShouldWriteTransactionChangesToJournal must be true for branch commit");
+                    rootJournal.SharedJournalState.Enqueue(pendingJournalStateRecord);
+                    rootJournal.SubmitBranchJournalEntry(branchCommit?.Task);
+
+                    lock (_writeLock)
+                    {
+                        if (_env.Options.Encryption.IsEnabled && _env.Options.Encryption.HasExternalJournalCompressionBufferHandlerRegistration == false)
+                        {
+                            ZeroCompressionBuffer(ref tempTxState, compressionBufferIndex);
+                        }
+
+                        ReduceSizeOfCompressionBufferIfNeeded(compressionBufferIndex);
+                    }
                 }
-                finally
-                {
-                    tempTxState.InvokeDispose(_env, ref _compressionPagerState, ref tempTxState);
-                }
+
+                return (numberOfUncompressedPages, numberOf4Kbs);
+            }
+            catch (Exception e)
+            {
+                branchCommit?.TrySetException(e);
+                tx.JournalWriteStarted?.TrySetException(e);
+                throw;
+            }
+            finally
+            {
+                tempTxState.InvokeDispose(_env, ref _compressionPagerStates[compressionBufferIndex], ref tempTxState);
             }
         }
 
@@ -2501,6 +2542,11 @@ namespace Voron.Impl.Journal
 
                 _acksForCurrentWrite.Add(new JournalWritePipeline.Ack(environment, llt.Id, rec.Tcs));
 
+                // the write for this record is about to start - in the compression-overlap regime
+                // this releases the merger's batching window, so the next batch closes and begins
+                // compressing while our write is in flight (RavenDB-27409)
+                llt.JournalWriteStarted?.TrySetResult();
+
                 llt.UpdateJournal(llt.WrittenToJournalNumber, positionIn4Kbs);
             }
 
@@ -2620,9 +2666,10 @@ namespace Voron.Impl.Journal
         /// │ - Encoded Data (FastPFor compressed sections)               │
         /// │ - EncodedFreePagesSection[] (section sizes, at the end)     │
         /// └─────────────────────────────────────────────────────────────┘
-        private Pal.journal_entry PrepareToWriteToJournal(LowLevelTransaction tx, ref Pager.PagerTransactionState txState, out long numberOfUncompressedPages, 
+        private Pal.journal_entry PrepareToWriteToJournal(LowLevelTransaction tx, int compressionBufferIndex, ref Pager.PagerTransactionState txState, out long numberOfUncompressedPages, 
             out int totalNumberOfUsedCompressionBufferPages)
         {
+            var compressionPager = _compressionPagers[compressionBufferIndex];
             var txPages = CollectionsMarshal.AsSpan(tx.GetTransactionPages());
             var numberOfPages = txPages.Length;
             var pagesCountIncludingAllOverflowPages = tx.PagesCountIncludingAllOverflowPages;
@@ -2663,23 +2710,23 @@ namespace Voron.Impl.Journal
 
             try
             {
-                _compressionPager.EnsureContinuous(ref _compressionPagerState, 0, pagesRequired);
-                Debug.Assert(_compressionPagerState.TotalAllocatedSize >= pagesRequired * Constants.Storage.PageSize, "_compressionPagerState.TotalAllocatedSize >= pagesRequired* Constants.Storage.PageSize");
+                compressionPager.EnsureContinuous(ref _compressionPagerStates[compressionBufferIndex], 0, pagesRequired);
+                Debug.Assert(_compressionPagerStates[compressionBufferIndex].TotalAllocatedSize >= pagesRequired * Constants.Storage.PageSize, "state.TotalAllocatedSize >= pagesRequired * PageSize");
             }
             catch (InsufficientMemoryException)
             {
                 // RavenDB-10830: failed to lock memory of temp buffers in encrypted db, let's create new file with initial size
 
-                _compressionPager.Dispose();
-                (_compressionPager, _compressionPagerState) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
+                compressionPager.Dispose();
+                (_compressionPagers[compressionBufferIndex], _compressionPagerStates[compressionBufferIndex]) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
                 _lastCompressionBufferReduceCheck = DateTime.UtcNow;
                 throw;
             }
 
-            _compressionPager.EnsureMapped(_compressionPagerState, ref txState, 0, pagesRequired);
-            var stateOfThePagerForPagesToBeCompressed = _compressionPagerState;
-            var txHeaderPtr = _compressionPager.MakeWritable(_compressionPagerState,
-                _compressionPager.AcquireRawPagePointer(_compressionPagerState, ref txState, 0)
+            compressionPager.EnsureMapped(_compressionPagerStates[compressionBufferIndex], ref txState, 0, pagesRequired);
+            var stateOfThePagerForPagesToBeCompressed = _compressionPagerStates[compressionBufferIndex];
+            var txHeaderPtr = compressionPager.MakeWritable(stateOfThePagerForPagesToBeCompressed,
+                compressionPager.AcquireRawPagePointer(stateOfThePagerForPagesToBeCompressed, ref txState, 0)
             );
             var txPageInfoPtr = txHeaderPtr + sizeof(TransactionHeader);
             var pagesInfo = (TransactionHeaderPageInfo*)txPageInfoPtr;
@@ -2787,29 +2834,30 @@ namespace Voron.Impl.Journal
 
                 try
                 {
-                    // IMPORTANT: The memory we got in the previous call to AcquirePagePointer() is associated with the _compressionPagerState
+                    // IMPORTANT: The memory we got in the previous call to AcquirePagePointer() is associated with the pager state
                     // which may *change* because we are extending the file. We need to *ensure* that we keep hold of that state until the
                     // end of this method, to avoid releasing the buffer too early when the state's finalizer is running. This is why we
                     // have the stateOfThePagerForPagesToBeCompressed held there
                     Debug.Assert(stateOfThePagerForPagesToBeCompressed != null, "Read the comment above!");
-                    _compressionPager.EnsureContinuous(ref _compressionPagerState, pagesWritten, outputBufferInPages);
-                    Debug.Assert(_compressionPagerState.TotalAllocatedSize >= (pagesWritten + outputBufferInPages) * Constants.Storage.PageSize,
-                        "_compressionPagerState.TotalAllocatedSize >= (pagesWritten+outputBufferInPages)* Constants.Storage.PageSize");
+                    compressionPager.EnsureContinuous(ref _compressionPagerStates[compressionBufferIndex], pagesWritten, outputBufferInPages);
+                    Debug.Assert(_compressionPagerStates[compressionBufferIndex].TotalAllocatedSize >= (pagesWritten + outputBufferInPages) * Constants.Storage.PageSize,
+                        "state.TotalAllocatedSize >= (pagesWritten+outputBufferInPages) * PageSize");
                 }
                 catch (InsufficientMemoryException)
                 {
                     // RavenDB-10830: failed to lock memory of temp buffers in encrypted db, let's create new file with initial size
 
-                    _compressionPager.Dispose();
-                    (_compressionPager, _compressionPagerState) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
+                    compressionPager.Dispose();
+                    (_compressionPagers[compressionBufferIndex], _compressionPagerStates[compressionBufferIndex]) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
                     _lastCompressionBufferReduceCheck = DateTime.UtcNow;
                     throw;
                 }
 
-                _compressionPager.EnsureMapped(_compressionPagerState, ref tx.PagerTransactionState, pagesWritten, outputBufferInPages);
+                compressionPager.EnsureMapped(_compressionPagerStates[compressionBufferIndex], ref tx.PagerTransactionState, pagesWritten, outputBufferInPages);
 
-                txHeaderPtr = _compressionPager.MakeWritable(_compressionPagerState,
-                    _compressionPager.AcquireRawPagePointer(_compressionPagerState, ref tx.PagerTransactionState, pagesWritten)
+                var rawTxHeaderPtr = txHeaderPtr;
+                txHeaderPtr = compressionPager.MakeWritable(_compressionPagerStates[compressionBufferIndex],
+                    compressionPager.AcquireRawPagePointer(_compressionPagerStates[compressionBufferIndex], ref tx.PagerTransactionState, pagesWritten)
                 );
                 var compressionBuffer = txHeaderPtr + sizeof(TransactionHeader);
 
@@ -2822,6 +2870,14 @@ namespace Voron.Impl.Journal
                         : LZ4.Encode64LongBuffer(txPageInfoPtr, compressionBuffer, totalSizeWritten, outputBufferSize, compressionAcceleration);
 
                     metrics.SetCompressionResults(totalSizeWritten, compressedLen, compressionAcceleration);
+                }
+
+                if (compressedLen >= totalSizeWritten)
+                {
+                    // incompressible payload - the raw layout is still intact one header back, so
+                    // storing it costs nothing and recovery skips a pointless decompression
+                    txHeaderPtr = rawTxHeaderPtr;
+                    performCompression = false;
                 }
             }
             else
@@ -2957,15 +3013,15 @@ namespace Voron.Impl.Journal
         private DateTime _lastCompressionBufferReduceCheck = DateTime.UtcNow;
         private readonly bool _is32Bit;
 
-        private void ReduceSizeOfCompressionBufferIfNeeded(bool forceReduce = false)
+        private void ReduceSizeOfCompressionBufferIfNeeded(int compressionBufferIndex, bool forceReduce = false)
         {
             var maxSize = _env.Options.MaxScratchBufferSize;
-            if (ShouldReduceSizeOfCompressionPager(maxSize, forceReduce) == false)
+            if (ShouldReduceSizeOfCompressionPager(compressionBufferIndex, maxSize, forceReduce) == false)
             {
                 // PERF: Compression buffer will be reused, it is safe to discard the content to clear the modified bit.
                 // For encrypted databases, discarding locked memory is *expensive*, so we avoid it
                 if (_env.Options.Encryption.IsEnabled == false)
-                    _compressionPager.DiscardWholeFile(_compressionPagerState);
+                    _compressionPagers[compressionBufferIndex].DiscardWholeFile(_compressionPagerStates[compressionBufferIndex]);
 
                 return;
             }
@@ -2976,21 +3032,23 @@ namespace Voron.Impl.Journal
             if (forceReduce == false && _logger.IsInfoEnabled)
             {
                 _logger.Info(
-                    $"Compression buffer: {_compressionPager} has reached size {new Size(_compressionPagerState.NumberOfAllocatedPages * Constants.Storage.PageSize, SizeUnit.Bytes)} which is more than the maximum size " +
+                    $"Compression buffer: {_compressionPagers[compressionBufferIndex]} has reached size {new Size(_compressionPagerStates[compressionBufferIndex].NumberOfAllocatedPages * Constants.Storage.PageSize, SizeUnit.Bytes)} which is more than the maximum size " +
                     $"of {new Size(maxSize, SizeUnit.Bytes)}. Will trim it now to the max size allowed. If this is happen on a regular basis," +
                     " consider raising the limit (MaxScratchBufferSize option control it), since it can cause performance issues");
             }
 
             _lastCompressionBufferReduceCheck = DateTime.UtcNow;
 
-            _compressionPager.Dispose();
+            _compressionPagers[compressionBufferIndex].Dispose();
 
             _forTestingPurposes?.OnReduceSizeOfCompressionBufferIfNeeded_RightAfterDisposingCompressionPager?.Invoke();
 
-            (_compressionPager, _compressionPagerState) = CreateCompressionPager(maxSize);
+            (_compressionPagers[compressionBufferIndex], _compressionPagerStates[compressionBufferIndex]) = CreateCompressionPager(maxSize);
         }
 
-        public void ZeroCompressionBuffer(ref Pager.PagerTransactionState txState)
+        public void ZeroCompressionBuffer(ref Pager.PagerTransactionState txState) => ZeroCompressionBuffer(ref txState, _activeCompressionBuffer);
+
+        public void ZeroCompressionBuffer(ref Pager.PagerTransactionState txState, int compressionBufferIndex)
         {
             var lockTaken = false;
 
@@ -2999,12 +3057,14 @@ namespace Voron.Impl.Journal
 
             try
             {
-                var numberOfPagesToZero = Math.Min(_numberOfUsedCompressionBufferPagesSinceZeroing, _compressionPagerState.NumberOfAllocatedPages);
+                var compressionPager = _compressionPagers[compressionBufferIndex];
+                var state = _compressionPagerStates[compressionBufferIndex];
+                var numberOfPagesToZero = Math.Min(_numberOfUsedCompressionBufferPagesSinceZeroing, state.NumberOfAllocatedPages);
                 var numberOfBytesToZero = numberOfPagesToZero * Constants.Storage.PageSize;
                 
-                _compressionPager.EnsureMapped(_compressionPagerState, ref txState, 0, checked((int)numberOfPagesToZero));
-                var pagePointer = _compressionPager.MakeWritable(_compressionPagerState,
-                 _compressionPager.AcquirePagePointer(_compressionPagerState, ref txState, 0)
+                compressionPager.EnsureMapped(state, ref txState, 0, checked((int)numberOfPagesToZero));
+                var pagePointer = compressionPager.MakeWritable(state,
+                 compressionPager.AcquirePagePointer(state, ref txState, 0)
              );
                 Sodium.sodium_memzero(pagePointer, (UIntPtr)numberOfBytesToZero);
                 _numberOfUsedCompressionBufferPagesSinceZeroing = 0;
@@ -3016,9 +3076,9 @@ namespace Voron.Impl.Journal
             }
         }
 
-        private bool ShouldReduceSizeOfCompressionPager(long maxSize, bool forceReduce)
+        private bool ShouldReduceSizeOfCompressionPager(int compressionBufferIndex, long maxSize, bool forceReduce)
         {
-            var compressionBufferSize = _compressionPagerState.NumberOfAllocatedPages * Constants.Storage.PageSize;
+            var compressionBufferSize = _compressionPagerStates[compressionBufferIndex].NumberOfAllocatedPages * Constants.Storage.PageSize;
             if (compressionBufferSize <= maxSize)
                 return false;
 
@@ -3029,7 +3089,7 @@ namespace Voron.Impl.Journal
                 return false;
 
             // prevent resize if we recently used at least half of the compression buffer
-            var preventResize = _maxNumberOfPagesRequiredForCompressionBuffer > _compressionPagerState.NumberOfAllocatedPages / 2;
+            var preventResize = _maxNumberOfPagesRequiredForCompressionBuffer > _compressionPagerStates[compressionBufferIndex].NumberOfAllocatedPages / 2;
 
             _maxNumberOfPagesRequiredForCompressionBuffer = 0;
             _lastCompressionBufferReduceCheck = DateTime.UtcNow;
@@ -3045,7 +3105,10 @@ namespace Voron.Impl.Journal
             try
             {
                 // called when the storage environment was idle
-                ReduceSizeOfCompressionBufferIfNeeded(forceReduce: true);
+                // idle: reduce both regions, nothing can be preparing concurrently
+                ReduceSizeOfCompressionBufferIfNeeded(0, forceReduce: true);
+                if (_compressionPagers[1] != null)
+                    ReduceSizeOfCompressionBufferIfNeeded(1, forceReduce: true);
             }
             finally
             {

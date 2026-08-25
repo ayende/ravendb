@@ -629,9 +629,15 @@ namespace Raven.Server.Documents.TransactionMerger
                         var transactionMeter = TransactionPerformanceMetrics.MeterPerformanceRate();
                         try
                         {
-                            // accumulate operations into the current transaction while the previous one is in flight
+                            // accumulate operations into the current transaction while the previous one is in flight.
+                            // In the compression-overlap regime (RavenDB-27409) the window releases when the previous
+                            // WRITE STARTS (its compression is done, the device is busy) - so this batch closes and
+                            // compresses during that write instead of idling the device. Batch formation time is
+                            // unchanged: the window still spans one full write, just phase-shifted one stage earlier.
                             var previousInFlight = previous.Transaction.InnerTransaction.LowLevelTransaction;
-                            Task batchingWindow = previousInFlight.DurableCommit ?? previousInFlight.AsyncCommit;
+                            Task batchingWindow = _env.Journal.ShouldOverlapCompression
+                                ? previousInFlight.JournalWriteStarted?.Task ?? previousInFlight.DurableCommit ?? previousInFlight.AsyncCommit
+                                : previousInFlight.DurableCommit ?? previousInFlight.AsyncCommit;
 
                             result = ExecutePendingOperationsInTransaction(
                                 currentPendingOps, current,
@@ -645,7 +651,11 @@ namespace Raven.Server.Documents.TransactionMerger
                         startedCompletingInFlight = true;
                         // depending on the size of journal writes, we may want to keep writes to the jounral in flight (pipelined).
                         // that doesn't make sense if we have large journal writes, since then we are bandwidth bound anyway
-                        var keepInFlight = _env.Journal.ShouldPipelineJournalNow ? _maxConcurrentJournalWrites - 1 : 0;
+                        var keepInFlight = _env.Journal.ShouldPipelineJournalNow ? _maxConcurrentJournalWrites - 1 :
+                            // compression overlap needs the previous transaction to stay in flight while the next
+                            // one begins, so its compression can run during the previous write - only one journal
+                            // write is ever in flight (the write-order barrier serializes them), the overlap is CPU
+                            _env.Journal.ShouldOverlapCompression ? 1 : 0;
                         CompleteAsyncCommittedTransactions(keep: keepInFlight, throwOnError: true);
                     }
                     catch (Exception e)

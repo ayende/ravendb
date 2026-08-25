@@ -1153,10 +1153,15 @@ namespace Voron.Impl
         // This task completes when the journal write for this transaction is durably stored on disk.
         internal Task DurableCommit;
         internal TaskCompletionSource PreparedDurableCommit;
+        // completes when this transaction's journal write has begun - its batch is compressed and the
+        // device is (about to be) busy with it. The merger uses it as the batching window in the
+        // compression-overlap regime: the next batch may close once our write started, so its
+        // compression runs while our write is in flight, instead of idling the device
+        internal TaskCompletionSource JournalWriteStarted;
         
         private LowLevelTransaction _asyncCommitNextTransaction;
         private LowLevelTransaction _asyncCommitPreviousTransaction;
-        private bool _asyncCommitSubmissionEnded;
+        private int _asyncCommitSubmissionEnded;
         private static readonly Task<bool> NoWriteToJournalRequiredTask = Task.FromResult(false);
 
         /// <summary>
@@ -1171,7 +1176,9 @@ namespace Voron.Impl
             if (_asyncCommitNextTransaction != null)
                 ThrowAsyncCommitAlreadyCalled();
 
-            WaitForPreviousTxToBeginJournalWrite();
+            // deliberately NOT waiting for the previous transaction here - the async-commit task
+            // waits after preparing (compressing) its own journal entry, so the compression runs
+            // while the previous journal write is still in flight (RavenDB-27409)
 
             CommitStage1_CompleteTransaction();
 
@@ -1221,6 +1228,9 @@ namespace Voron.Impl
                 finally
                 {
                     AsyncCommit = null;
+                    // nothing will complete these if we failed before (or during) the journal write
+                    PreparedDurableCommit?.TrySetCanceled();
+                    JournalWriteStarted?.TrySetCanceled();
                 }
 
                 _txStatus |= TxStatus.Errored;
@@ -1241,14 +1251,19 @@ namespace Voron.Impl
             throw new InvalidOperationException("Only write transactions can do async commit");
         }
 
-        private void WaitForPreviousTxToBeginJournalWrite()
+        internal void WaitForPreviousTxToBeginJournalWrite()
         {
-            var producer = _asyncCommitPreviousTransaction;
-            _asyncCommitPreviousTransaction = null;
-
             // if we had a previous tx, we need to wait for it to build its journal entry
             // and start writing it. This is so we know the size, of the last written journal
-            // position, so we know where *our* write goes (parallel journal writes)
+            // position, so we know where *our* write goes (parallel journal writes).
+            //
+            // This used to run in commit stage 1, on the merger thread. It now runs inside the
+            // async-commit task, AFTER this transaction's own journal entry was prepared - so the
+            // compression of this batch overlaps the previous batch's journal write instead of
+            // idling the device (RavenDB-27409). Position hand-off is unchanged: we still adopt
+            // the previous transaction's journal position before computing our own.
+            var producer = _asyncCommitPreviousTransaction;
+            _asyncCommitPreviousTransaction = null;
 
             if (producer?.AsyncCommit != null)
                 producer.EndAsyncCommitSubmission();
@@ -1263,10 +1278,8 @@ namespace Voron.Impl
                 return;// never reached
             }
 
-            if (_asyncCommitSubmissionEnded)
-                return;
-
-            _asyncCommitSubmissionEnded = true;
+            if (Interlocked.CompareExchange(ref _asyncCommitSubmissionEnded, 1, 0) != 0)
+                return; // a concurrent caller owns the hand-off; EndAsyncCommit still observes AsyncCommit directly
 
             try
             {
@@ -1279,8 +1292,9 @@ namespace Voron.Impl
                 // state of the journal is. We have to shut down and run recovery to 
                 // come to a known good state
                 _txStatus |= TxStatus.Errored;
-                // stage2 may have died before reaching the journal - nothing else will complete the window task
+                // stage2 may have died before reaching the journal - nothing else will complete the window tasks
                 PreparedDurableCommit?.TrySetException(e);
+                JournalWriteStarted?.TrySetException(e);
                 _env.Options.SetCatastrophicFailure(ExceptionDispatchInfo.Capture(e));
 
                 throw;
@@ -1419,6 +1433,7 @@ namespace Voron.Impl
                 // synchronous completion releases them directly instead of hopping through the pool
 #pragma warning disable RDB0008
                 PreparedDurableCommit = new TaskCompletionSource();
+                JournalWriteStarted = new TaskCompletionSource();
 #pragma warning restore RDB0008
                 DurableCommit = PreparedDurableCommit.Task;
             }
