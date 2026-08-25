@@ -625,6 +625,16 @@ namespace Voron
                 if (EnableJournalPoolPrewarming == false || Disposed)
                     return;
 
+                // pre-created pool files only pay off where the zero-fill can prepay the filesystem
+                // extent-conversion cost, which needs a fast local device with bandwidth to spare. On
+                // budgeted volumes the fill competes with the journal for the whole budget, and an
+                // UNZEROED pool file is worse than none: reuse prefers the newest pool entry, so it
+                // displaces recycled used journals whose extents are already written. Skip entirely -
+                // rolls are then served by recycled journals, measured +7% over v7.2 on gp3 writes
+                // where creating (zeroed or not) cost 8-17%.
+                if (journal.IsMeasuredFastDevice == false)
+                    return;
+
                 size = Math.Min(size, MaxLogFileSize);
 
                 if (HasAdequateRecyclableJournal(size))
