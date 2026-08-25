@@ -326,14 +326,76 @@ namespace Voron.Impl.Journal
 
         public bool IsMeasuredFastDevice => _writePipeline.IsMeasuredFastDevice;
 
+        #region PROBE (RavenDB-27429: is Budgeted reachable, and what does each codec cost per batch size?)
+
+        private static readonly bool ProbeZstdTrace = Environment.GetEnvironmentVariable("RAVEN_ZSTD_TRACE") == "1";
+        private static readonly long[] ProbeSizeBuckets = [16 * 1024, 64 * 1024, 256 * 1024, Constants.Size.Megabyte, 4L * Constants.Size.Megabyte, long.MaxValue];
+        private static readonly string[] ProbeSizeNames = ["<16k", "16-64k", "64-256k", "256k-1m", "1-4m", ">4m"];
+        // [codec 0=lz4 1=zstd][bucket] -> count / raw / compressed / compress ticks
+        private readonly long[,] _probeCount = new long[2, 6];
+        private readonly long[,] _probeRaw = new long[2, 6];
+        private readonly long[,] _probeComp = new long[2, 6];
+        private readonly long[,] _probeTicks = new long[2, 6];
+        private long _probeDevUnknown, _probeDevFast, _probeDevBudgeted, _probeUncompressed, _probeGaveUp;
+        private readonly Stopwatch _probeSinceEmit = Stopwatch.StartNew();
+
+        private void ProbeRecord(JournalCompressionAlgorithm codec, long raw, long compressed, long ticks)
+        {
+            var c = codec == JournalCompressionAlgorithm.Zstd ? 1 : 0;
+            var b = 0;
+            while (b < ProbeSizeBuckets.Length - 1 && raw > ProbeSizeBuckets[b])
+                b++;
+            _probeCount[c, b]++; _probeRaw[c, b] += raw; _probeComp[c, b] += compressed; _probeTicks[c, b] += ticks;
+        }
+
+        private void ProbeEmit()
+        {
+            if (_probeSinceEmit.ElapsedMilliseconds < 2000)
+                return;
+            var secs = _probeSinceEmit.Elapsed.TotalSeconds;
+            _probeSinceEmit.Restart();
+
+            var sb = new System.Text.StringBuilder();
+            sb.Append($"ZSTD env={_env.Options.BasePath?.FullPath} secs={secs:F1} dev(unk/fast/budg)={_probeDevUnknown}/{_probeDevFast}/{_probeDevBudgeted} ")
+              .Append($"nocompress={_probeUncompressed} gaveup={_probeGaveUp} sizeEwmaKb={_writePipeline.WriteSizeEwmaBytes / 1024} latEwmaMs={Math.Round((double)_writePipeline.WriteLatencyEwmaTicks / TimeSpan.TicksPerMillisecond, 2)} class={_writePipeline.MeasuredDeviceClass}");
+            for (var c = 0; c < 2; c++)
+            {
+                var name = c == 0 ? "lz4" : "zstd";
+                for (var b = 0; b < 6; b++)
+                {
+                    var n = _probeCount[c, b];
+                    if (n == 0)
+                        continue;
+                    var us = (double)_probeTicks[c, b] / n / 10.0; // TimeSpan ticks -> microseconds
+                    sb.Append($" | {name}[{ProbeSizeNames[b]}] n={n} kb={(double)_probeRaw[c, b] / n / 1024:F0} ratio={(double)_probeRaw[c, b] / Math.Max(1, _probeComp[c, b]):F2} us={us:F0} mbps={(double)_probeRaw[c, b] / 1024 / 1024 / Math.Max(1e-9, (double)_probeTicks[c, b] / TimeSpan.TicksPerSecond):F0}");
+                }
+            }
+            Console.WriteLine(sb.ToString());
+            Array.Clear(_probeCount); Array.Clear(_probeRaw); Array.Clear(_probeComp); Array.Clear(_probeTicks);
+            _probeDevUnknown = _probeDevFast = _probeDevBudgeted = _probeUncompressed = _probeGaveUp = 0;
+        }
+
+        #endregion
+
         internal JournalCompressionAlgorithm ResolveJournalCompressionAlgorithm()
         {
             var configured = _env.Options.JournalCompressionAlgorithm;
+            var measured = _writePipeline.MeasuredDeviceClass;
+            if (ProbeZstdTrace) // PROBE: the class is tallied even when a codec is pinned, so the arms are comparable
+            {
+                switch (measured)
+                {
+                    case JournalWritePipeline.DeviceClass.Fast: _probeDevFast++; break;
+                    case JournalWritePipeline.DeviceClass.Budgeted: _probeDevBudgeted++; break;
+                    default: _probeDevUnknown++; break;
+                }
+            }
+
             if (configured != JournalCompressionAlgorithm.Auto)
                 return configured; // pinned by the user, in either direction
 
             // Zstd is 400MB/sec vs. LZ4 1.5GB/sec. It pays to pay for Zstd if the device is constrained.
-            return _writePipeline.MeasuredDeviceClass == JournalWritePipeline.DeviceClass.Budgeted
+            return measured == JournalWritePipeline.DeviceClass.Budgeted
                 ? JournalCompressionAlgorithm.Zstd
                 : JournalCompressionAlgorithm.Lz4;
         }
@@ -2830,9 +2892,15 @@ namespace Voron.Impl.Journal
                 using (var metrics = _env.Options.IoMetrics.MeterIoRate(path, IoMetrics.MeterType.Compression, 0)) // Note that the last journal may be replaced if we switch journals, however it doesn't affect web graph
                 {
                     int compressionAcceleration = _env.Options.JournalsCompressionAcceleration;
+                    var probeStart = Stopwatch.GetTimestamp(); // PROBE
                     compressedLen = compressionAlgorithm == JournalCompressionAlgorithm.Zstd
                         ? ZstdLib.CompressWithLevel(txPageInfoPtr, totalSizeWritten, compressionBuffer, outputBufferSize, level: 1)
                         : LZ4.Encode64LongBuffer(txPageInfoPtr, compressionBuffer, totalSizeWritten, outputBufferSize, compressionAcceleration);
+                    if (ProbeZstdTrace) // PROBE
+                    {
+                        ProbeRecord(compressionAlgorithm, totalSizeWritten, compressedLen, Stopwatch.GetElapsedTime(probeStart).Ticks);
+                        ProbeEmit();
+                    }
 
                     metrics.SetCompressionResults(totalSizeWritten, compressedLen, compressionAcceleration);
                 }
@@ -2842,10 +2910,17 @@ namespace Voron.Impl.Journal
                     // didn't compress, so let's use the raw output, instead
                     txHeaderPtr = rawTxHeaderPtr;
                     performCompression = false;
+                    if (ProbeZstdTrace)
+                        _probeGaveUp++; // PROBE
                 }
             }
             else
             {
+                if (ProbeZstdTrace)
+                {
+                    _probeUncompressed++; // PROBE: below CompressTxAboveSizeInBytes, no codec involved
+                    ProbeEmit();
+                }
                 _maxNumberOfPagesRequiredForCompressionBuffer = Math.Max(pagesRequired, _maxNumberOfPagesRequiredForCompressionBuffer);
                 totalNumberOfUsedCompressionBufferPages = pagesRequired;
             }

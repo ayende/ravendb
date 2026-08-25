@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
@@ -94,6 +94,8 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         IsCommitLatencyBound;                                         
 
     internal long WriteLatencyEwmaTicks => _writeLatencyTicks.Current;
+
+    internal long WriteSizeEwmaBytes => _writeSizeBytes.Current; // PROBE (RavenDB-27429)
 
     private long _lastWriteActivityTimestamp;
 
