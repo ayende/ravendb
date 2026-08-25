@@ -326,6 +326,16 @@ namespace Voron.Impl.Journal
 
         public bool IsMeasuredFastDevice => _writePipeline.IsMeasuredFastDevice;
 
+        // PROBE (layers experiment): monotonic journal-write tallies for the merger trace
+        internal void ProbeJournalCounters(out long writes, out long ticks, out long n4Kbs, out long pipelined, out long inline)
+        {
+            writes = Volatile.Read(ref _writePipeline.ProbeWrites);
+            ticks = Volatile.Read(ref _writePipeline.ProbeWriteTicks);
+            n4Kbs = Volatile.Read(ref _writePipeline.ProbeWrite4Kbs);
+            pipelined = Volatile.Read(ref _writePipeline.ProbePipelined);
+            inline = Volatile.Read(ref _writePipeline.ProbeInline);
+        }
+
         private JournalFile NextFile(long numberOf4Kbs)
         {
             var now = DateTime.UtcNow;

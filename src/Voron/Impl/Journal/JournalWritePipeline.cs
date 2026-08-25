@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.ExceptionServices;
@@ -16,6 +16,18 @@ namespace Voron.Impl.Journal;
 internal sealed unsafe class JournalWritePipeline : IDisposable
 {
     public const int MaxPipelinedBatchSizeInBytes = Constants.Size.Megabyte;
+
+    // PROBE (layers experiment): when set, the pipeline gates ignore the consolidation veto,
+    // so both mechanisms may run at the same time. This is the missing arm of the regime A/B.
+    internal static readonly bool ProbeIgnoreConsolidationVeto =
+        Environment.GetEnvironmentVariable("RAVEN_LAYERS_PIPE_IGNORE_CONSOLIDATION") == "1";
+
+    // PROBE counters (monotonic, read by the merger trace)
+    internal long ProbeWrites;
+    internal long ProbeWriteTicks;
+    internal long ProbeWrite4Kbs;
+    internal long ProbePipelined;
+    internal long ProbeInline;
 
     private const int MaxPipelinedBatch4Kbs = MaxPipelinedBatchSizeInBytes / Constants.Storage.JournalPageSize;
 
@@ -87,7 +99,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     internal bool ShouldPipelineNow =>
         PipeliningEnabled &&
         // the merger is waiting to get bigger batches, overlapping writes will do the reverse
-        _env.BatchConsolidationActive == false &&                                          
+        (ProbeIgnoreConsolidationVeto || _env.BatchConsolidationActive == false) &&                                          
         // the device is slow enough that overlapping writes pays for the smaller batches
         _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks &&   
         // if we are bounded by device bandwidth, pipelining won't help
@@ -124,7 +136,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     public bool CanPipeline(long totalNumberOf4Kbs) =>
         PipeliningEnabled &&
-        _env.BatchConsolidationActive == false &&                                          
+        (ProbeIgnoreConsolidationVeto || _env.BatchConsolidationActive == false) &&                                          
         // < 1MB, otherwise we'll be copying to our own buffer, then we have large write, etc. Doesn't pay off. 
         totalNumberOf4Kbs <= MaxPipelinedBatch4Kbs &&                 
         // the device is slow enough that overlapping writes pays for the smaller batches
@@ -132,6 +144,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     public void SubmitPipelined(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<Ack> acks)
     {
+        Interlocked.Increment(ref ProbePipelined);
         var write = RentWrite(file, posBy4Kb, (int)totalNumberOf4Kbs, acks);
 
         file.AddRef();
@@ -183,6 +196,7 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private void WriteDirect(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<Ack> acks)
     {
+        Interlocked.Increment(ref ProbeInline);
         Volatile.Write(ref _lastWriteActivityTimestamp, Stopwatch.GetTimestamp());
         RecordSubmitted(acks);
 
@@ -263,6 +277,9 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     private void RecordWriteLatency(long ticks, long numberOf4Kbs)
     {
+        Interlocked.Increment(ref ProbeWrites);
+        Interlocked.Add(ref ProbeWriteTicks, ticks);
+        Interlocked.Add(ref ProbeWrite4Kbs, numberOf4Kbs);
         Volatile.Write(ref _lastWriteActivityTimestamp, Stopwatch.GetTimestamp());
         _writeLatencyTicks.Update(ticks);
         _writeSizeBytes.Update(numberOf4Kbs * 4 * Constants.Size.Kilobyte);

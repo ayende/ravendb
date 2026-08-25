@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -76,6 +76,55 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private bool _consolidatingBatches;
 
+        #region PROBE (layers experiment)
+
+        // off   = consolidation never engages
+        // force = consolidation always engages (window = max(ProbeConsolMinMs, 2x write ewma), capped as usual)
+        // auto  = shipping behaviour
+        private static readonly string ProbeConsolidation = Environment.GetEnvironmentVariable("RAVEN_LAYERS_CONSOLIDATION") ?? "auto";
+        private static readonly double ProbeConsolMinMs = double.TryParse(Environment.GetEnvironmentVariable("RAVEN_LAYERS_CONSOL_MIN_MS"), out var __m) ? __m : 0;
+        // off = the merger never chains an async commit (no overlap of execute with the journal write)
+        private static readonly bool ProbeAsyncTxOff = Environment.GetEnvironmentVariable("RAVEN_LAYERS_ASYNCTX") == "off";
+        private static readonly bool ProbeTrace = Environment.GetEnvironmentVariable("RAVEN_LAYERS_TRACE") == "1";
+
+        private long _probeBatches, _probeOps, _probeBytes, _probeExecTicks, _probeWindowWaitTicks, _probeConsolWaitTicks, _probeComplTicks;
+        private long _probeConsolBatches, _probeKeepSum, _probeAsyncChains, _probeWindowWaits;
+        private long _probeLastBatchBytes;
+        private long _probeWindowWaitTicksBatch, _probeConsolWaitTicksBatch;
+        private readonly Stopwatch _probeSinceEmit = Stopwatch.StartNew();
+        private long _pjWrites, _pjTicks, _pj4Kbs, _pjPipelined, _pjInline;
+
+        private void ProbeEmit()
+        {
+            if (ProbeTrace == false || _probeSinceEmit.ElapsedMilliseconds < 1000)
+                return;
+
+            var secs = _probeSinceEmit.Elapsed.TotalSeconds;
+            _probeSinceEmit.Restart();
+
+            var b = Math.Max(1, _probeBatches);
+            _env.Journal.ProbeJournalCounters(out var jw, out var jt, out var j4, out var jp, out var ji);
+            var dW = jw - _pjWrites; var dT = jt - _pjTicks; var d4 = j4 - _pj4Kbs;
+            var dP = jp - _pjPipelined; var dI = ji - _pjInline;
+            _pjWrites = jw; _pjTicks = jt; _pj4Kbs = j4; _pjPipelined = jp; _pjInline = ji;
+
+            static double Ms(long ticks, long n) => Math.Round((double)ticks / Math.Max(1, n) / TimeSpan.TicksPerMillisecond, 3);
+
+            Console.WriteLine(
+                $"LAYERS db={_resourceName} secs={secs:F1} " +
+                $"tx/s={_probeBatches / secs:F0} ops/s={_probeOps / secs:F0} ops/tx={(double)_probeOps / b:F1} kb/tx={(double)_probeBytes / b / 1024:F0} " +
+                $"exec={Ms(_probeExecTicks, _probeBatches)} wwait={Ms(_probeWindowWaitTicks, _probeBatches)} cwait={Ms(_probeConsolWaitTicks, _probeBatches)} compl={Ms(_probeComplTicks, _probeBatches)} " +
+                $"wwaits/tx={(double)_probeWindowWaits / b:F2} consol%={100.0 * _probeConsolBatches / b:F0} keep={(double)_probeKeepSum / Math.Max(1, _probeAsyncChains):F1} chains/s={_probeAsyncChains / secs:F0} " +
+                $"jw/s={dW / secs:F0} jlat={Ms(dT, dW)} jkb={(double)d4 * 4 / Math.Max(1, dW):F0} pipe%={100.0 * dP / Math.Max(1, dP + dI):F0} " +
+                $"ewma={Math.Round((double)_env.Journal.WriteLatencyEwmaTicks / TimeSpan.TicksPerMillisecond, 3)} consolFlag={_consolidatingBatches}");
+
+            _probeBatches = _probeOps = _probeBytes = _probeExecTicks = _probeWindowWaitTicks = _probeConsolWaitTicks = _probeComplTicks = 0;
+            _probeConsolBatches = _probeKeepSum = _probeAsyncChains = _probeWindowWaits = 0;
+        }
+
+        #endregion
+
+
         // Is the batch is still worth waiting for more operations to arrive?
         // Even though we have async commits, we want to keep the *current* transaction alive for a bit longer
         //
@@ -102,8 +151,11 @@ namespace Raven.Server.Documents.TransactionMerger
 
             _waitHandle.Reset();
 
-            if (_operations.IsEmpty == false || // an operation arrived between the queue check and the reset
-                _waitHandle.Wait(millisecondsTimeout: 1, _shutdown)) // or was enqueued while we waited
+            var probeStart = Stopwatch.GetTimestamp(); // PROBE
+            var probeGot = _operations.IsEmpty == false || _waitHandle.Wait(millisecondsTimeout: 1, _shutdown);
+            _probeConsolWaitTicksBatch += Stopwatch.GetElapsedTime(probeStart).Ticks;
+
+            if (probeGot) // an operation arrived between the queue check and the reset, or was enqueued while we waited
             {
                 _consecutiveEmptyConsolidationWaits = 0;
                 return true;
@@ -128,12 +180,20 @@ namespace Raven.Server.Documents.TransactionMerger
             _consolidatingBatches = _consolidatingBatches
                 ? writeLatencyTicks >= ExitBatchConsolidationAtLatencyTicks
                 : writeLatencyTicks >= EnterBatchConsolidationAtLatencyTicks && _env.Journal.IsCommitLatencyBound;
+
+            switch (ProbeConsolidation) // PROBE (layers experiment)
+            {
+                case "off": _consolidatingBatches = false; break;
+                case "force": _consolidatingBatches = true; break;
+            }
+
             _env.BatchConsolidationActive = _consolidatingBatches;
 
             if (_consolidatingBatches == false)
                 return _maxTimeToWaitForPreviousTxInMs;
 
-            var windowMs = BatchConsolidationWindowLatencyFactor * writeLatencyTicks / TimeSpan.TicksPerMillisecond;
+            double windowMs = BatchConsolidationWindowLatencyFactor * writeLatencyTicks / TimeSpan.TicksPerMillisecond;
+            windowMs = Math.Max(windowMs, ProbeConsolMinMs); // PROBE
             return Math.Max(_maxTimeToWaitForPreviousTxInMs, Math.Min(MaxBatchConsolidationWindowInMs, windowMs));
         }
         private readonly double _maxTimeToWaitForPreviousTxBeforeRejectingInMs;
@@ -646,7 +706,14 @@ namespace Raven.Server.Documents.TransactionMerger
                         // depending on the size of journal writes, we may want to keep writes to the jounral in flight (pipelined).
                         // that doesn't make sense if we have large journal writes, since then we are bandwidth bound anyway
                         var keepInFlight = _env.Journal.ShouldPipelineJournalNow ? _maxConcurrentJournalWrites - 1 : 0;
+                        var probeComplStart = Stopwatch.GetTimestamp(); // PROBE
                         CompleteAsyncCommittedTransactions(keep: keepInFlight, throwOnError: true);
+                        if (ProbeTrace)
+                        {
+                            _probeComplTicks += Stopwatch.GetElapsedTime(probeComplStart).Ticks;
+                            _probeKeepSum += keepInFlight;
+                            _probeAsyncChains++;
+                        }
                     }
                     catch (Exception e)
                     {
@@ -898,6 +965,7 @@ namespace Raven.Server.Documents.TransactionMerger
                 var modifiedSize = llt.NumberOfModifiedPages * Constants.Storage.PageSize;
 
                 modifiedSize += llt.AdditionalMemoryUsageSize.GetValue(SizeUnit.Bytes);
+                _probeLastBatchBytes = modifiedSize; // PROBE
 
                 var canCloseCurrentTx = previousOperation == null || previousOperation.IsCompleted;
                 if (canCloseCurrentTx || _is32Bits)
@@ -931,6 +999,23 @@ namespace Raven.Server.Documents.TransactionMerger
                 UnlikelyRejectOperations(previousOperation, sp, llt, modifiedSize);
                 break;
             } while (true);
+
+            if (ProbeTrace) // PROBE (layers experiment)
+            {
+                _probeBatches++;
+                _probeOps += executedOps.Count;
+                _probeBytes += _probeLastBatchBytes;
+                _probeWindowWaitTicks += _probeWindowWaitTicksBatch;
+                _probeConsolWaitTicks += _probeConsolWaitTicksBatch;
+                var total = sp.Elapsed.Ticks;
+                var waits = _probeWindowWaitTicksBatch + _probeConsolWaitTicksBatch;
+                _probeExecTicks += Math.Max(0, total - waits);
+                if (_consolidatingBatches)
+                    _probeConsolBatches++;
+                _probeWindowWaitTicksBatch = _probeConsolWaitTicksBatch = 0;
+                _probeLastBatchBytes = 0;
+                ProbeEmit();
+            }
 
             var status = GetPendingOperationsStatus(context, executedOps.Count is 0);
             if (_log.IsDebugEnabled)
@@ -1020,6 +1105,7 @@ namespace Raven.Server.Documents.TransactionMerger
             }
             while (true)
             {
+                var probeStart = Stopwatch.GetTimestamp(); // PROBE
                 try
                 {
                     meter.MarkInternalWindowStart();
@@ -1036,6 +1122,8 @@ namespace Raven.Server.Documents.TransactionMerger
                 finally
                 {
                     meter.MarkInternalWindowEnd();
+                    _probeWindowWaitTicksBatch += Stopwatch.GetElapsedTime(probeStart).Ticks; // PROBE
+                    _probeWindowWaits++;
                 }
             }
         }
@@ -1051,6 +1139,9 @@ namespace Raven.Server.Documents.TransactionMerger
                 return PendingOperations.CompletedAll;
 
             if (forceCompletion)
+                return PendingOperations.CompletedAll;
+
+            if (ProbeAsyncTxOff) // PROBE (layers experiment)
                 return PendingOperations.CompletedAll;
 
             return PendingOperations.HasMore;
