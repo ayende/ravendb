@@ -155,6 +155,7 @@ namespace Voron
                 SelfReference.WeekReference = new WeakReference<StorageEnvironment>(this);
                 _log = RavenLogManager.Instance.GetLoggerForVoron<StorageEnvironment>(options, options.BasePath.FullPath);
                 _options = options;
+                WriteFlow = new WriteFlowPolicy(options);
                 ScratchPagesTable = new ScratchPagesTable(ActiveTransactions);
                 (_dataPager, var dataPagerState) = options.InitializeDataPager();
                 _freeSpaceHandling = new FreeSpaceHandling(options.DisableSparseRegions);
@@ -1554,7 +1555,9 @@ namespace Voron
             }
         }
 
-        internal volatile bool BatchConsolidationActive;
+        // every adaptive decision on the commit write path (pipelining, consolidation, codec, ...)
+        // is made in one place, reading shared telemetry - see the class doc for the rules
+        public WriteFlowPolicy WriteFlow { get; }
 
         internal bool ShouldDelaySyncToConsolidateWrites()
         {

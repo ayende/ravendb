@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
@@ -51,7 +51,6 @@ namespace Raven.Server.Documents.TransactionMerger
         private readonly ConcurrentQueue<List<MergedTransactionCommand<TOperationContext, TTransaction>>> _opsBuffers = new();
 
         private readonly Queue<(TOperationContext Context, List<MergedTransactionCommand<TOperationContext, TTransaction>> PendingOps)> _asyncCommittedTransactions = new();
-        private int _maxConcurrentJournalWrites = 1;
         
         private readonly ManualResetEventSlim _waitHandle = new(false);
         private ExceptionDispatchInfo _edi;
@@ -61,38 +60,19 @@ namespace Raven.Server.Documents.TransactionMerger
         private readonly double _maxTimeToWaitForPreviousTxInMs;
         private readonly long _maxTxSizeInBytes;
 
-        // On a slow device the group-commit equilibrium can collapse into tiny batches: short writes release few clients, next requests dribbles and we have small batches
-        // result: volume IOPS bound at a fraction of its bandwidth. We intentionally increase transaction time here, to batch more
-        private const long EnterBatchConsolidationAtLatencyTicks = 8 * TimeSpan.TicksPerMillisecond;   // the device is queuing under the write traffic
-        private const long ExitBatchConsolidationAtLatencyTicks = 4 * TimeSpan.TicksPerMillisecond;    // consolidation grows the writes, and must not turn itself off too quickly
-        private const long BatchConsolidationWindowLatencyFactor = 2;                                  // hold for up to this many write durations...
-        private const long MaxBatchConsolidationWindowInMs = 50;                                     // ...but never longer than this
-        private const long MaxBatchConsolidationSizeInBytes = 128 * Constants.Size.Megabyte;
+        // the consolidation rules (when to engage, how long to hold) live in WriteFlowPolicy,
+        // together with every other adaptive decision on the commit write path; the merger only
+        // owns the wait mechanics (the queue, the wait handle, the dry-up counter)
         private int _consecutiveEmptyConsolidationWaits;
 
-        // two empty one-millisecond waits in a row mean the arrivals dried up - every writer is already
-        // aboard this batch, and holding it any longer is pure added latency for them
-        private const int MaxConsecutiveEmptyConsolidationWaits = 2;
-
-        private bool _consolidatingBatches;
-
-        // Is the batch is still worth waiting for more operations to arrive?
-        // Even though we have async commits, we want to keep the *current* transaction alive for a bit longer
-        //
-        // This is an issue because gp3 drives, for example, has both IOPS and bandwidth limits. If we have a lot of 
-        // small writes, we burned through that budget, and start queuing. And we end in a meta-stable slow state.
-        // 
-        // Batch size is whatever arrives during one write, so tiny writes -> the device goes IOPS bound at a fraction of its bandwidth 
-        // -> queuing inflates every op's latency -> clients cycle slowly -> few arrivals per write -> tiny writes again. 
-        // 
-        // Holding the batch open for a couple of write-durations flips it to few large writes: the device becomes bandwidth
-        // // bound, the queuing disappears, and per-op latency drops even though we waited (measured on gp3: 8.4k -> 12.9k ops/s at 1,531 clients, p50 down). 
-        // 
-        // The hold only engages when both symptoms are present (writes queuing AND batches collapsed), exits within ~2ms once every writer is already 
-        // aboard, and never engages on a fast device - a flat hold measurably hurts healthy workloads
+        // Is the batch still worth waiting for more operations to arrive? The regime and window
+        // come from the WriteFlowPolicy (see its class doc for why the hold exists and when it
+        // pays); this method only implements the wait: absorb while inside the window, and stop
+        // as soon as the arrivals dry up - every writer is already aboard, and holding the batch
+        // any longer is pure added latency for them
         private bool TryWaitForMoreOperationsToConsolidate(long modifiedSize, long consolidationSize, Stopwatch sp, double consolidationWindowMs)
         {
-            if (_consolidatingBatches == false || // not relevant unless in consolidation regine
+            if (_env.WriteFlow.ConsolidatingBatches == false || // not relevant unless in consolidation regime
                 modifiedSize >= consolidationSize ||
                 sp.ElapsedMilliseconds >= consolidationWindowMs)
             {
@@ -109,7 +89,7 @@ namespace Raven.Server.Documents.TransactionMerger
                 return true;
             }
 
-            if (++_consecutiveEmptyConsolidationWaits >= MaxConsecutiveEmptyConsolidationWaits)
+            if (++_consecutiveEmptyConsolidationWaits >= WriteFlowPolicy.MaxConsecutiveEmptyConsolidationWaits)
             {
                 _consecutiveEmptyConsolidationWaits = 0;
                 return false;
@@ -123,18 +103,7 @@ namespace Raven.Server.Documents.TransactionMerger
             if (_is32Bits)
                 return _maxTimeToWaitForPreviousTxInMs;
 
-            var writeLatencyTicks = _env.Journal.WriteLatencyEwmaTicks;
-
-            _consolidatingBatches = _consolidatingBatches
-                ? writeLatencyTicks >= ExitBatchConsolidationAtLatencyTicks
-                : writeLatencyTicks >= EnterBatchConsolidationAtLatencyTicks && _env.Journal.IsCommitLatencyBound;
-            _env.BatchConsolidationActive = _consolidatingBatches;
-
-            if (_consolidatingBatches == false)
-                return _maxTimeToWaitForPreviousTxInMs;
-
-            var windowMs = BatchConsolidationWindowLatencyFactor * writeLatencyTicks / TimeSpan.TicksPerMillisecond;
-            return Math.Max(_maxTimeToWaitForPreviousTxInMs, Math.Min(MaxBatchConsolidationWindowInMs, windowMs));
+            return _env.WriteFlow.GetBatchingWindowDurationInMs(_maxTimeToWaitForPreviousTxInMs);
         }
         private readonly double _maxTimeToWaitForPreviousTxBeforeRejectingInMs;
 
@@ -169,7 +138,6 @@ namespace Raven.Server.Documents.TransactionMerger
             _isEncrypted = isEncrypted;
             _is32Bits = is32Bits;
             _env = GetStorageEnvironment(contextPool);
-            _maxConcurrentJournalWrites = Math.Max(1, _env.Journal.MaxConcurrentJournalWrites);
             _initialized = true;
         }
 
@@ -645,7 +613,7 @@ namespace Raven.Server.Documents.TransactionMerger
                         startedCompletingInFlight = true;
                         // depending on the size of journal writes, we may want to keep writes to the jounral in flight (pipelined).
                         // that doesn't make sense if we have large journal writes, since then we are bandwidth bound anyway
-                        var keepInFlight = _env.Journal.ShouldPipelineJournalNow ? _maxConcurrentJournalWrites - 1 : 0;
+                        var keepInFlight = _env.WriteFlow.KeepInFlightJournalWrites;
                         CompleteAsyncCommittedTransactions(keep: keepInFlight, throwOnError: true);
                     }
                     catch (Exception e)
@@ -903,7 +871,7 @@ namespace Raven.Server.Documents.TransactionMerger
                 if (canCloseCurrentTx || _is32Bits)
                 {
                     var consolidationWindowMs = GetBatchingWindowDurationInMs();
-                    var consolidationSize = Math.Min(_maxTxSizeInBytes, MaxBatchConsolidationSizeInBytes);
+                    var consolidationSize = Math.Min(_maxTxSizeInBytes, WriteFlowPolicy.MaxBatchConsolidationSizeInBytes);
 
                     if (_operations.IsEmpty && 
                         TryWaitForMoreOperationsToConsolidate(modifiedSize, consolidationSize, sp, consolidationWindowMs) is false)

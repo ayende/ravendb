@@ -610,8 +610,8 @@ namespace Voron
                     if (pacing.StalledMs >= MaxJournalZeroingStallMs)
                         return -1; // no sign of going quiet - abort, the partial file is still banked
 
-                    pacing.StalledMs += JournalWritePipeline.RecentWriteActivityWindowMs;
-                    return JournalWritePipeline.RecentWriteActivityWindowMs;
+                    pacing.StalledMs += WriteFlowPolicy.RecentWriteActivityWindowMs;
+                    return WriteFlowPolicy.RecentWriteActivityWindowMs;
                 }
             }
 
