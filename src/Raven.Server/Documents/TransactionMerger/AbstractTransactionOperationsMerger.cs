@@ -904,10 +904,13 @@ namespace Raven.Server.Documents.TransactionMerger
                         TryWaitForMoreOperationsToConsolidate(modifiedSize, consolidationSize, sp, consolidationWindowMs) is false)
                     {
                         // the wait declines for three distinct reasons - what stopped THIS batch matters
-                        // to the policy: a starved close means the batch could not have grown
+                        // to the policy: a starved close means the batch could not have grown. The
+                        // window comparison only means anything while consolidation holds the window
+                        // open - otherwise the window is ~0, always "elapsed", and an empty-queue
+                        // close here IS starvation (mislabeling it silenced the pipeline gate)
                         closeReason = modifiedSize >= consolidationSize
                             ? WriteFlowPolicy.BatchCloseReason.SizeReached
-                            : sp.ElapsedMilliseconds >= consolidationWindowMs
+                            : _env.WriteFlow.ConsolidatingBatches && sp.ElapsedMilliseconds >= consolidationWindowMs
                                 ? WriteFlowPolicy.BatchCloseReason.WindowElapsed
                                 : WriteFlowPolicy.BatchCloseReason.QueueStarved;
                         break; // nothing remaining to do, let's us close this work
