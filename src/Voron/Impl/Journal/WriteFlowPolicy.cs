@@ -119,10 +119,15 @@ public sealed class WriteFlowPolicy
     private SimpleEwma _batchOpenIdlePerMille = new(smoothing: 16);
     private bool _extensionPausedByIdle;
 
-    // pause extending batches when idle-at-open exceeds ~5% of the cycle; resume only once it
-    // has decayed to noise, so the two states do not flap on single samples
-    private const long PauseExtensionAtIdlePerMille = 50;
-    private const long ResumeExtensionBelowIdlePerMille = 10;
+    // pause extending batches when idle-at-open costs more than the extension can plausibly
+    // amortize. Measured brackets: where extension is futile (population-capped batches, NVMe
+    // patch c96) idle runs ~265 permille; where it pays +6..+17% (NVMe patch c1024) the
+    // occasional post-drain idle runs ~50-100 permille and is worth paying - the amortization
+    // gain there is ~175 permille of the cycle. The threshold separates the two regimes; the
+    // proper form (compare idle against the measured a/c amortization gain) can replace the
+    // constant once the estimator exists.
+    private const long PauseExtensionAtIdlePerMille = 150;
+    private const long ResumeExtensionBelowIdlePerMille = 50;
 
     private readonly StorageEnvironmentOptions _options;
 
