@@ -82,14 +82,27 @@ namespace Raven.Server.Documents.TransactionMerger
 
             _waitHandle.Reset();
 
-            if (_operations.IsEmpty == false || // an operation arrived between the queue check and the reset
-                _waitHandle.Wait(millisecondsTimeout: 1, _shutdown)) // or was enqueued while we waited
+            if (_operations.IsEmpty == false) // an operation arrived between the queue check and the reset
             {
                 _consecutiveEmptyConsolidationWaits = 0;
                 return true;
             }
 
-            if (++_consecutiveEmptyConsolidationWaits >= WriteFlowPolicy.MaxConsecutiveEmptyConsolidationWaits)
+            var emptyWaitLimit = _env.WriteFlow.EmptyConsolidationWaitLimit;
+            if (emptyWaitLimit == 0)
+            {
+                // a starved queue cannot grow this batch, holding it is pure added latency
+                _consecutiveEmptyConsolidationWaits = 0;
+                return false;
+            }
+
+            if (_waitHandle.Wait(millisecondsTimeout: 1, _shutdown)) // enqueued while we waited
+            {
+                _consecutiveEmptyConsolidationWaits = 0;
+                return true;
+            }
+
+            if (++_consecutiveEmptyConsolidationWaits >= emptyWaitLimit)
             {
                 _consecutiveEmptyConsolidationWaits = 0;
                 return false;
@@ -877,7 +890,7 @@ namespace Raven.Server.Documents.TransactionMerger
                 if (canCloseCurrentTx || _is32Bits)
                 {
                     var consolidationWindowMs = GetBatchingWindowDurationInMs();
-                    var consolidationSize = Math.Min(_maxTxSizeInBytes, WriteFlowPolicy.MaxBatchConsolidationSizeInBytes);
+                    var consolidationSize = Math.Min(_maxTxSizeInBytes, _env.WriteFlow.ConsolidationSizeLimitInBytes);
 
                     if (_operations.IsEmpty && 
                         TryWaitForMoreOperationsToConsolidate(modifiedSize, consolidationSize, sp, consolidationWindowMs) is false)

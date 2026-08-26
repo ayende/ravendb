@@ -40,7 +40,7 @@ namespace Voron.Impl.Journal;
 /// Telemetry inputs (owned here, fed by the components):
 ///  - journal write latency and size (from the write pipeline, per completed device write)
 ///  - whether the merger is currently consolidating (set by the merger through this policy)
-///  - why each merged batch closed (recorded for future rules, not yet consumed)
+///  - why each merged batch closed (the close-reason policy keys its decisions on this)
 /// </summary>
 public sealed class WriteFlowPolicy
 {
@@ -52,9 +52,9 @@ public sealed class WriteFlowPolicy
     }
 
     /// <summary>
-    /// Why a merged batch stopped accumulating. Recorded per batch so future rules can key on
-    /// it (a starved close means the batch could not grow; a window/size close means it could),
-    /// not yet consumed by any decision below.
+    /// Why a merged batch stopped accumulating: a starved close means the batch could not
+    /// grow; a window/size close means it could. Under the close-reason policy this is the
+    /// discriminator that selects between pipelining and consolidation.
     /// </summary>
     public enum BatchCloseReason
     {
@@ -62,6 +62,34 @@ public sealed class WriteFlowPolicy
         WindowElapsed,  // the batching window expired with work still queued
         SizeReached,    // hit the transaction / consolidation size cap
     }
+
+    // -------------------------------------------------------------------------------------
+    // EXPERIMENT (probe): the close-reason policy. The shipping rules key pipelining and
+    // consolidation on the write-latency EWMA - a signal both mechanisms perturb, which makes
+    // the regime choice bistable (a 32% run-to-run band was measured on identical config).
+    // The alternate mode keys them on batch state instead:
+    //   - consolidate while the typical journal write is below a target size, and stop the
+    //     moment the queue empties (a starved batch cannot grow, waiting is pure latency)
+    //   - pipeline when recent batches closed starved (they could not have grown, so
+    //     overlapping their writes costs nothing) and the write is worth hiding
+    // The two exclude each other through the close reason itself: while consolidation absorbs,
+    // closes are window/size and the starved share collapses; when arrivals are the cap,
+    // consolidation's wait exits immediately and the starved share rises. No veto needed.
+    // Defaults preserve shipping behavior; flip after the A/B validates.
+    // -------------------------------------------------------------------------------------
+    private static readonly bool UseCloseReasonPolicy =
+        Environment.GetEnvironmentVariable("RAVEN_WRITEFLOW") == "closereason";
+
+    // where consolidation aims the journal write. Measured optima: ~80KB (NVMe patch c1024),
+    // 43-54KB (gp3 patch c1531), and no gain past 152KB (NVMe writes c1024) - the default sits
+    // inside that band until the online estimator replaces it
+    private static readonly long TargetWriteSizeBytes =
+        long.TryParse(Environment.GetEnvironmentVariable("RAVEN_WRITEFLOW_TARGET_KB"), out var kb)
+            ? kb * Constants.Size.Kilobyte
+            : 96 * Constants.Size.Kilobyte;
+
+    // most recent batches closed starved => the batches are arrival-capped
+    private const long MostlyStarvedPerMille = 900;
 
     private readonly long _pipelineAboveLatencyTicks;
     private readonly int _maxConcurrentJournalWrites;
@@ -76,10 +104,8 @@ public sealed class WriteFlowPolicy
     private long _batchesClosedOnWindow;
     private long _batchesClosedOnSize;
 
-    // per-batch telemetry: how large batches get, and what fraction close starved. A starved
-    // close means the batch could not have grown - the discriminator between the regime where
-    // pipelining pays (batches are arrival-capped) and the one where it shrinks batches that
-    // could have grown. Recorded here for future rules; no current decision reads these yet.
+    // per-batch telemetry: how large batches get, and what fraction close starved (i.e. the
+    // batch was arrival-capped and could not have grown)
     private SimpleEwma _batchOperations = new(smoothing: 16);
     private SimpleEwma _batchModifiedBytes = new(smoothing: 16);
     private SimpleEwma _starvedClosesPerMille = new(smoothing: 16);
@@ -118,6 +144,8 @@ public sealed class WriteFlowPolicy
         _batchOperations.Update(operations);
         _batchModifiedBytes.Update(modifiedBytes);
         _starvedClosesPerMille.Update(reason == BatchCloseReason.QueueStarved ? 1000 : 0);
+
+        MaybeTrace();
     }
 
     public long BatchOperationsEwma => _batchOperations.Current;
@@ -126,6 +154,28 @@ public sealed class WriteFlowPolicy
 
     // 0..1000: what share of recent batches closed because the arrivals dried up
     public long StarvedClosesPerMille => _starvedClosesPerMille.Current;
+
+    // PROBE: one line per second describing the policy state, for the benchmark harness
+    private static readonly bool Trace = Environment.GetEnvironmentVariable("RAVEN_WRITEFLOW_TRACE") == "1";
+    private long _lastTraceTimestamp;
+    private readonly string _traceId = Guid.NewGuid().ToString("N")[..8];
+
+    private void MaybeTrace()
+    {
+        if (Trace == false)
+            return;
+        var last = Volatile.Read(ref _lastTraceTimestamp);
+        var now = Stopwatch.GetTimestamp();
+        if (last != 0 && Stopwatch.GetElapsedTime(last, now).TotalSeconds < 1)
+            return;
+        Volatile.Write(ref _lastTraceTimestamp, now);
+        Console.WriteLine(
+            $"WRITEFLOW id={_traceId} mode={(UseCloseReasonPolicy ? "closereason" : "latency")} " +
+            $"starvedpm={_starvedClosesPerMille.Current} batchOps={_batchOperations.Current} batchKb={_batchModifiedBytes.Current / 1024} " +
+            $"closes(s/w/z)={_batchesClosedStarved}/{_batchesClosedOnWindow}/{_batchesClosedOnSize} " +
+            $"writeKb={_writeSizeBytes.Current / 1024} latMs={Math.Round((double)_writeLatencyTicks.Current / TimeSpan.TicksPerMillisecond, 2)} " +
+            $"consol={_consolidatingBatches} pipe={ShouldPipelineNow} keep={KeepInFlightJournalWrites} consolLimitKb={ConsolidationSizeLimitInBytes / 1024}");
+    }
 
     public long WriteLatencyEwmaTicks => _writeLatencyTicks.Current;
 
@@ -174,20 +224,31 @@ public sealed class WriteFlowPolicy
 
     public bool ShouldPipelineNow =>
         PipeliningEnabled &&
-        // the merger is waiting to get bigger batches, overlapping writes will do the reverse
-        _consolidatingBatches == false &&
-        // the device is slow enough that overlapping writes pays for the smaller batches
-        _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks &&
-        // if we are bounded by device bandwidth, pipelining won't help
-        IsCommitLatencyBound;
+        (UseCloseReasonPolicy
+            // recent batches closed starved: they could not have grown, so overlapping their
+            // writes shrinks nothing - and the latency floor keeps this off where the write is
+            // too cheap to be worth hiding. The starved share is honest here: consolidation
+            // absorbing means window/size closes, which turns this off by itself.
+            ? _starvedClosesPerMille.Current >= MostlyStarvedPerMille &&
+              _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks &&
+              IsCommitLatencyBound
+            // shipping rule: the merger is waiting to get bigger batches, overlapping writes
+            // would do the reverse; the device is slow enough that overlapping pays; and if we
+            // are bounded by device bandwidth, pipelining won't help
+            : _consolidatingBatches == false &&
+              _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks &&
+              IsCommitLatencyBound);
 
     public bool CanPipeline(long totalNumberOf4Kbs) =>
         PipeliningEnabled &&
-        _consolidatingBatches == false &&
         // < 1MB, otherwise we'll be copying to our own buffer, then we have large write, etc. Doesn't pay off.
         totalNumberOf4Kbs <= JournalWritePipeline.MaxPipelinedBatch4Kbs &&
-        // the device is slow enough that overlapping writes pays for the smaller batches
-        _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks;
+        (UseCloseReasonPolicy
+            ? _starvedClosesPerMille.Current >= MostlyStarvedPerMille &&
+              _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks
+            : _consolidatingBatches == false &&
+              // the device is slow enough that overlapping writes pays for the smaller batches
+              _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks);
 
     // how many async-committed transactions the merger leaves in flight instead of completing.
     // Overlapping writes doesn't make sense when we have large journal writes - we are bandwidth
@@ -226,6 +287,20 @@ public sealed class WriteFlowPolicy
     {
         var writeLatencyTicks = _writeLatencyTicks.Current;
 
+        if (UseCloseReasonPolicy)
+        {
+            // consolidate whenever the typical journal write is still below the target size -
+            // the batch is not yet amortizing its fixed cost. The time cap only bounds the
+            // pathological case; size is the real close condition, and a starved queue exits
+            // immediately (see EmptyConsolidationWaitLimit)
+            var writeSize = _writeSizeBytes.Current;
+            _consolidatingBatches = writeSize > 0 && writeSize < TargetWriteSizeBytes;
+
+            return _consolidatingBatches
+                ? Math.Max(configuredMinimumMs, MaxBatchConsolidationWindowInMs)
+                : configuredMinimumMs;
+        }
+
         _consolidatingBatches = _consolidatingBatches
             ? writeLatencyTicks >= ExitBatchConsolidationAtLatencyTicks
             : writeLatencyTicks >= EnterBatchConsolidationAtLatencyTicks && IsCommitLatencyBound;
@@ -236,6 +311,35 @@ public sealed class WriteFlowPolicy
         var windowMs = BatchConsolidationWindowLatencyFactor * writeLatencyTicks / TimeSpan.TicksPerMillisecond;
         return Math.Max(configuredMinimumMs, Math.Min(MaxBatchConsolidationWindowInMs, windowMs));
     }
+
+    /// <summary>
+    /// The merger stops absorbing once the batch's modified bytes reach this. Under the
+    /// close-reason policy this is the write-size target translated to modified-bytes terms
+    /// through the measured end-to-end ratio (diffing plus compression shrink the modified
+    /// pages by 10-80x on real workloads, so the target must be converted, not compared raw).
+    /// </summary>
+    public long ConsolidationSizeLimitInBytes
+    {
+        get
+        {
+            if (UseCloseReasonPolicy == false)
+                return MaxBatchConsolidationSizeInBytes;
+
+            var writeSize = _writeSizeBytes.Current;
+            var modified = _batchModifiedBytes.Current;
+            if (writeSize <= 0 || modified <= 0)
+                return MaxBatchConsolidationSizeInBytes; // no evidence yet - the time cap still bounds us
+
+            var modifiedBytesPerWrittenByte = (double)modified / writeSize;
+            var limit = (long)(TargetWriteSizeBytes * Math.Max(1, modifiedBytesPerWrittenByte));
+            return Math.Clamp(limit, TargetWriteSizeBytes, MaxBatchConsolidationSizeInBytes);
+        }
+    }
+
+    // under the close-reason policy a starved queue ends the hold at once: every writer is
+    // already aboard, and (measured) even a 2ms speculative wait costs 34% where the batch is
+    // arrival-capped. The shipping rule waits out two empty 1ms polls before giving up.
+    public int EmptyConsolidationWaitLimit => UseCloseReasonPolicy ? 0 : MaxConsecutiveEmptyConsolidationWaits;
 
     // ---------------------------------------------------------------------------------------
     // Journal compression
