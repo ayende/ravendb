@@ -823,6 +823,8 @@ namespace Raven.Server.Documents.TransactionMerger
             _alreadyListeningToPreviousOperationEnd = false;
             context.TransactionMarkerOffset = 1;  // ensure that we are consistent here and don't use old values
             var sp = Stopwatch.StartNew();
+            var closeReason = WriteFlowPolicy.BatchCloseReason.QueueStarved;
+            long lastModifiedSize = 0;
 
             do
             {
@@ -833,7 +835,10 @@ namespace Raven.Server.Documents.TransactionMerger
                 context.TransactionMarkerOffset++;
 
                 if (TryGetNextOperation(previousOperation, out MergedTransactionCommand<TOperationContext, TTransaction> op, ref meter) == false)
+                {
+                    closeReason = WriteFlowPolicy.BatchCloseReason.QueueStarved;
                     break;
+                }
 
                 executedOps.Add(op);
 
@@ -866,6 +871,7 @@ namespace Raven.Server.Documents.TransactionMerger
                 var modifiedSize = llt.NumberOfModifiedPages * Constants.Storage.PageSize;
 
                 modifiedSize += llt.AdditionalMemoryUsageSize.GetValue(SizeUnit.Bytes);
+                lastModifiedSize = modifiedSize;
 
                 var canCloseCurrentTx = previousOperation == null || previousOperation.IsCompleted;
                 if (canCloseCurrentTx || _is32Bits)
@@ -876,14 +882,27 @@ namespace Raven.Server.Documents.TransactionMerger
                     if (_operations.IsEmpty && 
                         TryWaitForMoreOperationsToConsolidate(modifiedSize, consolidationSize, sp, consolidationWindowMs) is false)
                     {
+                        // the wait declines for three distinct reasons - what stopped THIS batch matters
+                        // to the policy: a starved close means the batch could not have grown
+                        closeReason = modifiedSize >= consolidationSize
+                            ? WriteFlowPolicy.BatchCloseReason.SizeReached
+                            : sp.ElapsedMilliseconds >= consolidationWindowMs
+                                ? WriteFlowPolicy.BatchCloseReason.WindowElapsed
+                                : WriteFlowPolicy.BatchCloseReason.QueueStarved;
                         break; // nothing remaining to do, let's us close this work
                     }
 
                     if (sp.ElapsedMilliseconds > consolidationWindowMs)
+                    {
+                        closeReason = WriteFlowPolicy.BatchCloseReason.WindowElapsed;
                         break; // too much time
+                    }
 
                     if (modifiedSize > _maxTxSizeInBytes)
+                    {
+                        closeReason = WriteFlowPolicy.BatchCloseReason.SizeReached;
                         break; // transaction is too big, let's clean it
+                    }
 
                     // even though we can close the tx, we choose to keep it a bit longer
                     // we want to keep processing operations until we clear the queue, time / size
@@ -897,8 +916,11 @@ namespace Raven.Server.Documents.TransactionMerger
                     continue; // we can still process requests at this time, so let's do that...
 
                 UnlikelyRejectOperations(previousOperation, sp, llt, modifiedSize);
+                closeReason = WriteFlowPolicy.BatchCloseReason.SizeReached;
                 break;
             } while (true);
+
+            _env.WriteFlow.RecordBatchClosed(closeReason, executedOps.Count, lastModifiedSize);
 
             var status = GetPendingOperationsStatus(context, executedOps.Count is 0);
             if (_log.IsDebugEnabled)

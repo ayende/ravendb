@@ -76,6 +76,14 @@ public sealed class WriteFlowPolicy
     private long _batchesClosedOnWindow;
     private long _batchesClosedOnSize;
 
+    // per-batch telemetry: how large batches get, and what fraction close starved. A starved
+    // close means the batch could not have grown - the discriminator between the regime where
+    // pipelining pays (batches are arrival-capped) and the one where it shrinks batches that
+    // could have grown. Recorded here for future rules; no current decision reads these yet.
+    private SimpleEwma _batchOperations = new(smoothing: 16);
+    private SimpleEwma _batchModifiedBytes = new(smoothing: 16);
+    private SimpleEwma _starvedClosesPerMille = new(smoothing: 16);
+
     public WriteFlowPolicy(StorageEnvironmentOptions options)
     {
         _pipelineAboveLatencyTicks = options.PipelineJournalWritesAboveLatencyInTicks;
@@ -98,7 +106,7 @@ public sealed class WriteFlowPolicy
         Volatile.Write(ref _lastWriteActivityTimestamp, Stopwatch.GetTimestamp());
     }
 
-    public void RecordBatchClosed(BatchCloseReason reason)
+    public void RecordBatchClosed(BatchCloseReason reason, int operations, long modifiedBytes)
     {
         switch (reason)
         {
@@ -106,7 +114,18 @@ public sealed class WriteFlowPolicy
             case BatchCloseReason.WindowElapsed: _batchesClosedOnWindow++; break;
             case BatchCloseReason.SizeReached: _batchesClosedOnSize++; break;
         }
+
+        _batchOperations.Update(operations);
+        _batchModifiedBytes.Update(modifiedBytes);
+        _starvedClosesPerMille.Update(reason == BatchCloseReason.QueueStarved ? 1000 : 0);
     }
+
+    public long BatchOperationsEwma => _batchOperations.Current;
+
+    public long BatchModifiedBytesEwma => _batchModifiedBytes.Current;
+
+    // 0..1000: what share of recent batches closed because the arrivals dried up
+    public long StarvedClosesPerMille => _starvedClosesPerMille.Current;
 
     public long WriteLatencyEwmaTicks => _writeLatencyTicks.Current;
 
