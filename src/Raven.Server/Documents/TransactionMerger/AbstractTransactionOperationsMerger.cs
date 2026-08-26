@@ -931,7 +931,12 @@ namespace Raven.Server.Documents.TransactionMerger
                         // the floor means "stop extending, leave a seed" - a batch still smaller
                         // than a seed has not collected its own arrival group yet
                         executedOps.Count >= WriteFlowPolicy.TinyBatchOperations &&
-                        _operations.Count < minQueueDepth)
+                        // extension pays where it MULTIPLIES the batch (34 -> 417 ops at
+                        // saturation, +6% and p50 -57%); absorbing a tail that cannot even
+                        // double it trades a seed for ~2% amortization and loses 8% in cycle
+                        // time. The queue right now is the extension's whole upside - if it is
+                        // smaller than what we already have, close and leave it as the seed.
+                        _operations.Count < Math.Max(minQueueDepth, executedOps.Count))
                     {
                         // a draining tail seeds the NEXT batch; absorbing it here would close the
                         // batch against an empty queue and idle the merger for a notification
