@@ -1559,14 +1559,8 @@ namespace Voron
         // is made in one place, reading shared telemetry - see the class doc for the rules
         public WriteFlowPolicy WriteFlow { get; }
 
-        internal bool ShouldDelaySyncToConsolidateWrites()
-        {
-            var options = Options;
-            if (options.SyncWritebackBlockSizeInMb <= 0 || options.RunningOn32Bits)
-                return false;
-
-            return _journal.Applicator.TotalWrittenButUnsyncedBytes <= options.MaxUnsyncedBytesBeforeMandatorySync;
-        }
+        internal bool ShouldDelaySyncToConsolidateWrites() =>
+            WriteFlow.ShouldDelaySyncToConsolidateWrites(_journal.Applicator.TotalWrittenButUnsyncedBytes);
 
         internal void BackgroundFlushWritesToDataFile()
         {

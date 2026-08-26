@@ -32,6 +32,11 @@ namespace Voron.Impl.Journal;
 ///     a bigger batch only adds execute time: +17% at NVMe patch c1024 at ~80KB writes,
 ///     -27% at NVMe writes c1024 when pushed from 152KB to 757KB).
 ///
+/// Two more consumers spend the same device budget and are ruled from here for the same
+/// reason: the fsync (deferred while the unsynced backlog is modest, so it rides a quieter
+/// moment instead of colliding with commits) and the background journal zeroing / pool
+/// prewarming (fast local device only, and it stands down while a journal write is active).
+///
 /// The mechanisms interact through the batch size and through this policy's own telemetry
 /// (pipelining lowers the measured write latency, consolidation raises it), so decisions made
 /// in separate places fight each other and produce bistable throughput. Keeping every rule
@@ -110,8 +115,11 @@ public sealed class WriteFlowPolicy
     private SimpleEwma _batchModifiedBytes = new(smoothing: 16);
     private SimpleEwma _starvedClosesPerMille = new(smoothing: 16);
 
+    private readonly StorageEnvironmentOptions _options;
+
     public WriteFlowPolicy(StorageEnvironmentOptions options)
     {
+        _options = options;
         _pipelineAboveLatencyTicks = options.PipelineJournalWritesAboveLatencyInTicks;
         _maxConcurrentJournalWrites = Math.Clamp(options.MaxConcurrentJournalWrites, 1, StorageEnvironmentOptions.MaxSupportedConcurrentJournalWrites);
     }
@@ -376,4 +384,53 @@ public sealed class WriteFlowPolicy
     // so the caller bounds this by the flush backlog.
     public bool ShouldFlusherYieldToJournal =>
         _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks * 2;
+
+    // ---------------------------------------------------------------------------------------
+    // Sync (fsync) deferral
+    // ---------------------------------------------------------------------------------------
+
+    // the fsync spends the same device budget as the journal writes and the writeback; while
+    // the unsynced backlog is still modest we prefer to let the sync ride a quieter moment
+    // instead of colliding with commit traffic. The backlog cap bounds recovery time and dirty
+    // memory, so past it the sync becomes mandatory regardless.
+    public bool ShouldDelaySyncToConsolidateWrites(long totalWrittenButUnsyncedBytes)
+    {
+        if (_options.SyncWritebackBlockSizeInMb <= 0 || _options.RunningOn32Bits)
+            return false;
+
+        return totalWrittenButUnsyncedBytes <= _options.MaxUnsyncedBytesBeforeMandatorySync;
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // Journal pool zeroing / prewarming
+    // ---------------------------------------------------------------------------------------
+
+    // pre-zeroed pool files only pay where the filesystem's extent-conversion cost is what the
+    // journal writes wait on (a fast local device). On a bandwidth-budgeted volume the fill
+    // competes with the journal for the whole byte budget - measured 8-17% of throughput on
+    // gp3 at high write load - so we skip the pool there entirely.
+    public bool ShouldPrepareZeroedJournalsInBackground => IsMeasuredFastDevice;
+
+    private const int MaxJournalZeroingStallMs = 500;
+
+    /// <summary>
+    /// Paces the background zero-fill against the journal: journal writes are user facing, so
+    /// the fill stands down while a write is running or imminent. Returns the milliseconds to
+    /// wait before the next chunk, 0 to write it now, or -1 to abort the fill (the partially
+    /// zeroed file is still banked). A fill that never finds a quiet gap aborts after a bounded
+    /// cumulative stall instead of shadowing the journal forever.
+    /// </summary>
+    public int NextJournalZeroingStepMs(bool journalWriteActive, int stalledSoFarMs)
+    {
+        if (IsMeasuredFastDevice == false)
+            return -1;
+
+        if (journalWriteActive == false)
+            return 0; // write the next chunk immediately
+
+        if (stalledSoFarMs >= MaxJournalZeroingStallMs)
+            return -1; // no sign of going quiet - abort
+
+        return RecentWriteActivityWindowMs;
+    }
 }

@@ -592,26 +592,17 @@ namespace Voron
                 public WriteAheadJournal Journal;
                 public int StalledMs;
 
-                private const int MaxJournalZeroingStallMs = 500;
-
                 [UnmanagedCallersOnly]
                 public static unsafe int JournalZeroingPacing(void* state)
                 {
                     var pacing = (JournalZeroingPacingState)GCHandle.FromIntPtr((IntPtr)state).Target;
 
-                    // zero-filling prepays the filesystem extent-conversion cost, on bandwidth-budgeted volumes 
-                    // (cloud disks) the fill competes with the journal and (gp3 at high write cost 8-17% of throughput).
-                    if (pacing.Journal.IsMeasuredFastDevice == false)
-                        return -1;
-
-                    if (pacing.Journal.IsJournalWriteActive == false)
-                        return 0; // write the next chunk immediately
-
-                    if (pacing.StalledMs >= MaxJournalZeroingStallMs)
-                        return -1; // no sign of going quiet - abort, the partial file is still banked
-
-                    pacing.StalledMs += WriteFlowPolicy.RecentWriteActivityWindowMs;
-                    return WriteFlowPolicy.RecentWriteActivityWindowMs;
+                    // the policy decides (see WriteFlowPolicy.NextJournalZeroingStepMs); this
+                    // callback only carries the state across the PAL boundary
+                    var step = pacing.Journal.Env.WriteFlow.NextJournalZeroingStepMs(pacing.Journal.IsJournalWriteActive, pacing.StalledMs);
+                    if (step > 0)
+                        pacing.StalledMs += step;
+                    return step;
                 }
             }
 
@@ -620,9 +611,7 @@ namespace Voron
                 if (EnableJournalPoolPrewarming == false || Disposed)
                     return;
 
-                // pre-zeroed pool files only pay off where filesystems extent-conversion cost (fast local device)
-                // On GP3 & similar, the fill competes with the journal for the whole budget, so we'll skip it.
-                if (journal.IsMeasuredFastDevice == false)
+                if (journal.Env.WriteFlow.ShouldPrepareZeroedJournalsInBackground == false)
                     return;
 
                 size = Math.Min(size, MaxLogFileSize);
