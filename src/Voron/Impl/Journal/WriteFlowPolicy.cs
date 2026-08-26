@@ -344,10 +344,19 @@ public sealed class WriteFlowPolicy
         }
     }
 
-    // under the close-reason policy a starved queue ends the hold at once: every writer is
-    // already aboard, and (measured) even a 2ms speculative wait costs 34% where the batch is
-    // arrival-capped. The shipping rule waits out two empty 1ms polls before giving up.
-    public int EmptyConsolidationWaitLimit => UseCloseReasonPolicy ? 0 : MaxConsecutiveEmptyConsolidationWaits;
+    // How long to humor an empty queue before closing the batch. An empty queue means one of
+    // two things, and the recent starved share tells them apart:
+    //  - almost every batch closes starved: the population is arrival-capped, nobody else is
+    //    coming, and (measured) even a 2ms speculative wait costs 34% - close at once.
+    //  - closes are mixed: the "empty" moment is usually just the previous batch's clients
+    //    still in their notification round trip; they arrive within a millisecond, and waiting
+    //    them out is how the batch reaches the target size (measured: the batch stalls ~30%
+    //    short of the optimum without it).
+    // The shipping rule always waits out two empty 1ms polls.
+    public int EmptyConsolidationWaitLimit =>
+        UseCloseReasonPolicy && _starvedClosesPerMille.Current >= MostlyStarvedPerMille
+            ? 0
+            : MaxConsecutiveEmptyConsolidationWaits;
 
     // ---------------------------------------------------------------------------------------
     // Journal compression
