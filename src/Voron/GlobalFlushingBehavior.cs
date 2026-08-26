@@ -118,10 +118,9 @@ namespace Voron
                 if (env.IsDisposing || env.Disposed)
                     continue;
 
-                if (force == false && envSyncReq.Value.IsRequired == false &&
-                    env.Journal.Files.Count + env.Journal.Applicator.JournalsToDeleteCount <= env.Options.SyncJournalsCountThreshold &&
-                    (env.Journal.Applicator.TotalWrittenButUnsyncedBytes <= env.Options.MaxUnsyncedBytesBeforeSync ||
-                     env.ShouldDelaySyncToConsolidateWrites()))
+                if (force == false && envSyncReq.Value.IsRequired == false && env.WriteFlow.ShouldSyncNow(
+                        env.Journal.Files.Count + env.Journal.Applicator.JournalsToDeleteCount,
+                        env.Journal.Applicator.TotalWrittenButUnsyncedBytes) == false)
                     continue;
 
                 var isSyncRun = Interlocked.CompareExchange(ref envSyncReq.Value.IsSyncRun, 1, 0);
@@ -203,10 +202,7 @@ namespace Voron
                 if (envToFlush.Journal.Applicator.ShouldFlush == false)
                     continue; // nothing to do
 
-                if (envToFlush.WriteFlow.ShouldFlusherYieldToJournal &&
-                    // we have to flush _sometimes_, we can't starve the flusher indefinitely, and too high a limit will 
-                    // cause the *journals writes* to suffer high latency, so we have to balance not flushing too often and not saturating the I/O
-                    numberOfNewPagesSinceLastFlush < 4 * envToFlush.Options.MaxNumberOfPagesInJournalBeforeFlush)
+                if (envToFlush.WriteFlow.ShouldFlusherYieldToJournal(numberOfNewPagesSinceLastFlush))
                 {
                     _maybeNeedToFlush.Enqueue(req);
                     continue;

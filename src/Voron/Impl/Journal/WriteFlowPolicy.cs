@@ -380,10 +380,12 @@ public sealed class WriteFlowPolicy
     // ---------------------------------------------------------------------------------------
 
     // journal writes are user facing, high latency there effects the user, so we want to
-    // prioritize them over flushing - but we can't starve the flusher indefinitely either,
-    // so the caller bounds this by the flush backlog.
-    public bool ShouldFlusherYieldToJournal =>
-        _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks * 2;
+    // prioritize them over flushing - but we can't starve the flusher indefinitely either, and
+    // too high a backlog would itself inflate journal write latency, so the yield stops once
+    // the unflushed pages pile up past a few flush units.
+    public bool ShouldFlusherYieldToJournal(long unflushedPages) =>
+        _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks * 2 &&
+        unflushedPages < 4 * _options.MaxNumberOfPagesInJournalBeforeFlush;
 
     // ---------------------------------------------------------------------------------------
     // Sync (fsync) deferral
@@ -399,6 +401,18 @@ public sealed class WriteFlowPolicy
             return false;
 
         return totalWrittenButUnsyncedBytes <= _options.MaxUnsyncedBytesBeforeMandatorySync;
+    }
+
+    // a sync is due once enough journals or unsynced bytes pile up - unless deferring it a bit
+    // longer lets it ride a quieter moment (above). Callers force past this for explicit and
+    // required syncs.
+    public bool ShouldSyncNow(long journalsPendingSync, long totalWrittenButUnsyncedBytes)
+    {
+        if (journalsPendingSync > _options.SyncJournalsCountThreshold)
+            return true;
+
+        return totalWrittenButUnsyncedBytes > _options.MaxUnsyncedBytesBeforeSync &&
+               ShouldDelaySyncToConsolidateWrites(totalWrittenButUnsyncedBytes) == false;
     }
 
     // ---------------------------------------------------------------------------------------
