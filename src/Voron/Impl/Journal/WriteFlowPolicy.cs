@@ -313,19 +313,19 @@ public sealed class WriteFlowPolicy
             //
             // The extension is bounded by its own measured waste: if batches sit idle at open
             // (the previous batch drained the queue and the merger waited out a notification
-            // round trip), extending is a net loss no matter how small the writes are -
-            // measured -8.4% at NVMe patch c96, where the population caps the batch below the
-            // target and the 0.2ms write cannot cover the round trip. Where the write itself
-            // covers the round trip (gp3, 3ms writes) or the queue never empties (saturation),
-            // the idle stays ~0 and the extension keeps its measured +6..+20%.
+            // round trip), extending past the seed is a net loss - measured -8.4% at NVMe
+            // patch c96, where the population caps the batch below the target and the 0.2ms
+            // write cannot cover the round trip. The response is a LARGER seed floor (see
+            // MinQueueDepthToKeepAbsorbing), never disabling consolidation: absorbing what is
+            // already queued is what keeps low-concurrency batches whole, and losing it
+            // fragments them into a latency-gate lockout.
             var idle = _batchOpenIdlePerMille.Current;
             _extensionPausedByIdle = _extensionPausedByIdle
                 ? idle > ResumeExtensionBelowIdlePerMille
                 : idle >= PauseExtensionAtIdlePerMille;
 
             var writeSize = _writeSizeBytes.Current;
-            _consolidatingBatches = writeSize > 0 && writeSize < TargetWriteSizeBytes &&
-                                    _extensionPausedByIdle == false;
+            _consolidatingBatches = writeSize > 0 && writeSize < TargetWriteSizeBytes;
 
             return _consolidatingBatches
                 ? Math.Max(configuredMinimumMs, MaxBatchConsolidationWindowInMs)
@@ -375,7 +375,12 @@ public sealed class WriteFlowPolicy
     /// next batch can start - a 27% loss for 7 extra operations in a batch of 45. The shipping
     /// policy never extends past the natural window, so its floor is 0.
     /// </summary>
-    public int MinQueueDepthToKeepAbsorbing => UseCloseReasonPolicy && _consolidatingBatches ? 8 : 0;
+    // when idle-at-open says the drain is costing round trips, leave a LARGER seed rather than
+    // stopping absorption altogether: disabling consolidation outright let low-concurrency
+    // batches fragment to single operations, whose tiny writes complete under the latency gate
+    // and lock the pipeline out (a state trap measured at gp3 writes c8)
+    public int MinQueueDepthToKeepAbsorbing =>
+        UseCloseReasonPolicy && _consolidatingBatches ? (_extensionPausedByIdle ? 16 : 8) : 0;
 
     // a batch this small that closes the moment it may is arrival-capped, whatever trailing
     // operations happen to be mid-enqueue - labeling those closes "window elapsed" starves the

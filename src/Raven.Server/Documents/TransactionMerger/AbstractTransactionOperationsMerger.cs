@@ -927,7 +927,11 @@ namespace Raven.Server.Documents.TransactionMerger
                     }
 
                     var minQueueDepth = _env.WriteFlow.MinQueueDepthToKeepAbsorbing;
-                    if (minQueueDepth > 0 && _operations.Count < minQueueDepth)
+                    if (minQueueDepth > 0 &&
+                        // the floor means "stop extending, leave a seed" - a batch still smaller
+                        // than a seed has not collected its own arrival group yet
+                        executedOps.Count >= WriteFlowPolicy.TinyBatchOperations &&
+                        _operations.Count < minQueueDepth)
                     {
                         // a draining tail seeds the NEXT batch; absorbing it here would close the
                         // batch against an empty queue and idle the merger for a notification
