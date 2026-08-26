@@ -911,6 +911,16 @@ namespace Raven.Server.Documents.TransactionMerger
                         break; // too much time
                     }
 
+                    var minQueueDepth = _env.WriteFlow.MinQueueDepthToKeepAbsorbing;
+                    if (minQueueDepth > 0 && _operations.Count < minQueueDepth)
+                    {
+                        // a draining tail seeds the NEXT batch; absorbing it here would close the
+                        // batch against an empty queue and idle the merger for a notification
+                        // round trip (see WriteFlowPolicy.MinQueueDepthToKeepAbsorbing)
+                        closeReason = WriteFlowPolicy.BatchCloseReason.WindowElapsed;
+                        break;
+                    }
+
                     if (modifiedSize > _maxTxSizeInBytes)
                     {
                         closeReason = WriteFlowPolicy.BatchCloseReason.SizeReached;

@@ -331,6 +331,16 @@ public sealed class WriteFlowPolicy
         }
     }
 
+    /// <summary>
+    /// While consolidating, stop absorbing once the queue falls below this floor even though
+    /// work remains: a draining tail is the SEED of the next batch, not fuel for this one.
+    /// Measured (NVMe patch c96): absorbing the last few queued operations closes the batch
+    /// against an empty queue, and the merger then idles a notification round trip before the
+    /// next batch can start - a 27% loss for 7 extra operations in a batch of 45. The shipping
+    /// policy never extends past the natural window, so its floor is 0.
+    /// </summary>
+    public int MinQueueDepthToKeepAbsorbing => UseCloseReasonPolicy ? 8 : 0;
+
     // How long to humor an empty queue before closing the batch. An empty queue means one of
     // two things, and the recent starved share tells them apart:
     //  - almost every batch closes starved: the population is arrival-capped, nobody else is
