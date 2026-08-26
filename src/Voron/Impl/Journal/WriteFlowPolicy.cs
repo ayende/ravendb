@@ -267,8 +267,14 @@ public sealed class WriteFlowPolicy
     {
         var writeSize = _writeSizeBytes.Current;
 
-        // if typical write is under target size == not yet amortizing fixed costs
-        _consolidatingBatches = writeSize > 0 && writeSize < TargetWriteSizeBytes;
+        // if typical write is under target size == not yet amortizing fixed costs. When almost
+        // every batch closes starved, extension can only absorb each group's trailing arrivals -
+        // that pays when the write itself covers the clients' notification round trip (slow
+        // device), and idles the merger a round trip per batch when the write is ~free
+        // (measured -57% at NVMe patch c8)
+        _consolidatingBatches = writeSize > 0 && writeSize < TargetWriteSizeBytes &&
+                                (_starvedClosesPerMille.Current < MostlyStarvedPerMille ||
+                                 _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks);
 
         // Extend to window cap during consolidation; fallback to base floor otherwise
         return _consolidatingBatches
