@@ -375,7 +375,12 @@ public sealed class WriteFlowPolicy
     /// next batch can start - a 27% loss for 7 extra operations in a batch of 45. The shipping
     /// policy never extends past the natural window, so its floor is 0.
     /// </summary>
-    public int MinQueueDepthToKeepAbsorbing => UseCloseReasonPolicy ? 8 : 0;
+    public int MinQueueDepthToKeepAbsorbing => UseCloseReasonPolicy && _consolidatingBatches ? 8 : 0;
+
+    // a batch this small that closes the moment it may is arrival-capped, whatever trailing
+    // operations happen to be mid-enqueue - labeling those closes "window elapsed" starves the
+    // pipeline gate of its signal at low concurrency
+    public const int TinyBatchOperations = 8;
 
     // How long to humor an empty queue before closing the batch. An empty queue means one of
     // two things, and the recent starved share tells them apart:

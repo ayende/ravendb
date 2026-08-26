@@ -918,7 +918,11 @@ namespace Raven.Server.Documents.TransactionMerger
 
                     if (sp.ElapsedMilliseconds > consolidationWindowMs)
                     {
-                        closeReason = WriteFlowPolicy.BatchCloseReason.WindowElapsed;
+                        // a tiny batch closing the moment it may is arrival-capped: the couple of
+                        // trailing operations still mid-enqueue do not make it a window close
+                        closeReason = executedOps.Count < WriteFlowPolicy.TinyBatchOperations
+                            ? WriteFlowPolicy.BatchCloseReason.QueueStarved
+                            : WriteFlowPolicy.BatchCloseReason.WindowElapsed;
                         break; // too much time
                     }
 
