@@ -597,8 +597,8 @@ namespace Voron
                 {
                     var pacing = (JournalZeroingPacingState)GCHandle.FromIntPtr((IntPtr)state).Target;
 
-                    // the policy decides (see WriteFlowPolicy.NextJournalZeroingStepMs); this
-                    // callback only carries the state across the PAL boundary
+                    // the device budget decides (see DeviceWriteBudget.NextJournalZeroingStepMs);
+                    // this callback only carries the state across the PAL boundary
                     var step = pacing.Journal.Env.WriteFlow.NextJournalZeroingStepMs(pacing.Journal.IsJournalWriteActive, pacing.StalledMs);
                     if (step > 0)
                         pacing.StalledMs += step;
@@ -1794,14 +1794,17 @@ namespace Voron
             set => _maxConcurrentJournalWrites = Math.Clamp(value, 1, MaxSupportedConcurrentJournalWrites);
         }
 
-        internal WritebackPacingGate WritebackGate { get; private set; }
+        // the device-scoped half of the write-path policy, shared by every environment on the
+        // same physical device; see DeviceWriteBudget. Null until the data pager identifies the
+        // device - WriteFlowPolicy substitutes a private, unshared instance in that case.
+        internal DeviceWriteBudget DeviceWriteBudget { get; private set; }
 
         private protected unsafe void InitializeWritebackGate(Pager.State state, string dataFilePath)
         {
             if (Pal.rvn_pager_get_device_id(state.Handle, out var deviceId, out _) != PalFlags.FailCodes.Success)
                 return;
                 
-            WritebackGate = WritebackPacingGate.GetForDevice(deviceId, dataFilePath,
+            DeviceWriteBudget = DeviceWriteBudget.GetForDevice(deviceId, dataFilePath,
                 SyncWritebackBarrierCostThresholdTicks, SyncWritebackDrainQueueDepthThreshold);
         }
 

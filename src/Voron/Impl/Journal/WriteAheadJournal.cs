@@ -1385,7 +1385,7 @@ namespace Voron.Impl.Journal
                 if (options.RootJournal != null)
                     return; // non-root (shared-journal) environments never trickle
 
-                var gate = options.WritebackGate;
+                var gate = options.DeviceWriteBudget;
                 if (gate != null && gate.ShouldDrain())
                     return; // drain mode - the sync owns the writeback now
 
@@ -1586,7 +1586,7 @@ namespace Voron.Impl.Journal
                     var currentStateRecord = parent._waj._env.CurrentStateRecord;
                     var dataPagerState = currentStateRecord.DataPagerState;
                     var options = parent._waj._env.Options;
-                    var gate = options.SyncWritebackBlockSizeInMb > 0 ? options.WritebackGate : null;
+                    var gate = options.SyncWritebackBlockSizeInMb > 0 ? options.DeviceWriteBudget : null;
 
                     // In trickle mode, we already initiated the writeback, so we don't need to do it again here. 
                     // In drain mode, we drain first to avoid big I/O hitting all at once, causing congestion.

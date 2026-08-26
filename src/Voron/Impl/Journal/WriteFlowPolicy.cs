@@ -32,10 +32,14 @@ namespace Voron.Impl.Journal;
 ///     a bigger batch only adds execute time: +17% at NVMe patch c1024 at ~80KB writes,
 ///     -27% at NVMe writes c1024 when pushed from 152KB to 757KB).
 ///
-/// Two more consumers spend the same device budget and are ruled from here for the same
-/// reason: the fsync (deferred while the unsynced backlog is modest, so it rides a quieter
-/// moment instead of colliding with commits) and the background journal zeroing / pool
-/// prewarming (fast local device only, and it stands down while a journal write is active).
+/// This class is the PER-ENVIRONMENT half: batch shaping, pipelining, this stream's codec
+/// and sync scheduling. Signals that are properties of the physical DISK - the device class,
+/// the writeback trickle/drain mode, the zeroing budget - live in the shared, per-device
+/// <see cref="DeviceWriteBudget"/>, which this class feeds and consults; per-environment
+/// copies of those would disagree across the databases on one disk.
+///
+/// The fsync deferral is also ruled here: the sync spends the same device budget as the
+/// commits, so while the unsynced backlog is modest it rides a quieter moment instead.
 ///
 /// The mechanisms interact through the batch size and through this policy's own telemetry
 /// (pipelining lowers the measured write latency, consolidation raises it), so decisions made
@@ -49,13 +53,6 @@ namespace Voron.Impl.Journal;
 /// </summary>
 public sealed class WriteFlowPolicy
 {
-    public enum DeviceClass
-    {
-        Unknown, // no evidence yet, go for safe defaults
-        Fast,    // example: nvme - very high limits, or we never hit them
-        Budgeted // example: gp3 - both bandwidth & IOPS limits that we hit
-    }
-
     /// <summary>
     /// Why a merged batch stopped accumulating: a starved close means the batch could not
     /// grow; a window/size close means it could. Under the close-reason policy this is the
@@ -101,7 +98,6 @@ public sealed class WriteFlowPolicy
 
     private SimpleEwma _writeLatencyTicks = new(smoothing: 8);
     private SimpleEwma _writeSizeBytes = new(smoothing: 8);
-    private long _lastWriteActivityTimestamp;
 
     private volatile bool _consolidatingBatches;
 
@@ -117,6 +113,18 @@ public sealed class WriteFlowPolicy
 
     private readonly StorageEnvironmentOptions _options;
 
+    // the shared per-device half; resolved lazily because the data pager identifies the device
+    // after this policy is constructed. Environments without an identifiable device get a
+    // private, unshared budget (no queue signal, safe defaults).
+    private DeviceWriteBudget _unsharedDevice;
+
+    private DeviceWriteBudget Device =>
+        _options.DeviceWriteBudget ??
+        _unsharedDevice ??
+        Interlocked.CompareExchange(ref _unsharedDevice,
+            DeviceWriteBudget.CreateUnshared(_options.SyncWritebackBarrierCostThresholdTicks, _options.SyncWritebackDrainQueueDepthThreshold), null) ??
+        _unsharedDevice;
+
     public WriteFlowPolicy(StorageEnvironmentOptions options)
     {
         _options = options;
@@ -130,15 +138,12 @@ public sealed class WriteFlowPolicy
 
     public void RecordJournalWrite(long latencyTicks, long sizeInBytes)
     {
-        Volatile.Write(ref _lastWriteActivityTimestamp, Stopwatch.GetTimestamp());
         _writeLatencyTicks.Update(latencyTicks);
         _writeSizeBytes.Update(sizeInBytes);
+        Device.RecordJournalWrite(latencyTicks, sizeInBytes, _pipelineAboveLatencyTicks);
     }
 
-    public void RecordJournalWriteSubmitted()
-    {
-        Volatile.Write(ref _lastWriteActivityTimestamp, Stopwatch.GetTimestamp());
-    }
+    public void RecordJournalWriteSubmitted() => Device.RecordJournalWriteActivity();
 
     public void RecordBatchClosed(BatchCloseReason reason, int operations, long modifiedBytes)
     {
@@ -197,32 +202,14 @@ public sealed class WriteFlowPolicy
     // latency is meaningful if we have many small commits, not large ones
     public bool IsCommitLatencyBound => _writeSizeBytes.Current < 256 * Constants.Size.Kilobyte;
 
-    public DeviceClass MeasuredDeviceClass
-    {
-        get
-        {
-            // small writes can be fast on a slow device, so we can't estimate from small writes only
-            // gp3 writes small batches in 1.3-1.9ms, gp2 in 3-4ms, we need more than that...
-            if (_writeSizeBytes.Current < 256 * Constants.Size.Kilobyte)
-                return DeviceClass.Unknown;
+    // device-scoped: classified from every journal stream on the disk, see DeviceWriteBudget
+    public DeviceWriteBudget.DeviceClass MeasuredDeviceClass => Device.MeasuredDeviceClass;
 
-            var ewma = _writeLatencyTicks.Current;
-            if (ewma == 0)
-                return DeviceClass.Unknown;
+    public bool IsMeasuredFastDevice => Device.IsMeasuredFastDevice;
 
-            return ewma < _pipelineAboveLatencyTicks / 2 ? DeviceClass.Fast : DeviceClass.Budgeted;
-        }
-    }
-
-    public bool IsMeasuredFastDevice => MeasuredDeviceClass == DeviceClass.Fast;
-
-    internal const int RecentWriteActivityWindowMs = 3;
-
-    // journal writes are user facing - background work (pool zeroing, etc.) uses this to stand down
-    // while a write was recently running or another is likely imminent. Writes currently in flight
-    // are tracked by the pipeline itself and OR-ed in by the caller.
-    public bool JournalWriteRecentlyActive =>
-        Stopwatch.GetElapsedTime(Volatile.Read(ref _lastWriteActivityTimestamp)).TotalMilliseconds < RecentWriteActivityWindowMs;
+    // writes currently in flight are tracked by this environment's pipeline and OR-ed in by
+    // the caller; the recent-activity window is device-wide
+    public bool JournalWriteRecentlyActive => Device.JournalWriteRecentlyActive;
 
     // ---------------------------------------------------------------------------------------
     // Pipelining (overlapping journal writes on the device)
@@ -379,7 +366,7 @@ public sealed class WriteFlowPolicy
         if (configured != JournalCompressionAlgorithm.Auto)
             return configured; // pinned by the user, in either direction
 
-        return MeasuredDeviceClass == DeviceClass.Budgeted
+        return Device.MeasuredDeviceClass == DeviceWriteBudget.DeviceClass.Budgeted
             ? JournalCompressionAlgorithm.Zstd
             : JournalCompressionAlgorithm.Lz4;
     }
@@ -428,32 +415,9 @@ public sealed class WriteFlowPolicy
     // Journal pool zeroing / prewarming
     // ---------------------------------------------------------------------------------------
 
-    // pre-zeroed pool files only pay where the filesystem's extent-conversion cost is what the
-    // journal writes wait on (a fast local device). On a bandwidth-budgeted volume the fill
-    // competes with the journal for the whole byte budget - measured 8-17% of throughput on
-    // gp3 at high write load - so we skip the pool there entirely.
-    public bool ShouldPrepareZeroedJournalsInBackground => IsMeasuredFastDevice;
+    // device-scoped, see DeviceWriteBudget: the fill competes with every journal on the disk
+    public bool ShouldPrepareZeroedJournalsInBackground => Device.ShouldPrepareZeroedJournalsInBackground;
 
-    private const int MaxJournalZeroingStallMs = 500;
-
-    /// <summary>
-    /// Paces the background zero-fill against the journal: journal writes are user facing, so
-    /// the fill stands down while a write is running or imminent. Returns the milliseconds to
-    /// wait before the next chunk, 0 to write it now, or -1 to abort the fill (the partially
-    /// zeroed file is still banked). A fill that never finds a quiet gap aborts after a bounded
-    /// cumulative stall instead of shadowing the journal forever.
-    /// </summary>
-    public int NextJournalZeroingStepMs(bool journalWriteActive, int stalledSoFarMs)
-    {
-        if (IsMeasuredFastDevice == false)
-            return -1;
-
-        if (journalWriteActive == false)
-            return 0; // write the next chunk immediately
-
-        if (stalledSoFarMs >= MaxJournalZeroingStallMs)
-            return -1; // no sign of going quiet - abort
-
-        return RecentWriteActivityWindowMs;
-    }
+    public int NextJournalZeroingStepMs(bool journalWriteActive, int stalledSoFarMs) =>
+        Device.NextJournalZeroingStepMs(journalWriteActive, stalledSoFarMs);
 }
