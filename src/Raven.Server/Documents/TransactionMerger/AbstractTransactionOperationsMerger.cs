@@ -838,6 +838,7 @@ namespace Raven.Server.Documents.TransactionMerger
             var sp = Stopwatch.StartNew();
             var closeReason = WriteFlowPolicy.BatchCloseReason.QueueStarved;
             long lastModifiedSize = 0;
+            long idleToFirstOpTicks = 0;
 
             do
             {
@@ -851,6 +852,13 @@ namespace Raven.Server.Documents.TransactionMerger
                 {
                     closeReason = WriteFlowPolicy.BatchCloseReason.QueueStarved;
                     break;
+                }
+
+                if (executedOps.Count == 0)
+                {
+                    // how long this batch sat with nothing to do before its first operation - the
+                    // cost of the previous batch draining the queue instead of leaving a seed
+                    idleToFirstOpTicks = sp.Elapsed.Ticks;
                 }
 
                 executedOps.Add(op);
@@ -943,7 +951,7 @@ namespace Raven.Server.Documents.TransactionMerger
                 break;
             } while (true);
 
-            _env.WriteFlow.RecordBatchClosed(closeReason, executedOps.Count, lastModifiedSize);
+            _env.WriteFlow.RecordBatchClosed(closeReason, executedOps.Count, lastModifiedSize, idleToFirstOpTicks, sp.Elapsed.Ticks);
 
             var status = GetPendingOperationsStatus(context, executedOps.Count is 0);
             if (_log.IsDebugEnabled)

@@ -111,6 +111,19 @@ public sealed class WriteFlowPolicy
     private SimpleEwma _batchModifiedBytes = new(smoothing: 16);
     private SimpleEwma _starvedClosesPerMille = new(smoothing: 16);
 
+    // 0..1000: what share of a batch's cycle is spent idle before its first operation. This is
+    // the DIRECT cost of over-draining: when the previous batch absorbed the whole queue, the
+    // next one sits through the clients' notification round trip with nothing to do. It is the
+    // feedback signal that bounds batch extension (see GetBatchingWindowDurationInMs) - the
+    // quantity the extension can waste, measured rather than proxied.
+    private SimpleEwma _batchOpenIdlePerMille = new(smoothing: 16);
+    private bool _extensionPausedByIdle;
+
+    // pause extending batches when idle-at-open exceeds ~5% of the cycle; resume only once it
+    // has decayed to noise, so the two states do not flap on single samples
+    private const long PauseExtensionAtIdlePerMille = 50;
+    private const long ResumeExtensionBelowIdlePerMille = 10;
+
     private readonly StorageEnvironmentOptions _options;
 
     // the shared per-device half; resolved lazily because the data pager identifies the device
@@ -145,8 +158,11 @@ public sealed class WriteFlowPolicy
 
     public void RecordJournalWriteSubmitted() => Device.RecordJournalWriteActivity();
 
-    public void RecordBatchClosed(BatchCloseReason reason, int operations, long modifiedBytes)
+    public void RecordBatchClosed(BatchCloseReason reason, int operations, long modifiedBytes, long idleToFirstOpTicks, long cycleTicks)
     {
+        if (cycleTicks > 0)
+            _batchOpenIdlePerMille.Update(Math.Min(1000, idleToFirstOpTicks * 1000 / cycleTicks));
+
         switch (reason)
         {
             case BatchCloseReason.QueueStarved: _batchesClosedStarved++; break;
@@ -187,6 +203,7 @@ public sealed class WriteFlowPolicy
             $"starvedpm={_starvedClosesPerMille.Current} batchOps={_batchOperations.Current} batchKb={_batchModifiedBytes.Current / 1024} " +
             $"closes(s/w/z)={_batchesClosedStarved}/{_batchesClosedOnWindow}/{_batchesClosedOnSize} " +
             $"writeKb={_writeSizeBytes.Current / 1024} latMs={Math.Round((double)_writeLatencyTicks.Current / TimeSpan.TicksPerMillisecond, 2)} " +
+            $"idlepm={_batchOpenIdlePerMille.Current} paused={_extensionPausedByIdle} " +
             $"consol={_consolidatingBatches} pipe={ShouldPipelineNow} keep={KeepInFlightJournalWrites} consolLimitKb={ConsolidationSizeLimitInBytes / 1024}");
     }
 
@@ -287,9 +304,23 @@ public sealed class WriteFlowPolicy
             // consolidate whenever the typical journal write is still below the target size -
             // the batch is not yet amortizing its fixed cost. The time cap only bounds the
             // pathological case; size is the real close condition, and a starved queue exits
-            // immediately (see EmptyConsolidationWaitLimit)
+            // immediately (see EmptyConsolidationWaitLimit).
+            //
+            // The extension is bounded by its own measured waste: if batches sit idle at open
+            // (the previous batch drained the queue and the merger waited out a notification
+            // round trip), extending is a net loss no matter how small the writes are -
+            // measured -8.4% at NVMe patch c96, where the population caps the batch below the
+            // target and the 0.2ms write cannot cover the round trip. Where the write itself
+            // covers the round trip (gp3, 3ms writes) or the queue never empties (saturation),
+            // the idle stays ~0 and the extension keeps its measured +6..+20%.
+            var idle = _batchOpenIdlePerMille.Current;
+            _extensionPausedByIdle = _extensionPausedByIdle
+                ? idle > ResumeExtensionBelowIdlePerMille
+                : idle >= PauseExtensionAtIdlePerMille;
+
             var writeSize = _writeSizeBytes.Current;
-            _consolidatingBatches = writeSize > 0 && writeSize < TargetWriteSizeBytes;
+            _consolidatingBatches = writeSize > 0 && writeSize < TargetWriteSizeBytes &&
+                                    _extensionPausedByIdle == false;
 
             return _consolidatingBatches
                 ? Math.Max(configuredMinimumMs, MaxBatchConsolidationWindowInMs)
