@@ -162,6 +162,8 @@ public sealed class WriteFlowPolicy
         }
 
         _batchSequence++;
+        if (TraceWriteFlow && _batchSequence % 4096 == 0)
+            Console.WriteLine($"OPENWAIT|seq={_batchSequence}|probe={_emptyWaitProbeSlices}|broad={_emptyWaitBroadSlices}|caught={_emptyWaitArrivalsCaptured}|hitsPm={_emptyWaitHitsPerMille.Current}|attemptTicks={_emptyWaitTicksPerAttempt.Current}|wlatTicks={_writeLatencyTicks.Current}|consol={(_consolidatingBatches ? 1 : 0)}");
         _batchModifiedBytes.Update(modifiedBytes);
         _starvedClosesPerMille.Update(reason == BatchCloseReason.QueueStarved ? 1000 : 0);
 
@@ -334,10 +336,31 @@ public sealed class WriteFlowPolicy
     private SimpleEwma _emptyWaitTicksPerAttempt = new(smoothing: 16);
     private SimpleEwma _emptyWaitHitsPerMille = new(smoothing: 16);
 
+    // proof instrumentation for the probe branch: RAVEN_OPENWAIT=off disables broad waiting
+    // while the probes keep measuring (same binary, clean attribution), and
+    // RAVEN_WRITEFLOW_TRACE=1 prints the gate's inputs, decisions and slice counters
+    private static readonly bool BroadEmptyWaitDisabled =
+        Environment.GetEnvironmentVariable("RAVEN_OPENWAIT") == "off";
+    private static readonly bool TraceWriteFlow =
+        Environment.GetEnvironmentVariable("RAVEN_WRITEFLOW_TRACE") == "1";
+
+    private long _emptyWaitProbeSlices;
+    private long _emptyWaitBroadSlices;
+    private long _emptyWaitArrivalsCaptured;
+
     public bool ShouldWaitForEmptyQueueArrivals(long alreadyWaitedTicks)
     {
         if (_batchSequence % EmptyWaitProbeEveryBatches == 0)
-            return alreadyWaitedTicks == 0; // a probe is a single measured slice
+        {
+            if (alreadyWaitedTicks != 0)
+                return false; // a probe is a single measured slice
+
+            _emptyWaitProbeSlices++;
+            return true;
+        }
+
+        if (BroadEmptyWaitDisabled)
+            return false;
 
         var hits = _emptyWaitHitsPerMille.Current;
         if (hits < BroadEmptyWaitMinimumHitsPerMille)
@@ -348,11 +371,17 @@ public sealed class WriteFlowPolicy
         if (ticksPerArrival > _writeLatencyTicks.Current)
             return false; // the wait costs more than the write it saves
 
-        return alreadyWaitedTicks < Math.Min(_writeLatencyTicks.Current, MaxEmptyWaitPerBatchTicks);
+        if (alreadyWaitedTicks >= Math.Min(_writeLatencyTicks.Current, MaxEmptyWaitPerBatchTicks))
+            return false;
+
+        _emptyWaitBroadSlices++;
+        return true;
     }
 
     public void RecordEmptyQueueWait(long waitedTicks, bool arrivalCaptured)
     {
+        if (arrivalCaptured)
+            _emptyWaitArrivalsCaptured++;
         _emptyWaitTicksPerAttempt.Update(waitedTicks);
         _emptyWaitHitsPerMille.Update(arrivalCaptured ? 1000 : 0);
     }
