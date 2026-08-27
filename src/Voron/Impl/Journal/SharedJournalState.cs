@@ -49,12 +49,15 @@ public class SharedJournalState()
         {
             MarkCatastrophicFailure(rec.Transaction.Environment, edi);
             rec.Tcs.TrySetException(e);
+            // a branch blocks on Consumed to get its buffer back, so it has to be released here too
+            rec.Consumed.TrySetException(e);
         }
 
         foreach (var record in _mergedJournalJournalRecordsBuffer)
         {
             MarkCatastrophicFailure(record.Transaction.Environment, edi);
             record.Tcs.TrySetException(e);
+            record.Consumed.TrySetException(e);
         }
 
         static void MarkCatastrophicFailure(StorageEnvironment env, ExceptionDispatchInfo edi)
@@ -68,11 +71,13 @@ public class SharedJournalState()
         while (_mergedCommitsQueue.TryDequeue(out var rec))
         {
             rec.Tcs.TrySetCanceled();
+            rec.Consumed.TrySetCanceled();
         }
 
         foreach (var record in _mergedJournalJournalRecordsBuffer)
         {
             record.Tcs.TrySetCanceled();
+            record.Consumed.TrySetCanceled();
         }
     }
 }
