@@ -15,7 +15,11 @@ namespace Voron.Impl.Journal;
 
 internal sealed unsafe class JournalWritePipeline : IDisposable
 {
-    public const int MaxPipelinedBatchSizeInBytes = Constants.Size.Megabyte;
+    // 32MB, was 1MB: the shared index root writes merged batches of ~8-9MB mean, and the 1MB
+    // cap sent every one of them down the inline path - which drains the window and serializes
+    // the one stream the indexes share. The copy the pipeline pays is also what frees the
+    // branches early, so for the root the memcpy buys something the inline path cannot.
+    public const int MaxPipelinedBatchSizeInBytes = 32 * Constants.Size.Megabyte;
 
     private const int MaxPipelinedBatch4Kbs = MaxPipelinedBatchSizeInBytes / Constants.Storage.JournalPageSize;
 
