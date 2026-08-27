@@ -161,6 +161,7 @@ public sealed class WriteFlowPolicy
             case BatchCloseReason.SizeReached: _batchesClosedOnSize++; break;
         }
 
+        _batchSequence++;
         _batchModifiedBytes.Update(modifiedBytes);
         _starvedClosesPerMille.Update(reason == BatchCloseReason.QueueStarved ? 1000 : 0);
 
@@ -305,15 +306,56 @@ public sealed class WriteFlowPolicy
     // batches so small they aren't worth considering in our calculations
     public const int TinyBatchOperations = 8;
 
-    // Consolidation shapes work that is already queued. It must not spend wall clock waiting
-    // for arrivals that have not happened yet. The starved-share gate that allowed a 1ms
-    // empty-queue wait read a signal the wait itself controls: the wait collects the trailing
-    // arrivals, the batch grows past the tiny-batch bound, closes get labeled WindowElapsed,
-    // and the gate stays armed. That hold is self-sustaining and was measured at -57%
-    // (NVMe patch c8) and as three distinct stable throughput states (NVMe writes c8).
-    // The chained transaction and the seed the absorption rule leaves in the queue already
-    // cover the "clients come right back" case without burning the merger's wall clock.
-    public int EmptyConsolidationWaitLimit => 0;
+    // ---------------------------------------------------------------------------------------
+    // Empty-queue waiting (the open-loop case)
+    // ---------------------------------------------------------------------------------------
+    // In a closed loop the next requests are downstream of our own acks: holding the batch
+    // delays the write, the write delays the acks, and the acks delay the arrivals the hold
+    // was waiting for. Waiting is pure cycle time there - measured at -57% (NVMe patch c8)
+    // and as three distinct stable throughput states (NVMe writes c8) when a starved-share
+    // gate allowed it, because that gate read a signal the wait itself controls.
+    //
+    // In an OPEN loop the arrivals come on an external cadence. Holding the batch w ms then
+    // collects rate*w operations into the current write instead of paying another write for
+    // them - worth it exactly when the device charges per write more than the wait costs.
+    //
+    // The regimes are told apart by MEASURING the wait, never by a proxy it can write:
+    // one consolidating batch in 256 runs a single 1ms wait slice as a probe regardless of
+    // the broad gate, recording how long a captured arrival took. Broad waiting engages only
+    // while probes actually capture arrivals (a closed loop leaves the hit rate near zero -
+    // nobody arrives while we withhold their acks) AND the measured wait per captured arrival
+    // costs less than the write it merges away. A device whose write is cheaper than the 1ms
+    // wait slice can never pass the price test - fast NVMe self-excludes structurally.
+    private const int EmptyWaitProbeEveryBatches = 256;
+    private const long BroadEmptyWaitMinimumHitsPerMille = 500;
+    private static readonly long MaxEmptyWaitPerBatchTicks = 5 * TimeSpan.TicksPerMillisecond;
+
+    private long _batchSequence; // touched only by the merger thread
+    private SimpleEwma _emptyWaitTicksPerAttempt = new(smoothing: 16);
+    private SimpleEwma _emptyWaitHitsPerMille = new(smoothing: 16);
+
+    public bool ShouldWaitForEmptyQueueArrivals(long alreadyWaitedTicks)
+    {
+        if (_batchSequence % EmptyWaitProbeEveryBatches == 0)
+            return alreadyWaitedTicks == 0; // a probe is a single measured slice
+
+        var hits = _emptyWaitHitsPerMille.Current;
+        if (hits < BroadEmptyWaitMinimumHitsPerMille)
+            return false; // arrivals do not come unless we ack first - a closed loop
+
+        // the wait spent per captured arrival, against the write that merging it away saves
+        var ticksPerArrival = _emptyWaitTicksPerAttempt.Current * 1000 / hits;
+        if (ticksPerArrival > _writeLatencyTicks.Current)
+            return false; // the wait costs more than the write it saves
+
+        return alreadyWaitedTicks < Math.Min(_writeLatencyTicks.Current, MaxEmptyWaitPerBatchTicks);
+    }
+
+    public void RecordEmptyQueueWait(long waitedTicks, bool arrivalCaptured)
+    {
+        _emptyWaitTicksPerAttempt.Update(waitedTicks);
+        _emptyWaitHitsPerMille.Update(arrivalCaptured ? 1000 : 0);
+    }
 
    
     // On NVMe devices, writing the full data to disk is _faster_ than compressing it first (CPU bound, not I/O bound).

@@ -785,7 +785,7 @@ namespace Raven.Server.Documents.TransactionMerger
             public WriteFlowPolicy.BatchCloseReason CloseReason = WriteFlowPolicy.BatchCloseReason.QueueStarved;
 
             private long _queueDepthSnapshot = -1;
-            private int _consecutiveEmptyWaits;
+            private long _emptyQueueWaitTicks;
 
             // called when the _previous_ tx is done, and we *can* close, we check whether we _should_ 
             // if we keep the tx open longer, we get better batch and better throughput (min latency cost)
@@ -832,39 +832,31 @@ namespace Raven.Server.Documents.TransactionMerger
                 return false;
             }
 
-            // When consolidating writes, we flush immediately once arrivals dry up to avoid latency
+            // When consolidating, an empty queue closes the batch immediately unless the policy
+            // asks for a wait: a measured probe slice, or - once the probes show arrivals that do
+            // not depend on our own acks (an open loop) and the wait per captured arrival costs
+            // less than the write it merges away - a bounded broad wait. Every slice is measured
+            // and reported, so the policy's signal stays live whether the broad gate is on or off.
             private bool ShouldWaitForMoreOperationsToConsolidate(long modifiedSize, long sizeLimit, double windowMs)
             {
                 if (merger._env.WriteFlow.ConsolidatingBatches == false || // not relevant unless in consolidation regime
                     modifiedSize >= sizeLimit ||
                     Timer.ElapsedMilliseconds >= windowMs)
-                {
-                    _consecutiveEmptyWaits = 0;
                     return false;
-                }
 
                 merger._waitHandle.Reset();
 
                 if (merger._operations.IsEmpty == false) // we have more operations, let's consolidate them
-                {
-                    _consecutiveEmptyWaits = 0;
                     return true;
-                }
 
-                // policy may return 0 here, to disable waiting entirely
-                var emptyWaitLimit = merger._env.WriteFlow.EmptyConsolidationWaitLimit;
-                if (++_consecutiveEmptyWaits >= emptyWaitLimit)
-                {
-                    _consecutiveEmptyWaits = 0;
+                if (merger._env.WriteFlow.ShouldWaitForEmptyQueueArrivals(_emptyQueueWaitTicks) == false)
                     return false;
-                }
 
-                // we'll "burn" up to 1ms waiting for more operations to arrive
-                if (merger._waitHandle.Wait(millisecondsTimeout: 1, merger._shutdown))
-                {
-                    _consecutiveEmptyWaits = 0;
-                }
-
+                var started = Stopwatch.GetTimestamp();
+                var arrived = merger._waitHandle.Wait(millisecondsTimeout: 1, merger._shutdown);
+                var waitedTicks = Stopwatch.GetElapsedTime(started).Ticks;
+                _emptyQueueWaitTicks += waitedTicks;
+                merger._env.WriteFlow.RecordEmptyQueueWait(waitedTicks, arrived);
                 return true;
             }
 
