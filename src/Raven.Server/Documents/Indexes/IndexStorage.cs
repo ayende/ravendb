@@ -294,26 +294,24 @@ namespace Raven.Server.Documents.Indexes
 
         public void WriteDefinition(IndexDefinitionBaseServerSide indexDefinition, TimeSpan? timeout = null)
         {
-            using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
-            using (var tx = context.OpenWriteTransaction(timeout))
+            using (var scope = OpenWriteScope(timeout))
             {
-                indexDefinition.Persist(context, _environment.Options);
+                indexDefinition.Persist(scope.Context, _environment.Options);
 
-                tx.Commit();
+                scope.Complete();
             }
         }
 
         public unsafe void WriteState(IndexState state)
         {
-            using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
-            using (var tx = context.OpenWriteTransaction())
+            using (var scope = OpenWriteScope())
             {
-                var statsTree = tx.InnerTransaction.ReadTree(IndexSchema.StatsTree);
+                var statsTree = scope.Tx.InnerTransaction.ReadTree(IndexSchema.StatsTree);
                 var stateInt = (int)state;
-                using (Slice.External(context.Allocator, (byte*)&stateInt, sizeof(int), out Slice stateSlice))
+                using (Slice.External(scope.Context.Allocator, (byte*)&stateInt, sizeof(int), out Slice stateSlice))
                     statsTree.Add(IndexSchema.StateSlice, stateSlice);
 
-                tx.Commit();
+                scope.Complete();
             }
         }
 
@@ -329,14 +327,13 @@ namespace Raven.Server.Documents.Indexes
 
         public void DeleteErrors()
         {
-            using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
-            using (var tx = context.OpenWriteTransaction())
+            using (var scope = OpenWriteScope())
             {
-                var table = tx.InnerTransaction.OpenTable(_errorsSchema, "Errors");
+                var table = scope.Tx.InnerTransaction.OpenTable(_errorsSchema, "Errors");
 
                 table.DeleteForwardFrom(_errorsSchema.Indexes[IndexSchema.ErrorTimestampsSlice], Slices.BeforeAllKeys, startsWith: false, numberOfEntriesToDelete: long.MaxValue);
 
-                tx.Commit();
+                scope.Complete();
             }
         }
 
@@ -418,13 +415,90 @@ namespace Raven.Server.Documents.Indexes
 
         public void WriteElapsedSinceQueried(TimeSpan value)
         {
-            using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
-            using (var tx = context.OpenWriteTransaction())
+            using (var scope = OpenWriteScope())
             {
-                tx.InnerTransaction.LowLevelTransaction.DisableLastWorkTimeUpdate();
-                var statsTree = tx.InnerTransaction.ReadTree(IndexSchema.StatsTree);
-                WriteElapsedSinceQueriedToStatsTree(context.Allocator, value, statsTree);
-                tx.Commit();
+                scope.Tx.InnerTransaction.LowLevelTransaction.DisableLastWorkTimeUpdate();
+                var statsTree = scope.Tx.InnerTransaction.ReadTree(IndexSchema.StatsTree);
+                WriteElapsedSinceQueriedToStatsTree(scope.Context.Allocator, value, statsTree);
+                scope.Complete();
+            }
+        }
+
+        /// <summary>
+        /// Joins the transaction the indexing thread already has open, when there is one, so a write between
+        /// batches does not block on the write lock that the indexing chain is holding - Voron's write lock is
+        /// a non-reentrant semaphore, so taking it again on the same thread would deadlock. Off the indexing
+        /// thread, and once the chain has closed, this opens and commits its own transaction as before.
+        /// </summary>
+        private IndexStorageWriteScope OpenWriteScope(TimeSpan? timeout = null)
+        {
+            var current = _index?.CurrentIndexingWriteTransaction;
+            if (current != null)
+                return new IndexStorageWriteScope(_index.CurrentIndexingWriteContext, current);
+
+            var returnContext = _contextPool.AllocateOperationContext(out TransactionOperationContext context);
+            try
+            {
+                // tell the indexing thread we want the lock, so it closes its commit chain instead of
+                // holding it for the length of a batch - the counter is dropped as soon as we have the lock
+                _index?.EnterWriteLockQueue();
+                RavenTransaction tx;
+                try
+                {
+                    tx = context.OpenWriteTransaction(timeout);
+                }
+                finally
+                {
+                    _index?.LeaveWriteLockQueue();
+                }
+
+                return new IndexStorageWriteScope(context, returnContext, tx);
+            }
+            catch
+            {
+                returnContext.Dispose();
+                throw;
+            }
+        }
+
+        private readonly struct IndexStorageWriteScope : IDisposable
+        {
+            public readonly TransactionOperationContext Context;
+            public readonly RavenTransaction Tx;
+
+            private readonly IDisposable _returnContext;
+            private readonly bool _ownsTransaction;
+
+            public IndexStorageWriteScope(TransactionOperationContext context, RavenTransaction joined)
+            {
+                Context = context;
+                Tx = joined;
+                _returnContext = null;
+                _ownsTransaction = false;
+            }
+
+            public IndexStorageWriteScope(TransactionOperationContext context, IDisposable returnContext, RavenTransaction tx)
+            {
+                Context = context;
+                _returnContext = returnContext;
+                Tx = tx;
+                _ownsTransaction = true;
+            }
+
+            /// <summary>Commits, but only when this scope opened the transaction - a joined one is committed by its owner.</summary>
+            public void Complete()
+            {
+                if (_ownsTransaction)
+                    Tx.Commit();
+            }
+
+            public void Dispose()
+            {
+                if (_ownsTransaction == false)
+                    return;
+
+                using (_returnContext)
+                    Tx.Dispose();
             }
         }
 
@@ -993,17 +1067,16 @@ namespace Raven.Server.Documents.Indexes
             if (_logger.IsDebugEnabled)
                 _logger.Debug($"Updating statistics for '{_index.Name}'. Stats: {stats}.");
 
-            using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
-            using (var tx = context.OpenWriteTransaction())
+            using (var scope = OpenWriteScope())
             {
                 var result = new IndexFailureInformation
                 {
                     Name = _index.Name
                 };
 
-                var table = tx.InnerTransaction.OpenTable(_errorsSchema, "Errors");
+                var table = scope.Tx.InnerTransaction.OpenTable(_errorsSchema, "Errors");
 
-                var statsTree = tx.InnerTransaction.ReadTree(IndexSchema.StatsTree);
+                var statsTree = scope.Tx.InnerTransaction.ReadTree(IndexSchema.StatsTree);
 
                 result.MapAttempts = statsTree.Increment(IndexSchema.MapAttemptsSlice, stats.MapAttempts);
                 result.MapSuccesses = statsTree.Increment(IndexSchema.MapSuccessesSlice, stats.MapSuccesses);
@@ -1036,10 +1109,10 @@ namespace Raven.Server.Documents.Indexes
                     statsTree.Add(IndexSchema.EntriesCount, stats.EntriesCount.Value);
 
                 var binaryDate = indexingTime.ToBinary();
-                using (Slice.External(context.Allocator, (byte*)&binaryDate, sizeof(long), out Slice binaryDateslice))
+                using (Slice.External(scope.Context.Allocator, (byte*)&binaryDate, sizeof(long), out Slice binaryDateslice))
                     statsTree.Add(IndexSchema.LastIndexingTimeSlice, binaryDateslice);
 
-                WriteElapsedSinceQueriedToStatsTree(context.Allocator, lastQueryElapsed, statsTree);
+                WriteElapsedSinceQueriedToStatsTree(scope.Context.Allocator, lastQueryElapsed, statsTree);
 
                 if (stats.Errors != null)
                 {
@@ -1047,9 +1120,9 @@ namespace Raven.Server.Documents.Indexes
                     {
                         var error = stats.Errors[i];
                         var ticksBigEndian = Bits.SwapBytes(error.Timestamp.Ticks);
-                        using (var document = context.GetLazyString(error.Document))
-                        using (var action = context.GetLazyString(error.Action))
-                        using (var e = context.GetLazyString(error.Error))
+                        using (var document = scope.Context.GetLazyString(error.Document))
+                        using (var action = scope.Context.GetLazyString(error.Action))
+                        using (var e = scope.Context.GetLazyString(error.Error))
                         {
                             var tvb = new TableValueBuilder
                             {
@@ -1065,7 +1138,7 @@ namespace Raven.Server.Documents.Indexes
                     CleanupErrors(table);
                 }
 
-                tx.Commit();
+                scope.Complete();
 
                 return result;
             }
@@ -1178,12 +1251,11 @@ namespace Raven.Server.Documents.Indexes
             if (_index.Definition.Name == name)
                 return;
 
-            using (_contextPool.AllocateOperationContext(out TransactionOperationContext context))
-            using (var tx = context.OpenWriteTransaction())
+            using (var scope = OpenWriteScope())
             {
-                _index.Definition.Rename(name, context, _environment.Options);
+                _index.Definition.Rename(name, scope.Context, _environment.Options);
 
-                tx.Commit();
+                scope.Complete();
             }
         }
 
