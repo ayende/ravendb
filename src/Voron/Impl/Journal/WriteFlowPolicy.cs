@@ -259,8 +259,6 @@ public sealed class WriteFlowPolicy
 
     private const long MaxBatchConsolidationSizeInBytes = 128 * Constants.Size.Megabyte;
 
-    private const int MaxConsecutiveEmptyConsolidationWaits = 2; // > 2 ms wait max, avoid high latency / stalls
-
     public bool ConsolidatingBatches => _consolidatingBatches;
 
     public double GetBatchingWindowDurationInMs(double configuredMinimumMs)
@@ -307,14 +305,15 @@ public sealed class WriteFlowPolicy
     // batches so small they aren't worth considering in our calculations
     public const int TinyBatchOperations = 8;
 
-    // How long to humor an empty queue before closing the batch. An empty queue means one of
-    // two things, and the recent starved share tells them apart:
-    //  - almost every batch closes starved: the population is arrival-capped, waiting won't help.
-    //  - closes are mixed: the previous batch's clients will come back to us shortly, waiting improve throughput
-    public int EmptyConsolidationWaitLimit =>
-        _starvedClosesPerMille.Current >= MostlyStarvedPerMille
-            ? 0
-            : MaxConsecutiveEmptyConsolidationWaits;
+    // Consolidation shapes work that is already queued. It must not spend wall clock waiting
+    // for arrivals that have not happened yet. The starved-share gate that allowed a 1ms
+    // empty-queue wait read a signal the wait itself controls: the wait collects the trailing
+    // arrivals, the batch grows past the tiny-batch bound, closes get labeled WindowElapsed,
+    // and the gate stays armed. That hold is self-sustaining and was measured at -57%
+    // (NVMe patch c8) and as three distinct stable throughput states (NVMe writes c8).
+    // The chained transaction and the seed the absorption rule leaves in the queue already
+    // cover the "clients come right back" case without burning the merger's wall clock.
+    public int EmptyConsolidationWaitLimit => 0;
 
    
     // On NVMe devices, writing the full data to disk is _faster_ than compressing it first (CPU bound, not I/O bound).
