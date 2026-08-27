@@ -1,9 +1,10 @@
-﻿using System;
+using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using Raven.Server.Logging;
 using Sparrow.Logging;
 using Sparrow.Server.Logging;
+using Voron;
 using Voron.Impl;
 
 namespace Raven.Server.ServerWide
@@ -28,6 +29,17 @@ namespace Raven.Server.ServerWide
         {
             BeforeCommit();
             InnerTransaction.Commit();
+        }
+
+        /// <summary>
+        /// Completes this transaction in memory, hands its journal write off to run in the background,
+        /// and returns a new transaction to keep working in. Must be paired with EndAsyncCommit on this
+        /// instance, in submission order.
+        /// </summary>
+        public virtual RavenTransaction BeginAsyncCommitAndStartNewTransaction(TransactionPersistentContext persistentContext)
+        {
+            BeforeCommit();
+            return new RavenTransaction(InnerTransaction.BeginAsyncCommitAndStartNewTransaction(persistentContext));
         }
 
         public void EndAsyncCommit()
