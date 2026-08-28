@@ -122,6 +122,14 @@ public sealed class WriteFlowPolicy
     private SimpleEwma _batchModifiedBytes = new(smoothing: 16);
     private SimpleEwma _starvedClosesPerMille = new(smoothing: 16);
 
+    // diagnosis instrumentation: RAVEN_WRITEFLOW_TRACE=1 prints the ladder's position and the
+    // consolidation share every 4096 batches, so a run reports which regime it converged to
+    private static readonly bool TraceWriteFlow =
+        Environment.GetEnvironmentVariable("RAVEN_WRITEFLOW_TRACE") == "1";
+
+    private long _batchesTotal;
+    private long _batchesConsolidated;
+
     private readonly StorageEnvironmentOptions _options;
 
     private DeviceWriteBudget _unsharedDevice;
@@ -161,6 +169,11 @@ public sealed class WriteFlowPolicy
             case BatchCloseReason.SizeReached: _batchesClosedOnSize++; break;
         }
 
+        _batchesTotal++;
+        if (_consolidatingBatches)
+            _batchesConsolidated++;
+        if (TraceWriteFlow && _batchesTotal % 4096 == 0)
+            Console.WriteLine($"LADDER|n={_batchesTotal}|consolTotal={_batchesConsolidated}|rung={_targetLadderIndex}|targetKb={TargetWriteSizeBytes / Constants.Size.Kilobyte}|pinnedKb={_pinnedTargetWriteSizeBytes / Constants.Size.Kilobyte}|writeKb={_writeSizeBytes.Current / Constants.Size.Kilobyte}|wlatTicks={_writeLatencyTicks.Current}|starvedPm={_starvedClosesPerMille.Current}|dir={_targetClimbDirection}");
         _batchModifiedBytes.Update(modifiedBytes);
         _starvedClosesPerMille.Update(reason == BatchCloseReason.QueueStarved ? 1000 : 0);
 
