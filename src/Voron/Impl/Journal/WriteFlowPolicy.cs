@@ -305,16 +305,6 @@ public sealed class WriteFlowPolicy
     // batches so small they aren't worth considering in our calculations
     public const int TinyBatchOperations = 8;
 
-    // Consolidation shapes work that is already queued. It must not spend wall clock waiting
-    // for arrivals that have not happened yet. The starved-share gate that allowed a 1ms
-    // empty-queue wait read a signal the wait itself controls: the wait collects the trailing
-    // arrivals, the batch grows past the tiny-batch bound, closes get labeled WindowElapsed,
-    // and the gate stays armed. That hold is self-sustaining and was measured at -57%
-    // (NVMe patch c8) and as three distinct stable throughput states (NVMe writes c8).
-    // The chained transaction and the seed the absorption rule leaves in the queue already
-    // cover the "clients come right back" case without burning the merger's wall clock.
-    public int EmptyConsolidationWaitLimit => 0;
-
    
     // On NVMe devices, writing the full data to disk is _faster_ than compressing it first (CPU bound, not I/O bound).
     private const int FastDeviceCompressTxAboveSizeInBytes = 512 * Constants.Size.Kilobyte;
