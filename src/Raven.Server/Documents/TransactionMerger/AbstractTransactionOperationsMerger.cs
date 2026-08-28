@@ -817,7 +817,10 @@ namespace Raven.Server.Documents.TransactionMerger
                     return true;
                 }
 
-                if (modifiedSize > merger._maxTxSizeInBytes)
+                if (modifiedSize > merger._maxTxSizeInBytes ||
+                    // a consolidating batch stops at the write size it is aiming for; growing past
+                    // it only lengthens the write, which is what makes this cell's batch size swing
+                    modifiedSize >= merger._env.WriteFlow.ConsolidationBatchSizeLimitInBytes)
                 {
                     CloseReason = WriteFlowPolicy.BatchCloseReason.SizeReached;
                     return true; // transaction is too big, let's clean it

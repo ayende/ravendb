@@ -292,6 +292,30 @@ public sealed class WriteFlowPolicy
             ? Math.Max(configuredMinimumMs, MaxBatchConsolidationWindowInMs)
             : configuredMinimumMs;
     }
+    /// <summary>
+    /// How many modified bytes a consolidating batch may collect before it must close. The target
+    /// is a WRITE size, so it is scaled by how many modified bytes each written byte costs
+    /// (diffing and compression). Without this bound only the queue race decides how far a batch
+    /// grows: a bigger batch takes a longer write, a longer write lets more arrive, and the cell
+    /// settles into whichever of the two equilibria its startup reached - a 2x batch-size swing
+    /// between otherwise identical runs. Bounding the batch by the size it is aiming for makes
+    /// the target mean something for a single batch, not just for the average.
+    /// </summary>
+    public long ConsolidationBatchSizeLimitInBytes
+    {
+        get
+        {
+            var writeSize = _writeSizeBytes.Current;
+            var modified = _batchModifiedBytes.Current;
+
+            if (_consolidatingBatches == false || writeSize <= 0 || modified <= 0)
+                return long.MaxValue; // not consolidating, or no measurement yet - no extra bound
+
+            var modifiedBytesPerWrittenByte = Math.Max(1, (double)modified / writeSize);
+            return (long)(TargetWriteSizeBytes * modifiedBytesPerWrittenByte);
+        }
+    }
+
     // Leave a tail in the queue when consolidating to seed the next batch immediately. Draining those 
     // last few ops means all clients have to be notified, instead of staggering the work to increase throughput
     public int MinQueueDepthToKeepAbsorbing => _consolidatingBatches ? 8 : 0;
