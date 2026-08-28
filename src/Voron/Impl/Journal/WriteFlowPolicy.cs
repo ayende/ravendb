@@ -124,6 +124,12 @@ public sealed class WriteFlowPolicy
     private SimpleEwma<double> _batchOperations = new(smoothing: 16);
     private SimpleEwma<double> _starvedShare = new(smoothing: 16);
 
+    private static readonly bool TraceWriteFlow =
+        Environment.GetEnvironmentVariable("RAVEN_WRITEFLOW_TRACE") == "1";
+
+    private long _batchesTotal;
+    private long _batchesConsolidated;
+
     private readonly StorageEnvironmentOptions _options;
 
     private DeviceWriteBudget _unsharedDevice;
@@ -163,6 +169,11 @@ public sealed class WriteFlowPolicy
             case BatchCloseReason.SizeReached: _batchesClosedOnSize++; break;
         }
 
+        _batchesTotal++;
+        if (_consolidatingBatches)
+            _batchesConsolidated++;
+        if (TraceWriteFlow && _batchesTotal % 4096 == 0)
+            Console.WriteLine($"LADDER|n={_batchesTotal}|consolTotal={_batchesConsolidated}|rung={_targetLadderIndex}|targetKb={TargetWriteSizeBytes / Constants.Size.Kilobyte}|writeKb={_writeSizeBytes.Current / Constants.Size.Kilobyte}|wlatTicks={_writeLatencyTicks.Current}|starved={_starvedShare.Current:0.00}|ops={_batchOperations.Current:0.0}|capKb={(ConsolidationBatchSizeLimitInBytes == long.MaxValue ? -1 : ConsolidationBatchSizeLimitInBytes / Constants.Size.Kilobyte)}");
         _batchModifiedBytes.Update(modifiedBytes);
         _batchOperations.Update(operations);
         _starvedShare.Update(reason == BatchCloseReason.QueueStarved ? 1 : 0);
