@@ -121,6 +121,7 @@ public sealed class WriteFlowPolicy
     private long _batchesClosedOnSize;
 
     private SimpleEwma<long> _batchModifiedBytes = new(smoothing: 16);
+    private SimpleEwma<double> _batchOperations = new(smoothing: 16);
     private SimpleEwma<double> _starvedShare = new(smoothing: 16);
 
     private readonly StorageEnvironmentOptions _options;
@@ -163,6 +164,7 @@ public sealed class WriteFlowPolicy
         }
 
         _batchModifiedBytes.Update(modifiedBytes);
+        _batchOperations.Update(operations);
         _starvedShare.Update(reason == BatchCloseReason.QueueStarved ? 1 : 0);
 
         _evaluationWindowBatches++;
@@ -277,8 +279,13 @@ public sealed class WriteFlowPolicy
         // when writes are cheap there is nothing to save, the next write will happen soon anyway
         bool writeIsExpensive = _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks;
 
+        // merging pays where it multiplies a tiny batch; a batch already past the tiny bound
+        // has amortized its write, and holding it open buys nothing more. A batch AT the bound
+        // is a merged tiny population - exactly the state the escape exists to keep together.
+        bool batchesAreTiny = _batchOperations.Current <= TinyBatchOperations;
+
         _consolidatingBatches = hasWriteTelemetry && writeBelowTarget &&
-                                (batchesCouldGrow || writeIsExpensive);
+                                (batchesCouldGrow || (writeIsExpensive && batchesAreTiny));
 
         // Extend to window cap during consolidation; fallback to base floor otherwise
         return _consolidatingBatches
