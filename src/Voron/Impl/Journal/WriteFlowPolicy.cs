@@ -105,13 +105,14 @@ public sealed class WriteFlowPolicy
     private long TargetWriteSizeBytes =>
         _pinnedTargetWriteSizeBytes > 0 ? _pinnedTargetWriteSizeBytes : TargetWriteSizeLadder[_targetLadderIndex];
 
-    private const long MostlyStarvedPerMille = 900;
+    // most recent batches closed starved => the batches are arrival-capped
+    private const double MostlyStarved = 0.9;
 
     private readonly long _pipelineAboveLatencyTicks;
     private readonly int _maxConcurrentJournalWrites;
 
-    private SimpleEwma _writeLatencyTicks = new(smoothing: 8);
-    private SimpleEwma _writeSizeBytes = new(smoothing: 8);
+    private SimpleEwma<long> _writeLatencyTicks = new(smoothing: 8);
+    private SimpleEwma<long> _writeSizeBytes = new(smoothing: 8);
 
     private volatile bool _consolidatingBatches;
 
@@ -119,8 +120,8 @@ public sealed class WriteFlowPolicy
     private long _batchesClosedOnWindow;
     private long _batchesClosedOnSize;
 
-    private SimpleEwma _batchModifiedBytes = new(smoothing: 16);
-    private SimpleEwma _starvedClosesPerMille = new(smoothing: 16);
+    private SimpleEwma<long> _batchModifiedBytes = new(smoothing: 16);
+    private SimpleEwma<double> _starvedShare = new(smoothing: 16);
 
     private readonly StorageEnvironmentOptions _options;
 
@@ -162,7 +163,7 @@ public sealed class WriteFlowPolicy
         }
 
         _batchModifiedBytes.Update(modifiedBytes);
-        _starvedClosesPerMille.Update(reason == BatchCloseReason.QueueStarved ? 1000 : 0);
+        _starvedShare.Update(reason == BatchCloseReason.QueueStarved ? 1 : 0);
 
         _evaluationWindowBatches++;
         _evaluationWindowOperations += operations;
@@ -241,7 +242,7 @@ public sealed class WriteFlowPolicy
         PipeliningEnabled &&
         IsCommitLatencyBound && // not meaningful if we are bandwidth-bound
         (HasBatchTelemetry == false || // no batching == cannot grow the batch to amortize fixed costs, pipelining is always a win
-         _starvedClosesPerMille.Current >= MostlyStarvedPerMille) && // most recent batches closed starved, they cannot grow
+         _starvedShare.Current >= MostlyStarved) && // most recent batches closed starved, they cannot grow
         // the device is slow enough that overlapping writes pays for the smaller batches
         _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks;
 
@@ -257,58 +258,39 @@ public sealed class WriteFlowPolicy
 
     private const long MaxBatchConsolidationWindowInMs = 50;
 
-    private const long MaxBatchConsolidationSizeInBytes = 128 * Constants.Size.Megabyte;
-
-    private const int MaxConsecutiveEmptyConsolidationWaits = 2; // > 2 ms wait max, avoid high latency / stalls
-
     public bool ConsolidatingBatches => _consolidatingBatches;
 
     public double GetBatchingWindowDurationInMs(double configuredMinimumMs)
     {
         var writeSize = _writeSizeBytes.Current;
 
-        // if typical write is under target size == not yet amortizing fixed costs
-        _consolidatingBatches = writeSize > 0 && writeSize < TargetWriteSizeBytes;
+        // no writes measured yet, nothing to shape
+        bool hasWriteTelemetry = writeSize > 0;
+
+        // the typical write is under the target size, so it is not yet amortizing its fixed costs
+        bool writeBelowTarget = writeSize < TargetWriteSizeBytes;
+
+        // closes are mixed: batches could have grown, there are arrivals to absorb
+        bool batchesCouldGrow = _starvedShare.Current < MostlyStarved;
+
+        // joining this batch means skipping a whole write; pure win for late joiners
+        // when writes are cheap there is nothing to save, the next write will happen soon anyway
+        bool writeIsExpensive = _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks;
+
+        _consolidatingBatches = hasWriteTelemetry && writeBelowTarget &&
+                                (batchesCouldGrow || writeIsExpensive);
 
         // Extend to window cap during consolidation; fallback to base floor otherwise
         return _consolidatingBatches
             ? Math.Max(configuredMinimumMs, MaxBatchConsolidationWindowInMs)
             : configuredMinimumMs;
     }
-    public long ConsolidationSizeLimitInBytes
-    {
-        get
-        {
-            var writeSize = _writeSizeBytes.Current;
-            var modified = _batchModifiedBytes.Current;
-
-            if (writeSize <= 0 || modified <= 0) // no good data yet, safe defaults
-                return MaxBatchConsolidationSizeInBytes;
-
-            // Convert target write size to actual modified bytes (accounts for diffing + compression)
-            var modifiedBytesPerWrittenByte = (double)modified / writeSize;
-            var limit = (long)(TargetWriteSizeBytes * Math.Max(1, modifiedBytesPerWrittenByte));
-
-            // Clamp limit between target floor and max allowed batch cap
-            return Math.Clamp(limit, TargetWriteSizeBytes, MaxBatchConsolidationSizeInBytes);
-        }
-    }
-
     // Leave a tail in the queue when consolidating to seed the next batch immediately. Draining those 
     // last few ops means all clients have to be notified, instead of staggering the work to increase throughput
     public int MinQueueDepthToKeepAbsorbing => _consolidatingBatches ? 8 : 0;
 
     // batches so small they aren't worth considering in our calculations
     public const int TinyBatchOperations = 8;
-
-    // How long to humor an empty queue before closing the batch. An empty queue means one of
-    // two things, and the recent starved share tells them apart:
-    //  - almost every batch closes starved: the population is arrival-capped, waiting won't help.
-    //  - closes are mixed: the previous batch's clients will come back to us shortly, waiting improve throughput
-    public int EmptyConsolidationWaitLimit =>
-        _starvedClosesPerMille.Current >= MostlyStarvedPerMille
-            ? 0
-            : MaxConsecutiveEmptyConsolidationWaits;
 
    
     // On NVMe devices, writing the full data to disk is _faster_ than compressing it first (CPU bound, not I/O bound).

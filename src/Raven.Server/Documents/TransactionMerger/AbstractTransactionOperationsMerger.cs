@@ -785,25 +785,21 @@ namespace Raven.Server.Documents.TransactionMerger
             public WriteFlowPolicy.BatchCloseReason CloseReason = WriteFlowPolicy.BatchCloseReason.QueueStarved;
 
             private long _queueDepthSnapshot = -1;
-            private int _consecutiveEmptyWaits;
 
             // called when the _previous_ tx is done, and we *can* close, we check whether we _should_ 
             // if we keep the tx open longer, we get better batch and better throughput (min latency cost)
             public bool ShouldCloseBatch(int batchOperations, long modifiedSize)
             {
                 var windowMs = merger.GetBatchingWindowDurationInMs();
-                var sizeLimit = Math.Min(merger._maxTxSizeInBytes, merger._env.WriteFlow.ConsolidationSizeLimitInBytes);
 
-                if (merger._operations.IsEmpty &&
-                    ShouldWaitForMoreOperationsToConsolidate(modifiedSize, sizeLimit, windowMs) == false)
+                if (merger._operations.IsEmpty)
                 {
-                    if (modifiedSize >= sizeLimit)
-                        CloseReason = WriteFlowPolicy.BatchCloseReason.SizeReached;
-                    else if (merger._env.WriteFlow.ConsolidatingBatches && Timer.ElapsedMilliseconds >= windowMs)
-                        CloseReason = WriteFlowPolicy.BatchCloseReason.WindowElapsed;
-                    else
-                        CloseReason = WriteFlowPolicy.BatchCloseReason.QueueStarved;
-                    return true; // nothing remaining to do, let us close this work
+                    // an empty queue means the batch cannot grow - a starved close by definition.
+                    // In a closed loop the next arrivals are downstream of our own acks, so waiting
+                    // for them only stretches the cycle (measured: -57% at NVMe patch c8 from a 1ms
+                    // wait that used to live here). An operation racing this check seeds the next batch.
+                    CloseReason = WriteFlowPolicy.BatchCloseReason.QueueStarved;
+                    return true;
                 }
 
                 if (Timer.ElapsedMilliseconds > windowMs)
@@ -830,42 +826,6 @@ namespace Raven.Server.Documents.TransactionMerger
                 // even though we can close the tx, we choose to keep it a bit longer:
                 // keep processing operations until the queue clears or time / size limits hit
                 return false;
-            }
-
-            // When consolidating writes, we flush immediately once arrivals dry up to avoid latency
-            private bool ShouldWaitForMoreOperationsToConsolidate(long modifiedSize, long sizeLimit, double windowMs)
-            {
-                if (merger._env.WriteFlow.ConsolidatingBatches == false || // not relevant unless in consolidation regime
-                    modifiedSize >= sizeLimit ||
-                    Timer.ElapsedMilliseconds >= windowMs)
-                {
-                    _consecutiveEmptyWaits = 0;
-                    return false;
-                }
-
-                merger._waitHandle.Reset();
-
-                if (merger._operations.IsEmpty == false) // we have more operations, let's consolidate them
-                {
-                    _consecutiveEmptyWaits = 0;
-                    return true;
-                }
-
-                // policy may return 0 here, to disable waiting entirely
-                var emptyWaitLimit = merger._env.WriteFlow.EmptyConsolidationWaitLimit;
-                if (++_consecutiveEmptyWaits >= emptyWaitLimit)
-                {
-                    _consecutiveEmptyWaits = 0;
-                    return false;
-                }
-
-                // we'll "burn" up to 1ms waiting for more operations to arrive
-                if (merger._waitHandle.Wait(millisecondsTimeout: 1, merger._shutdown))
-                {
-                    _consecutiveEmptyWaits = 0;
-                }
-
-                return true;
             }
 
             // counter-intuitive: we leave a small number of operations to the *next* transaction, 
