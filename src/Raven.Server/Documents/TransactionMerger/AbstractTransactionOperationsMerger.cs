@@ -577,6 +577,16 @@ namespace Raven.Server.Documents.TransactionMerger
                         // depending on the size of journal writes, we may want to keep writes to the jounral in flight (pipelined).
                         // that doesn't make sense if we have large journal writes, since then we are bandwidth bound anyway
                         var keepInFlight = _env.WriteFlow.KeepInFlightJournalWrites;
+                        if (currentPendingOps.Count <= 1)
+                        {
+                            // A lone-op cycle means the stream arrives with gaps (e.g. a read-heavy mix
+                            // where each writer returns only after its reads). Kept batches there are
+                            // completed by FUTURE cycles, so their waiters pay arrival gaps, not I/O -
+                            // measured as +2.3ms per update on a 75/25 mix. Streams that sustain the
+                            // pipeline produce multi-op cycles and keep the phase-shifted completion
+                            // clumps that make group commits form; lone-op cycles have nothing to clump.
+                            keepInFlight = 0;
+                        }
                         CompleteAsyncCommittedTransactions(keep: keepInFlight, throwOnError: true);
                     }
                     catch (Exception e)
