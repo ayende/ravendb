@@ -120,14 +120,21 @@ namespace Voron.Impl.Journal
         {
             get
             {
-                // small writes can be fast on a slow device, so we can't estimate from small writes only
-                // gp3 writes small batches in 1.3-1.9ms, gp2 in 3-4ms, we need more than that...
-                if (_journalWriteSizeBytes.Current < 256 * Voron.Global.Constants.Size.Kilobyte)
-                    return DeviceClass.Unknown;
-
                 var ewma = _journalWriteLatencyTicks.Current;
                 var threshold = _classifyAboveLatencyTicks;
                 if (ewma == 0 || threshold == 0)
+                    return DeviceClass.Unknown;
+
+                // A decisively low latency proves a fast device at any write size - no budgeted volume
+                // completes a durable write this quickly (gp3 small batches take 1.3-1.9ms). Without this,
+                // low-concurrency streams (small writes, see below) never classify, and Fast-gated behaviors
+                // like the zeroed journal pool never engage exactly where they pay the most.
+                if (ewma < threshold / 8)
+                    return DeviceClass.Fast;
+
+                // small writes can be fast on a slow device, so we can't estimate from small writes only
+                // gp3 writes small batches in 1.3-1.9ms, gp2 in 3-4ms, we need more than that...
+                if (_journalWriteSizeBytes.Current < 256 * Voron.Global.Constants.Size.Kilobyte)
                     return DeviceClass.Unknown;
 
                 return ewma < threshold / 2 ? DeviceClass.Fast : DeviceClass.Budgeted;
