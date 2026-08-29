@@ -183,6 +183,10 @@ namespace Sparrow.Server.Platform
             out Int32 errorCode);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
+        public static extern PalFlags.FailCodes rvn_pager_reset_dirty_tracking(
+            void* handle, out Int64 resetPages, out Int32 errorCode);
+
+        [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_pager_get_device_id(
             void* handle, out UInt64 deviceId, out Int32 errorCode);
 

@@ -225,6 +225,8 @@ _writeback_finish_run(struct writeback_ctx *ctx, int64_t start_bit, int64_t bit_
 {
     if (partially_emitted == false && bit_count < min_bits)
     {
+        // too sparse to push profitably - set the bits again, maybe it will be good enough next scan
+        _set_dirty_bits(rvn_atomic_load_ptr(&ctx->handle->global_state->dirty_bitmap), start_bit, bit_count);
         ctx->stats->bytes_skipped += bit_count * WRITEBACK_BYTES_PER_BIT;
         return SUCCESS;
     }
@@ -359,4 +361,28 @@ done:
         stats->set_bits_remaining += rvn_popcnt64(bm->words[w]);
     }
     return rc;
+}
+
+EXPORT int32_t
+rvn_pager_reset_dirty_tracking(void *handle, int64_t *reset_pages, int32_t *detailed_error_code)
+{
+    struct handle *handle_ptr = handle;
+    struct handle_global_state *global_state = handle_ptr->global_state;
+    *reset_pages = 0;
+    *detailed_error_code = 0;
+
+    struct dirty_bitmap *bm = rvn_atomic_load_ptr(&global_state->dirty_bitmap);
+    if (bm == NULL)
+        return SUCCESS;
+
+    int64_t pages = 0;
+    for (int64_t w = 0; w < bm->number_of_words; w++)
+    {
+        if (bm->words[w] == 0) /* plain read, mostly zero - cheap skip */
+            continue;
+        uint64_t bits = rvn_atomic_xchg64(&bm->words[w], 0);
+        pages += rvn_popcnt64(bits);
+    }
+    *reset_pages = pages;
+    return SUCCESS;
 }

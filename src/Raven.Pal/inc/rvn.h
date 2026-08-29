@@ -193,6 +193,12 @@ rvn_pager_writeback_dirty(void* handle,
     struct rvn_writeback_stats* stats,
     int32_t* detailed_error_code);
 
+/* Called before fdatasync: every bit present belongs to a write that completed before the sync started, so the sync covers it. */
+EXPORT int32_t
+rvn_pager_reset_dirty_tracking(void* handle,
+    int64_t* reset_pages,
+    int32_t* detailed_error_code);
+
 /* st_dev on posix, volume serial number on windows - groups pagers that share
    a physical device so the caller can budget writeback per device. */
 EXPORT int32_t
