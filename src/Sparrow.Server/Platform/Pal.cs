@@ -10,7 +10,7 @@ namespace Sparrow.Server.Platform
 {
     public static unsafe class Pal
     {
-        public const int PAL_VER = 70899; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70901; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -114,6 +114,7 @@ namespace Sparrow.Server.Platform
             public long TotalWaitTicks;
             public long MaxRangeWaitTicks;
             public long BytesSkipped;
+            public long PagesDeferredHot; // second-chance: rewritten-while-dirty pages held back this scan
         }
 
         [DllImport(LIBRVNPAL, SetLastError = true)]

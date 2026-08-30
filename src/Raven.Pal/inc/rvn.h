@@ -178,6 +178,7 @@ struct rvn_writeback_stats
     int64_t total_wait_ticks;
     int64_t max_range_wait_ticks;
     int64_t bytes_skipped;
+    int64_t pages_deferred_hot; /* second-chance: rewritten-while-dirty pages held back this scan */
 };
 
 /* Walks the pager's dirty pages and pushes the corresponding ranges to the device as a pipelined stream:

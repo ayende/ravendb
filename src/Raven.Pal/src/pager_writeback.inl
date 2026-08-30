@@ -10,6 +10,14 @@
     This uses a bitmap with one bit per page (set when a page is dirtied) to track the dirty ranges.
     Rely on Voron's single writer for concurrency, with a known race when reading (during flush / sync).
     This is acceptable because the bitmap for pacing the I/O, not for durability. That remains on fdatasync.
+
+    Second-chance (CLOCK): a second plane of bits marks pages that were dirtied AGAIN while already
+    dirty. The scan defers such hot pages for one round (clears the hot bit, keeps the dirty bit)
+    instead of pushing every intermediate version of a page the workload keeps rewriting - the hot
+    core of the tree collapses its versions in page cache exactly like an untracked pager would,
+    while write-once pages still drain promptly. A page hot on every scan is never trickled and is
+    simply covered by the sync barrier. All races push a page one round later or one push earlier -
+    both harmless for a pacing hint.
 */
 
 
@@ -44,10 +52,12 @@ static int32_t rvn_ctz64(uint64_t v)
 
 struct dirty_bitmap
 {
-    int64_t number_of_words;
+    int64_t number_of_words; /* per plane; the allocation holds two planes back to back */
     struct dirty_bitmap *prev; /* retired generations, freed with global_state */
-    uint64_t words[];
+    uint64_t words[]; /* [0, number_of_words) = dirty plane, [number_of_words, 2n) = hot plane */
 };
+
+#define WRITEBACK_HOT_PLANE(bm) ((bm)->words + (bm)->number_of_words)
 
 PRIVATE int32_t
 _writeback_supported(struct handle *handle_ptr);
@@ -84,7 +94,7 @@ _grow_dirty_bitmap(struct handle_global_state *global_state, struct dirty_bitmap
 
     // no concurrency to worry about, we are called under the lock
 
-    struct dirty_bitmap *bm = calloc(1, sizeof(struct dirty_bitmap) + (size_t)words * sizeof(uint64_t));
+    struct dirty_bitmap *bm = calloc(1, sizeof(struct dirty_bitmap) + (size_t)words * 2 * sizeof(uint64_t));
     if (bm == NULL)
         return current; /* tracking degrades, fdatasync still covers everything */
 
@@ -94,11 +104,13 @@ _grow_dirty_bitmap(struct handle_global_state *global_state, struct dirty_bitmap
     {
         /* safe to race against a concurrent drain clearing words - we'll just re-clear it next time */
         memcpy(bm->words, (void *)current->words, (size_t)current->number_of_words * sizeof(uint64_t));
+        memcpy(WRITEBACK_HOT_PLANE(bm), (void *)WRITEBACK_HOT_PLANE(current), (size_t)current->number_of_words * sizeof(uint64_t));
     }
     rvn_atomic_store_ptr(&global_state->dirty_bitmap, bm);
     return bm;
 }
 
+/* raw dirty set - used by the scan when it puts skipped/deferred bits back; never marks hot */
 static void
 _set_dirty_bits(struct dirty_bitmap *bm, int64_t start_bit, int64_t bit_count)
 {
@@ -111,6 +123,27 @@ _set_dirty_bits(struct dirty_bitmap *bm, int64_t start_bit, int64_t bit_count)
                             ? ~0ULL
                             : (((1ULL << bits_in_this_word) - 1) << bit_in_word);
         rvn_atomic_or64(&bm->words[word], mask);
+        bit += bits_in_this_word;
+    }
+}
+
+/* writer path: a page dirtied while already dirty is HOT - the scan gives it a second chance
+   instead of pushing every intermediate version */
+static void
+_mark_dirty_bits(struct dirty_bitmap *bm, int64_t start_bit, int64_t bit_count)
+{
+    uint64_t *hot = WRITEBACK_HOT_PLANE(bm);
+    for (int64_t bit = start_bit; bit < start_bit + bit_count;)
+    {
+        int64_t word = bit >> 6;
+        int32_t bit_in_word = (int32_t)(bit & 63);
+        int64_t bits_in_this_word = rvn_min(64 - bit_in_word, start_bit + bit_count - bit);
+        uint64_t mask = bits_in_this_word == 64
+                            ? ~0ULL
+                            : (((1ULL << bits_in_this_word) - 1) << bit_in_word);
+        uint64_t already_dirty = rvn_atomic_or64(&bm->words[word], mask) & mask;
+        if (already_dirty != 0)
+            rvn_atomic_or64(&hot[word], already_dirty);
         bit += bits_in_this_word;
     }
 }
@@ -136,7 +169,7 @@ _mark_dirty_pages(void *handle, struct page_to_write *buffers, int32_t count)
     {
         int64_t first_bit = (buffers[i].page_num * VORON_PAGE_SIZE) / WRITEBACK_BYTES_PER_BIT;
         int64_t last_bit = ((buffers[i].page_num + buffers[i].count_of_pages) * VORON_PAGE_SIZE - 1) / WRITEBACK_BYTES_PER_BIT;
-        _set_dirty_bits(bm, first_bit, last_bit - first_bit + 1);
+        _mark_dirty_bits(bm, first_bit, last_bit - first_bit + 1);
     }
 }
 
@@ -276,13 +309,27 @@ rvn_pager_writeback_dirty(void *handle,
     int64_t run_bits = 0;
     bool run_emitted = false;
 
+    uint64_t *hot_plane = WRITEBACK_HOT_PLANE(bm);
     for (int64_t w = 0; w < bm->number_of_words; w++)
     {
         uint64_t bits = bm->words[w]; // checking without atomics here, mostly they are 0, so this is cheap
         if (bits != 0)
         {
+            /* second chance: claim the hot plane FIRST (a racing writer's hot mark then lands for the
+               NEXT round), claim the dirty word, and put the hot pages' dirty bits straight back -
+               they stay tracked but are not pushed this round. Only the trickle defers: a drain runs
+               right before the sync barrier, so it is the LAST round - deferring there just hands the
+               pages to fdatasync unmerged (measured -6% on gp3 patch c1531, whose whole set is hot). */
+            uint64_t hot = hot_plane[w] != 0 ? rvn_atomic_xchg64(&hot_plane[w], 0) : 0;
             // atomically clear the word, then do the I/O, in the meantime writes may set more bits, we'll get them next time
             bits = rvn_atomic_xchg64(&bm->words[w], 0);
+            uint64_t deferred = initiate_only ? (bits & hot) : 0;
+            if (deferred != 0)
+            {
+                rvn_atomic_or64(&bm->words[w], deferred);
+                stats->pages_deferred_hot += rvn_popcnt64(deferred);
+                bits &= ~deferred;
+            }
         }
 
         if (bits == 0)
@@ -376,8 +423,11 @@ rvn_pager_reset_dirty_tracking(void *handle, int64_t *reset_pages, int32_t *deta
         return SUCCESS;
 
     int64_t pages = 0;
+    uint64_t *hot_plane = WRITEBACK_HOT_PLANE(bm);
     for (int64_t w = 0; w < bm->number_of_words; w++)
     {
+        if (hot_plane[w] != 0)
+            rvn_atomic_xchg64(&hot_plane[w], 0);
         if (bm->words[w] == 0) /* plain read, mostly zero - cheap skip */
             continue;
         uint64_t bits = rvn_atomic_xchg64(&bm->words[w], 0);

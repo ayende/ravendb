@@ -1403,6 +1403,7 @@ namespace Voron.Impl.Journal
                     _waj._logger.Debug(
                         $"Trickle writeback initiated {stats.BytesWritten / Constants.Size.Kilobyte:#,#0} kb in {stats.RangesWritten:#,#} ranges " +
                         $"({stats.BytesSkipped / Constants.Size.Kilobyte:#,#0} kb in sparse runs kept for merging, " +
+                        $"{stats.PagesDeferredHot:#,#0} hot pages deferred, " +
                         $"{stats.SetBitsRemaining:#,#0} dirty pages remain) for {dataPager.FileName}");
                 }
             }
