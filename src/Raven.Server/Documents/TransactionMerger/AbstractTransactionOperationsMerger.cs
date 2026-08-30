@@ -562,7 +562,11 @@ namespace Raven.Server.Documents.TransactionMerger
                         {
                             // accumulate operations into the current transaction while the previous one is in flight
                             var previousInFlight = previous.Transaction.InnerTransaction.LowLevelTransaction;
-                            Task batchingWindow = previousInFlight.DurableCommit ?? previousInFlight.AsyncCommit;
+                            Task batchingWindow = _env.WriteFlow.UseSubmissionWindowForBatching
+                                // lone-batch regime: close on submission so this batch's write overlaps the
+                                // previous one instead of serializing behind its full durability
+                                ? previousInFlight.AsyncCommit ?? previousInFlight.DurableCommit
+                                : previousInFlight.DurableCommit ?? previousInFlight.AsyncCommit;
 
                             result = ExecutePendingOperationsInTransaction(
                                 currentPendingOps, current,
@@ -585,7 +589,9 @@ namespace Raven.Server.Documents.TransactionMerger
                             // measured as +2.3ms per update on a 75/25 mix. Streams that sustain the
                             // pipeline produce multi-op cycles and keep the phase-shifted completion
                             // clumps that make group commits form; lone-op cycles have nothing to clump.
-                            keepInFlight = 0;
+                            // Under a submission-width window one write must stay in flight, or
+                            // completing it here blocks the merger before the overlapping write submits.
+                            keepInFlight = _env.WriteFlow.UseSubmissionWindowForBatching ? 1 : 0;
                         }
                         CompleteAsyncCommittedTransactions(keep: keepInFlight, throwOnError: true);
                     }

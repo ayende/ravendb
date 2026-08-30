@@ -246,7 +246,25 @@ public sealed class WriteFlowPolicy
         (HasBatchTelemetry == false || // no batching == cannot grow the batch to amortize fixed costs, pipelining is always a win
          _starvedShare.Current >= MostlyStarved) && // most recent batches closed starved, they cannot grow
         // the device is slow enough that overlapping writes pays for the smaller batches
-        _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks;
+        (_writeLatencyTicks.Current >= _pipelineAboveLatencyTicks || IsLoneBatchRegime);
+
+    // batches carry ~one operation each and close starved: a gappy stream (e.g. a read-heavy mix
+    // where each writer returns only after its reads). Nothing can grow these batches, so the only
+    // lever left is overlapping their writes.
+    private const double LoneBatchOperations = 1.5;
+
+    private bool IsLoneBatchRegime =>
+        HasBatchTelemetry &&
+        _consolidatingBatches == false &&
+        _starvedShare.Current >= MostlyStarved &&
+        _batchOperations.Current <= LoneBatchOperations;
+
+    // In the lone-batch regime, holding the next batch open across the previous batch's full
+    // durability only bills its waiters a device round trip they don't need to serialize behind:
+    // the batch cannot grow (starved, ~1 op), so close on submission and let the writes overlap.
+    // Everywhere else the durable-width window is load-bearing - it is the absorb window that
+    // lets group commits form (RavenDB-27377 eqwindow).
+    public bool UseSubmissionWindowForBatching => PipeliningEnabled && IsLoneBatchRegime;
 
     public bool CanPipeline(long totalNumberOf4Kbs) =>
         ShouldPipeline &&
