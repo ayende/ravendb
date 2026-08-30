@@ -246,11 +246,13 @@ public sealed class WriteFlowPolicy
 
     private bool ShouldPipeline =>
         PipeliningEnabled &&
-        IsCommitLatencyBound && // not meaningful if we are bandwidth-bound
-        (HasBatchTelemetry == false || // no batching == cannot grow the batch to amortize fixed costs, pipelining is always a win
-         _queueEmptyShare.Current >= MostlyQueueEmpty) && // most recent batches closed on an empty queue, they cannot grow
-        // the device is slow enough that overlapping writes pays for the smaller batches
-        _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks;
+        (HasBatchTelemetry == false // externally-fixed batches (indexing, the shared journal root): the batch
+                                    // cannot grow, and the inline path's drain serializes the one stream every
+                                    // index shares - pipelining is the only lever, at any latency or write size
+         || (IsCommitLatencyBound && // not meaningful if we are bandwidth-bound
+             _queueEmptyShare.Current >= MostlyQueueEmpty && // most recent batches closed on an empty queue, they cannot grow
+             // the device is slow enough that overlapping writes pays for the smaller batches
+             _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks));
 
     public bool CanPipeline(long totalNumberOf4Kbs) =>
         ShouldPipeline &&
