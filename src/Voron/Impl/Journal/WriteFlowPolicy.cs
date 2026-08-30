@@ -246,7 +246,7 @@ public sealed class WriteFlowPolicy
         (HasBatchTelemetry == false || // no batching == cannot grow the batch to amortize fixed costs, pipelining is always a win
          _starvedShare.Current >= MostlyStarved) && // most recent batches closed starved, they cannot grow
         // the device is slow enough that overlapping writes pays for the smaller batches
-        (_writeLatencyTicks.Current >= _pipelineAboveLatencyTicks || IsLoneBatchRegime);
+        (_writeLatencyTicks.Current >= _pipelineAboveLatencyTicks || IsLoneBatchRegime || ForceSubmitWindow);
 
     // batches carry ~one operation each and close starved: a gappy stream (e.g. a read-heavy mix
     // where each writer returns only after its reads). Nothing can grow these batches, so the only
@@ -264,7 +264,10 @@ public sealed class WriteFlowPolicy
     // the batch cannot grow (starved, ~1 op), so close on submission and let the writes overlap.
     // Everywhere else the durable-width window is load-bearing - it is the absorb window that
     // lets group commits form (RavenDB-27377 eqwindow).
-    public bool UseSubmissionWindowForBatching => PipeliningEnabled && IsLoneBatchRegime;
+    // TEMP probe: force the submission-width window + pipeline eligibility regardless of regime
+    internal static readonly bool ForceSubmitWindow = Environment.GetEnvironmentVariable("VORON_FORCE_SUBMIT_WINDOW") == "1";
+
+    public bool UseSubmissionWindowForBatching => PipeliningEnabled && (ForceSubmitWindow || IsLoneBatchRegime);
 
     public bool CanPipeline(long totalNumberOf4Kbs) =>
         ShouldPipeline &&
