@@ -78,10 +78,37 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     public bool PipeliningEnabled => _maxConcurrentWrites > 1;
 
+    // TEMP PIPE-DIAG: measure whether journal writes ever overlap at the device, and how often
+    // the inline path's Drain() hits in-flight work. Dumps to stdout every 15s.
+    private long _diagSubmits, _diagOverlapped, _diagInline, _diagInlineDrainBusy, _diagMaxInFlight;
+    private long _diagLastDump = Stopwatch.GetTimestamp();
+
+    private void DiagCount(bool inlineWrite, long inFlightBefore)
+    {
+        if (inlineWrite)
+            Interlocked.Increment(ref _diagInline);
+        else
+        {
+            Interlocked.Increment(ref _diagSubmits);
+            if (inFlightBefore > 0)
+                Interlocked.Increment(ref _diagOverlapped);
+        }
+        ThreadingHelper.InterlockedExchangeMax(ref _diagMaxInFlight, inFlightBefore + 1);
+        var last = Volatile.Read(ref _diagLastDump);
+        var now = Stopwatch.GetTimestamp();
+        if (now - last > 15 * Stopwatch.Frequency && Interlocked.CompareExchange(ref _diagLastDump, now, last) == last)
+        {
+            Console.WriteLine($"[PIPE-DIAG] submits={Volatile.Read(ref _diagSubmits):#,#0} overlapped={Volatile.Read(ref _diagOverlapped):#,#0} " +
+                              $"inline={Volatile.Read(ref _diagInline):#,#0} inlineDrainBusy={Volatile.Read(ref _diagInlineDrainBusy):#,#0} maxInFlight={Volatile.Read(ref _diagMaxInFlight)}");
+        }
+    }
+
     internal bool HasInFlightWrites => Volatile.Read(ref _nextSequence) - Volatile.Read(ref _reapedSequence) > 0;
 
     public void SubmitPipelined(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<Ack> acks)
     {
+        DiagCount(inlineWrite: false, Volatile.Read(ref _nextSequence) - Volatile.Read(ref _reapedSequence)); // TEMP PIPE-DIAG
+
         var write = RentWrite(file, posBy4Kb, (int)totalNumberOf4Kbs, acks);
 
         file.AddRef();
@@ -116,6 +143,10 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     public void WriteInline(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<Ack> acks)
     {
+        if (HasInFlightWrites) // TEMP PIPE-DIAG
+            Interlocked.Increment(ref _diagInlineDrainBusy);
+        DiagCount(inlineWrite: true, 0);
+
         Drain(throwOnFailure: false); // we mustn't have anything else concurrently running with us
         Debug.Assert(_disposed is false, "WriteInline called after the pipeline was disposed");
 
