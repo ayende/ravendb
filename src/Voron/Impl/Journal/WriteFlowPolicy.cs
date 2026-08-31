@@ -119,6 +119,13 @@ public sealed class WriteFlowPolicy
 
     private volatile bool _consolidatingBatches;
 
+    private static readonly bool TraceWriteFlow =
+        Environment.GetEnvironmentVariable("RAVEN_WRITEFLOW_TRACE") == "1";
+
+    private long _batchesTotal;
+    private long _batchesConsolidated;
+    private long _batchesPipelining;
+
     private long _batchesClosedQueueEmpty;
     private long _batchesClosedOnTime;
     private long _batchesClosedOnSize;
@@ -166,6 +173,14 @@ public sealed class WriteFlowPolicy
             case BatchCloseReason.YieldedQueueTail: _batchesClosedOnTime++; break; // grow-capable close, same bucket as time
             case BatchCloseReason.SizeReached: _batchesClosedOnSize++; break;
         }
+
+        _batchesTotal++;
+        if (_consolidatingBatches)
+            _batchesConsolidated++;
+        if (ShouldPipeline)
+            _batchesPipelining++;
+        if (TraceWriteFlow && _batchesTotal % 256 == 0)
+            Console.WriteLine($"FLOW|n={_batchesTotal}|consol={_batchesConsolidated * 1000 / _batchesTotal}pm|pipe={_batchesPipelining * 1000 / _batchesTotal}pm|rung={_targetLadderIndex}|targetKb={TargetWriteSizeBytes / Constants.Size.Kilobyte}|writeKb={_writeSizeBytes.Current / Constants.Size.Kilobyte}|wlatUs={_writeLatencyTicks.Current / 10}|ops={_batchOperations.Current:0.0}|qe={_batchesClosedQueueEmpty}|ot={_batchesClosedOnTime}|os={_batchesClosedOnSize}|devClass={Device.MeasuredDeviceClass}|latBound={(IsCommitLatencyBound ? 1 : 0)}");
 
         _batchModifiedBytes.Update(modifiedBytes);
         _batchOperations.Update(operations);
