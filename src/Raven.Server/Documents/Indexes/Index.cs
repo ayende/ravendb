@@ -191,6 +191,31 @@ namespace Raven.Server.Documents.Indexes
 
         internal IndexStorage _indexStorage;
 
+        /// <summary>
+        /// The write transaction the indexing thread currently has open, if any. Set while a batch's commit
+        /// has been handed off to run in the background and the next transaction is already open, so a write
+        /// that happens between batches joins it instead of blocking on the write lock the chain holds.
+        /// Only ever read or written by the indexing thread.
+        /// </summary>
+        internal RavenTransaction CurrentIndexingWriteTransaction;
+
+        /// <summary>The context of <see cref="CurrentIndexingWriteTransaction"/>, for writers that join it.</summary>
+        internal TransactionOperationContext CurrentIndexingWriteContext;
+
+        private int _writeLockWaiters;
+
+        /// <summary>
+        /// True while someone is blocked waiting for this index environment's write lock. The indexing
+        /// thread checks it to decide whether to keep its commit chain open: the chain holds the write lock
+        /// across batches, and an indexing batch can run for minutes, so it has to yield rather than starve
+        /// the rare writers (definition, state, errors, rename).
+        /// </summary>
+        internal bool IsWriteLockWanted => Volatile.Read(ref _writeLockWaiters) > 0;
+
+        internal void EnterWriteLockQueue() => Interlocked.Increment(ref _writeLockWaiters);
+
+        internal void LeaveWriteLockQueue() => Interlocked.Decrement(ref _writeLockWaiters);
+
         private IIndexingWork[] _indexWorkers;
 
         private IndexingStatsAggregator _lastStats;
@@ -395,6 +420,10 @@ namespace Raven.Server.Documents.Indexes
                 if (indexingThread != null && PoolOfThreads.LongRunningWork.Current != indexingThread)
                     indexingThread.Join(int.MaxValue);
             });
+
+            // after the indexing thread has stopped, and before the environment goes: the commit chain can
+            // still be holding an open write transaction, and the environment refuses to dispose under one
+            exceptionAggregator.Execute(DrainPendingIndexingCommit);
 
             exceptionAggregator.Execute(() => { IndexPersistence?.Dispose(); });
 
@@ -1705,6 +1734,10 @@ namespace Raven.Server.Documents.Indexes
 
                         bool didWork = false;
 
+                        // completes when the batch's transaction is public - already completed when it
+                        // committed inline, pending while its journal write runs in the background
+                        Task batchPublished = Task.CompletedTask;
+
                         var stats = _lastStats = new IndexingStatsAggregator(DocumentDatabase.IndexStore.Identities.GetNextIndexingStatsId(), _lastStats);
 
                         try
@@ -1744,7 +1777,7 @@ namespace Raven.Server.Documents.Indexes
 
                                             TimeSpentIndexing.Start();
 
-                                            didWork = DoIndexingWork(scope, _indexingProcessCancellationTokenSource.Token);
+                                            didWork = DoIndexingWork(scope, out batchPublished, _indexingProcessCancellationTokenSource.Token);
 
                                             if (_lowMemoryPressure > 0)
                                                 LowMemoryOver();
@@ -1779,7 +1812,18 @@ namespace Raven.Server.Documents.Indexes
                                         DocumentDatabase.ServerStore.ServerWideConcurrentlyRunningIndexesLock?.Release();
                                     }
 
-                                    _indexingBatchCompleted.SetAndResetAtomically();
+                                    // Listeners of this - WaitForIndexing, "wait for indexes" on bulk docs, query
+                                    // non-stale waits - must not be released before the batch's transaction is
+                                    // public, or they observe results that are not there yet. With a pipelined
+                                    // commit that is when the journal write is durable, which is after the next
+                                    // batch has started, so the signal follows the transaction rather than the
+                                    // iteration that produced it.
+                                    if (batchPublished.IsCompleted)
+                                        _indexingBatchCompleted.SetAndResetAtomically();
+                                    else
+                                        batchPublished.ContinueWith(
+                                            static (_, index) => ((Index)index)._indexingBatchCompleted.SetAndResetAtomically(),
+                                            this, TaskScheduler.Default);
 
                                     if (didWork)
                                     {
@@ -2007,6 +2051,9 @@ namespace Raven.Server.Documents.Indexes
                 finally
                 {
                     _forTestingPurposes?.ActionToCallInFinallyOfExecuteIndexing?.Invoke();
+
+                    // the chain holds the environment's write lock - it must not outlive the indexing thread
+                    DrainPendingIndexingCommit();
 
                     _inMemoryIndexProgress.Clear();
 
@@ -2494,115 +2541,359 @@ namespace Raven.Server.Documents.Indexes
 
         public bool DoIndexingWork(IndexingStatsScope stats, CancellationToken cancellationToken)
         {
+            var mightBeMore = DoIndexingWork(stats, out var batchPublished, cancellationToken);
+
+            // A direct caller expects the batch to be readable once this returns. Voron does not publish an
+            // async-committed transaction to new read transactions until EndAsyncCommit, and nothing else is
+            // going to call it on our behalf, so finish the chain here rather than wait on it.
+            if (batchPublished.IsCompleted == false)
+                DrainPendingIndexingCommit();
+
+            batchPublished.GetAwaiter().GetResult();
+            return mightBeMore;
+        }
+
+        /// <summary>
+        /// Runs one indexing batch. <paramref name="batchPublished"/> completes when the batch's transaction
+        /// is durable and visible to new read transactions - already completed when the batch committed
+        /// inline, pending when its journal write was handed off to run in the background so that it could
+        /// overlap the next batch. Anything that makes the batch's results observable - the batch-completed
+        /// signal that releases WaitForIndexing and query non-stale waits, staleness, the last indexed etag -
+        /// has to be ordered after it.
+        /// </summary>
+        public bool DoIndexingWork(IndexingStatsScope stats, out Task batchPublished, CancellationToken cancellationToken)
+        {
             _threadAllocations = NativeMemory.CurrentThreadStats;
             _initialManagedAllocations = new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes);
-
-            bool mightBeMore = false;
 
             using (CreateBatchRunningFileMarkerIfDebuggingEnabled())
             using (DocumentDatabase.PreventFromUnloadingByIdleOperations())
             using (CultureHelper.EnsureInvariantCulture())
             using (var context = QueryOperationContext.Allocate(DocumentDatabase, this))
-            using (_contextPool.AllocateOperationContext(out TransactionOperationContext indexContext))
             {
-                indexContext.PersistentContext.LongLivedTransactions = true;
                 context.SetLongLivedTransactions(true);
 
-                using (var tx = indexContext.OpenWriteTransaction())
-                using (CurrentIndexingScope.Current = CreateIndexingScope(indexContext, context))
+                // Adopt the transaction the previous batch left open, or start a fresh one. When there is
+                // more work to do we hand this batch's journal write off to run in the background and leave
+                // the next transaction open, so the write of batch N overlaps the execution of batch N+1.
+                var link = _pendingIndexingCommit ?? OpenIndexingTransaction();
+                _pendingIndexingCommit = null;
+                CurrentIndexingWriteTransaction = null;
+                CurrentIndexingWriteContext = null;
+
+                var inFlight = link.Previous;
+                link.Previous = null;
+                var chained = false;
+                Task published = Task.CompletedTask;
+
+                try
                 {
-                    var writeOperation = new Lazy<IndexWriteOperationBase>(() =>
-                    {
-                        var writer = IndexPersistence.OpenIndexWriter(indexContext.Transaction.InnerTransaction, indexContext);
-
-                        if (IsTestRun)
-                            writer = TestRun.CreateIndexWriteOperationWrapper(writer, this);
-
-                        return writer;
-                    });
-                    try
-                    {
-                        long? entriesCount = null;
-
-                        using (InitializeIndexingWork(indexContext))
+                    var mightBeMore = ExecuteIndexingBatch(context, link.Context, link.Tx, stats,
+                        (commitStats, backlogIsFull) =>
                         {
-                            foreach (var work in _indexWorkers)
+                            // the previous batch's write has had this entire batch to complete. Clear the
+                            // reference first: if completing it throws - a failed journal write, which is
+                            // catastrophic for every environment in that batch - the finally below must not
+                            // try again on a disposed link, or the NullReferenceException that produces would
+                            // replace the real failure and nobody would learn the environment has to reload.
+                            var previous = inFlight;
+                            inFlight = null;
+                            CompleteInFlightCommit(previous);
+
+                            // the chain holds the write lock across batches, so it yields the moment anyone
+                            // else wants it - a batch can run for minutes and these writers are user facing
+                            if (backlogIsFull && IsWriteLockWanted == false && CanPipelineIndexingCommits(link.Context))
                             {
-                                using (var scope = stats.For(work.Name))
-                                {
-                                    var result = work.Execute(context, indexContext, writeOperation, scope, cancellationToken);
-                                    mightBeMore |= result.MoreWorkFound;
+                                var next = AllocateIndexingContext();
+                                link.Published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                                published = link.Published.Task;
+                                next.Tx = link.Tx.BeginAsyncCommitAndStartNewTransaction(next.Context.PersistentContext);
 
-                                    if (mightBeMore)
-                                    {
-                                        var ignoreThrottling = result.BatchContinuationResult == CanContinueBatchResult.False; // if batch was stopped because of memory limit or batch size then let it continue immediately
+                                // OpenWriteTransaction would have done this - anything reading
+                                // indexContext.Transaction on the next batch needs it published here too
+                                next.Context.Transaction = next.Tx;
 
-                                        _mre.Set(ignoreThrottling);
-                                    }
-                                }
+                                // the commit stats are only filled in once the journal write finishes, so
+                                // they are recorded against this batch's scope when the chain completes it
+                                link.CommitStats = commitStats;
+                                link.Stats = stats;
+                                next.Previous = link;
+
+                                _pendingIndexingCommit = next;
+                                CurrentIndexingWriteTransaction = next.Tx;
+                                CurrentIndexingWriteContext = next.Context;
+                                chained = true;
+                                return;
                             }
 
-                            var current = new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes);
-                            stats.SetAllocatedManagedBytes((current - _initialManagedAllocations).GetValue(SizeUnit.Bytes));
-
-                            if (writeOperation.IsValueCreated)
-                            {
-                                using (var indexWriteOperation = writeOperation.Value)
-                                {
-                                    indexWriteOperation.Commit(stats, cancellationToken);
-
-                                    entriesCount = writeOperation.Value.EntriesCount();
-                                }
-
-                                // at this point, we have completed storing all Lucene segment files,
-                                // so we can safely release the stream buffer.
-                                indexContext.Transaction.InnerTransaction.DisposeStreamBuffer();
-
-                                UpdateThreadAllocations(indexContext, null, null, IndexingWorkType.None);
-                            }
-
-                            IndexFieldsPersistence.Persist(indexContext);
-                            HandleReferences(tx, stats);
-
-                            HandleMismatchedReferences();
-                            HandleComplexFieldsAlert();
-                        }
-
-                        using (stats.For(IndexingOperation.Storage.Commit))
-                        {
-                            tx.InnerTransaction.LowLevelTransaction.RetrieveCommitStats(out CommitStats commitStats);
-
-                            tx.InnerTransaction.LowLevelTransaction.LastChanceToReadFromWriteTransactionBeforeCommit += llt =>
-                            {
-                                llt.UpdateClientState(IndexPersistence.UpdateIndexCache(llt.Transaction));
-                            };
-
-                            if (writeOperation.IsValueCreated)
-                            {
-                                using (stats.For(IndexingOperation.Lucene.RecreateSearcher))
-                                {
-                                    IndexPersistence.RecreateSearcher(tx.InnerTransaction);
-                                    IndexPersistence.RecreateSuggestionsSearchers(tx.InnerTransaction);
-                                }
-
-                                if (entriesCount != null)
-                                    stats.RecordEntriesCountAfterTxCommit(entriesCount.Value);
-                            }
-
-                            tx.InnerTransaction.LowLevelTransaction.OnDispose += _ => IndexPersistence.CleanWritersIfNeeded();
-
-                            tx.Commit();
+                            link.Tx.Commit();
                             stats.RecordCommitStats(commitStats.NumberOfModifiedPages, commitStats.NumberOf4KbsWrittenToDisk);
-                        }
-                    }
-                    catch
-                    {
-                        DisposeIndexWriterOnError(writeOperation);
-                        throw;
-                    }
+                        },
+                        cancellationToken);
 
+                    batchPublished = published;
                     return mightBeMore;
                 }
+                catch
+                {
+                    _pendingIndexingCommit = null;
+                    CurrentIndexingWriteTransaction = null;
+                    CurrentIndexingWriteContext = null;
+                    chained = false;
+                    throw;
+                }
+                finally
+                {
+                    CompleteInFlightCommit(inFlight);
+
+                    if (chained == false)
+                        link.Dispose();
+                }
+            }
+        }
+
+        /// <summary>
+        /// A write transaction owned by the indexing thread and, once its commit has been handed off to run
+        /// in the background, the batch it is chained behind. Only ever touched by the indexing thread.
+        /// </summary>
+        private sealed class IndexingTransactionLink : IDisposable
+        {
+            public TransactionOperationContext Context;
+            public IDisposable ReturnContext;
+            public RavenTransaction Tx;
+
+            public IndexingTransactionLink Previous;
+            public CommitStats CommitStats;
+            public IndexingStatsScope Stats;
+
+            /// <summary>Completed once this batch has been EndAsyncCommit'ed, and so is visible to readers.</summary>
+            public TaskCompletionSource Published;
+
+            public void Dispose()
+            {
+                using (ReturnContext)
+                {
+                    var tx = Tx;
+                    Tx = null;
+                    tx?.Dispose();
+                }
+            }
+        }
+
+        private IndexingTransactionLink _pendingIndexingCommit;
+
+        private IndexingTransactionLink AllocateIndexingContext()
+        {
+            var returnContext = _contextPool.AllocateOperationContext(out TransactionOperationContext indexContext);
+            indexContext.PersistentContext.LongLivedTransactions = true;
+
+            return new IndexingTransactionLink { Context = indexContext, ReturnContext = returnContext };
+        }
+
+        private IndexingTransactionLink OpenIndexingTransaction()
+        {
+            var link = AllocateIndexingContext();
+            try
+            {
+                link.Tx = link.Context.OpenWriteTransaction();
+                return link;
+            }
+            catch
+            {
+                link.Dispose();
+                throw;
+            }
+        }
+
+        /// <summary>The same restrictions the documents merger puts on its async-commit chain.</summary>
+        private static bool CanPipelineIndexingCommits(TransactionOperationContext context)
+        {
+            var options = context.Environment.Options;
+            return options.Encryption.IsEnabled == false && options.RunningOn32Bits == false;
+        }
+
+        private static void CompleteInFlightCommit(IndexingTransactionLink link)
+        {
+            if (link?.Tx == null)
+                return; // never completed twice - the second call would fault over the disposed transaction
+
+            try
+            {
+                link.Tx.EndAsyncCommit();
+                link.Stats?.RecordCommitStats(link.CommitStats.NumberOfModifiedPages, link.CommitStats.NumberOf4KbsWrittenToDisk);
+                link.Published?.TrySetResult();
+            }
+            catch (Exception e)
+            {
+                link.Published?.TrySetException(e);
+                throw;
+            }
+            finally
+            {
+                link.Dispose();
+                // if neither ran, nobody is going to publish this batch - do not leave a waiter hanging
+                link.Published?.TrySetCanceled();
+            }
+        }
+
+        /// <summary>
+        /// Closes any transaction the chain left open - it must not outlive the indexing thread, and it holds
+        /// the environment's write lock until it does.
+        /// </summary>
+        internal void DrainPendingIndexingCommit()
+        {
+            var pending = _pendingIndexingCommit;
+            _pendingIndexingCommit = null;
+            CurrentIndexingWriteTransaction = null;
+            CurrentIndexingWriteContext = null;
+
+            if (pending == null)
+                return;
+
+            try
+            {
+                CompleteInFlightCommit(pending.Previous);
+            }
+            finally
+            {
+                pending.Previous = null;
+
+                try
+                {
+                    // Writes that joined this transaction have to be kept. Index stats and errors are
+                    // written after the batch, through OpenWriteScope, and when the index stops - which is
+                    // exactly what happens when it errors - dropping the transaction here would roll them
+                    // back and the failure would never be reported.
+                    pending.Tx?.Commit();
+                }
+                catch
+                {
+                    // the environment is already failing; the transaction is disposed either way
+                }
+                finally
+                {
+                    pending.Dispose();
+                }
+            }
+        }
+
+        /// <summary>
+        /// Runs one indexing batch against an already open write transaction. Whoever owns the transaction
+        /// decides how it completes - a plain commit, or an async commit that lets this batch's journal
+        /// write overlap the next batch - through <paramref name="completeCommit"/>, which runs inside the
+        /// Commit stats scope and is handed the batch's <see cref="CommitStats"/>.
+        /// </summary>
+        internal bool ExecuteIndexingBatch(
+            QueryOperationContext context,
+            TransactionOperationContext indexContext,
+            RavenTransaction tx,
+            IndexingStatsScope stats,
+            Action<CommitStats, bool> completeCommit,
+            CancellationToken cancellationToken)
+        {
+            bool mightBeMore = false;
+            bool batchCutByLimits = false;
+
+            using (CurrentIndexingScope.Current = CreateIndexingScope(indexContext, context))
+            {
+                var writeOperation = new Lazy<IndexWriteOperationBase>(() =>
+                {
+                    var writer = IndexPersistence.OpenIndexWriter(indexContext.Transaction.InnerTransaction, indexContext);
+
+                    if (IsTestRun)
+                        writer = TestRun.CreateIndexWriteOperationWrapper(writer, this);
+
+                    return writer;
+                });
+                try
+                {
+                    long? entriesCount = null;
+
+                    using (InitializeIndexingWork(indexContext))
+                    {
+                        foreach (var work in _indexWorkers)
+                        {
+                            using (var scope = stats.For(work.Name))
+                            {
+                                var result = work.Execute(context, indexContext, writeOperation, scope, cancellationToken);
+                                mightBeMore |= result.MoreWorkFound;
+                                batchCutByLimits |= result.BatchContinuationResult == CanContinueBatchResult.False;
+
+                                if (mightBeMore)
+                                {
+                                    var ignoreThrottling = result.BatchContinuationResult == CanContinueBatchResult.False; // if batch was stopped because of memory limit or batch size then let it continue immediately
+
+                                    _mre.Set(ignoreThrottling);
+                                }
+                            }
+                        }
+
+                        var current = new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes);
+                        stats.SetAllocatedManagedBytes((current - _initialManagedAllocations).GetValue(SizeUnit.Bytes));
+
+                        if (writeOperation.IsValueCreated)
+                        {
+                            using (var indexWriteOperation = writeOperation.Value)
+                            {
+                                indexWriteOperation.Commit(stats, cancellationToken);
+
+                                entriesCount = writeOperation.Value.EntriesCount();
+                            }
+
+                            // at this point, we have completed storing all Lucene segment files,
+                            // so we can safely release the stream buffer.
+                            indexContext.Transaction.InnerTransaction.DisposeStreamBuffer();
+
+                            UpdateThreadAllocations(indexContext, null, null, IndexingWorkType.None);
+                        }
+
+                        IndexFieldsPersistence.Persist(indexContext);
+                        HandleReferences(tx, stats);
+
+                        HandleMismatchedReferences();
+                        HandleComplexFieldsAlert();
+                    }
+
+                    using (stats.For(IndexingOperation.Storage.Commit))
+                    {
+                        tx.InnerTransaction.LowLevelTransaction.RetrieveCommitStats(out CommitStats commitStats);
+
+                        tx.InnerTransaction.LowLevelTransaction.LastChanceToReadFromWriteTransactionBeforeCommit += llt =>
+                        {
+                            llt.UpdateClientState(IndexPersistence.UpdateIndexCache(llt.Transaction));
+                        };
+
+                        if (writeOperation.IsValueCreated)
+                        {
+                            using (stats.For(IndexingOperation.Lucene.RecreateSearcher))
+                            {
+                                IndexPersistence.RecreateSearcher(tx.InnerTransaction);
+                                IndexPersistence.RecreateSuggestionsSearchers(tx.InnerTransaction);
+                            }
+
+                            if (entriesCount != null)
+                                stats.RecordEntriesCountAfterTxCommit(entriesCount.Value);
+                        }
+
+                        tx.InnerTransaction.LowLevelTransaction.OnDispose += _ => IndexPersistence.CleanWritersIfNeeded();
+
+                        // chain only when the batch was CUT BY ITS LIMITS: a full backlog is already
+                        // waiting, so the next batch is full-sized no matter when it starts, and
+                        // overlapping the commit is pure gain. A batch that merely left work behind is
+                        // arrival-fed - the synchronous commit IS its collection window, and chaining
+                        // there shrinks batches until the per-batch fixed costs dominate (measured:
+                        // 3,155 -> 504 items/batch, +30% CPU per indexed item, -30% doc throughput
+                        // on the 10+2 indexed-writes ramp).
+                        completeCommit(commitStats, mightBeMore && batchCutByLimits);
+                    }
+                }
+                catch
+                {
+                    DisposeIndexWriterOnError(writeOperation);
+                    throw;
+                }
+
+                return mightBeMore;
             }
         }
 
