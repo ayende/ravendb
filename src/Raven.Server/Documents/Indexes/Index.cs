@@ -2589,7 +2589,7 @@ namespace Raven.Server.Documents.Indexes
                 try
                 {
                     var mightBeMore = ExecuteIndexingBatch(context, link.Context, link.Tx, stats,
-                        (commitStats, mightBeMore) =>
+                        (commitStats, backlogIsFull) =>
                         {
                             // the previous batch's write has had this entire batch to complete. Clear the
                             // reference first: if completing it throws - a failed journal write, which is
@@ -2602,7 +2602,7 @@ namespace Raven.Server.Documents.Indexes
 
                             // the chain holds the write lock across batches, so it yields the moment anyone
                             // else wants it - a batch can run for minutes and these writers are user facing
-                            if (mightBeMore && IsWriteLockWanted == false && CanPipelineIndexingCommits(link.Context))
+                            if (backlogIsFull && IsWriteLockWanted == false && CanPipelineIndexingCommits(link.Context))
                             {
                                 var next = AllocateIndexingContext();
                                 link.Published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -2792,6 +2792,7 @@ namespace Raven.Server.Documents.Indexes
             CancellationToken cancellationToken)
         {
             bool mightBeMore = false;
+            bool batchCutByLimits = false;
 
             using (CurrentIndexingScope.Current = CreateIndexingScope(indexContext, context))
             {
@@ -2816,6 +2817,7 @@ namespace Raven.Server.Documents.Indexes
                             {
                                 var result = work.Execute(context, indexContext, writeOperation, scope, cancellationToken);
                                 mightBeMore |= result.MoreWorkFound;
+                                batchCutByLimits |= result.BatchContinuationResult == CanContinueBatchResult.False;
 
                                 if (mightBeMore)
                                 {
@@ -2875,7 +2877,14 @@ namespace Raven.Server.Documents.Indexes
 
                         tx.InnerTransaction.LowLevelTransaction.OnDispose += _ => IndexPersistence.CleanWritersIfNeeded();
 
-                        completeCommit(commitStats, mightBeMore);
+                        // chain only when the batch was CUT BY ITS LIMITS: a full backlog is already
+                        // waiting, so the next batch is full-sized no matter when it starts, and
+                        // overlapping the commit is pure gain. A batch that merely left work behind is
+                        // arrival-fed - the synchronous commit IS its collection window, and chaining
+                        // there shrinks batches until the per-batch fixed costs dominate (measured:
+                        // 3,155 -> 504 items/batch, +30% CPU per indexed item, -30% doc throughput
+                        // on the 10+2 indexed-writes ramp).
+                        completeCommit(commitStats, mightBeMore && batchCutByLimits);
                     }
                 }
                 catch
