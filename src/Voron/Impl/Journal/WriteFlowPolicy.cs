@@ -100,7 +100,11 @@ public sealed class WriteFlowPolicy
     private long _evaluationWindowOperations;
     private long _evaluationWindowBatches;
     private long _evaluationWindowConsolidatedBatches;
-    private double _previousWindowOperationsPerSecond;
+    private long _windowWriteTicks;
+    private long _windowWriteBytes;
+    private long _windowWrites;
+    private double _previousWindowCostPerByte;
+    private int _flatWindows;
 
     private long TargetWriteSizeBytes =>
         _pinnedTargetWriteSizeBytes > 0 ? _pinnedTargetWriteSizeBytes : TargetWriteSizeLadder[_targetLadderIndex];
@@ -153,6 +157,9 @@ public sealed class WriteFlowPolicy
     {
         _writeLatencyTicks.Update(latencyTicks);
         _writeSizeBytes.Update(sizeInBytes);
+        Interlocked.Add(ref _windowWriteTicks, latencyTicks);
+        Interlocked.Add(ref _windowWriteBytes, sizeInBytes);
+        Interlocked.Increment(ref _windowWrites);
         Device.RecordJournalWrite(latencyTicks, sizeInBytes);
     }
 
@@ -207,45 +214,71 @@ public sealed class WriteFlowPolicy
             // a window that dragged far past its length spans an idle gap - start over
             if (elapsed > 4 * EvaluationWindowTicks)
             {
-                _previousWindowOperationsPerSecond = 0;
-                _evaluationWindowStart = now;
-                _evaluationWindowOperations = 0;
-                _evaluationWindowBatches = 0;
-                _evaluationWindowConsolidatedBatches = 0;
+                _previousWindowCostPerByte = 0;
+                ResetEvaluationWindow(now);
             }
 
             return;
         }
 
-        var operationsPerSecond = (double)_evaluationWindowOperations * Stopwatch.Frequency / elapsed;
+        var writes = Interlocked.Read(ref _windowWrites);
+        var writeTicks = Interlocked.Read(ref _windowWriteTicks);
+        var writeBytes = Interlocked.Read(ref _windowWriteBytes);
 
-        // let consolidation shape majority of the batches before action, otherwise, it's just noise
+        // the objective is the device's own cost per byte written - it falls while a bigger
+        // target amortizes the fixed per-write cost, and stops falling once the device charges
+        // proportionally for size. Unlike throughput it exists under any client behavior.
+        var costPerByte = writes > 0 && writeBytes > 0 ? (double)writeTicks / writeBytes : 0;
+
+        // let consolidation shape the majority of the batches before acting, otherwise it's noise
         var steering = _evaluationWindowConsolidatedBatches * 2 > _evaluationWindowBatches;
-        if (steering && _previousWindowOperationsPerSecond > 0)
+        if (steering && costPerByte > 0 && _previousWindowCostPerByte > 0)
         {
-            var change = (operationsPerSecond - _previousWindowOperationsPerSecond) / _previousWindowOperationsPerSecond;
-            if (change < -EvaluationNoiseBand)
-                _targetClimbDirection = -_targetClimbDirection; // that step hurt - walk it back
+            var change = (costPerByte - _previousWindowCostPerByte) / _previousWindowCostPerByte;
+            if (change > EvaluationNoiseBand)
+                _targetClimbDirection = -_targetClimbDirection; // cost per byte rose - that step hurt, walk it back
 
             if (Math.Abs(change) > EvaluationNoiseBand)
             {
-                var next = _targetLadderIndex + _targetClimbDirection;
-                if (next < 0 || next >= TargetWriteSizeLadder.Length)
-                {
-                    _targetClimbDirection = -_targetClimbDirection;
-                    next = _targetLadderIndex + _targetClimbDirection;
-                }
-
-                _targetLadderIndex = next;
+                _flatWindows = 0;
+                Step();
             }
-            // a flat reading holds the position: the optimum is a wide plateau, sitting on it is the goal
+            else if (++_flatWindows >= FlatWindowsBeforeDither)
+            {
+                // a flat reading is not proof we sit at the optimum - probe anyway, so a stale
+                // or wrong estimate gets re-measured instead of parked on forever
+                _flatWindows = 0;
+                Step();
+            }
         }
 
-        _previousWindowOperationsPerSecond = steering ? operationsPerSecond : 0; // a non-steering window is no baseline
+        _previousWindowCostPerByte = steering ? costPerByte : 0; // a non-steering window is no baseline
+        ResetEvaluationWindow(now);
+
+        void Step()
+        {
+            var next = _targetLadderIndex + _targetClimbDirection;
+            if (next < 0 || next >= TargetWriteSizeLadder.Length)
+            {
+                _targetClimbDirection = -_targetClimbDirection;
+                next = _targetLadderIndex + _targetClimbDirection;
+            }
+
+            _targetLadderIndex = next;
+        }
+    }
+
+    private const int FlatWindowsBeforeDither = 3;
+
+    private void ResetEvaluationWindow(long now)
+    {
         _evaluationWindowStart = now;
         _evaluationWindowOperations = 0;
         _evaluationWindowBatches = 0;
         _evaluationWindowConsolidatedBatches = 0;
+        Interlocked.Exchange(ref _windowWrites, 0);
+        Interlocked.Exchange(ref _windowWriteTicks, 0);
+        Interlocked.Exchange(ref _windowWriteBytes, 0);
     }
 
     // if we are making large writes, we'll be limited by device bandwidth, not latency.
