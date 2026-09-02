@@ -160,13 +160,22 @@ namespace Sparrow.Json
 
             public override string ToString()
             {
-                return string.Join(", ", Sorting.Select(x => x.Property.Comparer));
+                return string.Join(", ", Sorting.Select(x => x.Property?.Comparer));
             }
 
             public void Clear()
             {
-                FinalCount = 0;
-                Sorting.Clear();
+                // keep the PropertyPosition instances for reuse across context resets - only drop
+                // the references into the resetting context. FinalCount == -1 marks the entry as
+                // holding stale positions so Sort() cannot take the fast path over them.
+                FinalCount = -1;
+                for (int i = 0; i < Sorting.Count; i++)
+                {
+                    var position = Sorting[i];
+                    position.Property = null;
+                    position.SortedPosition = -1;
+                    position.Tmp = default;
+                }
             }
         }
 
@@ -267,7 +276,7 @@ namespace Sparrow.Json
             }
 
             var cachedSort = _cachedSorts[index];
-            if (cachedSort?.Sorting.Count != properties.Count)
+            if (cachedSort == null || cachedSort.FinalCount < 0 || cachedSort.Sorting.Count != properties.Count)
             {
                 UnlikelySortProperties(properties);
                 return;
