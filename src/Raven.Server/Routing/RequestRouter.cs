@@ -27,6 +27,7 @@ using Sparrow.Logging;
 using Sparrow.Server.Logging;
 using static Raven.Server.RavenServer;
 using HttpMethods = Raven.Client.Util.HttpMethods;
+using System.Runtime.CompilerServices;
 
 namespace Raven.Server.Routing
 {
@@ -255,6 +256,9 @@ namespace Raven.Server.Routing
             }
         }
 
+        // pooled state-machine box: this frame suspends on every write (durability wait), which
+        // made it the single largest async-box allocation under write load
+        [AsyncMethodBuilder(typeof(System.Runtime.CompilerServices.PoolingAsyncValueTaskMethodBuilder))]
         public async ValueTask HandlePath(RequestHandlerContext reqCtx)
         {
             var context = reqCtx.HttpContext;

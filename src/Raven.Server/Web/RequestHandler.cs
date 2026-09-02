@@ -119,12 +119,19 @@ namespace Raven.Server.Web
 
         private Stream _requestBodyStream;
 
+        // probe switch: Kestrel streams cannot use the base-stream timeout, so StreamWithTimeout falls
+        // back to a CancellationTokenSource + timer per request and an async wrapper per read - a
+        // measurable allocation source at high request rates, duplicating Kestrel's own
+        // MinRequestBodyDataRate / MinResponseDataRate stall protection
+        private static readonly bool DisableStreamTimeout = Environment.GetEnvironmentVariable("RAVEN_DISABLE_STREAM_TIMEOUT") == "1";
+
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal Stream RequestBodyStream()
         {
             if (_requestBodyStream != null)
                 return _requestBodyStream;
-            _requestBodyStream = new StreamWithTimeout(GetDecompressedStream(HttpContext.Request.Body, HttpContext.Request.Headers));
+            var decompressed = GetDecompressedStream(HttpContext.Request.Body, HttpContext.Request.Headers);
+            _requestBodyStream = DisableStreamTimeout ? decompressed : new StreamWithTimeout(decompressed);
 
             if (TrafficWatchManager.HasRegisteredClients)
             {
@@ -261,9 +268,10 @@ namespace Raven.Server.Web
             if (_responseStream != null)
                 return _responseStream;
 
-            _responseStream = new StreamWithTimeout(HttpContext.Response.Body);
+            _responseStream = DisableStreamTimeout ? HttpContext.Response.Body : new StreamWithTimeout(HttpContext.Response.Body);
 
-            _context.HttpContext.Response.RegisterForDispose(_responseStream);
+            if (DisableStreamTimeout == false)
+                _context.HttpContext.Response.RegisterForDispose(_responseStream);
 
             if (TrafficWatchManager.HasRegisteredClients)
             {
