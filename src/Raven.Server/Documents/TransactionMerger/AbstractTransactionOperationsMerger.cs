@@ -114,6 +114,14 @@ namespace Raven.Server.Documents.TransactionMerger
 
             private void Complete(AsyncCommittedTransaction entry)
             {
+                long evTxId = 0, evDurableTicks = 0;
+                if (EvTrace.Enabled)
+                {
+                    var evLlt = entry.Context.Transaction.InnerTransaction.LowLevelTransaction;
+                    evTxId = evLlt.Id;
+                    evDurableTicks = evLlt.EvDurableTicks;
+                }
+
                 // once one of them failed, all the following ones failed, a journal write failure will throw on EndAsyncCommit
                 var error = _failure?.SourceException;
 
@@ -153,7 +161,7 @@ namespace Raven.Server.Documents.TransactionMerger
                 }
 
                 if (EvTrace.Enabled)
-                    EmitSlowTx(entry);
+                    EmitSlowTx(entry, evTxId, evDurableTicks);
 
                 try
                 {
@@ -168,7 +176,7 @@ namespace Raven.Server.Documents.TransactionMerger
             private long _slowTxWindowStart;
             private int _slowTxInWindow;
 
-            private void EmitSlowTx(AsyncCommittedTransaction entry)
+            private void EmitSlowTx(AsyncCommittedTransaction entry, long txId, long durable)
             {
                 var now = EvTrace.Now;
                 long oldestEnq = long.MaxValue, firstExec = long.MaxValue;
@@ -191,10 +199,8 @@ namespace Raven.Server.Documents.TransactionMerger
                 }
                 if (++_slowTxInWindow > 200)
                     return;
-                var llt = entry.Context.Transaction.InnerTransaction.LowLevelTransaction;
                 var submitted = entry.EvSubmittedTicks;
-                var durable = llt.EvDurableTicks;
-                EvTrace.Emit($"SLOWTX|tx={llt.Id}|ops={entry.PendingOps.Count}|totalMs={totalMs:0.0}|queueMs={EvTrace.ToMs(oldestEnq, firstExec):0.0}|execMs={EvTrace.ToMs(firstExec, submitted > 0 ? submitted : now):0.0}|durWaitMs={(submitted > 0 && durable > 0 ? EvTrace.ToMs(submitted, durable) : -1):0.0}|drainMs={(durable > 0 ? EvTrace.ToMs(durable, now) : -1):0.0}");
+                EvTrace.Emit($"SLOWTX|tx={txId}|ops={entry.PendingOps.Count}|totalMs={totalMs:0.0}|queueMs={EvTrace.ToMs(oldestEnq, firstExec):0.0}|execMs={EvTrace.ToMs(firstExec, submitted > 0 ? submitted : now):0.0}|durWaitMs={(submitted > 0 && durable > 0 ? EvTrace.ToMs(submitted, durable) : -1):0.0}|drainMs={(durable > 0 ? EvTrace.ToMs(durable, now) : -1):0.0}");
             }
 
             public void ThrowOnFailure()
