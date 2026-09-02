@@ -9,7 +9,9 @@ namespace Voron.Data.BTrees
 {
     public sealed class TreeCursor : IDisposable
     {
-        private static readonly ObjectPool<FastStack<TreePage>> _treePageStackPool = new(() => new FastStack<TreePage>(16));
+        // sized well above 2 x cores: cursor churn under load empties the default-sized pool and the
+        // factory allocations become measurable on the write path
+        private static readonly ObjectPool<FastStack<TreePage>> _treePageStackPool = new(() => new FastStack<TreePage>(16), 512);
 
         public readonly FastStack<TreePage> _statePages = _treePageStackPool.Allocate();
 

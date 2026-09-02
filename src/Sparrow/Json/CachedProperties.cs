@@ -340,10 +340,25 @@ namespace Sparrow.Json
             var cachedSort = _cachedSorts[index];
             var sorting = cachedSort.Sorting;
             
-            sorting.Clear();
+            // reuse the PropertyPosition instances from the previous document that hashed to this
+            // slot; this path runs for every document whose properties don't match the cached order,
+            // so allocating them per property was a measurable share of the write path
+            if (sorting.Count > properties.Count)
+                sorting.Trim(properties.Count);
+
             for (int i = 0; i < properties.Count; i++)
             {
-                sorting.Add(new PropertyPosition(properties[i].Property, -1));
+                if (i < sorting.Count)
+                {
+                    var propPos = sorting[i];
+                    propPos.Property = properties[i].Property;
+                    propPos.SortedPosition = -1;
+                    propPos.Tmp = default;
+                }
+                else
+                {
+                    sorting.Add(new PropertyPosition(properties[i].Property, -1));
+                }
             }
 
             cachedSort.FinalCount = properties.Count;
@@ -360,12 +375,12 @@ namespace Sparrow.Json
                     if (properties[i].Property.Equals(properties[i + 1].Property))
                     {
                         cachedSort.FinalCount--;
-                        sorting[i + 1] = new PropertyPosition(
-                            properties[i + 1].Property,
-                            // set it to the previous value, so it'll just overwrite
-                            // this saves us a check and more complex code
-                            sortedPosition: i
-                        );
+                        var duplicate = sorting[i + 1];
+                        duplicate.Property = properties[i + 1].Property;
+                        // set it to the previous value, so it'll just overwrite
+                        // this saves us a check and more complex code
+                        duplicate.SortedPosition = i;
+                        duplicate.Tmp = default;
 
                         properties.RemoveAt(i + 1);
 

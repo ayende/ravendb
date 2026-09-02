@@ -14,7 +14,7 @@ namespace Sparrow.Json.Parsing
 
         public static readonly byte[] Utf8Preamble = Encoding.UTF8.GetPreamble();
 
-        private readonly string _debugTag;
+        private string _debugTag;
         private UnmanagedWriteBuffer _unmanagedWriteBuffer;
         private int _currentStrStart;
         private readonly JsonOperationContext _ctx;
@@ -205,6 +205,43 @@ namespace Sparrow.Json.Parsing
         {
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             get { return (int)_pos; }
+        }
+
+        /// <summary>
+        /// Called by the owning context before it resets its allocator, so the write buffer's
+        /// memory is returned while it is still valid. A later Renew() re-acquires it.
+        /// </summary>
+        public void Reset()
+        {
+            _unmanagedWriteBuffer.Dispose();
+        }
+
+        /// <summary>
+        /// Make a cached instance ready for parsing a new document, equivalent to constructing a
+        /// fresh parser but without the allocations.
+        /// </summary>
+        public void Renew(string debugTag)
+        {
+            _debugTag = debugTag;
+            _currentStrStart = 0;
+            _pos = 0;
+            _bufSize = 0;
+            _line = 1;
+            _charPos = 1;
+            _inputBuffer = null;
+            _prevEscapePosition = 0;
+            _currentQuote = 0;
+            _expectedTokenInfo = default;
+            _zeroPrefix = false;
+            _isNegative = false;
+            _isFractionedDouble = false;
+            _isOverflow = false;
+            _isExponent = false;
+            _escapeMode = false;
+            _maybeBeforePreamble = true;
+
+            _unmanagedWriteBuffer.Dispose();
+            _unmanagedWriteBuffer = _ctx.GetStream(JsonOperationContext.InitialStreamSize);
         }
 
         public void NewDocument()
