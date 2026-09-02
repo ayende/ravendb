@@ -1159,8 +1159,12 @@ namespace Voron.Impl
             _env.DurableCommitAcknowledged?.Invoke();
         }
 
+        internal long EvDurableTicks;
+
         internal void CompleteDurableCommit()
         {
+            if (EvTrace.Enabled)
+                EvDurableTicks = EvTrace.Now;
             _env.MarkJournalWriteDurable(Id);
             PreparedDurableCommit?.TrySetResult();
             AcknowledgeDurableCommit();

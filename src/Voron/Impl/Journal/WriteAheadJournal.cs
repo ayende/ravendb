@@ -1021,6 +1021,7 @@ namespace Voron.Impl.Journal
                     if (_applyLogsToDataFileStateFromPreviousFailedAttempt.SparseRegions is { Count: > 0 } || _pendingSparseRegions.Count > 0)
                         flushedPageRanges = new List<(long Start, long Count)>();
 
+                    var evApply0 = EvTrace.Now;
                     try
                     {
                         byteStringContext = new ByteStringContext(SharedMultipleUseFlag.None);
@@ -1066,6 +1067,7 @@ namespace Voron.Impl.Journal
                     if (flushedPageRanges != null)
                         SubtractRanges(_pendingSparseRegions, flushedPageRanges);
 
+                    var evState0 = EvTrace.Now;
                     try
                     {
                         ApplyJournalStateAfterFlush(token, currentState.Buffers, currentState.Record, dataPagerState, byteStringContext);
@@ -1075,6 +1077,9 @@ namespace Voron.Impl.Journal
                         _failedToUpdateJournalState = true;
                         throw;
                     }
+
+                    if (EvTrace.Enabled)
+                        EvTrace.Emit($"FLUSH|pages={currentTotalCommittedSinceLastFlushPages}|applyMs={EvTrace.ToMs(evApply0, evState0):0.0}|stateMs={EvTrace.ToMs(evState0, EvTrace.Now):0.0}");
 
                     _waj._env.SuggestSyncDataFile();
                 }
@@ -1120,8 +1125,12 @@ namespace Voron.Impl.Journal
 
                     try
                     {
+                        var evJState0 = EvTrace.Now;
                         txw.UpdateDataPagerState(dataPagerState);
                         UpdateJournalStateUnderWriteTransactionLock(txw, bufferOfPageFromScratchBuffersToFree, record);
+
+                        if (EvTrace.Enabled)
+                            EvTrace.Emit($"JSTATE|tx={txw.Id}|freed={bufferOfPageFromScratchBuffersToFree.Count}|ms={EvTrace.ToMs(evJState0, EvTrace.Now):0.0}");
 
                         _updateJournalStateApplied = true;
 
@@ -1357,6 +1366,9 @@ namespace Voron.Impl.Journal
                 if (rc != PalFlags.FailCodes.Success)
                     PalHelper.ThrowLastError(rc, error, $"Failed to writeback dirty ranges of {dataPager.FileName}");
 
+                if (EvTrace.Enabled && stats.BytesWritten > 0)
+                    EvTrace.Emit($"WB|kb={stats.BytesWritten / Constants.Size.Kilobyte}|ranges={stats.RangesWritten}|waitMs={TimeSpan.FromTicks(stats.TotalWaitTicks).TotalMilliseconds:0.0}|maxRangeMs={TimeSpan.FromTicks(stats.MaxRangeWaitTicks).TotalMilliseconds:0.0}");
+
                 if (_waj._logger.IsDebugEnabled && stats.BytesWritten > 0)
                 {
                     _waj._logger.Debug(
@@ -1401,6 +1413,9 @@ namespace Voron.Impl.Journal
 
                 if (rc != PalFlags.FailCodes.Success)
                     PalHelper.ThrowLastError(rc, error, $"Failed to trickle writeback of {dataPager.FileName}");
+
+                if (EvTrace.Enabled && stats.BytesWritten > 0)
+                    EvTrace.Emit($"TRICKLE|kb={stats.BytesWritten / Constants.Size.Kilobyte}|ranges={stats.RangesWritten}|deferredHot={stats.PagesDeferredHot}");
 
                 if (_waj._logger.IsDebugEnabled && (stats.BytesWritten > 0 || stats.BytesSkipped > 0))
                 {
@@ -1508,6 +1523,7 @@ namespace Voron.Impl.Journal
                         return false;
                     }
 
+                    var evSync0 = EvTrace.Now;
                     if (parent._flushLockTaskResponsible.WaitForTaskToBeDone(GatherInformationToStartSync) == false)
                         return false;
 
@@ -1516,8 +1532,10 @@ namespace Voron.Impl.Journal
                     if (parent._waj._env.Disposed)
                         return false;
 
+                    var evSync1 = EvTrace.Now;
                     CallPagerSync();
-                    
+                    var evSync2 = EvTrace.Now;
+
                     if (_lastFlushed.PathsToSync is not null)
                     {
                         var record = parent._waj._env.CurrentStateRecord;
@@ -1532,7 +1550,11 @@ namespace Voron.Impl.Journal
                     if (parent._waj._env.Disposed)
                         return false;
 
-                    return parent._flushLockTaskResponsible.WaitForTaskToBeDone(UpdateDatabaseStateAfterSync);
+                    var evSync3 = EvTrace.Now;
+                    var evSyncResult = parent._flushLockTaskResponsible.WaitForTaskToBeDone(UpdateDatabaseStateAfterSync);
+                    if (EvTrace.Enabled)
+                        EvTrace.Emit($"SYNC|gatherMs={EvTrace.ToMs(evSync0, evSync1):0.0}|pagerSyncMs={EvTrace.ToMs(evSync1, evSync2):0.0}|dirMs={EvTrace.ToMs(evSync2, evSync3):0.0}|updMs={EvTrace.ToMs(evSync3, EvTrace.Now):0.0}|syncedMB={_currentTotalWrittenBytes / (1024 * 1024)}");
+                    return evSyncResult;
                 }
 
                 private bool UpdateDatabaseStateAfterSync()
@@ -1542,8 +1564,10 @@ namespace Voron.Impl.Journal
                     if (parent._waj._env.Disposed)
                         return false;
 
+                    var evUpd0 = EvTrace.Now;
                     // runs here because the file is now synced (clean) and we hold _flushingLock - the deferred punch's two preconditions (RavenDB-26910)
                     parent.ApplyPendingSparseRegions();
+                    var evUpd1 = EvTrace.Now;
 
                     Interlocked.Add(ref parent._totalWrittenButUnsyncedBytes, -_currentTotalWrittenBytes);
 
@@ -1559,6 +1583,7 @@ namespace Voron.Impl.Journal
                     }
 
                     parent.UpdateFileHeaderAfterDataFileSync(_lastFlushed, ignoreLastSyncJournalMissing);
+                    var evUpd2 = EvTrace.Now;
 
                     foreach (var toDelete in _lastFlushed.JournalsToDelete)
                     {
@@ -1573,6 +1598,9 @@ namespace Voron.Impl.Journal
                     }
 
                     parent._lastSyncTime = DateTime.UtcNow;
+
+                    if (EvTrace.Enabled)
+                        EvTrace.Emit($"SYNCUPD|punchMs={EvTrace.ToMs(evUpd0, evUpd1):0.0}|hdrMs={EvTrace.ToMs(evUpd1, evUpd2):0.0}|delMs={EvTrace.ToMs(evUpd2, EvTrace.Now):0.0}|deleted={_lastFlushed.JournalsToDelete.Count}");
 
                     return true;
                 }
@@ -1599,8 +1627,10 @@ namespace Voron.Impl.Journal
 
                     // In trickle mode, we already initiated the writeback, so we don't need to do it again here.
                     // In drain mode, we drain first to avoid big I/O hitting all at once, causing congestion.
+                    var evPs0 = EvTrace.Now;
                     if (gate?.ShouldDrain() == true)
                         parent.WritebackDirtyRanges();
+                    var evPs1 = EvTrace.Now;
 
                     // The coming sync will cover all the dirty pages, no need for trickling to the disk
                     var resetRc = Pal.rvn_pager_reset_dirty_tracking(dataPagerState.Handle, out var resetPages, out var resetError);
@@ -1609,6 +1639,8 @@ namespace Voron.Impl.Journal
 
                     dataPager.Sync(dataPagerState, Interlocked.Read(ref parent._totalWrittenButUnsyncedBytes));
                     gate?.RecordSyncCost(sp.Elapsed.Ticks);
+                    if (EvTrace.Enabled)
+                        EvTrace.Emit($"SYNCIO|drainMs={EvTrace.ToMs(evPs0, evPs1):0.0}|fsyncMs={EvTrace.ToMs(evPs1, EvTrace.Now):0.0}|resetPages={resetPages}|unsyncedMB={_currentTotalWrittenBytes / (1024 * 1024)}");
                     if (parent._waj._logger.IsDebugEnabled)
                     {
                         var sizeInKb = (dataPagerState.NumberOfAllocatedPages * Constants.Storage.PageSize) / Constants.Size.Kilobyte;

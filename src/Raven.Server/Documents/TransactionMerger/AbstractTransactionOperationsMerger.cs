@@ -24,6 +24,7 @@ using Sparrow.Server.Meters;
 using Sparrow.Server.Utils;
 using Sparrow.Utils;
 using Voron;
+using Voron.Util;
 using Voron.Global;
 using Voron.Impl;
 using Voron.Impl.Journal;
@@ -56,6 +57,7 @@ namespace Raven.Server.Documents.TransactionMerger
             public TOperationContext Context;
             public IDisposable ReturnContext;
             public List<MergedTransactionCommand<TOperationContext, TTransaction>> PendingOps;
+            public long EvSubmittedTicks;
         }
 
         private sealed class AsyncCommitCompletionPump(AbstractTransactionOperationsMerger<TOperationContext, TTransaction> parent)
@@ -78,6 +80,8 @@ namespace Raven.Server.Documents.TransactionMerger
 
             public void Release(AsyncCommittedTransaction entry)
             {
+                if (EvTrace.Enabled)
+                    entry.EvSubmittedTicks = EvTrace.Now;
                 _inFlight.Enqueue(entry);
                 if (_inFlight.Count == 1)
                     UpdateHeadDurableCommit();
@@ -148,6 +152,9 @@ namespace Raven.Server.Documents.TransactionMerger
                     }
                 }
 
+                if (EvTrace.Enabled)
+                    EmitSlowTx(entry);
+
                 try
                 {
                     parent.NotifyOnThreadPool(entry.PendingOps);
@@ -156,6 +163,38 @@ namespace Raven.Server.Documents.TransactionMerger
                 {
                     _failure ??= ExceptionDispatchInfo.Capture(e);
                 }
+            }
+
+            private long _slowTxWindowStart;
+            private int _slowTxInWindow;
+
+            private void EmitSlowTx(AsyncCommittedTransaction entry)
+            {
+                var now = EvTrace.Now;
+                long oldestEnq = long.MaxValue, firstExec = long.MaxValue;
+                foreach (var op in entry.PendingOps)
+                {
+                    if (op.EvEnqueuedTicks > 0 && op.EvEnqueuedTicks < oldestEnq)
+                        oldestEnq = op.EvEnqueuedTicks;
+                    if (op.EvExecStartTicks > 0 && op.EvExecStartTicks < firstExec)
+                        firstExec = op.EvExecStartTicks;
+                }
+                if (oldestEnq == long.MaxValue || firstExec == long.MaxValue)
+                    return;
+                var totalMs = EvTrace.ToMs(oldestEnq, now);
+                if (totalMs < 25)
+                    return;
+                if (now - _slowTxWindowStart > System.Diagnostics.Stopwatch.Frequency)
+                {
+                    _slowTxWindowStart = now;
+                    _slowTxInWindow = 0;
+                }
+                if (++_slowTxInWindow > 200)
+                    return;
+                var llt = entry.Context.Transaction.InnerTransaction.LowLevelTransaction;
+                var submitted = entry.EvSubmittedTicks;
+                var durable = llt.EvDurableTicks;
+                EvTrace.Emit($"SLOWTX|tx={llt.Id}|ops={entry.PendingOps.Count}|totalMs={totalMs:0.0}|queueMs={EvTrace.ToMs(oldestEnq, firstExec):0.0}|execMs={EvTrace.ToMs(firstExec, submitted > 0 ? submitted : now):0.0}|durWaitMs={(submitted > 0 && durable > 0 ? EvTrace.ToMs(submitted, durable) : -1):0.0}|drainMs={(durable > 0 ? EvTrace.ToMs(durable, now) : -1):0.0}");
             }
 
             public void ThrowOnFailure()
@@ -259,6 +298,8 @@ namespace Raven.Server.Documents.TransactionMerger
                 throw new InvalidOperationException($"Tx Merger for '{_resourceName}' is not initialized.");
 
             _edi?.Throw();
+            if (EvTrace.Enabled)
+                cmd.EvEnqueuedTicks = EvTrace.Now;
             _operations.Enqueue(cmd);
             _waitHandle.Set();
 
@@ -917,6 +958,8 @@ namespace Raven.Server.Documents.TransactionMerger
                 if (TryGetNextOperation(previousOperation, out MergedTransactionCommand<TOperationContext, TTransaction> op, ref meter) == false)
                     break;
 
+                if (EvTrace.Enabled)
+                    op.EvExecStartTicks = EvTrace.Now;
                 executedOps.Add(op);
 
                 var llt = context.Transaction.InnerTransaction.LowLevelTransaction;
@@ -931,6 +974,9 @@ namespace Raven.Server.Documents.TransactionMerger
                         GlobalFlushingBehavior.GlobalFlusher.Value?.MaybeFlushEnvironment(context.Environment);
                         _lastHighDirtyMemCheck = now;
                     }
+
+                    if (EvTrace.Enabled)
+                        EvTrace.Emit($"HIGHDIRTY|dirty={dirtyMemoryState.TotalDirty}");
 
                     throw new HighDirtyMemoryException(
                         $"Operation was cancelled by the transaction merger for transaction #{llt.Id} due to high dirty memory in scratch files." +

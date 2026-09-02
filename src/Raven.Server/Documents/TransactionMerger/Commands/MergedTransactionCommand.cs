@@ -36,6 +36,12 @@ public abstract class MergedTransactionCommand<TOperationContext, TTransaction> 
     [JsonIgnore]
     public readonly TaskCompletionSource<object> TaskCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
+    [JsonIgnore]
+    public long EvEnqueuedTicks;
+
+    [JsonIgnore]
+    public long EvExecStartTicks;
+
     public Exception Exception;
 
     public bool RetryOnError = false;
