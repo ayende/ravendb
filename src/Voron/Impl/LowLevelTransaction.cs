@@ -10,6 +10,7 @@ using CollectionsMarshal = System.Runtime.InteropServices.CollectionsMarshal;
 using System.Threading;
 using System.Threading.Tasks;
 using Sparrow;
+using Sparrow.Collections;
 using Sparrow.Platform;
 using Sparrow.Server;
 using Sparrow.Server.Collections;
@@ -972,6 +973,13 @@ namespace Voron.Impl
                 _txStatus |= TxStatus.Disposed;
 
                 FreePageLocator(PersistentContext, ref _pageLocator);
+
+                if (_treePageWrappers != null)
+                {
+                    _treePageWrappersInUse = 0;
+                    TreePageWrappersPool.Free(_treePageWrappers);
+                    _treePageWrappers = null;
+                }
             }
             finally
             {
@@ -1834,8 +1842,32 @@ namespace Voron.Impl
             // Callers are fine with getting "dirty" data, but will actually make compressing for journal better
             tmp.Clear();
             TreePage.Initialize(tmp.Ptr, pageSize);
-            page = new TreePage(tmp.Ptr, pageSize);
+            page = RentTreePage(tmp.Ptr, pageSize);
             return dispose;
+        }
+
+        private static readonly ObjectPool<FastList<TreePage>> TreePageWrappersPool = new(() => new FastList<TreePage>(), 512);
+        private FastList<TreePage> _treePageWrappers;
+        private int _treePageWrappersInUse;
+
+        // B+tree traversal creates a TreePage wrapper per page visit, which was a top-five
+        // allocation under write load. The wrappers never escape their transaction (cursors and
+        // the recently-found-pages cache are transaction scoped), so instances come from a
+        // per-transaction arena that is recycled wholesale on dispose.
+        internal TreePage RentTreePage(byte* basePtr, int pageSize)
+        {
+            _treePageWrappers ??= TreePageWrappersPool.Allocate();
+            if (_treePageWrappersInUse < _treePageWrappers.Count)
+            {
+                var reused = _treePageWrappers[_treePageWrappersInUse++];
+                reused.Renew(basePtr, pageSize);
+                return reused;
+            }
+
+            var page = new TreePage(basePtr, pageSize);
+            _treePageWrappers.Add(page);
+            _treePageWrappersInUse++;
+            return page;
         }
 
         public bool IsDirty(long p)

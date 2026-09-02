@@ -674,7 +674,7 @@ namespace Voron.Data.BTrees
         internal TreePage GetReadOnlyTreePage(long pageNumber)
         {
             var page = _llt.GetPage(pageNumber);
-            return new TreePage(page.Pointer, Constants.Storage.PageSize);
+            return _llt.RentTreePage(page.Pointer, Constants.Storage.PageSize);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -687,7 +687,7 @@ namespace Voron.Data.BTrees
         internal TreePage GetWriteableTreePage(long pageNumber)
         {
             var page = _llt.ModifyPage(pageNumber);
-            return new TreePage(page.Pointer, Constants.Storage.PageSize);
+            return _llt.RentTreePage(page.Pointer, Constants.Storage.PageSize);
         }
 
         internal TreePage FindPageFor(Slice key, out TreeNodeHeader* node)
@@ -939,7 +939,7 @@ namespace Voron.Data.BTrees
             {
                 // we can't share the same instance, Page instance may be modified by
                 // concurrently run iterators
-                page = new TreePage(foundPage.Page.Base, foundPage.Page.PageSize);
+                page = _llt.RentTreePage(foundPage.Page.Base, foundPage.Page.PageSize);
             }
             else
             {
@@ -970,7 +970,7 @@ namespace Voron.Data.BTrees
             {
                 // we can't share the same instance, Page instance may be modified by
                 // concurrently run iterators
-                page = new TreePage(foundPage.Page.Base, foundPage.Page.PageSize);
+                page = _llt.RentTreePage(foundPage.Page.Base, foundPage.Page.PageSize);
             }
             else
             {
