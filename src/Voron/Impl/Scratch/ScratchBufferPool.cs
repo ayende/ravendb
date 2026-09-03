@@ -552,6 +552,18 @@ namespace Voron.Impl.Scratch
             return removed;
         }
 
+        internal (long Files, long InUsePages, long CapacityPages) GetFlushProbeTotals()
+        {
+            long inUse = 0, capacity = 0;
+            foreach (var item in _scratchBuffers.Values)
+            {
+                inUse += item.File.AllocatedPagesCount;
+                capacity += item.File.NumberOfAllocatedPages;
+            }
+
+            return (_scratchBuffers.Count, inUse, capacity);
+        }
+
         public ScratchBufferPoolInfo InfoForDebug(long oldestActiveTransaction)
         {
             var currentFile = _current.File;

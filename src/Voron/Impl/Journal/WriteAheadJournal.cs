@@ -964,15 +964,21 @@ namespace Voron.Impl.Journal
                     if (lockTaken == false)
                     {
                         if (timeToWait == TimeSpan.Zero)
+                        {
                             // someone else is flushing, and we were explicitly told that we don't care about this
                             // so there is no point in throwing
+                            FlushProbe.Log(_waj._env, "FT|LOCKBUSY");
                             return;
+                        }
 
                         throw new TimeoutException(
                             $"Could not acquire the write lock in {timeToWait.TotalSeconds} seconds");
                     }
 
                     Interlocked.Exchange(ref FlushInProgress, 1);
+
+                    var probeSw = FlushProbe.Enabled ? Stopwatch.StartNew() : null;
+                    long probeApplyMs = 0;
 
                     if (_waj._env.Disposed)
                         return;
@@ -1005,7 +1011,11 @@ namespace Voron.Impl.Journal
                         _applyLogsToDataFileStateFromPreviousFailedAttempt = _waj._env.TryGetLatestEnvironmentStateToFlush(
                             uptoTxIdExclusive: uptoTxIdExclusive);
                         if (_applyLogsToDataFileStateFromPreviousFailedAttempt == null)
+                        {
+                            if (FlushProbe.Enabled)
+                                FlushProbe.Log(_waj._env, $"FT|NOOP|pendingPages={TotalCommittedSinceLastFlushPages}|{FlushProbe.Snapshot(_waj._env, uptoTxIdExclusive)}");
                             return; // nothing to do
+                        }
                     }
 
                     _forTestingPurposes?.OnApplyLogsToDataFile_BeforeWritingToDataFile?.Invoke();
@@ -1025,6 +1035,8 @@ namespace Voron.Impl.Journal
                     {
                         byteStringContext = new ByteStringContext(SharedMultipleUseFlag.None);
                         dataPagerState = ApplyPagesToDataFileFromScratch(_applyLogsToDataFileStateFromPreviousFailedAttempt, flushedPageRanges);
+                        if (probeSw != null)
+                            probeApplyMs = probeSw.ElapsedMilliseconds;
                     }
                     catch (Exception e) when (e is OutOfMemoryException or EarlyOutOfMemoryException)
                     {
@@ -1074,6 +1086,17 @@ namespace Voron.Impl.Journal
                     {
                         _failedToUpdateJournalState = true;
                         throw;
+                    }
+
+                    if (FlushProbe.Enabled)
+                    {
+                        long freedPages = 0;
+                        foreach (var buffer in currentState.Buffers)
+                            freedPages += buffer.NumberOfPages;
+                        FlushProbe.Log(_waj._env,
+                            $"FT|APPLIED|flushedTo={currentState.Record.TransactionId}|clearedPages={currentTotalCommittedSinceLastFlushPages}|freedPages={freedPages}|" +
+                            $"applyMs={probeApplyMs}|totalMs={probeSw.ElapsedMilliseconds}|unsyncedMB={TotalWrittenButUnsyncedBytes / 1024 / 1024}|" +
+                            FlushProbe.Snapshot(_waj._env, uptoTxIdExclusive));
                     }
 
                     _waj._env.SuggestSyncDataFile();
