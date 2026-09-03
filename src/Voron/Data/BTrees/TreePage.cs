@@ -17,9 +17,8 @@ namespace Voron.Data.BTrees
 {
     public unsafe class TreePage
     {
-        public readonly int PageSize;
         public byte* Base;
-
+        public int PageSize;
         public int LastMatch;
         public int LastSearchPosition;
         public bool Dirty;
@@ -28,6 +27,15 @@ namespace Voron.Data.BTrees
         {
             Base = basePtr;
             PageSize = pageSize;
+        }
+
+        internal void Renew(byte* basePtr, int pageSize)
+        {
+            Base = basePtr;
+            PageSize = pageSize;
+            LastMatch = 0;
+            LastSearchPosition = 0;
+            Dirty = false;
         }
 
         public static void Initialize(byte* ptr, int pageSize)

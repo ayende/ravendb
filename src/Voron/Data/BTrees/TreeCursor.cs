@@ -4,14 +4,21 @@ using System.Diagnostics;
 using System.Linq;
 using Sparrow;
 using Sparrow.Collections;
+using Voron.Impl;
 
 namespace Voron.Data.BTrees
 {
     public sealed class TreeCursor : IDisposable
     {
-        private static readonly ObjectPool<FastStack<TreePage>> _treePageStackPool = new(() => new FastStack<TreePage>(16));
+        private readonly TransactionPersistentContext _context;
 
-        public readonly FastStack<TreePage> _statePages = _treePageStackPool.Allocate();
+        public readonly FastStack<TreePage> _statePages;
+
+        public TreeCursor(LowLevelTransaction llt)
+        {
+            _context = llt.PersistentContext;
+            _statePages = _context.AllocateCursorPages();
+        }
 
         public FastStack<TreePage> Pages => _statePages;
 
@@ -28,7 +35,7 @@ namespace Voron.Data.BTrees
                 return;
 
             _statePages.WeakClear();
-            _treePageStackPool.Free(_statePages);
+            _context.FreeCursorPages(_statePages);
         }
 
         /// <summary>
