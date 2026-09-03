@@ -62,7 +62,7 @@ namespace Voron.Data.BTrees
                     }
                     else if (key.Options == SliceOptions.AfterAllKeys)
                     {
-                        cursorPage.LastSearchPosition = (ushort)(cursorPage.NumberOfEntries - 1);
+                        cursorPage.LastSearchPosition = (short)(cursorPage.NumberOfEntries - 1);
                     }
                     else throw new ArgumentException();
 

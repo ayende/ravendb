@@ -740,12 +740,14 @@ namespace Voron.Data.BTrees
                 }
                 else if (key.Options == SliceOptions.BeforeAllKeys)
                 {
-                    p.LastSearchPosition = nodePos = 0;
+                    nodePos = 0;
+                        p.LastSearchPosition = 0;
                     rightmostPage = false;
                 }
                 else // if (key.Options == SliceOptions.AfterAllKeys)
                 {
-                    p.LastSearchPosition = nodePos = (ushort)(p.NumberOfEntries - 1);
+                    nodePos = (ushort)(p.NumberOfEntries - 1);
+                        p.LastSearchPosition = (short)nodePos;
                     leftmostPage = false;
                 }
 
@@ -810,12 +812,14 @@ namespace Voron.Data.BTrees
                 int nodePos;
                 if (key.Options == SliceOptions.BeforeAllKeys)
                 {
-                    p.LastSearchPosition = nodePos = 0;
+                    nodePos = 0;
+                        p.LastSearchPosition = 0;
                     rightmostPage = false;
                 }
                 else if (key.Options == SliceOptions.AfterAllKeys)
                 {
-                    p.LastSearchPosition = nodePos = (ushort)(p.NumberOfEntries - 1);
+                    nodePos = (ushort)(p.NumberOfEntries - 1);
+                        p.LastSearchPosition = (short)nodePos;
                     leftmostPage = false;
                 }
                 else

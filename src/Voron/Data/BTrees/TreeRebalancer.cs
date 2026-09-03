@@ -80,7 +80,7 @@ namespace Voron.Data.BTrees
                     VoronUnrecoverableErrorException.Raise(_tx,
                         $"The page {page.PageNumber} being rebalanced is not referenced by its cursor parent page {parentPage.PageNumber}, tree: {_tree.Name}");
 
-                parentPage.LastSearchPosition = positionInParent;
+                parentPage.LastSearchPosition = (short)positionInParent;
 
                 if (page.NumberOfEntries == 0) // empty page, just delete it and fixup parent
                 {
@@ -197,7 +197,7 @@ namespace Voron.Data.BTrees
 
                 for (int i = 0; i < right.NumberOfEntries; i++)
                 {
-                    right.LastSearchPosition = i;
+                    right.LastSearchPosition = (short)i;
 
                     Slice key;
                     using (GetActualKey(right, right.LastSearchPositionOrLastEntry, out key))
@@ -264,7 +264,7 @@ namespace Voron.Data.BTrees
                 sibling = _tree.ModifyPage(parentPage.GetNode(1)->PageNumber);
 
                 sibling.LastSearchPosition = 0;
-                page.LastSearchPosition = page.NumberOfEntries;
+                page.LastSearchPosition = (short)page.NumberOfEntries;
                 parentPage.LastSearchPosition = 1;
             }
             else // there is at least 1 page to our left
@@ -277,7 +277,7 @@ namespace Voron.Data.BTrees
                 parentPage.LastSearchPosition++;
                 if (beyondLast)
                     parentPage.LastSearchPosition++;
-                sibling.LastSearchPosition = sibling.NumberOfEntries - 1;
+                sibling.LastSearchPosition = (short)(sibling.NumberOfEntries - 1);
                 page.LastSearchPosition = 0;
             }
             return sibling;

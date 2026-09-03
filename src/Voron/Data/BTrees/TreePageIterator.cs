@@ -150,7 +150,7 @@ namespace Voron.Data.BTrees
             if (count > int.MaxValue)
                 ThrowSkipTooBig(count);
 
-            _page.LastSearchPosition += (int)count;
+            _page.LastSearchPosition += (short)count;
 
             return TrySetPosition();
         }

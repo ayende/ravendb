@@ -53,7 +53,7 @@ namespace Voron.Data.BTrees
                     if (_cursor.CurrentPage.GetNode(i)->PageNumber == _currentPage.PageNumber)
                     {
                         adjustParentPageOnCursor = false;
-                        _cursor.CurrentPage.LastSearchPosition = i;
+                        _cursor.CurrentPage.LastSearchPosition = (short)i;
                         break;
                     }
                 }
@@ -93,9 +93,9 @@ namespace Voron.Data.BTrees
         private static void EnsureValidLastSearchPosition(TreePage page, long referencedPageNumber, int originalLastSearchPosition)
         {
             if (page.NumberOfEntries <= originalLastSearchPosition || page.GetNode(originalLastSearchPosition)->PageNumber != referencedPageNumber)
-                page.LastSearchPosition = page.NodePositionReferencing(referencedPageNumber);
+                page.LastSearchPosition = (short)page.NodePositionReferencing(referencedPageNumber);
             else
-                page.LastSearchPosition = originalLastSearchPosition;
+                page.LastSearchPosition = (short)originalLastSearchPosition;
         }
     }
 }

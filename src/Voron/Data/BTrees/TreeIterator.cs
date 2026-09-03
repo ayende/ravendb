@@ -95,7 +95,7 @@ namespace Voron.Data.BTrees
             {
                 // We know that the exact value isn't there, but it is possible that the next page has values 
                 // that is actually greater than the key, so we need to check it as well.
-                _currentPage.LastSearchPosition = _currentPage.NumberOfEntries; // force next MoveNext to move to the next _page_.
+                _currentPage.LastSearchPosition = (short)_currentPage.NumberOfEntries; // force next MoveNext to move to the next _page_.
                 return MoveNext();
             }
         }
@@ -154,7 +154,7 @@ namespace Voron.Data.BTrees
                         if (_currentPage.IsCompressed)
                             DecompressedCurrentPage();
 
-                        _currentPage.LastSearchPosition = _currentPage.NumberOfEntries - 1;
+                        _currentPage.LastSearchPosition = (short)(_currentPage.NumberOfEntries - 1);
                     }
 
                     // We should be prefetching data pages down here.
