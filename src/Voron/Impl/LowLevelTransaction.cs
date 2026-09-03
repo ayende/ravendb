@@ -1838,7 +1838,7 @@ namespace Voron.Impl
             // Callers are fine with getting "dirty" data, but will actually make compressing for journal better
             tmp.Clear();
             TreePage.Initialize(tmp.Ptr, pageSize);
-            page = RentTreePage(tmp.Ptr, pageSize);
+            page = new TreePage(tmp.Ptr, pageSize);
             return dispose;
         }
 
