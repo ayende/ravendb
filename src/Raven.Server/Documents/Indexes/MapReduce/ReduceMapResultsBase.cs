@@ -339,8 +339,11 @@ namespace Raven.Server.Documents.Indexes.MapReduce
                 if (compressed)
                     stats.RecordCompressedLeafPage();
 
-                using (compressed ? (DecompressedLeafPage)(leafPage = tree.DecompressPage(leafPage, DecompressionUsage.Read, skipCache: true)) : null)
+                using (var decompressedLeaf = compressed ? tree.DecompressPage(leafPage, DecompressionUsage.Read, skipCache: true) : null)
                 {
+                    if (decompressedLeaf != null)
+                        leafPage = decompressedLeaf.Page;
+
                     if (leafPage.NumberOfEntries == 0)
                     {
                         if (leafPage.PageNumber == tree.ReadHeader().RootPageNumber)
@@ -487,7 +490,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
                     using (var emptyPage = tree.DecompressPage(page, DecompressionUsage.Read, skipCache: true))
                     {
-                        if (emptyPage.NumberOfEntries > 0) // could be changed meanwhile
+                        if (emptyPage.Page.NumberOfEntries > 0) // could be changed meanwhile
                             continue;
 
                         modifiedStore.Tree.RemoveEmptyDecompressedPage(emptyPage);
@@ -648,7 +651,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
                 using (var decompressed = tree.DecompressPage(relatedTreePage, DecompressionUsage.Read, skipCache: true))
                 {
-                    if (decompressed.NumberOfEntries == 0)
+                    if (decompressed.Page.NumberOfEntries == 0)
                     {
                         // it's empty so there is no related aggregation result, we can safely skip it
 
