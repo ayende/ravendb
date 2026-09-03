@@ -316,7 +316,7 @@ namespace Voron.Data.BTrees
 
             _decompressedPage?.Dispose();
 
-            _currentPage = _decompressedPage = _tree.DecompressPage(_currentPage, DecompressionUsage.Read, skipCache: false);
+            _currentPage = (_decompressedPage = _tree.DecompressPage(_currentPage, DecompressionUsage.Read, skipCache: false)).Page;
         }
     }
 

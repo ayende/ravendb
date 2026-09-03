@@ -76,16 +76,16 @@ namespace Voron.Data.BTrees
                 if (_page.IsCompressed)
                 {
                     _pageDecompressed = _tree.DecompressPage(_page, WriteDecompressionUsage, skipCache: false);
-                    _pageDecompressed.Search(_tx, _newKey);
+                    _pageDecompressed.Page.Search(_tx, _newKey);
 
-                    if (_pageDecompressed.LastMatch == 0)
+                    if (_pageDecompressed.Page.LastMatch == 0)
                     {
                         // we are going to insert the value in a bit, but it might have 
                         // been in the compressed portion and not removed by the calling
                         // code
-                        _tree.RemoveLeafNode(_pageDecompressed);
+                        _tree.RemoveLeafNode(_pageDecompressed.Page);
 
-                        if (_pageDecompressed.NumberOfEntries == 0)
+                        if (_pageDecompressed.Page.NumberOfEntries == 0)
                         {
                             // we have just removed the last node that we wanted to update
                             // there is no need to do any split - copy the value to the current (empty) page
@@ -99,7 +99,7 @@ namespace Voron.Data.BTrees
                             }
                         }
                     }
-                    _page = _pageDecompressed;
+                    _page = _pageDecompressed.Page;
                 }
                 
                 TreePage rightPage = _tree.NewPage(_page.TreeFlags, _page.PageNumber);
@@ -147,7 +147,7 @@ namespace Voron.Data.BTrees
             if (_pageDecompressed == null)
                 return;
             _pageDecompressed.CopyToOriginal(_tx, defragRequired: false, wasModified: wasModified, _tree);
-            _tree.DecompressionsCache.Invalidate(_pageDecompressed.PageNumber, WriteDecompressionUsage);
+            _tree.DecompressionsCache.Invalidate(_pageDecompressed.Page.PageNumber, WriteDecompressionUsage);
             _page = _pageDecompressed.Original;
         }
 
@@ -265,7 +265,7 @@ namespace Voron.Data.BTrees
             int? decompressedPageSize = null;
 
             if (_pageDecompressed != null)
-                decompressedPageSize = _pageDecompressed.PageSize;
+                decompressedPageSize = _pageDecompressed.Page.PageSize;
             else if (_splittingOnDecompressed)
                 decompressedPageSize = _page.PageSize;
 
@@ -273,7 +273,7 @@ namespace Voron.Data.BTrees
             {
                 // splitting the decompressed page, let's allocate the page of the same size to ensure enough space
                 rightDecompressed = _tree.GetDecompressedPage(decompressedPageSize.Value, DecompressionUsage.Write, rightPage);
-                rightPage = rightDecompressed;
+                rightPage = rightDecompressed.Page;
             }
 
             if (_page.IsLeaf)

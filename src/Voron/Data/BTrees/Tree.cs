@@ -613,8 +613,11 @@ namespace Voron.Data.BTrees
                 {
                     var p = stack.Pop();
 
-                    using (p.IsCompressed ? (DecompressedLeafPage)(p = DecompressPage(p, DecompressionUsage.Read, skipCache: true)) : null)
+                    using (var decompressed = p.IsCompressed ? DecompressPage(p, DecompressionUsage.Read, skipCache: true) : null)
                     {
+                        if (decompressed != null)
+                            p = decompressed.Page;
+
                         if (p.NumberOfEntries == 0 && p != root)
                         {
                             DebugStuff.RenderAndShowTree(this, rootPageNumber);
@@ -1183,12 +1186,12 @@ namespace Voron.Data.BTrees
             {
                 var p = FindPageFor(key, node: out _, cursor: out var cursorConstructor, allowCompressed: true);
 
-                Debug.Assert(p.IsLeaf && p.IsCompressed && p.PageNumber == emptyPage.PageNumber);
+                Debug.Assert(p.IsLeaf && p.IsCompressed && p.PageNumber == emptyPage.Page.PageNumber);
 
                 using (var cursor = cursorConstructor.Build(key))
                 {
                     var treeRebalancer = new TreeRebalancer(_llt, this, cursor);
-                    var changedPage = (TreePage)emptyPage;
+                    var changedPage = emptyPage.Page;
                     while (changedPage != null)
                     {
                         changedPage = treeRebalancer.Execute(changedPage);
@@ -1662,7 +1665,7 @@ namespace Voron.Data.BTrees
                         {
                             using (var decompressedRefPage = DecompressPage(refPage, DecompressionUsage.Read, skipCache: true))
                             {
-                                Validate(decompressedRefPage, referenceKey);
+                                Validate(decompressedRefPage.Page, referenceKey);
                             }
                         }
                     }
