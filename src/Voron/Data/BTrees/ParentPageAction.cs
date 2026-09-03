@@ -23,6 +23,12 @@ namespace Voron.Data.BTrees
             _tx = tx;
         }
 
+        /// <summary>
+        /// The parent page as this action left it. AddSeparator can move the page and fix up its
+        /// search position, and TreePage is a value type, so the caller has to read it back.
+        /// </summary>
+        public TreePage ParentPage => _parentPage;
+
         public TreePage ParentOfAddedPageRef { get; private set; }
 
         public bool PerformedSplit { get; private set; }
@@ -39,6 +45,9 @@ namespace Voron.Data.BTrees
                 // the sequential-insert optimization that appends without a key search - so it must reflect
                 // the position of this separator instead of a leftover from the descent or another fix-up
                 _parentPage.NodePositionFor(_tx, separator);
+                // the splitter works off the cursor's copy of this page, so the position has to be
+                // published there before it runs
+                _cursor.SyncTopPage(_parentPage);
 
                 var pageSplitter = new TreePageSplitter(_tx, _tree, separator, -1, pageRefNumber, TreeNodeFlags.PageRef, _cursor);
 

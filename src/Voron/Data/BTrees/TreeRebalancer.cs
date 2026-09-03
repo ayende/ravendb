@@ -145,21 +145,23 @@ namespace Voron.Data.BTrees
                 {
                     // neighbor is over the min size and has enough key, can move just one key to  the current page
                     if (page.IsBranch)
-                        MoveBranchNode(parentPage, sibling, page);
+                        MoveBranchNode(ref parentPage, sibling, page);
                     else
-                        MoveLeafNode(parentPage, sibling, page);
+                        MoveLeafNode(ref parentPage, sibling, page);
 
                     return parentPage;
                 }
 
                 if (page.LastSearchPosition == 0) // this is the right page, merge left
                 {
-                    if (TryMergePages(parentPage, sibling, page) == false)
+                    var merged = TryMergePages(parentPage, sibling, ref page);
+                    if (merged == false)
                         return default;
                 }
                 else // this is the left page, merge right
                 {
-                    if (TryMergePages(parentPage, page, sibling) == false)
+                    var merged = TryMergePages(parentPage, page, ref sibling);
+                    if (merged == false)
                         return default;
                 }
 
@@ -188,7 +190,8 @@ namespace Voron.Data.BTrees
             _tree.FreePage(page);
         }
 
-        private bool TryMergePages(TreePage parentPage, TreePage left, TreePage right)
+
+        private bool TryMergePages(TreePage parentPage, TreePage left, ref TreePage right)
         {
             using (_tx.GetTempPage(left.PageSize, out var mergedPage))
             {
@@ -284,7 +287,7 @@ namespace Voron.Data.BTrees
             return sibling;
         }
 
-        private void MoveLeafNode(TreePage parentPage, TreePage from, TreePage to)
+        private void MoveLeafNode(ref TreePage parentPage, TreePage from, TreePage to)
         {
             Debug.Assert(from.IsBranch == false);
             Slice originalFromKeyStart;
@@ -339,7 +342,7 @@ namespace Voron.Data.BTrees
                         scope = GetActualKey(from, 0, out newSeparatorKey);
                     }
 
-                    AddSeparatorToParentPage(to, parentPage, pageNumber, newSeparatorKey, pos);
+                    AddSeparatorToParentPage(to, ref parentPage, pageNumber, newSeparatorKey, pos);
                 }
                 finally
                 {
@@ -348,17 +351,19 @@ namespace Voron.Data.BTrees
             }
         }
 
-        private void AddSeparatorToParentPage(TreePage childPage, TreePage parentPage, long pageNumber, Slice seperatorKey, int separatorKeyPosition)
+        private void AddSeparatorToParentPage(TreePage childPage, ref TreePage parentPage, long pageNumber, Slice seperatorKey, int separatorKeyPosition)
         {
             var parent = new ParentPageAction(parentPage, childPage, _tree, _cursor, _tx);
 
             parent.AddSeparator(seperatorKey, pageNumber, separatorKeyPosition);
 
+            parentPage = parent.ParentPage;
+
             if (parent.PerformedSplit)
                 _ancestorsChanged = true;
         }
 
-        private void MoveBranchNode(TreePage parentPage, TreePage from, TreePage to)
+        private void MoveBranchNode(ref TreePage parentPage, TreePage from, TreePage to)
         {
             Debug.Assert(from.IsBranch);
 
@@ -439,7 +444,7 @@ namespace Voron.Data.BTrees
                     scope = GetActualKey(from, 0, out newSeparatorKey);
                 }
 
-                AddSeparatorToParentPage(to, parentPage, pageNumber, newSeparatorKey, pos);
+                AddSeparatorToParentPage(to, ref parentPage, pageNumber, newSeparatorKey, pos);
             }
             finally
             {

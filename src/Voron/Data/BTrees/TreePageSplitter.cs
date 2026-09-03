@@ -94,7 +94,7 @@ namespace Voron.Data.BTrees
                             {
                                 RecompressPageIfNeeded(wasModified: true);
 
-                                var pos = InsertNewKey(_page);
+                                var pos = InsertNewKey(ref _page);
                                 return pos;
                             }
                         }
@@ -354,7 +354,7 @@ namespace Voron.Data.BTrees
                         }
 
                         // actually insert the new key
-                        pos = InsertNewKey(toRight ? rightPage : _page);
+                        pos = InsertNewKey(ref toRight ? ref rightPage : ref _page);
                     }
                     catch (InvalidOperationException e)
                     {
@@ -420,7 +420,7 @@ namespace Voron.Data.BTrees
             _tree.FreePage(page);
         }
 
-        private byte* InsertNewKey(TreePage p)
+        private byte* InsertNewKey(ref TreePage p)
         {
             int pos = p.NodePositionFor(_tx, _newKey);
 
