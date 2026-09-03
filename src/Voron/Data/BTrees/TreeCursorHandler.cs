@@ -40,7 +40,7 @@ namespace Voron.Data.BTrees
             if (_current != null)
                 return _current;
 
-            var c = new TreeCursor();
+            var c = new TreeCursor(_llt);
             foreach (var p in _cursorPath)
             {
                 if (p == _lastFoundPageNumber)
