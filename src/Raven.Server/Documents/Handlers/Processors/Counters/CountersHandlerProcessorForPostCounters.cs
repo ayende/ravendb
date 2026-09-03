@@ -4,7 +4,6 @@ using JetBrains.Annotations;
 using Raven.Client.Documents.Operations.Counters;
 using Raven.Client.Exceptions.Documents;
 using Raven.Server.ServerWide.Context;
-using System.Runtime.CompilerServices;
 
 namespace Raven.Server.Documents.Handlers.Processors.Counters
 {
@@ -14,7 +13,6 @@ namespace Raven.Server.Documents.Handlers.Processors.Counters
         {
         }
 
-        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
         protected override async ValueTask<CountersDetail> ApplyCountersOperationsAsync(DocumentsOperationContext context, CounterBatch counterBatch)
         {
             var cmd = new CountersHandler.ExecuteCounterBatchCommand(RequestHandler.Database, counterBatch);

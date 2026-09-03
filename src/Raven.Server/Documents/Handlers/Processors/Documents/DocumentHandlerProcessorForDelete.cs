@@ -2,7 +2,6 @@
 using JetBrains.Annotations;
 using Raven.Server.Documents.TransactionMerger.Commands;
 using Raven.Server.ServerWide.Context;
-using System.Runtime.CompilerServices;
 
 namespace Raven.Server.Documents.Handlers.Processors.Documents;
 
@@ -12,7 +11,6 @@ internal sealed class DocumentHandlerProcessorForDelete : AbstractDocumentHandle
     {
     }
 
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     protected override async ValueTask HandleDeleteDocumentAsync(string docId, string changeVector)
     {
         using (ContextPool.AllocateOperationContext(out DocumentsOperationContext context))

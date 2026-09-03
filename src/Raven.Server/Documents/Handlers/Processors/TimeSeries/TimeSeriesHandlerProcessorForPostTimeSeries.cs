@@ -4,7 +4,6 @@ using JetBrains.Annotations;
 using Raven.Client.Documents.Operations.TimeSeries;
 using Raven.Client.Exceptions.Documents;
 using Raven.Server.ServerWide.Context;
-using System.Runtime.CompilerServices;
 
 namespace Raven.Server.Documents.Handlers.Processors.TimeSeries
 {
@@ -14,7 +13,6 @@ namespace Raven.Server.Documents.Handlers.Processors.TimeSeries
         {
         }
 
-        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
         protected override async ValueTask ApplyTimeSeriesOperationAsync(string docId, TimeSeriesOperation operation, DocumentsOperationContext _)
         {
             var cmd = new TimeSeriesHandler.ExecuteTimeSeriesBatchCommand(RequestHandler.Database, docId, operation, fromEtl: false);

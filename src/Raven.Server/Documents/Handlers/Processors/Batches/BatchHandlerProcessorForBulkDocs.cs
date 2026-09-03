@@ -20,7 +20,6 @@ using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Sparrow.Server;
 using Index = Raven.Server.Documents.Indexes.Index;
-using System.Runtime.CompilerServices;
 
 namespace Raven.Server.Documents.Handlers.Processors.Batches;
 
@@ -30,7 +29,6 @@ internal sealed class BatchHandlerProcessorForBulkDocs : AbstractBatchHandlerPro
     {
     }
 
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
     protected override async ValueTask<DynamicJsonArray> HandleTransactionAsync(JsonOperationContext context, MergedBatchCommand command, IndexBatchOptions indexBatchOptions, ReplicationBatchOptions replicationBatchOptions)
     {
         try

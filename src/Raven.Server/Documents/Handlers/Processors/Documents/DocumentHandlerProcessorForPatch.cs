@@ -11,7 +11,6 @@ using Sparrow.Extensions;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using PatchRequest = Raven.Server.Documents.Patch.PatchRequest;
-using System.Runtime.CompilerServices;
 
 namespace Raven.Server.Documents.Handlers.Processors.Documents;
 
@@ -21,7 +20,6 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
     {
     }
 
-    [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     protected override async ValueTask HandleDocumentPatchAsync(string id, string cv, BlittableJsonReaderObject patchRequest, bool skipPatchIfChangeVectorMismatch, bool debugMode,
         bool isTest, DocumentsOperationContext context)
     {
