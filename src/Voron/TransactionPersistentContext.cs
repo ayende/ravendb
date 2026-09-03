@@ -13,7 +13,6 @@ namespace Voron
         
 
          // async commit keeps multuple transactions alive at once over the same context, so we use a stack for those
-        private readonly Stack<FastList<TreePage>> _treePageWrappers = new();
         private readonly Stack<FastStack<TreePage>> _cursorPages = new();
         private readonly Stack<PageLocator> _pageLocators = new();
         
@@ -39,19 +38,6 @@ namespace Voron
             Debug.Assert(locator != null);
             if (_pageLocators.Count < 1024)
                 _pageLocators.Push(locator);
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal FastList<TreePage> AllocateTreePageWrappers()
-        {
-            return _treePageWrappers.Count != 0 ? _treePageWrappers.Pop() : new FastList<TreePage>();
-        }
-
-        internal void FreeTreePageWrappers(FastList<TreePage> wrappers)
-        {
-            Debug.Assert(wrappers != null);
-            if (_treePageWrappers.Count < 8)
-                _treePageWrappers.Push(wrappers);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]

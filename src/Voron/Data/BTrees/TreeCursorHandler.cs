@@ -18,7 +18,7 @@ namespace Voron.Data.BTrees
 
             this._llt = null;
             this._tree = null;
-            this._pageCopy = null;
+            this._pageCopy = default;
             this._cursorPath = null;
             this._lastFoundPageNumber = 0;
 

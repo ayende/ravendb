@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -45,7 +45,7 @@ namespace Voron.Data.BTrees
                 if (_cursor.PageCount <= 1) // the root page
                 {
                     RebalanceRoot(page);
-                    return null;
+                    return default;
                 }
 
                 _cursor.Pop();
@@ -118,7 +118,7 @@ namespace Voron.Data.BTrees
 
                 var minKeys = page.IsBranch ? 2 : 1;
                 if (page.UseMoreSizeThan(Constants.Tree.PageMinSpace) && page.NumberOfEntries >= minKeys) 
-                    return null; // above space/keys thresholds
+                    return default; // above space/keys thresholds
 
                 Debug.Assert(parentPage.NumberOfEntries >= 2); // if we have less than 2 entries in the parent, the tree is invalid
 
@@ -126,15 +126,15 @@ namespace Voron.Data.BTrees
                 Debug.Assert(sibling.PageNumber != page.PageNumber);
 
                 if (page.TreeFlags != sibling.TreeFlags)
-                    return null;
+                    return default;
 
                 if (sibling.IsCompressed)
-                    return null;
+                    return default;
 
                 if (sibling.PageSize != page.PageSize)
                     // if the current page is compressed (but already opened), we need to 
                     // avoid merging it with the right (uncompressed) page
-                    return null;
+                    return default;
 
                 Debug.Assert(page.IsCompressed == false);
 
@@ -154,12 +154,12 @@ namespace Voron.Data.BTrees
                 if (page.LastSearchPosition == 0) // this is the right page, merge left
                 {
                     if (TryMergePages(parentPage, sibling, page) == false)
-                        return null;
+                        return default;
                 }
                 else // this is the left page, merge right
                 {
                     if (TryMergePages(parentPage, page, sibling) == false)
-                        return null;
+                        return default;
                 }
 
                 return parentPage;

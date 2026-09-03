@@ -53,7 +53,7 @@ namespace Voron.Data.BTrees
                     if (_cursor.CurrentPage.GetNode(i)->PageNumber == _currentPage.PageNumber)
                     {
                         adjustParentPageOnCursor = false;
-                        _cursor.CurrentPage.LastSearchPosition = (short)i;
+                        _cursor.CurrentPageRef.LastSearchPosition = (short)i;
                         break;
                     }
                 }

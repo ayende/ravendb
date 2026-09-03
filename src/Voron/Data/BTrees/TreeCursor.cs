@@ -60,6 +60,11 @@ namespace Voron.Data.BTrees
 
         public TreePage CurrentPage => _statePages.Peek();
 
+        /// <summary>
+        /// The top page by reference, for callers that need to update its search state in place.
+        /// </summary>
+        public ref TreePage CurrentPageRef => ref _statePages.TopByRef();
+
         public int PageCount => _statePages.Count;
 
         public void Push(TreePage p)

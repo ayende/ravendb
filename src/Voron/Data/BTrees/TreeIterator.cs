@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
@@ -176,7 +176,7 @@ namespace Voron.Data.BTrees
                     break;
                 _currentPage = _cursor.Pop();
             }
-            _currentPage = null;
+            _currentPage = default;
             return false;
         }
 
@@ -189,7 +189,7 @@ namespace Voron.Data.BTrees
         {
             ThrowIfDisposedOnDebug(this, "TreeIterator " + _tree.Name);
 
-            while (_currentPage != null)
+            while (_currentPage.IsValid)
             {
                 _currentPage.LastSearchPosition++;
                 if (_currentPage.LastSearchPosition < _currentPage.NumberOfEntries)
@@ -229,7 +229,7 @@ namespace Voron.Data.BTrees
                     break;
                 _currentPage = _cursor.Pop();
             }
-            _currentPage = null;
+            _currentPage = default;
 
             return false;
         }
@@ -248,8 +248,8 @@ namespace Voron.Data.BTrees
             }
 
             if (DoRequireValidation)
-                return _currentPage != null && this.ValidateCurrentKey(_tx, Current);
-            return _currentPage != null;
+                return _currentPage.IsValid && this.ValidateCurrentKey(_tx, Current);
+            return _currentPage.IsValid;
         }
 
         public ValueReader CreateReaderForCurrent()
@@ -276,7 +276,7 @@ namespace Voron.Data.BTrees
             OnDisposal?.Invoke(this);
 
             // We want most operations to fail even if we are only checking disposed on debug. 
-            _currentPage = null;
+            _currentPage = default;
         }
 
 

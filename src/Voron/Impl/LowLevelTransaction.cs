@@ -973,13 +973,6 @@ namespace Voron.Impl
                 _txStatus |= TxStatus.Disposed;
 
                 FreePageLocator(PersistentContext, ref _pageLocator);
-
-                if (_treePageWrappers != null)
-                {
-                    _treePageWrappersInUse = 0;
-                    PersistentContext.FreeTreePageWrappers(_treePageWrappers);
-                    _treePageWrappers = null;
-                }
             }
             finally
             {
@@ -1838,33 +1831,8 @@ namespace Voron.Impl
             // Callers are fine with getting "dirty" data, but will actually make compressing for journal better
             tmp.Clear();
             TreePage.Initialize(tmp.Ptr, pageSize);
-            page = RentTreePage(tmp.Ptr, pageSize);
+            page = new TreePage(tmp.Ptr, pageSize);
             return dispose;
-        }
-
-        private const int MaxCachedTreePageWrappers = 1024;
-
-        private FastList<TreePage> _treePageWrappers;
-        private int _treePageWrappersInUse;
-
-        internal TreePage RentTreePage(byte* basePtr, int pageSize)
-        {
-            var wrappers = _treePageWrappers ??= PersistentContext.AllocateTreePageWrappers();
-            if (_treePageWrappersInUse < wrappers.Count)
-            {
-                var reused = wrappers[_treePageWrappersInUse++];
-                reused.Renew(basePtr, pageSize);
-                return reused;
-            }
-
-            var page = new TreePage(basePtr, pageSize);
-            if (wrappers.Count < MaxCachedTreePageWrappers) // a huge transaction shouldn't pin its whole traversal
-            {
-                wrappers.Add(page);
-                _treePageWrappersInUse++;
-            }
-
-            return page;
         }
 
         public bool IsDirty(long p)

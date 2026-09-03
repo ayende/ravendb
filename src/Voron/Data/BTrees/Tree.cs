@@ -618,7 +618,7 @@ namespace Voron.Data.BTrees
                         if (decompressed != null)
                             p = decompressed.Page;
 
-                        if (p.NumberOfEntries == 0 && p != root)
+                        if (p.NumberOfEntries == 0 && p.PageNumber != root.PageNumber)
                         {
                             DebugStuff.RenderAndShowTree(this, rootPageNumber);
                             throw new InvalidOperationException("The page " + p.PageNumber + " is empty");
@@ -677,7 +677,7 @@ namespace Voron.Data.BTrees
         internal TreePage GetReadOnlyTreePage(long pageNumber)
         {
             var page = _llt.GetPage(pageNumber);
-            return _llt.RentTreePage(page.Pointer, Constants.Storage.PageSize);
+            return new TreePage(page.Pointer, Constants.Storage.PageSize);
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -690,7 +690,7 @@ namespace Voron.Data.BTrees
         internal TreePage GetWriteableTreePage(long pageNumber)
         {
             var page = _llt.ModifyPage(pageNumber);
-            return _llt.RentTreePage(page.Pointer, Constants.Storage.PageSize);
+            return new TreePage(page.Pointer, Constants.Storage.PageSize);
         }
 
         internal TreePage FindPageFor(Slice key, out TreeNodeHeader* node)
@@ -937,16 +937,16 @@ namespace Voron.Data.BTrees
         {
             if (_recentlyFoundPages == null || _recentlyFoundPages.TryFind(key, out var foundPage) == false)
             {
-                page = null;
+                page = default;
                 node = null;
                 return false;
             }
 
-            if (foundPage.Page != null)
+            if (foundPage.Page.IsValid)
             {
                 // we can't share the same instance, Page instance may be modified by
                 // concurrently run iterators
-                page = _llt.RentTreePage(foundPage.Page.Base, foundPage.Page.PageSize);
+                page = new TreePage(foundPage.Page.Base, foundPage.Page.PageSize);
             }
             else
             {
@@ -965,7 +965,7 @@ namespace Voron.Data.BTrees
         {
             if (_recentlyFoundPages == null || _recentlyFoundPages.TryFind(key, out var foundPage) == false)
             {
-                page = null;
+                page = default;
                 node = null;
                 cursor = default;
                 return false;
@@ -973,11 +973,11 @@ namespace Voron.Data.BTrees
 
             var lastFoundPageNumber = foundPage.Number;
 
-            if (foundPage.Page != null)
+            if (foundPage.Page.IsValid)
             {
                 // we can't share the same instance, Page instance may be modified by
                 // concurrently run iterators
-                page = _llt.RentTreePage(foundPage.Page.Base, foundPage.Page.PageSize);
+                page = new TreePage(foundPage.Page.Base, foundPage.Page.PageSize);
             }
             else
             {
@@ -1093,7 +1093,7 @@ namespace Voron.Data.BTrees
             {
                 var treeRebalancer = new TreeRebalancer(_llt, this, cursor);
                 var changedPage = page;
-                while (changedPage != null)
+                while (changedPage.IsValid)
                 {
                     changedPage = treeRebalancer.Execute(changedPage);
                 }
@@ -1192,7 +1192,7 @@ namespace Voron.Data.BTrees
                 {
                     var treeRebalancer = new TreeRebalancer(_llt, this, cursor);
                     var changedPage = emptyPage.Page;
-                    while (changedPage != null)
+                    while (changedPage.IsValid)
                     {
                         changedPage = treeRebalancer.Execute(changedPage);
                     }
@@ -1261,7 +1261,7 @@ namespace Voron.Data.BTrees
         {
             var p = FindPageFor(key, out TreeNodeHeader* node);
 
-            if (p == null || p.LastMatch != 0)
+            if (p.IsValid == false || p.LastMatch != 0)
                 return null;
 
             Debug.Assert(node != null);

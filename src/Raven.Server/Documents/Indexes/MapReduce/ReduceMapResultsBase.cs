@@ -229,7 +229,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
             {
                 _index.ErrorIndexIfCriticalException(e);
 
-                HandleReductionError(e, reduceKeyHash, writer, stats, updateStats: true, page: null, numberOfNestedValues: numberOfEntriesToReduce);
+                HandleReductionError(e, reduceKeyHash, writer, stats, updateStats: true, page: default, numberOfNestedValues: numberOfEntriesToReduce);
             }
         }
 
@@ -731,7 +731,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
         {
             var builder = new StringBuilder("Failed to execute reduce function on ");
 
-            if (page != null)
+            if (page.IsValid)
                 builder.Append($"page {page} ");
             else
                 builder.Append("nested values ");
@@ -773,7 +773,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
             
             if (updateStats)
             {
-                var numberOfEntries = page?.NumberOfEntries ?? numberOfNestedValues;
+                var numberOfEntries = page.IsValid ? page.NumberOfEntries : numberOfNestedValues;
 
                 Debug.Assert(numberOfEntries != -1);
 

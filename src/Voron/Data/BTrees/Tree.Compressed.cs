@@ -311,7 +311,7 @@ namespace Voron.Data.BTrees
                 {
                     var treeRebalancer = new TreeRebalancer(_llt, this, cursor);
                     var changedPage = decompressed.Page;
-                    while (changedPage != null)
+                    while (changedPage.IsValid)
                     {
                         changedPage = treeRebalancer.Execute(changedPage);
                     }

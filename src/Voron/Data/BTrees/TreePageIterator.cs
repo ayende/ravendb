@@ -10,7 +10,7 @@ namespace Voron.Data.BTrees
     {
         private readonly Slice _treeKey;
         private readonly Tree _parent;
-        private readonly TreePage _page;
+        private TreePage _page;
         private readonly LowLevelTransaction _tx;
 
         private Slice _currentKey = default(Slice);

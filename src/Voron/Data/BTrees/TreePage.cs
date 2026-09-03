@@ -15,7 +15,7 @@ using Constants = Voron.Global.Constants;
 
 namespace Voron.Data.BTrees
 {
-    public unsafe class TreePage
+    public unsafe struct TreePage
     {
         // laid out to fit in 16 bytes, so a page can be passed and returned in registers:
         // pointer (8) + page size (4) + search position (2) + match sign (1) + dirty (1)
@@ -37,19 +37,20 @@ namespace Voron.Data.BTrees
 
         public bool Dirty;
 
+        /// <summary>
+        /// False for a default-initialized page, which is how callers express "no page" now that
+        /// TreePage is a value type and cannot be null.
+        /// </summary>
+        public bool IsValid
+        {
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            get { return Base != null; }
+        }
+
         public TreePage(byte* basePtr, int pageSize)
         {
             Base = basePtr;
             PageSize = pageSize;
-        }
-
-        internal void Renew(byte* basePtr, int pageSize)
-        {
-            Base = basePtr;
-            PageSize = pageSize;
-            LastMatch = 0;
-            LastSearchPosition = 0;
-            Dirty = false;
         }
 
         public static void Initialize(byte* ptr, int pageSize)
