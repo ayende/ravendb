@@ -40,6 +40,12 @@ namespace Raven.Server.Documents.TransactionMerger
         where TTransaction : RavenTransaction
     {
         private readonly string _resourceName;
+
+        // RavenDB-27377 merger-cycle probe accumulators; touched only on the merger thread
+        private long _probeWaitTicks;
+        private long _probePumpTicks;
+        private WriteFlowPolicy.BatchCloseReason _probeCloseReason;
+        private long _probeModifiedSize;
         private JsonContextPoolBase<TOperationContext> _contextPool;
         private readonly RavenConfiguration _configuration;
         private readonly SystemTime _time;
@@ -640,6 +646,8 @@ namespace Raven.Server.Documents.TransactionMerger
             {
                 while (true)
                 {
+                    long probeLoopT = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
+
                     if (_log.IsDebugEnabled)
                         _log.Debug($"BeginAsyncCommit on {previous.Transaction.InnerTransaction.LowLevelTransaction.Id} with {_operations.Count} additional operations pending");
 
@@ -677,6 +685,8 @@ namespace Raven.Server.Documents.TransactionMerger
                         return;
                     }
 
+                    long probeBeginT = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
+
                     var previousInFlight = previous.Transaction.InnerTransaction.LowLevelTransaction;
                     Task batchingWindow = previousInFlight.DurableCommit ?? previousInFlight.AsyncCommit;
 
@@ -689,6 +699,8 @@ namespace Raven.Server.Documents.TransactionMerger
                     returnPreviousContext = null;
 
                     var currentPendingOps = GetBufferForPendingOps();
+                    _probeWaitTicks = 0;
+                    _probePumpTicks = 0;
                     PendingOperations result;
                     bool startedCompletingInFlight = false;
                     try
@@ -707,8 +719,21 @@ namespace Raven.Server.Documents.TransactionMerger
                             transactionMeter.Dispose();
                         }
                         startedCompletingInFlight = true;
+                        long probeExecT = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
                         _completionPump.DrainCompleted();
                         _completionPump.ThrowOnFailure();
+
+                        if (probeExecT != 0)
+                        {
+                            long probeDrainT = Stopwatch.GetTimestamp();
+                            MergerProbe.Log(_resourceName, currentPendingOps.Count, _probeCloseReason.ToString(), _probeModifiedSize,
+                                _operations.Count,
+                                beginMs: MergerProbe.Ms(probeLoopT, probeBeginT),
+                                execMs: MergerProbe.Ms(probeBeginT, probeExecT),
+                                waitMs: MergerProbe.TicksMs(_probeWaitTicks),
+                                pumpMs: MergerProbe.TicksMs(_probePumpTicks),
+                                drainMs: MergerProbe.Ms(probeExecT, probeDrainT));
+                        }
                     }
                     catch (Exception e)
                     {
@@ -968,6 +993,8 @@ namespace Raven.Server.Documents.TransactionMerger
             } while (true);
 
             shaper.Publish(executedOps.Count, modifiedSize);
+            _probeCloseReason = shaper.CloseReason;
+            _probeModifiedSize = modifiedSize;
 
             var status = GetPendingOperationsStatus(context, executedOps.Count is 0);
             if (_log.IsDebugEnabled)
@@ -1036,7 +1063,12 @@ namespace Raven.Server.Documents.TransactionMerger
         private bool TryGetNextOperation(Task previousOperation, out MergedTransactionCommand<TOperationContext, TTransaction> op, ref PerformanceMetrics.DurationMeasurement meter)
         {
             if (_completionPump.OldestTransactionIsDurable)
+            {
+                long probeT0 = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
                 _completionPump.DrainCompleted();
+                if (probeT0 != 0)
+                    _probePumpTicks += Stopwatch.GetTimestamp() - probeT0;
+            }
 
             if (_operations.TryDequeue(out op))
                 return true;
@@ -1063,10 +1095,16 @@ namespace Raven.Server.Documents.TransactionMerger
                 try
                 {
                     meter.MarkInternalWindowStart();
+                    long probeT0 = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
                     _waitHandle.Wait(_shutdown);
+                    if (probeT0 != 0)
+                        _probeWaitTicks += Stopwatch.GetTimestamp() - probeT0;
                     _waitHandle.Reset();
 
+                    long probeT1 = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
                     _completionPump.DrainCompleted(); // complete any completed txs, and notify their waiters
+                    if (probeT1 != 0)
+                        _probePumpTicks += Stopwatch.GetTimestamp() - probeT1;
 
                     if (previousOperation.IsCompleted)
                     {
