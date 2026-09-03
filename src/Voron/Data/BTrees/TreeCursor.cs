@@ -81,16 +81,6 @@ namespace Voron.Data.BTrees
                 top = page;
         }
 
-        /// <summary>
-        /// Pushes a page and hands back the slot it now occupies. Any further push invalidates the
-        /// returned reference, so callers re-acquire it after each push.
-        /// </summary>
-        public ref TreePage PushAndGetRef(TreePage p)
-        {
-            _statePages.Push(p);
-            return ref _statePages.TopByRef();
-        }
-
         public int PageCount => _statePages.Count;
 
         public void Push(TreePage p)

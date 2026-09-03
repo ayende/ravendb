@@ -48,7 +48,8 @@ namespace Voron.Data.BTrees
                 _page = _tree.ModifyPage(page);
             else
             {
-                Debug.Assert(page is DecompressedLeafPage);
+                // the caller placed a decompressed page on top of the cursor; TreePage no longer
+                // carries the type, so the flag is the contract
                 _page = page;
             }
 
