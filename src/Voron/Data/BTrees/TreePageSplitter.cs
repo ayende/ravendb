@@ -117,6 +117,7 @@ namespace Voron.Data.BTrees
                     newRootPage.AddPageRefNode(0, Slices.BeforeAllKeys, _page.PageNumber);
                     _parentPage = newRootPage;
                     _parentPage.LastSearchPosition++;
+                    _cursor.SyncTopPage(_parentPage);
                 }
                 else
                 {

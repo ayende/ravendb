@@ -122,7 +122,8 @@ namespace Voron.Data.BTrees
 
                 Debug.Assert(parentPage.NumberOfEntries >= 2); // if we have less than 2 entries in the parent, the tree is invalid
 
-                var sibling = SetupMoveOrMerge(page, parentPage);
+                var sibling = SetupMoveOrMerge(ref page, ref parentPage);
+                _cursor.SyncTopPage(parentPage);
                 Debug.Assert(sibling.PageNumber != page.PageNumber);
 
                 if (page.TreeFlags != sibling.TreeFlags)
@@ -256,7 +257,7 @@ namespace Voron.Data.BTrees
             }
         }
 
-        private TreePage SetupMoveOrMerge(TreePage page, TreePage parentPage)
+        private TreePage SetupMoveOrMerge(ref TreePage page, ref TreePage parentPage)
         {
             TreePage sibling;
             if (parentPage.LastSearchPosition == 0) // we are the left most item

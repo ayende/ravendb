@@ -9,7 +9,7 @@ namespace Voron.Data.BTrees
     public sealed unsafe class ParentPageAction
     {
         private readonly TreePage _currentPage;
-        private readonly TreePage _parentPage;
+        private TreePage _parentPage;
         private readonly Tree _tree;
         private readonly TreeCursor _cursor;
         private readonly LowLevelTransaction _tx;
@@ -66,7 +66,8 @@ namespace Voron.Data.BTrees
                     _cursor.Pop();
                     _cursor.Push(_parentPage);
 
-                    EnsureValidLastSearchPosition(_parentPage, _currentPage.PageNumber, originalLastSearchPositionOfParent);
+                    EnsureValidLastSearchPosition(ref _parentPage, _currentPage.PageNumber, originalLastSearchPositionOfParent);
+                    _cursor.SyncTopPage(_parentPage);
                 }
 
                 Debug.Assert(_cursor.CurrentPage.GetNode(_cursor.CurrentPage.LastSearchPosition)->PageNumber == _currentPage.PageNumber, 
@@ -84,13 +85,14 @@ namespace Voron.Data.BTrees
 
             var pos = _parentPage.AddPageRefNode(nodePos.Value, separator, pageRefNumber);
 
-            EnsureValidLastSearchPosition(_parentPage, _currentPage.PageNumber, originalLastSearchPositionOfParent);
+            EnsureValidLastSearchPosition(ref _parentPage, _currentPage.PageNumber, originalLastSearchPositionOfParent);
+            _cursor.SyncTopPage(_parentPage);
 
             return pos;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private static void EnsureValidLastSearchPosition(TreePage page, long referencedPageNumber, int originalLastSearchPosition)
+        private static void EnsureValidLastSearchPosition(ref TreePage page, long referencedPageNumber, int originalLastSearchPosition)
         {
             if (page.NumberOfEntries <= originalLastSearchPosition || page.GetNode(originalLastSearchPosition)->PageNumber != referencedPageNumber)
                 page.LastSearchPosition = (short)page.NodePositionReferencing(referencedPageNumber);
