@@ -44,6 +44,7 @@ namespace Raven.Server.Documents.TransactionMerger
         // RavenDB-27377 merger-cycle probe accumulators; touched only on the merger thread
         private long _probeWaitTicks;
         private long _probePumpTicks;
+        private long _probeIdleTicks;
         private WriteFlowPolicy.BatchCloseReason _probeCloseReason;
         private long _probeModifiedSize;
         private JsonContextPoolBase<TOperationContext> _contextPool;
@@ -333,7 +334,10 @@ namespace Raven.Server.Documents.TransactionMerger
                             using (var generalMeter = GeneralWaitPerformanceMetrics.MeterPerformanceRate())
                             {
                                 generalMeter.IncrementCounter(1);
+                                long probeIdleT = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
                                 _waitHandle.Wait(_shutdown);
+                                if (probeIdleT != 0)
+                                    _probeIdleTicks += Stopwatch.GetTimestamp() - probeIdleT;
                             }
                             _waitHandle.Reset();
                         }
@@ -471,6 +475,7 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private void MergeTransactionsOnce()
         {
+            long probeEntryT = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
             TOperationContext context = null;
             IDisposable returnContext = null;
             TTransaction tx = null;
@@ -504,6 +509,7 @@ namespace Raven.Server.Documents.TransactionMerger
                             }
                         }
                     }
+                    long probeOpenT = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
                     PendingOperations result;
                     try
                     {
@@ -550,6 +556,7 @@ namespace Raven.Server.Documents.TransactionMerger
                         return;
                     }
 
+                    long probeExecT = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
                     switch (result)
                     {
                         case PendingOperations.CompletedAll:
@@ -572,9 +579,28 @@ namespace Raven.Server.Documents.TransactionMerger
                             {
                                 NotifyOnThreadPool(pendingOps);
                             }
+
+                            if (probeEntryT != 0)
+                            {
+                                MergerProbe.LogChain(_resourceName, "Done", pendingOps.Count, _operations.Count,
+                                    idleMs: MergerProbe.TicksMs(_probeIdleTicks),
+                                    openMs: MergerProbe.Ms(probeEntryT, probeOpenT),
+                                    execMs: MergerProbe.Ms(probeOpenT, probeExecT),
+                                    commitMs: MergerProbe.Ms(probeExecT, Stopwatch.GetTimestamp()));
+                                _probeIdleTicks = 0;
+                            }
                             return;
 
                         case PendingOperations.HasMore:
+                            if (probeEntryT != 0)
+                            {
+                                MergerProbe.LogChain(_resourceName, "Chain", pendingOps.Count, _operations.Count,
+                                    idleMs: MergerProbe.TicksMs(_probeIdleTicks),
+                                    openMs: MergerProbe.Ms(probeEntryT, probeOpenT),
+                                    execMs: MergerProbe.Ms(probeOpenT, probeExecT),
+                                    commitMs: 0);
+                                _probeIdleTicks = 0;
+                            }
                             MergeTransactionsWithAsyncCommit(ref context, ref returnContext, pendingOps);
                             return;
 
@@ -787,10 +813,14 @@ namespace Raven.Server.Documents.TransactionMerger
                     switch (result)
                     {
                         case PendingOperations.CompletedAll:
+                            long probeExitT = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
+                            long probeDrainAllT = 0;
                             try
                             {
                                 _completionPump.DrainAll(); // everything in flight must be completed first
                                 _completionPump.ThrowOnFailure();
+
+                                probeDrainAllT = MergerProbe.Enabled ? Stopwatch.GetTimestamp() : 0;
 
                                 _recording.State?.TryRecord(current, TxInstruction.Commit);
                                 previous.Transaction.Commit();
@@ -803,6 +833,12 @@ namespace Raven.Server.Documents.TransactionMerger
                                 }
                             }
                             NotifyOnThreadPool(currentPendingOps);
+                            if (probeExitT != 0 && probeDrainAllT != 0)
+                            {
+                                MergerProbe.LogChainExit(_resourceName,
+                                    drainMs: MergerProbe.Ms(probeExitT, probeDrainAllT),
+                                    commitMs: MergerProbe.Ms(probeDrainAllT, Stopwatch.GetTimestamp()));
+                            }
                             return;
 
                         case PendingOperations.HasMore:
