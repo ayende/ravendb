@@ -78,61 +78,63 @@ public unsafe partial class Pager
         // Closing a pager is munmap + close. Under write load pager growth retires a
         // steady stream of State instances, and paying those syscalls on the finalizer
         // thread kept it at ~75% of a core (munmap also broadcasts TLB shootdowns),
-        // starving every other finalizable object. The finalizer just hands the state
-        // to a dedicated background thread instead.
+        // starving every other finalizable object. The finalizer queues the state and a
+        // single thread-pool work item drains the queue: at most one close runs at a
+        // time (munmap can stall for a long time, no reason to occupy several pool
+        // threads with it), and no thread is parked when there is nothing to close.
         private static readonly ConcurrentQueue<State> PendingDisposal = new();
-        private static readonly AutoResetEvent HasPendingDisposal = new(false);
+        private static int _disposalScheduled;
 
-        static State()
+        private static void ScheduleBackgroundDisposal()
         {
-            new Thread(BackgroundDisposalWork)
-            {
-                IsBackground = true,
-                Name = "Voron Pager Disposal",
-                Priority = ThreadPriority.BelowNormal
-            }.Start();
-        }
+            if (Interlocked.CompareExchange(ref _disposalScheduled, 1, 0) != 0)
+                return;
 
-        private static void BackgroundDisposalWork()
-        {
-            while (true)
+            ThreadPool.UnsafeQueueUserWorkItem(static _ =>
             {
-                HasPendingDisposal.WaitOne();
-                while (PendingDisposal.TryDequeue(out var state))
+                do
                 {
-                    try
-                    {
-                        state.Dispose();
-                    }
-                    catch (Exception e)
+                    while (PendingDisposal.TryDequeue(out var state))
                     {
                         try
                         {
-                            // cannot let the disposal thread die, just log it
-                            var logger = RavenLogManager.Instance.GetLoggerForGlobalVoron<State>();
-
-                            if (logger.IsErrorEnabled)
+                            state.Dispose();
+                        }
+                        catch (Exception e)
+                        {
+                            try
                             {
-                                logger.Error("Failed to dispose a pager state from the background disposer", e);
+                                // cannot let the drain die, just log it
+                                var logger = RavenLogManager.Instance.GetLoggerForGlobalVoron<State>();
+
+                                if (logger.IsErrorEnabled)
+                                {
+                                    logger.Error("Failed to dispose a pager state from the background disposer", e);
+                                }
+                            }
+                            catch
+                            {
+                                // nothing we can do here
                             }
                         }
-                        catch
-                        {
-                            // nothing we can do here
-                        }
                     }
-                }
-            }
+
+                    Volatile.Write(ref _disposalScheduled, 0);
+                    // a producer may have enqueued between the last TryDequeue and the gate
+                    // release; re-arm and keep draining if we win the gate back
+                } while (PendingDisposal.IsEmpty == false &&
+                         Interlocked.CompareExchange(ref _disposalScheduled, 1, 0) == 0);
+            }, null);
         }
 
         ~State()
         {
             try
             {
-                // resurrecting the instance is fine: the background thread holds the only
-                // reference until Dispose completes, and Dispose is idempotent under its lock
+                // resurrecting the instance is fine: the queue holds the only reference
+                // until Dispose completes, and Dispose is idempotent under its lock
                 PendingDisposal.Enqueue(this);
-                HasPendingDisposal.Set();
+                ScheduleBackgroundDisposal();
             }
             catch
             {
