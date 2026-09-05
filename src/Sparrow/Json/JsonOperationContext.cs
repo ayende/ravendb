@@ -596,6 +596,7 @@ namespace Sparrow.Json
             return ParseToMemoryAsync(stream, documentId, BlittableJsonDocumentBuilder.UsageMode.None, modifier: null, token: token);
         }
 
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
         private async ValueTask<BlittableJsonReaderObject> ParseToMemoryAsync(Stream stream, string debugTag, BlittableJsonDocumentBuilder.UsageMode mode, IBlittableDocumentModifier modifier = null, CancellationToken? token = null)
         {
             using (GetMemoryBuffer(out var bytes))
@@ -754,6 +755,7 @@ namespace Sparrow.Json
             }
         }
 
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
         public async ValueTask<BlittableJsonReaderObject> ParseToMemoryAsync(
             WebSocket webSocket,
             string debugTag,
@@ -810,6 +812,7 @@ namespace Sparrow.Json
                 ThrowObjectDisposed();
         }
 
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder<>))]
         public async ValueTask<BlittableJsonReaderObject> ParseToMemoryAsync(
             Stream stream,
             string documentId,

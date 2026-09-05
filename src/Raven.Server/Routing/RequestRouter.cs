@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Net;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography.X509Certificates;
 using System.Threading;
 using System.Threading.Tasks;
@@ -255,6 +256,9 @@ namespace Raven.Server.Routing
             }
         }
 
+        // runs once per request and always suspends on the tx merger; without the pooling
+        // builder its state machine box was the single largest allocation site (13.5%)
+        [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
         public async ValueTask HandlePath(RequestHandlerContext reqCtx)
         {
             var context = reqCtx.HttpContext;
