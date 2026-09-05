@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Runtime.InteropServices;
 using System.ComponentModel;
 using Microsoft.Extensions.Configuration;
 using Raven.Server.Config.Attributes;
@@ -20,7 +21,12 @@ namespace Raven.Server.Config.Categories
         {
             // On Windows, DiscardVirtualMemory can result in high CPU usage due to contention on the
             // PTE entry (in Win Server 2016 and Win Server 2019), we want to avoid it by default.
-            DiscardVirtualMemory = PlatformDetails.RunningOnPosix;
+            // On arm64 Linux it is far worse: madvise(MADV_DONTNEED) over a PMD-sized (2MB+) range
+            // frees the leaf page table, and the kernel's local-only spurious-fault flush leaves a
+            // stale walk-cache entry, so the next write into the mapping re-faults millions of times
+            // (measured: a 4MB memcpy taking 2-22 SECONDS, collapsing writes from 196K/s to 547/s).
+            DiscardVirtualMemory = PlatformDetails.RunningOnPosix &&
+                                   RuntimeInformation.ProcessArchitecture != Architecture.Arm64;
 
             // The sequential read-ahead hint relies on posix_fadvise, which exists on Linux but not macOS.
             UseSequentialReadAheadHintForJournalRecovery = PlatformDetails.RunningOnLinux;
