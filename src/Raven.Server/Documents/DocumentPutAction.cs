@@ -107,7 +107,8 @@ namespace Raven.Server.Documents
             string oldChangeVectorForClusterTransactionIndexCheck = null,
             DocumentFlags newFlags = DocumentFlags.None,
             NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None,
-            string knownCollectionName = null) // normalized non-null by DocumentsStorage.Put, the only caller
+            string knownCollectionName = null, // normalized non-null by DocumentsStorage.Put, the only caller
+            BlittableJsonReaderObject knownMetadata = null) // the document's @metadata, when the caller already parsed it (off the merger)
         {
             if (context.Transaction == null)
             {
@@ -117,6 +118,7 @@ namespace Raven.Server.Documents
 
             var documentDebugHash = 0UL;
             ValidateDocument(id, document, ref documentDebugHash);
+            var documentAsReceived = document; // knownMetadata belongs to this instance; Recreate may replace it
 
             var newEtag = _documentsStorage.GenerateNextEtag();
             var modifiedTicks = _documentsStorage.GetOrCreateLastModifiedTicks(context, lastModifiedTicks);
@@ -242,7 +244,13 @@ namespace Raven.Server.Documents
                     }
                 }
 
-                if (document.TryGetMetadata(out BlittableJsonReaderObject docMetadata))
+                BlittableJsonReaderObject docMetadata;
+                if (knownMetadata != null && ReferenceEquals(document, documentAsReceived))
+                    docMetadata = knownMetadata; // parsed off the merger by the command builder
+                else
+                    document.TryGetMetadata(out docMetadata);
+
+                if (docMetadata != null)
                 {
                     if (newFlags.Contain(DocumentFlags.Archived))
                     {

@@ -35,8 +35,9 @@ namespace Raven.Server.Documents.Handlers.Batches
             public string Id { get; set; }
             public BlittableJsonReaderArray Ids;
             public BlittableJsonReaderObject Document;
-            // For PUT: the @collection parsed off the merger thread (during request parsing).
+            // For PUT: the @metadata and @collection parsed off the merger thread (during request parsing).
             public string CollectionName;
+            public BlittableJsonReaderObject Metadata;
             public PatchRequest Patch;
             public List<JsonPatchCommand.Command> JsonPatchCommands;
             public BlittableJsonReaderObject PatchArgs;
@@ -621,8 +622,9 @@ namespace Raven.Server.Documents.Handlers.Batches
                 case CommandType.PUT:
                     if (commandData.Document == null)
                         ThrowMissingDocumentProperty();
-                    // Parse @collection here (off the tx merger) so the merger's Put can skip it.
+                    // Parse @metadata/@collection here (off the tx merger) so the merger's Put can skip both.
                     commandData.CollectionName = Raven.Server.Documents.CollectionName.GetCollectionName(commandData.Document);
+                    commandData.Document.TryGet(Raven.Client.Constants.Documents.Metadata.Key, out commandData.Metadata);
                     break;
 
                 case CommandType.PATCH:

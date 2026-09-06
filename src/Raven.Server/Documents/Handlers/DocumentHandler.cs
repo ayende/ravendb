@@ -93,6 +93,7 @@ namespace Raven.Server.Documents.Handlers
         private readonly BlittableJsonReaderObject _document;
         private readonly DocumentDatabase _database;
         private readonly string _collectionName;
+        private readonly BlittableJsonReaderObject _metadata;
         private readonly BlittableJsonReaderArray _attachmentsToValidate;
         private readonly bool _hasAttachmentsToValidate; // tracks TryGet success: an explicit "@attachments": null must still fail validation
         public DocumentsStorage.PutOperationResults PutResult;
@@ -108,9 +109,9 @@ namespace Raven.Server.Documents.Handlers
             // the attachments array when the caller wants it validated (the validation itself reads
             // storage, so it stays on the merger). The array shares the document's lifetime.
             _collectionName = CollectionName.GetCollectionName(doc);
-            if (shouldValidateAttachments &&
-                doc.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata) &&
-                metadata.TryGet(Constants.Documents.Metadata.Attachments, out BlittableJsonReaderArray attachments))
+            doc.TryGet(Constants.Documents.Metadata.Key, out _metadata);
+            if (shouldValidateAttachments && _metadata != null &&
+                _metadata.TryGet(Constants.Documents.Metadata.Attachments, out BlittableJsonReaderArray attachments))
             {
                 _attachmentsToValidate = attachments;
                 _hasAttachmentsToValidate = true;
@@ -125,7 +126,7 @@ namespace Raven.Server.Documents.Handlers
             }
             try
             {
-                PutResult = _database.DocumentsStorage.Put(context, _id, _expectedChangeVector, _document, knownCollectionName: _collectionName);
+                PutResult = _database.DocumentsStorage.Put(context, _id, _expectedChangeVector, _document, knownCollectionName: _collectionName, knownMetadata: _metadata);
             }
             catch (Voron.Exceptions.VoronConcurrencyErrorException e)
             {

@@ -2333,7 +2333,7 @@ namespace Raven.Server.Documents
             string expectedChangeVector, BlittableJsonReaderObject document, long? lastModifiedTicks = null, string changeVector = null,
             string oldChangeVectorForClusterTransactionIndexCheck = null,
             DocumentFlags flags = DocumentFlags.None, NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None,
-            string knownCollectionName = null)
+            string knownCollectionName = null, BlittableJsonReaderObject knownMetadata = null)
         {
             ChangeVector cv = null;
             if (changeVector != null)
@@ -2344,7 +2344,7 @@ namespace Raven.Server.Documents
             // way PutDocument gets a non-null name and has a single code path.
             knownCollectionName ??= CollectionName.GetCollectionName(document);
 
-            return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags, knownCollectionName);
+            return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags, knownCollectionName, knownMetadata);
         }
 
         public long GetNumberOfDocumentsToProcess(DocumentsOperationContext context, string collection, long afterEtag, out long totalCount, Stopwatch overallDuration)
