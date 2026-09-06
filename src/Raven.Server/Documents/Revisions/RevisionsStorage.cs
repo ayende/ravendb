@@ -2612,10 +2612,17 @@ namespace Raven.Server.Documents.Revisions
 
         public long GetRevisionsCount(DocumentsOperationContext context, string id)
         {
+            // Put() calls this for every document to decide the HasRevisions flag. When no revisions
+            // exist anywhere (the common case for a database without revisions), the count tree is
+            // empty, so we can answer 0 without lowering the id and searching by prefix on the merger.
+            var numbers = context.Transaction.InnerTransaction.ReadTree(RevisionsCountSlice);
+            if (numbers == null || numbers.ReadHeader().NumberOfEntries == 0)
+                return 0;
+
             using (DocumentIdWorker.GetLoweredIdSliceFromId(context, id, out Slice lowerId))
             using (GetKeyPrefix(context, lowerId, out Slice prefixSlice))
             {
-                return GetRevisionsCount(context, prefixSlice);
+                return numbers.Read(prefixSlice)?.Reader.Read<long>() ?? 0;
             }
         }
 

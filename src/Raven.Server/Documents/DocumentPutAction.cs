@@ -311,8 +311,7 @@ namespace Raven.Server.Documents
                         _documentsStorage.DataArchivalStorage.Put(context, lowerId, archiveAtDate);
                 }
 
-                _documentDatabase.Metrics.Docs.PutsPerSec.MarkSingleThreaded(1);
-                _documentDatabase.Metrics.Docs.BytesPutsPerSec.MarkSingleThreaded(document.Size);
+                context.Transaction.AccumulatePutMetrics(document.Size);
 
                 context.Transaction.AddAfterCommitNotification(new DocumentChange
                 {

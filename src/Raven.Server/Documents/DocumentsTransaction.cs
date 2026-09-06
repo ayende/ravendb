@@ -32,6 +32,18 @@ namespace Raven.Server.Documents
 
         private Dictionary<string, CollectionName> _collectionCache;
 
+        // Rate meters were marked per document, and each Mark reads the (vdso) clock. The merger
+        // commits many puts per transaction, so we accumulate here and mark once in BeforeCommit -
+        // same time bucket, far fewer clock reads on the merger thread.
+        private long _putsCount;
+        private long _putsBytes;
+
+        public void AccumulatePutMetrics(long documentSize)
+        {
+            _putsCount++;
+            _putsBytes += documentSize;
+        }
+
         public DocumentsTransaction(DocumentsOperationContext context, Transaction transaction, DocumentsChanges changes)
             : base(transaction)
         {
@@ -48,6 +60,15 @@ namespace Raven.Server.Documents
 
         public override void BeforeCommit()
         {
+            if (_putsCount != 0)
+            {
+                var docsMetrics = _context.DocumentDatabase.Metrics.Docs;
+                docsMetrics.PutsPerSec.MarkSingleThreaded(_putsCount);
+                docsMetrics.BytesPutsPerSec.MarkSingleThreaded(_putsBytes);
+                _putsCount = 0;
+                _putsBytes = 0;
+            }
+
             if (_attachmentHashesToMaybeDelete == null)
                 return;
 
