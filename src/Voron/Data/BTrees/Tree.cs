@@ -30,6 +30,12 @@ namespace Voron.Data.BTrees
     {
         private int _directAddUsage;
 
+        // Incremented whenever the tree's stored values may have MOVED (new entries, deletes,
+        // splits, rebalances, page compression). In-place same-size overwrites do not bump it, so
+        // a caller holding a direct pointer to a value (e.g. the FixedSizeTree header cache) can
+        // use this to know its pointer is still valid within the current write transaction.
+        internal long StructureVersion;
+
         private static readonly ObjectPool<RecentlyFoundTreePages> FoundPagesPool = new(() => new RecentlyFoundTreePages(), 128);
 
         private RecentlyFoundTreePages _recentlyFoundPages;
@@ -414,6 +420,8 @@ namespace Voron.Data.BTrees
                 state.NumberOfEntries++;
             }
 
+            StructureVersion++; // adding (or resizing) an entry can shift/move values in the page
+
             nodeType &= ~TreeNodeFlags.NewOnly;
 
             ThrowIfOnDebug<InvalidOperationException>(nodeType != TreeNodeFlags.Data && nodeType != TreeNodeFlags.MultiValuePageRef,
@@ -585,6 +593,7 @@ namespace Voron.Data.BTrees
 
         internal void RemoveLeafNode(TreePage page)
         {
+            StructureVersion++;
             var node = page.GetNode(page.LastSearchPosition);
             if (node->Flags == (TreeNodeFlags.PageRef)) // this is an overflow pointer
             {

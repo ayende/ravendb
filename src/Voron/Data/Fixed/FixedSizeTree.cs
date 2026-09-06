@@ -1578,11 +1578,28 @@ namespace Voron.Data.Fixed
             DebugStuff.RenderAndShow_FixedSizeTree(_tx, this);
         }
 
+        // The header lives as a value in the parent tree, so getting a writable pointer to it is a
+        // full parent-tree DirectAdd (descent + copy-on-write) - and we do it on every single add
+        // to bump NumberOfEntries. Within one write transaction the pointer stays valid as long as
+        // no value in the parent tree moved, which Tree.StructureVersion tracks, so we cache it.
+        // Both the tree instance and this instance are bound to the same transaction, so there is
+        // no cross-transaction reuse to guard against.
+        private FixedSizeTreeHeader.Large* _cachedLargeHeader;
+        private long _cachedLargeHeaderVersion;
+
         private Tree.DirectAddScope ModifyLargeHeader(out FixedSizeTreeHeader.Large* largeHeader)
         {
+            if (_cachedLargeHeader != null && _cachedLargeHeaderVersion == _parent.StructureVersion)
+            {
+                largeHeader = _cachedLargeHeader;
+                return new Tree.DirectAddScope(_parent);
+            }
+
             var largeHeaderScope = _parent.DirectAdd(_treeName, sizeof(FixedSizeTreeHeader.Large), out var ptr);
 
             largeHeader = (FixedSizeTreeHeader.Large*)ptr;
+            _cachedLargeHeader = largeHeader;
+            _cachedLargeHeaderVersion = _parent.StructureVersion; // read AFTER DirectAdd - a first-time add bumps it
 
             return largeHeaderScope;
         }

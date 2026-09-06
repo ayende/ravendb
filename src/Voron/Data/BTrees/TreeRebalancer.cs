@@ -23,6 +23,7 @@ namespace Voron.Data.BTrees
 
         public TreeRebalancer(LowLevelTransaction tx, Tree tree, ref TreeCursor cursor)
         {
+            tree.StructureVersion++; // rebalancing moves entries across pages
             _tx = tx;
             _tree = tree;
             _cursor = ref cursor;
