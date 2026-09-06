@@ -352,7 +352,7 @@ namespace Voron.Data.BTrees
             if (key.Size > Constants.Tree.MaxKeySize)
                 ThrowInvalidKeySize(key);
 
-            var foundPage = FindPageFor(key, node: out TreeNodeHeader* node, cursor: out TreeCursor cursorConstructor, allowCompressed: true);
+            var foundPage = FindPageFor(key, node: out TreeNodeHeader* node, allowCompressed: true);
 
             if (populateDataPtr == false && len == 0 && nodeType == TreeNodeFlags.Data && foundPage.LastMatch == 0)
             {
@@ -435,7 +435,10 @@ namespace Voron.Data.BTrees
                 if (IsLeafCompressionSupported == false || TryCompressPageNodes(key, len, page) == false)
                 {
                     {
-                        ref var cursor = ref cursorConstructor;
+                        // rare path: the leaf must split, so build the descent cursor now instead of
+                        // on every insert. COW keeps page numbers stable, so re-descending yields the
+                        // same path; the modified leaf is set explicitly via SetTopPage.
+                        SearchForPage(key, allowCompressed: true, out TreeCursor cursor, out TreeNodeHeader* _, addToRecentlyFoundPages: false);
                         cursor.SetTopPage(page);
 
                         var pageSplitter = new TreePageSplitter(_llt, this, key, len, pageNumber, nodeType, ref cursor);
@@ -716,6 +719,21 @@ namespace Voron.Data.BTrees
             return SearchForPage(key, allowCompressed, out cursor, out node, backward: backward);
         }
 
+        // Cursor-free descent for the common insert path: the caller only needs the descent cursor if
+        // the target page has to split, so it descends with this and rebuilds the cursor lazily.
+        internal TreePage FindPageFor(Slice key, out TreeNodeHeader* node, bool allowCompressed)
+        {
+            if (TryUseRecentTransactionPage(key, out TreePage p, out node))
+            {
+                if (allowCompressed == false && p.IsCompressed)
+                    ThrowOnCompressedPage(p);
+
+                return p;
+            }
+
+            return DescendToLeaf(key, allowCompressed, addToRecentlyFoundPages: true, backward: false, out node);
+        }
+
         [ThreadStatic]
         private static FastList<long> CursorPathBuffer;
 
@@ -802,6 +820,22 @@ namespace Voron.Data.BTrees
 
         private TreePage SearchForPage(Slice key, bool allowCompressed, out TreeCursor cursorConstructor, out TreeNodeHeader* node, bool addToRecentlyFoundPages = true, bool backward = false)
         {
+            var p = DescendToLeaf(key, allowCompressed, addToRecentlyFoundPages, backward, out node);
+
+            // the leaf copy is taken after the search so it carries the found position.
+            // The descent path is still in CursorPathBuffer (thread static, single operation).
+            cursorConstructor = new TreeCursor(_llt, this, key, p, CursorPathBuffer.AsUnsafeSpan());
+
+            return p;
+        }
+
+        // Descends to the leaf that owns the key, recording the path in CursorPathBuffer, without
+        // building a TreeCursor. The cursor is a ~265 byte struct carrying managed references, so
+        // materializing it on every insert produced a write-barriered copy that dominated the tx
+        // merger. Callers that only need the cursor on a page split (the common insert path) descend
+        // with this and build the cursor lazily from CursorPathBuffer if a split actually happens.
+        private TreePage DescendToLeaf(Slice key, bool allowCompressed, bool addToRecentlyFoundPages, bool backward, out TreeNodeHeader* node)
+        {
             var p = GetReadOnlyTreePage(_header.RootPageNumber);
 
             CursorPathBuffer ??= new FastList<long>();
@@ -846,9 +880,6 @@ namespace Voron.Data.BTrees
                 ThrowOnCompressedPage(p);
 
             node = p.Search(_llt, key, backward); // will set the LastSearchPosition
-
-            // the leaf copy is taken after the search so it carries the found position
-            cursorConstructor = new TreeCursor(_llt, this, key, p, CursorPathBuffer.AsUnsafeSpan());
 
             if (p.NumberOfEntries > 0 && addToRecentlyFoundPages) // compressed page can have no ordinary entries
                 AddToRecentlyFoundPages(CursorPathBuffer, p, leftmostPage, rightmostPage);
