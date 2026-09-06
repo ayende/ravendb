@@ -138,7 +138,7 @@ namespace Raven.Server.Documents
 
                 _documentDatabase.SchemaValidatorCache?.Validate(collectionName.Name, document, nonPersistentFlags, context);
 
-                var table = context.Transaction.InnerTransaction.OpenTable(_documentDatabase.GetDocsSchemaForCollection(collectionName, newFlags), collectionName.GetTableName(CollectionTableType.Documents));
+                var table = context.Transaction.GetOrOpenDocumentsTable(collectionName, _documentDatabase.GetDocsSchemaForCollection(collectionName, newFlags));
 
                 var oldValue = default(TableValueReader);
                 ChangeVector oldChangeVector = null;

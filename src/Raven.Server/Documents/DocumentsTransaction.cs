@@ -44,6 +44,26 @@ namespace Raven.Server.Documents
             _putsBytes += documentSize;
         }
 
+        // OpenTable caches per transaction, but the put path still paid a string->slice conversion,
+        // a TableKey and a dictionary lookup for every document. Consecutive puts in a batch almost
+        // always target the same collection, so a single-entry cache keyed by the (per-tx cached)
+        // collection and the (static) schema references skips that work on the merger.
+        private CollectionName _cachedDocsTableCollection;
+        private Voron.Data.Tables.TableSchema _cachedDocsTableSchema;
+        private Voron.Data.Tables.Table _cachedDocsTable;
+
+        public Voron.Data.Tables.Table GetOrOpenDocumentsTable(CollectionName collection, Voron.Data.Tables.TableSchema schema)
+        {
+            if (ReferenceEquals(collection, _cachedDocsTableCollection) && ReferenceEquals(schema, _cachedDocsTableSchema))
+                return _cachedDocsTable;
+
+            var table = InnerTransaction.OpenTable(schema, collection.GetTableName(CollectionTableType.Documents));
+            _cachedDocsTableCollection = collection;
+            _cachedDocsTableSchema = schema;
+            _cachedDocsTable = table;
+            return table;
+        }
+
         public DocumentsTransaction(DocumentsOperationContext context, Transaction transaction, DocumentsChanges changes)
             : base(transaction)
         {
