@@ -33,6 +33,24 @@ namespace Raven.Server.Documents.Changes
             }
         }
 
+        // Internal listeners (indexing, ETL, replication, subscriptions) only need to know that a
+        // collection changed, so we notify them once per collection per transaction instead of once
+        // per document - no per-document DocumentChange allocation.
+        public void RaiseInternalDocumentChangeNotification(DocumentChange documentChange)
+        {
+            OnDocumentChange?.Invoke(documentChange);
+        }
+
+        // External /changes clients need the per-document detail (id, change vector, type).
+        public void SendDocumentChangeToConnections(DocumentChange documentChange)
+        {
+            foreach (var connection in Connections)
+            {
+                if (!connection.Value.IsDisposed)
+                    connection.Value.SendDocumentChanges(documentChange);
+            }
+        }
+
         public void RaiseNotifications(CounterChange counterChange)
         {
             OnCounterChange?.Invoke(counterChange);

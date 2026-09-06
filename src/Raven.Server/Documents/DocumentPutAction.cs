@@ -316,13 +316,7 @@ namespace Raven.Server.Documents
 
                 var changeVectorString = changeVector.AsString(); // AsString allocates; reuse it for the notification and the result
 
-                context.Transaction.AddAfterCommitNotification(new DocumentChange
-                {
-                    ChangeVector = changeVectorString,
-                    CollectionName = collectionName.Name,
-                    Id = id,
-                    Type = DocumentChangeTypes.Put,
-                });
+                context.Transaction.AddAfterCommitNotification(collectionName.Name, id, changeVectorString, DocumentChangeTypes.Put);
 
                 ValidateDocumentHash(id, document, documentDebugHash);
                 ValidateDocument(id, document, ref documentDebugHash);

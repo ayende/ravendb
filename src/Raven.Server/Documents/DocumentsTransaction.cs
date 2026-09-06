@@ -115,13 +115,34 @@ namespace Raven.Server.Documents
             return new DocumentsTransaction(context, tx, _changes);
         }
 
+        // Internal listeners (indexing, ETL, replication, subscriptions) only need to know which
+        // collections changed; they are notified once per collection per transaction. External
+        // /changes clients need per-document detail, so those are only built when a client is
+        // connected. Keyed by collection name, value = whether the change came from replication.
+        private Dictionary<string, bool> _changedCollections;
+
+        public void AddAfterCommitNotification(string collectionName, string id, string changeVector, DocumentChangeTypes type)
+        {
+            var triggeredByReplicationThread = IncomingReplicationHandler.IsIncomingInternalReplication;
+
+            (_changedCollections ??= new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase))[collectionName] = triggeredByReplicationThread;
+
+            if (_changes.HasConnections == false)
+                return;
+
+            (_documentNotifications ??= new List<DocumentChange>()).Add(new DocumentChange
+            {
+                ChangeVector = changeVector,
+                CollectionName = collectionName,
+                Id = id,
+                Type = type,
+                TriggeredByReplicationThread = triggeredByReplicationThread
+            });
+        }
+
         public void AddAfterCommitNotification(DocumentChange change)
         {
-            change.TriggeredByReplicationThread = IncomingReplicationHandler.IsIncomingInternalReplication;
-
-            if (_documentNotifications == null)
-                _documentNotifications = new List<DocumentChange>();
-            _documentNotifications.Add(change);
+            AddAfterCommitNotification(change.CollectionName, change.Id, change.ChangeVector, change.Type);
         }
 
         public void AddAfterCommitNotification(CounterChange change)
@@ -166,11 +187,26 @@ namespace Raven.Server.Documents
         {
             base.RaiseNotifications();
 
+            if (_changedCollections != null)
+            {
+                // one wakeup per changed collection for internal listeners
+                foreach (var changed in _changedCollections)
+                {
+                    _changes.RaiseInternalDocumentChangeNotification(new DocumentChange
+                    {
+                        CollectionName = changed.Key,
+                        Type = DocumentChangeTypes.Put,
+                        TriggeredByReplicationThread = changed.Value
+                    });
+                }
+            }
+
             if (_documentNotifications?.Count > 0)
             {
+                // per-document detail for connected /changes clients
                 foreach (var notification in _documentNotifications)
                 {
-                    _changes.RaiseNotifications(notification);
+                    _changes.SendDocumentChangeToConnections(notification);
                 }
             }
 
@@ -194,6 +230,7 @@ namespace Raven.Server.Documents
         protected override bool ShouldRaiseNotifications()
         {
             return base.ShouldRaiseNotifications()
+                || _changedCollections != null
                 || _documentNotifications != null
                 || _counterNotifications != null
                 || _timeSeriesNotifications != null;
