@@ -92,8 +92,9 @@ namespace Raven.Server.Documents.Handlers
         private readonly LazyStringValue _expectedChangeVector;
         private readonly BlittableJsonReaderObject _document;
         private readonly DocumentDatabase _database;
-        private readonly bool _shouldValidateAttachments;
         private readonly string _collectionName;
+        private readonly BlittableJsonReaderArray _attachmentsToValidate;
+        private readonly bool _hasAttachmentsToValidate; // tracks TryGet success: an explicit "@attachments": null must still fail validation
         public DocumentsStorage.PutOperationResults PutResult;
 
         public MergedPutCommand(BlittableJsonReaderObject doc, string id, LazyStringValue changeVector, DocumentDatabase database, bool shouldValidateAttachments = false)
@@ -102,21 +103,25 @@ namespace Raven.Server.Documents.Handlers
             _id = id;
             _expectedChangeVector = changeVector;
             _database = database;
-            _shouldValidateAttachments = shouldValidateAttachments;
-            // Parse the @collection out of the document metadata on the thread that builds the
-            // command (usually a request/ThreadPool thread) instead of on the single tx merger.
+            // Parse the document metadata on the thread that builds the command (usually a
+            // request/ThreadPool thread) instead of on the single tx merger: the @collection, and
+            // the attachments array when the caller wants it validated (the validation itself reads
+            // storage, so it stays on the merger). The array shares the document's lifetime.
             _collectionName = CollectionName.GetCollectionName(doc);
+            if (shouldValidateAttachments &&
+                doc.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata) &&
+                metadata.TryGet(Constants.Documents.Metadata.Attachments, out BlittableJsonReaderArray attachments))
+            {
+                _attachmentsToValidate = attachments;
+                _hasAttachmentsToValidate = true;
+            }
         }
 
         protected override long ExecuteCmd(DocumentsOperationContext context)
         {
-            if (_shouldValidateAttachments)
+            if (_hasAttachmentsToValidate)
             {
-                if (_document.TryGet(Constants.Documents.Metadata.Key, out BlittableJsonReaderObject metadata)
-                    && metadata.TryGet(Constants.Documents.Metadata.Attachments, out BlittableJsonReaderArray attachments))
-                {
-                    ValidateAttachments(attachments, context, _id);
-                }
+                ValidateAttachments(_attachmentsToValidate, context, _id);
             }
             try
             {
