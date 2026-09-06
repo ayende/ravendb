@@ -1278,15 +1278,48 @@ namespace Voron.Data.Tables
             throw new VoronErrorException("Attempt to add duplicate value " + key + " to " + indexDef.Name + " on " + Name);
         }
 
+        // The schema's fixed-size index definitions are static, and this is called for each of them on
+        // every insert/delete - each call paying a ReadTree plus two slice-keyed dictionary lookups.
+        // A table has a handful of fixed indexes at most, so resolve each definition once per table
+        // (== per transaction) and serve repeats from a small reference-keyed array scan.
+        private TableSchema.FixedSizeKeyIndexDef[] _resolvedFsiDefs;
+        private FixedSizeTree[] _resolvedFsiTrees;
+        private int _resolvedFsiCount;
+
         public FixedSizeTree GetFixedSizeTree(TableSchema.FixedSizeKeyIndexDef indexDef)
         {
-            if (indexDef.IsGlobal)
+            var defs = _resolvedFsiDefs;
+            for (int i = 0; i < _resolvedFsiCount; i++)
             {
-                return _tx.GetGlobalFixedSizeTree(indexDef.Name, sizeof(long), isIndexTree: true, newPageAllocator: GlobalPageAllocator);
+                if (ReferenceEquals(defs[i], indexDef))
+                    return _resolvedFsiTrees[i];
             }
 
-            var tableTree = _tx.ReadTree(Name);
-            return GetFixedSizeTree(tableTree, indexDef.Name, sizeof(long), isGlobal: false, isIndexTree: true);
+            FixedSizeTree tree;
+            if (indexDef.IsGlobal)
+            {
+                tree = _tx.GetGlobalFixedSizeTree(indexDef.Name, sizeof(long), isIndexTree: true, newPageAllocator: GlobalPageAllocator);
+            }
+            else
+            {
+                var tableTree = _tx.ReadTree(Name);
+                tree = GetFixedSizeTree(tableTree, indexDef.Name, sizeof(long), isGlobal: false, isIndexTree: true);
+            }
+
+            if (_resolvedFsiDefs == null)
+            {
+                _resolvedFsiDefs = new TableSchema.FixedSizeKeyIndexDef[4];
+                _resolvedFsiTrees = new FixedSizeTree[4];
+            }
+
+            if (_resolvedFsiCount < _resolvedFsiDefs.Length)
+            {
+                _resolvedFsiDefs[_resolvedFsiCount] = indexDef;
+                _resolvedFsiTrees[_resolvedFsiCount] = tree;
+                _resolvedFsiCount++;
+            }
+
+            return tree;
         }
 
         internal FixedSizeTree GetFixedSizeTree(Tree parent, Slice name, ushort valSize, bool isGlobal, bool isIndexTree = false)
