@@ -119,7 +119,7 @@ namespace Raven.Server.Documents
             ValidateDocument(id, document, ref documentDebugHash);
 
             var newEtag = _documentsStorage.GenerateNextEtag();
-            var modifiedTicks = _documentsStorage.GetOrCreateLastModifiedTicks(lastModifiedTicks);
+            var modifiedTicks = _documentsStorage.GetOrCreateLastModifiedTicks(context, lastModifiedTicks);
 
             var compareClusterTransaction = new CompareClusterTransactionId(this);
             if (oldChangeVectorForClusterTransactionIndexCheck != null)

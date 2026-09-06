@@ -1732,7 +1732,7 @@ namespace Raven.Server.Documents
             var fromResharding = nonPersistentFlags.Contain(NonPersistentDocumentFlags.FromResharding);
 
             var local = GetDocumentOrTombstone(context, lowerId, throwOnConflict: false);
-            var modifiedTicks = GetOrCreateLastModifiedTicks(lastModifiedTicks);
+            var modifiedTicks = GetOrCreateLastModifiedTicks(context, lastModifiedTicks);
 
             if (local.Tombstone != null)
             {
@@ -1990,6 +1990,17 @@ namespace Raven.Server.Documents
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public long GetOrCreateLastModifiedTicks(DocumentsOperationContext context, long? lastModifiedTicks)
+        {
+            if (lastModifiedTicks.HasValue)
+            {
+                Debug.Assert(lastModifiedTicks.Value != DateTime.MinValue.Ticks, $"lastModifiedTicks cannot have DateTime.MinValue. {_name}");
+                return lastModifiedTicks.Value;
+            }
+
+            return context.Transaction.GetOrCreateLastModifiedTicks();
+        }
+
         public long GetOrCreateLastModifiedTicks(long? lastModifiedTicks)
         {
             if (lastModifiedTicks.HasValue)

@@ -44,6 +44,17 @@ namespace Raven.Server.Documents
             _putsBytes += documentSize;
         }
 
+        // All documents written by this transaction share one LastModified reading - they commit at
+        // the same instant, and it saves a clock read (vdso call) per document on the merger.
+        private long _cachedLastModifiedTicks;
+
+        public long GetOrCreateLastModifiedTicks()
+        {
+            if (_cachedLastModifiedTicks == 0)
+                _cachedLastModifiedTicks = _context.DocumentDatabase.Time.GetUtcNow().Ticks;
+            return _cachedLastModifiedTicks;
+        }
+
         // OpenTable caches per transaction, but the put path still paid a string->slice conversion,
         // a TableKey and a dictionary lookup for every document. Consecutive puts in a batch almost
         // always target the same collection, so a single-entry cache keyed by the (per-tx cached)
