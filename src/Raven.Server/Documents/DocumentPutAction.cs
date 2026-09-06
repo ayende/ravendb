@@ -108,7 +108,7 @@ namespace Raven.Server.Documents
             DocumentFlags newFlags = DocumentFlags.None,
             NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None,
             string knownCollectionName = null, // normalized non-null by DocumentsStorage.Put, the only caller
-            BlittableJsonReaderObject knownMetadata = null) // the document's @metadata, when the caller already parsed it (off the merger)
+            BlittableJsonReaderObject knownMetadata = null) // the document's @metadata, resolved by DocumentsStorage.Put (null = document has none)
         {
             if (context.Transaction == null)
             {
@@ -245,10 +245,10 @@ namespace Raven.Server.Documents
                 }
 
                 BlittableJsonReaderObject docMetadata;
-                if (knownMetadata != null && ReferenceEquals(document, documentAsReceived))
-                    docMetadata = knownMetadata; // parsed off the merger by the command builder
+                if (ReferenceEquals(document, documentAsReceived))
+                    docMetadata = knownMetadata; // always resolved by DocumentsStorage.Put; null = the document has no metadata
                 else
-                    document.TryGetMetadata(out docMetadata);
+                    document.TryGetMetadata(out docMetadata); // Recreate replaced the document - re-resolve
 
                 if (docMetadata != null)
                 {

@@ -10,6 +10,7 @@ using Raven.Client;
 using Raven.Client.Documents.Attachments;
 using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Operations;
+using Raven.Client.Extensions;
 using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Database;
 using Raven.Client.Exceptions.Documents;
@@ -2339,10 +2340,15 @@ namespace Raven.Server.Documents
             if (changeVector != null)
                 cv = context.GetChangeVector(changeVector);
 
-            // Callers that build the command off the tx merger pass the collection they already parsed;
-            // merger-side callers leave it null and we parse here (they run on the merger anyway). Either
-            // way PutDocument gets a non-null name and has a single code path.
-            knownCollectionName ??= CollectionName.GetCollectionName(document);
+            // Callers that build the command off the tx merger pass the collection they already parsed,
+            // and by the same contract have also resolved knownMetadata (possibly to null - a document
+            // without metadata). Merger-side callers leave both null and we resolve here (they run on
+            // the merger anyway). Either way PutDocument receives both resolved, single code path.
+            if (knownCollectionName == null)
+            {
+                knownCollectionName = CollectionName.GetCollectionName(document);
+                document.TryGetMetadata(out knownMetadata);
+            }
 
             return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags, knownCollectionName, knownMetadata);
         }
