@@ -2328,6 +2328,11 @@ namespace Raven.Server.Documents
             if (changeVector != null)
                 cv = context.GetChangeVector(changeVector);
 
+            // Callers that build the command off the tx merger pass the collection they already parsed;
+            // merger-side callers leave it null and we parse here (they run on the merger anyway). Either
+            // way PutDocument gets a non-null name and has a single code path.
+            knownCollectionName ??= CollectionName.GetCollectionName(document);
+
             return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags, knownCollectionName);
         }
 

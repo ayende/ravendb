@@ -107,7 +107,7 @@ namespace Raven.Server.Documents
             string oldChangeVectorForClusterTransactionIndexCheck = null,
             DocumentFlags newFlags = DocumentFlags.None,
             NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None,
-            string knownCollectionName = null)
+            string knownCollectionName = null) // normalized non-null by DocumentsStorage.Put, the only caller
         {
             if (context.Transaction == null)
             {
@@ -133,9 +133,7 @@ namespace Raven.Server.Documents
                 if (newFlags.HasFlag(DocumentFlags.FromResharding) == false)
                     _documentsStorage.ValidateId(context, lowerId, type: DocumentChangeTypes.Put, newFlags);
 
-                var collectionName = knownCollectionName != null
-                    ? _documentsStorage.ExtractCollectionName(context, knownCollectionName)
-                    : _documentsStorage.ExtractCollectionName(context, document);
+                var collectionName = _documentsStorage.ExtractCollectionName(context, knownCollectionName);
                 ValidateIdAndCollection(id, collectionName.Name, newFlags, nonPersistentFlags);
                 _documentsStorage._forTestingPurposes?.OnBeforeOpenTableWhenPutDocumentWithSpecificId?.Invoke(id);
 
