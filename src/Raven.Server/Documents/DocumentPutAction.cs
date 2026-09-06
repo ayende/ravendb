@@ -106,7 +106,8 @@ namespace Raven.Server.Documents
             ChangeVector changeVector = null,
             string oldChangeVectorForClusterTransactionIndexCheck = null,
             DocumentFlags newFlags = DocumentFlags.None,
-            NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None)
+            NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None,
+            string knownCollectionName = null)
         {
             if (context.Transaction == null)
             {
@@ -132,7 +133,9 @@ namespace Raven.Server.Documents
                 if (newFlags.HasFlag(DocumentFlags.FromResharding) == false)
                     _documentsStorage.ValidateId(context, lowerId, type: DocumentChangeTypes.Put, newFlags);
 
-                var collectionName = _documentsStorage.ExtractCollectionName(context, document);
+                var collectionName = knownCollectionName != null
+                    ? _documentsStorage.ExtractCollectionName(context, knownCollectionName)
+                    : _documentsStorage.ExtractCollectionName(context, document);
                 ValidateIdAndCollection(id, collectionName.Name, newFlags, nonPersistentFlags);
                 _documentsStorage._forTestingPurposes?.OnBeforeOpenTableWhenPutDocumentWithSpecificId?.Invoke(id);
 
@@ -313,9 +316,11 @@ namespace Raven.Server.Documents
 
                 context.Transaction.AccumulatePutMetrics(document.Size);
 
+                var changeVectorString = changeVector.AsString(); // AsString allocates; reuse it for the notification and the result
+
                 context.Transaction.AddAfterCommitNotification(new DocumentChange
                 {
-                    ChangeVector = changeVector.AsString(),
+                    ChangeVector = changeVectorString,
                     CollectionName = collectionName.Name,
                     Id = id,
                     Type = DocumentChangeTypes.Put,
@@ -329,7 +334,7 @@ namespace Raven.Server.Documents
                     Etag = newEtag,
                     Id = id,
                     Collection = collectionName,
-                    ChangeVector = changeVector.AsString(),
+                    ChangeVector = changeVectorString,
                     Flags = newFlags,
                     LastModified = new DateTime(modifiedTicks, DateTimeKind.Utc)
                 };

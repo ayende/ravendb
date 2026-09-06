@@ -93,8 +93,9 @@ namespace Raven.Server.Documents.Handlers
         private readonly BlittableJsonReaderObject _document;
         private readonly DocumentDatabase _database;
         private readonly bool _shouldValidateAttachments;
+        private readonly string _collectionName;
         public DocumentsStorage.PutOperationResults PutResult;
-        
+
         public MergedPutCommand(BlittableJsonReaderObject doc, string id, LazyStringValue changeVector, DocumentDatabase database, bool shouldValidateAttachments = false)
         {
             _document = doc;
@@ -102,6 +103,9 @@ namespace Raven.Server.Documents.Handlers
             _expectedChangeVector = changeVector;
             _database = database;
             _shouldValidateAttachments = shouldValidateAttachments;
+            // Parse the @collection out of the document metadata on the thread that builds the
+            // command (usually a request/ThreadPool thread) instead of on the single tx merger.
+            _collectionName = CollectionName.GetCollectionName(doc);
         }
 
         protected override long ExecuteCmd(DocumentsOperationContext context)
@@ -116,7 +120,7 @@ namespace Raven.Server.Documents.Handlers
             }
             try
             {
-                PutResult = _database.DocumentsStorage.Put(context, _id, _expectedChangeVector, _document);
+                PutResult = _database.DocumentsStorage.Put(context, _id, _expectedChangeVector, _document, knownCollectionName: _collectionName);
             }
             catch (Voron.Exceptions.VoronConcurrencyErrorException e)
             {

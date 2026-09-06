@@ -2321,13 +2321,14 @@ namespace Raven.Server.Documents
         public PutOperationResults Put(DocumentsOperationContext context, string id,
             string expectedChangeVector, BlittableJsonReaderObject document, long? lastModifiedTicks = null, string changeVector = null,
             string oldChangeVectorForClusterTransactionIndexCheck = null,
-            DocumentFlags flags = DocumentFlags.None, NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None)
+            DocumentFlags flags = DocumentFlags.None, NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None,
+            string knownCollectionName = null)
         {
             ChangeVector cv = null;
             if (changeVector != null)
                 cv = context.GetChangeVector(changeVector);
 
-            return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags);
+            return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags, knownCollectionName);
         }
 
         public long GetNumberOfDocumentsToProcess(DocumentsOperationContext context, string collection, long afterEtag, out long totalCount, Stopwatch overallDuration)
