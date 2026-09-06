@@ -102,7 +102,8 @@ public sealed class MergedBatchCommand : TransactionMergedCommand
                         }
 
                         putResult = Database.DocumentsStorage.Put(context, cmd.Id, cmd.ChangeVector, cmd.Document,
-                            oldChangeVectorForClusterTransactionIndexCheck: cmd.OriginalChangeVector, flags: flags);
+                            oldChangeVectorForClusterTransactionIndexCheck: cmd.OriginalChangeVector, flags: flags,
+                            knownCollectionName: cmd.CollectionName);
                     }
                     catch (Voron.Exceptions.VoronConcurrencyErrorException e)
                     {
