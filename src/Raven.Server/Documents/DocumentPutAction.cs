@@ -730,7 +730,7 @@ namespace Raven.Server.Documents
 
         private ChangeVector DeleteTombstoneAndGetPredecessor(DocumentsOperationContext context, CollectionName collectionName, byte* lowerId, int lowerSize)
         {
-            var tombstoneTable = context.Transaction.InnerTransaction.OpenTable(_documentsStorage.TombstonesSchema, collectionName.GetTableName(CollectionTableType.Tombstones));
+            var tombstoneTable = context.Transaction.GetOrOpenTombstonesTable(collectionName, _documentsStorage.TombstonesSchema);
             if (tombstoneTable.NumberOfEntries == 0)
                 return null;
 
@@ -746,7 +746,7 @@ namespace Raven.Server.Documents
 
         public void DeleteTombstoneIfNeeded(DocumentsOperationContext context, CollectionName collectionName, Slice id)
         {
-            var tombstoneTable = context.Transaction.InnerTransaction.OpenTable(_documentsStorage.TombstonesSchema, collectionName.GetTableName(CollectionTableType.Tombstones));
+            var tombstoneTable = context.Transaction.GetOrOpenTombstonesTable(collectionName, _documentsStorage.TombstonesSchema);
             if (tombstoneTable.NumberOfEntries == 0)
                 return;
 

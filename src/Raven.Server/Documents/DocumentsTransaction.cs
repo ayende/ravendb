@@ -64,6 +64,23 @@ namespace Raven.Server.Documents
             return table;
         }
 
+        // Same idea for the tombstones table: an id-overwriting put opens it per document to look for
+        // a predecessor tombstone, and consecutive puts hit the same collection. Schema is the single
+        // static TombstonesSchema, so we key only on the collection.
+        private CollectionName _cachedTombstonesCollection;
+        private Voron.Data.Tables.Table _cachedTombstonesTable;
+
+        public Voron.Data.Tables.Table GetOrOpenTombstonesTable(CollectionName collection, Voron.Data.Tables.TableSchema tombstonesSchema)
+        {
+            if (ReferenceEquals(collection, _cachedTombstonesCollection))
+                return _cachedTombstonesTable;
+
+            var table = InnerTransaction.OpenTable(tombstonesSchema, collection.GetTableName(CollectionTableType.Tombstones));
+            _cachedTombstonesCollection = collection;
+            _cachedTombstonesTable = table;
+            return table;
+        }
+
         public DocumentsTransaction(DocumentsOperationContext context, Transaction transaction, DocumentsChanges changes)
             : base(transaction)
         {
