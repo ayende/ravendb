@@ -46,6 +46,15 @@ namespace Voron.Data.Fixed
         
         private int _changes;
 
+        // Append fast-path: the etag indexes are written with monotonically increasing keys, so an
+        // insert almost always lands at the end of the rightmost leaf. We cache that leaf and the
+        // current max key; when the next key is a new maximum and the leaf still has room, we write
+        // it directly and skip the full root-to-leaf descent. _rightmostLeafPageNumber is cleared on
+        // any split or delete, so while it is set it is guaranteed to still be the rightmost leaf,
+        // and _treeMaxKey only ever moves up - so a key greater than it belongs appended there.
+        private long _rightmostLeafPageNumber = -1;
+        private TVal _treeMaxKey = TVal.MinValue;
+
         public LowLevelTransaction Llt => _tx;
 
         internal RootObjectType? Type
@@ -299,6 +308,36 @@ namespace Voron.Data.Fixed
 
         private byte* AddLargeEntry(TVal key, out bool isNew)
         {
+            if (_rightmostLeafPageNumber != -1 && key > _treeMaxKey)
+            {
+                var rightmost = GetReadOnlyPage(_rightmostLeafPageNumber);
+                if (rightmost.IsLeaf &&
+                    rightmost.NumberOfTombstones == 0 &&
+                    rightmost.NumberOfEntries + 1 <= _tombstonesCapacity && // has room, no split needed
+                    (rightmost.NumberOfEntries == 0 || key > rightmost.GetKey(rightmost.NumberOfEntries - 1)))
+                {
+                    var appendPage = ModifyPage(rightmost);
+                    appendPage.ResetStartPosition();
+                    appendPage.LastSearchPosition = (short)appendPage.NumberOfEntries;
+
+                    using (ModifyLargeHeader(out FixedSizeTreeHeader.Large* header))
+                    {
+                        appendPage.NumberOfEntries++;
+                        header->NumberOfEntries++;
+                    }
+
+                    *((TVal*)(appendPage.Pointer + appendPage.StartPosition + (appendPage.LastSearchPosition * _entrySize))) = key;
+
+                    _treeMaxKey = key;
+                    _rightmostLeafPageNumber = appendPage.PageNumber;
+
+                    isNew = true;
+                    ValidateTree();
+                    return appendPage.Pointer + appendPage.StartPosition + (appendPage.LastSearchPosition * _entrySize) + sizeof(long);
+                }
+                // not appendable in place (would split / not a leaf) - fall through to the full descent
+            }
+
             var page = FindPageFor(key);
 
             page = ModifyPage(page);
@@ -388,6 +427,14 @@ namespace Voron.Data.Fixed
 
                 isNew = true;
                 *((TVal*)(page.Pointer + page.StartPosition + (page.LastSearchPosition * _entrySize))) = key;
+
+                // A new global maximum was appended, so this leaf is the rightmost - cache it for the
+                // append fast-path. We don't touch the cache for non-maximum (interior) inserts.
+                if (key > _treeMaxKey)
+                {
+                    _treeMaxKey = key;
+                    _rightmostLeafPageNumber = page.PageNumber;
+                }
 
                 ValidateTree();
 
@@ -591,6 +638,8 @@ namespace Voron.Data.Fixed
 
         private FixedSizeTreePage<TVal> PageSplit(FixedSizeTreePage<TVal>page, TVal key)
         {
+            _rightmostLeafPageNumber = -1; // structure is changing; the append fast-path cache is no longer trustworthy
+
             FixedSizeTreePage<TVal> parentPage = _cursor.Count > 0 ? _cursor.Pop() : default;
             if (parentPage.IsValid == false) // root split
             {
@@ -977,6 +1026,8 @@ namespace Voron.Data.Fixed
 
         private DeletionResult RemoveLargeEntry(TVal key)
         {
+            _rightmostLeafPageNumber = -1; // a delete can change the rightmost leaf / max key; drop the append cache
+
             var page = FindPageFor(key);
             if (page.LastMatch != 0)
                 return new DeletionResult();
