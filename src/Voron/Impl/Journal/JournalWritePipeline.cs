@@ -114,16 +114,15 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     public void WriteInline(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<LowLevelTransaction> transactions)
     {
-        Drain(throwOnFailure: false); // we mustn't have anything else concurrently running with us
         Debug.Assert(_disposed is false, "WriteInline called after the pipeline was disposed");
 
         var failure = Volatile.Read(ref _failure);
-        if (failure != null) // previous error, fail
+        if (failure != null) // previous error, fail without bothering to write
         {
             FailDurableCommits(transactions, failure.SourceException);
             failure.Throw();
         }
-        
+
         WriteDirect(file, posBy4Kb, entries, totalNumberOf4Kbs, transactions);
     }
 
@@ -138,6 +137,12 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         {
             _inlineContext ??= SafeJournalWriteContext.Create();
 
+            // The physical write can run concurrently with the pipelined writes still in flight -
+            // each write targets its own pre-assigned region of the journal. Only the durable-commit
+            // publication below must wait for the predecessors, because recovery stops at the first
+            // hole in the journal: a transaction may be reported durable only once everything before
+            // it is known to be on disk. Writing first and draining after means a large inline write
+            // (one that exceeded the pipelined size cap) no longer serializes behind its predecessors.
             var start = Stopwatch.GetTimestamp();
             file.Write(posBy4Kb, entries, _inlineContext);
             RecordWriteLatency(Stopwatch.GetElapsedTime(start).Ticks, totalNumberOf4Kbs);
@@ -146,6 +151,17 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         {
             FailDurableCommits(transactions, e);
             throw;
+        }
+
+        Drain(throwOnFailure: false);
+
+        var failure = Volatile.Read(ref _failure);
+        if (failure != null)
+        {
+            // a predecessor failed, so recovery will never reach our (successfully written)
+            // transactions - they must not be reported as durable
+            FailDurableCommits(transactions, failure.SourceException);
+            failure.Throw();
         }
 
         foreach (var tx in transactions)
