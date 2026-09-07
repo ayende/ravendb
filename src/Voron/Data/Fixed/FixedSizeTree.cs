@@ -356,6 +356,23 @@ namespace Voron.Data.Fixed
                 $"treeEntries={NumberOfEntries} depth={_cursor.Count} cursor=[{path}]");
         }
 
+        // The append fast-path may only be armed by a TRUE right-edge append: the key must have
+        // landed in the last slot of its leaf AND the descent must have taken the last child at
+        // every branch. "key > _treeMaxKey" alone is a per-instance high-water mark, not a global
+        // maximum - a fresh instance whose first insert is an interior key (e.g. the raw-data
+        // section defrag path re-adding an existing etag under a new row id) would otherwise arm
+        // an interior leaf and strand every subsequent maximal append in an unreachable page.
+        private bool CursorIsOnRightmostEdge()
+        {
+            foreach (var branch in _cursor)
+            {
+                if (branch.LastSearchPosition != branch.NumberOfEntries - 1)
+                    return false;
+            }
+
+            return true;
+        }
+
         private byte* AddLargeEntry(TVal key, out bool isNew)
         {
             if (_rightmostLeafPageNumber != -1 && key > _treeMaxKey)
@@ -483,7 +500,7 @@ namespace Voron.Data.Fixed
 
                 // A new global maximum was appended, so this leaf is the rightmost - cache it for the
                 // append fast-path. We don't touch the cache for non-maximum (interior) inserts.
-                if (key > _treeMaxKey)
+                if (key > _treeMaxKey && page.LastSearchPosition == page.NumberOfEntries - 1 && CursorIsOnRightmostEdge())
                 {
                     _treeMaxKey = key;
                     _rightmostLeafPageNumber = page.PageNumber;
