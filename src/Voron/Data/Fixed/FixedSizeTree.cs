@@ -306,6 +306,47 @@ namespace Voron.Data.Fixed
             throw new InvalidFixedSizeTree(Type?.ToString());
         }
 
+        // PROBE (fst-assert build): immediately after a fast-path append, a full descent must find
+        // the key on the same page, not tombstoned. Fail fast with enough state to name the bug.
+        private void VerifyFastPathAppend(TVal key, long appendPageNumber, int entries, ushort startPos, int lsp)
+        {
+            var found = FindPageFor(key);
+            bool tombstoned = _lastMatch == 0 && found.HasTombstonesBitmap && found.IsTombstoned(found.LastSearchPosition);
+            if (_lastMatch == 0 && found.PageNumber == appendPageNumber && tombstoned == false)
+                return;
+
+            var path = new System.Text.StringBuilder();
+            foreach (var c in _cursor)
+                path.Append(c.PageNumber).Append(':').Append(c.LastSearchPosition).Append(' ');
+            throw new VoronErrorException(
+                $"FST-FASTPATH-CORRUPTION tree={_treeName} key={key} lastMatch={_lastMatch} tombstoned={tombstoned} " +
+                $"appendPage={appendPageNumber} entries={entries} start={startPos} lsp={lsp} " +
+                $"foundPage={found.PageNumber} foundLeaf={found.IsLeaf} foundEntries={found.NumberOfEntries} foundLsp={found.LastSearchPosition} foundTomb={found.NumberOfTombstones} " +
+                $"treeEntries={NumberOfEntries} depth={_cursor.Count} cursor=[{path}]");
+        }
+
+        // PROBE (fst-assert build): a delete that misses re-scans the whole tree; if the key IS
+        // present, the descent (or the tombstone bitmap) is corrupt - dump how we got there.
+        private void VerifyDeleteMiss(TVal key, FixedSizeTreePage<TVal> page, string mode)
+        {
+            long onPage = -1;
+            using (var it = Iterate())
+            {
+                if (it.Seek(key) && it.CurrentKey.Equals(key))
+                    onPage = 0; // present per iteration
+            }
+            if (onPage == -1)
+                return; // genuinely absent - a legitimate miss
+
+            var path = new System.Text.StringBuilder();
+            foreach (var c in _cursor)
+                path.Append(c.PageNumber).Append(':').Append(c.LastSearchPosition).Append(' ');
+            throw new VoronErrorException(
+                $"FST-DELETE-MISS-CORRUPTION tree={_treeName} key={key} mode={mode} lastMatch={_lastMatch} " +
+                $"page={page.PageNumber} leaf={page.IsLeaf} entries={page.NumberOfEntries} lsp={page.LastSearchPosition} tomb={page.NumberOfTombstones} start={page.StartPosition} " +
+                $"treeEntries={NumberOfEntries} depth={_cursor.Count} cursor=[{path}]");
+        }
+
         private byte* AddLargeEntry(TVal key, out bool isNew)
         {
             if (_rightmostLeafPageNumber != -1 && key > _treeMaxKey)
@@ -333,7 +374,9 @@ namespace Voron.Data.Fixed
 
                     isNew = true;
                     ValidateTree();
-                    return appendPage.Pointer + appendPage.StartPosition + (appendPage.LastSearchPosition * _entrySize) + sizeof(long);
+                    var valuePtr = appendPage.Pointer + appendPage.StartPosition + (appendPage.LastSearchPosition * _entrySize) + sizeof(long);
+                    VerifyFastPathAppend(key, appendPage.PageNumber, appendPage.NumberOfEntries, appendPage.StartPosition, appendPage.LastSearchPosition);
+                    return valuePtr;
                 }
                 // not appendable in place (would split / not a leaf) - fall through to the full descent
             }
@@ -1030,14 +1073,20 @@ namespace Voron.Data.Fixed
 
             var page = FindPageFor(key);
             if (page.LastMatch != 0)
+            {
+                VerifyDeleteMiss(key, page, "descent-miss");
                 return new DeletionResult();
+            }
 
             page = ModifyPage(page);
 
             if (page.HasTombstonesBitmap)
             {
                 if (page.IsTombstoned(page.LastSearchPosition))
+                {
+                    VerifyDeleteMiss(key, page, "found-but-tombstoned");
                     return new DeletionResult(); // the key is only physically there, it was already tombstoned
+                }
             }
             else if (page.NumberOfEntries > _tombstonesCapacity)
             {
