@@ -54,6 +54,14 @@ namespace Voron.Data.Fixed
         // and _treeMaxKey only ever moves up - so a key greater than it belongs appended there.
         private long _rightmostLeafPageNumber = -1;
         private TVal _treeMaxKey = TVal.MinValue;
+        private readonly System.Text.StringBuilder _fastPathLog = new(); // PROBE: arm/invalidate history
+
+        private void FpLog(string ev)
+        {
+            if (_fastPathLog.Length > 1600)
+                _fastPathLog.Remove(0, 800);
+            _fastPathLog.Append(ev).Append(' ');
+        }
 
         public LowLevelTransaction Llt => _tx;
 
@@ -322,7 +330,8 @@ namespace Voron.Data.Fixed
                 $"FST-FASTPATH-CORRUPTION tree={_treeName} key={key} lastMatch={_lastMatch} tombstoned={tombstoned} " +
                 $"appendPage={appendPageNumber} entries={entries} start={startPos} lsp={lsp} " +
                 $"foundPage={found.PageNumber} foundLeaf={found.IsLeaf} foundEntries={found.NumberOfEntries} foundLsp={found.LastSearchPosition} foundTomb={found.NumberOfTombstones} " +
-                $"treeEntries={NumberOfEntries} depth={_cursor.Count} cursor=[{path}]");
+                $"treeEntries={NumberOfEntries} depth={_cursor.Count} cursor=[{path}] " +
+                $"instance={GetHashCode():x} changes={_changes} history=[{_fastPathLog}]");
         }
 
         // PROBE (fst-assert build): a delete that misses re-scans the whole tree; if the key IS
@@ -371,6 +380,7 @@ namespace Voron.Data.Fixed
 
                     _treeMaxKey = key;
                     _rightmostLeafPageNumber = appendPage.PageNumber;
+                    FpLog($"F:{appendPage.PageNumber}/{key}/{NumberOfEntries}");
 
                     isNew = true;
                     ValidateTree();
@@ -477,6 +487,7 @@ namespace Voron.Data.Fixed
                 {
                     _treeMaxKey = key;
                     _rightmostLeafPageNumber = page.PageNumber;
+                    FpLog($"A:{page.PageNumber}/{key}/{NumberOfEntries}");
                 }
 
                 ValidateTree();
@@ -682,6 +693,7 @@ namespace Voron.Data.Fixed
         private FixedSizeTreePage<TVal> PageSplit(FixedSizeTreePage<TVal>page, TVal key)
         {
             _rightmostLeafPageNumber = -1; // structure is changing; the append fast-path cache is no longer trustworthy
+            FpLog("I:split");
 
             FixedSizeTreePage<TVal> parentPage = _cursor.Count > 0 ? _cursor.Pop() : default;
             if (parentPage.IsValid == false) // root split
@@ -1070,6 +1082,7 @@ namespace Voron.Data.Fixed
         private DeletionResult RemoveLargeEntry(TVal key)
         {
             _rightmostLeafPageNumber = -1; // a delete can change the rightmost leaf / max key; drop the append cache
+            FpLog($"I:del/{key}");
 
             var page = FindPageFor(key);
             if (page.LastMatch != 0)
