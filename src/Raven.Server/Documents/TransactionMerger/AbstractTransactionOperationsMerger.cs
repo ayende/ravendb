@@ -203,6 +203,10 @@ namespace Raven.Server.Documents.TransactionMerger
 
             _maxTimeToWaitForPreviousTxInMs = configuration.TransactionMergerConfiguration.MaxTimeToWaitForPreviousTx.AsTimeSpan.TotalMilliseconds;
             _maxTxSizeInBytes = configuration.TransactionMergerConfiguration.MaxTxSize.GetValue(SizeUnit.Bytes);
+            // PROBE: cap the merged-tx gather so journal writes stay near-constant size and the
+            // journal pipeline slots absorb arrival bursts instead of batch growth.
+            if (long.TryParse(Environment.GetEnvironmentVariable("RAVEN_PIPELINE_BATCH_CAP_BYTES"), out var batchCap) && batchCap > 0)
+                _maxTxSizeInBytes = Math.Min(_maxTxSizeInBytes, batchCap);
             _maxTimeToWaitForPreviousTxBeforeRejectingInMs = configuration.TransactionMergerConfiguration.MaxTimeToWaitForPreviousTxBeforeRejecting.AsTimeSpan.TotalMilliseconds;
             _timeToCheckHighDirtyMemory = configuration.Memory.TemporaryDirtyMemoryChecksPeriod;
             _lastHighDirtyMemCheck = time.GetUtcNow();
