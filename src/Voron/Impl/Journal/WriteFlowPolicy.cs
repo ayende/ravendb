@@ -248,10 +248,20 @@ public sealed class WriteFlowPolicy
         // the device is slow enough that overlapping writes pays for the smaller batches
         _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks;
 
-    public bool CanPipeline(long totalNumberOf4Kbs) =>
-        ShouldPipeline &&
-        // < 1MB, otherwise memcpy + large write, etc. Doesn't pay off.
-        totalNumberOf4Kbs <= JournalWritePipeline.MaxPipelinedBatch4Kbs;
+    // PROBE: force the pipeline open in the bandwidth-bound regime, bypassing the latency-bound
+    // and queue-shape gates, to measure whether the inline-mode commit join is what caps the
+    // merger when the device shows tail-latency spikes. 16MB memcpy cap as a safety bound.
+    private static readonly bool ForceJournalPipeline = Environment.GetEnvironmentVariable("VORON_FORCE_JOURNAL_PIPELINE") == "1";
+
+    public bool CanPipeline(long totalNumberOf4Kbs)
+    {
+        if (ForceJournalPipeline)
+            return PipeliningEnabled && totalNumberOf4Kbs <= 4096;
+
+        return ShouldPipeline &&
+               // < 1MB, otherwise memcpy + large write, etc. Doesn't pay off.
+               totalNumberOf4Kbs <= JournalWritePipeline.MaxPipelinedBatch4Kbs;
+    }
 
     private bool HasBatchTelemetry => Volatile.Read(ref _batchesClosedQueueEmpty) + Volatile.Read(ref _batchesClosedOnTime) + Volatile.Read(ref _batchesClosedOnSize) > 0;
 
