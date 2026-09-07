@@ -10,6 +10,7 @@ using Raven.Client;
 using Raven.Client.Documents.Attachments;
 using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Operations;
+using Raven.Client.Extensions;
 using Raven.Client.Exceptions;
 using Raven.Client.Exceptions.Database;
 using Raven.Client.Exceptions.Documents;
@@ -78,7 +79,13 @@ namespace Raven.Server.Documents
 
         public Action<Transaction> OnBeforeCommit { get; protected set; }
 
-        protected Dictionary<string, CollectionName> _collectionsCache;
+        private static readonly IReadOnlyDictionary<string, CollectionName> EmptyCollections = new Dictionary<string, CollectionName>();
+
+        private protected static IReadOnlyDictionary<string, CollectionName> GetCollectionsMap(LowLevelTransaction llt)
+        {
+            return llt.TryGetClientState(out DocumentTransactionCache cache) ? cache.Collections ?? EmptyCollections : EmptyCollections;
+        }
+
         private static readonly Slice LastReplicatedEtagsSlice;
         private static readonly Slice EtagsSlice;
         private static readonly Slice LastEtagSlice;
@@ -273,7 +280,6 @@ namespace Raven.Server.Documents
                     DocumentPut = CreateDocumentPutAction();
 
                     InitializeLastEtag(tx);
-                    _collectionsCache = ReadCollections(tx);
 
                     var cv = GetDatabaseChangeVector(tx);
                     var lastEtagInChangeVector = ChangeVectorUtils.GetEtagById(cv, DocumentDatabase.DbBase64Id);
@@ -325,13 +331,26 @@ namespace Raven.Server.Documents
                 ConflictsCount = ConflictsStorage.GetNumberOfConflicts(tx)
             };
 
+            llt.TryGetClientState(out DocumentTransactionCache previousCache);
+            var collectionsForReads = previousCache?.Collections ?? EmptyCollections;
+            Dictionary<string, CollectionName> collectionsForWrites = null;
+
             using (ContextPool.AllocateOperationContext(out JsonOperationContext ctx))
             {
                 Table.TableValueHolder holder = default;
-                foreach (var collection in IterateCollectionNames(tx, ctx))
+                using var collectionNames = IterateCollectionNames(tx, ctx);
+
+                if (collectionNames.Count != collectionsForReads.Count) // collections are never removed, so different count means more collection added
+                    collectionsForWrites = new Dictionary<string, CollectionName>(collectionsForReads, StringComparer.OrdinalIgnoreCase);
+
+                foreach (var collection in collectionNames)
                 {
-                    var collectionName = new CollectionName(collection);
-                    if (ReadLastDocument(tx, collectionName, CollectionTableType.Documents, ref holder) == false)
+                    if (collectionsForReads.TryGetValue(collection, out CollectionName collectionName) == false)
+                    {
+                        collectionsForWrites[collection] = collectionName = new CollectionName(collection) { Index = collectionsForWrites.Count };
+                    }
+
+                    if (ReadLast(tx, DocumentDatabase.GetDocsSchemaForCollection(collectionName), collectionName, CollectionTableType.Documents, ref holder) == false)
                         continue;
 
                     var colCache = new DocumentTransactionCache.CollectionCache
@@ -340,13 +359,17 @@ namespace Raven.Server.Documents
                         LastChangeVector = TableValueToChangeVector(ctx, (int)DocumentsTable.ChangeVector, ref holder.Reader),
                     };
 
-                    if (ReadLastDocument(tx, collectionName, CollectionTableType.Tombstones, ref holder))
+                    if (ReadLast(tx, TombstonesSchema, collectionName, CollectionTableType.Tombstones, ref holder))
                     {
-                        colCache.LastTombstoneEtag = TableValueToEtag((int)DocumentsTable.Etag, ref holder.Reader);
+                        colCache.LastTombstoneEtag = TableValueToEtag((int)TombstoneTable.Etag, ref holder.Reader);
                     }
                     currentCache.LastEtagsByCollection[collection] = colCache;
                 }
             }
+            currentCache.Collections = collectionsForWrites;
+            currentCache.RevisionsCount = tx.ReadTree(Schemas.Revisions.RevisionsCountSlice)?.ReadHeader().NumberOfEntries ?? 0;
+            currentCache.Published = true; // this instance becomes the committed state - immutable from here on
+
             // we set it on the current transaction because we aren't committed yet
             // this is used to remember the metadata about collections / documents for
             // common operations. Thread safety is inherited from the voron transaction
@@ -850,7 +873,7 @@ namespace Raven.Server.Documents
 
         public IEnumerable<Document> GetDocumentsInReverseEtagOrder(DocumentsOperationContext context, string collection, long start, long take, DocumentFields fields = DocumentFields.All)
         {
-            var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+            var collectionName = GetCollection(context.Transaction.InnerTransaction, collection, throwIfDoesNotExist: false);
             if (collectionName == null)
                 yield break;
 
@@ -1019,7 +1042,7 @@ namespace Raven.Server.Documents
 
         public IEnumerable<Document> GetDocumentsFrom(DocumentsOperationContext context, string collection, long etag, long start, long take, DocumentFields fields = DocumentFields.All)
         {
-            var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+            var collectionName = GetCollection(context.Transaction.InnerTransaction, collection, throwIfDoesNotExist: false);
             if (collectionName == null)
                 yield break;
 
@@ -1369,7 +1392,7 @@ namespace Raven.Server.Documents
             }
             else
             {
-                var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+                var collectionName = GetCollection(context.Transaction.InnerTransaction, collection, throwIfDoesNotExist: false);
                 if (collectionName == null)
                     return null;
 
@@ -1408,7 +1431,7 @@ namespace Raven.Server.Documents
             }
             else
             {
-                var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+                var collectionName = GetCollection(context.Transaction.InnerTransaction, collection, throwIfDoesNotExist: false);
                 if (collectionName == null)
                     yield break;
 
@@ -1466,23 +1489,22 @@ namespace Raven.Server.Documents
 
         private bool LastDocument(Transaction transaction, string collection, ref Table.TableValueHolder result)
         {
-            var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+            var collectionName = GetCollection(transaction, collection, throwIfDoesNotExist: false);
             if (collectionName == null)
                 return false;
 
-            return ReadLastDocument(transaction, collectionName, CollectionTableType.Documents, ref result);
+            return ReadLast(transaction, DocumentDatabase.GetDocsSchemaForCollection(collectionName), collectionName, CollectionTableType.Documents, ref result);
         }
 
-        private bool ReadLastDocument(Transaction transaction, CollectionName collectionName, CollectionTableType collectionType, ref Table.TableValueHolder result)
+        private bool ReadLast(Transaction transaction, TableSchema schema, CollectionName collectionName, CollectionTableType collectionType, ref Table.TableValueHolder result)
         {
-            var table = transaction.OpenTable(DocumentDatabase.GetDocsSchemaForCollection(collectionName),
-                collectionName.GetTableName(collectionType));
+            var table = transaction.OpenTable(schema, collectionName.GetTableName(collectionType));
 
             // ReSharper disable once UseNullPropagation
             if (table == null)
                 return false;
 
-            result = table.ReadLast(DocsSchema.FixedSizeIndexes[CollectionEtagsSlice]);
+            result = table.ReadLast(schema.FixedSizeIndexes[CollectionEtagsSlice]);
             if (result == null)
                 return false;
 
@@ -1500,7 +1522,7 @@ namespace Raven.Server.Documents
                 }
             }
 
-            var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+            var collectionName = GetCollection(tx, collection, throwIfDoesNotExist: false);
             if (collectionName == null)
                 return 0;
 
@@ -1525,7 +1547,7 @@ namespace Raven.Server.Documents
             if (start >= end)
                 return false;
 
-            var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+            var collectionName = GetCollection(context.Transaction.InnerTransaction, collection, throwIfDoesNotExist: false);
             if (collectionName == null)
                 return false;
 
@@ -1806,13 +1828,7 @@ namespace Raven.Server.Documents
                 // that. Another issue is that the last tombstone etag has changed, and we need
                 // to let the indexes catch up to us here, even if they'll just do a noop.
 
-                context.Transaction.AddAfterCommitNotification(new DocumentChange
-                {
-                    Type = DocumentChangeTypes.Delete,
-                    Id = id,
-                    ChangeVector = changeVector,
-                    CollectionName = collectionName.Name,
-                });
+                context.Transaction.AddAfterCommitNotification(collectionName.Name, id, changeVector, DocumentChangeTypes.Delete);
 
                 return new DeleteOperationResult
                 {
@@ -1907,13 +1923,7 @@ namespace Raven.Server.Documents
 
                 table.Delete(doc.StorageId);
 
-                context.Transaction.AddAfterCommitNotification(new DocumentChange
-                {
-                    Type = DocumentChangeTypes.Delete,
-                    Id = id,
-                    ChangeVector = changeVector,
-                    CollectionName = collectionName.Name,
-                });
+                context.Transaction.AddAfterCommitNotification(collectionName.Name, id, changeVector, DocumentChangeTypes.Delete);
 
                 return new DeleteOperationResult
                 {
@@ -1956,13 +1966,7 @@ namespace Raven.Server.Documents
                     nonPersistentFlags).Etag;
 
                 // We've to add notification since we're updating last tombstone etag, and we can end up in situation when our indexes will be stale due unprocessed tombstones after replication.
-                context.Transaction.AddAfterCommitNotification(new DocumentChange
-                {
-                    Type = DocumentChangeTypes.Delete,
-                    Id = id,
-                    ChangeVector = changeVector,
-                    CollectionName = collectionName.Name,
-                });
+                context.Transaction.AddAfterCommitNotification(collectionName.Name, id, changeVector, DocumentChangeTypes.Delete);
 
                 return new DeleteOperationResult
                 {
@@ -2321,13 +2325,20 @@ namespace Raven.Server.Documents
         public PutOperationResults Put(DocumentsOperationContext context, string id,
             string expectedChangeVector, BlittableJsonReaderObject document, long? lastModifiedTicks = null, string changeVector = null,
             string oldChangeVectorForClusterTransactionIndexCheck = null,
-            DocumentFlags flags = DocumentFlags.None, NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None)
+            DocumentFlags flags = DocumentFlags.None, NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None,
+            string knownCollectionName = null, BlittableJsonReaderObject knownMetadata = null)
         {
             ChangeVector cv = null;
             if (changeVector != null)
                 cv = context.GetChangeVector(changeVector);
 
-            return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags);
+            if (knownCollectionName == null) // request handling threads already got those (optimization), but callers from the merger tx don't, so we need to extract it here
+            {
+                knownCollectionName = CollectionName.GetCollectionName(document);
+                document.TryGetMetadata(out knownMetadata);
+            }
+
+            return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags, knownCollectionName, knownMetadata);
         }
 
         public long GetNumberOfDocumentsToProcess(DocumentsOperationContext context, string collection, long afterEtag, out long totalCount, Stopwatch overallDuration)
@@ -2353,7 +2364,7 @@ namespace Raven.Server.Documents
         private long GetNumberOfItemsToProcess(DocumentsOperationContext context, string collection, long afterEtag, bool tombstones, out long totalCount,
             Stopwatch overallDuration)
         {
-            var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+            var collectionName = GetCollection(context.Transaction.InnerTransaction, collection, throwIfDoesNotExist: false);
             if (collectionName == null)
             {
                 totalCount = 0;
@@ -2441,7 +2452,7 @@ namespace Raven.Server.Documents
 
         public IEnumerable<CollectionStats> GetCollections(DocumentsOperationContext context)
         {
-            foreach (var kvp in _collectionsCache)
+            foreach (var kvp in GetCollectionsMap(context.Transaction.InnerTransaction.LowLevelTransaction))
             {
                 var collectionTable = context.Transaction.InnerTransaction.OpenTable(DocumentDatabase.GetDocsSchemaForCollection(kvp.Value),
                     kvp.Value.GetTableName(CollectionTableType.Documents));
@@ -2462,7 +2473,7 @@ namespace Raven.Server.Documents
 
         public List<string> GetCollectionsNames(DocumentsOperationContext context)
         {
-            return _collectionsCache.Keys.ToList();
+            return GetCollectionsMap(context.Transaction.InnerTransaction.LowLevelTransaction).Keys.ToList();
         }
 
         public CollectionDetails GetCollectionDetails(DocumentsOperationContext context, string collection)
@@ -2479,7 +2490,7 @@ namespace Raven.Server.Documents
                 CounterEntriesSize = new Client.Util.Size(),
                 TimeSeriesSegmentsSize = new Client.Util.Size()
             };
-            CollectionName collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+            CollectionName collectionName = GetCollection(context.Transaction.InnerTransaction, collection, throwIfDoesNotExist: false);
 
             if (collectionName != null)
             {
@@ -2540,7 +2551,7 @@ namespace Raven.Server.Documents
             }
             else
             {
-                var collectionName = GetCollection(collection, throwIfDoesNotExist: false);
+                var collectionName = GetCollection(context.Transaction.InnerTransaction, collection, throwIfDoesNotExist: false);
                 if (collectionName == null)
                     return 0;
 
@@ -2661,9 +2672,20 @@ namespace Raven.Server.Documents
             }
         }
 
-        public CollectionName GetCollection(string collection, bool throwIfDoesNotExist)
+
+
+        public CollectionName GetCollection(Transaction transaction, string collection, bool throwIfDoesNotExist)
         {
-            if (_collectionsCache.TryGetValue(collection, out CollectionName collectionName) == false && throwIfDoesNotExist)
+            if (GetCollectionsMap(transaction.LowLevelTransaction).TryGetValue(collection, out CollectionName collectionName) == false && throwIfDoesNotExist)
+                throw new InvalidOperationException($"There is no collection for '{collection}'.");
+
+            return collectionName;
+        }
+
+        public CollectionName GetCollectionFromLatestCommittedState(string collection, bool throwIfDoesNotExist)
+        {
+            var collections = Environment.TryGetClientState(out DocumentTransactionCache current) ? current.Collections ?? EmptyCollections : EmptyCollections;
+            if (collections.TryGetValue(collection, out CollectionName collectionName) == false && throwIfDoesNotExist)
                 throw new InvalidOperationException($"There is no collection for '{collection}'.");
 
             return collectionName;
@@ -2677,7 +2699,7 @@ namespace Raven.Server.Documents
 
         public CollectionName ExtractCollectionName(DocumentsOperationContext context, string collectionName)
         {
-            if (_collectionsCache.TryGetValue(collectionName, out CollectionName name))
+            if (GetCollectionsMap(context.Transaction.InnerTransaction.LowLevelTransaction).TryGetValue(collectionName, out CollectionName name))
                 return name;
 
             if (context.Transaction == null)
@@ -2710,18 +2732,6 @@ namespace Raven.Server.Documents
                 DocsSchema.Create(context.Transaction.InnerTransaction, name.GetTableName(CollectionTableType.Documents), 16);
                 TombstonesSchema.Create(context.Transaction.InnerTransaction, name.GetTableName(CollectionTableType.Tombstones), 16);
 
-                // Add to cache ONLY if the transaction was committed.
-                // this would prevent NREs next time a PUT is run,since if a transaction
-                // is not committed, DocsSchema and TombstonesSchema will not be actually created..
-                // has to happen after the commit, but while we are holding the write tx lock
-                context.Transaction.InnerTransaction.LowLevelTransaction.BeforeCommitFinalization += _ =>
-                {
-                    var collectionNames = new Dictionary<string, CollectionName>(_collectionsCache, StringComparer.OrdinalIgnoreCase)
-                    {
-                        [name.Name] = name
-                    };
-                    _collectionsCache = collectionNames;
-                };
             }
             return name;
         }
@@ -2875,39 +2885,38 @@ namespace Raven.Server.Documents
             throw new InvalidOperationException("This method requires active transaction, and no active transactions in the current context...");
         }
 
-        private IEnumerable<string> IterateCollectionNames(Transaction tx, JsonOperationContext context)
+        private CollectionNamesIterator IterateCollectionNames(Transaction tx, JsonOperationContext context)
         {
-            var collections = tx.OpenTable(CollectionsSchema, CollectionsSlice);
-            foreach (var tvr in collections.SeekByPrimaryKey(Slices.BeforeAllKeys, 0))
+            return new CollectionNamesIterator(tx.OpenTable(CollectionsSchema, CollectionsSlice), context);
+        }
+
+        private struct CollectionNamesIterator(Table collections, JsonOperationContext context) : IDisposable
+        {
+            private IEnumerator<Table.TableValueHolder> _inner;
+
+            public long Count => collections.NumberOfEntries;
+
+            public string Current { get; private set; } = null;
+
+            public void Dispose() => _inner.Dispose();
+
+            public CollectionNamesIterator GetEnumerator()
             {
-                var collection = TableValueToId(context, (int)CollectionsTable.Name, ref tvr.Reader);
-                yield return collection.ToString();
+                _inner = collections.SeekByPrimaryKey(Slices.BeforeAllKeys, 0).GetEnumerator();
+                return this;
+            }
+
+            public bool MoveNext()
+            {
+                if (_inner.MoveNext() == false)
+                    return false;
+
+                var collection = TableValueToId(context, (int)CollectionsTable.Name, ref _inner.Current.Reader);
+                Current = collection.ToString();
+                return true;
             }
         }
 
-        private Dictionary<string, CollectionName> ReadCollections(Transaction tx)
-        {
-            var result = new Dictionary<string, CollectionName>(StringComparer.OrdinalIgnoreCase);
-
-            using (ContextPool.AllocateOperationContext(out JsonOperationContext context))
-            {
-                var collections = tx.OpenTable(CollectionsSchema, CollectionsSlice);
-                foreach (var tvr in collections.SeekByPrimaryKey(Slices.BeforeAllKeys, 0))
-                {
-                    var collection = TableValueToId(context, (int)CollectionsTable.Name, ref tvr.Reader);
-                    var collectionName = new CollectionName(collection);
-                    result.Add(collection, collectionName);
-
-                    var documentsTree = tx.ReadTree(collectionName.GetTableName(CollectionTableType.Documents), RootObjectType.Table);
-                    NewPageAllocator.MaybePrefetchSections(documentsTree, tx.LowLevelTransaction);
-
-                    var tombstonesTree = tx.ReadTree(collectionName.GetTableName(CollectionTableType.Tombstones), RootObjectType.Table);
-                    NewPageAllocator.MaybePrefetchSections(tombstonesTree, tx.LowLevelTransaction);
-                }
-            }
-
-            return result;
-        }
 
         public static Dictionary<string, CollectionName> ReadCollections(Transaction tx, JsonOperationContext context)
         {
