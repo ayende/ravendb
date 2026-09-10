@@ -2656,10 +2656,29 @@ namespace Raven.Server.Documents.Indexes
                 }
                 catch
                 {
+                    if (chained)
+                    {
+                        // completeCommit already handed the chain off, so the failure came from after it -
+                        // dropping the chain here would leak a write transaction that holds the environment's
+                        // write lock and blocks its disposal, and would dispose link before EndAsyncCommit.
+                        // Draining closes both; chained stays set so the finally leaves link alone. A failure
+                        // while draining is already recorded on the environment - the original one is the
+                        // one worth reporting.
+                        try
+                        {
+                            DrainPendingIndexingCommit();
+                        }
+                        catch
+                        {
+                            // ignored, see above
+                        }
+
+                        throw;
+                    }
+
                     _pendingIndexingCommit = null;
                     CurrentIndexingWriteTransaction = null;
                     CurrentIndexingWriteContext = null;
-                    chained = false;
                     throw;
                 }
                 finally
