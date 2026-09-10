@@ -46,11 +46,14 @@ public class SharedJournalState()
         while (_mergedCommitsQueue.TryDequeue(out var rec))
         {
             rec.Transaction.FailDurableCommit(e);
+            // a branch blocks on Consumed to get its buffer back, so it has to be released here too
+            rec.Consumed.TrySetException(e);
         }
 
         foreach (var record in _mergedJournalJournalRecordsBuffer)
         {
             record.Transaction.FailDurableCommit(e);
+            record.Consumed.TrySetException(e);
         }
     }
 
@@ -59,11 +62,13 @@ public class SharedJournalState()
         while (_mergedCommitsQueue.TryDequeue(out var rec))
         {
             rec.Transaction.CancelDurableCommit();
+            rec.Consumed.TrySetCanceled();
         }
 
         foreach (var record in _mergedJournalJournalRecordsBuffer)
         {
             record.Transaction.CancelDurableCommit();
+            record.Consumed.TrySetCanceled();
         }
     }
 }
