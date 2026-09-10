@@ -266,7 +266,7 @@ public sealed class WriteFlowPolicy
 
     public bool CanPipeline(long totalNumberOf4Kbs) =>
         ShouldPipeline &&
-        // < 1MB, otherwise memcpy + large write, etc. Doesn't pay off.
+        // beyond the cap the memcpy into the pipeline's buffer stops paying for itself
         totalNumberOf4Kbs <= JournalWritePipeline.MaxPipelinedBatch4Kbs;
 
     private bool HasBatchTelemetry => Volatile.Read(ref _batchesClosedQueueEmpty) + Volatile.Read(ref _batchesClosedOnTime) + Volatile.Read(ref _batchesClosedOnSize) > 0;
