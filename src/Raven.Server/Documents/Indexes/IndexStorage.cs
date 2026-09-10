@@ -434,9 +434,8 @@ namespace Raven.Server.Documents.Indexes
         /// </summary>
         private IndexStorageWriteScope OpenWriteScope(TimeSpan? timeout = null)
         {
-            var current = _index?.CurrentIndexingWriteTransaction;
-            if (current != null)
-                return new IndexStorageWriteScope(_index.CurrentIndexingWriteContext, current);
+            if (_index != null && _index.TryJoinIndexingWriteTransaction(out var joinedContext, out var joined))
+                return new IndexStorageWriteScope(joinedContext, joined);
 
             var returnContext = _contextPool.AllocateOperationContext(out TransactionOperationContext context);
             try

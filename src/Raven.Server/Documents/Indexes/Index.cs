@@ -195,12 +195,32 @@ namespace Raven.Server.Documents.Indexes
         /// The write transaction the indexing thread currently has open, if any. Set while a batch's commit
         /// has been handed off to run in the background and the next transaction is already open, so a write
         /// that happens between batches joins it instead of blocking on the write lock the chain holds.
-        /// Only ever read or written by the indexing thread.
+        /// Only ever read or written by the indexing thread - see <see cref="TryJoinIndexingWriteTransaction"/>.
         /// </summary>
         internal RavenTransaction CurrentIndexingWriteTransaction;
 
         /// <summary>The context of <see cref="CurrentIndexingWriteTransaction"/>, for writers that join it.</summary>
         internal TransactionOperationContext CurrentIndexingWriteContext;
+
+        /// <summary>
+        /// Hands the chain's open transaction to a between-batches writer, but only on the indexing thread
+        /// that owns it. Everyone else has to queue for the write lock: a Voron write transaction belongs to
+        /// one thread, and index state, priority, rename and delete-errors all arrive off cluster and request
+        /// threads, which would otherwise write into a transaction while its own batch is still filling it.
+        /// </summary>
+        internal bool TryJoinIndexingWriteTransaction(out TransactionOperationContext context, out RavenTransaction tx)
+        {
+            if (_indexingThread != null && _indexingThread == PoolOfThreads.LongRunningWork.Current)
+            {
+                context = CurrentIndexingWriteContext;
+                tx = CurrentIndexingWriteTransaction;
+                return tx != null;
+            }
+
+            context = null;
+            tx = null;
+            return false;
+        }
 
         private int _writeLockWaiters;
 
