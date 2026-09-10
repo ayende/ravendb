@@ -39,15 +39,7 @@ namespace SlowTests.Issues
                 db = await GetDatabase(store.Database);
                 await store.Maintenance.SendAsync(new CreateSampleDataOperation());
 
-                // Deleting a journal is only safe once its transactions are in the data file and synced:
-                // journal entries are page DIFFS, so replaying the later journals over a data file that
-                // lacks the deleted journal's pages fails the recovery checksum validation. Dispose does
-                // not flush, and the background flusher may legitimately defer a small environment, so
-                // flush and sync explicitly instead of relying on its timing.
-                var env = db.DocumentsStorage.Environment;
-                env.Journal.Applicator.ApplyLogsToDataFile(CancellationToken.None, TimeSpan.FromSeconds(30));
-                using (var sync = new WriteAheadJournal.JournalApplicator.SyncOperation(env.Journal.Applicator))
-                    sync.SyncDataFile();
+                await EnsureDataWasSynced(db);
             }
 
             db.Dispose();
@@ -63,6 +55,23 @@ namespace SlowTests.Issues
                 Path = path
             }))
             {
+            }
+        }
+
+        private static async Task EnsureDataWasSynced(DocumentDatabase db)
+        {
+            // Deleting a journal is only safe once its transactions are in the data file and synced, ensure that this happens first
+            var env = db.DocumentsStorage.Environment;
+            env.Journal.Applicator.ApplyLogsToDataFile(CancellationToken.None, TimeSpan.FromSeconds(30));
+            while (env.Journal.Applicator.ShouldSync)
+            {
+                using (var sync = new WriteAheadJournal.JournalApplicator.SyncOperation(env.Journal.Applicator))
+                {
+                    if (sync.SyncDataFile())
+                        break; // now we are sure that the sync actually completed, exit the loop
+                }
+
+                await Task.Delay(100);
             }
         }
     }
