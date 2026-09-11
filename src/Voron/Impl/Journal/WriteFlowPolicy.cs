@@ -74,6 +74,12 @@ public sealed class WriteFlowPolicy
         SizeReached,    
     }
 
+    public enum OptimizationMode
+    {
+        Latency,
+        Bandwidth
+    }
+
     // ---------------------------------------------------------------------------------------
     // The consolidation target: how large a journal write consolidation aims for
     // ---------------------------------------------------------------------------------------
@@ -109,16 +115,12 @@ public sealed class WriteFlowPolicy
     private const double MostlyQueueEmpty = 0.9;
 
     private readonly long _pipelineAboveLatencyTicks;
-    private readonly int _maxConcurrentJournalWrites;
 
     private SimpleEwma<long> _writeLatencyTicks = new(smoothing: 8);
     private SimpleEwma<long> _writeSizeBytes = new(smoothing: 8);
 
     private volatile bool _consolidatingBatches;
-
-    private long _batchesClosedQueueEmpty;
-    private long _batchesClosedOnTime;
-    private long _batchesClosedOnSize;
+    private bool _pipeliningEnabled;
 
     private SimpleEwma<long> _batchModifiedBytes = new(smoothing: 16);
     private SimpleEwma<double> _batchOperations = new(smoothing: 16);
@@ -139,7 +141,8 @@ public sealed class WriteFlowPolicy
         _options = options;
         _pipelineAboveLatencyTicks = options.PipelineJournalWritesAboveLatencyInTicks;
         _pinnedTargetWriteSizeBytes = options.ConsolidationTargetWriteSizeInBytes;
-        _maxConcurrentJournalWrites = Math.Clamp(options.MaxConcurrentJournalWrites, 1, StorageEnvironmentOptions.MaxSupportedConcurrentJournalWrites);
+        var maxConcurrentJournalWrites = Math.Clamp(options.MaxConcurrentJournalWrites, 1, StorageEnvironmentOptions.MaxSupportedConcurrentJournalWrites);
+        _pipeliningEnabled = maxConcurrentJournalWrites > 1;
     }
 
     public void RecordJournalWrite(long latencyTicks, long sizeInBytes)
@@ -169,13 +172,6 @@ public sealed class WriteFlowPolicy
     {
         if (operations == 0)
             return; // chain unwinding, an empty batch says nothing about batch shaping
-
-        switch (reason)
-        {
-            case BatchCloseReason.QueueEmpty: _batchesClosedQueueEmpty++; break;
-            case BatchCloseReason.MaxBatchTimeReached: _batchesClosedOnTime++; break;
-            case BatchCloseReason.SizeReached: _batchesClosedOnSize++; break;
-        }
 
         _batchModifiedBytes.Update(modifiedBytes);
         _batchOperations.Update(operations);
@@ -252,22 +248,24 @@ public sealed class WriteFlowPolicy
 
     private bool IsMeasuredFastDevice => Device.IsMeasuredFastDevice;
 
-    private bool PipeliningEnabled => _maxConcurrentJournalWrites > 1;
 
-    private bool ShouldPipeline =>
-        PipeliningEnabled &&
-        IsCommitLatencyBound && // not meaningful if we are bandwidth-bound
-        (HasBatchTelemetry == false || // no batching == cannot grow the batch to amortize fixed costs, pipelining is always a win
-         _queueEmptyShare.Current >= MostlyQueueEmpty) && // most recent batches closed on an empty queue, they cannot grow
-        // the device is slow enough that overlapping writes pays for the smaller batches
-        _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks;
+    public OptimizationMode OptimizeFor { get; set; } = OptimizationMode.Bandwidth;
 
-    public bool CanPipeline(long totalNumberOf4Kbs) =>
-        ShouldPipeline &&
-        // < 1MB, otherwise memcpy + large write, etc. Doesn't pay off.
-        totalNumberOf4Kbs <= JournalWritePipeline.MaxPipelinedBatch4Kbs;
+    public bool ShouldPipeline
+    {
+        get
+        {
+            if(_pipeliningEnabled is false)
+                return false;
 
-    private bool HasBatchTelemetry => Volatile.Read(ref _batchesClosedQueueEmpty) + Volatile.Read(ref _batchesClosedOnTime) + Volatile.Read(ref _batchesClosedOnSize) > 0;
+            if (OptimizeFor == OptimizationMode.Bandwidth) 
+                return true;
+
+            return IsCommitLatencyBound
+                && _queueEmptyShare.Current >= MostlyQueueEmpty
+                && _writeLatencyTicks.Current >= _pipelineAboveLatencyTicks;
+        }
+    }
 
     private const long MaxBatchConsolidationWindowInMs = 50;
 

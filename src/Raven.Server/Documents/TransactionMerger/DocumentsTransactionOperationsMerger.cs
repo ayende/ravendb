@@ -5,6 +5,7 @@ using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Logging;
 using Voron;
+using Voron.Impl.Journal;
 
 namespace Raven.Server.Documents.TransactionMerger;
 
@@ -17,6 +18,8 @@ public sealed class DocumentsTransactionOperationsMerger : AbstractTransactionOp
     {
         _database = database ?? throw new ArgumentNullException(nameof(database));
     }
+
+    protected override WriteFlowPolicy.OptimizationMode OptimizeFor => WriteFlowPolicy.OptimizationMode.Latency;
 
     protected override StorageEnvironment GetStorageEnvironment(JsonContextPoolBase<DocumentsOperationContext> contextPool)
     {

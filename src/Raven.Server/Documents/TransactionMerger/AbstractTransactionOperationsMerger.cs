@@ -51,98 +51,51 @@ namespace Raven.Server.Documents.TransactionMerger
 
         private readonly ConcurrentQueue<List<MergedTransactionCommand<TOperationContext, TTransaction>>> _opsBuffers = new();
 
-        private sealed class AsyncCommittedTransaction
+        private sealed class AsyncCommittedTransaction : IAsyncCommittedBatch
         {
+            public AbstractTransactionOperationsMerger<TOperationContext, TTransaction> Parent;
             public TOperationContext Context;
             public IDisposable ReturnContext;
             public List<MergedTransactionCommand<TOperationContext, TTransaction>> PendingOps;
-        }
 
-        private sealed class AsyncCommitCompletionPump(AbstractTransactionOperationsMerger<TOperationContext, TTransaction> parent)
-        {
-            private readonly Queue<AsyncCommittedTransaction> _inFlight = new();
-            private ExceptionDispatchInfo _failure;
+            public Task DurableCommit => Context.Transaction.InnerTransaction.LowLevelTransaction.DurableCommit;
 
-            public bool HasPendingCompletions => _inFlight.Count > 0;
-
-            private Task _headDurableCommit;
-
-            public bool OldestTransactionIsDurable => _headDurableCommit is { IsCompleted: true };
-
-            private void UpdateHeadDurableCommit()
-            {
-                _headDurableCommit = _inFlight.TryPeek(out var head)
-                    ? head.Context.Transaction.InnerTransaction.LowLevelTransaction.DurableCommit
-                    : null;
-            }
-
-            public void Release(AsyncCommittedTransaction entry)
-            {
-                _inFlight.Enqueue(entry);
-                if (_inFlight.Count == 1)
-                    UpdateHeadDurableCommit();
-
-                if (entry.Context.Transaction.InnerTransaction.LowLevelTransaction.DurableCommit is not { IsCompleted: false })
-                    DrainCompleted(); // can be completed inline, if the durable commit is already done, otherwise we wait for the completion
-            }
-
-            public void DrainCompleted()
-            {
-                while (_inFlight.TryPeek(out var head)) // in commit order, so no tx can be raised before its predecessor is completed
-                {
-                    if (_failure == null &&
-                        head.Context.Transaction.InnerTransaction.LowLevelTransaction.DurableCommit is { IsCompleted: false })
-                        break; // its ack wakes us again
-
-                    Complete(_inFlight.Dequeue());
-                }
-
-                UpdateHeadDurableCommit();
-            }
-
-            public void DrainAll()
-            {
-                while (_inFlight.Count > 0)
-                    Complete(_inFlight.Dequeue());
-
-                _headDurableCommit = null;
-            }
-
-            private void Complete(AsyncCommittedTransaction entry)
+            public ExceptionDispatchInfo Complete(Exception priorFailure)
             {
                 // once one of them failed, all the following ones failed, a journal write failure will throw on EndAsyncCommit
-                var error = _failure?.SourceException;
+                var error = priorFailure;
+                ExceptionDispatchInfo failure = null;
 
                 try
                 {
-                    parent._recording.State?.TryRecord(entry.Context, TxInstruction.EndAsyncCommit);
-                    entry.Context.Transaction.EndAsyncCommit();
+                    Parent._recording.State?.TryRecord(Context, TxInstruction.EndAsyncCommit);
+                    Context.Transaction.EndAsyncCommit();
 
-                    if (parent._log.IsDebugEnabled)
-                        parent._log.Debug($"EndAsyncCommit on {entry.Context.Transaction.InnerTransaction.LowLevelTransaction.Id}");
+                    if (Parent._log.IsDebugEnabled)
+                        Parent._log.Debug($"EndAsyncCommit on {Context.Transaction.InnerTransaction.LowLevelTransaction.Id}");
 
-                    parent._recording.State?.TryRecord(entry.Context, TxInstruction.DisposePrevTx, entry.Context.Disposed == false);
+                    Parent._recording.State?.TryRecord(Context, TxInstruction.DisposePrevTx, Context.Disposed == false);
                 }
                 catch (Exception e)
                 {
                     error ??= e;
-                    _failure ??= ExceptionDispatchInfo.Capture(e);
+                    failure ??= ExceptionDispatchInfo.Capture(e);
                 }
 
                 try
                 {
-                    entry.Context.Transaction.Dispose();
-                    entry.ReturnContext?.Dispose();
+                    Context.Transaction.Dispose();
+                    ReturnContext?.Dispose();
                 }
                 catch (Exception e)
                 {
                     error ??= e;
-                    _failure ??= ExceptionDispatchInfo.Capture(e);
+                    failure ??= ExceptionDispatchInfo.Capture(e);
                 }
 
                 if (error != null)
                 {
-                    foreach (var op in entry.PendingOps)
+                    foreach (var op in PendingOps)
                     {
                         op.Exception = error;
                     }
@@ -150,21 +103,18 @@ namespace Raven.Server.Documents.TransactionMerger
 
                 try
                 {
-                    parent.NotifyOnThreadPool(entry.PendingOps);
+                    Parent.NotifyOnThreadPool(PendingOps);
                 }
                 catch (Exception e)
                 {
-                    _failure ??= ExceptionDispatchInfo.Capture(e);
+                    failure ??= ExceptionDispatchInfo.Capture(e);
                 }
-            }
 
-            public void ThrowOnFailure()
-            {
-                _failure?.Throw();
+                return failure;
             }
         }
 
-        private readonly AsyncCommitCompletionPump _completionPump;
+        private readonly AsyncCommitCompletionPump<AsyncCommittedTransaction> _completionPump;
 
         private readonly ManualResetEventSlim _waitHandle = new(false);
         private ExceptionDispatchInfo _edi;
@@ -206,7 +156,7 @@ namespace Raven.Server.Documents.TransactionMerger
             _maxTimeToWaitForPreviousTxBeforeRejectingInMs = configuration.TransactionMergerConfiguration.MaxTimeToWaitForPreviousTxBeforeRejecting.AsTimeSpan.TotalMilliseconds;
             _timeToCheckHighDirtyMemory = configuration.Memory.TemporaryDirtyMemoryChecksPeriod;
             _lastHighDirtyMemCheck = time.GetUtcNow();
-            _completionPump = new AsyncCommitCompletionPump(this);
+            _completionPump = new AsyncCommitCompletionPump<AsyncCommittedTransaction>();
         }
         
         public void Initialize([NotNull] JsonContextPoolBase<TOperationContext> contextPool, bool isEncrypted, bool is32Bits)
@@ -215,6 +165,7 @@ namespace Raven.Server.Documents.TransactionMerger
             _isEncrypted = isEncrypted;
             _is32Bits = is32Bits;
             _env = GetStorageEnvironment(contextPool);
+            _env.WriteFlow.OptimizeFor = OptimizeFor;
             _env.DurableCommitAcknowledged = OnDurableCommitAcknowledged; // raise the event when the journal write is durable, so we can drain the async commit queue
             _initialized = true;
         }
@@ -230,6 +181,8 @@ namespace Raven.Server.Documents.TransactionMerger
                 // an ack racing the merger's dispose - nothing is waiting anymore
             }
         }
+
+        protected abstract WriteFlowPolicy.OptimizationMode OptimizeFor { get; }
 
         protected abstract StorageEnvironment GetStorageEnvironment(JsonContextPoolBase<TOperationContext> contextPool);
 
@@ -682,6 +635,7 @@ namespace Raven.Server.Documents.TransactionMerger
 
                     _completionPump.Release(new AsyncCommittedTransaction
                     {
+                        Parent = this,
                         Context = previous,
                         ReturnContext = returnPreviousContext, // the pump owns returning the context now
                         PendingOps = previousPendingOps

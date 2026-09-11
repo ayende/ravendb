@@ -10,6 +10,7 @@ using Raven.Server.ServerWide.Context;
 using Sparrow.Json;
 using Sparrow.Logging;
 using Voron;
+using Voron.Impl.Journal;
 
 namespace Raven.Server.ServerWide.TransactionMerger;
 
@@ -19,6 +20,8 @@ public sealed class ClusterTransactionOperationsMerger : AbstractTransactionOper
         : base("Cluster", configuration, time, RavenLogManager.Instance.GetLoggerForServer<ClusterTransactionOperationsMerger>(), shutdown)
     {
     }
+
+    protected override WriteFlowPolicy.OptimizationMode OptimizeFor => WriteFlowPolicy.OptimizationMode.Latency;
 
     protected override StorageEnvironment GetStorageEnvironment(JsonContextPoolBase<ClusterOperationContext> contextPool)
     {
