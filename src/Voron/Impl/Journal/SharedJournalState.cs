@@ -45,12 +45,12 @@ public class SharedJournalState()
     {
         while (_mergedCommitsQueue.TryDequeue(out var rec))
         {
-            rec.Transaction.FailDurableCommit(e);
+            rec.FailCatastrophically(e);
         }
 
         foreach (var record in _mergedJournalJournalRecordsBuffer)
         {
-            record.Transaction.FailDurableCommit(e);
+            record.FailCatastrophically(e);
         }
     }
 
@@ -58,12 +58,12 @@ public class SharedJournalState()
     {
         while (_mergedCommitsQueue.TryDequeue(out var rec))
         {
-            rec.Transaction.CancelDurableCommit();
+            rec.Cancel();
         }
 
         foreach (var record in _mergedJournalJournalRecordsBuffer)
         {
-            record.Transaction.CancelDurableCommit();
+            record.Cancel();
         }
     }
 }

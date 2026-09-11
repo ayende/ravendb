@@ -15,8 +15,6 @@ namespace Voron.Impl.Journal;
 
 internal sealed unsafe class JournalWritePipeline : IDisposable
 {
-    internal const int MaxPipelinedBatch4Kbs = Constants.Size.Megabyte / Constants.Storage.JournalPageSize;
-
     private sealed class PendingWrite(JournalWritePipeline pipeline) : IThreadPoolWorkItem, IDisposable
     {
         public readonly List<LowLevelTransaction> Transactions = [];

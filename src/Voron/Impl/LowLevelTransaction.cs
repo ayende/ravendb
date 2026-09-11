@@ -1184,13 +1184,19 @@ namespace Voron.Impl
         
         internal void FailDurableCommit(Exception e)
         {
+            if (PreparedDurableCommit != null && PreparedDurableCommit.TrySetException(e) == false)
+                return; // can only ack the durable commit failure once
+
+            var edi = ExceptionDispatchInfo.Capture(e);
+
             try
             {   // a durable-commit failure is catastrophic by definition
-                _env.Options.SetCatastrophicFailure(ExceptionDispatchInfo.Capture(e));
+                _env.Options.SetCatastrophicFailure(edi);
             }
             catch{ /* best effort  */ }
 
-            PreparedDurableCommit?.TrySetException(e);
+            _env.MarkJournalWriteFailed(edi); // frees a branch env that is waiting in WaitForCommitDurabilityBlocking
+
             AcknowledgeDurableCommit();
         }
 

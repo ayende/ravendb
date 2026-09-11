@@ -50,7 +50,34 @@ namespace Voron.Impl.Journal
         public record JournalStateRecord(
             LowLevelTransaction Transaction,
             TaskCompletionSource Tcs,
-            Pal.journal_entry Entry);
+            TaskCompletionSource Consumed,
+            Pal.journal_entry Entry)
+        {
+            public void MarkConsumed() => Consumed.TrySetResult();
+
+            public void ReleaseBranchOnly(Exception e) => Consumed.TrySetException(e);
+
+            public void FailCatastrophically(Exception e)
+            {
+                Transaction.FailDurableCommit(e);
+                ReleaseBranchOnly(e);
+            }
+
+            public void FailLeavingEnvironmentUsable(Exception e)
+            {
+                Tcs.TrySetException(e);
+                _ = Tcs.Task.Exception; // caller will not observe in this case, so we do pre-emptively
+                Transaction.AcknowledgeDurableCommit();
+                ReleaseBranchOnly(e);
+            }
+
+            public void Cancel()
+            {
+                Transaction.CancelDurableCommit();
+                Consumed.TrySetCanceled();
+            }
+
+        }
 
         private long _currentJournalFileSize;
         private DateTime _lastFile;
@@ -2255,7 +2282,10 @@ namespace Voron.Impl.Journal
                         var entry = PrepareToWriteToJournal(tx, ref tempTxState, out numberOfUncompressedPages, out var numberOfUsedCompressionBufferPages);
                         Debug.Assert(branchCommit != null, "stage 1 creates PreparedDurableCommit for every ModifiedPages commit");
                         numberOf4Kbs = entry.NumberOf4Kbs;
-                        journalStateRecord = new JournalStateRecord(tx, branchCommit, entry);
+#pragma warning disable RDB0008
+                        var consumed = new TaskCompletionSource(); // branch blocks on this, we want to complete it inline
+#pragma warning restore RDB0008
+                        journalStateRecord = new JournalStateRecord(tx, branchCommit, consumed, entry);
                         if (this != rootJournal)
                         {
                             rootJournal.SharedJournalState.Enqueue(journalStateRecord);
@@ -2278,7 +2308,7 @@ namespace Voron.Impl.Journal
                     else
                     {
                         Debug.Assert(tx.ShouldWriteTransactionChangesToJournal, "ShouldWriteTransactionChangesToJournal must be true for branch commit");
-                        rootJournal.SubmitBranchJournalEntry(branchCommit?.Task);
+                        rootJournal.SubmitBranchJournalEntry(journalStateRecord.Consumed.Task);
                     }
 
                     if (_env.Options.Encryption.IsEnabled && _env.Options.Encryption.HasExternalJournalCompressionBufferHandlerRegistration == false)
@@ -2314,7 +2344,7 @@ namespace Voron.Impl.Journal
         /// </summary>
         public Action<StorageEnvironment> OnBranchHardLinkLimitReached;
 
-        private void SubmitBranchJournalEntry(Task commitCompleted)
+        private void SubmitBranchJournalEntry(Task entryConsumed)
         {
             Debug.Assert(_env.Options.RootJournal is null, "_env.Options.RootJournal is null");
             {
@@ -2327,12 +2357,10 @@ namespace Voron.Impl.Journal
            
             handler.JournalMergeSubmitted();
 
-            // here we are going to wait for the root to do the actual write to disk
-            // note that we *explicitly* do NOT use the cancellation token, since
-            // we _must_ wait in the branch until the root releases us, because the
-            // may be in the middle of writing from our buffer and returning here
-            // will release this memory pre-maturely
-            commitCompleted.GetAwaiter().GetResult();
+            // we must wait here until the root is done using our entry. Either by writing it to disk or copying its
+            // content to its own buffer.  Note that we *explicitly* do NOT use the cancellation token, since we _must_ wait in the branch until the root releases us.
+            // This does *NOT* handle durability, that is a separate concern that is handled by the WaitForCommitDurabilityBlocking() call, since the root may pipeline the journal writes.
+            entryConsumed.GetAwaiter().GetResult();
         }
 
         private void WriteBuffersToJournal(LowLevelTransaction tx, JournalStateRecord rootEntry)
@@ -2403,7 +2431,7 @@ namespace Voron.Impl.Journal
                     _logger.Debug($"New journal file created {CurrentFile.Number:D19} with size {CurrentFile.JournalSize}");
             }
 
-            Dictionary<JournalStateRecord, Exception> failedBranchRecords = null;
+            Dictionary<JournalStateRecord, HardLinkLimitExceededException> failedBranchRecords = null;
 
             foreach (var rec in SharedJournalState.JournalRecords)
             {
@@ -2427,7 +2455,7 @@ namespace Voron.Impl.Journal
                     // still writing from.
                     environment.Options.RootJournal = null;
                     OnBranchHardLinkLimitReached?.Invoke(environment);
-                    failedBranchRecords ??= new Dictionary<JournalStateRecord, Exception>();
+                    failedBranchRecords ??= [];
                     failedBranchRecords[rec] = ex;
                     continue;
                 }
@@ -2496,7 +2524,7 @@ namespace Voron.Impl.Journal
 
             foreach (var rec in SharedJournalState.JournalRecords)
             {
-                if (failedBranchRecords != null && failedBranchRecords.ContainsKey(rec))
+                if (failedBranchRecords?.ContainsKey(rec) is true)
                     continue; // hard-link fallback: exception will be set below, after the write.
 
                 var llt = rec.Transaction;
@@ -2528,10 +2556,30 @@ namespace Voron.Impl.Journal
 
             tx._forTestingPurposes?.ActionToCallJustBeforeWritingToJournal?.Invoke();
 
-            if (tx.IsAsyncCommit && _env.WriteFlow.CanPipeline(totalNumberOf4Kbs))
-                _writePipeline.SubmitPipelined(CurrentFile, writePosIn4Kbs, entries, totalNumberOf4Kbs, _transactionsForCurrentWrite);
-            else
-                _writePipeline.WriteInline(CurrentFile, writePosIn4Kbs, entries, totalNumberOf4Kbs, _transactionsForCurrentWrite);
+            try
+            {
+                if (tx.IsAsyncCommit && _env.WriteFlow.ShouldPipeline)
+                    _writePipeline.SubmitPipelined(CurrentFile, writePosIn4Kbs, entries, totalNumberOf4Kbs, _transactionsForCurrentWrite);
+                else
+                    _writePipeline.WriteInline(CurrentFile, writePosIn4Kbs, entries, totalNumberOf4Kbs, _transactionsForCurrentWrite);
+            }
+            catch (Exception e)
+            {
+                foreach (var rec in SharedJournalState.JournalRecords)
+                {
+                    rec.ReleaseBranchOnly(e);
+                }
+
+                throw;
+            }
+
+            foreach (var rec in SharedJournalState.JournalRecords)
+            {
+                if (failedBranchRecords?.ContainsKey(rec) is true)
+                    continue; // released below, see the hard-link failure handling
+
+                rec.MarkConsumed(); // let the branch know that its entry has been consumed and can reuse the buffer
+            }
 
             var elapsed = Stopwatch.GetElapsedTime(start);
 
@@ -2541,12 +2589,9 @@ namespace Voron.Impl.Journal
 
             if (failedBranchRecords != null)
             {
-                foreach (var (rec, ex) in failedBranchRecords)
+                foreach (var (rec, hardLinkError) in failedBranchRecords)
                 {
-                    // deliberately not FailDurableCommit: because this is *not* a catastrophic failure
-                    // the environment survives this & already fell back to standalone journaling
-                    rec.Tcs.TrySetException(ex);
-                    rec.Transaction.AcknowledgeDurableCommit();
+                    rec.FailLeavingEnvironmentUsable(hardLinkError); // hard link failure is survivable
                 }
             }
 
