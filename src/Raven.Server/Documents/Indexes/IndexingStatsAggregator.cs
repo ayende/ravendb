@@ -73,7 +73,13 @@ namespace Raven.Server.Documents.Indexes
                 if (_performanceStats != null)
                     return _performanceStats;
 
-                return _performanceStats = CreateIndexingPerformanceStats(completed: true);
+                var result = CreateIndexingPerformanceStats(completed: true);
+                if (Stats.CommitDetailsPending is false)
+                {
+                    _performanceStats = result; // memoize it if we can
+                }
+
+                return result;
             }
         }
 
@@ -420,11 +426,14 @@ namespace Raven.Server.Documents.Indexes
             _stats.ReduceDetails.CurrentlyAllocated = allocations;
         }
 
+        public void MarkCommitStatsPending() => _stats.CommitDetailsPending = true;
+
         public void RecordCommitStats(long numberOfModifiedPages, long numberOf4KbsWrittenToDisk)
         {
             if (_stats.CommitDetails == null)
                 _stats.CommitDetails = new StorageCommitDetails();
 
+            _stats.CommitDetailsPending = false;
             _stats.CommitDetails.NumberOfModifiedPages = numberOfModifiedPages;
             _stats.CommitDetails.NumberOf4KbsWrittenToDisk = numberOf4KbsWrittenToDisk;
         }

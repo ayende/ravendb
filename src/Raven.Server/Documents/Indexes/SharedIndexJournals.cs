@@ -11,6 +11,7 @@ using Sparrow;
 using Sparrow.Server.Logging;
 using Sparrow.Server.Utils;
 using Voron;
+using Voron.Impl;
 using Voron.Impl.Journal;
 
 namespace Raven.Server.Documents.Indexes;
@@ -66,46 +67,105 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
     {
         using (_scopeForSharedJournals)
         {
-            while (_disposed is false)
+            var persistentContext = new TransactionPersistentContext();
+            Transaction current = null;
+            Transaction inFlight = null;
+
+            try
             {
-                try
+                while (_disposed is false)
                 {
-
-                    _waitForJournals.Wait();
-                    _waitForJournals.Reset();
-                    do
+                    try
                     {
-                        var curJournal = _env.Journal.CurrentFile;
-                        using (var txw = _env.WriteTransaction())
+                        _waitForJournals.Wait();
+                        _waitForJournals.Reset();
+                        do
                         {
-                            txw.Commit();
-                        }
+                            var curJournal = _env.Journal.CurrentFile;
+                            CommitMergedBatch(persistentContext, ref current, ref inFlight, forceOwnJournalWrite: false);
 
-                        if (curJournal == _env.Journal.CurrentFile)
-                            continue;
+                            if (curJournal == _env.Journal.CurrentFile)
+                                continue;
 
-                        // this will force us to do an actual commit
-                        // to our own journal, and thus force us to 
-                        // flush the journals, etc...
-                        // 
-                        // This is required to ensure that journals are properly
-                        // flushed & handled after we switch between journals
-                        using (var txw = _env.WriteTransaction())
-                        {
-                            // we do a dummy change here to force the env
-                            // to think that it has an actual transaction and thus
-                            // will force it to flush / remove older journal
-                            txw.LowLevelTransaction.ModifyPage(0);
-                            txw.Commit();
-                        }
-                    } while (_env.Journal.HasBranchCommits);
-                }
-                catch (Exception e)
-                {
-                    Interlocked.Exchange(ref _env.Journal.SharedJournalState, new SharedJournalState()).SetException(e);
+                            // this will force us to do an actual commit
+                            // to our own journal, and thus force us to 
+                            // flush the journals, etc...
+                            // 
+                            // This is required to ensure that journals are properly
+                            // flushed & handled after we switch between journals
+                            CommitMergedBatch(persistentContext, ref current, ref inFlight, forceOwnJournalWrite: true);
+                        } while (_env.Journal.HasBranchCommits);
+
+                        // nothing else is queued, so we can complete the in-flight batch
+                        CompleteInFlightBatch(ref inFlight);
+
+                        var idle = current;
+                        current = null;
+                        idle?.Dispose();
+                    }
+                    catch (Exception e)
+                    {
+                        DiscardBatchesOnError(ref current, ref inFlight);
+                        Interlocked.Exchange(ref _env.Journal.SharedJournalState, new SharedJournalState()).SetException(e);
+                    }
                 }
             }
+            finally
+            {
+                DiscardBatchesOnError(ref current, ref inFlight);
+            }
         }
+    }
+
+    private void CommitMergedBatch(TransactionPersistentContext persistentContext, ref Transaction current, ref Transaction inFlight, bool forceOwnJournalWrite)
+    {
+        current ??= _env.WriteTransaction(persistentContext);
+
+        if (forceOwnJournalWrite)
+        {
+            // we do a dummy change here to force the env
+            // to think that it has an actual transaction and thus
+            // will force it to flush / remove older journal
+            current.LowLevelTransaction.ModifyPage(0);
+        }
+
+        var next = current.BeginAsyncCommitAndStartNewTransaction(persistentContext);
+        var justSubmitted = current;
+        current = next;
+
+        // the batch before this one has had this whole round to be submitted
+        CompleteInFlightBatch(ref inFlight);
+        inFlight = justSubmitted;
+    }
+
+    private static void CompleteInFlightBatch(ref Transaction inFlight)
+    {
+        var batch = inFlight;
+        inFlight = null;
+
+        if (batch == null)
+            return;
+
+        using (batch)
+            batch.EndAsyncCommit();
+    }
+
+    private static void DiscardBatchesOnError(ref Transaction current, ref Transaction inFlight)
+    {
+        // an outstanding async commit has to be ended before its transaction can be disposed, and the
+        // environment will not shut down while one is still open
+        try
+        {
+            CompleteInFlightBatch(ref inFlight);
+        }
+        catch
+        {
+            // the failure is already being reported through SharedJournalState
+        }
+
+        var open = current;
+        current = null;
+        open?.Dispose();
     }
 
     public void JournalMergeSubmitted()

@@ -228,7 +228,7 @@ namespace Raven.Server.Documents.Indexes.Workers
                                             inMemoryStats.UpdateLastEtag(lastEtag, actionType == ActionType.Tombstone);
                                             totalProcessedCount++;
 
-                                            token.ThrowIfCancellationRequested();
+                                            _index.IndexingCheckpoint(token);
 
                                             if (CanContinueReferenceBatch() == false)
                                                 break;
@@ -245,7 +245,7 @@ namespace Raven.Server.Documents.Indexes.Workers
                                             long lastIndexedParentEtag = 0;
                                             while (itemsEnumerator.MoveNext(queryContext.Documents, out IEnumerable mapResults, out var etag))
                                             {
-                                                token.ThrowIfCancellationRequested();
+                                                _index.IndexingCheckpoint(token);
 
                                                 var current = itemsEnumerator.Current;
 

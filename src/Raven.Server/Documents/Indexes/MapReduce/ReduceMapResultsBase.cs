@@ -105,7 +105,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
             foreach (var store in _mapReduceContext.StoreByReduceKeyHash)
             {
-                token.ThrowIfCancellationRequested();
+                _index.IndexingCheckpoint(token);
                 
                 using (var reduceKeyHash = indexContext.GetLazyString(store.Key.ToString(CultureInfo.InvariantCulture)))
                 using (store.Value)
@@ -318,7 +318,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
             foreach (var modifiedPage in modifiedStore.ModifiedPages)
             {
-                token.ThrowIfCancellationRequested();
+                _index.IndexingCheckpoint(token);
 
                 page.Base = lowLevelTransaction.GetPage(modifiedPage).Pointer;
 
@@ -413,7 +413,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
             while (parentPagesToAggregate.Count > 0 || branchesToAggregate.Count > 0)
             {
-                token.ThrowIfCancellationRequested();
+                _index.IndexingCheckpoint(token);
 
                 var branchPages = parentPagesToAggregate;
                 parentPagesToAggregate = new HashSet<long>();

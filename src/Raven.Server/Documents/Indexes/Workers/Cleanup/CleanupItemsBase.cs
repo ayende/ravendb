@@ -99,7 +99,7 @@ namespace Raven.Server.Documents.Indexes.Workers.Cleanup
 
                             foreach (var tombstone in tombstones)
                             {
-                                token.ThrowIfCancellationRequested();
+                                _index.IndexingCheckpoint(token);
 
                                 count++;
                                 totalProcessedCount++;

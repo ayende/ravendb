@@ -7,6 +7,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -190,6 +191,42 @@ namespace Raven.Server.Documents.Indexes
         public readonly HashSet<string> Collections;
 
         internal IndexStorage _indexStorage;
+
+        private (RavenTransaction Tx, TransactionOperationContext Ctx) _currentIndexingScope;
+
+        // Allows to join the _current_ tx, if it is open and we are in the indexing thread.
+        internal bool TryJoinIndexingWriteTransaction(out TransactionOperationContext context, out RavenTransaction tx)
+        {
+            if (_indexingThread != null && _indexingThread == PoolOfThreads.LongRunningWork.Current)
+            {
+                (tx, context) = _currentIndexingScope;
+                return tx != null;
+            }
+
+            context = null;
+            tx = null;
+            return false;
+        }
+
+        private int _writeLockWaiters;
+
+        // used to check if we need to yield the indexing thread for external writers
+        internal bool IsWriteLockWanted => Volatile.Read(ref _writeLockWaiters) > 0;
+
+        internal WriteLockWaiterScope WriteLockWanted()
+        {
+            Interlocked.Increment(ref _writeLockWaiters);
+            return new WriteLockWaiterScope(this);
+        }
+
+        internal readonly ref struct WriteLockWaiterScope(Index parent)
+        {
+            public void Dispose()
+            {
+                if (parent is null) return;
+                Interlocked.Decrement(ref parent._writeLockWaiters);
+            }
+        }
 
         private IIndexingWork[] _indexWorkers;
 
@@ -395,6 +432,8 @@ namespace Raven.Server.Documents.Indexes
                 if (indexingThread != null && PoolOfThreads.LongRunningWork.Current != indexingThread)
                     indexingThread.Join(int.MaxValue);
             });
+
+            exceptionAggregator.Execute(DrainPendingIndexingCommit);
 
             exceptionAggregator.Execute(() => { IndexPersistence?.Dispose(); });
 
@@ -967,6 +1006,8 @@ namespace Raven.Server.Documents.Indexes
 
         private void InitializeComponentsUsingEnvironment(DocumentDatabase documentDatabase, StorageEnvironment environment)
         {
+            _pipeliningEnabled = environment.Options.Encryption.IsEnabled == false && environment.Options.RunningOn32Bits == false;
+
             _contextPool?.Dispose();
             _contextPool = new TransactionContextPool(_logger, environment, documentDatabase.Configuration.Memory.MaxContextSizeToKeep);
 
@@ -1705,6 +1746,8 @@ namespace Raven.Server.Documents.Indexes
 
                         bool didWork = false;
 
+                        Task batchPublished = Task.CompletedTask;
+
                         var stats = _lastStats = new IndexingStatsAggregator(DocumentDatabase.IndexStore.Identities.GetNextIndexingStatsId(), _lastStats);
 
                         try
@@ -1744,7 +1787,7 @@ namespace Raven.Server.Documents.Indexes
 
                                             TimeSpentIndexing.Start();
 
-                                            didWork = DoIndexingWork(scope, _indexingProcessCancellationTokenSource.Token);
+                                            (didWork, batchPublished) = RunIndexingBatch(scope, _indexingProcessCancellationTokenSource.Token);
 
                                             if (_lowMemoryPressure > 0)
                                                 LowMemoryOver();
@@ -1779,7 +1822,16 @@ namespace Raven.Server.Documents.Indexes
                                         DocumentDatabase.ServerStore.ServerWideConcurrentlyRunningIndexesLock?.Release();
                                     }
 
-                                    _indexingBatchCompleted.SetAndResetAtomically();
+                                    if (batchPublished.IsCompleted)
+                                    {
+                                        _indexingBatchCompleted.SetAndResetAtomically();
+                                    }   
+                                    else   // Listeners of this - WaitForIndexing, "wait for indexes" on bulk docs, query non-stale waits                                    
+                                    {      // must wait until we actually publish the transaction
+                                        batchPublished.ContinueWith(
+                                            static (_, index) => ((Index)index)._indexingBatchCompleted.SetAndResetAtomically(),
+                                            this, TaskScheduler.Default);
+                                    }
 
                                     if (didWork)
                                     {
@@ -2007,6 +2059,8 @@ namespace Raven.Server.Documents.Indexes
                 finally
                 {
                     _forTestingPurposes?.ActionToCallInFinallyOfExecuteIndexing?.Invoke();
+
+                    DrainPendingIndexingCommit();
 
                     _inMemoryIndexProgress.Clear();
 
@@ -2492,116 +2546,369 @@ namespace Raven.Server.Documents.Indexes
             TestRun = new TestIndexRun(context, docsToProcessPerCollection, numberOfCollections);
         }
 
+        public readonly record struct IndexingBatchResult(
+            bool MightBeMore, 
+            // The task is completed when the batch's transaction is durable and visible to new read transactions.
+            Task Published);
+
         public bool DoIndexingWork(IndexingStatsScope stats, CancellationToken cancellationToken)
+        {
+            var result = RunIndexingBatch(stats, cancellationToken);
+
+            // This is called only for tests, so we ensure that the batch is fully committed and visible before returning.
+            if (result.Published.IsCompleted == false)
+                DrainPendingIndexingCommit();
+
+            result.Published.GetAwaiter().GetResult();
+            return result.MightBeMore;
+        }
+
+        public IndexingBatchResult RunIndexingBatch(IndexingStatsScope stats, CancellationToken cancellationToken)
         {
             _threadAllocations = NativeMemory.CurrentThreadStats;
             _initialManagedAllocations = new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes);
-
-            bool mightBeMore = false;
 
             using (CreateBatchRunningFileMarkerIfDebuggingEnabled())
             using (DocumentDatabase.PreventFromUnloadingByIdleOperations())
             using (CultureHelper.EnsureInvariantCulture())
             using (var context = QueryOperationContext.Allocate(DocumentDatabase, this))
-            using (_contextPool.AllocateOperationContext(out TransactionOperationContext indexContext))
             {
-                indexContext.PersistentContext.LongLivedTransactions = true;
                 context.SetLongLivedTransactions(true);
 
-                using (var tx = indexContext.OpenWriteTransaction())
-                using (CurrentIndexingScope.Current = CreateIndexingScope(indexContext, context))
+                var cur = _previousIndexingTransaction ?? OpenIndexingTransaction();
+                _previousIndexingTransaction = null;
+                _currentIndexingScope = default;
+
+                var chained = false;
+                Task published = Task.CompletedTask;
+
+                try
                 {
-                    var writeOperation = new Lazy<IndexWriteOperationBase>(() =>
+                    bool mightBeMore = false;
+
+                    using (CurrentIndexingScope.Current = CreateIndexingScope(cur.Context, context))
                     {
-                        var writer = IndexPersistence.OpenIndexWriter(indexContext.Transaction.InnerTransaction, indexContext);
-
-                        if (IsTestRun)
-                            writer = TestRun.CreateIndexWriteOperationWrapper(writer, this);
-
-                        return writer;
-                    });
-                    try
-                    {
-                        long? entriesCount = null;
-
-                        using (InitializeIndexingWork(indexContext))
+                        var writeOperation = new Lazy<IndexWriteOperationBase>(() =>
                         {
-                            foreach (var work in _indexWorkers)
-                            {
-                                using (var scope = stats.For(work.Name))
-                                {
-                                    var result = work.Execute(context, indexContext, writeOperation, scope, cancellationToken);
-                                    mightBeMore |= result.MoreWorkFound;
+                            var writer = IndexPersistence.OpenIndexWriter(cur.Context.Transaction.InnerTransaction, cur.Context);
 
-                                    if (mightBeMore)
+                            if (IsTestRun)
+                                writer = TestRun.CreateIndexWriteOperationWrapper(writer, this);
+
+                            return writer;
+                        });
+                        try
+                        {
+                            long? entriesCount = null;
+
+                            using (InitializeIndexingWork(cur.Context))
+                            {
+                                var batchCutByLimits = false;
+
+                                while (true)
+                                {
+                                    foreach (var work in _indexWorkers)
                                     {
-                                        var ignoreThrottling = result.BatchContinuationResult == CanContinueBatchResult.False; // if batch was stopped because of memory limit or batch size then let it continue immediately
+                                        IndexingCheckpoint(cancellationToken);
 
-                                        _mre.Set(ignoreThrottling);
+                                        using (var scope = stats.For(work.Name))
+                                        {
+                                            var result = work.Execute(context, cur.Context, writeOperation, scope, cancellationToken);
+                                            mightBeMore |= result.MoreWorkFound;
+                                            batchCutByLimits |= result.BatchContinuationResult == CanContinueBatchResult.False;
+
+                                            if (mightBeMore)
+                                            {
+                                                var ignoreThrottling = result.BatchContinuationResult == CanContinueBatchResult.False; // if batch was stopped because of memory limit or batch size then let it continue immediately
+
+                                                _mre.Set(ignoreThrottling);
+                                            }
+                                        }
                                     }
+
+                                    if (batchCutByLimits) // a full backlog is already waiting, the batch is as big as it may get
+                                        break;
+
+                                    if (WaitForMoreItemsToGather(cancellationToken) == false)
+                                        break;
                                 }
-                            }
 
-                            var current = new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes);
-                            stats.SetAllocatedManagedBytes((current - _initialManagedAllocations).GetValue(SizeUnit.Bytes));
+                                var current = new Size(GC.GetAllocatedBytesForCurrentThread(), SizeUnit.Bytes);
+                                stats.SetAllocatedManagedBytes((current - _initialManagedAllocations).GetValue(SizeUnit.Bytes));
 
-                            if (writeOperation.IsValueCreated)
-                            {
-                                using (var indexWriteOperation = writeOperation.Value)
+                                if (writeOperation.IsValueCreated)
                                 {
-                                    indexWriteOperation.Commit(stats, cancellationToken);
+                                    using (var indexWriteOperation = writeOperation.Value)
+                                    {
+                                        IndexingCheckpoint(cancellationToken);
 
-                                    entriesCount = writeOperation.Value.EntriesCount();
+                                        indexWriteOperation.Commit(stats, cancellationToken);
+
+                                        entriesCount = writeOperation.Value.EntriesCount();
+                                    }
+
+                                    // at this point, we have completed storing all Lucene segment files,
+                                    // so we can safely release the stream buffer.
+                                    cur.Context.Transaction.InnerTransaction.DisposeStreamBuffer();
+
+                                    UpdateThreadAllocations(cur.Context, null, null, IndexingWorkType.None);
                                 }
 
-                                // at this point, we have completed storing all Lucene segment files,
-                                // so we can safely release the stream buffer.
-                                indexContext.Transaction.InnerTransaction.DisposeStreamBuffer();
+                                IndexFieldsPersistence.Persist(cur.Context);
+                                HandleReferences(cur.Tx, stats);
 
-                                UpdateThreadAllocations(indexContext, null, null, IndexingWorkType.None);
+                                HandleMismatchedReferences();
+                                HandleComplexFieldsAlert();
                             }
 
-                            IndexFieldsPersistence.Persist(indexContext);
-                            HandleReferences(tx, stats);
+                            using (stats.For(IndexingOperation.Storage.Commit))
+                            {
+                                cur.Tx.InnerTransaction.LowLevelTransaction.RetrieveCommitStats(out CommitStats commitStats);
 
-                            HandleMismatchedReferences();
-                            HandleComplexFieldsAlert();
+                                cur.Tx.InnerTransaction.LowLevelTransaction.LastChanceToReadFromWriteTransactionBeforeCommit += llt =>
+                                {
+                                    llt.UpdateClientState(IndexPersistence.UpdateIndexCache(llt.Transaction));
+                                };
+
+                                if (writeOperation.IsValueCreated)
+                                {
+                                    using (stats.For(IndexingOperation.Lucene.RecreateSearcher))
+                                    {
+                                        IndexPersistence.RecreateSearcher(cur.Tx.InnerTransaction);
+                                        IndexPersistence.RecreateSuggestionsSearchers(cur.Tx.InnerTransaction);
+                                    }
+
+                                    if (entriesCount != null)
+                                        stats.RecordEntriesCountAfterTxCommit(entriesCount.Value);
+                                }
+
+                                cur.Tx.InnerTransaction.LowLevelTransaction.OnDispose += _ => IndexPersistence.CleanWritersIfNeeded();
+
+                                // here we wait for the _previous_ transaction to complete before committing the current one
+                                _completionPump.DrainAll();
+                                _completionPump.ThrowOnFailure();
+
+                                if (mightBeMore is false ||     // no work remaining, synchronous commit & done
+                                    IsWriteLockWanted    ||     // another thread is waiting for the write lock, sync commit yields it
+                                    _pipeliningEnabled is false)
+                                {
+                                    cur.Tx.Commit();
+                                    stats.RecordCommitStats(commitStats.NumberOfModifiedPages, commitStats.NumberOf4KbsWrittenToDisk);
+                                    return new IndexingBatchResult(mightBeMore, published);
+                                }
+
+                                var next = AllocateIndexingContext();
+                                cur.Published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+                                published = cur.Published.Task;
+                                next.Tx = cur.Tx.BeginAsyncCommitAndStartNewTransaction(next.Context.PersistentContext);
+                                next.Context.Transaction = next.Tx;
+
+                                cur.CommitStats = commitStats;
+                                cur.Stats = stats;
+                                stats.MarkCommitStatsPending();
+                                _completionPump.Release(cur);
+
+                                _previousIndexingTransaction = next;
+                                _currentIndexingScope = (next.Tx, next.Context);
+                                chained = true;
+                                return new IndexingBatchResult(mightBeMore, published);
+                            }
                         }
-
-                        using (stats.For(IndexingOperation.Storage.Commit))
+                        catch
                         {
-                            tx.InnerTransaction.LowLevelTransaction.RetrieveCommitStats(out CommitStats commitStats);
-
-                            tx.InnerTransaction.LowLevelTransaction.LastChanceToReadFromWriteTransactionBeforeCommit += llt =>
-                            {
-                                llt.UpdateClientState(IndexPersistence.UpdateIndexCache(llt.Transaction));
-                            };
-
-                            if (writeOperation.IsValueCreated)
-                            {
-                                using (stats.For(IndexingOperation.Lucene.RecreateSearcher))
-                                {
-                                    IndexPersistence.RecreateSearcher(tx.InnerTransaction);
-                                    IndexPersistence.RecreateSuggestionsSearchers(tx.InnerTransaction);
-                                }
-
-                                if (entriesCount != null)
-                                    stats.RecordEntriesCountAfterTxCommit(entriesCount.Value);
-                            }
-
-                            tx.InnerTransaction.LowLevelTransaction.OnDispose += _ => IndexPersistence.CleanWritersIfNeeded();
-
-                            tx.Commit();
-                            stats.RecordCommitStats(commitStats.NumberOfModifiedPages, commitStats.NumberOf4KbsWrittenToDisk);
+                            DisposeIndexWriterOnError(writeOperation);
+                            throw;
                         }
                     }
-                    catch
+                }
+                catch
+                {
+                    if (chained)
                     {
-                        DisposeIndexWriterOnError(writeOperation);
+                        try
+                        {
+                            // we failed, but we still need to drain the pending indexing commits before we throw
+                            DrainPendingIndexingCommit();
+                        }
+                        catch
+                        {
+                            // ignored, see above
+                        }
+
                         throw;
                     }
 
-                    return mightBeMore;
+                    _previousIndexingTransaction = null;
+                    _currentIndexingScope = default;
+                    throw;
+                }
+                finally
+                {
+                    if (chained == false)
+                    {
+                        // we didn't chain _this_ time, but we might have done so previously, need to wait for all to complete
+                        _completionPump.DrainAll();
+
+                        cur.Dispose();
+                    }
+                }
+            }
+        }
+
+        private sealed class IndexingTransactionLink : IDisposable, IAsyncCommittedBatch
+        {
+            public TransactionOperationContext Context;
+            public IDisposable ReturnContext;
+            public RavenTransaction Tx;
+
+            public CommitStats CommitStats;
+            public IndexingStatsScope Stats;
+
+            /// <summary>Completed once this batch has been EndAsyncCommit'ed, and so is visible to readers.</summary>
+            public TaskCompletionSource Published;
+
+            public Task DurableCommit => Tx?.InnerTransaction.LowLevelTransaction.DurableCommit;
+
+            public ExceptionDispatchInfo Complete(Exception priorFailure)
+            {
+                var error = priorFailure;
+                ExceptionDispatchInfo failure = null;
+
+                try
+                {
+                    Tx.EndAsyncCommit();
+                    Stats?.RecordCommitStats(CommitStats.NumberOfModifiedPages, CommitStats.NumberOf4KbsWrittenToDisk);
+                }
+                catch (Exception e)
+                {
+                    error ??= e;
+                    failure = ExceptionDispatchInfo.Capture(e);
+                }
+
+                try
+                {
+                    if (error == null)
+                        Published?.TrySetResult();
+                    else
+                        Published?.TrySetException(error);
+                }
+                finally
+                {
+                    Dispose();
+                }
+
+                return failure;
+            }
+
+            public void Dispose()
+            {
+                using (ReturnContext)
+                {
+                    var tx = Tx;
+                    Tx = null;
+                    tx?.Dispose();
+                }
+            }
+        }
+
+        private bool _pipeliningEnabled;
+
+        private IndexingTransactionLink _previousIndexingTransaction;
+
+        internal bool WaitForMoreItemsToGather(CancellationToken token)
+        {
+            if (Configuration.ThrottlingTimeInterval != null)
+                return false;
+
+            if (token.IsCancellationRequested || IsWriteLockWanted)
+                return false;
+
+            var inFlight = _completionPump.OldestDurableCommit;
+            if (inFlight is null || inFlight.IsCompleted)
+                return false;
+
+            try
+            {
+                inFlight.Wait(token);
+            }
+            catch
+            {
+                return false; // the drain at the commit point reports this properly
+            }
+
+            return true;
+        }
+
+        private readonly AsyncCommitCompletionPump<IndexingTransactionLink> _completionPump = new();
+
+        internal void IndexingCheckpoint(CancellationToken token)
+        {
+            // this is called during the indexing batch to cancel the batch and check if the *previous*
+            // indexing batch was completed and its results can be published.
+
+            IndexingCheckpointWithoutCancellation();
+            token.ThrowIfCancellationRequested();
+        }
+
+        internal void IndexingCheckpointWithoutCancellation()
+        {
+            if (_completionPump.OldestTransactionIsDurable is false)
+                return;
+
+            _completionPump.DrainCompleted();
+            _completionPump.ThrowOnFailure();
+        }
+
+        private IndexingTransactionLink AllocateIndexingContext()
+        {
+            var returnContext = _contextPool.AllocateOperationContext(out TransactionOperationContext indexContext);
+            indexContext.PersistentContext.LongLivedTransactions = true;
+
+            return new IndexingTransactionLink { Context = indexContext, ReturnContext = returnContext };
+        }
+
+        private IndexingTransactionLink OpenIndexingTransaction()
+        {
+            var link = AllocateIndexingContext();
+            try
+            {
+                link.Tx = link.Context.OpenWriteTransaction();
+                return link;
+            }
+            catch
+            {
+                link.Dispose();
+                throw;
+            }
+        }
+
+        internal void DrainPendingIndexingCommit()
+        {
+            var pending = _previousIndexingTransaction;
+            _previousIndexingTransaction = null;
+            _currentIndexingScope = default;
+
+            try
+            {
+                _completionPump.DrainAll();
+            }
+            finally
+            {
+                if (pending != null)
+                {
+                    try
+                    {
+                        // Index stats and errors are written after the batch, via OpenWriteScope, we commit that here
+                        pending.Tx?.Commit();
+                    }
+                    catch
+                    {
+                        // the environment is already failing; the transaction is disposed either way
+                    }
+                    finally
+                    {
+                        pending.Dispose();
+                    }
                 }
             }
         }

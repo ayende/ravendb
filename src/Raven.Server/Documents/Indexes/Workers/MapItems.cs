@@ -64,7 +64,9 @@ namespace Raven.Server.Documents.Indexes.Workers
                     var lastCollectionEtag = -1L;
                     while (keepRunning)
                     {
-                        batchContinuationResult = Index.CanContinueBatchResult.None;
+                        _index.IndexingCheckpoint(token);
+
+                        var iterationContinuationResult = Index.CanContinueBatchResult.None;
 
                         using (queryContext.OpenReadTransaction())
                         {
@@ -94,7 +96,7 @@ namespace Raven.Server.Documents.Indexes.Workers
                                         break;
                                     }
 
-                                    token.ThrowIfCancellationRequested();
+                                    _index.IndexingCheckpoint(token);
 
                                     var current = itemEnumerator.Current;
 
@@ -102,19 +104,19 @@ namespace Raven.Server.Documents.Indexes.Workers
                                     // this can happen for counters, because we are processing counters from counter group separately
                                     if (prevEtag != current.Etag)
                                     {
-                                        if (batchContinuationResult == Index.CanContinueBatchResult.False)
+                                        if (iterationContinuationResult == Index.CanContinueBatchResult.False)
                                         {
                                             if (_index.TestRun != null)
-                                                _index.TestRun.HandleCanContinueBatch(batchContinuationResult, collection);
+                                                _index.TestRun.HandleCanContinueBatch(iterationContinuationResult, collection);
 
                                             keepRunning = false;
                                             break;
                                         }
 
-                                        if (batchContinuationResult == Index.CanContinueBatchResult.RenewTransaction)
+                                        if (iterationContinuationResult == Index.CanContinueBatchResult.RenewTransaction)
                                         {
                                             if (_index.TestRun != null)
-                                                _index.TestRun.HandleCanContinueBatch(batchContinuationResult, collection);
+                                                _index.TestRun.HandleCanContinueBatch(iterationContinuationResult, collection);
 
                                             break;
                                         }
@@ -170,7 +172,10 @@ namespace Raven.Server.Documents.Indexes.Workers
                                     var parameters = new CanContinueBatchParameters(collectionStats, IndexingWorkType.Map, queryContext, indexContext, writeOperation,
                                         lastEtag, lastCollectionEtag, totalProcessedCount, sw);
 
-                                    batchContinuationResult = _index.CanContinueBatch(in parameters, ref maxTimeForDocumentTransactionToRemainOpen);
+                                    iterationContinuationResult = _index.CanContinueBatch(in parameters, ref maxTimeForDocumentTransactionToRemainOpen);
+
+                                    if (iterationContinuationResult == Index.CanContinueBatchResult.False)
+                                        batchContinuationResult = Index.CanContinueBatchResult.False;
                                 }
                             }
                         }

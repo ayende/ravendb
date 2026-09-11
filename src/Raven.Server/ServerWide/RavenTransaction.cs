@@ -1,9 +1,10 @@
-﻿using System;
+using System;
 using System.Diagnostics.CodeAnalysis;
 using System.Threading;
 using Raven.Server.Logging;
 using Sparrow.Logging;
 using Sparrow.Server.Logging;
+using Voron;
 using Voron.Impl;
 
 namespace Raven.Server.ServerWide
@@ -28,6 +29,12 @@ namespace Raven.Server.ServerWide
         {
             BeforeCommit();
             InnerTransaction.Commit();
+        }
+
+        public virtual RavenTransaction BeginAsyncCommitAndStartNewTransaction(TransactionPersistentContext persistentContext)
+        {
+            BeforeCommit();
+            return new RavenTransaction(InnerTransaction.BeginAsyncCommitAndStartNewTransaction(persistentContext));
         }
 
         public void EndAsyncCommit()

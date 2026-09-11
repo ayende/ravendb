@@ -42,6 +42,8 @@ namespace Raven.Server.Documents.Indexes
 
         public StorageCommitDetails CommitDetails;
 
+        public volatile bool CommitDetailsPending;
+
         public List<IndexingError> Errors;
 
         public int MaxNumberOfOutputsPerDocument;
