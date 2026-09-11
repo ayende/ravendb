@@ -1,28 +1,22 @@
+using System.Threading;
 using Corax.Utils;
 
 namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
-public readonly struct CoraxIndexingStats : ICoraxStatsScope
+public readonly struct CoraxIndexingStats(IndexingStatsScope stats, Index index) : ICoraxIndexingScope<CoraxIndexingStats>
 {
-    private readonly IndexingStatsScope _stats;
+    public CoraxIndexingStats For(string name, bool start = true) => new CoraxIndexingStats(stats.For(name, start), index);
 
-    public CoraxIndexingStats(IndexingStatsScope indexingStatsScope)
+    public void Checkpoint(long allocatedUnmanagedBytes, CancellationToken token)
     {
-        _stats = indexingStatsScope;
-    }
-    
-    public ICoraxStatsScope For(string name, bool start = true)
-    {
-        return new CoraxIndexingStats(_stats.For(name, start));
+        stats.SetAllocatedUnmanagedBytes(allocatedUnmanagedBytes);
+
+        index?.IndexingCheckpointWithoutCancellation();
+        token.ThrowIfCancellationRequested();
     }
 
-    public void SetAllocatedUnmanagedBytes(long sizeInBytes)
-    {
-        _stats.SetAllocatedUnmanagedBytes(sizeInBytes);
-    }
-    
     public void Dispose()
     {
-        _stats?.Dispose();
+        stats?.Dispose();
     }
 }

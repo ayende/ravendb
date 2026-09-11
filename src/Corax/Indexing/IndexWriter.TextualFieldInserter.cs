@@ -73,7 +73,8 @@ public unsafe partial class IndexWriter
             _postingListPagesProcessingBuffer.Dispose();
         }
 
-        public void InsertTextualField(in CancellationToken token)
+        public void InsertTextualField<TScope>(in TScope scope, CancellationToken token)
+            where TScope : struct, ICoraxIndexingScope<TScope>
         {
             long totalLengthOfTerm = 0;
             _buffers.PrepareTerms(_indexedField, out var sortedTerms, out var termsOffsets);
@@ -99,7 +100,7 @@ public unsafe partial class IndexWriter
 
             while (true)
             {
-                token.ThrowIfCancellationRequested();
+                scope.Checkpoint(_writer._entriesAllocator?._totalAllocated ?? 0, token);
 
                 if (sortedTerms.IsEmpty)
                     break;

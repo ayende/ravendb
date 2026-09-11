@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using System.Threading;
 using Sparrow;
@@ -129,7 +130,8 @@ public partial class Hnsw
             }
         }
 
-        private void InsertVectorsToGraph(ref ContextBoundNativeList<byte> byteBuffer, CancellationToken token)
+        private void InsertVectorsToGraph<TCheckpoint>(ref ContextBoundNativeList<byte> byteBuffer, in TCheckpoint checkpoint, CancellationToken token)
+            where TCheckpoint : struct, IOperationCheckpoint
         {
             if (_searchState.TryGetLocationForNode(EntryPointId, out var entryPointNode) is false)
             {
@@ -150,7 +152,7 @@ public partial class Hnsw
             // but not too much...
             int maxTasks = Math.Min(numberOfBatches, MaxConcurrentBatches);
             NodePlacementRunner runner = new(this, maxTasks, token);
-            runner.Run();
+            runner.Run(checkpoint);
         }
 
         private class NodePlacement(Registration parent, NodePlacementRunner runner)
@@ -743,6 +745,7 @@ public partial class Hnsw
             private readonly CancellationTokenSource _errorCts = new();
             private readonly CancellationTokenSource _mainCts;
             private readonly List<Exception> _errors = [];
+            private ExceptionDispatchInfo _checkpointFailure; // capture this so we can safely raise when there are no workers active
             private readonly LinkedList<int> _inFlightIndexes = [];
             private readonly Registration.TestingStuff _forTestingPurposes;
 
@@ -784,13 +787,29 @@ public partial class Hnsw
             }
 
             
-            public void Run()
+            public void Run<TCheckpoint>(in TCheckpoint checkpoint)
+                where TCheckpoint : struct, IOperationCheckpoint
             {
                 List<long> batch = [];
                 while (true)
                 {
                     _ready.Wait();
                     _ready.Reset();
+
+                    if (_mainCts.IsCancellationRequested == false && _checkpointFailure == null)
+                    {
+                        try
+                        {
+                            // we must do this on the thread that owns the transaction
+                            checkpoint.Checkpoint(_searchState.Llt.Allocator._totalAllocated, _mainCts.Token);
+                        }
+                        catch (Exception e)
+                        {
+                            // stop the workers and let them drain; this is rethrown below, once they are done
+                            _checkpointFailure = ExceptionDispatchInfo.Capture(e);
+                            _errorCts.Cancel();
+                        }
+                    }
 
                     _forTestingPurposes?.OnLltRunRound(_searchState);
 
@@ -815,6 +834,8 @@ public partial class Hnsw
 
                     if (_completed == _activeTasksCount)
                     {
+                        _checkpointFailure?.Throw(); // every task has drained, so it is safe to unwind now
+
                         if(_errors.Count > 0)
                             throw new AggregateException(_errors);
                         if (_errorCts.IsCancellationRequested == false && _mainCts.IsCancellationRequested)

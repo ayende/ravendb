@@ -1053,10 +1053,10 @@ namespace Corax.Indexing
             return fieldTree.TryGetValue(termValue, out idInTree);
         }
 
-        public void Commit(CancellationToken token = default) => Commit<EmptyStatsScope>(default, token);
+        public void Commit(CancellationToken token = default) => Commit<EmptyIndexingScope>(default, token);
 
-        public void Commit<TStatsScope>(TStatsScope stats, CancellationToken token)
-            where TStatsScope : struct, ICoraxStatsScope
+        public void Commit<TScope>(in TScope scope, CancellationToken token)
+            where TScope : struct, ICoraxIndexingScope<TScope>
         {
             _indexDebugDumper.Commit();
             using var _ = _entriesAllocator.Allocate(Container.MaxSizeInsideContainerPage, out Span<byte> workingBuffer);
@@ -1091,8 +1091,7 @@ namespace Corax.Indexing
             uniquePostingList.Sort(sortedFields);
             foreach (var indexedField in sortedFields)
             {
-                token.ThrowIfCancellationRequested();
-                stats.SetAllocatedUnmanagedBytes(_entriesAllocator?._totalAllocated ?? 0);
+                scope.Checkpoint(_entriesAllocator?._totalAllocated ?? 0, token);
 
                 //Dynamic terms will be indexed with explicit field terms.
                 if (indexedField.IsVirtual)
@@ -1100,7 +1099,7 @@ namespace Corax.Indexing
                     continue;
                 }
 
-                using var staticFieldScope = stats.For(indexedField.NameForStatistics);
+                using var staticFieldScope = scope.For(indexedField.NameForStatistics);
 
                 if (indexedField.VectorIndexer != null)
                 {
@@ -1108,7 +1107,7 @@ namespace Corax.Indexing
                     RegisterVectorRootPage(indexedField.FieldRootPage);
                     if (MaximumConcurrentBatchesForHnswAcceleration != null)
                         indexedField.VectorIndexer.MaxConcurrentBatches = MaximumConcurrentBatchesForHnswAcceleration.Value;
-                    indexedField.VectorIndexer.Commit(token);
+                    indexedField.VectorIndexer.Commit(scope, token);
 
                     // Snapshot DirtyNodeIds before ResetWriter clears the field's VectorIndexer.
                     // The post-commit hook (CoraxIndexPersistence.RecreateSearcher) consumes this
@@ -1130,23 +1129,23 @@ namespace Corax.Indexing
                 using (staticFieldScope.For(CommitOperation.TextualValues))
                 {
                     using var inserter = new TextualFieldInserter(this, indexedField, workingBuffer);
-                    inserter.InsertTextualField(token);
+                    inserter.InsertTextualField(scope, token);
                 }
 
                 using (staticFieldScope.For(CommitOperation.IntegerValues))
                 {
                     using var inserter = new NumericalFieldInserter<long, Int64LookupKey>(this, indexedField, workingBuffer);
-                    inserter.InsertNumericalField(token);
+                    inserter.InsertNumericalField(scope, token);
                 }
 
                 using (staticFieldScope.For(CommitOperation.FloatingValues))
                 {
                     using var inserter = new NumericalFieldInserter<double, DoubleLookupKey>(this, indexedField, workingBuffer);
-                    inserter.InsertNumericalField(token);
+                    inserter.InsertNumericalField(scope, token);
                 }
 
                 using (staticFieldScope.For(CommitOperation.SpatialValues))
-                    InsertSpatialField(entriesToSpatialTree, indexedField, token);
+                    InsertSpatialField(entriesToSpatialTree, indexedField, scope, token);
 
                 if (indexedField.HasMultipleTermsPerField)
                 {
@@ -1154,7 +1153,7 @@ namespace Corax.Indexing
                 }
             }
 
-            using (stats.For(CommitOperation.StoredValues))
+            using (scope.For(CommitOperation.StoredValues))
                 WriteIndexEntries();
 
             _pForEncoder.Dispose();
@@ -1165,7 +1164,7 @@ namespace Corax.Indexing
             // Check if we have suggestions to deal with. 
             if (_hasSuggestions)
             {
-                using var __ = stats.For(CommitOperation.Suggestions);
+                using var __ = scope.For(CommitOperation.Suggestions);
                 for (var fieldId = 0; fieldId < _knownFieldsTerms.Length; fieldId++)
                 {
                     IndexedField indexedField = _knownFieldsTerms[fieldId];
@@ -1240,7 +1239,8 @@ namespace Corax.Indexing
             }
         }
 
-        private void InsertSpatialField(Tree entriesToSpatialTree, IndexedField indexedField, CancellationToken token)
+        private void InsertSpatialField<TScope>(Tree entriesToSpatialTree, IndexedField indexedField, in TScope scope, CancellationToken token)
+            where TScope : struct, ICoraxIndexingScope<TScope>
         {
             if (indexedField.Spatial == null)
                 return;
@@ -1254,7 +1254,7 @@ namespace Corax.Indexing
 
             foreach (var (entry, spatialEntry) in indexedField.Spatial)
             {
-                token.ThrowIfCancellationRequested();
+                scope.Checkpoint(_entriesAllocator?._totalAllocated ?? 0, token);
                 spatialEntry.Locations.Sort();
 
                 ref var entryTerms = ref GetEntryTerms(spatialEntry.TermsPerEntryIndex);

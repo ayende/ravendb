@@ -94,7 +94,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
                     _persistence.ActiveWriter = _indexWriter;
                 try
                 {
-                    _indexWriter.Commit(new CoraxIndexingStats(commitStats), token);
+                    _indexWriter.Commit(new CoraxIndexingStats(commitStats, _indexingScope.Index), token);
 
                     // RecreateSearcher fires later from the outer storage tx's commit hook,
                     // by which time the writer reference is gone. Snapshot the dirty sets now

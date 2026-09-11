@@ -1304,7 +1304,10 @@ public unsafe partial class Hnsw
             return hashBuffer;
         }
 
-        public void Commit(CancellationToken token)
+        public void Commit(CancellationToken token) => Commit<NoOpCheckpoint>(default, token);
+
+        public void Commit<TCheckpoint>(in TCheckpoint checkpoint, CancellationToken token)
+            where TCheckpoint : struct, IOperationCheckpoint
         {
             PortableExceptions.ThrowIfOnDebug<InvalidOperationException>(_searchState.Llt.Committed);
 
@@ -1325,7 +1328,7 @@ public unsafe partial class Hnsw
             nodes = Span<Node>.Empty;
             _ = nodes;
 
-            InsertVectorsToGraph(ref byteBuffer, token);
+            InsertVectorsToGraph(ref byteBuffer, checkpoint, token);
 
             nodes = _searchState.Nodes;
             for (int i = 0; i < nodes.Length; i++)

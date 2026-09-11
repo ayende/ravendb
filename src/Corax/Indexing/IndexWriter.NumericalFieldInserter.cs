@@ -1,4 +1,5 @@
 using System;
+using Corax.Utils;
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 using System.Threading;
@@ -58,7 +59,8 @@ public partial class IndexWriter
             _jobs.Dispose();
         }
 
-        public void InsertNumericalField(CancellationToken token)
+        public void InsertNumericalField<TScope>(in TScope scope, CancellationToken token)
+            where TScope : struct, ICoraxIndexingScope<TScope>
         {
             if (_numberOfTermsToProcess == 0)
                 goto Finish;
@@ -68,7 +70,7 @@ public partial class IndexWriter
 
             while (true)
             {
-                token.ThrowIfCancellationRequested();
+                scope.Checkpoint(_writer._entriesAllocator?._totalAllocated ?? 0, token);
 
                 if (sortedTerms.IsEmpty)
                     break;

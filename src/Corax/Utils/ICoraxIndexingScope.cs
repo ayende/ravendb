@@ -1,12 +1,13 @@
 using System;
+using System.Threading;
+using Voron.Util;
 
 namespace Corax.Utils;
 
-public interface ICoraxStatsScope : IDisposable
+public interface ICoraxIndexingScope<TSelf> : IOperationCheckpoint, IDisposable
+    where TSelf : struct, ICoraxIndexingScope<TSelf>
 {
-    ICoraxStatsScope For(string name, bool start = true);
-
-    void SetAllocatedUnmanagedBytes(long sizeInBytes);
+    TSelf For(string name, bool start = true);
 }
 
 public static class CommitOperation
@@ -21,15 +22,16 @@ public static class CommitOperation
     public const string VectorValues = nameof(VectorValues);
 }
 
-internal struct EmptyStatsScope : ICoraxStatsScope
+internal readonly struct EmptyIndexingScope : ICoraxIndexingScope<EmptyIndexingScope>
 {
-    public ICoraxStatsScope For(string name, bool start = true)
+    public EmptyIndexingScope For(string name, bool start = true)
     {
         return this;
     }
 
-    public void SetAllocatedUnmanagedBytes(long sizeInBytes)
+    public void Checkpoint(long allocatedUnmanagedBytes, CancellationToken token)
     {
+        token.ThrowIfCancellationRequested();
     }
 
     public void Dispose()
