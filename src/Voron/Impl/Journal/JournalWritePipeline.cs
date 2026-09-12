@@ -18,13 +18,11 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     private sealed class PendingWrite(JournalWritePipeline pipeline) : IThreadPoolWorkItem, IDisposable
     {
         public readonly List<LowLevelTransaction> Transactions = [];
+        public readonly List<Pal.journal_entry> Entries = [];
+        public readonly List<CompressionBufferRing.Lease> RetainedBuffers = [];
         public SafeJournalWriteContext Context;
         public JournalFile File;
         public long PosBy4Kb;
-        public byte* Buffer;
-        public long BufferSize;
-        public NativeMemory.ThreadStats BufferAllocatingThread;
-        public long BufferGeneration;
         public int NumberOf4Kbs;
         public long Sequence;
         public Exception Error;
@@ -32,12 +30,10 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         public void Reset()
         {
             Transactions.Clear();
+            Entries.Clear();
+            ReleaseRetained(RetainedBuffers);
             File = null;
             PosBy4Kb = 0;
-            Buffer = null;
-            BufferSize = 0;
-            BufferAllocatingThread = null;
-            BufferGeneration = 0;
             NumberOf4Kbs = 0;
             Sequence = 0;
             Error = null;
@@ -49,7 +45,6 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     }
 
     private readonly StorageEnvironment _env;
-    private readonly EncryptionBuffersPool _buffers;
     private readonly int _maxConcurrentWrites;
     private readonly PendingWrite[] _slots;
 
@@ -66,7 +61,6 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     public JournalWritePipeline(StorageEnvironment env)
     {
         _env = env;
-        _buffers = env.Options.Encryption.EncryptionBuffersPool;
         _maxConcurrentWrites = Math.Clamp(env.Options.MaxConcurrentJournalWrites, 1, StorageEnvironmentOptions.MaxSupportedConcurrentJournalWrites);
         _slots = new PendingWrite[_maxConcurrentWrites];
         _allSlots = _maxConcurrentWrites == 64 ? ulong.MaxValue : (1UL << _maxConcurrentWrites) - 1;
@@ -76,9 +70,14 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
     internal bool HasInFlightWrites => Volatile.Read(ref _nextSequence) - Volatile.Read(ref _reapedSequence) > 0;
 
-    public void SubmitPipelined(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<LowLevelTransaction> transactions)
+    public void SubmitPipelined(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<LowLevelTransaction> transactions,
+        List<CompressionBufferRing.Lease> retainedBuffers)
     {
         var write = RentWrite(file, posBy4Kb, (int)totalNumberOf4Kbs, transactions);
+
+        write.Entries.AddRange(entries);
+        write.RetainedBuffers.AddRange(retainedBuffers);
+        retainedBuffers.Clear();
 
         _env.WriteFlow.RecordJournalWriteSubmitted();
 
@@ -86,22 +85,6 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
         try
         {
-            RentBuffer(write);
-
-            long copied4Kbs = 0;
-            foreach (var entry in entries)
-            {
-                Debug.Assert(copied4Kbs + entry.NumberOf4Kbs <= write.NumberOf4Kbs);
-
-                Memory.Copy(write.Buffer + copied4Kbs * Constants.Storage.JournalPageSize, (byte*)entry.Base,
-                    entry.NumberOf4Kbs * Constants.Storage.JournalPageSize);
-                copied4Kbs += entry.NumberOf4Kbs;
-            }
-
-            Debug.Assert(copied4Kbs == write.NumberOf4Kbs, $"copied {copied4Kbs} of {write.NumberOf4Kbs} 4KB blocks");
-
-            RecordSubmitted(transactions);
-
             ThreadPool.UnsafeQueueUserWorkItem(write, preferLocal: false);
         }
         catch (Exception e)
@@ -112,26 +95,38 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         }
     }
 
-    public void WriteInline(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<LowLevelTransaction> transactions)
+    public void WriteInline(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<LowLevelTransaction> transactions,
+        List<CompressionBufferRing.Lease> retainedBuffers)
     {
         Debug.Assert(_disposed is false, "WriteInline called after the pipeline was disposed");
 
         var failure = Volatile.Read(ref _failure);
         if (failure != null) // previous error, fail without bothering to write
         {
+            ReleaseRetained(retainedBuffers);
             FailDurableCommits(transactions, failure.SourceException);
             failure.Throw();
         }
-        
-        WriteDirect(file, posBy4Kb, entries, totalNumberOf4Kbs, transactions);
+
+        WriteDirect(file, posBy4Kb, entries, totalNumberOf4Kbs, transactions, retainedBuffers);
+    }
+
+    private static void ReleaseRetained(List<CompressionBufferRing.Lease> retainedBuffers)
+    {
+        foreach (var retained in retainedBuffers)
+        {
+            retained.Dispose();
+        }
+
+        retainedBuffers.Clear();
     }
 
     private SafeJournalWriteContext _inlineContext;
 
-    private void WriteDirect(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<LowLevelTransaction> transactions)
+    private void WriteDirect(JournalFile file, long posBy4Kb, Span<Pal.journal_entry> entries, long totalNumberOf4Kbs, List<LowLevelTransaction> transactions,
+        List<CompressionBufferRing.Lease> retainedBuffers)
     {
         _env.WriteFlow.RecordJournalWriteSubmitted();
-        RecordSubmitted(transactions);
 
         try
         {
@@ -145,6 +140,10 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         {
             FailDurableCommits(transactions, e);
             throw;
+        }
+        finally
+        {
+            ReleaseRetained(retainedBuffers);
         }
 
         Drain(throwOnFailure: false);
@@ -206,14 +205,6 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
             Monitor.PulseAll(_waiters);
     }
 
-    private static void RecordSubmitted(List<LowLevelTransaction> transactions)
-    {
-        foreach (var tx in transactions)
-        {
-            tx.Environment.RecordJournalWriteSubmitted(tx.Id);
-        }
-    }
-
     private bool IsAfterFailure(long sequence) => sequence > Volatile.Read(ref _lowestFailedSequence);
 
     private void RecordWriteLatency(long ticks, long numberOf4Kbs)
@@ -227,9 +218,8 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         {
             if (IsAfterFailure(write.Sequence) == false)
             {
-                var entry = new Pal.journal_entry { Base = write.Buffer, NumberOf4Kbs = write.NumberOf4Kbs };
                 var start = Stopwatch.GetTimestamp();
-                write.File.Write(write.PosBy4Kb, MemoryMarshal.CreateSpan(ref entry, 1), write.Context);
+                write.File.Write(write.PosBy4Kb, CollectionsMarshal.AsSpan(write.Entries), write.Context);
                 RecordWriteLatency(Stopwatch.GetElapsedTime(start).Ticks, write.NumberOf4Kbs);
             }
             else
@@ -290,6 +280,8 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
     {
         try
         {
+            ReleaseRetained(write.RetainedBuffers);
+
             if (write.Sequence >= Volatile.Read(ref _lowestFailedSequence))
                 FailDurableCommits(write);
             else
@@ -298,8 +290,6 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         finally
         {
             write.File.Release();
-
-            ReturnBuffer(write);
 
             var slot = SlotMask(write.Sequence);
 
@@ -337,7 +327,8 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
 
         Debug.Assert(pending.Transactions.Count == 0, "the slot was left dirty by its previous write");
         Debug.Assert(pending.File == null, "the slot was left dirty by its previous write");
-        Debug.Assert(pending.Buffer == null, "the slot was left dirty by its previous write");
+        Debug.Assert(pending.Entries.Count == 0, "the slot was left dirty by its previous write");
+        Debug.Assert(pending.RetainedBuffers.Count == 0, "the slot was left dirty by its previous write");
 
         try
         {
@@ -396,26 +387,6 @@ internal sealed unsafe class JournalWritePipeline : IDisposable
         catch
         {
         }
-
-        environment.MarkJournalWriteFailed(error);
-    }
-
-    private void RentBuffer(PendingWrite write)
-    {
-        var numberOfPages = checked((int)((write.NumberOf4Kbs * Constants.Storage.JournalPageSize + Constants.Storage.PageSize - 1) / Constants.Storage.PageSize));
-
-        write.BufferGeneration = _buffers.Generation;
-        write.Buffer = _buffers.Get(numberOfPages, out write.BufferSize, out write.BufferAllocatingThread);
-    }
-
-    private void ReturnBuffer(PendingWrite write)
-    {
-        if (write.Buffer == null)
-            return;
-
-        _buffers.Return(write.Buffer, write.BufferSize, write.BufferAllocatingThread, write.BufferGeneration);
-
-        write.Buffer = null;
     }
 
     private TestingStuff _forTestingPurposes;

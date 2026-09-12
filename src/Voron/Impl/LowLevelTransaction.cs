@@ -1168,6 +1168,20 @@ namespace Voron.Impl
         // This task completes when the journal write for this transaction is durably stored on disk.
         internal Task DurableCommit;
         internal TaskCompletionSource PreparedDurableCommit;
+        // This transaction will only be considered durable once the task completes.
+        internal Task DurabilityGate;
+        // The *previous* environment durable write (retained so we can revert the publication if this transaction is withdrawn)
+        internal Task DisplacedDurableWrite;
+
+        private void WaitForCommitDurability()
+        {
+            var durabilityGate = DurabilityGate;
+
+            if (durabilityGate is null or { IsCompletedSuccessfully: true })
+                return; // already on disk
+
+            durabilityGate.GetAwaiter().GetResult(); // wait or throw the error
+        }
 
         internal void AcknowledgeDurableCommit()
         {
@@ -1176,7 +1190,7 @@ namespace Voron.Impl
 
         internal void CompleteDurableCommit()
         {
-            _env.MarkJournalWriteDurable(Id);
+            _journal.MarkJournalWriteDurable(Id);
             PreparedDurableCommit?.TrySetResult();
             AcknowledgeDurableCommit();
         }
@@ -1184,9 +1198,10 @@ namespace Voron.Impl
         
         internal void FailDurableCommit(Exception e)
         {
-            if (PreparedDurableCommit != null && PreparedDurableCommit.TrySetException(e) == false)
+            if (PreparedDurableCommit is { Task.IsCompleted: true })
                 return; // can only ack the durable commit failure once
 
+            // poison the environment *before* faulting the promise
             var edi = ExceptionDispatchInfo.Capture(e);
 
             try
@@ -1195,14 +1210,16 @@ namespace Voron.Impl
             }
             catch{ /* best effort  */ }
 
-            _env.MarkJournalWriteFailed(edi); // frees a branch env that is waiting in WaitForCommitDurabilityBlocking
+            PreparedDurableCommit?.TrySetException(e);
 
             AcknowledgeDurableCommit();
         }
 
         internal void CancelDurableCommit()
         {
-            PreparedDurableCommit?.TrySetCanceled();
+            if (PreparedDurableCommit?.TrySetCanceled() == true)
+                _journal.WithdrawDurableWrite(this);
+
             AcknowledgeDurableCommit();
         }
         
@@ -1355,13 +1372,11 @@ namespace Voron.Impl
 
             try
             {
-                _env.WaitForCommitDurability(CommitDurabilityGateTransactionId);
+                WaitForCommitDurability();
             }
-            catch (Exception e)
+            catch
             {
                 _txStatus |= TxStatus.Errored;
-                _env.Options.SetCatastrophicFailure(ExceptionDispatchInfo.Capture(e));
-
                 throw;
             }
 
@@ -1395,9 +1410,6 @@ namespace Voron.Impl
 
         internal bool IsAsyncCommit => _asyncCommitNextTransaction != null;
 
-        internal long CommitDurabilityGateTransactionId =>
-            WrittenToJournalNumber == -1 ? CurrentStateRecord.TransactionId - 1 : CurrentStateRecord.TransactionId;
-
         private void CommitStage2_WriteToJournal(bool waitForDurability)
         {
             try
@@ -1408,7 +1420,7 @@ namespace Voron.Impl
                     _forTestingPurposes.ThrowSimulateErrorOnCommitStage2();
 
                 if (waitForDurability)
-                    _env.WaitForCommitDurability(CommitDurabilityGateTransactionId);
+                    WaitForCommitDurability();
 
                 if (_requestedCommitStats == null)
                     return;
@@ -1477,6 +1489,9 @@ namespace Voron.Impl
                 _writeToJournalState = WriteToJournalState.BranchCommits;
             else
                 _writeToJournalState = WriteToJournalState.Skip;
+
+            // Tx writes to journal, we wait for DurableCommit, otherwise, it will be durable when the _previous_ transaction is durable.
+            DurabilityGate = ShouldWriteTransactionChangesToJournal ? DurableCommit : _journal.LastDurableWrite;
 
             ScratchTableSnapshot = _scratchPagesInUse.CaptureSnapshot();
         }

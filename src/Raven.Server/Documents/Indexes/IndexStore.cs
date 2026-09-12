@@ -843,7 +843,7 @@ namespace Raven.Server.Documents.Indexes
         {
             if (_sharedJournals != null)
                 return Task.CompletedTask;
-            if (_documentDatabase.Configuration.Indexing.DisableSharedJournals)
+            if (_documentDatabase.Configuration.Indexing.DisableSharedJournals || _documentDatabase.Is32Bits)
                 return Task.CompletedTask;
             return Task.Run(() =>
             {
@@ -857,7 +857,7 @@ namespace Raven.Server.Documents.Indexes
                 throw new InvalidOperationException($"{nameof(IndexStore)} was already initialized.");
 
             InitializePath(_documentDatabase.Configuration.Indexing.StoragePath);
-            if (_documentDatabase.Configuration.Indexing.DisableSharedJournals == false)
+            if (_documentDatabase.Configuration.Indexing.DisableSharedJournals == false && _documentDatabase.Is32Bits == false)
                 InitializePath(_documentDatabase.Configuration.Indexing.SharedJournalsPath);
 
             _initialized = true;

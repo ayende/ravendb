@@ -142,7 +142,7 @@ public sealed class WriteFlowPolicy
         _pipelineAboveLatencyTicks = options.PipelineJournalWritesAboveLatencyInTicks;
         _pinnedTargetWriteSizeBytes = options.ConsolidationTargetWriteSizeInBytes;
         var maxConcurrentJournalWrites = Math.Clamp(options.MaxConcurrentJournalWrites, 1, StorageEnvironmentOptions.MaxSupportedConcurrentJournalWrites);
-        _pipeliningEnabled = maxConcurrentJournalWrites > 1;
+        _pipeliningEnabled = maxConcurrentJournalWrites > 1 && options.RunningOn32Bits == false;
     }
 
     public void RecordJournalWrite(long latencyTicks, long sizeInBytes)

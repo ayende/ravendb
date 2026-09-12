@@ -43,7 +43,7 @@ namespace SlowTests.Voron.Issues
                 }
             });
 
-            Env.Journal.ForTestingPurposesOnly().OnReduceSizeOfCompressionBufferIfNeeded_RightAfterDisposingCompressionPager += () =>
+            Env.Journal.ForTestingPurposesOnly().CompressionBuffer.ForTestingPurposesOnly().AfterReplacePager += () =>
             {
                 testingActionWasCalled = true;
 

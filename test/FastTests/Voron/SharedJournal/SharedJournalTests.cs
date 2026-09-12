@@ -13,6 +13,7 @@ using Sparrow.Server;
 using Tests.Infrastructure;
 using Voron;
 using Voron.Data.BTrees;
+using Voron.Exceptions;
 using Voron.Impl.Journal;
 using Xunit;
 
@@ -1071,6 +1072,163 @@ public class SharedJournalTests(ITestOutputHelper output) : RavenTestBase(output
             var fieldInfo = typeof(T).GetField(@event.Name, BindingFlags.NonPublic | BindingFlags.Instance);
             var delegateValue = fieldInfo?.GetValue(target) as MulticastDelegate;
             Assert.True(delegateValue?.GetInvocationList().Length > 0, $"{@event.Name} is not wired");
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Voron)]
+    public void ABranchThatHitsTheHardLinkLimitFailsOnItsOwnAndKeepsWriting()
+    {
+        // the branch no longer waits for the root to take its entry, so the hard-link fallback has to fail
+        // just this one transaction and wake the branch through its own PreparedDurableCommit, without moving
+        // the environment's durability watermark and without poisoning either environment
+        string rootPath = NewDataPath(suffix: "root");
+        string branchPath = NewDataPath(suffix: "branch");
+        IOExtensions.DeleteDirectory(rootPath);
+        IOExtensions.DeleteDirectory(branchPath);
+
+        using var rootOptions = StorageEnvironmentOptions.ForPathForTests(rootPath);
+        rootOptions.ManualFlushing = true;
+        rootOptions.ManualSyncing = true;
+        rootOptions.MaxLogFileSize = 3 * 4096; // roll often, a branch only links into a journal it has not seen
+
+        using var root = new StorageEnvironment(rootOptions);
+        using var scope = root.Journal.SharedJournalsScope();
+
+        var mre = new ManualResetEventSlim(false);
+        root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
+
+        var task = Task.Run(() =>
+        {
+            using var branch = CreateBranchEnv(branchPath, root);
+            branch.Options.ForTestingPurposesOnly().BeforeLinkFiles =
+                _ => throw new HardLinkLimitExceededException("simulated hard-link limit");
+
+            Exception error = null;
+            for (int i = 0; i < 20 && error == null; i++)
+            {
+                error = Record.Exception(() =>
+                {
+                    using var tx = branch.WriteTransaction();
+                    tx.CreateTree("tree").Add("shared/" + i, i.ToString());
+                    tx.Commit();
+                });
+            }
+
+            Assert.NotNull(error);
+            Assert.Contains("hard-link limit", error.ToString());
+            Assert.Null(branch.Options.RootJournal); // switched to writing its own journals
+
+            // the environment is usable: the branch retries against its own journal and the write sticks
+            using (var tx = branch.WriteTransaction())
+            {
+                tx.CreateTree("tree").Add("own", "yes");
+                tx.Commit();
+            }
+
+            using (var rtx = branch.ReadTransaction())
+            {
+                Assert.Equal("yes", rtx.ReadTree("tree").Read("own").Reader.ToStringValue());
+            }
+
+            var branchTesting = branch.Journal.ForTestingPurposesOnly();
+            using (branchTesting.EnterWriteLock())
+                Assert.Equal(0, branchTesting.CompressionBuffer.ForTestingPurposesOnly().OutstandingLeases);
+        });
+
+        task.ContinueWith(_ => mre.Set());
+
+        WaitForTaskAndExecuteBranchTransactions(task, mre, root);
+    }
+
+    [RavenFact(RavenTestCategory.Voron)]
+    public void ATornRootWriteReleasesTheBranchCompressionBufferLeases()
+    {
+        // the branch's compression buffer is now handed to the root's write rather than copied, so a write
+        // that dies half way still has to give every range back - otherwise the branch cannot reserve space
+        // again and its environment cannot be torn down
+        string rootPath = NewDataPath(suffix: "root");
+        string branchPath = NewDataPath(suffix: "branch");
+        IOExtensions.DeleteDirectory(rootPath);
+        IOExtensions.DeleteDirectory(branchPath);
+
+        var rootOptions = StorageEnvironmentOptions.ForPathForTests(rootPath);
+        rootOptions.ManualFlushing = true;
+        rootOptions.ManualSyncing = true;
+
+        var root = new StorageEnvironment(rootOptions);
+        try
+        {
+            using var scope = root.Journal.SharedJournalsScope();
+
+            var mre = new ManualResetEventSlim(false);
+            root.Journal.BranchJournalMerger = new MyJournalMerger(mre);
+
+            var armed = 0;
+            rootOptions.ForTestingPurposesOnly().SimulatePartialJournalWriteFailure = total =>
+            {
+                if (Interlocked.Exchange(ref armed, 0) == 0)
+                    return null;
+
+                return new StorageEnvironmentOptions.TestingStuff.PartialJournalWriteFailure
+                {
+                    NumberOf4KbsToWrite = total / 2,
+                    Error = new IOException("simulated torn journal write")
+                };
+            };
+
+            var task = Task.Run(() =>
+            {
+                var branch = CreateBranchEnv(branchPath, root);
+                try
+                {
+                    // incompressible, so the entry spans several 4KB blocks and half a write really tears
+                    var payload = new byte[64 * 1024];
+                    new Random(4902).NextBytes(payload);
+
+                    Volatile.Write(ref armed, 1);
+
+                    var error = Record.Exception(() =>
+                    {
+                        using var tx = branch.WriteTransaction();
+                        tx.CreateTree("tree").Add("torn", Convert.ToBase64String(payload));
+                        tx.Commit();
+                    });
+
+                    Assert.NotNull(error);
+                    var branchTesting = branch.Journal.ForTestingPurposesOnly();
+            using (branchTesting.EnterWriteLock())
+                Assert.Equal(0, branchTesting.CompressionBuffer.ForTestingPurposesOnly().OutstandingLeases);
+                }
+                finally
+                {
+                    // the branch is catastrophically failed by the torn write - disposing it must not block
+                    // on a lease the write never gave back
+                    var disposed = Task.Run(() => Record.Exception(() => branch.Dispose()));
+                    Assert.True(disposed.Wait(TimeSpan.FromSeconds(10)), "disposing the branch waited on a lease that was never returned");
+                }
+            });
+
+            task.ContinueWith(_ => mre.Set());
+
+            while (task.IsCompleted == false)
+            {
+                if (mre.Wait(TimeSpan.FromMilliseconds(100)) == false)
+                    continue;
+
+                mre.Reset();
+                Record.Exception(() => // the torn write surfaces on the root's commit too
+                {
+                    using var tx = root.WriteTransaction();
+                    tx.Commit();
+                });
+            }
+
+            task.Wait();
+        }
+        finally
+        {
+            Record.Exception(() => root.Dispose()); // root is catastrophically failed after the torn write
+            rootOptions.Dispose();
         }
     }
 

@@ -50,33 +50,28 @@ namespace Voron.Impl.Journal
         public record JournalStateRecord(
             LowLevelTransaction Transaction,
             TaskCompletionSource Tcs,
-            TaskCompletionSource Consumed,
             Pal.journal_entry Entry)
         {
-            public void MarkConsumed() => Consumed.TrySetResult();
-
-            public void ReleaseBranchOnly(Exception e) => Consumed.TrySetException(e);
+            public CompressionBufferRing.Lease Lease;
 
             public void FailCatastrophically(Exception e)
             {
                 Transaction.FailDurableCommit(e);
-                ReleaseBranchOnly(e);
+                Lease?.Dispose();
             }
 
             public void FailLeavingEnvironmentUsable(Exception e)
             {
+                Transaction.Environment.Journal.WithdrawDurableWrite(Transaction);
                 Tcs.TrySetException(e);
-                _ = Tcs.Task.Exception; // caller will not observe in this case, so we do pre-emptively
                 Transaction.AcknowledgeDurableCommit();
-                ReleaseBranchOnly(e);
             }
 
             public void Cancel()
             {
                 Transaction.CancelDurableCommit();
-                Consumed.TrySetCanceled();
+                Lease?.Dispose();
             }
-
         }
 
         private long _currentJournalFileSize;
@@ -92,31 +87,58 @@ namespace Voron.Impl.Journal
         internal JournalFile CurrentFile;
 
         private readonly HeaderAccessor _headerAccessor;
-        private Pager _compressionPager;
-        private Pager.State _compressionPagerState;
-        private long _compressionPagerCounter;
+        private readonly CompressionBufferRing _compressionBuffer;
 
         private readonly DiffPages _diffPage = new DiffPages();
         private readonly RavenLogger _logger;
 
         private readonly object _writeLock = new object();
+
+        // The promise for the most recent journal write this environment submitted.
+        private Task _lastDurableWrite = Task.CompletedTask;
+        private long _durableTransactionId;
+        internal long DurableTransactionId => Volatile.Read(ref _durableTransactionId);
+        internal Task LastDurableWrite => Volatile.Read(ref _lastDurableWrite);
+
+        internal void PublishDurableWrite(LowLevelTransaction tx)
+        {
+            Debug.Assert(tx.DurableCommit != null, "a transaction that submits an entry always has a durable commit");
+
+            Debug.Assert(ReferenceEquals(tx.DurabilityGate, tx.DurableCommit),
+                "stage 1 sets the gate to this transaction's own promise when it writes an entry");
+
+            tx.DisplacedDurableWrite = Interlocked.Exchange(ref _lastDurableWrite, tx.DurableCommit);
+        }
+
+        internal void WithdrawDurableWrite(LowLevelTransaction tx)
+        {
+            if (tx.DurableCommit == null)
+                return;
+            // revert the last durable write to it's previous one (hard link failure, merge cancelled, etc.)
+            Interlocked.CompareExchange(ref _lastDurableWrite, tx.DisplacedDurableWrite, tx.DurableCommit);
+        }
+
+        internal void MarkJournalWriteDurable(long transactionId) =>
+            ThreadingHelper.InterlockedExchangeMax(ref _durableTransactionId, transactionId);
+
+        [Conditional("DEBUG")]
+        internal void AssertWriteLockHeld([CallerMemberName] string caller = null)
+        {
+            Debug.Assert(Monitor.IsEntered(_writeLock), $"{caller} must be called under the journal write lock");
+        }
         private readonly JournalWritePipeline _writePipeline;
 
-        // write lock only - the acks of the journal write that is being assembled
+        // write lock only - the acks and the retained buffers of the journal write that is being assembled
         private readonly List<LowLevelTransaction> _transactionsForCurrentWrite = [];
-        private int _maxNumberOfPagesRequiredForCompressionBuffer;
-        private int _numberOfUsedCompressionBufferPagesSinceZeroing;
+        private readonly List<CompressionBufferRing.Lease> _retainedForCurrentWrite = [];
 
         private readonly DisposeOnce<SingleAttempt> _disposeRunner;
 
-        public class LinkedJournalsRecord : IDisposable
+        public class LinkedJournalsRecord
         {
             public static readonly Guid LinkedJournalId = new("66d2ff9c-6251-462c-bde5-e05ba50110cf");
             public static readonly long TransactionIdMarker = MemoryMarshal.Read<long>("LinkJrnl"u8);
             
-            private byte* _buffer;
-            private int _bufferSize;
-            private NativeMemory.ThreadStats _threadStats;
             private readonly List<string> _paths = new();
             private readonly List<Guid> _journalIds = new();
             private int _linksDataSize;
@@ -151,22 +173,16 @@ namespace Voron.Impl.Journal
             
             public bool HasEntries => _paths.Count > 0;
 
-            public Pal.journal_entry CreateEntry()
+            public int RequiredSize => checked(
+                Encoding.UTF8.GetMaxByteCount(_linksDataSize) + _paths.Count + sizeof(TransactionHeader)
+            );
+
+            public Pal.journal_entry CreateEntry(byte* ptr, int bufferSize)
             {
-                int reqSize = checked(
-                    Encoding.UTF8.GetMaxByteCount(_linksDataSize) + _paths.Count + sizeof(TransactionHeader)
-                );
-                if (reqSize > _bufferSize)
-                {
-                    if(_buffer is not null)
-                        PlatformSpecific.NativeMemory.Free4KbAlignedMemory(_buffer, _bufferSize, _threadStats);
+                Debug.Assert(bufferSize >= RequiredSize, "the reservation is too small for this linked-journals record");
 
-                    _bufferSize = ((reqSize - 1) / 4096 + 1) * 4096;
-                    _buffer = PlatformSpecific.NativeMemory.Allocate4KbAlignedMemory(_bufferSize, out _threadStats);
-                }
-
-                Memory.Set(_buffer, 0, sizeof(TransactionHeader));
-                var header = (TransactionHeader*)_buffer;
+                Memory.Set(ptr, 0, sizeof(TransactionHeader));
+                var header = (TransactionHeader*)ptr;
                 header->JournalId = LinkedJournalId;
                 header->Flags = TransactionPersistenceModeFlags.LinkedJournalsRecord;
                 header->HeaderMarker = Constants.TransactionHeaderMarker;
@@ -175,8 +191,8 @@ namespace Voron.Impl.Journal
                 header->TxMarker = TransactionMarker.Commit;
                 header->CompressedSize = -1;
 
-                var data = _buffer + sizeof(TransactionHeader);
-                int usableBufferSize = _bufferSize - sizeof(TransactionHeader);
+                var data = ptr + sizeof(TransactionHeader);
+                int usableBufferSize = bufferSize - sizeof(TransactionHeader);
                 var span = new Span<byte>(data, usableBufferSize);
                 for (int index = 0; index < _paths.Count; index++)
                 {
@@ -207,12 +223,6 @@ namespace Voron.Impl.Journal
                 };
             }
 
-            public void Dispose()
-            {
-                if(_buffer is not null)
-                    PlatformSpecific.NativeMemory.Free4KbAlignedMemory(_buffer, _bufferSize, _threadStats);
-                _buffer = null;
-            }
         }
 
         public class JournalHeaderRecord : IDisposable
@@ -296,7 +306,7 @@ namespace Voron.Impl.Journal
             _currentJournalFileSize = env.Options.InitialLogFileSize;
             _headerAccessor = env.HeaderAccessor;
 
-            (_compressionPager, _compressionPagerState) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
+            _compressionBuffer = new CompressionBufferRing(_env.Options, this);
             _journalApplicator = new WriteAheadJournal.JournalApplicator(this);
             _writePipeline = new JournalWritePipeline(_env);
 
@@ -306,7 +316,10 @@ namespace Voron.Impl.Journal
 
                 _writePipeline.Dispose();
 
-                _compressionPager.Dispose();
+                lock (_writeLock)
+                {
+                    _compressionBuffer.Dispose();
+                }
 
                 _journalApplicator.Dispose();
                 if (_env.Options.OwnsPagers)
@@ -318,7 +331,6 @@ namespace Voron.Impl.Journal
                 }
 
                 _files = ImmutableAppendOnlyList<JournalFile>.Empty;
-                _linkedJournalsRecord.Dispose();
                 _journalHeaderRecord.Dispose();
             });
         }
@@ -2267,31 +2279,32 @@ namespace Voron.Impl.Journal
                 long numberOfUncompressedPages = 0;
                 long numberOf4Kbs = 0;
                 TaskCompletionSource branchCommit = tx.PreparedDurableCommit;
+                var rootJournal = _env.Options.RootJournal ?? this;
+                JournalStateRecord journalStateRecord = null;
+
+                var handedToRoot = false;
                 try
                 {
-                    var rootJournal = _env.Options.RootJournal ?? this;
                     if (_env.Options.RootJournal != null && rootJournal._rootJournalMergedCommitsCts is null)
                     {
                         throw new InvalidOperationException("Unable to commit as a branch if the root journal I'm associated with is not within a shared journal scope");
                     }
 
-                    JournalStateRecord journalStateRecord = null;
                     if (tx.ShouldWriteTransactionChangesToJournal)
                     {
                         var start = Stopwatch.GetTimestamp();
-                        var entry = PrepareToWriteToJournal(tx, ref tempTxState, out numberOfUncompressedPages, out var numberOfUsedCompressionBufferPages);
+                        var entry = PrepareToWriteToJournal(tx, ref tempTxState, out numberOfUncompressedPages, out var lease);
                         Debug.Assert(branchCommit != null, "stage 1 creates PreparedDurableCommit for every ModifiedPages commit");
                         numberOf4Kbs = entry.NumberOf4Kbs;
-#pragma warning disable RDB0008
-                        var consumed = new TaskCompletionSource(); // branch blocks on this, we want to complete it inline
-#pragma warning restore RDB0008
-                        journalStateRecord = new JournalStateRecord(tx, branchCommit, consumed, entry);
+                        journalStateRecord = new JournalStateRecord(tx, branchCommit, entry) { Lease = lease };
+
+                        tx.Environment.Journal.PublishDurableWrite(tx);
+
                         if (this != rootJournal)
                         {
                             rootJournal.SharedJournalState.Enqueue(journalStateRecord);
+                            handedToRoot = true;
                         }
-                        
-                        _numberOfUsedCompressionBufferPagesSinceZeroing = Math.Max(_numberOfUsedCompressionBufferPagesSinceZeroing, numberOfUsedCompressionBufferPages);
 
                         if (_logger.IsDebugEnabled)
                         {
@@ -2308,15 +2321,10 @@ namespace Voron.Impl.Journal
                     else
                     {
                         Debug.Assert(tx.ShouldWriteTransactionChangesToJournal, "ShouldWriteTransactionChangesToJournal must be true for branch commit");
-                        rootJournal.SubmitBranchJournalEntry(journalStateRecord.Consumed.Task);
+                        rootJournal.SubmitBranchJournalEntry();
                     }
 
-                    if (_env.Options.Encryption.IsEnabled && _env.Options.Encryption.HasExternalJournalCompressionBufferHandlerRegistration == false)
-                    {
-                        ZeroCompressionBuffer(ref tempTxState);
-                    }
-
-                    ReduceSizeOfCompressionBufferIfNeeded();
+                    _compressionBuffer.ReduceSizeIfNeeded(forceReduce: false);
 
                     return (numberOfUncompressedPages, numberOf4Kbs);
                 }
@@ -2324,15 +2332,38 @@ namespace Voron.Impl.Journal
                 {
                     // failure happened *preparing* the write, before anything was written to disk
                     // so no need for catastrophic error, the transaction rolls back cleanly, don't poison the env
-                    branchCommit?.TrySetException(e);
+                    if (handedToRoot == false)
+                        journalStateRecord?.Lease?.Dispose();
+
+                    if (branchCommit?.TrySetException(e) == true)
+                    {
+                        // withdraw the durable write if *we* report that the exception failed
+                        // if the branchCommit already was set, that caller took care of that
+                        tx.Environment.Journal.WithdrawDurableWrite(tx); 
+                    }
+
                     tx.AcknowledgeDurableCommit();
                     throw;
                 }
                 finally
                 {
-                    tempTxState.InvokeDispose(_env, ref _compressionPagerState, ref tempTxState);
+                    var compressionState = _compressionBuffer.State;
+                    tempTxState.InvokeDispose(_env, ref compressionState, ref tempTxState);
                 }
             }
+        }
+
+        /// <summary>How a prepared entry came to sit at the base of its reservation.</summary>
+        internal enum JournalEntryLayout
+        {
+            /// <summary>The bound was under the compression threshold, so the entry was built at the base directly.</summary>
+            BuiltInPlace,
+
+            /// <summary>Compressed forward from the staging area into the base.</summary>
+            Compressed,
+
+            /// <summary>Reserved for compression, but the diffs came in under the threshold - memcpy'd to the base.</summary>
+            Relocated
         }
 
         public IJournalMerger BranchJournalMerger;
@@ -2344,7 +2375,7 @@ namespace Voron.Impl.Journal
         /// </summary>
         public Action<StorageEnvironment> OnBranchHardLinkLimitReached;
 
-        private void SubmitBranchJournalEntry(Task entryConsumed)
+        private void SubmitBranchJournalEntry()
         {
             Debug.Assert(_env.Options.RootJournal is null, "_env.Options.RootJournal is null");
             {
@@ -2356,11 +2387,35 @@ namespace Voron.Impl.Journal
                 throw new InvalidOperationException($"Call to {nameof(SubmitBranchJournalEntry)} when there is no handler registered for the {nameof(BranchJournalMerger)}");
            
             handler.JournalMergeSubmitted();
+        }
 
-            // we must wait here until the root is done using our entry. Either by writing it to disk or copying its
-            // content to its own buffer.  Note that we *explicitly* do NOT use the cancellation token, since we _must_ wait in the branch until the root releases us.
-            // This does *NOT* handle durability, that is a separate concern that is handled by the WaitForCommitDurabilityBlocking() call, since the root may pipeline the journal writes.
-            entryConsumed.GetAwaiter().GetResult();
+        private Pal.journal_entry CreateLinkedJournalsEntry(LowLevelTransaction tx, out CompressionBufferRing.Lease lease)
+        {
+            var pages = checked((_linkedJournalsRecord.RequiredSize + Constants.Storage.PageSize - 1) / Constants.Storage.PageSize);
+
+            lease = _compressionBuffer.Reserve(pages);
+            try
+            {
+                var pager = _compressionBuffer.Pager;
+                var state = _compressionBuffer.State;
+
+                pager.EnsureMapped(state, ref tx.PagerTransactionState, lease.BaseOffsetInPages, pages);
+                var ptr = pager.MakeWritable(state, pager.AcquireRawPagePointer(state, ref tx.PagerTransactionState, lease.BaseOffsetInPages));
+
+                var entry = _linkedJournalsRecord.CreateEntry(ptr, pages * Constants.Storage.PageSize);
+
+                if (_env.Options.Encryption.IsEnabled)
+                    EncryptTransaction(ptr);
+
+                var usedPages = checked((int)((entry.NumberOf4Kbs * Constants.Storage.JournalPageSize + Constants.Storage.PageSize - 1) / Constants.Storage.PageSize));
+                lease = _compressionBuffer.Trim(lease, usedPages);
+                return entry;
+            }
+            catch
+            {
+                _compressionBuffer.Cancel(lease);
+                throw;
+            }
         }
 
         private void WriteBuffersToJournal(LowLevelTransaction tx, JournalStateRecord rootEntry)
@@ -2432,6 +2487,7 @@ namespace Voron.Impl.Journal
             }
 
             Dictionary<JournalStateRecord, HardLinkLimitExceededException> failedBranchRecords = null;
+            Debug.Assert(_retainedForCurrentWrite.Count == 0, "the previous write did not release its buffers");
 
             foreach (var rec in SharedJournalState.JournalRecords)
             {
@@ -2482,103 +2538,118 @@ namespace Voron.Impl.Journal
                 }
             }
 
-            if (_linkedJournalsRecord.HasEntries)
-            {
-                var entry = _linkedJournalsRecord.CreateEntry();
-                if (_env.Options.Encryption.IsEnabled)
-                    EncryptTransaction((byte*)entry.Base);
-
-                requiredSizeIn4Kbs += entry.NumberOf4Kbs;
-                SharedJournalState.PrepareForCommit(entry);
-                long available4Kbs = CurrentFile.GetAvailable4Kbs(tx.CurrentStateRecord);
-                // This should be rare, we have a full journal, and we _had_ enough space, but not enough after we 
-                // included the linked journal record. So we have to extend the file size directly before issuing the 
-                // actual write.
-                if (available4Kbs < requiredSizeIn4Kbs)
-                {
-                    long newSize = (CurrentFile.JournalWriter.NumberOfAllocated4Kb - available4Kbs + requiredSizeIn4Kbs) * 4 * Constants.Size.Kilobyte;
-                    _writePipeline.Drain();
-                    CurrentFile.JournalWriter.Truncate(newSize);
-                    if (_logger.IsDebugEnabled)
-                        _logger.Debug($"Journal file {CurrentFile.Number:D19} was extended to size {CurrentFile.JournalSize} to allow the linked journals entry");
-                }
-            }
-            
-            var entries = SharedJournalState.Entries;
-
-            var currentIncarnation = CurrentFile.Incarnation;
-            foreach (var entry in entries) // stamp the tx headers with the file guid, to allow journal reuse
-            {
-                var entryHeader = (TransactionHeader*)entry.Base;
-                entryHeader->JournalId = entryHeader->JournalId.Xor(currentIncarnation);
-            }
-
-            long totalNumberOf4Kbs = 0;
-            foreach (var entry in entries)
-                totalNumberOf4Kbs += entry.NumberOf4Kbs;
-
-            var writePosIn4Kbs = CurrentFile.GetWritePosIn4KbPosition(tx.CurrentStateRecord);
-            long positionIn4Kbs = writePosIn4Kbs + totalNumberOf4Kbs;
-
-            _transactionsForCurrentWrite.Clear();
-
-            foreach (var rec in SharedJournalState.JournalRecords)
-            {
-                if (failedBranchRecords?.ContainsKey(rec) is true)
-                    continue; // hard-link fallback: exception will be set below, after the write.
-
-                var llt = rec.Transaction;
-                var environment = llt.Environment;
-                var header = (TransactionHeader*)rec.Entry.Base;
-
-                if (rec.Tcs.Task.IsCompleted)
-                {
-                    // indicates that there is no env _to_ report to, we still write to the jounral, but we'll let recovery deal with any holes as corruption
-                    header->DurableTxIdDeltaAtSubmit = 0;
-                    continue;
-                }
-
-                header->SetLastDurableTxIdAtSubmit(environment.DurableTransactionId);
-
-                _transactionsForCurrentWrite.Add(llt);
-
-                llt.UpdateJournal(llt.WrittenToJournalNumber, positionIn4Kbs);
-            }
-
-            CurrentFile.LastTransactionId = tx.Id;
-
-            // We must update the _root_ transaction as well here, since if we have a batch
-            // that does not include the root env, then we have to update the position of
-            // the journal writer
-            tx.UpdateJournal(CurrentFile.Number, positionIn4Kbs);
-
-            var start = Stopwatch.GetTimestamp();
-
-            tx._forTestingPurposes?.ActionToCallJustBeforeWritingToJournal?.Invoke();
-
+            long positionIn4Kbs;
+            long start;
             try
             {
+                if (_linkedJournalsRecord.HasEntries)
+                {
+                    var entry = CreateLinkedJournalsEntry(tx, out var linkedEntryLease);
+                    _retainedForCurrentWrite.Add(linkedEntryLease);
+
+                    requiredSizeIn4Kbs += entry.NumberOf4Kbs;
+                    SharedJournalState.PrepareForCommit(entry);
+                    long available4Kbs = CurrentFile.GetAvailable4Kbs(tx.CurrentStateRecord);
+                    // This should be rare, we have a full journal, and we _had_ enough space, but not enough after we 
+                    // included the linked journal record. So we have to extend the file size directly before issuing the 
+                    // actual write.
+                    if (available4Kbs < requiredSizeIn4Kbs)
+                    {
+                        long newSize = (CurrentFile.JournalWriter.NumberOfAllocated4Kb - available4Kbs + requiredSizeIn4Kbs) * 4 * Constants.Size.Kilobyte;
+                        _writePipeline.Drain();
+                        CurrentFile.JournalWriter.Truncate(newSize);
+                        if (_logger.IsDebugEnabled)
+                            _logger.Debug($"Journal file {CurrentFile.Number:D19} was extended to size {CurrentFile.JournalSize} to allow the linked journals entry");
+                    }
+                }
+                
+                var entries = SharedJournalState.Entries;
+
+                var currentIncarnation = CurrentFile.Incarnation;
+                foreach (var entry in entries) // stamp the tx headers with the file guid, to allow journal reuse
+                {
+                    var entryHeader = (TransactionHeader*)entry.Base;
+                    entryHeader->JournalId = entryHeader->JournalId.Xor(currentIncarnation);
+                }
+
+                long totalNumberOf4Kbs = 0;
+                foreach (var entry in entries)
+                    totalNumberOf4Kbs += entry.NumberOf4Kbs;
+
+                var writePosIn4Kbs = CurrentFile.GetWritePosIn4KbPosition(tx.CurrentStateRecord);
+                positionIn4Kbs = writePosIn4Kbs + totalNumberOf4Kbs;
+
+                _transactionsForCurrentWrite.Clear();
+
+                foreach (var rec in SharedJournalState.JournalRecords)
+                {
+                    if (failedBranchRecords?.ContainsKey(rec) is true)
+                        continue; // hard-link fallback: exception will be set below, after the write.
+
+                    var llt = rec.Transaction;
+                    var environment = llt.Environment;
+                    var header = (TransactionHeader*)rec.Entry.Base;
+
+                    if (rec.Tcs.Task.IsCompleted)
+                    {
+                        // indicates that there is no env _to_ report to, we still write to the jounral, but we'll let recovery deal with any holes as corruption
+                        header->DurableTxIdDeltaAtSubmit = 0;
+                        continue;
+                    }
+
+                    header->SetLastDurableTxIdAtSubmit(environment.Journal.DurableTransactionId);
+
+                    _transactionsForCurrentWrite.Add(llt);
+
+                    llt.UpdateJournal(llt.WrittenToJournalNumber, positionIn4Kbs);
+                }
+
+                CurrentFile.LastTransactionId = tx.Id;
+
+                // We must update the _root_ transaction as well here, since if we have a batch
+                // that does not include the root env, then we have to update the position of
+                // the journal writer
+                tx.UpdateJournal(CurrentFile.Number, positionIn4Kbs);
+
+                start = Stopwatch.GetTimestamp();
+
+                tx._forTestingPurposes?.ActionToCallJustBeforeWritingToJournal?.Invoke();
+
+                // Change ownership of the leases from the journal records to the retained list
+                foreach (var rec in SharedJournalState.JournalRecords)
+                {
+                    if (rec.Lease != null)
+                    {
+                        _retainedForCurrentWrite.Add(rec.Lease);
+                        rec.Lease = null;
+                    }
+                }
+
                 if (tx.IsAsyncCommit && _env.WriteFlow.ShouldPipeline)
-                    _writePipeline.SubmitPipelined(CurrentFile, writePosIn4Kbs, entries, totalNumberOf4Kbs, _transactionsForCurrentWrite);
+                    _writePipeline.SubmitPipelined(CurrentFile, writePosIn4Kbs, entries, totalNumberOf4Kbs, _transactionsForCurrentWrite, _retainedForCurrentWrite);
                 else
-                    _writePipeline.WriteInline(CurrentFile, writePosIn4Kbs, entries, totalNumberOf4Kbs, _transactionsForCurrentWrite);
+                    _writePipeline.WriteInline(CurrentFile, writePosIn4Kbs, entries, totalNumberOf4Kbs, _transactionsForCurrentWrite, _retainedForCurrentWrite);
             }
             catch (Exception e)
             {
-                foreach (var rec in SharedJournalState.JournalRecords)
+                if (failedBranchRecords != null)
                 {
-                    rec.ReleaseBranchOnly(e);
+                    foreach (var (rec, _) in failedBranchRecords)
+                        rec.FailLeavingEnvironmentUsable(e);
+
+                    failedBranchRecords = null;
                 }
 
                 throw;
             }
-
-            foreach (var rec in SharedJournalState.JournalRecords)
+            finally
             {
-                if (failedBranchRecords?.ContainsKey(rec) is true)
-                    continue; // released below, see the hard-link failure handling
+                foreach (var retained in _retainedForCurrentWrite)
+                {
+                    retained.Dispose();
+                }
 
-                rec.MarkConsumed(); // let the branch know that its entry has been consumed and can reuse the buffer
+                _retainedForCurrentWrite.Clear();
             }
 
             var elapsed = Stopwatch.GetElapsedTime(start);
@@ -2683,8 +2754,32 @@ namespace Voron.Impl.Journal
         /// │ - Encoded Data (FastPFor compressed sections)               │
         /// │ - EncodedFreePagesSection[] (section sizes, at the end)     │
         /// └─────────────────────────────────────────────────────────────┘
-        private Pal.journal_entry PrepareToWriteToJournal(LowLevelTransaction tx, ref Pager.PagerTransactionState txState, out long numberOfUncompressedPages, 
-            out int totalNumberOfUsedCompressionBufferPages)
+        private Pal.journal_entry PrepareToWriteToJournal(LowLevelTransaction tx, ref Pager.PagerTransactionState txState, out long numberOfUncompressedPages,
+            out CompressionBufferRing.Lease lease)
+        {
+            CompressionBufferRing.Lease open = null;
+            try
+            {
+                var entry = PrepareToWriteToJournal(tx, ref txState, ref open, out numberOfUncompressedPages, out var entryPages);
+                lease = _compressionBuffer.Trim(open, entryPages);
+                return entry;
+            }
+            catch (InsufficientMemoryException)
+            {
+                // RavenDB-10830: failed to lock memory of temp buffers in encrypted db, let's create new file with initial size
+                _compressionBuffer.Cancel(open);
+                _compressionBuffer.Recreate();
+                throw;
+            }
+            catch
+            {
+                _compressionBuffer.Cancel(open);
+                throw;
+            }
+        }
+
+        private Pal.journal_entry PrepareToWriteToJournal(LowLevelTransaction tx, ref Pager.PagerTransactionState txState,
+            ref CompressionBufferRing.Lease reservation, out long numberOfUncompressedPages, out int entryPages)
         {
             var txPages = CollectionsMarshal.AsSpan(tx.GetTransactionPages());
             var numberOfPages = txPages.Length;
@@ -2724,26 +2819,32 @@ namespace Voron.Impl.Journal
                 pagesRequired = AdjustPagesRequiredFor32Bits(pagesRequired);
             }
 
-            try
-            {
-                _compressionPager.EnsureContinuous(ref _compressionPagerState, 0, pagesRequired);
-                Debug.Assert(_compressionPagerState.TotalAllocatedSize >= pagesRequired * Constants.Storage.PageSize, "_compressionPagerState.TotalAllocatedSize >= pagesRequired* Constants.Storage.PageSize");
-            }
-            catch (InsufficientMemoryException)
-            {
-                // RavenDB-10830: failed to lock memory of temp buffers in encrypted db, let's create new file with initial size
+            var estimatedSize = (long)pagesRequired * Constants.Storage.PageSize;
+            var compressTxAboveSizeInBytes = _env.WriteFlow.GetCompressTxAboveSizeInBytes(_env.Options.CompressTxAboveSizeInBytes);
+            var compressionAlgorithm = ResolveJournalCompressionAlgorithm();
+            var mayCompress = estimatedSize > compressTxAboveSizeInBytes;
 
-                _compressionPager.Dispose();
-                (_compressionPager, _compressionPagerState) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
-                _lastCompressionBufferReduceCheck = DateTime.UtcNow;
-                throw;
+            long outputBufferSize = 0;
+            int outputBufferInPages = 0;
+            if (mayCompress)
+            {
+                outputBufferSize = compressionAlgorithm == JournalCompressionAlgorithm.Zstd
+                    ? ZstdLib.GetMaxCompression(estimatedSize)
+                    : LZ4.MaximumOutputLength(estimatedSize);
+                outputBufferInPages = checked((int)((outputBufferSize + sizeof(TransactionHeader) + Constants.Storage.PageSize - 1) / Constants.Storage.PageSize));
             }
 
-            _compressionPager.EnsureMapped(_compressionPagerState, ref txState, 0, pagesRequired);
-            var stateOfThePagerForPagesToBeCompressed = _compressionPagerState;
-            var txHeaderPtr = _compressionPager.MakeWritable(_compressionPagerState,
-                _compressionPager.AcquireRawPagePointer(_compressionPagerState, ref txState, 0)
+            reservation = _compressionBuffer.Reserve(outputBufferInPages + pagesRequired);
+            var reservationBase = reservation.BaseOffsetInPages;
+            var compressionPager = _compressionBuffer.Pager;
+            var compressionState = _compressionBuffer.State;
+
+            compressionPager.EnsureMapped(compressionState, ref txState, reservationBase, outputBufferInPages + pagesRequired);
+            var entryBasePtr = compressionPager.MakeWritable(compressionState,
+                compressionPager.AcquireRawPagePointer(compressionState, ref txState, reservationBase)
             );
+            var stagingPtr = entryBasePtr + (long)outputBufferInPages * Constants.Storage.PageSize;
+            var txHeaderPtr = stagingPtr;
             var txPageInfoPtr = txHeaderPtr + sizeof(TransactionHeader);
             var pagesInfo = (TransactionHeaderPageInfo*)txPageInfoPtr;
 
@@ -2826,80 +2927,41 @@ namespace Voron.Impl.Journal
 
             long compressedLen = 0;
 
-            // We want to do compression when the size of the data to store is bigger than the threshold.
-            // On NVMe devices, writing the full data to disk is _faster_ than compressing it first.
-            var compressTxAboveSizeInBytes = _env.WriteFlow.GetCompressTxAboveSizeInBytes(_env.Options.CompressTxAboveSizeInBytes);
-            var performCompression = totalSizeWritten > compressTxAboveSizeInBytes;
-            var compressionAlgorithm = ResolveJournalCompressionAlgorithm();
-            if (performCompression)
+            // `mayCompress` was on the _raw_ changes, the diff may have brought up below `compressTxAboveSizeInBytes`
+            var performCompression = mayCompress && totalSizeWritten > compressTxAboveSizeInBytes;
+
+            var layout = JournalEntryLayout.BuiltInPlace;
+
+            if (mayCompress)
             {
-                var outputBufferSize = compressionAlgorithm == JournalCompressionAlgorithm.Zstd
-                    ? ZstdLib.GetMaxCompression(totalSizeWritten)
-                    : LZ4.MaximumOutputLength(totalSizeWritten);
-                int outputBufferInPages = checked((int)((outputBufferSize + sizeof(TransactionHeader)) / Constants.Storage.PageSize +
-                                                        ((outputBufferSize + sizeof(TransactionHeader)) % Constants.Storage.PageSize == 0 ? 0 : 1)));
+                txHeaderPtr = entryBasePtr;
+                var entryPayload = entryBasePtr + sizeof(TransactionHeader);
 
-                _maxNumberOfPagesRequiredForCompressionBuffer = Math.Max(pagesRequired + outputBufferInPages, _maxNumberOfPagesRequiredForCompressionBuffer);
-                totalNumberOfUsedCompressionBufferPages = pagesRequired + outputBufferInPages;
-
-                var totalSizeWrittenPlusTxHeader = totalSizeWritten + sizeof(TransactionHeader);
-                var pagesWritten = (totalSizeWrittenPlusTxHeader / Constants.Storage.PageSize) +
-                                   (totalSizeWrittenPlusTxHeader % Constants.Storage.PageSize == 0 ? 0 : 1);
-
-                try
+                if (performCompression)
                 {
-                    // IMPORTANT: The memory we got in the previous call to AcquirePagePointer() is associated with the _compressionPagerState
-                    // which may *change* because we are extending the file. We need to *ensure* that we keep hold of that state until the
-                    // end of this method, to avoid releasing the buffer too early when the state's finalizer is running. This is why we
-                    // have the stateOfThePagerForPagesToBeCompressed held there
-                    Debug.Assert(stateOfThePagerForPagesToBeCompressed != null, "Read the comment above!");
-                    _compressionPager.EnsureContinuous(ref _compressionPagerState, pagesWritten, outputBufferInPages);
-                    Debug.Assert(_compressionPagerState.TotalAllocatedSize >= (pagesWritten + outputBufferInPages) * Constants.Storage.PageSize,
-                        "_compressionPagerState.TotalAllocatedSize >= (pagesWritten+outputBufferInPages)* Constants.Storage.PageSize");
+                    layout = JournalEntryLayout.Compressed;
+
+                    var path = CurrentFile?.JournalWriter?.FileName?.FullPath ?? _env.Options.GetJournalPath(Math.Max(0, _journalIndex))?.FullPath;
+                    using (var metrics = _env.Options.IoMetrics.MeterIoRate(path, IoMetrics.MeterType.Compression, 0)) // Note that the last journal may be replaced if we switch journals, however it doesn't affect web graph
+                    {
+                        int compressionAcceleration = _env.Options.JournalsCompressionAcceleration;
+                        compressedLen = compressionAlgorithm == JournalCompressionAlgorithm.Zstd
+                            ? ZstdLib.CompressWithLevel(txPageInfoPtr, totalSizeWritten, entryPayload, outputBufferSize, level: 1)
+                            : LZ4.Encode64LongBuffer(txPageInfoPtr, entryPayload, totalSizeWritten, outputBufferSize, compressionAcceleration);
+
+                        metrics.SetCompressionResults(totalSizeWritten, compressedLen, compressionAcceleration);
+                    }
+
                 }
-                catch (InsufficientMemoryException)
+                else
                 {
-                    // RavenDB-10830: failed to lock memory of temp buffers in encrypted db, let's create new file with initial size
+                    layout = JournalEntryLayout.Relocated;
 
-                    _compressionPager.Dispose();
-                    (_compressionPager, _compressionPagerState) = CreateCompressionPager(_env.Options.InitialFileSize ?? _env.Options.InitialLogFileSize);
-                    _lastCompressionBufferReduceCheck = DateTime.UtcNow;
-                    throw;
-                }
-
-                _compressionPager.EnsureMapped(_compressionPagerState, ref tx.PagerTransactionState, pagesWritten, outputBufferInPages);
-
-                txHeaderPtr = _compressionPager.MakeWritable(_compressionPagerState,
-                    _compressionPager.AcquireRawPagePointer(_compressionPagerState, ref tx.PagerTransactionState, pagesWritten)
-                );
-                var compressionBuffer = txHeaderPtr + sizeof(TransactionHeader);
-
-                var path = CurrentFile?.JournalWriter?.FileName?.FullPath ?? _env.Options.GetJournalPath(Math.Max(0, _journalIndex))?.FullPath;
-                using (var metrics = _env.Options.IoMetrics.MeterIoRate(path, IoMetrics.MeterType.Compression, 0)) // Note that the last journal may be replaced if we switch journals, however it doesn't affect web graph
-                {
-                    int compressionAcceleration = _env.Options.JournalsCompressionAcceleration;
-                    compressedLen = compressionAlgorithm == JournalCompressionAlgorithm.Zstd
-                        ? ZstdLib.CompressWithLevel(txPageInfoPtr, totalSizeWritten, compressionBuffer, outputBufferSize, level: 1)
-                        : LZ4.Encode64LongBuffer(txPageInfoPtr, compressionBuffer, totalSizeWritten, outputBufferSize, compressionAcceleration);
-
-                    metrics.SetCompressionResults(totalSizeWritten, compressedLen, compressionAcceleration);
-                }
-
-                if (compressedLen >= totalSizeWritten)
-                {
-                    _compressionPager.EnsureMapped(_compressionPagerState, ref tx.PagerTransactionState, 0, checked((int)pagesWritten));
-                    // txHeaderPtr may have changed because we extended the file, so we need to re-acquire it from the current state
-                    txHeaderPtr = _compressionPager.MakeWritable(_compressionPagerState,
-                        _compressionPager.AcquireRawPagePointer(_compressionPagerState, ref tx.PagerTransactionState, 0)
-                    );
-                    performCompression = false;
+                    // it's cheaper to NOT compress in this case (the disk is fast enough), so we'll just memcpy to the start of the buffer
+                    Memory.Copy(entryPayload, txPageInfoPtr, totalSizeWritten);
                 }
             }
-            else
-            {
-                _maxNumberOfPagesRequiredForCompressionBuffer = Math.Max(pagesRequired, _maxNumberOfPagesRequiredForCompressionBuffer);
-                totalNumberOfUsedCompressionBufferPages = pagesRequired;
-            }
+
 
             // We need to account for the transaction header as part of the total length.
             var totalSize = performCompression ? compressedLen : totalSizeWritten;
@@ -2913,6 +2975,9 @@ namespace Voron.Impl.Journal
                 Memory.Set(txHeaderPtr + totalLength, 0, 4 * Constants.Size.Kilobyte - remainder);
             }
 
+            entryPages = checked((int)(((long)entireBuffer4Kbs * Constants.Storage.JournalPageSize + Constants.Storage.PageSize - 1) / Constants.Storage.PageSize));
+            Debug.Assert(entryPages <= outputBufferInPages + pagesRequired, "the entry does not fit in its own reservation");
+
             var reportedCompressionLength = performCompression ? compressedLen : -1;
 
             txHeader.CompressedSize = reportedCompressionLength;
@@ -2924,10 +2989,10 @@ namespace Voron.Impl.Journal
             
             if (_env.Options.Encryption.IsEnabled == false)
             {
-                if (performCompression)
-                    txHeader.Hash = Hashing.XXHash64.Calculate(txHeaderPtr + sizeof(TransactionHeader), (ulong)compressedLen, (ulong)txHeader.TransactionId);
-                else
-                    txHeader.Hash = Hashing.XXHash64.Calculate(txPageInfoPtr, (ulong)totalSizeWritten, (ulong)txHeader.TransactionId);
+                var payloadPtr = txHeaderPtr + sizeof(TransactionHeader);
+                txHeader.Hash = performCompression
+                    ? Hashing.XXHash64.Calculate(payloadPtr, (ulong)compressedLen, (ulong)txHeader.TransactionId)
+                    : Hashing.XXHash64.Calculate(payloadPtr, (ulong)totalSizeWritten, (ulong)txHeader.TransactionId);
             }
             else
             {
@@ -2941,9 +3006,15 @@ namespace Voron.Impl.Journal
             Debug.Assert(((long)txHeaderPtr % (4 * Constants.Size.Kilobyte)) == 0, "Memory must be 4kb aligned");
 
             if (_env.Options.Encryption.IsEnabled)
+            {
                 EncryptTransaction(txHeaderPtr);
 
-            GC.KeepAlive(stateOfThePagerForPagesToBeCompressed);
+                if (mayCompress) // remove the plain text staging (we already encrypted what will go to disk)
+                    Sodium.sodium_memzero(stagingPtr, (UIntPtr)(totalSizeWritten + sizeof(TransactionHeader)));
+            }
+
+            _forTestingPurposes?.OnEntryPrepared?.Invoke(layout);
+
             numberOfUncompressedPages = pagesCountIncludingAllOverflowPages;
             return new Pal.journal_entry
             {
@@ -3018,93 +3089,23 @@ namespace Voron.Impl.Journal
                 throw new InvalidOperationException("Failed to call crypto_aead_xchacha20poly1305_ietf_encrypt, rc = " + rc);
         }
 
-        private (Pager Pager, Pager.State State) CreateCompressionPager(long initialSize)
-        {
-            return _env.Options.CreateTemporaryBufferPager(
-                $"compression.{_compressionPagerCounter++:D10}{StorageEnvironmentOptions.DirectoryStorageEnvironmentOptions.BuffersFileExtension}", initialSize,
-                encrypted: false);
-        }
-
-        private DateTime _lastCompressionBufferReduceCheck = DateTime.UtcNow;
         private readonly bool _is32Bit;
-
-        private void ReduceSizeOfCompressionBufferIfNeeded(bool forceReduce = false)
-        {
-            var maxSize = _env.Options.MaxScratchBufferSize;
-            if (ShouldReduceSizeOfCompressionPager(maxSize, forceReduce) == false)
-            {
-                // PERF: Compression buffer will be reused, it is safe to discard the content to clear the modified bit.
-                // For encrypted databases, discarding locked memory is *expensive*, so we avoid it
-                if (_env.Options.Encryption.IsEnabled == false)
-                    _compressionPager.DiscardWholeFile(_compressionPagerState);
-
-                return;
-            }
-
-
-            // the compression pager is too large, we probably had a big transaction and now can
-            // free all of that and come back to more reasonable values.
-            if (forceReduce == false && _logger.IsInfoEnabled)
-            {
-                _logger.Info(
-                    $"Compression buffer: {_compressionPager} has reached size {new Size(_compressionPagerState.NumberOfAllocatedPages * Constants.Storage.PageSize, SizeUnit.Bytes)} which is more than the maximum size " +
-                    $"of {new Size(maxSize, SizeUnit.Bytes)}. Will trim it now to the max size allowed. If this is happen on a regular basis," +
-                    " consider raising the limit (MaxScratchBufferSize option control it), since it can cause performance issues");
-            }
-
-            _lastCompressionBufferReduceCheck = DateTime.UtcNow;
-
-            _compressionPager.Dispose();
-
-            _forTestingPurposes?.OnReduceSizeOfCompressionBufferIfNeeded_RightAfterDisposingCompressionPager?.Invoke();
-
-            (_compressionPager, _compressionPagerState) = CreateCompressionPager(maxSize);
-        }
 
         public void ZeroCompressionBuffer(ref Pager.PagerTransactionState txState)
         {
             var lockTaken = false;
-
             if (Monitor.IsEntered(_writeLock) == false)
                 Monitor.Enter(_writeLock, ref lockTaken);
 
             try
             {
-                var numberOfPagesToZero = Math.Min(_numberOfUsedCompressionBufferPagesSinceZeroing, _compressionPagerState.NumberOfAllocatedPages);
-                var numberOfBytesToZero = numberOfPagesToZero * Constants.Storage.PageSize;
-                
-                _compressionPager.EnsureMapped(_compressionPagerState, ref txState, 0, checked((int)numberOfPagesToZero));
-                var pagePointer = _compressionPager.MakeWritable(_compressionPagerState,
-                 _compressionPager.AcquirePagePointer(_compressionPagerState, ref txState, 0)
-             );
-                Sodium.sodium_memzero(pagePointer, (UIntPtr)numberOfBytesToZero);
-                _numberOfUsedCompressionBufferPagesSinceZeroing = 0;
+                _compressionBuffer.ZeroWhenEmpty(ref txState);
             }
             finally
             {
                 if (lockTaken)
                     Monitor.Exit(_writeLock);
             }
-        }
-
-        private bool ShouldReduceSizeOfCompressionPager(long maxSize, bool forceReduce)
-        {
-            var compressionBufferSize = _compressionPagerState.NumberOfAllocatedPages * Constants.Storage.PageSize;
-            if (compressionBufferSize <= maxSize)
-                return false;
-
-            if (forceReduce)
-                return true;
-
-            if ((DateTime.UtcNow - _lastCompressionBufferReduceCheck).TotalMinutes < 5)
-                return false;
-
-            // prevent resize if we recently used at least half of the compression buffer
-            var preventResize = _maxNumberOfPagesRequiredForCompressionBuffer > _compressionPagerState.NumberOfAllocatedPages / 2;
-
-            _maxNumberOfPagesRequiredForCompressionBuffer = 0;
-            _lastCompressionBufferReduceCheck = DateTime.UtcNow;
-            return !preventResize;
         }
 
         public void TryReduceSizeOfCompressionBufferIfNeeded()
@@ -3115,8 +3116,7 @@ namespace Voron.Impl.Journal
             // if we can't get it, we are active, so it doesn't matter
             try
             {
-                // called when the storage environment was idle
-                ReduceSizeOfCompressionBufferIfNeeded(forceReduce: true);
+                _compressionBuffer.ReduceSizeIfNeeded(forceReduce: true);
             }
             finally
             {
@@ -3141,10 +3141,22 @@ namespace Voron.Impl.Journal
 
         internal sealed class TestingStuff(WriteAheadJournal journal)
         {
-            internal Action OnReduceSizeOfCompressionBufferIfNeeded_RightAfterDisposingCompressionPager;
             internal Action<ConcurrentQueue<WriteAheadJournal.JournalStateRecord>> OnWriteBuffersToJournal;
 
+            internal Action<JournalEntryLayout> OnEntryPrepared;
+
+            // ranges of this environment's compression buffer that a journal write has not released yet
+
             internal int InFlightJournalWrites => journal._writePipeline.ForTestingPurposesOnly().InFlightCount;
+
+            // the ring asserts that the journal write lock is held, so a test driving it directly has to take it
+            internal CompressionBufferRing CompressionBuffer => journal._compressionBuffer;
+
+            internal IDisposable EnterWriteLock()
+            {
+                Monitor.Enter(journal._writeLock);
+                return new Voron.Util.DisposableAction(() => Monitor.Exit(journal._writeLock));
+            }
         }
 
         private void RejectCommitsToMerge() => SharedJournalState.SetCancel();
