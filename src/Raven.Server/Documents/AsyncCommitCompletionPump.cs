@@ -76,5 +76,16 @@ internal sealed class AsyncCommitCompletionPump<TBatch>
         }
     }
 
-    public void ThrowOnFailure() => _failure?.Throw();
+   
+    public void ThrowOnFailure()
+    {
+        var failure = _failure;
+        if (failure == null)
+            return;
+        
+        // if there *is* a failure, we report it (ownership of that is on the caller now)
+        // we clear the failure so we'll only report it once (some exceptions are trasient)
+        _failure = null;
+        failure.Throw();
+    }
 }

@@ -1933,7 +1933,7 @@ namespace Raven.Server.Documents.Indexes
                         }
 
                         if (batchCompleted)
-                            NotifyAboutCompletedBatch(didWork);
+                            NotifyAboutCompletedBatch(didWork, batchPublished);
 
                         try
                         {
@@ -2167,16 +2167,32 @@ namespace Raven.Server.Documents.Indexes
             DocumentDatabase.NotificationCenter.Indexing.RemoveIndexNameFromCpuCreditsExhaustionWarning(Name);
         }
 
-        private void NotifyAboutCompletedBatch(bool didWork)
+        private void NotifyAboutCompletedBatch(bool didWork, Task batchPublished = null)
         {
-            DocumentDatabase.Changes.RaiseNotifications(new IndexChange { Name = Name, Type = IndexChangeTypes.BatchCompleted });
-
             if (didWork)
             {
                 _didWork = true;
                 _firstBatchTimeout = null;
             }
-            
+
+            if (batchPublished is not { IsCompleted: false })
+            {   // run this inline
+                RaiseBatchCompletedNotifications(didWork);
+                return;
+            }
+            // run this only after the batch has actually completed
+            batchPublished.ContinueWith(static (_, state) =>
+            {
+                // ensure that we use the state _at the time of scheduling the continuation
+                var (index, didWork) = ((Index, bool))state;
+                index.RaiseBatchCompletedNotifications(didWork);
+            }, (this, didWork), TaskScheduler.Default);
+        }
+
+        private void RaiseBatchCompletedNotifications(bool didWork)
+        {
+            DocumentDatabase.Changes.RaiseNotifications(new IndexChange { Name = Name, Type = IndexChangeTypes.BatchCompleted });
+
             TestRun?.BatchCompleted.Set();
 
             var batchCompletedAction = DocumentDatabase.IndexStore.IndexBatchCompleted;
