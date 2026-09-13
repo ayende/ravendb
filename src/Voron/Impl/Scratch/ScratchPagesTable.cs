@@ -117,6 +117,7 @@ namespace Voron.Impl.Scratch
         private readonly Queue<(long Seq, int Index)> _pendingFree = new();
 
         private readonly List<long> _undo = [];
+        private readonly List<(long Seq, int Start)> _undoSessions = [];
 
         private ScratchTableBuffers _buffers = new();
 
@@ -213,14 +214,21 @@ namespace Voron.Impl.Scratch
 
         internal void ForceRebuildForTests() => Rebuild();
 
-        public void BeginWriteTransaction(long lastPublishedSeq)
+        public long BeginWriteTransaction(long lastPublishedSeq, bool chainedToPreviousSession)
         {
             Debug.Assert(lastPublishedSeq <= _seqCounter, "a published bound cannot come from a session that never began");
 
-            _undo.Clear();
+            if (chainedToPreviousSession == false)
+            {
+                _undo.Clear();
+                _undoSessions.Clear();
+            }
+
             _seq = ++_seqCounter;
+            _undoSessions.Add((_seq, _undo.Count));
             _lastPublishedSeq = lastPublishedSeq;
             _activeSnapshotsFetched = false;
+            return _seq;
         }
 
         [Conditional("DEBUG")]
@@ -433,9 +441,26 @@ namespace Voron.Impl.Scratch
         private bool SurvivesRollback(int index) =>
             _entries[index].AllocatedInTransaction == PageFromScratchBuffer.SurvivingTombstoneTx;
 
-        public void RollbackCurrentTransaction()
+
+        // we may roll back transaction N and we already *have* tx N+1 (async commit, etc), so we must discard
+        // everything after the transaction we are rolling back
+        public void RollbackTransactionsAfter(long seq)
         {
-            var pages = CollectionsMarshal.AsSpan(_undo);
+            for (var session = _undoSessions.Count - 1; session >= 0; session--)
+            {
+                var (sessionSeq, start) = _undoSessions[session];
+                if (sessionSeq < seq)
+                    break;
+
+                RollbackSession(sessionSeq, start);
+                _undoSessions.RemoveAt(session);
+                _undo.RemoveRange(start, _undo.Count - start);
+            }
+        }
+
+        private void RollbackSession(long sessionSeq, int start)
+        {
+            var pages = CollectionsMarshal.AsSpan(_undo)[start..];
             for (var i = 0; i < pages.Length; i++)
             {
                 if (TryFindSlot(pages[i], out var index) == false)
@@ -443,7 +468,7 @@ namespace Voron.Impl.Scratch
 
                 var head = _heads[index];
                 var restored = head;
-                while (restored != NoEntry && _entries[restored].Seq == _seq && SurvivesRollback(restored) == false)
+                while (restored != NoEntry && _entries[restored].Seq == sessionSeq && SurvivesRollback(restored) == false)
                     restored = _entries[restored].OlderIndex;
 
                 if (restored == head)
@@ -461,8 +486,6 @@ namespace Voron.Impl.Scratch
                     node = next;
                 }
             }
-
-            _undo.Clear();
         }
 
         private void PruneChain(int headIndex)

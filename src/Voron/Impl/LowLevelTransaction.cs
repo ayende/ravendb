@@ -276,7 +276,7 @@ namespace Voron.Impl
             _isValidationEnabled = _env.Options.Encryption.IsEnabled == false;
             _scratchPagesInUse = previous._scratchPagesInUse;
             ScratchSnapshotSeq = env.CurrentStateRecord.ScratchPagesTable.VisibleAsOfSeq;
-            _scratchPagesInUse.BeginWriteTransaction(ScratchSnapshotSeq);
+            _scratchWriteSeq = _scratchPagesInUse.BeginWriteTransaction(ScratchSnapshotSeq, chainedToPreviousSession: true);
             _getPageMethod = GetPageMethod.WriteScratchFirst;
 
             Flags = TransactionFlags.ReadWrite;
@@ -352,7 +352,7 @@ namespace Voron.Impl
                 _dirtyPages = _env.WriteTransactionPool.DirtyPagesPool;
                 _scratchPagesInUse = _env.ScratchPagesTable;
                 ScratchSnapshotSeq = _envRecord.ScratchPagesTable.VisibleAsOfSeq;
-                _scratchPagesInUse.BeginWriteTransaction(ScratchSnapshotSeq);
+                _scratchWriteSeq = _scratchPagesInUse.BeginWriteTransaction(ScratchSnapshotSeq, chainedToPreviousSession: false);
                 _transactionPages = new List<PageFromScratchBuffer>();
                 _transactionPagesIndex = new Dictionary<long, int>();
                 _pagesToFreeOnCommit = new Stack<long>();
@@ -1567,7 +1567,7 @@ namespace Voron.Impl
             ValidateReadOnlyPages();
 
             // we need to roll back all the changes we made here
-            _scratchPagesInUse.RollbackCurrentTransaction();
+            _scratchPagesInUse.RollbackTransactionsAfter(_scratchWriteSeq);
 
             // We need to free pages allocated by this transaction in a scratch buffer.
             // During tx, we did partial cleanup via `DiscardScratchModificationOn`
@@ -1598,6 +1598,7 @@ namespace Voron.Impl
         }
 
         private EnvironmentStateRecord _envRecord;
+        private long _scratchWriteSeq;
         private long _localTxNextPageNumber;
         public DateTime TxStartTime;
         public bool IsCloned;
