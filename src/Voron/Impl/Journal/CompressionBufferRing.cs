@@ -49,6 +49,13 @@ public sealed unsafe class CompressionBufferRing : IDisposable
         CreatePager(options.InitialFileSize ?? options.InitialLogFileSize);
     }
 
+    /// Maps a reservation and hands back a writable pointer to its base.
+    public byte* AcquireWritable(ref Pager.PagerTransactionState txState, long baseOffsetInPages, int pages)
+    {
+        _current.EnsureMapped(_state, ref txState, baseOffsetInPages, pages);
+        return _current.MakeWritable(_state, _current.AcquireRawPagePointer(_state, ref txState, baseOffsetInPages));
+    }
+
     public Pager Pager => _current;
     public Pager.State State => _state;
 
@@ -63,9 +70,22 @@ public sealed unsafe class CompressionBufferRing : IDisposable
         _state = state;
     }
 
+    private long _reserveCount;
+    private long _stallCount;
+    private long _stallTicks;
+    private long _growCount;
+
+
+    public readonly record struct BackPressure(long Reserves, long Stalls, double StallMs, long Grows);
+
+    public BackPressure GetBackPressure() =>
+        new(Volatile.Read(ref _reserveCount), Volatile.Read(ref _stallCount),
+            Volatile.Read(ref _stallTicks) * 1000.0 / Stopwatch.Frequency, Volatile.Read(ref _growCount));
+
     public Lease Reserve(int pages)
     {
         _journal.AssertWriteLockHeld();
+        Interlocked.Increment(ref _reserveCount);
 
         while (true)
         {
@@ -115,7 +135,10 @@ public sealed unsafe class CompressionBufferRing : IDisposable
 
             // Nothing fits - park until a lease comes back. 
             // We are waiting while holding the journal write lock, *intentional back-pressure*
+            Interlocked.Increment(ref _stallCount);
+            var stallStart = Stopwatch.GetTimestamp();
             _returned.Wait();
+            Interlocked.Add(ref _stallTicks, Stopwatch.GetTimestamp() - stallStart);
         }
     }
 
@@ -184,7 +207,11 @@ public sealed unsafe class CompressionBufferRing : IDisposable
         }
     }
 
-    private void Grow(long minPages) => _current.EnsureContinuous(ref _state, 0, checked((int)minPages));
+    private void Grow(long minPages)
+    {
+        Interlocked.Increment(ref _growCount);
+        _current.EnsureContinuous(ref _state, 0, checked((int)minPages));
+    }
 
     public void ZeroWhenEmpty(ref Pager.PagerTransactionState txState)
     {

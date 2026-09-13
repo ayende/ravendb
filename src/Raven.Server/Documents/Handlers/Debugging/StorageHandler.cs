@@ -1,4 +1,4 @@
-﻿﻿using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net;
@@ -257,6 +257,43 @@ namespace Raven.Server.Documents.Handlers.Debugging
 
             var index = Database.IndexStore.GetIndex(environment.Name);
             return index.GenerateStorageReport(details);
+        }
+
+        [RavenAction("/databases/*/debug/storage/compression-buffer", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = true)]
+        public async Task CompressionBufferBackPressure()
+        {
+            using (ContextPool.AllocateOperationContext(out JsonOperationContext context))
+            await using (var writer = new AsyncBlittableJsonTextWriterForDebug(context, ServerStore, ResponseBodyStream()))
+            {
+                writer.WriteStartObject();
+                writer.WritePropertyName("Environments");
+                writer.WriteStartArray();
+
+                var first = true;
+                foreach (var env in Database.GetAllStoragesEnvironment())
+                {
+                    if (env?.Environment == null)
+                        continue;
+
+                    if (first == false)
+                        writer.WriteComma();
+                    first = false;
+
+                    var backPressure = env.Environment.Journal.CompressionBufferBackPressure;
+                    context.Write(writer, new DynamicJsonValue
+                    {
+                        ["Name"] = env.Name,
+                        ["Type"] = env.Type.ToString(),
+                        ["Reserves"] = backPressure.Reserves,
+                        ["Stalls"] = backPressure.Stalls,
+                        ["StallMs"] = backPressure.StallMs,
+                        ["Grows"] = backPressure.Grows
+                    });
+                }
+
+                writer.WriteEndArray();
+                writer.WriteEndObject();
+            }
         }
 
         [RavenAction("/databases/*/debug/storage/compression-dictionaries", "GET", AuthorizationStatus.ValidUser, EndpointType.Read, IsDebugInformationEndpoint = false)]

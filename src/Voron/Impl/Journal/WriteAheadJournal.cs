@@ -89,6 +89,8 @@ namespace Voron.Impl.Journal
         private readonly HeaderAccessor _headerAccessor;
         private readonly CompressionBufferRing _compressionBuffer;
 
+        public CompressionBufferRing.BackPressure CompressionBufferBackPressure => _compressionBuffer.GetBackPressure();
+
         private readonly DiffPages _diffPage = new DiffPages();
         private readonly RavenLogger _logger;
 
@@ -2399,8 +2401,7 @@ namespace Voron.Impl.Journal
                 var pager = _compressionBuffer.Pager;
                 var state = _compressionBuffer.State;
 
-                pager.EnsureMapped(state, ref tx.PagerTransactionState, lease.BaseOffsetInPages, pages);
-                var ptr = pager.MakeWritable(state, pager.AcquireRawPagePointer(state, ref tx.PagerTransactionState, lease.BaseOffsetInPages));
+                var ptr = _compressionBuffer.AcquireWritable(ref tx.PagerTransactionState, lease.BaseOffsetInPages, pages);
 
                 var entry = _linkedJournalsRecord.CreateEntry(ptr, pages * Constants.Storage.PageSize);
 
@@ -2839,10 +2840,7 @@ namespace Voron.Impl.Journal
             var compressionPager = _compressionBuffer.Pager;
             var compressionState = _compressionBuffer.State;
 
-            compressionPager.EnsureMapped(compressionState, ref txState, reservationBase, outputBufferInPages + pagesRequired);
-            var entryBasePtr = compressionPager.MakeWritable(compressionState,
-                compressionPager.AcquireRawPagePointer(compressionState, ref txState, reservationBase)
-            );
+            var entryBasePtr = _compressionBuffer.AcquireWritable(ref txState, reservationBase, outputBufferInPages + pagesRequired);
             var stagingPtr = entryBasePtr + (long)outputBufferInPages * Constants.Storage.PageSize;
             var txHeaderPtr = stagingPtr;
             var txPageInfoPtr = txHeaderPtr + sizeof(TransactionHeader);
