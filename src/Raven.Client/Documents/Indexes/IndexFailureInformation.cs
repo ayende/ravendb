@@ -1,4 +1,4 @@
-﻿namespace Raven.Client.Documents.Indexes
+namespace Raven.Client.Documents.Indexes
 {
     /// <summary>
     /// Information about index failure rates
@@ -15,18 +15,18 @@
         /// Indicates whether this is invalid index.
         /// </summary>
         /// <value><c>true</c> if this is invalid index; otherwise, <c>false</c>.</value>
-        public bool IsInvalidIndex(bool isStale)
+        public bool IsInvalidIndex(bool moreAttemptsExpected)
         {
             return CheckIndexInvalid(MapAttempts, MapErrors,
                 MapReferenceAttempts, MapReferenceErrors,
-                ReduceAttempts, ReduceErrors, isStale);
+                ReduceAttempts, ReduceErrors, moreAttemptsExpected);
         }
 
         public static bool CheckIndexInvalid(
             long mapAttempts, long mapErrors,
             long? mapReferenceAttempts, long? mapReferenceErrors,
             long? reduceAttempts, long? reduceErrors,
-            bool isStale)
+            bool moreAttemptsExpected)
         {
             var attempts = mapAttempts;
             if (mapReferenceAttempts != null)
@@ -48,7 +48,7 @@
 
             // we don't have enough attempts to make a good determination
 
-            if (isStale) // an index hasn't complete yet, let it index more docs
+            if (moreAttemptsExpected) // it will get another go at these, do not condemn it on this sample
                 return false;
 
             if (attempts >= MinimalNumberOfAttemptsToCheckFailureRate) // enough to calculate

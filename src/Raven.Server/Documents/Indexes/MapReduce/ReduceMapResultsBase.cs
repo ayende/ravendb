@@ -801,7 +801,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
                     ReduceAttempts = stats.ReduceAttempts
                 };
                 
-                if (failureInfo.IsInvalidIndex(true))
+                if (failureInfo.IsInvalidIndex(moreAttemptsExpected: true)) // mid-batch: this index will keep going
                 {
                     throw new ExcessiveNumberOfReduceErrorsException("Excessive number of errors during the reduce phase for the current batch. Failure info: " +
                                                                      failureInfo.GetErrorMessage());

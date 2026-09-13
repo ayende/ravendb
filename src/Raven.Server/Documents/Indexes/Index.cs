@@ -1910,7 +1910,8 @@ namespace Raven.Server.Documents.Indexes
                                     {
                                         var elapsedFromLastQuery = _lastQueriedTimeTracker.UpdateElapsedSinceQueried(stats.StartTime);
                                         var failureInformation = _indexStorage.UpdateStats(stats.StartTime, elapsedFromLastQuery, stats.ToIndexingBatchStats());
-                                        HandleIndexFailureInformation(failureInformation);
+                                        HandleIndexFailureInformation(failureInformation,
+                                            moreAttemptsExpected: IsTestRun == false && didWork);
                                     }
                                 }
                                 catch (VoronUnrecoverableErrorException vuee)
@@ -2523,9 +2524,9 @@ namespace Raven.Server.Documents.Indexes
             }
         }
 
-        private void HandleIndexFailureInformation(IndexFailureInformation failureInformation)
+        private void HandleIndexFailureInformation(IndexFailureInformation failureInformation, bool moreAttemptsExpected)
         {
-            if (failureInformation.IsInvalidIndex(IsStaleInternal()) == false)
+            if (failureInformation.IsInvalidIndex(moreAttemptsExpected) == false)
                 return;
 
             var message = failureInformation.GetErrorMessage();

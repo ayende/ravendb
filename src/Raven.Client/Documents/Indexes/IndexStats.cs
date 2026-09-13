@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using Raven.Client.Documents.DataArchival;
 using Raven.Client.Documents.Operations.DataArchival;
@@ -166,7 +166,7 @@ namespace Raven.Client.Documents.Indexes
         /// <summary>
         /// Determines if index is invalid. If more than 15% of attempts (map or reduce) are errors then value will be <c>true</c>.
         /// </summary>
-        public bool IsInvalidIndex => IndexFailureInformation.CheckIndexInvalid(MapAttempts, MapErrors, MapReferenceAttempts, MapReferenceErrors, ReduceAttempts, ReduceErrors, IsStale);
+        public bool IsInvalidIndex => IndexFailureInformation.CheckIndexInvalid(MapAttempts, MapErrors, MapReferenceAttempts, MapReferenceErrors, ReduceAttempts, ReduceErrors, moreAttemptsExpected: IsStale);
 
         public MemoryStats Memory { get; set; }
 

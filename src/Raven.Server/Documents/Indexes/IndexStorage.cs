@@ -510,7 +510,7 @@ namespace Raven.Server.Documents.Indexes
             }
 
             return IndexFailureInformation.CheckIndexInvalid(mapAttempts, mapErrors,
-                mapReferenceAttempts, mapReferenceErrors, reduceAttempts, reduceErrors, false);
+                mapReferenceAttempts, mapReferenceErrors, reduceAttempts, reduceErrors, moreAttemptsExpected: false);
         }
 
         public IndexStats ReadStats(RavenTransaction tx)
