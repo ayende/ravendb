@@ -1,8 +1,9 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Threading;
 using Sparrow.Threading;
 using Voron.Global;
 using Voron.Impl.Paging;
@@ -29,6 +30,8 @@ namespace Voron.Impl.Scratch
         private readonly Dictionary<long, LinkedList<PendingPage>> _freePagesBySize = new();
         private readonly Dictionary<long, PageFromScratchBuffer> _allocatedPages = new();
         private readonly DisposeOnce<SingleAttempt> _disposeOnceRunner;
+
+        private ScratchPageOwners _owners;
 
         private long _allocatedPagesCount;
         private long _lastUsedPage;
@@ -70,6 +73,7 @@ namespace Voron.Impl.Scratch
         {
             _allocatedPages.Clear();
             _freePagesBySize.Clear();
+            _owners.UntrackAll();
         }
 
         public void Reset()
@@ -110,7 +114,7 @@ namespace Voron.Impl.Scratch
             var result = new PageFromScratchBuffer(this,_scratchPagerState, tx.Id, _lastUsedPage, pageNumber, previousVersion, sizeToAllocate, numberOfPages);
 
             _allocatedPagesCount += numberOfPages;
-            _allocatedPages.Add(_lastUsedPage, result);
+            AddAllocatedPage(_lastUsedPage, result);
             _lastUsedPage += sizeToAllocate;
 
             return result;
@@ -141,8 +145,21 @@ namespace Voron.Impl.Scratch
             result = new PageFromScratchBuffer(this, _scratchPagerState, tx.Id,val.Page, pageNumber, previousVersion, size, numberOfPages);
 
             _allocatedPagesCount += numberOfPages;
-            _allocatedPages.Add(val.Page, result);
+            AddAllocatedPage(val.Page, result);
             return true;
+        }
+
+        private void AddAllocatedPage(long positionInScratchBuffer, in PageFromScratchBuffer value)
+        {
+            _allocatedPages.Add(positionInScratchBuffer, value);
+            _owners.Track(positionInScratchBuffer, value.PageNumberInDataFile, value.NumberOfPages);
+        }
+
+        private bool RemoveAllocatedPage(long positionInScratchBuffer)
+        {
+            var removed = _allocatedPages.Remove(positionInScratchBuffer);
+            _owners.Untrack(positionInScratchBuffer);
+            return removed;
         }
 
         public bool HasActivelyUsedBytes(long oldestActiveTransaction)
@@ -189,7 +206,7 @@ namespace Voron.Impl.Scratch
             DebugInfo.LastAsOfTxIdWhenFree = asOfTxId;
 
             _allocatedPagesCount -= value.NumberOfPages;
-            _allocatedPages.Remove(page);
+            RemoveAllocatedPage(page);
 
             Debug.Assert(value.NumberOfPages > 0);
 
@@ -238,7 +255,7 @@ namespace Voron.Impl.Scratch
 
         public PageFromScratchBuffer ShrinkOverflowPage(in PageFromScratchBuffer value, int newNumberOfPages)
         {
-            if (_allocatedPages.Remove(value.PositionInScratchBuffer) == false)
+            if (RemoveAllocatedPage(value.PositionInScratchBuffer) == false)
                 InvalidAttemptToShrinkPageThatWasntAllocated(value);
 
             Debug.Assert(value.NumberOfPages > 1);
@@ -250,7 +267,7 @@ namespace Voron.Impl.Scratch
                 PreviousVersion = value.PreviousVersion
             }; 
 
-            _allocatedPages.Add(shrinked.PositionInScratchBuffer, shrinked);
+            AddAllocatedPage(shrinked.PositionInScratchBuffer, shrinked);
 
             _allocatedPagesCount -= value.NumberOfPages - newNumberOfPages;
 
@@ -316,18 +333,88 @@ namespace Voron.Impl.Scratch
             }
         }
 
+        /// <summary>
+        /// Debug only pages ownership tracking. 
+        /// 
+        /// Lock-free view of _allocatedPages so VerifyMatch can read it concurrently.
+        /// </summary>
+        private struct ScratchPageOwners
+        {
+            private const long NoOwner = -1;
+            private const int NumberOfPagesBits = 24; // fits 127GB, big enough
+            private const long NumberOfPagesMask = (1L << NumberOfPagesBits) - 1;
+
+            private long[] _owners;
+
+            [Conditional("DEBUG")]
+            public void Track(long positionInScratchBuffer, long pageNumberInDataFile, int numberOfPages)
+            {
+                Debug.Assert(pageNumberInDataFile >= 0, "pageNumberInDataFile >= 0");
+                Debug.Assert(numberOfPages >= 0 && numberOfPages <= NumberOfPagesMask,
+                    $"{numberOfPages} does not fit in {NumberOfPagesBits} bits");
+
+                var owners = _owners ??= [];
+                if (positionInScratchBuffer >= owners.Length)
+                {
+                    var grown = new long[Math.Max(Math.Max(owners.Length * 2, 64), positionInScratchBuffer + 1)];
+                    Array.Fill(grown, NoOwner);
+                    Array.Copy(owners, grown, owners.Length);
+
+                    // a reader may still hold the previous array. The scratch file only grows and positions
+                    // are append-only, so every position that reader can resolve is in there with this value
+                    Volatile.Write(ref _owners, grown);
+                    owners = grown;
+                }
+
+                Volatile.Write(ref owners[positionInScratchBuffer],
+                    (pageNumberInDataFile << NumberOfPagesBits) | (uint)numberOfPages);
+            }
+
+            [Conditional("DEBUG")]
+            public void Untrack(long positionInScratchBuffer)
+            {
+                var owners = _owners;
+                if (owners != null && positionInScratchBuffer < owners.Length)
+                    Volatile.Write(ref owners[positionInScratchBuffer], NoOwner);
+            }
+
+            [Conditional("DEBUG")]
+            public void UntrackAll()
+            {
+                var owners = _owners;
+                if (owners != null)
+                    Array.Fill(owners, NoOwner);
+            }
+
+            /// False when nothing owns the position - it was never tracked, or it has been freed.
+            public bool TryGetOwner(long positionInScratchBuffer, out long pageNumberInDataFile, out long numberOfPages)
+            {
+                pageNumberInDataFile = numberOfPages = 0;
+
+                var owners = Volatile.Read(ref _owners);
+                if (owners == null || positionInScratchBuffer >= owners.Length)
+                    return false;
+
+                var owner = Volatile.Read(ref owners[positionInScratchBuffer]);
+                if (owner == NoOwner)
+                    return false;
+
+                pageNumberInDataFile = owner >> NumberOfPagesBits;
+                numberOfPages = owner & NumberOfPagesMask;
+                return true;
+            }
+        }
+
         [Conditional("DEBUG")]
         public void VerifyMatch(long pageNumberInDataFile, long positionInScratchBuffer, int numberOfPages)
         {
-            if (_allocatedPages.TryGetValue(positionInScratchBuffer, out var allocated) is false)
+            if (_owners.TryGetOwner(positionInScratchBuffer, out var ownerPageNumber, out var ownerNumberOfPages) == false)
                 return;
-            
-            if(allocated.PageNumberInDataFile != pageNumberInDataFile || 
-               allocated.NumberOfPages != numberOfPages)
+
+            if (ownerPageNumber != pageNumberInDataFile || ownerNumberOfPages != numberOfPages)
                 throw new InvalidOperationException(
                     $"Failed to verify page {pageNumberInDataFile} when reading scratch page {positionInScratchBuffer}, values different!" +
-                    $"Page: {pageNumberInDataFile} vs. {allocated.PageNumberInDataFile} ({numberOfPages} vs {allocated.NumberOfPages})!");
-
+                    $"Page: {pageNumberInDataFile} vs. {ownerPageNumber} ({numberOfPages} vs {ownerNumberOfPages})!");
         }
 
         [Conditional("DEBUG")]
