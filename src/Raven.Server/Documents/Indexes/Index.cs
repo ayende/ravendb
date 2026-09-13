@@ -2914,8 +2914,9 @@ namespace Raven.Server.Documents.Indexes
                 {
                     try
                     {
-                        // Index stats and errors are written after the batch, via OpenWriteScope, we commit that here
-                        pending.Tx?.Commit();
+                        // Index stats and errors are written after the batch, via OpenWriteScope, we commit that here if there are no failures
+                        if (_completionPump.HasFailure == false)
+                            pending.Tx?.Commit();
                     }
                     catch
                     {

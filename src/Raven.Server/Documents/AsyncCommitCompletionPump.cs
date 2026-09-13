@@ -24,6 +24,8 @@ internal sealed class AsyncCommitCompletionPump<TBatch>
 
     public bool HasPendingCompletions => _inFlight.Count > 0;
 
+    public bool HasFailure => _failure != null;
+
     public bool OldestTransactionIsDurable => _headDurableCommit is { IsCompleted: true };
 
     public Task OldestDurableCommit => _headDurableCommit;
