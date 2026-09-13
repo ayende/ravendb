@@ -230,7 +230,9 @@ namespace Raven.Server.Documents.Indexes
 
         private IIndexingWork[] _indexWorkers;
 
+        // _lastStats is the *current* executing batch, _lastCompletedStats is the one that finished before it.
         private IndexingStatsAggregator _lastStats;
+        private IndexingStatsAggregator _lastCompletedStats;
 
         private readonly ConcurrentQueue<IndexingStatsAggregator> _lastIndexingStats =
             new ConcurrentQueue<IndexingStatsAggregator>();
@@ -1934,7 +1936,7 @@ namespace Raven.Server.Documents.Indexes
                         }
 
                         if (batchCompleted)
-                            NotifyAboutCompletedBatch(didWork, batchPublished);
+                            NotifyAboutCompletedBatch(didWork, batchPublished, stats);
 
                         try
                         {
@@ -2168,7 +2170,7 @@ namespace Raven.Server.Documents.Indexes
             DocumentDatabase.NotificationCenter.Indexing.RemoveIndexNameFromCpuCreditsExhaustionWarning(Name);
         }
 
-        private void NotifyAboutCompletedBatch(bool didWork, Task batchPublished = null)
+        private void NotifyAboutCompletedBatch(bool didWork, Task batchPublished = null, IndexingStatsAggregator completedStats = null)
         {
             if (didWork)
             {
@@ -2178,20 +2180,23 @@ namespace Raven.Server.Documents.Indexes
 
             if (batchPublished is not { IsCompleted: false })
             {   // run this inline
-                RaiseBatchCompletedNotifications(didWork);
+                RaiseBatchCompletedNotifications(didWork, completedStats);
                 return;
             }
             // run this only after the batch has actually completed
             batchPublished.ContinueWith(static (_, state) =>
             {
                 // ensure that we use the state _at the time of scheduling the continuation
-                var (index, didWork) = ((Index, bool))state;
-                index.RaiseBatchCompletedNotifications(didWork);
-            }, (this, didWork), TaskScheduler.Default);
+                var (index, didWork, completedStats) = ((Index, bool, IndexingStatsAggregator))state;
+                index.RaiseBatchCompletedNotifications(didWork, completedStats);
+            }, (this, didWork, completedStats), TaskScheduler.Default);
         }
 
-        private void RaiseBatchCompletedNotifications(bool didWork)
+        private void RaiseBatchCompletedNotifications(bool didWork, IndexingStatsAggregator completedStats)
         {
+            if (completedStats != null)
+                _lastCompletedStats = completedStats;
+
             DocumentDatabase.Changes.RaiseNotifications(new IndexChange { Name = Name, Type = IndexChangeTypes.BatchCompleted });
 
             TestRun?.BatchCompleted.Set();
@@ -4815,7 +4820,7 @@ namespace Raven.Server.Documents.Indexes
 
         public IndexingStatsAggregator GetLatestIndexingStat()
         {
-            return _lastStats;
+            return _lastCompletedStats ?? _lastStats;
         }
 
         public abstract IQueryResultRetriever GetQueryResultRetriever(
