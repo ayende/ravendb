@@ -157,6 +157,7 @@ namespace Raven.Server.Documents.Indexes.MapReduce
 
             WriteLastEtags(indexContext);
             _mapReduceContext.StoreNextMapResultId();
+            _mapReduceContext.StoreByReduceKeyHash.Clear();
 
             return (false, Index.CanContinueBatchResult.None);
         }
