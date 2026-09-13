@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.IO;
 using System.Linq;
 using System.Threading;
@@ -44,6 +44,7 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
         options.OnRecoverableFailure += documentDatabase.HandleRecoverableFailure;
 
         _env = StorageLoader.OpenEnvironment(options, StorageEnvironmentWithType.StorageEnvironmentType.SharedJournals);
+        _canChainCommits = _env.Options.Encryption.IsEnabled == false && _env.Options.RunningOn32Bits == false;
         _logger = RavenLogManager.Instance.GetLoggerForDatabase<SharedIndexJournals>(documentDatabase);
         _env.Journal.BranchJournalMerger = this;
         _env.Journal.OnBranchHardLinkLimitReached = OnBranchHardLinkLimitReached;
@@ -57,6 +58,7 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
     
     private readonly ManualResetEventSlim _waitForJournals = new(initialState: true);
     private readonly StorageEnvironment _env;
+    private readonly bool _canChainCommits;
     public StorageEnvironment Env => _env;
     private bool _disposed;
     private readonly PoolOfThreads.LongRunningWork _sharedJournalsThread;
@@ -127,6 +129,19 @@ public class SharedIndexJournals : IJournalMerger, IDisposable
             // to think that it has an actual transaction and thus
             // will force it to flush / remove older journal
             current.LowLevelTransaction.ModifyPage(0);
+        }
+
+        if (_canChainCommits == false)
+        {
+            // no overlap, so batch is committed in place and the next uses a new transaction
+            CompleteInFlightBatch(ref inFlight);
+
+            var batch = current;
+            current = null;
+            using (batch)
+                batch.Commit();
+
+            return;
         }
 
         var next = current.BeginAsyncCommitAndStartNewTransaction(persistentContext);
