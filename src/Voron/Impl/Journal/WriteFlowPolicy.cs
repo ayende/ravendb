@@ -309,12 +309,26 @@ public sealed class WriteFlowPolicy
     public long GetCompressTxAboveSizeInBytes(long configured) =>
         IsMeasuredFastDevice ? Math.Max(configured, FastDeviceCompressTxAboveSizeInBytes) : configured;
 
-    public JournalCompressionAlgorithm ResolveJournalCompressionAlgorithm(JournalCompressionAlgorithm configured)
+    // Zstd is 400MB/sec vs. LZ4 1.5GB/sec, so the device-class rule below only spends it when the
+    // device is the constraint. That reasoning was calibrated on the documents journal, where an
+    // entry is tens of KB. A shared index journal merges every index's commit into one entry
+    // measured in megabytes, and there zstd's ratio removes more bytes than the extra CPU costs -
+    // it wins on a local NVMe too. So size decides before the device class gets a say.
+    //
+    // The 1MB line sits between the two regimes we actually measured (10 map + 2 map-reduce Corax
+    // indexes: ~85KB written per documents entry against a ~4MB median per shared-journal entry).
+    // The true crossover was not measured, so this stays deliberately above any ordinary
+    // document-sized transaction.
+    private const long ZstdWorthwhileEntrySizeInBytes = 1 * Constants.Size.Megabyte;
+
+    public JournalCompressionAlgorithm ResolveJournalCompressionAlgorithm(JournalCompressionAlgorithm configured, long entrySizeInBytes)
     {
         if (configured != JournalCompressionAlgorithm.Auto)
             return configured; // pinned by the user, in either direction
 
-        // Zstd is 400MB/sec vs. LZ4 1.5GB/sec - only make sense to go to this effort if the device is constrained
+        if (entrySizeInBytes >= ZstdWorthwhileEntrySizeInBytes)
+            return JournalCompressionAlgorithm.Zstd;
+
         return Device.MeasuredDeviceClass == DeviceWriteBudget.DeviceClass.Budgeted
             ? JournalCompressionAlgorithm.Zstd
             : JournalCompressionAlgorithm.Lz4;

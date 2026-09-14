@@ -26,6 +26,12 @@ public class RavenDB_24327 : StorageTest
         options.ManualFlushing = true;
         options.ManualSyncing = true;
         options.MaxLogFileSize = 1 * 1024 * 1024;
+
+        // these tests assert an exact NumberOf4KbsWrittenToDisk, which is about WHICH pages the
+        // transaction wrote - not about how well they compressed. Auto picks the codec from the
+        // entry size, so a large enough case would silently switch to Zstd and write fewer 4KBs
+        // for the same set of pages. Pin the codec so the assertions stay about the page set.
+        options.JournalCompressionAlgorithm = JournalCompressionAlgorithm.Lz4;
     }
 
     [RavenFact(RavenTestCategory.Voron)]
