@@ -1798,13 +1798,26 @@ namespace Voron
 
         internal DeviceWriteBudget DeviceWriteBudget { get; private set; } 
 
+        // Device telemetry is deliberately shared by every environment on a physical device, and
+        // deliberately long-lived, because it describes the disk rather than any one database. That
+        // makes it process-wide state: a test suite accumulates measurements across unrelated tests
+        // and the classification it lands on depends on what ran first. Tests that assert on the
+        // classification can ask for their own instance instead.
+        internal bool UseUnsharedDeviceWriteBudget { get; set; }
+
         private protected unsafe void InitializeWritebackGate(Pager.State state, string dataFilePath)
         {
+            if (UseUnsharedDeviceWriteBudget)
+            {
+                DeviceWriteBudget = DeviceWriteBudget.CreateUnshared(this);
+                return;
+            }
+
             if (Pal.rvn_pager_get_device_id(state.Handle, out var deviceId, out _) != PalFlags.FailCodes.Success)
                 return;
                 
             DeviceWriteBudget = DeviceWriteBudget.GetForDevice(deviceId, dataFilePath,
-                SyncWritebackBarrierCostThresholdTicks, SyncWritebackDrainQueueDepthThreshold, PipelineJournalWritesAboveLatencyInTicks);
+                SyncWritebackBarrierCostThresholdTicks, SyncWritebackDrainQueueDepthThreshold);
         }
 
         internal bool SimulateFailureOnDbCreation { get; set; }

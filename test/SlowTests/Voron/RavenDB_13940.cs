@@ -33,6 +33,13 @@ namespace SlowTests.Voron
             };
             options.ManualSyncing = true;
             options.ManualFlushing = true;
+
+            // Device classification is shared process-wide and drives more than the codec - it also
+            // gates background journal pre-zeroing, which changes what sits in a journal beyond the
+            // point these tests corrupt. Own the classification and pin the codec so recovery is
+            // asserted against a stable journal layout rather than against test order.
+            options.UseUnsharedDeviceWriteBudget = true;
+            options.JournalCompressionAlgorithm = JournalCompressionAlgorithm.Lz4;
             options.MaxScratchBufferSize = 1 * 1024 * 1024 * 1024;
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = true;
         }
@@ -533,6 +540,13 @@ namespace SlowTests.Voron
 
             options.ManualSyncing = true;
             options.ManualFlushing = true;
+
+            // Device classification is shared process-wide and drives more than the codec - it also
+            // gates background journal pre-zeroing, which changes what sits in a journal beyond the
+            // point these tests corrupt. Own the classification and pin the codec so recovery is
+            // asserted against a stable journal layout rather than against test order.
+            options.UseUnsharedDeviceWriteBudget = true;
+            options.JournalCompressionAlgorithm = JournalCompressionAlgorithm.Lz4;
             options.MaxScratchBufferSize = 1 * 1024 * 1024 * 1024;
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = true;
 

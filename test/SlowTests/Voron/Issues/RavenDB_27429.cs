@@ -18,6 +18,11 @@ public class RavenDB_27429 : StorageTest
         // every transaction here is large enough to be worth compressing
         options.CompressTxAboveSizeInBytes = 1024;
         options.ManualFlushing = true;
+
+        // these tests assert on the resolved codec, and the Auto resolution reads a device
+        // classification that is shared process-wide - take our own instance so the verdict comes
+        // from this environment's writes and not from whatever the suite ran before
+        options.UseUnsharedDeviceWriteBudget = true;
     }
 
     [RavenFact(RavenTestCategory.Voron)]
@@ -82,8 +87,9 @@ public class RavenDB_27429 : StorageTest
     {
         RequireFileBasedPager();
 
-        // Auto is the default, and nothing here writes enough to classify the device - the resolution
-        // has to stay on Lz4 rather than guess, and the data has to come back either way
+        // Auto is the default, and this environment owns its device budget, so nothing has been
+        // measured yet - the resolution has to stay on Lz4 rather than guess, and the data has to
+        // come back either way
         Assert.Equal(JournalCompressionAlgorithm.Auto, Env.Options.JournalCompressionAlgorithm);
         Assert.Equal(JournalCompressionAlgorithm.Lz4, Env.Journal.ResolveJournalCompressionAlgorithm(entrySizeInBytes: 0));
 
@@ -114,14 +120,14 @@ public class RavenDB_27429 : StorageTest
     private static byte[] Value(int round, int index) =>
         Encoding.UTF8.GetBytes(new string((char)('a' + ((round + index) % 26)), 512));
     [RavenFact(RavenTestCategory.Voron)]
-    public void ALargeEntryPicksZstdEvenOnAnUnclassifiedDevice()
+    public void ALargeEntryPicksZstdWhateverTheDeviceClass()
     {
         RequireFileBasedPager();
 
-        // Auto, and nothing here classifies the device as Budgeted - so the old rule would answer Lz4
-        // for every size. A shared index journal merges every index's commit into one multi-MB entry,
-        // and at that size zstd removes more bytes than the extra CPU costs on any device, so size has
-        // to win over device class.
+        // A shared index journal merges every index's commit into one multi-MB entry, and at that size
+        // zstd removes more bytes than the extra CPU costs on any device - so the size rule answers
+        // before the device class is consulted at all. That makes this assertion independent of the
+        // per-device classification, which is shared process-wide and depends on test order.
         Assert.Equal(JournalCompressionAlgorithm.Auto, Env.Options.JournalCompressionAlgorithm);
 
         Assert.Equal(JournalCompressionAlgorithm.Lz4, Env.Journal.ResolveJournalCompressionAlgorithm(entrySizeInBytes: 64 * Constants.Size.Kilobyte));

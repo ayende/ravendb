@@ -38,7 +38,7 @@ namespace Voron.Impl.Journal
         private static readonly ConcurrentDictionary<ulong, DeviceWriteBudget> DevicesById = new();
         private static readonly RavenLogger Log = RavenLogManager.Instance.GetLoggerForGlobalVoron<DeviceWriteBudget>();
 
-        public static DeviceWriteBudget GetForDevice(ulong deviceId, string pathOnDevice, long syncCostThresholdTicks, int queueDepthThreshold, long classifyAboveLatencyTicks)
+        public static DeviceWriteBudget GetForDevice(ulong deviceId, string pathOnDevice, long syncCostThresholdTicks, int queueDepthThreshold)
         {
             if (DevicesById.TryGetValue(deviceId, out var existing))
                 return existing;
@@ -48,7 +48,7 @@ namespace Voron.Impl.Journal
             DeviceWriteBudget Unlikely()
             {
                 var reader = DeviceQueueDepthReader.TryCreate(pathOnDevice, deviceId);
-                var candidate = new DeviceWriteBudget(reader, pathOnDevice, syncCostThresholdTicks, queueDepthThreshold, classifyAboveLatencyTicks);
+                var candidate = new DeviceWriteBudget(reader, pathOnDevice, syncCostThresholdTicks, queueDepthThreshold);
                 var winner = DevicesById.GetOrAdd(deviceId, candidate);
                 if (ReferenceEquals(winner, candidate) == false)
                     reader?.Dispose(); // lost the race - don't leak the device handle
@@ -57,7 +57,7 @@ namespace Voron.Impl.Journal
         }
 
         public static DeviceWriteBudget CreateUnshared(StorageEnvironmentOptions opts) =>
-            new(queueReader: null, pathOnDevice: "(unshared)", opts.SyncWritebackBarrierCostThresholdTicks, opts.SyncWritebackDrainQueueDepthThreshold, opts.PipelineJournalWritesAboveLatencyInTicks);
+            new(queueReader: null, pathOnDevice: "(unshared)", opts.SyncWritebackBarrierCostThresholdTicks, opts.SyncWritebackDrainQueueDepthThreshold);
 
         private const long SampleIntervalMs = 1_000;
         private const long ExitQuietMs = 30_000;
@@ -80,7 +80,7 @@ namespace Voron.Impl.Journal
         private long _lastBusyMs;
         private bool _draining;
 
-        internal DeviceWriteBudget(DeviceQueueDepthReader queueReader, string pathOnDevice, long syncCostThresholdTicks, int queueDepthThreshold, long classifyAboveLatencyTicks)
+        internal DeviceWriteBudget(DeviceQueueDepthReader queueReader, string pathOnDevice, long syncCostThresholdTicks, int queueDepthThreshold)
         {
             _queueReader = queueReader;
             _pathOnDevice = pathOnDevice;
@@ -88,7 +88,6 @@ namespace Voron.Impl.Journal
             _enterQueueDepth = queueDepthThreshold;
             _exitQueueDepth = queueDepthThreshold * 0.6; // leave only well below the entry point
             _activeQueueThreshold = _enterQueueDepth;
-            _classifyAboveLatencyTicks = classifyAboveLatencyTicks;
         }
 
         public enum DeviceClass
@@ -98,18 +97,72 @@ namespace Voron.Impl.Journal
             Budgeted // example: gp3 - both bandwidth & IOPS limits that we hit
         }
 
+        // Write size buckets. Latency on its own cannot tell a slow device from a big write - a shared
+        // index journal writes ~4.5MB at a time, which costs ~2.5ms on NVMe, and a latency rule reads
+        // that as a slow disk. Throughput tells them apart, but only within a size class, because a
+        // small write is mostly fixed overhead however fast the device is.
+        //
+        // Measured MB/s at the median write latency, 10 map + 2 map-reduce Corax indexes:
+        //
+        //                    NVMe (m6idn)     gp3 (throttled EBS)
+        //   < 256KB               171               4 -  8
+        //   256KB - 1MB          1121              19 - 26
+        //   1MB - 8MB            1881               9
+        //   > 8MB                2825               -
+        //
+        // The two devices separate by more than 20x in every bucket, so the thresholds below sit in
+        // a wide gap rather than on a knife edge.
+        internal enum WriteSizeBucket
+        {
+            Tiny,   // < 256KB
+            Small,  // < 1MB
+            Medium, // < 8MB
+            Large   // >= 8MB
+        }
+
+        private const int BucketCount = 4;
+
+        private static WriteSizeBucket BucketFor(long sizeInBytes) => sizeInBytes switch
+        {
+            < 256 * Global.Constants.Size.Kilobyte => WriteSizeBucket.Tiny,
+            < 1 * Global.Constants.Size.Megabyte => WriteSizeBucket.Small,
+            < 8 * Global.Constants.Size.Megabyte => WriteSizeBucket.Medium,
+            _ => WriteSizeBucket.Large
+        };
+
+        // A fast device sustains hundreds of MB/sec once a write is big enough to amortise the
+        // per-write cost. Below 256KB even NVMe only reached ~170MB/sec, so that bucket gets a far
+        // lower bar - a flat threshold there would call a genuine NVMe slow whenever it happened to
+        // be writing small.
+        private const long FastDeviceBytesPerSecond = 512L * 1024 * 1024;
+        private const long FastDeviceBytesPerSecondForTinyWrites = 64L * 1024 * 1024;
+
+        // enough samples that one stalled write cannot flip the verdict
+        private const int MinSamplesToClassify = 16;
+
         // journal write telemetry across EVERY environment on this device, intentionally long-lived because it shows disk perf
         // if the disk perf change (burstable, load, etc), we'll update the status with ~8 measurements anyway
-        private Sparrow.Server.Utils.SimpleEwma<long> _journalWriteLatencyTicks = new(smoothing: 8, validityMs: Sparrow.Server.Utils.SimpleEwma.NeverExpires);
-        private Sparrow.Server.Utils.SimpleEwma<long> _journalWriteSizeBytes = new(smoothing: 8, validityMs: Sparrow.Server.Utils.SimpleEwma.NeverExpires);
+        private readonly Sparrow.Server.Utils.SimpleEwma<long>[] _bucketLatencyTicks = CreateEwmas();
+        private readonly Sparrow.Server.Utils.SimpleEwma<long>[] _bucketSizeBytes = CreateEwmas();
+        private readonly long[] _bucketSamples = new long[BucketCount];
         private long _lastJournalWriteActivityTimestamp;
-        private readonly long _classifyAboveLatencyTicks;
+
+        private static Sparrow.Server.Utils.SimpleEwma<long>[] CreateEwmas()
+        {
+            var ewmas = new Sparrow.Server.Utils.SimpleEwma<long>[BucketCount];
+            for (int i = 0; i < ewmas.Length; i++)
+                ewmas[i] = new Sparrow.Server.Utils.SimpleEwma<long>(smoothing: 8, validityMs: Sparrow.Server.Utils.SimpleEwma.NeverExpires);
+            return ewmas;
+        }
 
         public void RecordJournalWrite(long latencyTicks, long sizeInBytes, long time)
         {
             Volatile.Write(ref _lastJournalWriteActivityTimestamp, time);
-            _journalWriteLatencyTicks.Update(latencyTicks);
-            _journalWriteSizeBytes.Update(sizeInBytes);
+
+            var bucket = (int)BucketFor(sizeInBytes);
+            _bucketLatencyTicks[bucket].Update(latencyTicks);
+            _bucketSizeBytes[bucket].Update(sizeInBytes);
+            Interlocked.Increment(ref _bucketSamples[bucket]);
         }
 
         public void RecordJournalWriteActivity(long time)
@@ -124,20 +177,29 @@ namespace Voron.Impl.Journal
         {
             get
             {
-                var ewma = _journalWriteLatencyTicks.Current;
-                var threshold = _classifyAboveLatencyTicks;
-                if (ewma == 0 || threshold == 0)
-                    return DeviceClass.Unknown;
+                // Largest bucket first. A big write is the honest measurement: it is dominated by
+                // bandwidth, and no write cache can absorb it indefinitely. Small writes are the
+                // easiest for a slow device to look good on, so they only get a say when nothing
+                // larger has been observed.
+                for (var bucket = BucketCount - 1; bucket >= 0; bucket--)
+                {
+                    if (Volatile.Read(ref _bucketSamples[bucket]) < MinSamplesToClassify)
+                        continue;
 
-                // This is really fast, consider it a fast disk regardless of the size threshold
-                if (ewma < threshold / 8)
-                    return DeviceClass.Fast;
+                    var latencyTicks = _bucketLatencyTicks[bucket].Current;
+                    var sizeBytes = _bucketSizeBytes[bucket].Current;
+                    if (latencyTicks <= 0 || sizeBytes <= 0)
+                        continue;
 
-                // small writes can be fast on a slow device, so we can't estimate from small writes only
-                if (_journalWriteSizeBytes.Current < 256 * Global.Constants.Size.Kilobyte)
-                    return DeviceClass.Unknown;
+                    var bytesPerSecond = (long)(sizeBytes * (double)TimeSpan.TicksPerSecond / latencyTicks);
+                    var required = bucket == (int)WriteSizeBucket.Tiny
+                        ? FastDeviceBytesPerSecondForTinyWrites
+                        : FastDeviceBytesPerSecond;
 
-                return ewma < threshold / 2 ? DeviceClass.Fast : DeviceClass.Budgeted;
+                    return bytesPerSecond >= required ? DeviceClass.Fast : DeviceClass.Budgeted;
+                }
+
+                return DeviceClass.Unknown; // no bucket has enough evidence yet, go for safe defaults
             }
         }
 
