@@ -321,6 +321,10 @@ public sealed class WriteFlowPolicy
     // document-sized transaction.
     private const long ZstdWorthwhileEntrySizeInBytes = 1 * Constants.Size.Megabyte;
 
+    // the classification drives the journal codec, background journal pre-zeroing and the
+    // compress-above floor, so it needs to be visible without inferring it from a benchmark
+    public DeviceWriteBudget.DeviceClass MeasuredDeviceClass => Device.MeasuredDeviceClass;
+
     public JournalCompressionAlgorithm ResolveJournalCompressionAlgorithm(JournalCompressionAlgorithm configured, long entrySizeInBytes)
     {
         if (configured != JournalCompressionAlgorithm.Auto)

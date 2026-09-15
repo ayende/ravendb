@@ -287,7 +287,8 @@ namespace Raven.Server.Documents.Handlers.Debugging
                         ["Reserves"] = backPressure.Reserves,
                         ["Stalls"] = backPressure.Stalls,
                         ["StallMs"] = backPressure.StallMs,
-                        ["Grows"] = backPressure.Grows
+                        ["Grows"] = backPressure.Grows,
+                        ["DeviceClass"] = env.Environment.WriteFlow.MeasuredDeviceClass.ToString()
                     });
                 }
 
