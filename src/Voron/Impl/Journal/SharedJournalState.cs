@@ -43,14 +43,24 @@ public class SharedJournalState()
 
     public void SetException(Exception e)
     {
-        while (_mergedCommitsQueue.TryDequeue(out var rec))
-        {
-            rec.FailCatastrophically(e);
-        }
-
+        // Only the records merged into the write that failed are casualties of it: part of their
+        // data may have reached the device, so their environments cannot be trusted.
         foreach (var record in _mergedJournalJournalRecordsBuffer)
         {
             record.FailCatastrophically(e);
+        }
+
+        // Records still queued were never part of that write. We don't fail them catastrophically, but we
+        // but we do abort the current transaction, this can then be retried.
+        while (_mergedCommitsQueue.TryDequeue(out var rec))
+        {
+            // a harvested record's lease is retained by the write and returned there; one that was
+            // never harvested still owns its own, and nothing else will hand it back
+            var lease = rec.Lease;
+            rec.Lease = null;
+            lease?.Dispose();
+
+            rec.FailLeavingEnvironmentUsable(e);
         }
     }
 
