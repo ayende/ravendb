@@ -26,6 +26,7 @@ public class RavenDB_24327 : StorageTest
         options.ManualFlushing = true;
         options.ManualSyncing = true;
         options.MaxLogFileSize = 1 * 1024 * 1024;
+        options.JournalCompressionAlgorithm = JournalCompressionAlgorithm.Lz4;
     }
 
     [RavenFact(RavenTestCategory.Voron)]

@@ -246,7 +246,7 @@ public sealed class WriteFlowPolicy
     // if we are making large writes, we'll be limited by device bandwidth, not latency.
     private bool IsCommitLatencyBound => _writeSizeBytes.Current < 256 * Constants.Size.Kilobyte;
 
-    private bool IsMeasuredFastDevice => Device.IsMeasuredFastDevice;
+    private bool IsMeasuredFastDevice => MeasuredDeviceClass == DeviceWriteBudget.DeviceClass.Fast;
 
 
     public OptimizationMode OptimizeFor { get; set; } = OptimizationMode.Bandwidth;
@@ -309,13 +309,25 @@ public sealed class WriteFlowPolicy
     public long GetCompressTxAboveSizeInBytes(long configured) =>
         IsMeasuredFastDevice ? Math.Max(configured, FastDeviceCompressTxAboveSizeInBytes) : configured;
 
-    public JournalCompressionAlgorithm ResolveJournalCompressionAlgorithm(JournalCompressionAlgorithm configured)
+    
+    // Zstd costs more than Lz4, but compresses better. Question is how much we can save, and the larger the data to compres, the more worthwhile Zstd is.
+    private const long ZstdWorthwhileEntrySizeInBytes = 1 * Constants.Size.Megabyte;
+
+    public DeviceWriteBudget.DeviceClass MeasuredDeviceClass =>
+        _options.ForTestingPurposes?.ForceDeviceClass ?? Device.MeasuredDeviceClass;
+
+    public DeviceWriteBudget.WriteSizeClassStats[] WriteSizeClassStats => Device.GetWriteSizeClassStats();
+
+    public JournalCompressionAlgorithm ResolveJournalCompressionAlgorithm(JournalCompressionAlgorithm configured, long entrySizeInBytes)
     {
         if (configured != JournalCompressionAlgorithm.Auto)
             return configured; // pinned by the user, in either direction
 
-        // Zstd is 400MB/sec vs. LZ4 1.5GB/sec - only make sense to go to this effort if the device is constrained
-        return Device.MeasuredDeviceClass == DeviceWriteBudget.DeviceClass.Budgeted
+        if (entrySizeInBytes >= ZstdWorthwhileEntrySizeInBytes)
+            return JournalCompressionAlgorithm.Zstd;
+
+        return MeasuredDeviceClass == DeviceWriteBudget.DeviceClass.Budgeted
+            // On devices with limited I/O budget, CPU cycles for Zstd ends up cheaper than I/O cost for more bytes
             ? JournalCompressionAlgorithm.Zstd
             : JournalCompressionAlgorithm.Lz4;
     }
@@ -351,8 +363,10 @@ public sealed class WriteFlowPolicy
         return totalWrittenButUnsyncedBytes > _options.MaxUnsyncedBytesBeforeMandatorySync;
     }
 
+    // fallocated file still pay for extent allocation, visible on NVMe devices (60% of write cost), pre-zero fill fixes that.
+    // slow devices (gp3) have a bandwidth budget, zero-fill competes with journal writes, so we need to skip that there.
     public bool ShouldPrepareZeroedJournalsInBackground =>
-        _forTestingPurposes?.ForceZeroedJournalPreparation ?? Device.ShouldPrepareZeroedJournalsInBackground;
+        _forTestingPurposes?.ForceZeroedJournalPreparation ?? IsMeasuredFastDevice;
 
     public int NextJournalZeroingStepMs(bool journalWriteActive, int stalledSoFarMs) =>
         _forTestingPurposes?.ForceZeroedJournalPreparation == true

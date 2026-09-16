@@ -1804,7 +1804,7 @@ namespace Voron
                 return;
                 
             DeviceWriteBudget = DeviceWriteBudget.GetForDevice(deviceId, dataFilePath,
-                SyncWritebackBarrierCostThresholdTicks, SyncWritebackDrainQueueDepthThreshold, PipelineJournalWritesAboveLatencyInTicks);
+                SyncWritebackBarrierCostThresholdTicks, SyncWritebackDrainQueueDepthThreshold);
         }
 
         internal bool SimulateFailureOnDbCreation { get; set; }
@@ -1982,6 +1982,8 @@ namespace Voron
             internal Action<long, long> OnJournalWrite;
 
             internal Action<long, long> OnJournalWriteCompleted;
+
+            internal DeviceWriteBudget.DeviceClass? ForceDeviceClass;
 
             internal sealed class PartialJournalWriteFailure
             {

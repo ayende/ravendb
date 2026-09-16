@@ -38,7 +38,7 @@ namespace Voron.Impl.Journal
         private static readonly ConcurrentDictionary<ulong, DeviceWriteBudget> DevicesById = new();
         private static readonly RavenLogger Log = RavenLogManager.Instance.GetLoggerForGlobalVoron<DeviceWriteBudget>();
 
-        public static DeviceWriteBudget GetForDevice(ulong deviceId, string pathOnDevice, long syncCostThresholdTicks, int queueDepthThreshold, long classifyAboveLatencyTicks)
+        public static DeviceWriteBudget GetForDevice(ulong deviceId, string pathOnDevice, long syncCostThresholdTicks, int queueDepthThreshold)
         {
             if (DevicesById.TryGetValue(deviceId, out var existing))
                 return existing;
@@ -48,7 +48,7 @@ namespace Voron.Impl.Journal
             DeviceWriteBudget Unlikely()
             {
                 var reader = DeviceQueueDepthReader.TryCreate(pathOnDevice, deviceId);
-                var candidate = new DeviceWriteBudget(reader, pathOnDevice, syncCostThresholdTicks, queueDepthThreshold, classifyAboveLatencyTicks);
+                var candidate = new DeviceWriteBudget(reader, pathOnDevice, syncCostThresholdTicks, queueDepthThreshold);
                 var winner = DevicesById.GetOrAdd(deviceId, candidate);
                 if (ReferenceEquals(winner, candidate) == false)
                     reader?.Dispose(); // lost the race - don't leak the device handle
@@ -57,7 +57,7 @@ namespace Voron.Impl.Journal
         }
 
         public static DeviceWriteBudget CreateUnshared(StorageEnvironmentOptions opts) =>
-            new(queueReader: null, pathOnDevice: "(unshared)", opts.SyncWritebackBarrierCostThresholdTicks, opts.SyncWritebackDrainQueueDepthThreshold, opts.PipelineJournalWritesAboveLatencyInTicks);
+            new(queueReader: null, pathOnDevice: "(unshared)", opts.SyncWritebackBarrierCostThresholdTicks, opts.SyncWritebackDrainQueueDepthThreshold);
 
         private const long SampleIntervalMs = 1_000;
         private const long ExitQuietMs = 30_000;
@@ -72,15 +72,15 @@ namespace Voron.Impl.Journal
         private readonly Stopwatch _clock = Stopwatch.StartNew();
         private double _activeQueueThreshold; // the enter value while trickling, the exit value while draining
         
-        private Sparrow.Server.Utils.SimpleEwma<long> _syncCostTicksEwma = new(smoothing: 4, 
+        private SimpleEwma<long> _syncCostTicksEwma = new(smoothing: 4, 
             validityMs: 60_000); // sync happens rarely, so we give it plenty of time to expire any measurements
         
-        private Sparrow.Server.Utils.SimpleEwma<double> _queueDepth = new(smoothing: 4);
+        private SimpleEwma<double> _queueDepth = new(smoothing: 4);
         private long _lastSampleMs;
         private long _lastBusyMs;
         private bool _draining;
 
-        internal DeviceWriteBudget(DeviceQueueDepthReader queueReader, string pathOnDevice, long syncCostThresholdTicks, int queueDepthThreshold, long classifyAboveLatencyTicks)
+        internal DeviceWriteBudget(DeviceQueueDepthReader queueReader, string pathOnDevice, long syncCostThresholdTicks, int queueDepthThreshold)
         {
             _queueReader = queueReader;
             _pathOnDevice = pathOnDevice;
@@ -88,7 +88,6 @@ namespace Voron.Impl.Journal
             _enterQueueDepth = queueDepthThreshold;
             _exitQueueDepth = queueDepthThreshold * 0.6; // leave only well below the entry point
             _activeQueueThreshold = _enterQueueDepth;
-            _classifyAboveLatencyTicks = classifyAboveLatencyTicks;
         }
 
         public enum DeviceClass
@@ -98,18 +97,69 @@ namespace Voron.Impl.Journal
             Budgeted // example: gp3 - both bandwidth & IOPS limits that we hit
         }
 
+        // There is a fixed latency per write, we account for the size of the write when computing speed.
+        //
+        // Measured MB/s at the median write latency, 10 map + 2 map-reduce Corax indexes:
+        // NVMe (m6idn)   gp3 (throttled EBS)
+        //    171 MB/s      4 -  8 MB/s
+        //  1,121 MB/s     19 - 26 MB/s
+        //  1,881 MB/s           9 MB/s
+        //  2,825 MB/s             -
+        private static readonly (long UnderSizeInBytes, long FastBytesPerSecond)[] WriteSizeClasses =
+        [
+            (256 * Global.Constants.Size.Kilobyte,  64L * 1024 * 1024), // < 256 KB, 64 MB/s
+            (1 * Global.Constants.Size.Megabyte,   512L * 1024 * 1024), // < 1 MB, 512 MB/s
+            (8 * Global.Constants.Size.Megabyte,   512L * 1024 * 1024), // < 8 MB, 512 MB/s
+            (long.MaxValue,                        512L * 1024 * 1024), // >= 8 MB, 512 MB/s
+        ];
+
+        private static readonly int BucketCount = WriteSizeClasses.Length;
+
+        private static int BucketFor(long sizeInBytes)
+        {
+            for (var bucket = 0; bucket < BucketCount - 1; bucket++)
+            {
+                if (sizeInBytes < WriteSizeClasses[bucket].UnderSizeInBytes)
+                    return bucket;
+            }
+
+            return BucketCount - 1; // the last class is open-ended, everything else lands here
+        }
+
+        // enough samples that one stalled write cannot flip the verdict
+        private const int MinSamplesToClassify = 16;
+
         // journal write telemetry across EVERY environment on this device, intentionally long-lived because it shows disk perf
         // if the disk perf change (burstable, load, etc), we'll update the status with ~8 measurements anyway
-        private Sparrow.Server.Utils.SimpleEwma<long> _journalWriteLatencyTicks = new(smoothing: 8, validityMs: Sparrow.Server.Utils.SimpleEwma.NeverExpires);
-        private Sparrow.Server.Utils.SimpleEwma<long> _journalWriteSizeBytes = new(smoothing: 8, validityMs: Sparrow.Server.Utils.SimpleEwma.NeverExpires);
+        private readonly SimpleEwma<long>[] _bucketLatencyTicks = CreateEwmas();
+        private readonly SimpleEwma<long>[] _bucketSizeBytes = CreateEwmas();
+        private readonly long[] _bucketSamples = new long[BucketCount];
+
+        private int _decidingBucket = NoBucketDecided; // The largest bucket holding enough samples decides, and it only ever moves up
+        private const int NoBucketDecided = -1;
         private long _lastJournalWriteActivityTimestamp;
-        private readonly long _classifyAboveLatencyTicks;
+
+        private static SimpleEwma<long>[] CreateEwmas()
+        {
+            var ewmas = new SimpleEwma<long>[BucketCount];
+            for (int i = 0; i < ewmas.Length; i++)
+                ewmas[i] = new SimpleEwma<long>(smoothing: 8, validityMs: SimpleEwma.NeverExpires);
+            return ewmas;
+        }
 
         public void RecordJournalWrite(long latencyTicks, long sizeInBytes, long time)
         {
             Volatile.Write(ref _lastJournalWriteActivityTimestamp, time);
-            _journalWriteLatencyTicks.Update(latencyTicks);
-            _journalWriteSizeBytes.Update(sizeInBytes);
+
+            var bucket = BucketFor(sizeInBytes);
+            _bucketLatencyTicks[bucket].Update(latencyTicks);
+            _bucketSizeBytes[bucket].Update(sizeInBytes);
+
+            var samples = Interlocked.Increment(ref _bucketSamples[bucket]);
+
+            // the deciding class only ever moves up
+            if (samples >= MinSamplesToClassify && bucket > Volatile.Read(ref _decidingBucket))
+                Volatile.Write(ref _decidingBucket, bucket);
         }
 
         public void RecordJournalWriteActivity(long time)
@@ -124,29 +174,52 @@ namespace Voron.Impl.Journal
         {
             get
             {
-                var ewma = _journalWriteLatencyTicks.Current;
-                var threshold = _classifyAboveLatencyTicks;
-                if (ewma == 0 || threshold == 0)
+                var bucket = Volatile.Read(ref _decidingBucket);
+                if (bucket == NoBucketDecided)
+                    return DeviceClass.Unknown; // no bucket has enough evidence yet, go for safe defaults
+
+                var latencyTicks = _bucketLatencyTicks[bucket].Current;
+                var sizeBytes = _bucketSizeBytes[bucket].Current;
+                if (latencyTicks <= 0 || sizeBytes <= 0)
                     return DeviceClass.Unknown;
 
-                // This is really fast, consider it a fast disk regardless of the size threshold
-                if (ewma < threshold / 8)
-                    return DeviceClass.Fast;
+                var bytesPerSecond = (long)(sizeBytes * (double)TimeSpan.TicksPerSecond / latencyTicks);
 
-                // small writes can be fast on a slow device, so we can't estimate from small writes only
-                if (_journalWriteSizeBytes.Current < 256 * Global.Constants.Size.Kilobyte)
-                    return DeviceClass.Unknown;
-
-                return ewma < threshold / 2 ? DeviceClass.Fast : DeviceClass.Budgeted;
+                return bytesPerSecond >= WriteSizeClasses[bucket].FastBytesPerSecond ? DeviceClass.Fast : DeviceClass.Budgeted;
             }
         }
 
         public bool IsMeasuredFastDevice => MeasuredDeviceClass == DeviceClass.Fast;
 
-        // fallocated file still pay for extent allocation, visible on NVMe devices (60% of write cost), pre-zero fill fixes that.
-        // slow devices (gp3) have a bandwidth budget, zero-fill competes with journal writes, so we need to skip that there.
-        public bool ShouldPrepareZeroedJournalsInBackground => IsMeasuredFastDevice;
+        public readonly record struct WriteSizeClassStats(
+            long UnderSizeInBytes,
+            long NumberOfWrites,
+            double LatencyMs,
+            long AverageSizeInBytes,
+            long BytesPerSecond,
+            long FastBytesPerSecond);
 
+        public WriteSizeClassStats[] GetWriteSizeClassStats()
+        {
+            var deciding = Volatile.Read(ref _decidingBucket);
+            var stats = new WriteSizeClassStats[BucketCount];
+
+            for (var bucket = 0; bucket < stats.Length; bucket++)
+            {
+                var latencyTicks = _bucketLatencyTicks[bucket].Current;
+                var sizeBytes = _bucketSizeBytes[bucket].Current;
+
+                stats[bucket] = new WriteSizeClassStats(
+                    WriteSizeClasses[bucket].UnderSizeInBytes,
+                    Volatile.Read(ref _bucketSamples[bucket]),
+                    latencyTicks / (double)TimeSpan.TicksPerMillisecond,
+                    sizeBytes,
+                    latencyTicks > 0 ? (long)(sizeBytes * (double)TimeSpan.TicksPerSecond / latencyTicks) : 0,
+                    WriteSizeClasses[bucket].FastBytesPerSecond);
+            }
+
+            return stats;
+        }
         private const int MaxJournalZeroingStallMs = 500;
 
         // callback from zero fill PAL, let it know when it should pace itself to avoid contentions with journal

@@ -33,6 +33,9 @@ namespace SlowTests.Voron
             };
             options.ManualSyncing = true;
             options.ManualFlushing = true;
+
+            options.ForTestingPurposesOnly().ForceDeviceClass = DeviceWriteBudget.DeviceClass.Budgeted;
+            options.JournalCompressionAlgorithm = JournalCompressionAlgorithm.Lz4;
             options.MaxScratchBufferSize = 1 * 1024 * 1024 * 1024;
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = true;
         }
@@ -533,6 +536,9 @@ namespace SlowTests.Voron
 
             options.ManualSyncing = true;
             options.ManualFlushing = true;
+
+            options.ForTestingPurposesOnly().ForceDeviceClass = DeviceWriteBudget.DeviceClass.Budgeted;
+            options.JournalCompressionAlgorithm = JournalCompressionAlgorithm.Lz4;
             options.MaxScratchBufferSize = 1 * 1024 * 1024 * 1024;
             options.IgnoreDataIntegrityErrorsOfAlreadySyncedTransactions = true;
 

@@ -345,8 +345,8 @@ namespace Voron.Impl.Journal
         
         public bool HasBranchCommits => SharedJournalState.HasBranchCommits;
 
-        internal JournalCompressionAlgorithm ResolveJournalCompressionAlgorithm() =>
-            _env.WriteFlow.ResolveJournalCompressionAlgorithm(_env.Options.JournalCompressionAlgorithm);
+        internal JournalCompressionAlgorithm ResolveJournalCompressionAlgorithm(long entrySizeInBytes) =>
+            _env.WriteFlow.ResolveJournalCompressionAlgorithm(_env.Options.JournalCompressionAlgorithm, entrySizeInBytes);
 
         public bool IsJournalWriteActive => _writePipeline.HasInFlightWrites;
 
@@ -2822,7 +2822,7 @@ namespace Voron.Impl.Journal
 
             var estimatedSize = (long)pagesRequired * Constants.Storage.PageSize;
             var compressTxAboveSizeInBytes = _env.WriteFlow.GetCompressTxAboveSizeInBytes(_env.Options.CompressTxAboveSizeInBytes);
-            var compressionAlgorithm = ResolveJournalCompressionAlgorithm();
+            var compressionAlgorithm = ResolveJournalCompressionAlgorithm(estimatedSize);
             var mayCompress = estimatedSize > compressTxAboveSizeInBytes;
 
             long outputBufferSize = 0;

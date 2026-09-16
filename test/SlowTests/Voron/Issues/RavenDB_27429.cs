@@ -2,6 +2,8 @@ using System.Text;
 using FastTests.Voron;
 using Tests.Infrastructure;
 using Voron;
+using Voron.Global;
+using Voron.Impl.Journal;
 using Xunit;
 
 namespace SlowTests.Voron.Issues;
@@ -17,6 +19,7 @@ public class RavenDB_27429 : StorageTest
         // every transaction here is large enough to be worth compressing
         options.CompressTxAboveSizeInBytes = 1024;
         options.ManualFlushing = true;
+        options.ForTestingPurposesOnly().ForceDeviceClass = DeviceWriteBudget.DeviceClass.Fast;
     }
 
     [RavenFact(RavenTestCategory.Voron)]
@@ -41,7 +44,7 @@ public class RavenDB_27429 : StorageTest
 
             // an explicit codec is honoured verbatim, so the rounds really do differ - without this the
             // test would pass just as happily if every entry ended up Lz4
-            Assert.Equal(codecs[i], Env.Journal.ResolveJournalCompressionAlgorithm());
+            Assert.Equal(codecs[i], Env.Journal.ResolveJournalCompressionAlgorithm(entrySizeInBytes: 0));
 
             using (var tx = Env.WriteTransaction())
             {
@@ -77,14 +80,14 @@ public class RavenDB_27429 : StorageTest
     }
 
     [RavenFact(RavenTestCategory.Voron)]
-    public void AnUnclassifiedDeviceKeepsTheCurrentCodec()
+    public void AFastDeviceKeepsSmallEntriesOnLz4()
     {
         RequireFileBasedPager();
 
-        // Auto is the default, and nothing here writes enough to classify the device - the resolution
-        // has to stay on Lz4 rather than guess, and the data has to come back either way
+        // Auto is the default and the device is stated as Fast, so a small entry has to resolve to
+        // Lz4, and the data has to come back either way
         Assert.Equal(JournalCompressionAlgorithm.Auto, Env.Options.JournalCompressionAlgorithm);
-        Assert.Equal(JournalCompressionAlgorithm.Lz4, Env.Journal.ResolveJournalCompressionAlgorithm());
+        Assert.Equal(JournalCompressionAlgorithm.Lz4, Env.Journal.ResolveJournalCompressionAlgorithm(entrySizeInBytes: 0));
 
         using (var tx = Env.WriteTransaction())
         {
@@ -112,4 +115,29 @@ public class RavenDB_27429 : StorageTest
     // compressible on purpose, so the codec choice is actually exercised
     private static byte[] Value(int round, int index) =>
         Encoding.UTF8.GetBytes(new string((char)('a' + ((round + index) % 26)), 512));
+    [RavenFact(RavenTestCategory.Voron)]
+    public void ALargeEntryPicksZstdWhateverTheDeviceClass()
+    {
+        RequireFileBasedPager();
+
+        // A shared index journal merges every index's commit into one multi-MB entry, and at that size
+        // zstd removes more bytes than the extra CPU costs on any device - so the size rule answers
+        // before the device class is consulted at all. That makes this assertion independent of the
+        // per-device classification, which is shared process-wide and depends on test order.
+        Assert.Equal(JournalCompressionAlgorithm.Auto, Env.Options.JournalCompressionAlgorithm);
+
+        Assert.Equal(JournalCompressionAlgorithm.Lz4, Env.Journal.ResolveJournalCompressionAlgorithm(entrySizeInBytes: 64 * Constants.Size.Kilobyte));
+        Assert.Equal(JournalCompressionAlgorithm.Lz4, Env.Journal.ResolveJournalCompressionAlgorithm(entrySizeInBytes: Constants.Size.Megabyte - 1));
+
+        Assert.Equal(JournalCompressionAlgorithm.Zstd, Env.Journal.ResolveJournalCompressionAlgorithm(entrySizeInBytes: Constants.Size.Megabyte));
+        Assert.Equal(JournalCompressionAlgorithm.Zstd, Env.Journal.ResolveJournalCompressionAlgorithm(entrySizeInBytes: 8 * Constants.Size.Megabyte));
+
+        // an explicit setting still wins over the size rule, in either direction
+        Env.Options.JournalCompressionAlgorithm = JournalCompressionAlgorithm.Lz4;
+        Assert.Equal(JournalCompressionAlgorithm.Lz4, Env.Journal.ResolveJournalCompressionAlgorithm(entrySizeInBytes: 8 * Constants.Size.Megabyte));
+
+        Env.Options.JournalCompressionAlgorithm = JournalCompressionAlgorithm.Zstd;
+        Assert.Equal(JournalCompressionAlgorithm.Zstd, Env.Journal.ResolveJournalCompressionAlgorithm(entrySizeInBytes: 0));
+    }
+
 }

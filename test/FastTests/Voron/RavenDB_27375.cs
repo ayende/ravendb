@@ -48,8 +48,7 @@ namespace FastTests.Voron
         public void DeviceWriteBudget_selects_drain_mode_and_returns_to_trickle()
         {
             var gate = new global::Voron.Impl.Journal.DeviceWriteBudget(queueReader: null, pathOnDevice: "test",
-                syncCostThresholdTicks: TimeSpan.FromMilliseconds(100).Ticks, queueDepthThreshold: 5,
-                classifyAboveLatencyTicks: TimeSpan.FromMilliseconds(2).Ticks);
+                syncCostThresholdTicks: TimeSpan.FromMilliseconds(100).Ticks, queueDepthThreshold: 5);
 
             // healthy barrier: trickle mode
             gate.RecordSyncCost(TimeSpan.FromMilliseconds(5).Ticks);
@@ -65,11 +64,10 @@ namespace FastTests.Voron
         }
 
         [RavenFact(RavenTestCategory.Voron)]
-        public void DeviceWriteBudget_classifies_fast_device_from_small_writes_when_latency_is_decisive()
+        public void DeviceWriteBudget_classifies_from_throughput_within_a_write_size_class()
         {
             var gate = new global::Voron.Impl.Journal.DeviceWriteBudget(queueReader: null, pathOnDevice: "test",
-                syncCostThresholdTicks: TimeSpan.FromMilliseconds(100).Ticks, queueDepthThreshold: 5,
-                classifyAboveLatencyTicks: TimeSpan.FromMilliseconds(2).Ticks);
+                syncCostThresholdTicks: TimeSpan.FromMilliseconds(100).Ticks, queueDepthThreshold: 5);
 
             Assert.Equal(global::Voron.Impl.Journal.DeviceWriteBudget.DeviceClass.Unknown, gate.MeasuredDeviceClass);
 
@@ -78,16 +76,18 @@ namespace FastTests.Voron
                 gate.RecordJournalWrite(TimeSpan.FromMicroseconds(100).Ticks, 8 * 1024, Stopwatch.GetTimestamp());
             Assert.Equal(global::Voron.Impl.Journal.DeviceWriteBudget.DeviceClass.Fast, gate.MeasuredDeviceClass);
 
-            // gp3-shaped: 12KB writes at 1.5ms. Small writes must NOT classify - a small write can be
-            // fast on a slow device, so only the decisively-low band is trusted below the 256KB size gate.
+            // gp3-shaped: 12KB writes at 1.5ms, about 8MB/sec. Small writes used to be refused a verdict
+            // on the grounds that a slow device can serve them quickly - but measured, gp3 needs
+            // 3.8-5.3ms for a sub-256KB write against NVMe's 0.5ms, a 20-40x gap. So they are judged,
+            // against a bar set for their own size class rather than the large-write one.
             var gp3 = new global::Voron.Impl.Journal.DeviceWriteBudget(queueReader: null, pathOnDevice: "test",
-                syncCostThresholdTicks: TimeSpan.FromMilliseconds(100).Ticks, queueDepthThreshold: 5,
-                classifyAboveLatencyTicks: TimeSpan.FromMilliseconds(2).Ticks);
+                syncCostThresholdTicks: TimeSpan.FromMilliseconds(100).Ticks, queueDepthThreshold: 5);
             for (var i = 0; i < 16; i++)
                 gp3.RecordJournalWrite(TimeSpan.FromMilliseconds(1.5).Ticks, 12 * 1024, Stopwatch.GetTimestamp());
-            Assert.Equal(global::Voron.Impl.Journal.DeviceWriteBudget.DeviceClass.Unknown, gp3.MeasuredDeviceClass);
+            Assert.Equal(global::Voron.Impl.Journal.DeviceWriteBudget.DeviceClass.Budgeted, gp3.MeasuredDeviceClass);
 
-            // large writes above the size gate classify by the ordinary threshold: 9ms EWMA => Budgeted
+            // larger writes are the honest measurement and decide once they exist: 512KB in 9ms is
+            // ~57MB/sec, still budgeted
             for (var i = 0; i < 16; i++)
                 gp3.RecordJournalWrite(TimeSpan.FromMilliseconds(9).Ticks, 512 * 1024, Stopwatch.GetTimestamp());
             Assert.Equal(global::Voron.Impl.Journal.DeviceWriteBudget.DeviceClass.Budgeted, gp3.MeasuredDeviceClass);
