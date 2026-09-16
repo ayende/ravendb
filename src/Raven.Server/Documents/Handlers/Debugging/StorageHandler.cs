@@ -287,7 +287,17 @@ namespace Raven.Server.Documents.Handlers.Debugging
                         ["Reserves"] = backPressure.Reserves,
                         ["Stalls"] = backPressure.Stalls,
                         ["StallMs"] = backPressure.StallMs,
-                        ["Grows"] = backPressure.Grows
+                        ["Grows"] = backPressure.Grows,
+                        ["DeviceClass"] = env.Environment.WriteFlow.MeasuredDeviceClass.ToString(),
+                        ["WriteSizeClasses"] = new DynamicJsonArray(env.Environment.WriteFlow.WriteSizeClassStats.Select(x => new DynamicJsonValue
+                        {
+                            ["UnderSizeInBytes"] = x.UnderSizeInBytes,
+                            ["NumberOfWrites"] = x.NumberOfWrites,
+                            ["LatencyMs"] = x.LatencyMs,
+                            ["AverageSizeInBytes"] = x.AverageSizeInBytes,
+                            ["BytesPerSecond"] = x.BytesPerSecond,
+                            ["FastBytesPerSecond"] = x.FastBytesPerSecond,
+                        }))
                     });
                 }
 
