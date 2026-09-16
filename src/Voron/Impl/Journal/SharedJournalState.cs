@@ -54,12 +54,6 @@ public class SharedJournalState()
         // but we do abort the current transaction, this can then be retried.
         while (_mergedCommitsQueue.TryDequeue(out var rec))
         {
-            // a harvested record's lease is retained by the write and returned there; one that was
-            // never harvested still owns its own, and nothing else will hand it back
-            var lease = rec.Lease;
-            rec.Lease = null;
-            lease?.Dispose();
-
             rec.FailLeavingEnvironmentUsable(e);
         }
     }

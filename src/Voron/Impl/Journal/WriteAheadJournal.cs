@@ -65,6 +65,7 @@ namespace Voron.Impl.Journal
                 Transaction.Environment.Journal.WithdrawDurableWrite(Transaction);
                 Tcs.TrySetException(e);
                 Transaction.AcknowledgeDurableCommit();
+                Lease?.Dispose(); // null once the write has taken ownership of it
             }
 
             public void Cancel()
