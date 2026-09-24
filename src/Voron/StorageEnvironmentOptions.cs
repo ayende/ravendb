@@ -372,7 +372,9 @@ namespace Voron
 
         public static StorageEnvironmentOptions CreateMemoryOnlyForTests([CallerMemberName] string caller = null, LoggingResource loggingResource = null, LoggingComponent loggingComponent = null)
         {
-            return CreateMemoryOnly(caller, null, null, null, loggingResource, loggingComponent);
+            var options = CreateMemoryOnly(caller, null, null, null, loggingResource, loggingComponent);
+            ApplyTestDefaults(options);
+            return options;
         }
 
         public static StorageEnvironmentOptions ForPath(string path, string tempPath, string journalPath, IoChangesNotifications ioChangesNotifications, CatastrophicFailureNotification catastrophicFailureNotification, LoggingResource loggingResource,
@@ -387,7 +389,17 @@ namespace Voron
 
         public static StorageEnvironmentOptions ForPathForTests(string path, LoggingResource loggingResource = null, LoggingComponent loggingComponent = null)
         {
-            return ForPath(path, null, null, null, null, loggingResource, loggingComponent);
+            var options = ForPath(path, null, null, null, null, loggingResource, loggingComponent);
+            ApplyTestDefaults(options);
+            return options;
+        }
+
+        private static void ApplyTestDefaults(StorageEnvironmentOptions options)
+        {
+            // Voron tests drive the sync explicitly and then assert on the physical file size, so they need the hole
+            // punching to happen inside that sync rather than on the idle timer minutes later. Tests that cover the
+            // deferred path set this back to true themselves.
+            options.PunchSparseRegionsOnIdleOnly = false;
         }
 
         private static string GetTempPath(string basePath = null)
@@ -1823,6 +1835,17 @@ namespace Voron
         public bool SkipChecksumValidationOnDatabaseLoading { get; set; }
         public bool DiscardVirtualMemory { get; set; } = true;
         public bool DisableSparseRegions { get; set; }
+
+        /// <summary>
+        /// When set, the sparse regions a flush freed are accumulated and punched only after the environment has been
+        /// idle for <see cref="TimeToPunchSparseRegionsAfterIdle"/>, instead of at the end of every sync cycle.
+        /// Set on Windows, where a hole punch costs time proportional to the size of the mapped section rather than to
+        /// the size of the hole, and blocks every page fault against the file while it runs.
+        /// </summary>
+        public bool PunchSparseRegionsOnIdleOnly { get; set; } = PlatformDetails.RunningOnPosix == false;
+
+        public TimeSpan TimeToPunchSparseRegionsAfterIdle { get; set; } = TimeSpan.FromMinutes(5);
+
         public int JournalsCompressionAcceleration { get; set; } = 1;
 
         public JournalCompressionAlgorithm JournalCompressionAlgorithm { get; set; } = JournalCompressionAlgorithm.Auto;

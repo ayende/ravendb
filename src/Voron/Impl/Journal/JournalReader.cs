@@ -53,9 +53,16 @@ namespace Voron.Impl.Journal
 
         public bool RequireHeaderUpdate { get; private set; }
 
-        // An invalid region was found and valid data after it. We don't know which env used that, in the case of shared journals.
-        // Each env will deal with it on its own, but we don't want to keep writing to this file, we'll need a new one.
+        // An invalid region was found and valid data after it. Used for diagnostics only - on its own it says nothing
+        // about this environment, since the region may well be the recycled tail of the file's previous life.
         public bool BypassedInvalidRegion => _resyncedFromInvalid4KbPosition != null;
+
+        // An invalid region was bypassed and a transaction of THIS environment was accepted after it. Only then do we
+        // have to stop writing to the file: we do not know what the region held, so we must not overwrite past it.
+        // A bypass with nothing of ours behind it is the ordinary recycled tail - the file stays usable.
+        public bool BypassedInvalidRegionBeforeOwnTransaction => _bypassedInvalidRegionBeforeOwnTransaction;
+
+        private bool _bypassedInvalidRegionBeforeOwnTransaction;
 
         public long Next4Kb => _next4Kb;
 
@@ -778,6 +785,13 @@ namespace Voron.Impl.Journal
                 }
 
                 VerifyTransactionSequence(options, current);
+
+                if (_unexplainedInvalid4KbPosition != null)
+                {
+                    // our own data resumes after the bypassed region, so the region was in the middle of this
+                    // environment's transaction stream rather than being the leftover tail of a recycled file
+                    _bypassedInvalidRegionBeforeOwnTransaction = true;
+                }
 
                 _unexplainedInvalid4KbPosition = null;
 

@@ -272,6 +272,8 @@ namespace Voron
                             GlobalFlushingBehavior.GlobalFlusher.Value.MaybeFlushEnvironment(env);
                         else if (env.Journal.Applicator.ShouldSync)
                             env.SuggestSyncDataFile();
+                        else if (env.HasBeenIdleLongEnoughToPunchSparseRegions())
+                            env.Journal.Applicator.PunchPendingSparseRegionsOnIdle();
 
                         return true;
                     }
@@ -1751,6 +1753,17 @@ namespace Voron
         public void ResetLastWorkTime()
         {
             LastWorkTime = DateTime.MinValue;
+        }
+
+        // The idle timer fires a few seconds after the last write, which is far too eager for a hole punch on Windows:
+        // a pause between two batches of the same operation would pay the full FSCTL cost and stall the batch that
+        // follows. We wait for the environment to be properly quiet instead.
+        internal bool HasBeenIdleLongEnoughToPunchSparseRegions()
+        {
+            if (Options.PunchSparseRegionsOnIdleOnly == false)
+                return true;
+
+            return DateTime.UtcNow - LastWorkTime >= Options.TimeToPunchSparseRegionsAfterIdle;
         }
 
         [DoesNotReturn]

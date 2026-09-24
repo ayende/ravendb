@@ -725,8 +725,11 @@ namespace Voron.Impl
         // stops representing the modification of this one
         internal bool DirtyPageStillBelongsTo(byte* dirtyPagePointer, long pageNumber)
         {
+            // must resolve the page the same way ModifyPage did when the caller captured its pointer: the raw pointer
+            // is the scratch mapping itself, while an encrypted environment hands writers the transaction's decrypted
+            // buffer instead, so comparing against the raw one never matches there
             return _scratchPagesInUse.TryGetValue(pageNumber, out var scratchPage) &&
-                   scratchPage.ReadWritableRawPagePointer(ref PagerTransactionState) == dirtyPagePointer;
+                   scratchPage.ReadWritable(ref PagerTransactionState) == dirtyPagePointer;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
@@ -1031,7 +1034,7 @@ namespace Voron.Impl
             {
                 RemoveTransactionPage(scratchPage);
 
-                _env.ScratchBufferPool.FreeImmediately(this, scratchPage.File.Number, scratchPage.PositionInScratchBuffer);
+                _env.ScratchBufferPool.FreeImmediately(this, scratchPage);
 
                 if (_env.Options.Encryption.IsEnabled)
                 {
@@ -1560,7 +1563,7 @@ namespace Voron.Impl
                 Debug.Assert(scratchPage.AllocatedInTransaction == Id,
                     $"Scratch page {scratchPage.PositionInScratchBuffer} in the pages of transaction {Id} was allocated in transaction {scratchPage.AllocatedInTransaction}");
 
-                _env.ScratchBufferPool.FreeImmediately(this, scratchPage.File.Number, scratchPage.PositionInScratchBuffer);
+                _env.ScratchBufferPool.FreeImmediately(this, scratchPage);
             }
 
             RolledBack = true;

@@ -26,6 +26,12 @@ namespace Raven.Server.Config.Categories
 
             // The sequential read-ahead hint relies on posix_fadvise, which exists on Linux but not macOS.
             UseSequentialReadAheadHintForJournalRecovery = PlatformDetails.RunningOnLinux;
+
+            // On Windows a hole punch (FSCTL_SET_ZERO_DATA) makes NTFS walk the whole mapped section, so its cost
+            // scales with the size of the data file, not with the size of the hole - seconds on a large file - and
+            // NTFS holds the file's paging resource exclusively for the duration, blocking every page fault of the
+            // transaction merger. On Posix the equivalent call is cheap, so we keep punching inline there.
+            PunchSparseRegionsOnIdleOnly = PlatformDetails.RunningOnPosix == false;
         }
 
         // CVE-2026-74674: on arm64 Linux, kernels [7.0, 7.1.9)
@@ -79,9 +85,9 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.MaxConcurrentJournalWrites", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int MaxConcurrentJournalWrites { get; set; }
 
-        [Description("EXPERT: Journal writes become eligible for pipelining once their measured write latency exceeds this value (ticks, 10,000 per millisecond). Pipelining also requires small write batches - large batches are bandwidth bound and stay on the group-commit path. Set to 0 to make writes always eligible.")]
+        [Description("EXPERT: Journal writes become eligible for pipelining once their measured write latency exceeds this value (ticks, 10,000 per millisecond). Pipelining also requires small write batches - large batches are bandwidth bound and stay on the group-commit path. Set to 0 to make writes always eligible. The write budget this feeds is shared by every environment on the same device, so this is a server-wide setting.")]
         [DefaultValue(20_000)]
-        [ConfigurationEntry("Storage.PipelineJournalWritesAboveLatencyInTicks", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        [ConfigurationEntry("Storage.PipelineJournalWritesAboveLatencyInTicks", ConfigurationEntryScope.ServerWideOnly)]
         public long PipelineJournalWritesAboveLatencyInTicks { get; set; }
 
         [Description("EXPERT: The journal write size that batch consolidation aims for. 0 (the default) lets the server adapt the target at runtime from measured throughput.")]
@@ -154,9 +160,9 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.SyncWritebackBlockSizeInMb", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public int SyncWritebackBlockSizeInMb { get; set; }
 
-        [Description("Moving-average sync cost threshold per device; exceeding this value switches writeback from trickle to drain mode to handle elevated I/O latency or exhausted burst credits.")]
+        [Description("Moving-average sync cost threshold per device; exceeding this value switches writeback from trickle to drain mode to handle elevated I/O latency or exhausted burst credits. The budget is per device and shared by every environment on it, so this is a server-wide setting.")]
         [DefaultValue(100)]
-        [ConfigurationEntry("Storage.SyncWritebackBarrierCostThresholdInMs", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        [ConfigurationEntry("Storage.SyncWritebackBarrierCostThresholdInMs", ConfigurationEntryScope.ServerWideOnly)]
         public int SyncWritebackBarrierCostThresholdInMs { get; set; }
 
         [Description("Minimum contiguous dirty run for paced writeback; shorter runs are left to the OS writeback to avoid burning the device IOPS budget on unmergeable small requests. Set to 0 to write back every dirty run.")]
@@ -176,9 +182,9 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.MaxUnsyncedSizeBeforeMandatorySyncInMb", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public Size MaxUnsyncedSizeBeforeMandatorySync { get; set; }
 
-        [Description("Time-weighted device queue depth threshold (iostat aqu-sz) that switches writeback from trickle to paced drain mode; reverts when queue stays below 60% of this value for 30 seconds.")]
+        [Description("Time-weighted device queue depth threshold (iostat aqu-sz) that switches writeback from trickle to paced drain mode; reverts when queue stays below 60% of this value for 30 seconds. The budget is per device and shared by every environment on it, so this is a server-wide setting.")]
         [DefaultValue(5)]
-        [ConfigurationEntry("Storage.SyncWritebackDrainQueueDepthThreshold", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        [ConfigurationEntry("Storage.SyncWritebackDrainQueueDepthThreshold", ConfigurationEntryScope.ServerWideOnly)]
         public int SyncWritebackDrainQueueDepthThreshold { get; set; }
         
         [Description("EXPERT: Determine the acceleration level that Voron will use when compressing journals.")]
@@ -249,6 +255,18 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(false)]
         [ConfigurationEntry("Storage.DisableSparseRegions", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public bool DisableSparseRegions { get; set; }
+
+        [Description("Punch the sparse regions freed by a flush only once the environment has been idle, instead of at the end of every sync cycle. Enabled by default on Windows, where FSCTL_SET_ZERO_DATA costs time proportional to the size of the mapped section rather than the size of the hole, and holds the file's paging resource exclusively while it runs. Disabled by default on Posix, where punching a hole is cheap.")]
+        [DefaultValue(DefaultValueSetInConstructor)]
+        [ConfigurationEntry("Storage.PunchSparseRegionsOnIdleOnly", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public bool PunchSparseRegionsOnIdleOnly { get; set; }
+
+        [Description("How long an environment must be without write activity before the sparse regions accumulated by its flushes are punched. Only relevant when Storage.PunchSparseRegionsOnIdleOnly is set.")]
+        [DefaultValue(5)]
+        [MinValue(0)]
+        [TimeUnit(TimeUnit.Minutes)]
+        [ConfigurationEntry("Storage.TimeToPunchSparseRegionsAfterIdleInMin", ConfigurationEntryScope.ServerWideOrPerDatabase)]
+        public TimeSetting TimeToPunchSparseRegionsAfterIdle { get; set; }
 
         [Description("EXPERT: I/O for flush and sync operation is issued for a low priority thread, giving transaction commits higher priority")]
         [DefaultValue(false)]

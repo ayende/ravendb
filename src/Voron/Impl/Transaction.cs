@@ -47,6 +47,7 @@ namespace Voron.Impl
         private Dictionary<Slice, Tree> _trees;
 
         private Dictionary<Slice, FixedSizeTree> _globalFixedSizeTree;
+        private Dictionary<Tuple<Tree, Slice>, FixedSizeTree> _nestedFixedSizeTrees;
 
         public IEnumerable<Tree> Trees => _trees?.Values ?? Enumerable.Empty<Tree>();
         
@@ -598,6 +599,39 @@ namespace Voron.Impl
             {
                 tree.SetNewPageAllocator(newPageAllocator);
             }
+
+            return tree;
+        }
+
+        /// <summary>
+        /// The nested fixed size trees of a variable size index, one per index key. This cache used to live on
+        /// <see cref="Table"/>, which is wrong for two reasons: a global index tree is shared by every table that
+        /// defines it (all the Collection.Revisions.* tables share DeleteRevisionEtag and ResolvedFlagByEtag, and the
+        /// latter is keyed on a single flag byte, so all of them land on the very same nested tree), and even a
+        /// table-local tree gets two Table objects when the same table is opened with both the compressed and the plain
+        /// schema. Two <see cref="FixedSizeTree"/> instances over one tree each keep their own rightmost-leaf append
+        /// cache, so once one of them splits that leaf, an append through the other puts the key to the left of the new
+        /// separator - in the tree, but unreachable by a search. Caching per transaction keeps it to one instance.
+        /// </summary>
+        internal FixedSizeTree GetNestedFixedSizeTree(Tree parent, Slice name, ushort valSize, bool isIndexTree, NewPageAllocator newPageAllocator)
+        {
+            // keyed on the parent Tree instance, not on its name: a table local index tree is named after the index,
+            // and that name repeats across tables, so a name keyed cache would hand one table the nested trees of
+            // another. The transaction already keeps one Tree instance per actual tree, which is exactly the identity
+            // we need - a global index tree resolves to the same instance for every table that defines it.
+            _nestedFixedSizeTrees ??= new Dictionary<Tuple<Tree, Slice>, FixedSizeTree>(new TreeAndSliceComparer());
+
+            var key = Tuple.Create(parent, name);
+
+            if (_nestedFixedSizeTrees.TryGetValue(key, out FixedSizeTree tree) == false)
+            {
+                tree = new FixedSizeTree(LowLevelTransaction, parent, name, valSize, isIndexTree: isIndexTree, newPageAllocator: newPageAllocator);
+                _nestedFixedSizeTrees[Tuple.Create(parent, tree.Name)] = tree;
+                return tree;
+            }
+
+            if (newPageAllocator != null && tree.HasNewPageAllocator == false)
+                tree.SetNewPageAllocator(newPageAllocator);
 
             return tree;
         }
