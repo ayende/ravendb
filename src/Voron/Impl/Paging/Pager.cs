@@ -60,6 +60,7 @@ public unsafe partial class Pager : IDisposable
             RaiseError(filename, error, result, initialFileSize);
 
         pager.Write = Pal.rvn_get_writer(handle);
+        AdviseRandomAccess(filename, readOnlyMemory, memorySize);
         var state = new State(pager, readOnlyMemory, writeMemory, memorySize, handle, pageSize ?? options.PageSize);
         (state.TotalAllocatedSize, state.TotalPhysicalSpace) = pager.GetFileSize(state);
         pager.InstallState(state);
@@ -68,6 +69,19 @@ public unsafe partial class Pager : IDisposable
     }
 
     public Pal.WriterFunc Write = WriterNotSetupYet;
+
+    // A data file is read by page-sized point lookups. With the default advice, every page fault reads up to the
+    // device read-ahead window around the faulting address (128 KB by default), so a lookup that needs one 8 KB page
+    // pulls in sixteen and evicts pages that lookups do need. MADV_RANDOM limits a fault to the pages it touches;
+    // sequential scans still get their read-ahead from the segment prefetcher.
+    private static void AdviseRandomAccess(string filename, byte* address, long size)
+    {
+        if (PlatformDetails.RunningOnLinux == false || address == null || size <= 0)
+            return;
+        if (filename.EndsWith(Constants.DatabaseFilename, StringComparison.OrdinalIgnoreCase) == false)
+            return;
+        Syscall.madvise(new IntPtr(address), new UIntPtr((ulong)size), MAdvFlags.MADV_RANDOM);
+    }
 
     private static PalFlags.FailCodes WriterNotSetupYet(void* handle, Pal.page_to_write* buffers, int count, out int errorCode)
     {
@@ -409,6 +423,7 @@ public unsafe partial class Pager : IDisposable
             PalHelper.ThrowLastError(rc, errorCode, $"Failed to increase file '{state.Pager.FileName}' to {new Size(allocationSize, SizeUnit.Bytes)}");
         }
         Debug.Assert(totalAllocatedSize >= state.TotalAllocatedSize, "totalAllocatedSize >= state.TotalAllocatedSize");
+        AdviseRandomAccess(state.Pager.FileName, readAddress, totalAllocatedSize);
         state = new State(this, readAddress, writeAddress, totalAllocatedSize, handle, pageSize: Options.PageSize);
         InstallState(state);
     }
