@@ -24,11 +24,23 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
     // The merger applies every write on one thread, and patching reads the document first. A document that
     // is not in memory would page-fault on that thread and stall every write queued behind it. Reading it
     // here moves the page fault to the request thread, where it overlaps with other requests.
+    // The update also removes the document's current etag from the etag indexes; for a document that was not
+    // written recently, those entries sit on cold pages, so we seek to them as well.
     private void LoadDocumentPages(DocumentsOperationContext context, string id)
     {
+        var storage = RequestHandler.Database.DocumentsStorage;
         using (context.OpenReadTransaction())
-        using (RequestHandler.Database.DocumentsStorage.Get(context, id, DocumentFields.Data, throwOnConflict: false))
+        using (var document = storage.Get(context, id, DocumentFields.Data, throwOnConflict: false))
         {
+            if (document == null)
+                return;
+
+            foreach (var _ in storage.GetDocumentsFrom(context, document.Etag, start: 0, take: 1, DocumentFields.Id))
+                break;
+
+            var collection = CollectionName.GetCollectionName(document.Data);
+            foreach (var _ in storage.GetDocumentsFrom(context, collection, document.Etag, start: 0, take: 1, DocumentFields.Id))
+                break;
         }
     }
 
