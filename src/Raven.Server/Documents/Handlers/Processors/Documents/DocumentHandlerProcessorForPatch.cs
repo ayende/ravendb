@@ -12,6 +12,11 @@ using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using PatchRequest = Raven.Server.Documents.Patch.PatchRequest;
 using System.Runtime.CompilerServices;
+using System.Threading;
+using Voron.Data.RawData;
+using Voron.Global;
+using Voron.Impl;
+using Voron.Impl.Paging;
 
 namespace Raven.Server.Documents.Handlers.Processors.Documents;
 
@@ -44,6 +49,14 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
             foreach (var _ in storage.GetDocumentsFrom(context, collection, document.Etag, start: 0, take: 1, DocumentFields.Id))
                 break;
 
+            // The merger copies every page it modifies in full, but reading an entry faults in only the 4 KB around it
+            // (random access advice), so we touch the rest of the document's page, and the section header page that a
+            // relocation frees the old entry into.
+            var llt = context.Transaction.InnerTransaction.LowLevelTransaction;
+            TouchPage(llt, document.StorageId / Constants.Storage.PageSize);
+            if (document.StorageId % Constants.Storage.PageSize != 0)
+                TouchPage(llt, RawDataSection.GetSectionPageNumber(llt, document.StorageId));
+
             if (simplePatch == null || document.Data == null)
                 return;
 
@@ -55,6 +68,14 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
             else
                 command.SetPrepared(document.Id, document.ChangeVector, document.Flags, modified);
         }
+    }
+
+    private static unsafe void TouchPage(LowLevelTransaction llt, long pageNumber)
+    {
+        var page = llt.GetPage(pageNumber);
+        var size = page.IsOverflow ? Paging.GetNumberOfOverflowPages(page.OverflowSize) * Constants.Storage.PageSize : Constants.Storage.PageSize;
+        for (var offset = 0; offset < size; offset += 4096)
+            Volatile.Read(ref page.Pointer[offset]);
     }
 
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
