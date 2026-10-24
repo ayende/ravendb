@@ -1655,11 +1655,20 @@ namespace Voron
             if ((old & bitToSet) != 0)
                 return;
 
-            // first touch of this page since load: the checksum reads all of it, so ask for the whole page at once
-            if (Pager.PrefetchOnFirstTouch)
-                _dataPager?.WillNeedPages(pageNumber);
-
             UnlikelyValidatePage(pageNumber, current, index, old, bitToSet);
+        }
+
+        // The first access to a page since load validates its checksum, which reads the whole page. With random access
+        // advice each 4 KB half would fault separately (two reads), so ask for the whole page before anything touches it.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        internal void HintFirstTouch(Pager dataPager, long pageNumber)
+        {
+            if (pageNumber >= _lastValidPageAfterLoad)
+                return;
+            var bit = 1L << (int)(pageNumber % (8 * sizeof(long)));
+            if ((Volatile.Read(ref _validPagesAfterLoad[pageNumber / (8 * sizeof(long))]) & bit) != 0)
+                return;
+            dataPager.WillNeedPages(pageNumber);
         }
 
         private unsafe void UnlikelyValidatePage(long pageNumber, PageHeader* current, long index, long old, long bitToSet)
