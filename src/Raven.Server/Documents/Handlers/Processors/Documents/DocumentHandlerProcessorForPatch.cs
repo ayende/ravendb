@@ -21,6 +21,17 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
     {
     }
 
+    // The merger applies every write on one thread, and patching reads the document first. A document that
+    // is not in memory would page-fault on that thread and stall every write queued behind it. Reading it
+    // here moves the page fault to the request thread, where it overlaps with other requests.
+    private void LoadDocumentPages(DocumentsOperationContext context, string id)
+    {
+        using (context.OpenReadTransaction())
+        using (RequestHandler.Database.DocumentsStorage.Get(context, id, DocumentFields.Data, throwOnConflict: false))
+        {
+        }
+    }
+
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     protected override async ValueTask HandleDocumentPatchAsync(string id, string cv, BlittableJsonReaderObject patchRequest, bool skipPatchIfChangeVectorMismatch, bool debugMode,
         bool isTest, DocumentsOperationContext context)
@@ -55,6 +66,7 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
 
         if (isTest == false)
         {
+            LoadDocumentPages(context, id);
             await RequestHandler.Database.TxMerger.Enqueue(command);
         }
         else
