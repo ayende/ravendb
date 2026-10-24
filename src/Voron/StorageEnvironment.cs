@@ -1627,6 +1627,13 @@ namespace Voron
             if (pageNumber != current->PageNumber)
                 ThrowInvalidPageNumber(pageNumber, current);
 
+            if (Pager.PrefetchOnFirstTouch && (current->Flags & PageFlags.Overflow) == PageFlags.Overflow)
+            {
+                var pages = Paging.GetNumberOfOverflowPages(current->OverflowSize);
+                if (pages > 1)
+                    _dataPager?.WillNeedPages(pageNumber + 1, pages - 1);
+            }
+
             ulong checksum = CalculatePageChecksum((byte*)current, current->PageNumber, current->Flags, current->OverflowSize);
 
             if (checksum != current->Checksum)
@@ -1648,6 +1655,10 @@ namespace Voron
             if ((old & bitToSet) != 0)
                 return;
 
+            // first touch of this page since load: the checksum reads all of it, so ask for the whole page at once
+            if (Pager.PrefetchOnFirstTouch)
+                _dataPager?.WillNeedPages(pageNumber);
+
             UnlikelyValidatePage(pageNumber, current, index, old, bitToSet);
         }
 
@@ -1657,6 +1668,13 @@ namespace Voron
             // which we already got using AcquirePagePointerWithOverflowHandling()
             if (pageNumber != current->PageNumber)
                 ThrowInvalidPageNumber(pageNumber, current);
+
+            if (Pager.PrefetchOnFirstTouch && (current->Flags & PageFlags.Overflow) == PageFlags.Overflow)
+            {
+                var pages = Paging.GetNumberOfOverflowPages(current->OverflowSize);
+                if (pages > 1)
+                    _dataPager?.WillNeedPages(pageNumber + 1, pages - 1);
+            }
 
             ulong checksum = CalculatePageChecksum((byte*)current, current->PageNumber, current->Flags, current->OverflowSize);
 

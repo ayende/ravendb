@@ -53,9 +53,21 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
             // (random access advice), so we touch the rest of the document's page, and the section header page that a
             // relocation frees the old entry into.
             var llt = context.Transaction.InnerTransaction.LowLevelTransaction;
-            TouchPage(llt, document.StorageId / Constants.Storage.PageSize);
-            if (document.StorageId % Constants.Storage.PageSize != 0)
-                TouchPage(llt, RawDataSection.GetSectionPageNumber(llt, document.StorageId));
+            var documentPage = document.StorageId / Constants.Storage.PageSize;
+            var sectionPage = document.StorageId % Constants.Storage.PageSize != 0 ? RawDataSection.GetSectionPageNumber(llt, document.StorageId) : -1;
+            if (Pager.PrefetchRingEnabled)
+            {
+                // fire and forget: the read races the merger instead of holding this request
+                llt.DataPager.PrefetchPagesAsync(documentPage);
+                if (sectionPage >= 0)
+                    llt.DataPager.PrefetchPagesAsync(sectionPage);
+            }
+            else
+            {
+                TouchPage(llt, documentPage);
+                if (sectionPage >= 0)
+                    TouchPage(llt, sectionPage);
+            }
 
             if (simplePatch == null || document.Data == null)
                 return;

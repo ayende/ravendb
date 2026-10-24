@@ -165,6 +165,27 @@ namespace Sparrow.Server.Platform
             out Int32 errorCode);
             
         [DllImport(LIBRVNPAL, SetLastError = true)]
+        public static extern PalFlags.FailCodes rvn_prefetch_register_file(
+            Int32 fd, out Int32 slot, out UInt32 generation, out Int32 errorCode);
+
+        [DllImport(LIBRVNPAL, SetLastError = true)]
+        public static extern PalFlags.FailCodes rvn_prefetch_unregister_file(
+            Int32 slot, out Int32 errorCode);
+
+        [DllImport(LIBRVNPAL)]
+        [SuppressGCTransition]
+        public static extern Int32 rvn_prefetch_file_range(
+            Int32 slot, UInt32 generation, Int64 offset, Int64 length);
+
+        [DllImport(LIBRVNPAL)]
+        public static extern PalFlags.FailCodes rvn_prefetch_stats(
+            out Int64 submitted, out Int64 droppedFull, out Int64 droppedStale, out Int64 failed);
+
+        [DllImport(LIBRVNPAL)]
+        public static extern Int32 rvn_fadvise_willneed(
+            Int32 fd, Int64 offset, Int64 length);
+
+        [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_close_pager(
             void* handle, out Int32 errorCode);
         

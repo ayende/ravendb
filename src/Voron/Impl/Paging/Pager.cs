@@ -65,6 +65,7 @@ public unsafe partial class Pager : IDisposable
         (state.TotalAllocatedSize, state.TotalPhysicalSpace) = pager.GetFileSize(state);
         pager.InstallState(state);
         pager.Initialize(memorySize);
+        pager.RegisterForPrefetch(state);
         return (pager, state);
     }
 
@@ -628,6 +629,8 @@ public unsafe partial class Pager : IDisposable
 
     public void Dispose()
     {
+        UnregisterForPrefetch();
+
         foreach (WeakReference<State> state in _states)
         {
             if (state.TryGetTarget(out var v))
