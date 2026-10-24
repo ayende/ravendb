@@ -13,7 +13,9 @@ public unsafe partial class Pager
     //  - synchronously, just before we touch the range ourselves (one exact read instead of two faults).
     // Experiment switches: RAVEN_PREFETCH_RING=1 (ring), RAVEN_PREFETCH_VALIDATE=1 (first touch of a page).
     public static readonly bool PrefetchRingEnabled = PlatformDetails.RunningOnLinux && Environment.GetEnvironmentVariable("RAVEN_PREFETCH_RING") == "1";
-    public static readonly bool PrefetchOnFirstTouch = PlatformDetails.RunningOnLinux && Environment.GetEnvironmentVariable("RAVEN_PREFETCH_VALIDATE") == "1";
+    // RAVEN_PREFETCH_VALIDATE=1: every transaction; =reads: read transactions only (keeps the syscall off the merger)
+    public static readonly bool PrefetchOnFirstTouch = PlatformDetails.RunningOnLinux && Environment.GetEnvironmentVariable("RAVEN_PREFETCH_VALIDATE") is "1" or "reads";
+    public static readonly bool PrefetchOnFirstTouchReadsOnly = Environment.GetEnvironmentVariable("RAVEN_PREFETCH_VALIDATE") == "reads";
 
     private int _prefetchSlot = -1;
     private uint _prefetchGeneration;
