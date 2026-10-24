@@ -26,11 +26,13 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
     // here moves the page fault to the request thread, where it overlaps with other requests.
     // The update also removes the document's current etag from the etag indexes; for a document that was not
     // written recently, those entries sit on cold pages, so we seek to them as well.
-    private void LoadDocumentPages(DocumentsOperationContext context, string id)
+    // A script that only assigns arguments to fields needs no script engine: we build the patched document here,
+    // and the merger only writes it (if the document did not change in between).
+    private void PrepareOutsideOfMerger(DocumentsOperationContext context, string id, PatchDocumentCommand command, SimpleAssignmentPatch simplePatch, BlittableJsonReaderObject args)
     {
         var storage = RequestHandler.Database.DocumentsStorage;
         using (context.OpenReadTransaction())
-        using (var document = storage.Get(context, id, DocumentFields.Data, throwOnConflict: false))
+        using (var document = storage.Get(context, id, simplePatch == null ? DocumentFields.Data : DocumentFields.All, throwOnConflict: false))
         {
             if (document == null)
                 return;
@@ -41,6 +43,17 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
             var collection = CollectionName.GetCollectionName(document.Data);
             foreach (var _ in storage.GetDocumentsFrom(context, collection, document.Etag, start: 0, take: 1, DocumentFields.Id))
                 break;
+
+            if (simplePatch == null || document.Data == null)
+                return;
+
+            if (simplePatch.TryApply(context, document.Id, document.Data, args, out var modified) == false)
+                return;
+
+            if (modified == null)
+                command.CompleteAsNotModified();
+            else
+                command.SetPrepared(document.Id, document.ChangeVector, document.Flags, modified);
         }
     }
 
@@ -78,8 +91,14 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
 
         if (isTest == false)
         {
-            LoadDocumentPages(context, id);
-            await RequestHandler.Database.TxMerger.Enqueue(command);
+            var simplePatch = debugMode == false && changeVector == null && patchIfMissing == null && createIfMissingCmd == null
+                ? SimpleAssignmentPatch.TryGet(patch)
+                : null;
+
+            PrepareOutsideOfMerger(context, id, command, simplePatch, patchArgs);
+
+            if (command.PatchResult == null)
+                await RequestHandler.Database.TxMerger.Enqueue(command);
         }
         else
         {

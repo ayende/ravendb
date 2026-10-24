@@ -455,8 +455,62 @@ namespace Raven.Server.Documents.Patch
         private IDisposable _disposableStatement;
         private IDisposable _disposableScriptRunner;
         private bool _isInitialized;
+        private (string Id, string ChangeVector, DocumentFlags Flags, BlittableJsonReaderObject Document) _prepared;
 
         public PatchResult PatchResult { get; private set; }
+
+        /// <summary>
+        /// Hands the command a patched document built outside the merger from a snapshot of the document.
+        /// The merger writes it only if the document is still at <paramref name="changeVector"/>, otherwise it runs the patch.
+        /// </summary>
+        internal void SetPrepared(string id, string changeVector, DocumentFlags flags, BlittableJsonReaderObject document)
+        {
+            _prepared = (id, changeVector, flags, document);
+        }
+
+        /// <summary>
+        /// Completes the command without the merger: the patch did not change the document.
+        /// </summary>
+        internal void CompleteAsNotModified()
+        {
+            PatchResult = new PatchResult { Status = PatchStatus.NotModified };
+            ReleaseScriptRunners();
+        }
+
+        private bool TryWritePrepared(DocumentsOperationContext context)
+        {
+            var storage = context.DocumentDatabase.DocumentsStorage;
+            using (var current = storage.Get(context, _id, DocumentFields.ChangeVector, throwOnConflict: false))
+            {
+                if (current == null || current.Flags != _prepared.Flags || string.Equals(current.ChangeVector, _prepared.ChangeVector, StringComparison.Ordinal) == false)
+                    return false;
+            }
+
+            var putResult = storage.Put(context, _prepared.Id, _prepared.ChangeVector, _prepared.Document,
+                flags: _prepared.Flags.Strip(DocumentFlags.FromClusterTransaction));
+
+            PatchResult = new PatchResult
+            {
+                Status = PatchStatus.Patched,
+                ChangeVector = putResult.ChangeVector,
+                Collection = putResult.Collection.Name,
+                LastModified = putResult.LastModified,
+                Etag = putResult.Etag
+            };
+            return true;
+        }
+
+        private void ReleaseScriptRunners()
+        {
+            _returnRun.Dispose();
+            _returnRun = default;
+
+            _disposableStatement?.Dispose();
+            _disposableStatement = null;
+
+            _disposableScriptRunner?.Dispose();
+            _disposableScriptRunner = null;
+        }
 
         public PatchDocumentCommand(
             JsonOperationContext context,
@@ -503,16 +557,10 @@ namespace Raven.Server.Documents.Patch
 
             Debug.Assert(context.DocumentDatabase == _database);
 
-            PatchResult = ExecuteOnDocument(context, _id, _expectedChangeVector, _run, _runIfMissing);
+            if (_prepared.Document == null || TryWritePrepared(context) == false)
+                PatchResult = ExecuteOnDocument(context, _id, _expectedChangeVector, _run, _runIfMissing);
 
-            _returnRun.Dispose();
-            _returnRun = default;
-
-            _disposableStatement?.Dispose();
-            _disposableStatement = null;
-
-            _disposableScriptRunner?.Dispose();
-            _disposableScriptRunner = null;
+            ReleaseScriptRunners();
 
             return 1;
         }
