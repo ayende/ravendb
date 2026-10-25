@@ -7,6 +7,7 @@ using Raven.Client.Documents.Changes;
 using Raven.Client.Documents.Commands.Batches;
 using Raven.Client.Documents.Operations;
 using Raven.Client.Exceptions;
+using Raven.Client.Extensions;
 using Raven.Server.Documents.Handlers.Batches;
 using Raven.Server.Documents.TransactionMerger.Commands;
 using Raven.Server.Extensions;
@@ -455,7 +456,8 @@ namespace Raven.Server.Documents.Patch
         private IDisposable _disposableStatement;
         private IDisposable _disposableScriptRunner;
         private bool _isInitialized;
-        private (string Id, string ChangeVector, DocumentFlags Flags, BlittableJsonReaderObject Document) _prepared;
+        private (string Id, string ChangeVector, DocumentFlags Flags, BlittableJsonReaderObject Document, string Collection, BlittableJsonReaderObject Metadata) _prepared;
+        private SimpleAssignmentPatch _simplePatch;
 
         public PatchResult PatchResult { get; private set; }
 
@@ -465,7 +467,17 @@ namespace Raven.Server.Documents.Patch
         /// </summary>
         internal void SetPrepared(string id, string changeVector, DocumentFlags flags, BlittableJsonReaderObject document)
         {
-            _prepared = (id, changeVector, flags, document);
+            document.TryGetMetadata(out var metadata);
+            _prepared = (id, changeVector, flags, document, CollectionName.GetCollectionName(document), metadata);
+        }
+
+        /// <summary>
+        /// The script is a <see cref="SimpleAssignmentPatch"/>: when the prepared document is stale, the merger re-applies
+        /// the assignments to the current document instead of running the script.
+        /// </summary>
+        internal void SetSimplePatch(SimpleAssignmentPatch simplePatch)
+        {
+            _simplePatch = simplePatch;
         }
 
         /// <summary>
@@ -479,15 +491,12 @@ namespace Raven.Server.Documents.Patch
 
         private bool TryWritePrepared(DocumentsOperationContext context)
         {
-            var storage = context.DocumentDatabase.DocumentsStorage;
-            using (var current = storage.Get(context, _id, DocumentFields.ChangeVector, throwOnConflict: false))
-            {
-                if (current == null || current.Flags != _prepared.Flags || string.Equals(current.ChangeVector, _prepared.ChangeVector, StringComparison.Ordinal) == false)
-                    return false;
-            }
-
-            var putResult = storage.Put(context, _prepared.Id, _prepared.ChangeVector, _prepared.Document,
-                flags: _prepared.Flags.Strip(DocumentFlags.FromClusterTransaction));
+            // Put reads the current document anyway: it writes only if the change vector is still the snapshot's
+            var putResult = context.DocumentDatabase.DocumentsStorage.Put(context, _prepared.Id, _prepared.ChangeVector, _prepared.Document,
+                flags: _prepared.Flags.Strip(DocumentFlags.FromClusterTransaction),
+                knownCollectionName: _prepared.Collection, knownMetadata: _prepared.Metadata, skipOnChangeVectorMismatch: true);
+            if (putResult.Etag == -1)
+                return false;
 
             PatchResult = new PatchResult
             {
@@ -498,6 +507,37 @@ namespace Raven.Server.Documents.Patch
                 Etag = putResult.Etag
             };
             return true;
+        }
+
+        private bool TryApplySimplePatch(DocumentsOperationContext context)
+        {
+            var storage = context.DocumentDatabase.DocumentsStorage;
+            using (var current = storage.Get(context, _id))
+            {
+                if (current?.Data == null)
+                    return false; // missing documents keep the script's semantics
+
+                if (_simplePatch.TryApply(context, current.Id, current.Data, _patch.Args, out var modified) == false)
+                    return false;
+
+                if (modified == null)
+                {
+                    PatchResult = new PatchResult { Status = PatchStatus.NotModified };
+                    return true;
+                }
+
+                var putResult = storage.Put(context, current.Id, current.ChangeVector, modified,
+                    flags: current.Flags.Strip(DocumentFlags.FromClusterTransaction));
+                PatchResult = new PatchResult
+                {
+                    Status = PatchStatus.Patched,
+                    ChangeVector = putResult.ChangeVector,
+                    Collection = putResult.Collection.Name,
+                    LastModified = putResult.LastModified,
+                    Etag = putResult.Etag
+                };
+                return true;
+            }
         }
 
         private void ReleaseScriptRunners()
@@ -558,7 +598,10 @@ namespace Raven.Server.Documents.Patch
             Debug.Assert(context.DocumentDatabase == _database);
 
             if (_prepared.Document == null || TryWritePrepared(context) == false)
-                PatchResult = ExecuteOnDocument(context, _id, _expectedChangeVector, _run, _runIfMissing);
+            {
+                if (_simplePatch == null || TryApplySimplePatch(context) == false)
+                    PatchResult = ExecuteOnDocument(context, _id, _expectedChangeVector, _run, _runIfMissing);
+            }
 
             ReleaseScriptRunners();
 

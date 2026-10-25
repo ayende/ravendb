@@ -2409,7 +2409,7 @@ namespace Raven.Server.Documents
             string expectedChangeVector, BlittableJsonReaderObject document, long? lastModifiedTicks = null, string changeVector = null,
             string oldChangeVectorForClusterTransactionIndexCheck = null,
             DocumentFlags flags = DocumentFlags.None, NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None,
-            string knownCollectionName = null, BlittableJsonReaderObject knownMetadata = null)
+            string knownCollectionName = null, BlittableJsonReaderObject knownMetadata = null, bool skipOnChangeVectorMismatch = false)
         {
             ChangeVector cv = null;
             if (changeVector != null)
@@ -2421,7 +2421,7 @@ namespace Raven.Server.Documents
                 document.TryGetMetadata(out knownMetadata);
             }
 
-            return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags, knownCollectionName, knownMetadata);
+            return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags, knownCollectionName, knownMetadata, skipOnChangeVectorMismatch);
         }
 
         public long GetNumberOfDocumentsToProcess(DocumentsOperationContext context, string collection, long afterEtag, out long totalCount, Stopwatch overallDuration)

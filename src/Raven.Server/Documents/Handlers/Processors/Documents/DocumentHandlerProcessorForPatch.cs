@@ -128,6 +128,8 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
                 ? SimpleAssignmentPatch.TryGet(patch)
                 : null;
 
+            if (simplePatch != null)
+                command.SetSimplePatch(simplePatch);
             PrepareOutsideOfMerger(context, id, command, simplePatch, patchArgs);
 
             if (command.PatchResult == null)

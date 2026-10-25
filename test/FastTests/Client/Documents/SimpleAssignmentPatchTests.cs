@@ -107,8 +107,10 @@ namespace FastTests.Client.Documents
             }
         }
 
-        [RavenFact(RavenTestCategory.Patching)]
-        public async Task StalePreparedDocumentFallsBackToTheScript()
+        [RavenTheory(RavenTestCategory.Patching)]
+        [InlineData(false)]
+        [InlineData(true)]
+        public async Task StalePreparedDocumentFallsBackToTheScript(bool simplePatchKnown)
         {
             using (var store = GetDocumentStore())
             {
@@ -147,6 +149,8 @@ namespace FastTests.Client.Documents
                                database.IdentityPartsSeparator, isTest: false, debugMode: false, collectResultsNeeded: true, returnDocument: false))
                     {
                         command.SetPrepared("items/1", changeVector, flags, prepared);
+                        if (simplePatchKnown)
+                            command.SetSimplePatch(SimpleAssignmentPatch.TryGet(patch)); // re-applied without the script engine
                         await database.TxMerger.Enqueue(command);
                         Assert.Equal(PatchStatus.Patched, command.PatchResult.Status);
                     }
