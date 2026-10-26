@@ -1255,14 +1255,14 @@ namespace Voron.Impl
                   ? Task.Run(() => { CommitStage2_WriteToJournal(waitForDurability: false); return true; })
                   : NoWriteToJournalRequiredTask;
 
-            var usageIncremented = false;
+            var usageSlot = -1;
 
             try
             {
                 _forTestingPurposes?.ActionToCallDuringBeginAsyncCommitAndStartNewTransaction?.Invoke();
 
-                _env.IncrementUsageOnNewTransaction();
-                usageIncremented = true;
+                usageSlot = _env.IncrementUsageOnNewTransaction();
+                nextTx.EnvironmentUsageSlot = usageSlot;
 
                 _env.ActiveTransactions.Add(nextTx);
                 _env.WriteTransactionStarted();
@@ -1278,8 +1278,8 @@ namespace Voron.Impl
 
                 try
                 {
-                    if (usageIncremented)
-                        _env.DecrementUsageOnTransactionCreationFailure();
+                    if (usageSlot != -1)
+                        _env.DecrementUsage(usageSlot);
 
                     EndAsyncCommit();
                 }
@@ -1604,6 +1604,9 @@ namespace Voron.Impl
         public bool IsCloned;
         internal long? LocalPossibleOldestReadTransaction;
         internal RacyConcurrentBag.Node ActiveTransactionNode;
+
+        // the slot of the environment's transaction count that this transaction incremented
+        internal int EnvironmentUsageSlot;
         public Transaction Transaction;
 
         /// <summary>
