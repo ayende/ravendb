@@ -237,7 +237,8 @@ void delete_global_state(struct handle_global_state *global_state)
     free(global_state->writes_arena.arena);
     free(global_state->fsync_dir_arena.arena);
     _free_dirty_bitmaps(global_state->dirty_bitmap);
-    rvn_prefetch_unregister(global_state->prefetch_ticket);
+    if (global_state->prefetch_ring != NULL)
+        rvn_prefetch_unregister(global_state->prefetch_ring, global_state->prefetch_ticket);
     free(global_state->file_path);
     pthread_mutex_destroy(&global_state->writes_arena.lock);
     pthread_mutex_destroy(&global_state->fsync_dir_arena.lock);
@@ -248,6 +249,7 @@ EXPORT int32_t
 rvn_init_pager(const char *filename,
                int64_t initial_file_size,
                int32_t open_flags,
+               void *prefetch_ring,
                void **handle,
                void **memory,
                void **writable_memory,
@@ -337,9 +339,9 @@ rvn_init_pager(const char *filename,
     if (rc != SUCCESS)
         goto Error;
 
-    if (open_flags & OPEN_FILE_PREFETCH)
+    if ((open_flags & OPEN_FILE_PREFETCH) && prefetch_ring != NULL)
     {
-        rc = rvn_prefetch_register(((struct handle *)*handle)->file_fd, &global_state->prefetch_ticket, detailed_error_code);
+        rc = rvn_prefetch_register(prefetch_ring, ((struct handle *)*handle)->file_fd, &global_state->prefetch_ticket, detailed_error_code);
         if (rc != SUCCESS)
         {
             int32_t ignored;
@@ -349,6 +351,7 @@ rvn_init_pager(const char *filename,
             *memory_size = 0;
             return rc;
         }
+        global_state->prefetch_ring = prefetch_ring;
     }
     return SUCCESS;
 
@@ -644,7 +647,7 @@ int32_t rvn_write_file_io(
 // drops the rest, so larger ranges go out as several requests.
 #define PREFETCH_REQUEST_SIZE (128 * 1024)
 
-/* Starts reading the range into the page cache: through the prefetch ring when the file is registered with it, or with
+/* Starts reading the range into the page cache: through the prefetch ring when the file is registered with one, or with
    posix_fadvise on the calling thread where io_uring is not available (an old kernel or a seccomp policy). Both only
    start the read. Returns 1 when the whole range was requested, 0 when part of it was dropped (the ring's queue is full). */
 EXPORT int32_t
@@ -656,13 +659,14 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 #if __APPLE__
     return 0; // no posix_fadvise
 #else
+    void *ring = handle_ptr->global_state->prefetch_ring;
     int64_t ticket = handle_ptr->global_state->prefetch_ticket;
     int32_t all = 1;
     for (int64_t end = offset + length; offset < end; offset += PREFETCH_REQUEST_SIZE)
     {
         int64_t size = rvn_min(PREFETCH_REQUEST_SIZE, end - offset);
-        if (ticket != -1)
-            all &= rvn_prefetch_enqueue(ticket, offset, size);
+        if (ring != NULL)
+            all &= rvn_prefetch_enqueue(ring, ticket, offset, size);
         else
             all &= posix_fadvise(handle_ptr->file_fd, offset, size, POSIX_FADV_WILLNEED) == 0;
     }

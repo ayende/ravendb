@@ -10,7 +10,7 @@ namespace Sparrow.Server.Platform
 {
     public static unsafe class Pal
     {
-        public const int PAL_VER = 70903; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70904; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -30,10 +30,7 @@ namespace Sparrow.Server.Platform
                 version = RvnConfigurationVersion.Current,
                 write_mode = PalConfiguration.WriteMode,
                 memoryLockCallback = &MemoryLockUsage.UpdateLockedMemory,
-                recoveryMemoryLockFailureCallback = &MemoryLockUsage.RecoverLockedMemoryFailure,
-                prefetch_ring_entries = PalConfiguration.PrefetchRingEntries,
-                prefetch_max_files = PalConfiguration.PrefetchMaxFiles,
-                prefetch_queue_size = PalConfiguration.PrefetchQueueSize
+                recoveryMemoryLockFailureCallback = &MemoryLockUsage.RecoverLockedMemoryFailure
             };
 
             try
@@ -175,9 +172,17 @@ namespace Sparrow.Server.Platform
         public static extern Int32 rvn_pager_prefetch(
             void* handle, Int64 offset, Int64 length);
 
+        [DllImport(LIBRVNPAL, SetLastError = true)]
+        public static extern PalFlags.FailCodes rvn_prefetch_ring_create(
+            Int32 ringEntries, Int32 maxFiles, Int32 queueSize, out void* ring, out Int32 errorCode);
+
+        [DllImport(LIBRVNPAL, SetLastError = true)]
+        public static extern PalFlags.FailCodes rvn_prefetch_ring_destroy(
+            void* ring, out Int32 errorCode);
+
         [DllImport(LIBRVNPAL)]
-        public static extern PalFlags.FailCodes rvn_prefetch_stats(
-            out Int64 submitted, out Int64 droppedFull, out Int64 droppedStale, out Int64 failed);
+        public static extern PalFlags.FailCodes rvn_prefetch_ring_stats(
+            void* ring, out Int64 submitted, out Int64 droppedFull, out Int64 droppedStale, out Int64 failed);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_close_pager(
@@ -210,6 +215,7 @@ namespace Sparrow.Server.Platform
             string filename,
             Int64 initialFileSize,
             OpenFileFlags flags,
+            void* prefetchRing,
             out void* handle,
             out byte* readAddress,
             out byte* writeAddress,
@@ -217,7 +223,7 @@ namespace Sparrow.Server.Platform
             out Int32 errorCode)
         {
             using var convert = new Converter(filename);
-            return rvn_init_pager(convert.Pointer, initialFileSize, flags,
+            return rvn_init_pager(convert.Pointer, initialFileSize, flags, prefetchRing,
                 out handle, out readAddress, out writeAddress, out memorySize, out errorCode);
         }
 
@@ -244,6 +250,7 @@ namespace Sparrow.Server.Platform
             byte* filename,
             Int64 initialFileSize,
             OpenFileFlags flags,
+            void* prefetchRing,
             out void* handle,
             out byte* readAddress,
             out byte* writeAddress,
@@ -566,10 +573,6 @@ namespace Sparrow.Server.Platform
 
             public delegate* unmanaged[Cdecl]<Int64, char*, void> memoryLockCallback;
             public delegate* unmanaged[Cdecl]<Int64, char*, int> recoveryMemoryLockFailureCallback;
-
-            public Int32 prefetch_ring_entries;
-            public Int32 prefetch_max_files;
-            public Int32 prefetch_queue_size;
         };
         
         [DllImport(LIBRVNPAL, SetLastError = true)]

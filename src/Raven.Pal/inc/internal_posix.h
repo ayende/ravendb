@@ -80,7 +80,8 @@ struct handle_global_state
 
     struct dirty_bitmap *dirty_bitmap;
 
-    // the file's ticket in the prefetch ring (-1 = not registered)
+    // the prefetch ring the file is registered with, and its ticket there (NULL / -1 = not registered)
+    void *prefetch_ring;
     int64_t prefetch_ticket;
 };
 
@@ -94,13 +95,13 @@ struct handle
 };
 
 PRIVATE int32_t
-rvn_prefetch_register(int fd, int64_t *ticket, int32_t *detailed_error_code);
+rvn_prefetch_register(void *ring, int fd, int64_t *ticket, int32_t *detailed_error_code);
 
 PRIVATE void
-rvn_prefetch_unregister(int64_t ticket);
+rvn_prefetch_unregister(void *ring, int64_t ticket);
 
 PRIVATE int32_t
-rvn_prefetch_enqueue(int64_t ticket, int64_t offset, int64_t length);
+rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length);
 
 PRIVATE
 int32_t _setup_io_ring(struct handle_global_state *global_state, int32_t *detailed_error_code);

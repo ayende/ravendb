@@ -54,7 +54,8 @@ public unsafe partial class Pager : IDisposable
             throw new InvalidOperationException($"Expected the PAL to have page size matching Voron but was: {Pal.PalVoronPageSize}");
         
         var pager = new Pager(options, filename, flags, GetFunctions(options, flags));
-        var result = Pal.rvn_init_pager(filename, initialFileSize, flags, 
+        var prefetchRing = flags.HasFlag(Pal.OpenFileFlags.Prefetch) ? (options.PrefetchRing ?? PrefetchRing.Default).Handle : null;
+        var result = Pal.rvn_init_pager(filename, initialFileSize, flags, prefetchRing,
             out var handle, out var readOnlyMemory, out var writeMemory, out var memorySize, out var error);
         if (result != PalFlags.FailCodes.Success)
             RaiseError(filename, error, result, initialFileSize);

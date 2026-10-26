@@ -21,7 +21,7 @@
  * It is separate from the journal ring: prefetches are hints, they are fire and forget, and they must never
  * queue behind (or in front of) durable writes.
  *
- * The pager registers a data file when it opens it (OPEN_FILE_PREFETCH) and unregisters it when the last handle
+ * The pager registers a data file with a ring when it opens it (OPEN_FILE_PREFETCH) and unregisters it when the last handle
  * closes. A registration puts the file in the ring's fixed file table; the ring holds its own reference to the
  * file, so a request can never reach another file that reused the same descriptor number. The pager keeps a
  * ticket = (generation << 32) | slot. Every registration and unregistration increments the slot's generation, so
@@ -31,12 +31,10 @@
  * Producers (any thread) push to a bounded lock-free queue; a full queue drops the request (it is only a hint).
  * One submitter thread drains the queue, submits in batches and reaps the completions.
  *
- * Sizes come from rvn_startup_configure (prefetch_ring_entries, prefetch_max_files, prefetch_queue_size).
+ * A ring is an object: rvn_prefetch_ring_create / rvn_prefetch_ring_destroy. The server keeps one for the process;
+ * a ring can only be destroyed once no file is registered with it.
  */
 
-#define PREFETCH_DEFAULT_RING_ENTRIES 256
-#define PREFETCH_DEFAULT_MAX_FILES 4096
-#define PREFETCH_DEFAULT_QUEUE_SIZE 8192
 #define CACHE_LINE 64
 
 struct prefetch_request
@@ -55,6 +53,7 @@ struct prefetch_state
     alignas(CACHE_LINE) _Atomic uint64_t enqueue_pos;
     /* written by the submitter, read by every producer */
     alignas(CACHE_LINE) _Atomic int32_t sleeping;
+    _Atomic int32_t stopping;
     /* owned by the submitter thread (the only consumer) */
     alignas(CACHE_LINE) uint64_t dequeue_pos;
     uint32_t inflight;
@@ -81,11 +80,6 @@ struct prefetch_state
 
     struct prefetch_request *queue;
 };
-
-static struct prefetch_state *g_prefetch = NULL;
-static pthread_once_t g_prefetch_once = PTHREAD_ONCE_INIT;
-static int32_t g_prefetch_init_rc = SUCCESS;
-static int32_t g_prefetch_init_errno = 0;
 
 static inline int32_t _ticket_slot(int64_t ticket) { return (int32_t)(uint32_t)ticket; }
 static inline uint32_t _ticket_generation(int64_t ticket) { return (uint32_t)((uint64_t)ticket >> 32); }
@@ -150,7 +144,7 @@ _prefetch_thread(void *arg)
 {
     struct prefetch_state *s = arg;
     struct prefetch_request req;
-    for (;;)
+    while (atomic_load_explicit(&s->stopping, memory_order_acquire) == 0)
     {
         while (_prefetch_dequeue(s, &req))
         {
@@ -183,11 +177,15 @@ _prefetch_thread(void *arg)
             atomic_store_explicit(&s->sleeping, 0, memory_order_relaxed);
             continue;
         }
+        if (atomic_load_explicit(&s->stopping, memory_order_acquire))
+            break;
         uint64_t value;
         ssize_t r = read(s->eventfd, &value, sizeof(value));
         (void)r;
         atomic_store_explicit(&s->sleeping, 0, memory_order_relaxed);
     }
+    while (s->inflight > 0) /* the kernel still uses the SQEs' memory until it completes them */
+        _prefetch_reap(s, true);
     return NULL;
 }
 
@@ -209,90 +207,113 @@ _prefetch_free(struct prefetch_state *s)
     free(s);
 }
 
-PRIVATE void
-_prefetch_init_once(void)
+EXPORT int32_t
+rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, void **ring, int32_t *detailed_error_code)
 {
+    *ring = NULL;
+    *detailed_error_code = 0;
+    if (ring_entries <= 0 || max_files <= 0 || queue_size <= 0)
+        return FAIL_INVALID_CONFIGURATION;
+
     struct prefetch_state *s = NULL;
     size_t state_size = (sizeof(struct prefetch_state) + CACHE_LINE - 1) & ~(size_t)(CACHE_LINE - 1);
     if (posix_memalign((void **)&s, CACHE_LINE, state_size) != 0)
     {
-        g_prefetch_init_rc = FAIL_NOMEM;
-        g_prefetch_init_errno = ENOMEM;
-        return;
+        *detailed_error_code = ENOMEM;
+        return FAIL_NOMEM;
     }
     memset(s, 0, state_size);
     s->eventfd = -1;
+    s->ring_entries = (uint32_t)ring_entries;
+    s->max_files = max_files;
+    uint64_t size = _round_up_to_power_of_two((uint64_t)queue_size);
+    s->queue_mask = size - 1;
 
-    s->ring_entries = g_cfg.prefetch_ring_entries > 0 ? (uint32_t)g_cfg.prefetch_ring_entries : PREFETCH_DEFAULT_RING_ENTRIES;
-    s->max_files = g_cfg.prefetch_max_files > 0 ? g_cfg.prefetch_max_files : PREFETCH_DEFAULT_MAX_FILES;
-    uint64_t queue_size = _round_up_to_power_of_two(g_cfg.prefetch_queue_size > 0 ? (uint64_t)g_cfg.prefetch_queue_size : PREFETCH_DEFAULT_QUEUE_SIZE);
-    s->queue_mask = queue_size - 1;
-
-    s->queue = calloc(queue_size, sizeof(struct prefetch_request));
-    s->free_slots = calloc((size_t)s->max_files, sizeof(int32_t));
-    s->generations = calloc((size_t)s->max_files, sizeof(_Atomic uint32_t));
+    s->queue = calloc(size, sizeof(struct prefetch_request));
+    s->free_slots = calloc((size_t)max_files, sizeof(int32_t));
+    s->generations = calloc((size_t)max_files, sizeof(_Atomic uint32_t));
     if (s->queue == NULL || s->free_slots == NULL || s->generations == NULL)
     {
-        g_prefetch_init_rc = FAIL_NOMEM;
-        g_prefetch_init_errno = ENOMEM;
         _prefetch_free(s);
-        return;
+        *detailed_error_code = ENOMEM;
+        return FAIL_NOMEM;
     }
-    for (uint64_t i = 0; i < queue_size; i++)
+    for (uint64_t i = 0; i < size; i++)
         atomic_store_explicit(&s->queue[i].sequence, i, memory_order_relaxed); /* every cell free for the first lap */
-    for (int32_t i = 0; i < s->max_files; i++)
+    for (int32_t i = 0; i < max_files; i++)
         s->free_slots[i] = i;
-    s->free_count = s->max_files;
+    s->free_count = max_files;
     pthread_mutex_init(&s->slots_lock, NULL);
 
     int rc = io_uring_queue_init(s->ring_entries, &s->ring, 0);
     if (rc < 0)
     {
-        g_prefetch_init_rc = FAIL_CREATE_IO_RING;
-        g_prefetch_init_errno = -rc;
         _prefetch_free(s);
-        return;
+        *detailed_error_code = -rc;
+        return FAIL_CREATE_IO_RING;
     }
-    rc = io_uring_register_files_sparse(&s->ring, (unsigned)s->max_files);
+    rc = io_uring_register_files_sparse(&s->ring, (unsigned)max_files);
     if (rc < 0)
     {
-        g_prefetch_init_rc = FAIL_CREATE_IO_RING;
-        g_prefetch_init_errno = -rc;
         io_uring_queue_exit(&s->ring);
         _prefetch_free(s);
-        return;
+        *detailed_error_code = -rc;
+        return FAIL_CREATE_IO_RING;
     }
     s->eventfd = eventfd(0, EFD_CLOEXEC);
     if (s->eventfd == -1 || pthread_create(&s->thread, NULL, _prefetch_thread, s) != 0)
     {
-        g_prefetch_init_rc = FAIL_CREATE_IO_RING;
-        g_prefetch_init_errno = errno;
+        *detailed_error_code = errno;
         if (s->eventfd != -1)
             close(s->eventfd);
         io_uring_queue_exit(&s->ring);
         _prefetch_free(s);
-        return;
+        return FAIL_CREATE_IO_RING;
     }
     pthread_setname_np(s->thread, "Rvn.Prefetch");
-    pthread_detach(s->thread);
-    g_prefetch = s;
+    *ring = s;
+    return SUCCESS;
 }
 
-/* Registers fd with the prefetch ring. When this kernel (or a seccomp policy) does not allow io_uring, there is no
-   ring: *ticket is -1 and prefetch requests for the file are no-ops. A full file table is an error. */
+/* Stops the submitter and frees the ring. Fails while files are still registered with it. */
+EXPORT int32_t
+rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code)
+{
+    *detailed_error_code = 0;
+    struct prefetch_state *s = ring;
+    if (s == NULL)
+        return FAIL_INVALID_HANDLE;
+
+    pthread_mutex_lock(&s->slots_lock);
+    int32_t registered = s->max_files - s->free_count;
+    pthread_mutex_unlock(&s->slots_lock);
+    if (registered != 0)
+    {
+        *detailed_error_code = EBUSY;
+        return FAIL_INVALID_HANDLE;
+    }
+
+    atomic_store_explicit(&s->stopping, 1, memory_order_seq_cst);
+    uint64_t one = 1;
+    ssize_t r = write(s->eventfd, &one, sizeof(one));
+    (void)r;
+    pthread_join(s->thread, NULL);
+
+    io_uring_queue_exit(&s->ring);
+    close(s->eventfd);
+    pthread_mutex_destroy(&s->slots_lock);
+    _prefetch_free(s);
+    return SUCCESS;
+}
+
+/* Registers fd with the ring. A full file table is an error. */
 PRIVATE int32_t
-rvn_prefetch_register(int fd, int64_t *ticket, int32_t *detailed_error_code)
+rvn_prefetch_register(void *ring, int fd, int64_t *ticket, int32_t *detailed_error_code)
 {
     *ticket = -1;
-    pthread_once(&g_prefetch_once, _prefetch_init_once);
-    struct prefetch_state *s = g_prefetch;
+    struct prefetch_state *s = ring;
     if (s == NULL)
-    {
-        if (g_prefetch_init_rc == FAIL_CREATE_IO_RING)
-            return SUCCESS;
-        *detailed_error_code = g_prefetch_init_errno;
-        return g_prefetch_init_rc;
-    }
+        return FAIL_INVALID_HANDLE;
 
     pthread_mutex_lock(&s->slots_lock);
     if (s->free_count == 0)
@@ -319,9 +340,9 @@ rvn_prefetch_register(int fd, int64_t *ticket, int32_t *detailed_error_code)
 }
 
 PRIVATE void
-rvn_prefetch_unregister(int64_t ticket)
+rvn_prefetch_unregister(void *ring, int64_t ticket)
 {
-    struct prefetch_state *s = g_prefetch;
+    struct prefetch_state *s = ring;
     int32_t slot = _ticket_slot(ticket);
     if (s == NULL || ticket == -1 || slot < 0 || slot >= s->max_files)
         return;
@@ -336,11 +357,11 @@ rvn_prefetch_unregister(int64_t ticket)
     pthread_mutex_unlock(&s->slots_lock);
 }
 
-/* returns 1 when queued, 0 when dropped (queue full, file not registered or no ring) */
+/* returns 1 when queued, 0 when dropped (queue full or file not registered) */
 PRIVATE int32_t
-rvn_prefetch_enqueue(int64_t ticket, int64_t offset, int64_t length)
+rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length)
 {
-    struct prefetch_state *s = g_prefetch;
+    struct prefetch_state *s = ring;
     int32_t slot = _ticket_slot(ticket);
     if (s == NULL || ticket == -1 || slot < 0 || slot >= s->max_files || length <= 0)
         return 0;
@@ -387,9 +408,9 @@ rvn_prefetch_enqueue(int64_t ticket, int64_t offset, int64_t length)
 }
 
 EXPORT int32_t
-rvn_prefetch_stats(int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed)
+rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed)
 {
-    struct prefetch_state *s = g_prefetch;
+    struct prefetch_state *s = ring;
     if (s == NULL)
     {
         *submitted = *dropped_full = *dropped_stale = *failed = 0;

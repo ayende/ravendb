@@ -587,12 +587,14 @@ EXPORT int32_t
 rvn_init_pager(const char *filename,
                int64_t initial_file_size,
                int32_t open_flags,
+               void *prefetch_ring,
                void **handle,
                void **memory,
                void **writable_memory,
                int64_t *memory_size,
                int32_t *detailed_error_code)
 {
+    (void)prefetch_ring; // no prefetch ring on Windows
     *memory_size = 0;
     *memory = NULL;
     *handle = NULL;
@@ -871,8 +873,28 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 }
 
 EXPORT int32_t
-rvn_prefetch_stats(int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed)
+rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, void **ring, int32_t *detailed_error_code)
 {
+    (void)ring_entries;
+    (void)max_files;
+    (void)queue_size;
+    *ring = NULL;
+    *detailed_error_code = 0;
+    return FAIL_CREATE_IO_RING; // no prefetch ring on Windows
+}
+
+EXPORT int32_t
+rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code)
+{
+    (void)ring;
+    *detailed_error_code = 0;
+    return FAIL_INVALID_HANDLE;
+}
+
+EXPORT int32_t
+rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed)
+{
+    (void)ring;
     *submitted = *dropped_full = *dropped_stale = *failed = 0;
     return FAIL_INVALID_HANDLE;
 }

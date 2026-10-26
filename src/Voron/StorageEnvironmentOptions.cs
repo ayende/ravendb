@@ -215,6 +215,9 @@ namespace Voron
 
         public bool ManualFlushing { get; set; }
 
+        /// <summary>The ring for data file prefetches; null uses <see cref="PrefetchRing.Default"/>.</summary>
+        public PrefetchRing PrefetchRing { get; set; }
+
         public bool IncrementalBackupEnabled { get; set; }
 
         public long MaxNumberOfPagesInJournalBeforeFlush { get; set; }

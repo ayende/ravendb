@@ -112,11 +112,6 @@ struct rvn_configuration
 
     MemoryLockCallback memoryLockCallback;
     RecoveryMemoryLockFailureCallback recoveryMemoryLockFailureCallback;
-
-    /* the prefetch ring (0 = default) */
-    int32_t prefetch_ring_entries;
-    int32_t prefetch_max_files;
-    int32_t prefetch_queue_size;
 };
 
 EXPORT
@@ -149,6 +144,7 @@ EXPORT int32_t
 rvn_init_pager(const char* filename,
     int64_t initial_file_size,
     int32_t open_flags,
+    void* prefetch_ring,
     void** handle,
     void** memory,
     void** writable_memory,
@@ -170,7 +166,13 @@ rvn_pager_prefetch(void *handle,
     int64_t length);
 
 EXPORT int32_t
-rvn_prefetch_stats(int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed);
+rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, void **ring, int32_t *detailed_error_code);
+
+EXPORT int32_t
+rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code);
+
+EXPORT int32_t
+rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed);
 
 EXPORT int32_t
 rvn_close_pager(
