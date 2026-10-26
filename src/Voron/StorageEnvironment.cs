@@ -1634,7 +1634,7 @@ namespace Voron
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public unsafe void ValidatePageChecksum(long pageNumber, PageHeader* current, Pager.State prefetchState = null)
+        public unsafe void ValidatePageChecksum(long pageNumber, PageHeader* current, Pager.State dataPagerState)
         {
             // If the page is beyond the initial size of the file we don't validate it. 
             // We assume that it is valid since we wrote it in this run.
@@ -1648,35 +1648,26 @@ namespace Voron
             if ((old & bitToSet) != 0)
                 return;
 
-            UnlikelyValidatePage(pageNumber, current, index, old, bitToSet, prefetchState);
+            UnlikelyValidatePage(pageNumber, current, index, old, bitToSet, dataPagerState);
         }
 
-        // The first access to a page since load validates its checksum, which reads the whole page. With random access
-        // advice each 4 KB half would fault separately (two reads), so queue a read of the whole page before we touch it.
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        internal void HintFirstTouch(Pager.State dataPagerState, long pageNumber)
+        private unsafe void UnlikelyValidatePage(long pageNumber, PageHeader* current, long index, long old, long bitToSet, Pager.State dataPagerState)
         {
-            if (pageNumber >= _lastValidPageAfterLoad)
-                return;
-            var bit = 1L << (int)(pageNumber % (8 * sizeof(long)));
-            if ((Volatile.Read(ref _validPagesAfterLoad[pageNumber / (8 * sizeof(long))]) & bit) != 0)
-                return;
+            // The checksum reads the whole page, and with random access advice each 4 KB half would fault separately (two
+            // reads): ask for the whole page before the first access to it.
             Pager.PrefetchPages(dataPagerState, pageNumber);
-        }
 
-        private unsafe void UnlikelyValidatePage(long pageNumber, PageHeader* current, long index, long old, long bitToSet, Pager.State prefetchState)
-        {
             // No need to call EnsureMapped here. ValidatePageChecksum is only called for pages in the datafile, 
             // which we already got using AcquirePagePointerWithOverflowHandling()
             if (pageNumber != current->PageNumber)
                 ThrowInvalidPageNumber(pageNumber, current);
 
-            // the checksum reads every page of an overflow, queue the rest of them before we start
-            if (prefetchState != null && (current->Flags & PageFlags.Overflow) == PageFlags.Overflow)
+            // the checksum reads every page of an overflow, ask for the rest of them before we start
+            if ((current->Flags & PageFlags.Overflow) == PageFlags.Overflow)
             {
                 var pages = Paging.GetNumberOfOverflowPages(current->OverflowSize);
                 if (pages > 1)
-                    Pager.PrefetchPages(prefetchState, pageNumber + 1, pages - 1);
+                    Pager.PrefetchPages(dataPagerState, pageNumber + 1, pages - 1);
             }
 
             ulong checksum = CalculatePageChecksum((byte*)current, current->PageNumber, current->Flags, current->OverflowSize);

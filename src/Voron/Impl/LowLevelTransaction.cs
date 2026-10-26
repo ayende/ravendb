@@ -715,14 +715,9 @@ namespace Voron.Impl
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private Page GetPageInternalFromDataFile(long pageNumber)
         {
-            // read transactions queue whole-page prefetches for pages that are about to be validated; the write
-            // transaction does not, so the merger never waits on the prefetch queue
-            var prefetchState = _isValidationEnabled && Flags != TransactionFlags.ReadWrite ? DataPagerState : null;
-            if (prefetchState != null)
-                _env.HintFirstTouch(prefetchState, pageNumber);
             var page = new Page(DataPager.AcquirePagePointerWithOverflowHandling(DataPagerState, ref PagerTransactionState, pageNumber));
             if (_isValidationEnabled)// When encryption is off, we do validation by checksum
-                _env.ValidatePageChecksum(pageNumber, (PageHeader*)page.Pointer, prefetchState);
+                _env.ValidatePageChecksum(pageNumber, (PageHeader*)page.Pointer, DataPagerState);
             return page;
         }
 
