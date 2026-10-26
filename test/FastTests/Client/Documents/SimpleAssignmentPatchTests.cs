@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using Raven.Client;
 using Raven.Client.Documents;
@@ -28,6 +30,7 @@ namespace FastTests.Client.Documents
             public double Score { get; set; }
             public bool Active { get; set; }
             public string Note { get; set; }
+            public long Big { get; set; }
             public Dictionary<string, string> Tags { get; set; }
         }
 
@@ -48,6 +51,29 @@ namespace FastTests.Client.Documents
             yield return ["this[args.f] = args.v;", new Dictionary<string, object> { ["f"] = "Tags", ["v"] = new Dictionary<string, string> { ["k"] = "v" } }]; // object value
             yield return ["this[args.f] = args.v;", new Dictionary<string, object> { ["f"] = "@flags", ["v"] = "x" }]; // metadata-like field
             yield return ["this.Name = args.missing;", new Dictionary<string, object>()]; // undefined argument
+            yield return ["this.Age++;", new Dictionary<string, object>()];
+            yield return ["++this.Age;", new Dictionary<string, object>()];
+            yield return ["this.Age--; this.Age--;", new Dictionary<string, object>()];
+            yield return ["this.Age += args.v;", new Dictionary<string, object> { ["v"] = 5L }];
+            yield return ["this.Age -= args.v;", new Dictionary<string, object> { ["v"] = 5L }];
+            yield return ["this.Age += args.v;", new Dictionary<string, object> { ["v"] = 0.5 }]; // long field + double
+            yield return ["this.Age += 1;", new Dictionary<string, object>()]; // literal
+            yield return ["this.Age += 0;", new Dictionary<string, object>()]; // not modified
+            yield return ["this.Score += args.v;", new Dictionary<string, object> { ["v"] = 1.5 }];
+            yield return ["this.Score += args.v;", new Dictionary<string, object> { ["v"] = 0.75 }]; // double field, integral result
+            yield return ["this.Score = args.v;", new Dictionary<string, object> { ["v"] = 42L }]; // integer into a double field
+            yield return ["this.Count = args.v; this.Count += args.v;", new Dictionary<string, object> { ["v"] = 3L }]; // new field, then its own value
+            yield return ["this.Age = this.Age + args.v;", new Dictionary<string, object> { ["v"] = 2L }];
+            yield return ["this[args.f] = this[args.f] + args.v;", new Dictionary<string, object> { ["f"] = "Age", ["v"] = 2L }];
+            yield return ["this['Age'] = this['Age'] - args.v;", new Dictionary<string, object> { ["v"] = 2L }];
+            yield return ["this.Name += args.v;", new Dictionary<string, object> { ["v"] = "-suffix" }]; // string concatenation
+            yield return ["this.Name += args.v;", new Dictionary<string, object> { ["v"] = 7L }]; // string + number
+            yield return ["this.Name = this.Name + '!';", new Dictionary<string, object>()];
+            yield return ["this.Big++;", new Dictionary<string, object>()]; // beyond 2^53: JavaScript rounds
+            yield return ["this.Missing++;", new Dictionary<string, object>()]; // undefined
+            yield return ["this.Note = args.v; this.Note++;", new Dictionary<string, object> { ["v"] = null }]; // null
+            yield return ["this.Active += 1;", new Dictionary<string, object>()]; // bool
+            yield return ["this.Age = this.Score + args.v;", new Dictionary<string, object> { ["v"] = 1L }]; // a different field
         }
 
         [RavenTheory(RavenTestCategory.Patching)]
@@ -59,7 +85,7 @@ namespace FastTests.Client.Documents
                 using (var session = store.OpenSession())
                 {
                     foreach (var id in new[] { "fast/1", "engine/1" })
-                        session.Store(new Item { Name = "original", Age = 3, Score = 2.25, Active = true, Note = "n", Tags = new Dictionary<string, string> { ["a"] = "b" } }, id);
+                        session.Store(new Item { Name = "original", Age = 3, Score = 2.25, Active = true, Note = "n", Big = 9007199254740993, Tags = new Dictionary<string, string> { ["a"] = "b" } }, id);
                     session.SaveChanges();
                 }
 
@@ -68,6 +94,28 @@ namespace FastTests.Client.Documents
 
                 Assert.Equal(engineStatus, fastStatus);
                 Assert.Equal(Body(store, "engine/1"), Body(store, "fast/1"));
+            }
+        }
+
+        [RavenTheory(RavenTestCategory.Patching)]
+        [InlineData("this.Name = args.v;", "changed", PatchStatus.Patched)]
+        [InlineData("this.Name = args.v;", "original", PatchStatus.NotModified)]
+        public void SimpleAssignmentReturnsTheModifiedDocument(string script, string value, PatchStatus expectedStatus)
+        {
+            using (var store = GetDocumentStore())
+            using (var session = store.OpenSession())
+            {
+                session.Store(new Item { Name = "original" }, "items/1");
+                session.SaveChanges();
+
+                var request = new PatchRequest { Script = script, Values = { ["v"] = value } };
+                var command = new PatchOperation.PatchCommand(store.Conventions, session.Advanced.Context, "items/1", null, request,
+                    patchIfMissing: null, skipPatchIfChangeVectorMismatch: false, returnDebugInformation: false, test: false);
+                session.Advanced.RequestExecutor.Execute(command, session.Advanced.Context);
+
+                Assert.Equal(expectedStatus, command.Result.Status);
+                Assert.NotNull(command.Result.ModifiedDocument);
+                Assert.Equal(value, command.Result.ModifiedDocument["Name"].ToString());
             }
         }
 
@@ -183,8 +231,22 @@ namespace FastTests.Client.Documents
                 document.Modifications = new DynamicJsonValue(document);
                 document.Modifications.Remove(Constants.Documents.Metadata.Key);
                 using (var body = commands.Context.ReadObject(document, id))
-                    return collection + " " + body;
+                    return collection + " " + SortedJson(body); // the field order is not part of the result
             }
+        }
+
+        private static string SortedJson(BlittableJsonReaderObject document)
+        {
+            var node = System.Text.Json.Nodes.JsonNode.Parse(document.ToString());
+            return Sort(node).ToJsonString();
+
+            static System.Text.Json.Nodes.JsonNode Sort(System.Text.Json.Nodes.JsonNode n) => n switch
+            {
+                System.Text.Json.Nodes.JsonObject o => new System.Text.Json.Nodes.JsonObject(o.OrderBy(p => p.Key, StringComparer.Ordinal)
+                    .Select(p => KeyValuePair.Create(p.Key, p.Value == null ? null : Sort(p.Value)))),
+                System.Text.Json.Nodes.JsonArray a => new System.Text.Json.Nodes.JsonArray(a.Select(x => x == null ? null : Sort(x)).ToArray()),
+                _ => System.Text.Json.Nodes.JsonNode.Parse(n.ToJsonString())
+            };
         }
     }
 }
