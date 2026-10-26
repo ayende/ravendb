@@ -189,15 +189,6 @@ _prefetch_thread(void *arg)
     return NULL;
 }
 
-PRIVATE uint64_t
-_round_up_to_power_of_two(uint64_t v)
-{
-    uint64_t p = 1;
-    while (p < v)
-        p <<= 1;
-    return p;
-}
-
 PRIVATE void
 _prefetch_free(struct prefetch_state *s)
 {
@@ -212,8 +203,8 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
 {
     *ring = NULL;
     *detailed_error_code = 0;
-    if (ring_entries <= 0 || max_files <= 0 || queue_size <= 0)
-        return FAIL_INVALID_CONFIGURATION;
+    if (ring_entries <= 0 || max_files <= 0 || queue_size <= 0 || (queue_size & (queue_size - 1)) != 0)
+        return FAIL_INVALID_CONFIGURATION; /* the queue indexes by mask: a power of two */
 
     struct prefetch_state *s = NULL;
     size_t state_size = (sizeof(struct prefetch_state) + CACHE_LINE - 1) & ~(size_t)(CACHE_LINE - 1);
@@ -226,7 +217,7 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
     s->eventfd = -1;
     s->ring_entries = (uint32_t)ring_entries;
     s->max_files = max_files;
-    uint64_t size = _round_up_to_power_of_two((uint64_t)queue_size);
+    uint64_t size = (uint64_t)queue_size;
     s->queue_mask = size - 1;
 
     s->queue = calloc(size, sizeof(struct prefetch_request));

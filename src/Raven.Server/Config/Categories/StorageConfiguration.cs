@@ -291,7 +291,7 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.PrefetchRingEntries", ConfigurationEntryScope.ServerWideOnly)]
         public int PrefetchRingEntries { get; set; }
 
-        [Description("EXPERT: The number of prefetch requests waiting for the prefetch I/O ring (Linux); further requests are dropped.")]
+        [Description("EXPERT: The number of prefetch requests waiting for the prefetch I/O ring (Linux), rounded up to a power of two; further requests are dropped.")]
         [DefaultValue(8192)]
         [ConfigurationEntry("Storage.PrefetchRingQueueSize", ConfigurationEntryScope.ServerWideOnly)]
         public int PrefetchRingQueueSize { get; set; }

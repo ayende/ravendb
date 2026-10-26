@@ -1,4 +1,5 @@
 using System;
+using Sparrow.Binary;
 using Sparrow.Platform;
 
 namespace Sparrow.Server.Platform;
@@ -20,6 +21,7 @@ public sealed unsafe class PrefetchRing : IDisposable
         if (PlatformDetails.RunningOnLinux == false)
             return;
 
+        queueSize = Bits.PowerOf2(queueSize); // the PAL indexes the queue by mask
         var rc = Pal.rvn_prefetch_ring_create(ringEntries, maxFiles, queueSize, out var handle, out var errorCode);
         if (rc == PalFlags.FailCodes.Success)
             Handle = handle;
