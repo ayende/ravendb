@@ -16,8 +16,12 @@ public sealed unsafe class PrefetchRing : IDisposable
 
     public void* Handle { get; private set; }
 
+    /// <summary>The number of data files that can be registered with the ring at the same time.</summary>
+    public int MaxFiles { get; }
+
     public PrefetchRing(int ringEntries, int maxFiles, int queueSize)
     {
+        MaxFiles = maxFiles;
         if (PlatformDetails.RunningOnLinux == false)
             return;
 

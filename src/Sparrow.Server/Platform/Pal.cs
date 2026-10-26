@@ -10,7 +10,7 @@ namespace Sparrow.Server.Platform
 {
     public static unsafe class Pal
     {
-        public const int PAL_VER = 70906; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70907; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -171,6 +171,11 @@ namespace Sparrow.Server.Platform
         [SuppressGCTransition]
         public static extern Int32 rvn_pager_prefetch(
             void* handle, Int64 offset, Int64 length);
+
+        /// <summary>The largest WILLNEED request the data file's device reads whole (the kernel drops the rest of a larger one).</summary>
+        [DllImport(LIBRVNPAL)]
+        public static extern PalFlags.FailCodes rvn_pager_get_prefetch_request_size(
+            void* handle, out Int64 requestSize);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_create(

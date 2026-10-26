@@ -898,3 +898,11 @@ rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, i
     *submitted = *dropped_full = *dropped_stale = *failed = 0;
     return FAIL_INVALID_HANDLE;
 }
+
+EXPORT int32_t
+rvn_pager_get_prefetch_request_size(void *handle, int64_t *request_size)
+{
+    (void)handle;
+    *request_size = 0; // PrefetchVirtualMemory takes a whole range
+    return SUCCESS;
+}

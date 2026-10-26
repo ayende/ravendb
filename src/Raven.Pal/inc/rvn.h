@@ -62,6 +62,7 @@ struct RVN_RANGE_LIST
 {
     void *virtual_address;
     size_t number_of_bytes;
+    size_t request_size; /* the largest WILLNEED request the device reads whole (0: one request) */
 };
 
 typedef void (*MemoryLockCallback)(int64_t size, char* filename);
@@ -164,6 +165,10 @@ EXPORT int32_t
 rvn_pager_prefetch(void *handle,
     int64_t offset,
     int64_t length);
+
+EXPORT int32_t
+rvn_pager_get_prefetch_request_size(void *handle,
+    int64_t *request_size);
 
 EXPORT int32_t
 rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, void **ring, int32_t *detailed_error_code);

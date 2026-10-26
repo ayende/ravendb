@@ -9,6 +9,9 @@
 #include <fcntl.h>
 #include <errno.h>
 #include <sys/mman.h>
+#if __linux__
+#include <sys/sysmacros.h>
+#endif
 #include <string.h>
 #include <assert.h>
 #include <sys/stat.h>
@@ -245,6 +248,51 @@ void delete_global_state(struct handle_global_state *global_state)
     free(global_state);
 }
 
+// Without sysfs queue limits for the device (overlayfs, tmpfs, macOS): every common device reads 128 KB whole
+#define DEFAULT_PREFETCH_REQUEST_SIZE (128 * 1024)
+
+#if __linux__
+PRIVATE int64_t
+_read_queue_limit_kb(unsigned int major_number, unsigned int minor_number, const char *name)
+{
+    // a partition keeps the queue limits on its parent disk
+    const char *dirs[] = {"queue", "../queue"};
+    for (int i = 0; i < 2; i++)
+    {
+        char path[128];
+        snprintf(path, sizeof(path), "/sys/dev/block/%u:%u/%s/%s", major_number, minor_number, dirs[i], name);
+        FILE *file = fopen(path, "r");
+        if (file == NULL)
+            continue;
+        long long kb = 0;
+        int parsed = fscanf(file, "%lld", &kb) == 1;
+        fclose(file);
+        if (parsed)
+            return kb;
+    }
+    return 0;
+}
+#endif
+
+/* The largest WILLNEED request the device of fd reads whole: the kernel caps one at max(io_pages, ra_pages), which are
+   the device's max_sectors_kb and read_ahead_kb. */
+PRIVATE int64_t
+_prefetch_request_size(int fd)
+{
+#if __linux__
+    struct stat st;
+    if (fstat(fd, &st) != 0)
+        return DEFAULT_PREFETCH_REQUEST_SIZE;
+    int64_t read_ahead_kb = _read_queue_limit_kb(major(st.st_dev), minor(st.st_dev), "read_ahead_kb");
+    int64_t max_sectors_kb = _read_queue_limit_kb(major(st.st_dev), minor(st.st_dev), "max_sectors_kb");
+    int64_t kb = rvn_max(read_ahead_kb, max_sectors_kb);
+    return kb > 0 ? kb * 1024 : DEFAULT_PREFETCH_REQUEST_SIZE;
+#else
+    (void)fd;
+    return DEFAULT_PREFETCH_REQUEST_SIZE;
+#endif
+}
+
 EXPORT int32_t
 rvn_init_pager(const char *filename,
                int64_t initial_file_size,
@@ -275,6 +323,7 @@ rvn_init_pager(const char *filename,
     global_state->open_flags = open_flags;
     global_state->ref_count = 1;
     global_state->prefetch_ticket = -1;
+    global_state->prefetch_request_size = DEFAULT_PREFETCH_REQUEST_SIZE;
     global_state->writes_arena = (struct arena){.eventfd = -1};
     global_state->fsync_dir_arena = (struct arena){.eventfd = -1};
     global_state->writes_arena.lock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
@@ -338,6 +387,9 @@ rvn_init_pager(const char *filename,
     fd = -1;  // _open_pager_file takes ownership of fd in all cases:
     if (rc != SUCCESS)
         goto Error;
+
+    if (open_flags & OPEN_FILE_PREFETCH)
+        global_state->prefetch_request_size = _prefetch_request_size(((struct handle *)*handle)->file_fd);
 
     if ((open_flags & OPEN_FILE_PREFETCH) && prefetch_ring != NULL)
     {
@@ -643,13 +695,12 @@ int32_t rvn_write_file_io(
     return SUCCESS;
 }
 
-// The kernel reads at most max(io_pages, ra_pages) of a WILLNEED request (128-256 KB on common devices) and silently
-// drops the rest, so larger ranges go out as several requests.
-#define PREFETCH_REQUEST_SIZE (128 * 1024)
 
 /* Starts reading the range into the page cache: through the prefetch ring when the file is registered with one, or with
    posix_fadvise on the calling thread where io_uring is not available (an old kernel or a seccomp policy). Both only
-   start the read. Returns 1 when the whole range was requested, 0 when part of it was dropped (the ring's queue is full). */
+   start the read. The kernel reads at most max(io_pages, ra_pages) of a WILLNEED request and silently drops the rest,
+   so a range goes out in requests of the device's size. Returns 1 when the whole range was requested, 0 when part of it
+   was dropped (the ring's queue is full). */
 EXPORT int32_t
 rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 {
@@ -661,10 +712,11 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 #else
     void *ring = handle_ptr->global_state->prefetch_ring;
     int64_t ticket = handle_ptr->global_state->prefetch_ticket;
+    int64_t request_size = handle_ptr->global_state->prefetch_request_size;
     int32_t all = 1;
-    for (int64_t end = offset + length; offset < end; offset += PREFETCH_REQUEST_SIZE)
+    for (int64_t end = offset + length; offset < end; offset += request_size)
     {
-        int64_t size = rvn_min(PREFETCH_REQUEST_SIZE, end - offset);
+        int64_t size = rvn_min(request_size, end - offset);
         if (ring != NULL)
             all &= rvn_prefetch_enqueue(ring, ticket, offset, size);
         else
@@ -672,4 +724,12 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
     }
     return all;
 #endif
+}
+
+EXPORT int32_t
+rvn_pager_get_prefetch_request_size(void *handle, int64_t *request_size)
+{
+    struct handle *handle_ptr = handle;
+    *request_size = handle_ptr == NULL ? DEFAULT_PREFETCH_REQUEST_SIZE : handle_ptr->global_state->prefetch_request_size;
+    return SUCCESS;
 }

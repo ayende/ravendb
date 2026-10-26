@@ -43,6 +43,7 @@ public unsafe partial class Pager : IDisposable
     private readonly byte[] _masterKey;
     private SegmentPrefetchTable _prefetchTable;
     private bool _prefetchViaRing;
+    private long _prefetchRequestSize;
     private DateTime _lastIncrease;
     private long _increaseSize;
 
@@ -55,9 +56,14 @@ public unsafe partial class Pager : IDisposable
             throw new InvalidOperationException($"Expected the PAL to have page size matching Voron but was: {Pal.PalVoronPageSize}");
         
         var pager = new Pager(options, filename, flags, GetFunctions(options, flags));
-        var prefetchRing = flags.HasFlag(Pal.OpenFileFlags.Prefetch) ? (options.PrefetchRing ?? PrefetchRing.Default).Handle : null;
+        var ring = flags.HasFlag(Pal.OpenFileFlags.Prefetch) ? options.PrefetchRing ?? PrefetchRing.Default : null;
+        void* prefetchRing = ring != null ? ring.Handle : null;
         var result = Pal.rvn_init_pager(filename, initialFileSize, flags, prefetchRing,
             out var handle, out var readOnlyMemory, out var writeMemory, out var memorySize, out var error);
+        if (result == PalFlags.FailCodes.FailPrefetchFilesExhausted)
+            throw new InvalidOperationException(
+                $"Cannot open '{filename}': {ring!.MaxFiles} data files are already open with the prefetch I/O ring, which is its limit. " +
+                "Raise the 'Storage.PrefetchRingMaxFiles' configuration option (a server restart is needed) to open more databases and indexes.");
         if (result != PalFlags.FailCodes.Success)
             RaiseError(filename, error, result, initialFileSize);
 
@@ -67,6 +73,7 @@ public unsafe partial class Pager : IDisposable
         pager.InstallState(state);
         pager.Initialize(memorySize);
         pager._prefetchViaRing = prefetchRing != null;
+        Pal.rvn_pager_get_prefetch_request_size(handle, out pager._prefetchRequestSize);
         if (Pal.rvn_pager_get_device_id(handle, out var deviceId, out _) == PalFlags.FailCodes.Success)
             pager._prefetchTable.Gate = PrefetchPolicy.Global.GetGate(deviceId);
         return (pager, state);
@@ -266,7 +273,7 @@ public unsafe partial class Pager : IDisposable
         if (_prefetchViaRing)
             Pal.rvn_pager_prefetch(state.Handle, offset, bytes);
         else
-            GlobalPrefetchingBehavior.GlobalPrefetcher.Value.CommandQueue.TryAdd(new PalDefinitions.PrefetchRanges(state.ReadAddress + offset, bytes), 0);
+            GlobalPrefetchingBehavior.GlobalPrefetcher.Value.CommandQueue.TryAdd(new PalDefinitions.PrefetchRanges(state.ReadAddress + offset, bytes, _prefetchRequestSize), 0);
     }
 
 
