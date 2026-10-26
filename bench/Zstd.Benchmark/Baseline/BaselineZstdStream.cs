@@ -180,7 +180,7 @@ namespace Zstd.Benchmark.Baseline
 
         public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            using (await _disposerLock.EnsureNotDisposedAsync(false).ConfigureAwait(false))
+            using (_disposerLock.EnsureNotDisposed())
             {
                 while (true)
                 {
@@ -224,7 +224,7 @@ namespace Zstd.Benchmark.Baseline
 
         public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
         {
-            using (await _disposerLock.EnsureNotDisposedAsync(false).ConfigureAwait(false))
+            using (_disposerLock.EnsureNotDisposed())
             {
                 while (buffer.Length > 0)
                 {
@@ -262,7 +262,7 @@ namespace Zstd.Benchmark.Baseline
 
         public override async Task FlushAsync(CancellationToken cancellationToken)
         {
-            using (await _disposerLock.EnsureNotDisposedAsync(false).ConfigureAwait(false))
+            using (_disposerLock.EnsureNotDisposed())
             {
                 await FlushInternalAsync(cancellationToken).ConfigureAwait(false);
             }
@@ -287,7 +287,7 @@ namespace Zstd.Benchmark.Baseline
             if (_disposed)
                 return;
 
-            using (_disposerLock.StartDisposing())
+            if (_disposerLock.TryStartDisposing())
             {
                 if (_disposed)
                     return;
@@ -322,7 +322,7 @@ namespace Zstd.Benchmark.Baseline
             if (_disposed)
                 return;
 
-            using (_disposerLock.StartDisposing())
+            if (_disposerLock.TryStartDisposing())
             {
                 if (_disposed)
                     return;

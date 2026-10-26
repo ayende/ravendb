@@ -1,4 +1,4 @@
-﻿using System.ComponentModel;
+using System.ComponentModel;
 using System.IO.Compression;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
 using Raven.Server.Config.Attributes;
@@ -66,6 +66,12 @@ namespace Raven.Server.Config.Categories
         [DefaultValue(true)]
         [ConfigurationEntry("Http.UseResponseCompression", ConfigurationEntryScope.ServerWideOnly)]
         public bool UseResponseCompression { get; set; }
+
+        [Description("Responses smaller than this are sent uncompressed, because compressing them costs more CPU than the bytes it saves. It applies when the size of the response is known before it is sent.")]
+        [DefaultValue(1)]
+        [SizeUnit(SizeUnit.Kilobytes)]
+        [ConfigurationEntry("Http.MinResponseSizeToCompressInKb", ConfigurationEntryScope.ServerWideOnly)]
+        public Size MinResponseSizeToCompress { get; set; }
 
         [Description("Set whether Raven's HTTP server should allow response compression to happen when HTTPS is enabled.")]
         [DefaultValue(true)]

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
@@ -32,6 +32,7 @@ using Raven.Server.Routing;
 using Raven.Server.ServerWide;
 using Raven.Server.ServerWide.Context;
 using Raven.Server.TrafficWatch;
+using Raven.Server.Web.ResponseCompression;
 using Sparrow;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
@@ -39,7 +40,7 @@ using Sparrow.Utils;
 
 namespace Raven.Server.Web
 {
-    public abstract partial class RequestHandler
+    public abstract partial class RequestHandler : IContentLengthHint
     {
         public const string StartParameter = "start";
 
@@ -98,7 +99,9 @@ namespace Raven.Server.Web
         public virtual void Init(RequestHandlerContext context)
         {
             _context = context;
-            context.HttpContext.Response.OnStarting(() => CheckForChanges(context));
+
+            if (context.CheckForChanges)
+                context.HttpContext.Response.OnStarting(static state => ((RequestHandler)state).CheckForChanges(((RequestHandler)state)._context), this);
         }
 
         public abstract Task CheckForChanges(RequestHandlerContext context);
@@ -261,7 +264,10 @@ namespace Raven.Server.Web
             if (_responseStream != null)
                 return _responseStream;
 
-            _responseStream = new StreamWithTimeout(HttpContext.Response.Body);
+            _responseStream = new StreamWithTimeout(HttpContext.Response.Body)
+            {
+                ContentLengthHint = this
+            };
 
             _context.HttpContext.Response.RegisterForDispose(_responseStream);
 
@@ -271,6 +277,18 @@ namespace Raven.Server.Web
             }
 
             return _responseStream;
+        }
+
+        bool IContentLengthHint.OnContentLength(long length)
+        {
+            // PERF: compressing a small response costs more CPU than the bytes it saves are worth
+            if (length < Server.Configuration.Http.MinResponseSizeToCompress.GetValue(SizeUnit.Bytes))
+                HttpContext.Features.Set(SkipResponseCompressionFeature.Instance);
+            else if (HttpContext.Request.Headers.AcceptEncoding.Count > 0)
+                HttpContext.Features.Set(new ResponseContentLengthFeature(length));
+
+            // the response is completed (and so flushed) when the handler returns
+            return true;
         }
 
         internal string GetRaftRequestIdFromQuery()

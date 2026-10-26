@@ -1,81 +1,94 @@
-﻿using System;
+using System;
 using System.Threading;
-using System.Threading.Tasks;
-using Nito.AsyncEx;
 
 namespace Sparrow.Utils
 {
     /// <summary>
     /// This class allow us to perform disposal operations without running
-    /// into concurrency issues with calling code
+    /// into concurrency issues with calling code: disposal waits for the operations
+    /// in flight, and operations that start after it fail. Only one caller gets to dispose.
     /// </summary>
     internal sealed class DisposeLock
     {
+        // PERF: a counter instead of a reader / writer lock, entering and leaving an operation is a single interlocked
+        // instruction and allocates nothing, which matters since we guard every write of compression streams
+        private const int DisposingFlag = 1 << 30;
+
         private readonly string _name;
-        private readonly AsyncReaderWriterLock _lock;
-        private readonly CancellationTokenSource _cts;
+        private int _state; // operations in flight, plus DisposingFlag once disposal started
+        private ManualResetEventSlim _drained; // only created when disposal has to wait for operations in flight
 
         public DisposeLock(string name)
         {
             _name = name;
-            _cts = new CancellationTokenSource();
-            _lock = new AsyncReaderWriterLock();
         }
 
-        public IDisposable EnsureNotDisposed()
+        public OperationScope EnsureNotDisposed()
         {
-            IDisposable disposable = null;
-            try
+            if ((Interlocked.Increment(ref _state) & DisposingFlag) != 0)
             {
-                disposable = _lock.ReaderLock(_cts.Token);
-            }
-            catch
-            {
-               // ignore
-            }
-            
-            if (disposable == null || 
-                _cts.IsCancellationRequested)
-            {
-                disposable?.Dispose();
+                Exit();
                 ThrowDisposed();
             }
 
-            return disposable;
+            return new OperationScope(this);
         }
 
-        public async ValueTask<IDisposable> EnsureNotDisposedAsync(bool continueOnCapturedContext = false)
+        /// <summary>
+        /// Waits for the operations in flight to complete, and fails all the operations that start afterward.
+        /// </summary>
+        /// <returns>false when disposal was already started by someone else</returns>
+        public bool TryStartDisposing()
         {
-            IDisposable disposable = null;
-            try
+            while (true)
             {
-                disposable = await _lock.ReaderLockAsync(_cts.Token).ConfigureAwait(continueOnCapturedContext);
-            }
-            catch
-            {
-                // ignore
+                var state = Volatile.Read(ref _state);
+                if ((state & DisposingFlag) != 0)
+                    return false;
+
+                if (Interlocked.CompareExchange(ref _state, state | DisposingFlag, state) == state)
+                    break;
             }
 
-            if (disposable == null ||
-                _cts.IsCancellationRequested)
-            {
-                disposable?.Dispose();
-                ThrowDisposed();
-            }
+            if (Volatile.Read(ref _state) == DisposingFlag)
+                return true;
 
-            return disposable;
+            var drained = new ManualResetEventSlim();
+            Interlocked.Exchange(ref _drained, drained);
+
+            // the last operation might have left before it could see the event
+            if (Volatile.Read(ref _state) != DisposingFlag)
+                drained.Wait();
+
+            // not disposed: operations that fail after disposal still signal it on their way out
+            // (it doesn't hold a kernel handle, since we never use its WaitHandle)
+            return true;
         }
 
-        public IDisposable StartDisposing()
+        private void Exit()
         {
-            var disposable = _lock.WriterLock(_cts.Token);
-            _cts.Cancel();
-            return disposable;
+            if (Interlocked.Decrement(ref _state) == DisposingFlag)
+                Volatile.Read(ref _drained)?.Set();
         }
 
         private void ThrowDisposed()
         {
             throw new LockAlreadyDisposedException(_name);
+        }
+
+        public readonly struct OperationScope : IDisposable
+        {
+            private readonly DisposeLock _parent;
+
+            internal OperationScope(DisposeLock parent)
+            {
+                _parent = parent;
+            }
+
+            public void Dispose()
+            {
+                _parent?.Exit();
+            }
         }
     }
 

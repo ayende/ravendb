@@ -62,6 +62,7 @@ using Sparrow.Logging;
 using Sparrow.Platform;
 using Sparrow.Server;
 using Sparrow.Server.Meters;
+using Sparrow.Server.Threading;
 using Sparrow.Threading;
 using Voron;
 using Voron.Data.Tables;
@@ -106,7 +107,8 @@ namespace Raven.Server.Documents
         /// </summary>
         private Task _indexStoreTask;
 
-        private long _usages;
+        // PERF: every request enters and leaves the database, a single shared counter would bounce between all the cores
+        private readonly PerCoreCounter _usages = new();
         private readonly ManualResetEventSlim _waitForUsagesOnDisposal = new ManualResetEventSlim(false);
         private long _lastIdleTicks = DateTime.UtcNow.Ticks;
         private DateTime _nextIoMetricsCleanupTime;
@@ -151,6 +153,9 @@ namespace Raven.Server.Documents
             Is32Bits = PlatformDetails.Is32Bits || Configuration.Storage.ForceUsing32BitsPager;
 
             _databaseShutdown = CancellationTokenSource.CreateLinkedTokenSource(serverStore.ServerShutdown);
+            _databaseShutdownForRequests = new CancellationTokenSource[Environment.ProcessorCount];
+            for (var i = 0; i < _databaseShutdownForRequests.Length; i++)
+                _databaseShutdownForRequests[i] = CancellationTokenSource.CreateLinkedTokenSource(_databaseShutdown.Token);
             _disposeOnce = new DisposeOnce<SingleAttempt>(DisposeInternal);
 
             _databaseStateChange = new DatabasesLandlord.StateChange(ServerStore, name, _logger, UpdateOnStateChange, 0, _databaseShutdown.Token);
@@ -306,6 +311,12 @@ namespace Raven.Server.Documents
         public QueryRunner QueryRunner { get; }
 
         public CancellationToken DatabaseShutdown => _databaseShutdown.Token;
+
+        // PERF: every request links its token to the database shutdown, so a single source shared by all of them makes its registration
+        // lock a contention point. Requests link to a per core child of it instead, which is canceled together with it.
+        private readonly CancellationTokenSource[] _databaseShutdownForRequests;
+
+        public CancellationToken DatabaseShutdownForRequest => _databaseShutdownForRequests[Thread.GetCurrentProcessorId() % _databaseShutdownForRequests.Length].Token;
 
         public AsyncManualResetEvent DatabaseShutdownCompleted { get; } = new();
 
@@ -942,14 +953,16 @@ namespace Raven.Server.Documents
         {
             private readonly DocumentDatabase _parent;
             private readonly bool _skipUsagesCount;
+            private readonly int _usagesSlot;
 
             public DatabaseUsage(DocumentDatabase parent, bool skipUsagesCount)
             {
                 _parent = parent;
                 _skipUsagesCount = skipUsagesCount;
+                _usagesSlot = 0;
 
                 if (_skipUsagesCount == false)
-                    Interlocked.Increment(ref _parent._usages);
+                    _usagesSlot = _parent._usages.Increment();
 
                 if (_parent.IsShutdownRequested())
                 {
@@ -963,9 +976,9 @@ namespace Raven.Server.Documents
                 if (_skipUsagesCount)
                     return;
 
-                var currentUsagesCount = Interlocked.Decrement(ref _parent._usages);
+                _parent._usages.Decrement(_usagesSlot);
 
-                if (_parent._databaseShutdown.IsCancellationRequested && currentUsagesCount == 0)
+                if (_parent._databaseShutdown.IsCancellationRequested && _parent._usages.Value == 0)
                     _parent._waitForUsagesOnDisposal.Set();
             }
         }
@@ -1029,7 +1042,7 @@ namespace Raven.Server.Documents
                 var sp = Stopwatch.StartNew();
                 while (sp.ElapsedMilliseconds < 60 * 1000)
                 {
-                    if (Interlocked.Read(ref _usages) == 0)
+                    if (_usages.Value == 0)
                         break;
 
                     if (_waitForUsagesOnDisposal.Wait(1000))
@@ -1222,6 +1235,9 @@ namespace Raven.Server.Documents
             DisposeProgress("Disposing _databaseShutdown");
             exceptionAggregator.Execute(() =>
             {
+                foreach (var cts in _databaseShutdownForRequests)
+                    cts.Dispose();
+
                 _databaseShutdown.Dispose();
             });
             DisposeProgress("Disposed _databaseShutdown");
