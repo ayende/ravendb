@@ -7,11 +7,11 @@ namespace Voron.Impl.Paging;
 public unsafe partial class Pager
 {
     // Data files are opened with random access advice, so a page fault reads only the 4 KB it touches. Where we know
-    // that a whole page (or several) will be needed, we queue a read of the exact range on the PAL's prefetch ring:
-    // it is fire and forget and races the code that touches the pages.
+    // that a whole page (or several) will be needed, we ask the PAL to start reading the exact range: on its prefetch ring
+    // (fire and forget, it races the code that touches the pages), or with posix_fadvise where io_uring is not allowed.
     private static readonly bool PrefetchRingSupported = PlatformDetails.RunningOnLinux;
 
-    /// <summary>Queues an asynchronous read of the pages into the page cache. Returns false if the request was not queued.</summary>
+    /// <summary>Starts reading the pages into the page cache. Returns false if the request was dropped.</summary>
     public static bool PrefetchPages(State state, long pageNumber, int numberOfPages = 1)
     {
         if (PrefetchRingSupported == false)

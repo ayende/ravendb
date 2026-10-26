@@ -73,11 +73,9 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
             using (pager)
             using (state)
             {
-                if (Pal.rvn_prefetch_stats(out _, out _, out _, out _) != PalFlags.FailCodes.Success)
-                {
-                    Output.WriteLine("io_uring is not available here (kernel or seccomp policy): no prefetch ring to test");
-                    return;
-                }
+                // without io_uring (old kernel, seccomp policy) the PAL falls back to posix_fadvise on this thread
+                var ringAvailable = Pal.rvn_prefetch_stats(out _, out _, out _, out _) == PalFlags.FailCodes.Success;
+                Output.WriteLine($"prefetch ring available: {ringAvailable}");
 
                 DropFromPageCache(file);
                 Output.WriteLine($"resident before the prefetch: {ResidentPages(state.ReadAddress, content.Length)} of {content.Length / Environment.SystemPageSize}");
@@ -91,9 +89,12 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
                     Thread.Sleep(10);
                 Assert.Equal(expected, resident);
 
-                Assert.Equal(PalFlags.FailCodes.Success, Pal.rvn_prefetch_stats(out var submitted, out _, out _, out var failed));
-                Assert.True(submitted > 0);
-                Assert.Equal(0, failed);
+                if (ringAvailable)
+                {
+                    Assert.Equal(PalFlags.FailCodes.Success, Pal.rvn_prefetch_stats(out var submitted, out _, out _, out var failed));
+                    Assert.True(submitted > 0);
+                    Assert.Equal(0, failed);
+                }
             }
         }
     }

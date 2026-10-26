@@ -640,11 +640,32 @@ int32_t rvn_write_file_io(
     return SUCCESS;
 }
 
+// The kernel reads at most max(io_pages, ra_pages) of a WILLNEED request (128-256 KB on common devices) and silently
+// drops the rest, so larger ranges go out as several requests.
+#define PREFETCH_REQUEST_SIZE (128 * 1024)
+
+/* Starts reading the range into the page cache: through the prefetch ring when the file is registered with it, or with
+   posix_fadvise on the calling thread where io_uring is not available (an old kernel or a seccomp policy). Both only
+   start the read. Returns 1 when the whole range was requested, 0 when part of it was dropped (the ring's queue is full). */
 EXPORT int32_t
 rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 {
     struct handle *handle_ptr = handle;
-    if (handle_ptr == NULL)
+    if (handle_ptr == NULL || length <= 0)
         return 0;
-    return rvn_prefetch_enqueue(handle_ptr->global_state->prefetch_ticket, offset, length);
+#if __APPLE__
+    return 0; // no posix_fadvise
+#else
+    int64_t ticket = handle_ptr->global_state->prefetch_ticket;
+    int32_t all = 1;
+    for (int64_t end = offset + length; offset < end; offset += PREFETCH_REQUEST_SIZE)
+    {
+        int64_t size = rvn_min(PREFETCH_REQUEST_SIZE, end - offset);
+        if (ticket != -1)
+            all &= rvn_prefetch_enqueue(ticket, offset, size);
+        else
+            all &= posix_fadvise(handle_ptr->file_fd, offset, size, POSIX_FADV_WILLNEED) == 0;
+    }
+    return all;
+#endif
 }

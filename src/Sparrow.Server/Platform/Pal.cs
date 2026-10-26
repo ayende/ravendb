@@ -169,7 +169,7 @@ namespace Sparrow.Server.Platform
             out void* mem,
             out Int32 errorCode);
             
-        /// <summary>Queues an asynchronous read of the range into the page cache. Returns 1 when queued, 0 when dropped.</summary>
+        /// <summary>Starts reading the range into the page cache (prefetch ring, or posix_fadvise without io_uring). Returns 1 when requested, 0 when dropped.</summary>
         [DllImport(LIBRVNPAL)]
         [SuppressGCTransition]
         public static extern Int32 rvn_pager_prefetch(
