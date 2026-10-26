@@ -110,8 +110,7 @@ namespace Raven.Server.Documents
             DocumentFlags newFlags,
             NonPersistentDocumentFlags nonPersistentFlags,
             string knownCollectionName,
-            BlittableJsonReaderObject knownMetadata,
-            bool skipOnChangeVectorMismatch = false)
+            BlittableJsonReaderObject knownMetadata)
         {
             if (context.Transaction == null)
             {
@@ -161,11 +160,7 @@ namespace Raven.Server.Documents
                     // expectedChangeVector being null means we don't care, 
                     // and empty means that it must be new
                     if (string.IsNullOrEmpty(expectedChangeVector) == false)
-                    {
-                        if (skipOnChangeVectorMismatch)
-                            return new PutOperationResults { Etag = -1 };
                         ThrowConcurrentExceptionOnMissingDoc(id, expectedChangeVector);
-                    }
                 }
                 else
                 {
@@ -177,12 +172,7 @@ namespace Raven.Server.Documents
                     oldChangeVector = TableValueToChangeVector(context, (int)DocumentsTable.ChangeVector, oldValue);
 
                     if (expectedChangeVector != null && ChangeVector.CompareVersion(oldChangeVector, expectedChangeVector, context) != 0)
-                    {
-                        // the caller has a fallback for a document that changed (a patch prepared from an older snapshot)
-                        if (skipOnChangeVectorMismatch)
-                            return new PutOperationResults { Etag = -1 };
                         ThrowConcurrentException(id, expectedChangeVector, oldChangeVector);
-                    }
 
                     if (oldChangeVectorForClusterTransactionIndexCheck == null)
                     {

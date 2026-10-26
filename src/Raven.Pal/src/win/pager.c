@@ -859,3 +859,20 @@ rvn_writer rvn_get_writer(void *handle)
         return io_ring_setup_successful() ? rvn_write_io_ring : rvn_write_file_io;
     }
 }
+
+EXPORT int32_t
+rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
+{
+    // no prefetch ring on Windows: the data file is opened with FILE_FLAG_RANDOM_ACCESS and the memory manager pages it in
+    (void)handle;
+    (void)offset;
+    (void)length;
+    return 0;
+}
+
+EXPORT int32_t
+rvn_prefetch_stats(int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed)
+{
+    *submitted = *dropped_full = *dropped_stale = *failed = 0;
+    return FAIL_INVALID_HANDLE;
+}

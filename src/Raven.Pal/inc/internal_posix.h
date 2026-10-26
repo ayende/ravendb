@@ -79,6 +79,9 @@ struct handle_global_state
     struct arena fsync_dir_arena;
 
     struct dirty_bitmap *dirty_bitmap;
+
+    // the file's ticket in the prefetch ring (-1 = not registered)
+    int64_t prefetch_ticket;
 };
 
 struct handle
@@ -89,6 +92,15 @@ struct handle
     uint64_t allocation_size;
     int file_fd;
 };
+
+PRIVATE int32_t
+rvn_prefetch_register(int fd, int64_t *ticket, int32_t *detailed_error_code);
+
+PRIVATE void
+rvn_prefetch_unregister(int64_t ticket);
+
+PRIVATE int32_t
+rvn_prefetch_enqueue(int64_t ticket, int64_t offset, int64_t length);
 
 PRIVATE
 int32_t _setup_io_ring(struct handle_global_state *global_state, int32_t *detailed_error_code);

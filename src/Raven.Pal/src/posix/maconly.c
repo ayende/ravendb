@@ -249,3 +249,34 @@ rvn_pager_get_next_sparse_region(void* handle,
 }
 
 #endif
+
+PRIVATE int32_t
+rvn_prefetch_register(int fd, int64_t *ticket, int32_t *detailed_error_code)
+{
+    (void)fd;
+    (void)detailed_error_code;
+    *ticket = -1;
+    return SUCCESS;
+}
+
+PRIVATE void
+rvn_prefetch_unregister(int64_t ticket)
+{
+    (void)ticket;
+}
+
+PRIVATE int32_t
+rvn_prefetch_enqueue(int64_t ticket, int64_t offset, int64_t length)
+{
+    (void)ticket;
+    (void)offset;
+    (void)length;
+    return 0;
+}
+
+EXPORT int32_t
+rvn_prefetch_stats(int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed)
+{
+    *submitted = *dropped_full = *dropped_stale = *failed = 0;
+    return FAIL_INVALID_HANDLE;
+}

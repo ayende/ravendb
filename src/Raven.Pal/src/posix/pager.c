@@ -172,6 +172,12 @@ int32_t _open_pager_file(int fd,
         rc = FAIL_MAP_VIEW_OF_FILE;
         goto Error;
     }
+    if (global_state->open_flags & OPEN_FILE_RANDOM_ACCESS)
+    {
+        // a fault reads only the pages it touches, instead of the device's read-ahead window
+        // (advisory: a failure leaves the default read-around)
+        (void)madvise(mem, st.st_size, MADV_RANDOM);
+    }
 
     if (global_state->open_flags & OPEN_FILE_WRITABLE_MAP)
     {
@@ -231,6 +237,7 @@ void delete_global_state(struct handle_global_state *global_state)
     free(global_state->writes_arena.arena);
     free(global_state->fsync_dir_arena.arena);
     _free_dirty_bitmaps(global_state->dirty_bitmap);
+    rvn_prefetch_unregister(global_state->prefetch_ticket);
     free(global_state->file_path);
     pthread_mutex_destroy(&global_state->writes_arena.lock);
     pthread_mutex_destroy(&global_state->fsync_dir_arena.lock);
@@ -265,6 +272,7 @@ rvn_init_pager(const char *filename,
 
     global_state->open_flags = open_flags;
     global_state->ref_count = 1;
+    global_state->prefetch_ticket = -1;
     global_state->writes_arena = (struct arena){.eventfd = -1};
     global_state->fsync_dir_arena = (struct arena){.eventfd = -1};
     global_state->writes_arena.lock = (pthread_mutex_t)PTHREAD_MUTEX_INITIALIZER;
@@ -326,9 +334,23 @@ rvn_init_pager(const char *filename,
 
     rc = _open_pager_file(fd, global_state, initial_file_size, handle, memory, writable_memory, memory_size, detailed_error_code);
     fd = -1;  // _open_pager_file takes ownership of fd in all cases:
+    if (rc != SUCCESS)
+        goto Error;
 
-    if (rc == SUCCESS)
-        return SUCCESS;
+    if (open_flags & OPEN_FILE_PREFETCH)
+    {
+        rc = rvn_prefetch_register(((struct handle *)*handle)->file_fd, &global_state->prefetch_ticket, detailed_error_code);
+        if (rc != SUCCESS)
+        {
+            int32_t ignored;
+            rvn_close_pager(*handle, &ignored); // last reference: also deletes the global state
+            *handle = NULL;
+            *memory = NULL;
+            *memory_size = 0;
+            return rc;
+        }
+    }
+    return SUCCESS;
 
 Error:
     if (fd != -1)
@@ -616,4 +638,13 @@ int32_t rvn_write_file_io(
     }
     _mark_dirty_pages(handle, buffers, count);
     return SUCCESS;
+}
+
+EXPORT int32_t
+rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
+{
+    struct handle *handle_ptr = handle;
+    if (handle_ptr == NULL)
+        return 0;
+    return rvn_prefetch_enqueue(handle_ptr->global_state->prefetch_ticket, offset, length);
 }

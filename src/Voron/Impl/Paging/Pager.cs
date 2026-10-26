@@ -60,29 +60,14 @@ public unsafe partial class Pager : IDisposable
             RaiseError(filename, error, result, initialFileSize);
 
         pager.Write = Pal.rvn_get_writer(handle);
-        AdviseRandomAccess(filename, readOnlyMemory, memorySize);
         var state = new State(pager, readOnlyMemory, writeMemory, memorySize, handle, pageSize ?? options.PageSize);
         (state.TotalAllocatedSize, state.TotalPhysicalSpace) = pager.GetFileSize(state);
         pager.InstallState(state);
         pager.Initialize(memorySize);
-        pager.RegisterForPrefetch(state);
         return (pager, state);
     }
 
     public Pal.WriterFunc Write = WriterNotSetupYet;
-
-    // A data file is read by page-sized point lookups. With the default advice, every page fault reads up to the
-    // device read-ahead window around the faulting address (128 KB by default), so a lookup that needs one 8 KB page
-    // pulls in sixteen and evicts pages that lookups do need. MADV_RANDOM limits a fault to the pages it touches;
-    // sequential scans still get their read-ahead from the segment prefetcher.
-    private static void AdviseRandomAccess(string filename, byte* address, long size)
-    {
-        if (PlatformDetails.RunningOnLinux == false || address == null || size <= 0)
-            return;
-        if (filename.EndsWith(Constants.DatabaseFilename, StringComparison.OrdinalIgnoreCase) == false)
-            return;
-        Syscall.madvise(new IntPtr(address), new UIntPtr((ulong)size), MAdvFlags.MADV_RANDOM);
-    }
 
     private static PalFlags.FailCodes WriterNotSetupYet(void* handle, Pal.page_to_write* buffers, int count, out int errorCode)
     {
@@ -424,7 +409,6 @@ public unsafe partial class Pager : IDisposable
             PalHelper.ThrowLastError(rc, errorCode, $"Failed to increase file '{state.Pager.FileName}' to {new Size(allocationSize, SizeUnit.Bytes)}");
         }
         Debug.Assert(totalAllocatedSize >= state.TotalAllocatedSize, "totalAllocatedSize >= state.TotalAllocatedSize");
-        AdviseRandomAccess(state.Pager.FileName, readAddress, totalAllocatedSize);
         state = new State(this, readAddress, writeAddress, totalAllocatedSize, handle, pageSize: Options.PageSize);
         InstallState(state);
     }
@@ -518,19 +502,6 @@ public unsafe partial class Pager : IDisposable
         private int _refreshCounter;
         private readonly byte[] _prefetchTable;
 
-        // Windowed mode (experiment, RAVEN_PREFETCH_WINDOWED=1): hits count only within an epoch of page accesses
-        // (about a quarter as many accesses as there are segments), so uniformly random access almost never collects
-        // the threshold, while a scan collects it within its first few pages. A segment is not prefetched again for a
-        // while after it was, and a neighbour counts only if it was prefetched in this or the previous epoch.
-        public static readonly bool Windowed = Environment.GetEnvironmentVariable("RAVEN_PREFETCH_WINDOWED") == "1";
-        private const int RecentPrefetchEpochs = 64;
-        private readonly byte[] _hits;
-        private readonly ushort[] _hitEpoch;
-        private readonly ushort[] _prefetchedEpochPlusOne; // 0 = never prefetched
-        private readonly int _epochShift;
-        private readonly int _threshold;
-        private long _accesses;
-
         public PrefetchTableHint(long prefetchSegmentSize, long prefetchResetThreshold, long initialFileSize)
         {
             _segmentShift = Bits.MostSignificantBit(prefetchSegmentSize);
@@ -543,56 +514,6 @@ public unsafe partial class Pager : IDisposable
 
             long numberOfAllocatedSegments = (initialFileSize / _prefetchSegmentSize) + 1;
             _prefetchTable = new byte[(numberOfAllocatedSegments / 2) + 1];
-
-            if (Windowed)
-            {
-                _hits = new byte[numberOfAllocatedSegments];
-                _hitEpoch = new ushort[numberOfAllocatedSegments];
-                _prefetchedEpochPlusOne = new ushort[numberOfAllocatedSegments];
-                _epochShift = Math.Max(10, Bits.MostSignificantBit(Math.Max(1, numberOfAllocatedSegments / 4)));
-                // a file well above physical memory cannot keep what we prefetch for long: ask for more evidence
-                _threshold = initialFileSize > (long)Sparrow.Server.LowMemory.MemoryInformation.TotalPhysicalMemory.GetValue(Sparrow.SizeUnit.Bytes) / 2 ? 15 : 7;
-            }
-        }
-
-        private bool PrefetchedRecently(long segment, ushort epoch, int withinEpochs)
-        {
-            if (segment < 0 || segment >= _prefetchedEpochPlusOne.Length)
-                return false;
-            var plusOne = _prefetchedEpochPlusOne[segment];
-            return plusOne != 0 && (ushort)(epoch - (ushort)(plusOne - 1)) <= withinEpochs;
-        }
-
-        private bool ShouldPrefetchSegmentWindowed(long pageNumber, out long offsetFromFileBase, out long sizeInBytes)
-        {
-            offsetFromFileBase = 0;
-            sizeInBytes = 0;
-            long segment = (pageNumber * Constants.Storage.PageSize) >> _segmentShift;
-            if (segment < 0 || segment >= _hits.Length)
-                return false;
-
-            // racy by design, like the table above: a lost update only changes when a hint is issued
-            var epoch = (ushort)(++_accesses >> _epochShift);
-            if (_hitEpoch[segment] != epoch)
-            {
-                _hitEpoch[segment] = epoch;
-                _hits[segment] = 0;
-            }
-
-            if (PrefetchedRecently(segment, epoch, RecentPrefetchEpochs))
-                return false;
-
-            var hits = _hits[segment];
-            if (hits < byte.MaxValue)
-                _hits[segment] = ++hits;
-
-            if (hits < _threshold && PrefetchedRecently(segment - 1, epoch, 1) == false && PrefetchedRecently(segment + 1, epoch, 1) == false)
-                return false;
-
-            _prefetchedEpochPlusOne[segment] = (ushort)(epoch + 1 == 0 ? 1 : epoch + 1);
-            sizeInBytes = _prefetchSegmentSize;
-            offsetFromFileBase = segment * _prefetchSegmentSize;
-            return true;
         }
 
 
@@ -635,9 +556,6 @@ public unsafe partial class Pager : IDisposable
 
         public bool ShouldPrefetchSegment(long pageNumber, out long offsetFromFileBase, out long sizeInBytes)
         {
-            if (_hits != null)
-                return ShouldPrefetchSegmentWindowed(pageNumber, out offsetFromFileBase, out sizeInBytes);
-
             long segmentNumber = (pageNumber * Constants.Storage.PageSize) >> this._segmentShift;
 
             int segmentState = GetSegmentState(segmentNumber);
@@ -683,8 +601,6 @@ public unsafe partial class Pager : IDisposable
 
         public void CheckResetPrefetchTable()
         {
-            if (_hits != null)
-                return; // windowed mode forgets on its own
             if (_refreshCounter > _prefetchResetThreshold)
             {
                 _refreshCounter = 0;
@@ -697,8 +613,6 @@ public unsafe partial class Pager : IDisposable
 
     public void Dispose()
     {
-        UnregisterForPrefetch();
-
         foreach (WeakReference<State> state in _states)
         {
             if (state.TryGetTarget(out var v))

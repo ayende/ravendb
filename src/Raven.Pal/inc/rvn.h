@@ -34,7 +34,9 @@ enum
     OPEN_FILE_LOCK_MEMORY = (1 << 6),
     OPEN_FILE_DO_NOT_CONSIDER_MEMORY_LOCK_FAILURE_AS_CATASTROPHIC_ERROR = (1 << 7),
     OPEN_FILE_COPY_ON_WRITE = (1 << 8),
-    OPEN_FILE_DO_NOT_MAP = (1<<9)
+    OPEN_FILE_DO_NOT_MAP = (1<<9),
+    OPEN_FILE_RANDOM_ACCESS = (1<<10),
+    OPEN_FILE_PREFETCH = (1<<11)
 };
 
 enum
@@ -110,6 +112,11 @@ struct rvn_configuration
 
     MemoryLockCallback memoryLockCallback;
     RecoveryMemoryLockFailureCallback recoveryMemoryLockFailureCallback;
+
+    /* the prefetch ring (0 = default) */
+    int32_t prefetch_ring_entries;
+    int32_t prefetch_max_files;
+    int32_t prefetch_queue_size;
 };
 
 EXPORT
@@ -156,6 +163,14 @@ rvn_increase_pager_size(void* handle,
     void **writable_memory,
     int64_t* memory_size,
     int32_t* detailed_error_code);
+
+EXPORT int32_t
+rvn_pager_prefetch(void *handle,
+    int64_t offset,
+    int64_t length);
+
+EXPORT int32_t
+rvn_prefetch_stats(int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed);
 
 EXPORT int32_t
 rvn_close_pager(
