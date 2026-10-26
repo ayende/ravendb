@@ -43,12 +43,14 @@ namespace Raven.Server.Utils.Metrics
         private long _count;
         private readonly long _startTime;
         private readonly Func<long> _now;
+        private readonly bool _usesDefaultClock;
 
         private static long DefaultNow() => Clock.Nanoseconds;
 
         public MeterMetric(Func<long> nowProvider = null)
         {
             _now = nowProvider ?? DefaultNow;
+            _usesDefaultClock = nowProvider == null;
             _startTime = _now();
         }
 
@@ -82,7 +84,21 @@ namespace Raven.Server.Utils.Metrics
             if (value == 0 && duration == 0)
                 return;
 
-            var now = _now();
+            MarkInternal(value, duration, _now());
+        }
+
+        /// <param name="nowNanoseconds">The current <see cref="Clock.Nanoseconds"/>, when the caller already read it.</param>
+        public void Mark(long value, long duration, long nowNanoseconds)
+        {
+            if (value == 0 && duration == 0)
+                return;
+
+            // a meter with its own clock (tests) keeps using it
+            MarkInternal(value, duration, _usesDefaultClock ? nowNanoseconds : _now());
+        }
+
+        private void MarkInternal(long value, long duration, long now)
+        {
 
             // Record completions into the current quantum and keep a monotonic total (for MeanRate/diagnostics).
             AddToBucket(now, value, duration);
