@@ -16,6 +16,7 @@ using Raven.Server.Utils;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
 using Voron;
+using Voron.Data.Tables;
 
 namespace Raven.Server.Documents.Patch
 {
@@ -31,6 +32,10 @@ namespace Raven.Server.Documents.Patch
         protected readonly bool _returnDocument;
 
         private bool ModifiedDocumentRequired => _externalContext != null || _returnDocument || _isTest || _debugMode;
+
+        // the patched document goes back to the caller like the script runner's (ExecuteOnDocument)
+        protected BlittableJsonReaderObject CloneForResult(BlittableJsonReaderObject document, JsonOperationContext context) =>
+            ModifiedDocumentRequired ? document.Clone(_externalContext ?? context) : null;
 
         protected readonly (PatchRequest Run, BlittableJsonReaderObject Args) _patchIfMissing;
         private readonly BlittableJsonReaderObject _createIfMissing;
@@ -456,25 +461,22 @@ namespace Raven.Server.Documents.Patch
         private IDisposable _disposableStatement;
         private IDisposable _disposableScriptRunner;
         private bool _isInitialized;
-        private (string Id, string ChangeVector, DocumentFlags Flags, BlittableJsonReaderObject Document, string Collection, BlittableJsonReaderObject Metadata) _prepared;
+        private PreparedPatch? _prepared;
         private SimpleAssignmentPatch _simplePatch;
+
+        private readonly record struct PreparedPatch(string Id, string ChangeVector, DocumentFlags Flags, BlittableJsonReaderObject Document, string Collection, BlittableJsonReaderObject Metadata);
 
         public PatchResult PatchResult { get; private set; }
 
         /// <summary>
-        /// Hands the command a patched document built outside the merger from a snapshot of the document.
-        /// The merger writes it only if the document is still at <paramref name="changeVector"/>, otherwise it runs the patch.
+        /// Written only if the document's change vector is still <paramref name="changeVector"/>; otherwise the patch runs on the current document.
         /// </summary>
         internal void SetPrepared(string id, string changeVector, DocumentFlags flags, BlittableJsonReaderObject document)
         {
             document.TryGetMetadata(out var metadata);
-            _prepared = (id, changeVector, flags, document, CollectionName.GetCollectionName(document), metadata);
+            _prepared = new PreparedPatch(id, changeVector, flags, document, CollectionName.GetCollectionName(document), metadata);
         }
 
-        /// <summary>
-        /// The script is a <see cref="SimpleAssignmentPatch"/>: when the prepared document is stale, the merger re-applies
-        /// the assignments to the current document instead of running the script.
-        /// </summary>
         internal void SetSimplePatch(SimpleAssignmentPatch simplePatch)
         {
             _simplePatch = simplePatch;
@@ -483,24 +485,33 @@ namespace Raven.Server.Documents.Patch
         /// <summary>
         /// Completes the command without the merger: the patch did not change the document.
         /// </summary>
-        internal void CompleteAsNotModified()
+        internal void CompleteAsNotModified(JsonOperationContext context, BlittableJsonReaderObject document)
         {
-            PatchResult = new PatchResult { Status = PatchStatus.NotModified };
+            PatchResult = new PatchResult { Status = PatchStatus.NotModified, ModifiedDocument = CloneForResult(document, context) };
             ReleaseScriptRunners();
         }
 
-        private bool TryWritePrepared(DocumentsOperationContext context)
+        private bool TryWritePrepared(DocumentsOperationContext context, in PreparedPatch prepared)
         {
-            // Put reads the current document anyway: it writes only if the change vector is still the snapshot's
-            var putResult = context.DocumentDatabase.DocumentsStorage.Put(context, _prepared.Id, _prepared.ChangeVector, _prepared.Document,
-                flags: _prepared.Flags.Strip(DocumentFlags.FromClusterTransaction),
-                knownCollectionName: _prepared.Collection, knownMetadata: _prepared.Metadata, skipOnChangeVectorMismatch: true);
-            if (putResult.Etag == -1)
-                return false;
+            var storage = context.DocumentDatabase.DocumentsStorage;
+            using (DocumentIdWorker.GetLoweredIdSliceFromId(context, prepared.Id, out Slice lowerId))
+            {
+                if (storage.GetTableValueReaderForDocument(context, lowerId, throwOnConflict: false, out TableValueReader current) == false)
+                    return false;
+                var currentChangeVector = DocumentsStorage.TableValueToChangeVector(context, (int)Schemas.Documents.DocumentsTable.ChangeVector, current);
+                if (ChangeVector.CompareVersion(currentChangeVector, prepared.ChangeVector, context) != 0)
+                    return false;
+            }
+
+            // the merger is the only writer, so the document is still at the snapshot's change vector here
+            var putResult = storage.Put(context, prepared.Id, prepared.ChangeVector, prepared.Document,
+                flags: prepared.Flags.Strip(DocumentFlags.FromClusterTransaction),
+                knownCollectionName: prepared.Collection, knownMetadata: prepared.Metadata);
 
             PatchResult = new PatchResult
             {
                 Status = PatchStatus.Patched,
+                ModifiedDocument = CloneForResult(prepared.Document, context),
                 ChangeVector = putResult.ChangeVector,
                 Collection = putResult.Collection.Name,
                 LastModified = putResult.LastModified,
@@ -522,7 +533,7 @@ namespace Raven.Server.Documents.Patch
 
                 if (modified == null)
                 {
-                    PatchResult = new PatchResult { Status = PatchStatus.NotModified };
+                    PatchResult = new PatchResult { Status = PatchStatus.NotModified, ModifiedDocument = CloneForResult(current.Data, context) };
                     return true;
                 }
 
@@ -531,6 +542,7 @@ namespace Raven.Server.Documents.Patch
                 PatchResult = new PatchResult
                 {
                     Status = PatchStatus.Patched,
+                    ModifiedDocument = CloneForResult(modified, context),
                     ChangeVector = putResult.ChangeVector,
                     Collection = putResult.Collection.Name,
                     LastModified = putResult.LastModified,
@@ -597,7 +609,7 @@ namespace Raven.Server.Documents.Patch
 
             Debug.Assert(context.DocumentDatabase == _database);
 
-            if (_prepared.Document == null || TryWritePrepared(context) == false)
+            if (_prepared is not { } prepared || TryWritePrepared(context, prepared) == false)
             {
                 if (_simplePatch == null || TryApplySimplePatch(context) == false)
                     PatchResult = ExecuteOnDocument(context, _id, _expectedChangeVector, _run, _runIfMissing);

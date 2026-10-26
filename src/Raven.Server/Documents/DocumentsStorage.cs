@@ -1288,6 +1288,18 @@ namespace Raven.Server.Documents
             return doc;
         }
 
+        /// <summary>
+        /// Queues reads of the pages around <paramref name="document"/> that reading it did not bring in: the rest of its page,
+        /// its section header page and its etag-index entries. Uses the read transaction the document was read with.
+        /// </summary>
+        public void PrefetchDocument(DocumentsOperationContext context, Document document)
+        {
+            var collectionName = ExtractCollectionName(context, document.Data);
+            var table = context.Transaction.InnerTransaction.OpenTable(DocumentDatabase.GetDocsSchemaForCollection(collectionName),
+                collectionName.GetTableName(CollectionTableType.Documents));
+            table?.Prefetch(document.StorageId);
+        }
+
         public Document GetByEtag(DocumentsOperationContext context, long etag)
         {
             var table = context.DocumentsTable(this);
@@ -2409,7 +2421,7 @@ namespace Raven.Server.Documents
             string expectedChangeVector, BlittableJsonReaderObject document, long? lastModifiedTicks = null, string changeVector = null,
             string oldChangeVectorForClusterTransactionIndexCheck = null,
             DocumentFlags flags = DocumentFlags.None, NonPersistentDocumentFlags nonPersistentFlags = NonPersistentDocumentFlags.None,
-            string knownCollectionName = null, BlittableJsonReaderObject knownMetadata = null, bool skipOnChangeVectorMismatch = false)
+            string knownCollectionName = null, BlittableJsonReaderObject knownMetadata = null)
         {
             ChangeVector cv = null;
             if (changeVector != null)
@@ -2421,7 +2433,7 @@ namespace Raven.Server.Documents
                 document.TryGetMetadata(out knownMetadata);
             }
 
-            return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags, knownCollectionName, knownMetadata, skipOnChangeVectorMismatch);
+            return DocumentPut.PutDocument(context, id, expectedChangeVector, document, lastModifiedTicks, cv, oldChangeVectorForClusterTransactionIndexCheck, flags, nonPersistentFlags, knownCollectionName, knownMetadata);
         }
 
         public long GetNumberOfDocumentsToProcess(DocumentsOperationContext context, string collection, long afterEtag, out long totalCount, Stopwatch overallDuration)

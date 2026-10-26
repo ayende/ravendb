@@ -739,6 +739,24 @@ namespace Voron.Data.Tables
         }
 
         /// <summary>
+        /// Queues reads of the pages around the value <paramref name="id"/> that reading it did not bring in: the rest of its
+        /// page, its section header page and the leaf pages of its entries in the fixed-size indexes.
+        /// </summary>
+        public void Prefetch(long id)
+        {
+            var llt = _tx.LowLevelTransaction;
+            Pager.PrefetchPages(llt.DataPagerState, id / Constants.Storage.PageSize);
+            if (id % Constants.Storage.PageSize != 0) // a small value: its section header page tracks its space
+                Pager.PrefetchPages(llt.DataPagerState, RawDataSection.GetSectionPageNumber(llt, id));
+
+            if (_schema.FixedSizeIndexes.Count == 0)
+                return;
+            DirectRead(id, out TableValueReader value);
+            foreach (var indexDef in _schema.FixedSizeIndexes.Values)
+                GetFixedSizeTree(indexDef).PrefetchLeafFor(indexDef.GetValue(value));
+        }
+
+        /// <summary>
         /// Resource intensive function that validates fixed size trees in the table's schema
         /// </summary>
         public void AssertValidFixedSizeTrees()

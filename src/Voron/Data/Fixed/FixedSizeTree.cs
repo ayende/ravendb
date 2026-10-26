@@ -14,6 +14,7 @@ using Voron.Exceptions;
 using Voron.Impl;
 using static Sparrow.PortableExceptions;
 using static Voron.VoronExceptions;
+using Voron.Impl.Paging;
 using Constants = Voron.Global.Constants;
 
 namespace Voron.Data.Fixed
@@ -551,6 +552,33 @@ namespace Voron.Data.Fixed
         internal FixedSizeTreePageHeader GetPageHeader(long pageNumber)
         {
             return _tx.GetPageHeader<FixedSizeTreePageHeader>(pageNumber);
+        }
+
+        /// <summary>
+        /// Queues a read of the leaf page that holds <paramref name="key"/> without reading the leaf: the branch pages on
+        /// the way are read (they are usually in memory), the leaf goes to the pager's prefetch ring.
+        /// </summary>
+        public void PrefetchLeafFor(TVal key)
+        {
+            if (Type != RootObjectType.FixedSizeTree)
+                return; // an embedded tree is part of its parent's value
+            var header = (FixedSizeTreeHeader.Large*)_parent.DirectRead(_treeName);
+            if (header->Depth < 2)
+                return; // the root is the leaf
+            var page = GetReadOnlyPage(header->RootPageNumber);
+            for (var level = 1; ; level++)
+            {
+                BinarySearch(ref page, key);
+                if (page.LastMatch < 0 && page.LastSearchPosition > 0)
+                    page.LastSearchPosition--;
+                var childPageNumber = page.GetEntry(page.LastSearchPosition)->PageNumber;
+                if (level == header->Depth - 1)
+                {
+                    Pager.PrefetchPages(_tx.DataPagerState, childPageNumber);
+                    return;
+                }
+                page = GetReadOnlyPage(childPageNumber);
+            }
         }
 
         private FixedSizeTreePage<TVal> FindPageFor(TVal key)
