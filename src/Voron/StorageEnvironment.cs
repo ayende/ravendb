@@ -1,3 +1,4 @@
+using Sparrow.Server.Threading;
 using Sparrow;
 using System;
 using System.Collections.Concurrent;
@@ -108,7 +109,11 @@ namespace Voron
         internal readonly SemaphoreSlim _transactionWriter = new SemaphoreSlim(1, 1);
         internal int _currentWriteTransactionIdHolder;
         private readonly AsyncManualResetEvent _writeTransactionRunning = new AsyncManualResetEvent();
-        private readonly CountdownEvent _envDispose = new CountdownEvent(1);
+        // PERF: every transaction registers itself here, a single shared count would bounce between all the cores
+        private readonly PerCoreCounter _transactionsInUse = new();
+        private readonly ManualResetEventSlim _transactionsDrained = new(false);
+        private volatile bool _disposing; // new transactions are rejected from the moment disposal starts
+        private volatile bool _disposeCompleted;
 
         private readonly IFreeSpaceHandling _freeSpaceHandling;
         private readonly HeaderAccessor _headerAccessor;
@@ -132,7 +137,7 @@ namespace Voron
 
         public bool Disposed;
 
-        public bool IsDisposing => _cancellationTokenSource.IsCancellationRequested || _envDispose.IsSet;
+        public bool IsDisposing => _cancellationTokenSource.IsCancellationRequested || _disposeCompleted;
 
         private readonly RavenLogger _log;
         public static int MaxConcurrentFlushes = 10; // RavenDB-5221
@@ -555,7 +560,7 @@ namespace Voron
 
         public void Dispose()
         {
-            if (_envDispose.IsSet)
+            if (_disposeCompleted)
                 return; // already disposed
 
             using var audit = DisposeAudit.BeginOrStep($"StorageEnvironment '{Options.BasePath}'");
@@ -646,20 +651,40 @@ namespace Voron
 
         private void MoveEnvironmentToDisposeState()
         {
-            _envDispose.Signal(); // release the owner count
+            _disposing = true;
+            // a transaction increments its slot and then checks _disposing, we set _disposing and then read the slots,
+            // so a transaction we don't see in the slots is one that will see _disposing
+            Interlocked.MemoryBarrier();
 
-            bool disposed;
+            bool drained;
             using (DisposeAudit.Step("wait for the active transactions"))
-                disposed = _envDispose.Wait(Options.DisposeWaitTime);
+                drained = WaitForTransactionsToDrain(Options.DisposeWaitTime);
 
-            if (disposed == false)
+            if (drained == false)
             {
-                if (_envDispose.TryAddCount(1))
-                // try restore the previous signal, if it failed, the _envDispose is signaled
-                {
-                    var activeTxs = ActiveTransactions.AllTransactions;
-                    ThrowInvalidDisposeDuringActiveTransactions(activeTxs);
-                }
+                // _disposing stays set: Dispose tears the environment down regardless, and calling it again retries the wait
+                var activeTxs = ActiveTransactions.AllTransactions;
+                ThrowInvalidDisposeDuringActiveTransactions(activeTxs);
+            }
+
+            _disposeCompleted = true;
+        }
+
+        private bool WaitForTransactionsToDrain(TimeSpan timeout)
+        {
+            var sp = Stopwatch.StartNew();
+            while (true)
+            {
+                if (_transactionsInUse.Value == 0)
+                    return true;
+
+                var remaining = timeout - sp.Elapsed;
+                if (remaining <= TimeSpan.Zero)
+                    return false;
+
+                // the last transaction to complete sets it, the timeout guards against a missed signal
+                if (_transactionsDrained.Wait(remaining < TimeSpan.FromMilliseconds(100) ? remaining : TimeSpan.FromMilliseconds(100)))
+                    _transactionsDrained.Reset();
             }
         }
 
@@ -693,19 +718,22 @@ namespace Voron
             _cancellationTokenSource.Token.ThrowIfCancellationRequested();
             transactionPersistentContext ??= new TransactionPersistentContext();
 
+            PerCoreCounter.Decrementor? usage = null;
             try
             {
-                IncrementUsageOnNewTransaction();
+                usage = IncrementUsageOnNewTransaction();
 
                 _cancellationTokenSource.Token.ThrowIfCancellationRequested();
 
                 LowLevelTransaction tx = new(previous.LowLevelTransaction, transactionPersistentContext, context);
+                tx.EnvironmentUsage = usage.Value;
 
                 return new Transaction(tx);
             }
             catch (Exception)
             {
-                DecrementUsageOnTransactionCreationFailure();
+                if (usage.HasValue)
+                    DecrementUsage(usage.Value);
                 throw;
             }
         }
@@ -730,10 +758,11 @@ namespace Voron
 
             bool txLockTaken = false;
             LowLevelTransaction tx = null;
+            PerCoreCounter.Decrementor? usage = null;
 
             try
             {
-                IncrementUsageOnNewTransaction();
+                usage = IncrementUsageOnNewTransaction();
 
                 if (flags == TransactionFlags.ReadWrite)
                 {
@@ -772,6 +801,7 @@ namespace Voron
 
                 tx = new LowLevelTransaction(this, transactionPersistentContext, flags, _freeSpaceHandling,
                     context);
+                tx.EnvironmentUsage = usage.Value;
 
                 tx.CurrentTransactionIdHolder = flags == TransactionFlags.ReadWrite ? 
                     _currentWriteTransactionIdHolder : 
@@ -793,7 +823,8 @@ namespace Voron
                 }
                 finally
                 {
-                    DecrementUsageOnTransactionCreationFailure();
+                    if (usage.HasValue)
+                        DecrementUsage(usage.Value);
 
                     if (tx != null)
                         ActiveTransactions.TryRemove(tx);
@@ -819,16 +850,25 @@ namespace Voron
             }
         }
 
-        internal void IncrementUsageOnNewTransaction()
+        /// <returns>To pass to <see cref="DecrementUsage"/> when the transaction is done</returns>
+        internal PerCoreCounter.Decrementor IncrementUsageOnNewTransaction()
         {
-            if (_envDispose.TryAddCount(1) == false)
+            var usage = _transactionsInUse.Increment();
+            if (_disposing)
+            {
+                DecrementUsage(usage);
                 ThrowCurrentlyDisposing();
+            }
+
+            return usage;
         }
 
-        internal void DecrementUsageOnTransactionCreationFailure()
+        internal void DecrementUsage(PerCoreCounter.Decrementor usage)
         {
-            if (_envDispose.IsSet == false)
-                _envDispose.Signal();
+            usage.Decrement();
+
+            if (_disposing && _transactionsInUse.Value == 0)
+                _transactionsDrained.Set();
         }
 
         [DoesNotReturn]
@@ -915,7 +955,7 @@ namespace Voron
             }
             finally
             {
-                _envDispose.Signal();
+                DecrementUsage(tx.EnvironmentUsage);
             }
         }
 

@@ -16,6 +16,7 @@ using Sparrow.Server.Collections;
 using Sparrow.Threading;
 using Sparrow.Utils;
 using Sparrow.Server.Utils;
+using Sparrow.Server.Threading;
 using Voron.Data;
 using Voron.Data.BTrees;
 using Voron.Data.CompactTrees;
@@ -1255,14 +1256,14 @@ namespace Voron.Impl
                   ? Task.Run(() => { CommitStage2_WriteToJournal(waitForDurability: false); return true; })
                   : NoWriteToJournalRequiredTask;
 
-            var usageIncremented = false;
+            PerCoreCounter.Decrementor? usage = null;
 
             try
             {
                 _forTestingPurposes?.ActionToCallDuringBeginAsyncCommitAndStartNewTransaction?.Invoke();
 
-                _env.IncrementUsageOnNewTransaction();
-                usageIncremented = true;
+                usage = _env.IncrementUsageOnNewTransaction();
+                nextTx.EnvironmentUsage = usage.Value;
 
                 _env.ActiveTransactions.Add(nextTx);
                 _env.WriteTransactionStarted();
@@ -1278,8 +1279,8 @@ namespace Voron.Impl
 
                 try
                 {
-                    if (usageIncremented)
-                        _env.DecrementUsageOnTransactionCreationFailure();
+                    if (usage.HasValue)
+                        _env.DecrementUsage(usage.Value);
 
                     EndAsyncCommit();
                 }
@@ -1604,6 +1605,9 @@ namespace Voron.Impl
         public bool IsCloned;
         internal long? LocalPossibleOldestReadTransaction;
         internal RacyConcurrentBag.Node ActiveTransactionNode;
+
+        // decrements the slot of the environment's transaction count that this transaction incremented
+        internal PerCoreCounter.Decrementor EnvironmentUsage;
         public Transaction Transaction;
 
         /// <summary>
