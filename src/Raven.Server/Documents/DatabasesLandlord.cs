@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -840,7 +840,7 @@ namespace Raven.Server.Documents
                 else
                 {
                     if (database.IsCompletedSuccessfully)
-                        database.Result.LastAccessTime = database.Result.Time.GetUtcNow();
+                        database.Result.UpdateLastAccessTime();
 
                     return true;
                 }

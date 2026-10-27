@@ -145,7 +145,6 @@ namespace Raven.Server.Documents
             _serverStore = serverStore;
             _addToInitLog = addToInitLog;
             StartTime = Time.GetUtcNow();
-            LastAccessTime = Time.GetUtcNow();
             Configuration = configuration;
             _nextIoMetricsCleanupTime = DateTime.UtcNow.Add(Configuration.Storage.IoMetricsCleanupInterval.AsTimeSpan);
             Scripts = new ScriptRunnerCache(this, Configuration);
@@ -288,7 +287,29 @@ namespace Raven.Server.Documents
 
         public DateTime LastIdleTime => new DateTime(_lastIdleTicks);
 
-        public DateTime LastAccessTime;
+        // PERF: every request for the database marks the access, so each core keeps its own (in milliseconds of
+        // Environment.TickCount64) and we use the latest one, instead of all the cores writing to the same cache line
+        private readonly PerCoreMaximum _lastAccess = new(Environment.TickCount64);
+
+        public void UpdateLastAccessTime() => _lastAccess.Raise(Environment.TickCount64);
+
+        /// <summary>
+        /// The last time the database was used, for unloading idle databases.
+        /// </summary>
+        public DateTime LastAccessTime
+        {
+            get
+            {
+                long lastAccess = _lastAccess.Value;
+                if (lastAccess == long.MinValue)
+                    return DateTime.MinValue;
+
+                long millisecondsAgo = Environment.TickCount64 - lastAccess;
+                var now = DateTime.UtcNow;
+                return millisecondsAgo >= (now - DateTime.MinValue).TotalMilliseconds ? DateTime.MinValue : now.AddMilliseconds(-millisecondsAgo);
+            }
+            set => _lastAccess.Reset(value == DateTime.MinValue ? long.MinValue : Environment.TickCount64 - (long)(DateTime.UtcNow - value).TotalMilliseconds);
+        }
 
         public DatabaseInfoCache DatabaseInfoCache { get; set; }
 
