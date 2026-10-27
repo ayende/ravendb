@@ -71,8 +71,6 @@ public unsafe partial class Pager : IDisposable
         pager.InstallState(state);
         pager.Initialize(memorySize);
         Pal.rvn_pager_get_prefetch_request_size(handle, out pager._prefetchRequestSize);
-        if (Pal.rvn_pager_get_device_id(handle, out var deviceId, out _) == PalFlags.FailCodes.Success)
-            pager._prefetchTable.Gate = PrefetchPolicy.Global.GetGate(deviceId);
         return (pager, state);
     }
 

@@ -1,88 +1,44 @@
 using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Threading;
 using Sparrow;
-using Sparrow.Binary;
 using Sparrow.LowMemory;
 using Sparrow.Server.LowMemory;
 
 namespace Voron.Impl.Paging;
 
 /// <summary>
-/// Decides, for every data file in the process, when a segment (4 MB by default) is worth reading ahead.
-///
-/// A segment is prefetched when it collects <see cref="Threshold"/> hits within one epoch. An epoch lasts until the
-/// process has made <see cref="HitsPerEpoch"/> x (memory for the page cache, in segments) page accesses, or
-/// <see cref="MaxEpochSeconds"/>. A segment of any working set that fits in memory then gets about
-/// <see cref="HitsPerEpoch"/> hits per epoch, while uniform access over data larger than memory gets
-/// HitsPerEpoch x memory / data and almost never reaches the threshold. The accesses of all data files count
-/// (all databases share the page cache), so more active databases need hotter segments. Every device has a
-/// <see cref="DevicePrefetchGate"/> that stops prefetches while the device is congested.
+/// Decides when the data files read ahead whole segments (4 MB by default): only while the page cache still has free
+/// memory to fill. After a restart, a failover or on a new node, one large read brings in the pages that the next
+/// accesses need; on a volume with an IOPS limit this fills the cache many times faster than page faults do (gp3: about
+/// 15 minutes instead of 80 for 60 GB). When memory is full, a read-ahead only evicts pages that are in use: with uniform
+/// access over data larger than memory, a prefetcher that kept reading segments used the whole device bandwidth for it
+/// (18.5k instead of 203k ops/s on NVMe).
+/// A segment is read ahead at most once per warm-up. A warm-up ends when free memory drops below
+/// <see cref="StopPercent"/>% and a new one starts when it is above <see cref="StartPercent"/>% again (for example,
+/// after large files were deleted). On Linux the low-memory monitor's available memory is MemFree, the memory that the
+/// page cache did not take yet; on Windows and macOS it includes the cache, so there a segment is read ahead once per
+/// process lifetime.
 /// </summary>
 public sealed class PrefetchPolicy : IDisposable
 {
-    public const int HitsPerEpoch = 15;
-    public const int MaxEpochSeconds = 30;
-    public const int RearmSeconds = 60;
-    public const int SequentialSeconds = 2;
-    public const long SegmentSize = 4 * 1024 * 1024;
-    private const int TickMs = 250;
+    public const int StopPercent = 5;
+    public const int StartPercent = 10;
+    private const int TickMs = 1000;
 
     public static readonly PrefetchPolicy Global = new(startTimer: true);
 
-    // read on every page access
-    private volatile int _epoch = 1;
-    private volatile int _nowSeconds = 1;
-
-    [StructLayout(LayoutKind.Explicit, Size = 64)]
-    private struct PaddedCounter
-    {
-        [FieldOffset(0)]
-        public long Value;
-    }
-
-    // the page accesses of every data file, a cache line per processor (a power of two, so a mask picks it)
-    private readonly PaddedCounter[] _accesses = new PaddedCounter[Bits.PowerOf2(Environment.ProcessorCount)];
-
-    private readonly object _locker = new();
-    private readonly Dictionary<ulong, DevicePrefetchGate> _gates = new();
-    private DevicePrefetchGate[] _gatesSnapshot = []; // replaced when a gate is added, read by every tick
-    private readonly Stopwatch _clock = Stopwatch.StartNew();
+    private volatile int _generation; // read on every page access
+    private int _lastGeneration;
     private readonly Timer _timer;
-    private long _epochAccesses;
-    private long _epochStartMs;
-    private long _lastTotalAccesses;
 
     public PrefetchPolicy(bool startTimer)
     {
         if (startTimer)
-            _timer = new Timer(_ => TickFromSystem(), null, TickMs, TickMs);
+            _timer = new Timer(_ => TickFromSystem(), null, 0, TickMs);
     }
 
-    public int Epoch => _epoch;
-    public int Threshold => HitsPerEpoch;
-    public int NowSeconds => _nowSeconds;
-
-    /// <summary>Counts a page access. Not atomic: a lost increment only delays the end of the epoch a little.</summary>
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    internal void CountAccess() => _accesses[Environment.CurrentManagedThreadId & (_accesses.Length - 1)].Value++;
-
-    /// <summary>The gate of a device, shared by every data file on it.</summary>
-    internal DevicePrefetchGate GetGate(ulong deviceId)
-    {
-        lock (_locker)
-        {
-            if (_gates.TryGetValue(deviceId, out var gate) == false)
-            {
-                _gates[deviceId] = gate = DevicePrefetchGate.Create(deviceId);
-                _gatesSnapshot = [.. _gates.Values];
-            }
-            return gate;
-        }
-    }
+    /// <summary>The current warm-up (1 to 255), or 0 while memory is full and nothing is read ahead.</summary>
+    public int Generation => _generation;
 
     private void TickFromSystem()
     {
@@ -92,45 +48,30 @@ public sealed class PrefetchPolicy : IDisposable
             var memory = LowMemoryNotification.Instance.LastMemoryInfo;
             if (memory.TotalPhysicalMemory.GetValue(SizeUnit.Bytes) == 0)
                 memory = MemoryInformation.GetMemoryInfo();
-            Tick(_clock.ElapsedMilliseconds, memory.AvailableMemory.GetValue(SizeUnit.Bytes));
+            Tick(memory.AvailableMemory.GetValue(SizeUnit.Bytes), memory.TotalPhysicalMemory.GetValue(SizeUnit.Bytes));
         }
         catch
         {
-            // a lost tick only delays the next epoch
+            // a lost tick only delays the next decision
         }
     }
 
-    /// <summary>Advances the epoch, the clock and the device gates. Called every 250 ms (tests call it directly).</summary>
-    internal void Tick(long nowMs, long memoryForCacheBytes)
+    /// <summary>Starts or ends the warm-up from the free memory. Called every second (tests call it directly).</summary>
+    internal void Tick(long freeBytes, long totalBytes)
     {
-        long total = 0;
-        for (var i = 0; i < _accesses.Length; i++)
-            total += Volatile.Read(ref _accesses[i].Value);
-        _epochAccesses += total - _lastTotalAccesses;
-        _lastTotalAccesses = total;
-
-        var memorySegments = Math.Max(1, memoryForCacheBytes / SegmentSize);
-        if (_epochAccesses >= HitsPerEpoch * memorySegments || nowMs - _epochStartMs >= MaxEpochSeconds * 1000L)
+        if (_generation != 0)
         {
-            _epoch = _epoch == ushort.MaxValue ? 1 : _epoch + 1;
-            _epochAccesses = 0;
-            _epochStartMs = nowMs;
+            if (freeBytes * 100 < totalBytes * StopPercent)
+                _generation = 0;
+            return;
         }
 
-        _nowSeconds = (int)(nowMs / 1000 % ushort.MaxValue) + 1; // never 0: 0 marks a segment that was never prefetched
-
-        foreach (var gate in _gatesSnapshot)
-            gate.Sample(nowMs);
-    }
-
-    public void Dispose()
-    {
-        _timer?.Dispose();
-        lock (_locker)
+        if (freeBytes * 100 > totalBytes * StartPercent)
         {
-            foreach (var gate in _gates.Values)
-                gate.Dispose();
-            _gates.Clear();
+            _lastGeneration = _lastGeneration == byte.MaxValue ? 1 : _lastGeneration + 1;
+            _generation = _lastGeneration;
         }
     }
+
+    public void Dispose() => _timer?.Dispose();
 }
