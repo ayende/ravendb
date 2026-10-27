@@ -715,6 +715,8 @@ namespace Voron.Impl
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         private Page GetPageInternalFromDataFile(long pageNumber)
         {
+            if (_isValidationEnabled && Flags == TransactionFlags.Read)
+                _env.HintFirstTouch(DataPagerState, pageNumber);
             var page = new Page(DataPager.AcquirePagePointerWithOverflowHandling(DataPagerState, ref PagerTransactionState, pageNumber));
             if (_isValidationEnabled)// When encryption is off, we do validation by checksum
                 _env.ValidatePageChecksum(pageNumber, (PageHeader*)page.Pointer, DataPagerState);

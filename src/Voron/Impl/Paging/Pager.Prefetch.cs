@@ -40,4 +40,18 @@ public unsafe partial class Pager
         Volatile.Write(ref slot, key);
         return true;
     }
+
+    /// <summary>
+    /// Starts the read of the pages before the caller touches them, so the faults wait on one exact read instead of one
+    /// read per 4 KB. Synchronous (a madvise call), unlike <see cref="PrefetchPages"/>: a queued hint for a page that we
+    /// touch right away arrives after the fault.
+    /// </summary>
+    public static void WillNeedPages(State state, long pageNumber, int numberOfPages = 1)
+    {
+        if (PrefetchRingSupported == false || state.Pager.Options.RunningOn32Bits)
+            return;
+        var range = new PalDefinitions.PrefetchRanges(state.ReadAddress + pageNumber * Constants.Storage.PageSize,
+            (long)numberOfPages * Constants.Storage.PageSize, state.Pager._prefetchRequestSize);
+        Pal.rvn_prefetch_ranges(&range, 1, out _);
+    }
 }

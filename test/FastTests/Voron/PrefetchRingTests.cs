@@ -207,6 +207,52 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
     }
 
     [RavenFact(RavenTestCategory.Voron)]
+    public void WillNeedPagesReadsTheWholePageBeforeItIsTouched()
+    {
+        if (PlatformDetails.RunningOnLinux == false)
+            return;
+
+        const int pages = 16;
+        var path = RavenTestHelper.NewDataPath(nameof(WillNeedPagesReadsTheWholePageBeforeItIsTouched), 0, forceCreateDir: true);
+        try
+        {
+            var file = Path.Combine(path, Constants.DatabaseFilename);
+            var content = new byte[pages * Constants.Storage.PageSize];
+            Random.Shared.NextBytes(content);
+            File.WriteAllBytes(file, content);
+
+            using (var options = StorageEnvironmentOptions.ForPathForTests(path))
+            {
+                var (pager, state) = Pager.Create(options, file, content.Length, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
+                using (pager)
+                using (state)
+                {
+                    DropFromPageCache(file);
+                    var page = state.ReadAddress + 5 * Constants.Storage.PageSize;
+                    var expected = Constants.Storage.PageSize / Environment.SystemPageSize;
+                    if (ResidentPages(page, Constants.Storage.PageSize) == expected)
+                    {
+                        Output.WriteLine("this file system keeps the pages in memory (tmpfs?): nothing to check");
+                        return;
+                    }
+
+                    Pager.WillNeedPages(state, 5);
+
+                    var sw = Stopwatch.StartNew();
+                    int resident;
+                    while ((resident = ResidentPages(page, Constants.Storage.PageSize)) < expected && sw.Elapsed < TimeSpan.FromSeconds(5))
+                        Thread.Sleep(5);
+                    Assert.Equal(expected, resident);
+                }
+            }
+        }
+        finally
+        {
+            IOExtensions.DeleteDirectory(path);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Voron)]
     public void ThePrefetchRequestSizeComesFromTheDevice()
     {
         var path = RavenTestHelper.NewDataPath(nameof(ThePrefetchRequestSizeComesFromTheDevice), 0, forceCreateDir: true);
