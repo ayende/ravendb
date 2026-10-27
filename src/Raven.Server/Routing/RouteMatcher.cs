@@ -2,8 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
-using System.Runtime.Intrinsics;
 using System.Text;
 
 namespace Raven.Server.Routing
@@ -40,68 +38,29 @@ namespace Raven.Server.Routing
             public (string Prefix, int Value)[] Prefixes = [];
         }
 
-        private sealed class CaptureRoutes
+        private sealed class CaptureRoutes(string prefix, Routes routes)
         {
             // the path before the '*'
-            public readonly string Prefix;
+            public readonly string Prefix = prefix;
 
             // the path after the captured segment
-            public readonly Routes Routes;
-
-            // PERF: a prefix of 8 to 16 chars as two (overlapping) vectors of 8 chars with the case bit set for the letters, so
-            // comparing it ignoring the case is setting the case bit of the path and two vector comparisons, like the JIT does
-            // for a constant
-            private readonly bool _vectorized;
-            private readonly Vector128<ushort> _first, _firstCaseBits, _last, _lastCaseBits;
-
-            public CaptureRoutes(string prefix, Routes routes)
-            {
-                Prefix = prefix;
-                Routes = routes;
-
-                if (Vector128.IsHardwareAccelerated && prefix.Length >= Vector128<ushort>.Count && prefix.Length <= 2 * Vector128<ushort>.Count)
-                {
-                    _vectorized = true;
-                    (_first, _firstCaseBits) = ToVector(prefix, 0);
-                    (_last, _lastCaseBits) = ToVector(prefix, prefix.Length - Vector128<ushort>.Count);
-                }
-            }
-
-            private static (Vector128<ushort> Value, Vector128<ushort> CaseBits) ToVector(string prefix, int start)
-            {
-                Span<ushort> value = stackalloc ushort[Vector128<ushort>.Count];
-                Span<ushort> caseBits = stackalloc ushort[Vector128<ushort>.Count];
-                for (int i = 0; i < value.Length; i++)
-                {
-                    char c = prefix[start + i];
-                    caseBits[i] = (ushort)(char.IsAsciiLetter(c) ? 0x20 : 0);
-                    value[i] = (ushort)(c | caseBits[i]);
-                }
-
-                return (Vector128.Create<ushort>(value), Vector128.Create<ushort>(caseBits));
-            }
-
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            public bool IsPrefixOf(ReadOnlySpan<char> path)
-            {
-                if (_vectorized == false)
-                    return StartsWith(path, Prefix);
-
-                if (path.Length < Prefix.Length)
-                    return false;
-
-                ref ushort start = ref Unsafe.As<char, ushort>(ref MemoryMarshal.GetReference(path));
-                return (Vector128.LoadUnsafe(ref start) | _firstCaseBits) == _first &&
-                       (Vector128.LoadUnsafe(ref start, (nuint)(Prefix.Length - Vector128<ushort>.Count)) | _lastCaseBits) == _last;
-            }
+            public readonly Routes Routes = routes;
         }
 
-        private sealed class MethodRoutes(string method, Routes routes, CaptureRoutes[] captures)
+        private sealed class MethodRoutes(string method, Routes routes, Routes databases, CaptureRoutes[] captures)
         {
             public readonly string Method = method;
             public readonly Routes Routes = routes;
+
+            // the routes that capture after /databases/ (null if there are none)
+            public readonly Routes Databases = databases;
+
+            // the routes that capture after any other prefix
             public readonly CaptureRoutes[] Captures = captures;
         }
+
+        // PERF: most requests are for a database, comparing to a constant is a couple of vector instructions, as the JIT unrolls it
+        private const string DatabasesPrefix = "/databases/";
 
         private readonly MethodRoutes[] _methods;
         private readonly T[] _values;
@@ -147,11 +106,17 @@ namespace Raven.Server.Routing
                 {
                     EnsureUnambiguous(x.Key, x.Value.Routes, x.Value.Captures.Keys);
 
+                    x.Value.Captures.TryGetValue(DatabasesPrefix, out var databases);
+
                     return new MethodRoutes(
                         // PERF: Kestrel gives the known methods as the interned literals, so the common case is a reference comparison
                         string.Intern(x.Key.ToUpperInvariant()),
                         builder.Build(x.Key, x.Value.Routes),
-                        x.Value.Captures.Select(c => new CaptureRoutes(c.Key, builder.Build(x.Key, c.Value))).ToArray());
+                        databases == null ? null : builder.Build(x.Key, databases),
+                        x.Value.Captures
+                            .Where(c => string.Equals(c.Key, DatabasesPrefix, StringComparison.OrdinalIgnoreCase) == false)
+                            .Select(c => new CaptureRoutes(c.Key, builder.Build(x.Key, c.Value)))
+                            .ToArray());
                 })
                 .ToArray();
 
@@ -175,27 +140,22 @@ namespace Raven.Server.Routing
             {
                 ReadOnlySpan<char> span = path;
 
-                foreach (var capture in methodRoutes.Captures)
+                int id;
+                if (methodRoutes.Databases != null &&
+                    span.StartsWith(DatabasesPrefix, StringComparison.OrdinalIgnoreCase) &&
+                    TryMatchCaptured(methodRoutes.Databases, DatabasesPrefix.Length, span, ref match, out id))
                 {
-                    if (capture.IsPrefixOf(span) == false)
-                        continue;
-
-                    var segment = span.Slice(capture.Prefix.Length);
-                    int segmentLength = segment.IndexOf('/');
-                    if (segmentLength < 0)
-                        segmentLength = segment.Length;
-
-                    int id = Find(capture.Routes, segment.Slice(segmentLength), out int prefixLength);
-                    if (id < 0)
-                        continue;
-
-                    match.CaptureStart = capture.Prefix.Length;
-                    match.CaptureLength = segmentLength;
-                    if (prefixLength >= 0)
-                        match.MatchLength = capture.Prefix.Length + segmentLength + prefixLength;
-
                     value = _values[id];
                     return true;
+                }
+
+                foreach (var capture in methodRoutes.Captures)
+                {
+                    if (StartsWith(span, capture.Prefix) && TryMatchCaptured(capture.Routes, capture.Prefix.Length, span, ref match, out id))
+                    {
+                        value = _values[id];
+                        return true;
+                    }
                 }
 
                 int routeId = Find(methodRoutes.Routes, span, out int routePrefixLength);
@@ -211,6 +171,26 @@ namespace Raven.Server.Routing
 
             value = default;
             return false;
+        }
+
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private bool TryMatchCaptured(Routes routes, int prefixLength, ReadOnlySpan<char> path, ref RouteMatch match, out int id)
+        {
+            var segment = path.Slice(prefixLength);
+            int segmentLength = segment.IndexOf('/');
+            if (segmentLength < 0)
+                segmentLength = segment.Length;
+
+            id = Find(routes, segment.Slice(segmentLength), out int matchedPrefixLength);
+            if (id < 0)
+                return false;
+
+            match.CaptureStart = prefixLength;
+            match.CaptureLength = segmentLength;
+            if (matchedPrefixLength >= 0)
+                match.MatchLength = prefixLength + segmentLength + matchedPrefixLength;
+
+            return true;
         }
 
         private MethodRoutes FindMethod(string method)
