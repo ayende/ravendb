@@ -499,8 +499,6 @@ namespace Raven.Server.Documents.Patch
                 // conflicts throw like the script runner's lookup does
                 if (storage.GetTableValueReaderForDocument(context, lowerId, throwOnConflict: true, out TableValueReader current) == false)
                 {
-                    // deleted since the snapshot: what the script runner returns for a missing document (the fast path runs
-                    // only without patch-if-missing / create-if-missing)
                     PatchResult = new PatchResult { Status = PatchStatus.DocumentDoesNotExist };
                     return true;
                 }

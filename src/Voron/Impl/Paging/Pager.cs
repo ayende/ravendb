@@ -42,7 +42,6 @@ public unsafe partial class Pager : IDisposable
     private readonly EncryptionBuffersPool _encryptionBuffersPool;
     private readonly byte[] _masterKey;
     private SegmentPrefetchTable _prefetchTable;
-    private bool _prefetchViaRing;
     private long _prefetchRequestSize;
     private DateTime _lastIncrease;
     private long _increaseSize;
@@ -57,13 +56,8 @@ public unsafe partial class Pager : IDisposable
         
         var pager = new Pager(options, filename, flags, GetFunctions(options, flags));
         var ring = flags.HasFlag(Pal.OpenFileFlags.Prefetch) ? options.PrefetchRing ?? PrefetchRing.Default : null;
-        void* handle;
-        byte* readOnlyMemory, writeMemory;
-        long memorySize;
-        int error;
-        var result = ring != null
-            ? ring.InitPager(filename, initialFileSize, flags, out handle, out readOnlyMemory, out writeMemory, out memorySize, out error)
-            : Pal.rvn_init_pager(filename, initialFileSize, flags, null, out handle, out readOnlyMemory, out writeMemory, out memorySize, out error);
+        var result = Pal.rvn_init_pager(filename, initialFileSize, flags, ring != null ? ring.Handle : null,
+            out var handle, out var readOnlyMemory, out var writeMemory, out var memorySize, out var error);
         if (result == PalFlags.FailCodes.FailPrefetchFilesExhausted)
             throw new InvalidOperationException(
                 $"Cannot open '{filename}': {ring!.MaxFiles} data files are already open with the prefetch I/O ring, which is its limit. " +
@@ -76,7 +70,6 @@ public unsafe partial class Pager : IDisposable
         (state.TotalAllocatedSize, state.TotalPhysicalSpace) = pager.GetFileSize(state);
         pager.InstallState(state);
         pager.Initialize(memorySize);
-        pager._prefetchViaRing = ring is { IsAvailable: true };
         Pal.rvn_pager_get_prefetch_request_size(handle, out pager._prefetchRequestSize);
         if (Pal.rvn_pager_get_device_id(handle, out var deviceId, out _) == PalFlags.FailCodes.Success)
             pager._prefetchTable.Gate = PrefetchPolicy.Global.GetGate(deviceId);
@@ -270,11 +263,12 @@ public unsafe partial class Pager : IDisposable
         } while (pagesToPrefetch.MoveNext());
     }
 
-    // through the prefetch ring when the file is registered with it (non blocking, from the reading thread); otherwise the
-    // global prefetcher thread advises the kernel, so the reading thread does not wait on madvise
+    // Linux: through the PAL prefetch ring, non blocking, from the reading thread (a file that is not registered with the ring,
+    // such as the temporary data file of a pure memory environment, is not prefetched). Windows and macOS: the global
+    // prefetcher thread advises the kernel, so the reading thread does not wait on madvise.
     private void PrefetchSegment(State state, long offset, long bytes)
     {
-        if (_prefetchViaRing)
+        if (PlatformDetails.RunningOnLinux)
             Pal.rvn_pager_prefetch(state.Handle, offset, bytes);
         else
             GlobalPrefetchingBehavior.GlobalPrefetcher.Value.CommandQueue.TryAdd(new PalDefinitions.PrefetchRanges(state.ReadAddress + offset, bytes, _prefetchRequestSize), 0);
@@ -499,7 +493,6 @@ public unsafe partial class Pager : IDisposable
 
     public void Dispose()
     {
-        _prefetchTable?.Unregister();
         foreach (WeakReference<State> state in _states)
         {
             if (state.TryGetTarget(out var v))

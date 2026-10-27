@@ -1,8 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Sparrow;
+using Sparrow.Binary;
 using Sparrow.LowMemory;
 using Sparrow.Server.LowMemory;
 
@@ -34,8 +37,17 @@ public sealed class PrefetchPolicy : IDisposable
     private volatile int _epoch = 1;
     private volatile int _nowSeconds = 1;
 
+    [StructLayout(LayoutKind.Explicit, Size = 64)]
+    private struct PaddedCounter
+    {
+        [FieldOffset(0)]
+        public long Value;
+    }
+
+    // the page accesses of every data file, a cache line per processor (a power of two, so a mask picks it)
+    private readonly PaddedCounter[] _accesses = new PaddedCounter[Bits.PowerOf2(Environment.ProcessorCount)];
+
     private readonly object _locker = new();
-    private readonly List<WeakReference<SegmentPrefetchTable>> _tables = new();
     private readonly Dictionary<ulong, DevicePrefetchGate> _gates = new();
     private DevicePrefetchGate[] _gatesSnapshot = []; // replaced when a gate is added, read by every tick
     private readonly Stopwatch _clock = Stopwatch.StartNew();
@@ -54,17 +66,9 @@ public sealed class PrefetchPolicy : IDisposable
     public int Threshold => HitsPerEpoch;
     public int NowSeconds => _nowSeconds;
 
-    internal void Register(SegmentPrefetchTable table)
-    {
-        lock (_locker)
-            _tables.Add(new WeakReference<SegmentPrefetchTable>(table));
-    }
-
-    internal void Unregister(SegmentPrefetchTable table)
-    {
-        lock (_locker)
-            _tables.RemoveAll(x => x.TryGetTarget(out var t) == false || ReferenceEquals(t, table));
-    }
+    /// <summary>Counts a page access. Not atomic: a lost increment only delays the end of the epoch a little.</summary>
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    internal void CountAccess() => _accesses[Environment.CurrentManagedThreadId & (_accesses.Length - 1)].Value++;
 
     /// <summary>The gate of a device, shared by every data file on it.</summary>
     internal DevicePrefetchGate GetGate(ulong deviceId)
@@ -100,19 +104,10 @@ public sealed class PrefetchPolicy : IDisposable
     internal void Tick(long nowMs, long memoryForCacheBytes)
     {
         long total = 0;
-        lock (_locker)
-        {
-            _tables.RemoveAll(x => x.TryGetTarget(out _) == false);
-            foreach (var weak in _tables)
-            {
-                if (weak.TryGetTarget(out var table))
-                    total += table.Accesses;
-            }
-        }
-
-        var delta = Math.Max(0, total - _lastTotalAccesses); // a closed file takes its count with it
+        for (var i = 0; i < _accesses.Length; i++)
+            total += Volatile.Read(ref _accesses[i].Value);
+        _epochAccesses += total - _lastTotalAccesses;
         _lastTotalAccesses = total;
-        _epochAccesses += delta;
 
         var memorySegments = Math.Max(1, memoryForCacheBytes / SegmentSize);
         if (_epochAccesses >= HitsPerEpoch * memorySegments || nowMs - _epochStartMs >= MaxEpochSeconds * 1000L)

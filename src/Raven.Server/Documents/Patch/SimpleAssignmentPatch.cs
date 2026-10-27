@@ -20,12 +20,7 @@ namespace Raven.Server.Documents.Patch;
 /// </summary>
 internal sealed class SimpleAssignmentPatch
 {
-    private sealed class CacheEntry
-    {
-        public SimpleAssignmentPatch Patch;
-    }
-
-    private static readonly SizeLimitedConcurrentDictionary<string, CacheEntry> Cache = new(size: 1024, StringComparer.Ordinal);
+    private static readonly SizeLimitedConcurrentDictionary<string, SimpleAssignmentPatch> Cache = new(size: 1024, StringComparer.Ordinal);
     private static readonly SimpleAssignmentPatch NotSimple = new([]);
     private static readonly ParserOptions ParserOptions = ParserOptions.Default;
 
@@ -58,13 +53,13 @@ internal sealed class SimpleAssignmentPatch
         if (patch?.Script == null || patch.Type != PatchRequestType.Patch || patch.HasFunctions)
             return null;
 
-        if (Cache.TryGetValue(patch.Script, out var entry) == false)
+        if (Cache.TryGetValue(patch.Script, out var simple) == false)
         {
-            entry = new CacheEntry { Patch = Parse(patch.Script) ?? NotSimple };
-            Cache.Set(patch.Script, entry);
+            simple = Parse(patch.Script) ?? NotSimple;
+            Cache.Set(patch.Script, simple);
         }
 
-        return ReferenceEquals(entry.Patch, NotSimple) ? null : entry.Patch;
+        return ReferenceEquals(simple, NotSimple) ? null : simple;
     }
 
     private static SimpleAssignmentPatch Parse(string script)

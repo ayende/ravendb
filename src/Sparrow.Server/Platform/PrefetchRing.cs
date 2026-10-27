@@ -18,6 +18,9 @@ public sealed unsafe class PrefetchRing : IDisposable
 
     private void* _handle;
 
+    /// <summary>The PAL handle, passed to rvn_init_pager; null when there is no ring.</summary>
+    public void* Handle => _handle;
+
     /// <summary>The number of data files that can be open with the ring at the same time.</summary>
     public int MaxFiles { get; }
 
@@ -35,11 +38,6 @@ public sealed unsafe class PrefetchRing : IDisposable
             PalHelper.ThrowLastError(rc, errorCode, $"Failed to create a prefetch ring ({ringEntries} entries, {maxFiles} files, queue of {queueSize})");
         _handle = handle;
     }
-
-    /// <summary>Opens a pager whose file is registered with this ring (when <paramref name="flags"/> include Prefetch).</summary>
-    public PalFlags.FailCodes InitPager(string filename, long initialFileSize, Pal.OpenFileFlags flags,
-        out void* handle, out byte* readAddress, out byte* writeAddress, out long memorySize, out int errorCode) =>
-        Pal.rvn_init_pager(filename, initialFileSize, flags, _handle, out handle, out readAddress, out writeAddress, out memorySize, out errorCode);
 
     public PrefetchRingStats? GetStats()
     {

@@ -1,7 +1,6 @@
 using System;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
-using System.Threading;
 using Sparrow.Binary;
 using Voron.Global;
 
@@ -22,20 +21,8 @@ internal sealed class SegmentPrefetchTable
         public byte Hits;
     }
 
-    [StructLayout(LayoutKind.Explicit, Size = 64)]
-    private struct PaddedCounter
-    {
-        [FieldOffset(0)]
-        public long Value;
-    }
-
-    // a counter line per processor (a power of two, so a mask picks it), capped so a server with thousands of data files
-    // does not spend much memory on it
-    private static readonly int Stripes = Math.Min(64, Bits.PowerOf2(Environment.ProcessorCount));
-
     private readonly PrefetchPolicy _policy;
     private readonly int _segmentShift;
-    private readonly PaddedCounter[] _accesses = new PaddedCounter[Stripes]; // striped, so readers on many cores do not share a line
     private Segment[] _segments;
 
     public readonly long SegmentSize;
@@ -47,21 +34,7 @@ internal sealed class SegmentPrefetchTable
         _segmentShift = Bits.MostSignificantBit(segmentSize);
         SegmentSize = 1L << _segmentShift;
         _segments = new Segment[Math.Max(1, (fileSize >> _segmentShift) + 1)];
-        policy.Register(this);
     }
-
-    public long Accesses
-    {
-        get
-        {
-            long sum = 0;
-            for (var i = 0; i < Stripes; i++)
-                sum += Volatile.Read(ref _accesses[i].Value);
-            return sum;
-        }
-    }
-
-    public void Unregister() => _policy.Unregister(this);
 
     /// <summary>
     /// Counts an access to <paramref name="pageNumber"/>. Returns true with the range to read ahead when its segment
@@ -77,10 +50,10 @@ internal sealed class SegmentPrefetchTable
         if (index >= segments.Length)
             segments = Grow(index);
 
-        _accesses[Environment.CurrentManagedThreadId & (Stripes - 1)].Value++;
+        var policy = _policy;
+        policy.CountAccess();
 
         ref var segment = ref segments[index];
-        var policy = _policy;
         var epoch = (ushort)policy.Epoch;
         var now = (ushort)policy.NowSeconds;
         if (segment.Epoch != epoch)
