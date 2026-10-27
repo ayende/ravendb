@@ -739,15 +739,15 @@ namespace Voron.Data.Tables
         }
 
         /// <summary>
-        /// Queues reads of the pages around the value <paramref name="id"/> that reading it did not bring in: the rest of its
-        /// page, its section header page and the leaf pages of its entries in the given fixed-size indexes.
+        /// Starts the reads of the pages around the value <paramref name="id"/> that reading it did not bring in: the rest of
+        /// its page, its section header page and the leaf pages of its entries in the given fixed-size indexes.
         /// </summary>
         public void Prefetch(long id, params ReadOnlySpan<TableSchema.FixedSizeKeyIndexDef> indexes)
         {
             var llt = _tx.LowLevelTransaction;
-            Pager.PrefetchPages(llt.DataPagerState, id / Constants.Storage.PageSize);
+            Pager.WillNeedPages(llt.DataPagerState, id / Constants.Storage.PageSize);
             if (id % Constants.Storage.PageSize != 0) // a small value: its section header page tracks its space
-                Pager.PrefetchPages(llt.DataPagerState, RawDataSection.GetSectionPageNumber(llt, id));
+                Pager.WillNeedPages(llt.DataPagerState, RawDataSection.GetSectionPageNumber(llt, id));
 
             if (indexes.IsEmpty)
                 return;

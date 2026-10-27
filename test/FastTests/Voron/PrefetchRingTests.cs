@@ -77,45 +77,47 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
     }
 
     [RavenFact(RavenTestCategory.Voron)]
-    public void ARecentlyHintedPageIsNotQueuedAgain()
+    public void APageAskedForAMomentAgoIsSkipped()
     {
-        using var ring = new PrefetchRing(ringEntries: 8, maxFiles: 4, queueSize: 16384);
-        if (ring.IsAvailable == false)
-            return; // Windows / macOS
+        if (PlatformDetails.RunningOnLinux == false)
+            return;
 
-        var path = RavenTestHelper.NewDataPath(nameof(ARecentlyHintedPageIsNotQueuedAgain), 0, forceCreateDir: true);
+        const int pages = 16;
+        var path = RavenTestHelper.NewDataPath(nameof(APageAskedForAMomentAgoIsSkipped), 0, forceCreateDir: true);
         try
         {
+            var file = Path.Combine(path, Constants.DatabaseFilename);
+            var content = new byte[pages * Constants.Storage.PageSize];
+            Random.Shared.NextBytes(content);
+            File.WriteAllBytes(file, content);
+
             using (var options = StorageEnvironmentOptions.ForPathForTests(path))
             {
-                options.PrefetchRing = ring;
-                var (pager, state) = Pager.Create(options, Path.Combine(path, "hints.voron"), 64 * 1024, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
+                var (pager, state) = Pager.Create(options, file, content.Length, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
                 using (pager)
                 using (state)
                 {
-                    long expected = 0;
-                    void Hint(long page, bool queued)
+                    var page = state.ReadAddress + 5 * Constants.Storage.PageSize;
+                    var expected = Constants.Storage.PageSize / Environment.SystemPageSize;
+                    DropFromPageCache(file);
+                    if (ResidentPages(page, Constants.Storage.PageSize) == expected)
                     {
-                        Assert.True(Pager.PrefetchPages(state, page));
-                        if (queued)
-                            expected++;
+                        Output.WriteLine("this file system keeps the pages in memory (tmpfs?): nothing to check");
+                        return;
                     }
 
-                    Hint(5, queued: true);
-                    Hint(5, queued: false);
-                    Hint(5, queued: false);
-                    Hint(6, queued: true);
-                    Assert.Equal(expected, Processed(ring, expected));
+                    Pager.WillNeedPages(state, 5);
+                    Assert.Equal(expected, WaitForResident(page, expected));
 
-                    // many other pages take the slots, so page 5 is queued again
-                    for (var batch = 0; batch < 13; batch++)
-                    {
-                        for (var page = 0; page < 8000; page++)
-                            Hint(1000 + batch * 8000 + page, queued: true);
-                        Assert.Equal(expected, Processed(ring, expected)); // within the queue size, nothing is dropped
-                    }
-                    Hint(5, queued: true);
-                    Assert.Equal(expected, Processed(ring, expected));
+                    // asked for a moment ago: skipped, so it stays out of memory after we drop it
+                    DropFromPageCache(file);
+                    Pager.WillNeedPages(state, 5);
+                    Thread.Sleep(200);
+                    Assert.Equal(0, ResidentPages(page, Constants.Storage.PageSize));
+
+                    // another page is not affected
+                    Pager.WillNeedPages(state, 6);
+                    Assert.Equal(expected, WaitForResident(state.ReadAddress + 6 * Constants.Storage.PageSize, expected));
                 }
             }
         }
@@ -124,23 +126,13 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
             IOExtensions.DeleteDirectory(path);
         }
 
-        // the requests the ring has handled, once it has handled the expected number (or after 10 seconds)
-        static long Processed(PrefetchRing ring, long expected)
+        static int WaitForResident(byte* address, int expected)
         {
             var sw = Stopwatch.StartNew();
-            while (true)
-            {
-                var stats = ring.GetStats()!.Value;
-                Assert.Equal(0, stats.DroppedFull);
-                var processed = stats.Submitted + stats.Failed; // a hint past the end of the file may fail, it was still queued
-                if (processed >= expected || sw.Elapsed > TimeSpan.FromSeconds(10))
-                {
-                    Thread.Sleep(50); // nothing more should arrive
-                    stats = ring.GetStats()!.Value;
-                    return stats.Submitted + stats.Failed;
-                }
+            int resident;
+            while ((resident = ResidentPages(address, Constants.Storage.PageSize)) < expected && sw.Elapsed < TimeSpan.FromSeconds(5))
                 Thread.Sleep(5);
-            }
+            return resident;
         }
     }
 
@@ -187,7 +179,7 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
                     return;
                 }
 
-                Assert.True(Pager.PrefetchPages(state, 0, pages));
+                Assert.Equal(1, Pal.rvn_pager_prefetch(state.Handle, 0, (long)pages * Constants.Storage.PageSize));
 
                 var sw = Stopwatch.StartNew();
                 int resident;

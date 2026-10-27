@@ -555,9 +555,9 @@ namespace Voron.Data.Fixed
         }
 
         /// <summary>
-        /// Queues a read of the leaf page that holds <paramref name="key"/> without reading the leaf: the branch pages on
-        /// the way are read (they are usually in memory), the leaf goes to the pager's prefetch. This does not use or fill
-        /// the per transaction search state: the write transaction searches on its own and finds the leaf in memory.
+        /// Starts the read of the leaf page that holds <paramref name="key"/> without waiting for it: the branch pages on the
+        /// way are read (they are usually in memory), the leaf is asked for with <see cref="Pager.WillNeedPages"/>. This does
+        /// not use or fill the per transaction search state: the write transaction searches on its own.
         /// </summary>
         public void PrefetchLeafFor(TVal key)
         {
@@ -579,7 +579,7 @@ namespace Voron.Data.Fixed
                 var childPageNumber = page.GetEntry(page.LastSearchPosition)->PageNumber;
                 if (level == header->Depth - 1)
                 {
-                    Pager.PrefetchPages(_tx.DataPagerState, childPageNumber);
+                    Pager.WillNeedPages(_tx.DataPagerState, childPageNumber);
                     return;
                 }
                 page = GetReadOnlyPage(childPageNumber);

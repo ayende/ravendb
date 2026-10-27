@@ -8,50 +8,35 @@ namespace Voron.Impl.Paging;
 public unsafe partial class Pager
 {
     // Data files are opened with random access advice, so a page fault reads only the 4 KB it touches. Where we know
-    // that a whole page (or several) will be needed, we queue a read of the exact range on the PAL's prefetch ring: fire and
-    // forget, it races the code that touches the pages.
-    private static readonly bool PrefetchRingSupported = PlatformDetails.RunningOnLinux;
+    // that a whole page (or several) will be needed soon, we ask the kernel for the exact range right away: the read is
+    // in flight before the code that needs the pages runs, and that code waits at most for the rest of it. (A request
+    // queued on the prefetch ring arrived after the fault: the merger then read each half of a page on its own.)
+    private static readonly bool WillNeedSupported = PlatformDetails.RunningOnLinux;
 
-    // Hot pages (index leaves, section headers) are hinted on almost every request, and each queued hint costs an io_uring
-    // worker pass even when the page is in memory. So we remember the recently queued pages: a slot holds the page
-    // number + 1 (0 is empty), and a page leaves the table when another page takes its slot, so a hot page is hinted
-    // again after a while.
+    // Hot pages (index leaves, section headers) are asked for on almost every request, so we remember the recent ones:
+    // a slot holds the page number + 1 (0 is empty), and a page leaves the table when another page takes its slot, so a
+    // hot page is asked for again after a while.
     private const int RecentHintsBits = 12;
     private int[] _recentHints;
 
     /// <summary>
-    /// Starts reading the pages into the page cache. Returns false if the request was dropped. A range that starts at a
-    /// page that was queued a moment ago is not queued again.
-    /// </summary>
-    public static bool PrefetchPages(State state, long pageNumber, int numberOfPages = 1)
-    {
-        if (PrefetchRingSupported == false)
-            return false;
-
-        var recent = state.Pager._recentHints ??= new int[1 << RecentHintsBits];
-        ref var slot = ref recent[(int)(((ulong)pageNumber * 0x9E3779B97F4A7C15UL) >> (64 - RecentHintsBits))]; // Fibonacci hashing
-        var key = (int)(pageNumber + 1); // a file of more than 16 TB may skip a hint on a collision of the low bits
-        if (Volatile.Read(ref slot) == key)
-            return true;
-
-        if (Pal.rvn_pager_prefetch(state.Handle, pageNumber * Constants.Storage.PageSize, (long)numberOfPages * Constants.Storage.PageSize) != 1)
-            return false; // dropped: a later hint may queue it
-
-        Volatile.Write(ref slot, key);
-        return true;
-    }
-
-    /// <summary>
-    /// Starts the read of the pages before the caller touches them, so the faults wait on one exact read instead of one
-    /// read per 4 KB. Synchronous (a madvise call), unlike <see cref="PrefetchPages"/>: a queued hint for a page that we
-    /// touch right away arrives after the fault.
+    /// Starts reading the pages into the page cache now (a madvise call) and returns. A range that starts at a page that
+    /// was asked for a moment ago is skipped.
     /// </summary>
     public static void WillNeedPages(State state, long pageNumber, int numberOfPages = 1)
     {
-        if (PrefetchRingSupported == false || state.Pager.Options.RunningOn32Bits)
+        if (WillNeedSupported == false || state.Pager.Options.RunningOn32Bits)
             return;
+
+        var recent = state.Pager._recentHints ??= new int[1 << RecentHintsBits];
+        ref var slot = ref recent[(int)(((ulong)pageNumber * 0x9E3779B97F4A7C15UL) >> (64 - RecentHintsBits))]; // Fibonacci hashing
+        var key = (int)(pageNumber + 1); // a file of more than 16 TB may skip a request on a collision of the low bits
+        if (Volatile.Read(ref slot) == key)
+            return;
+
         var range = new PalDefinitions.PrefetchRanges(state.ReadAddress + pageNumber * Constants.Storage.PageSize,
             (long)numberOfPages * Constants.Storage.PageSize, state.Pager._prefetchRequestSize);
-        Pal.rvn_prefetch_ranges(&range, 1, out _);
+        if (Pal.rvn_prefetch_ranges(&range, 1, out _) == PalFlags.FailCodes.Success)
+            Volatile.Write(ref slot, key);
     }
 }
