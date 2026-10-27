@@ -912,23 +912,17 @@ namespace Voron.Data.BTrees
 
         private bool TryUseRecentTransactionPage(Slice key, out TreePage page, out TreeNodeHeader* node)
         {
-            if (_recentlyFoundPages == null || _recentlyFoundPages.TryFind(key, out var foundPage) == false)
+            ref readonly var foundPage = ref _recentlyFoundPages == null ? ref Unsafe.NullRef<FoundTreePageDescriptor>() : ref _recentlyFoundPages.Find(key);
+            if (Unsafe.IsNullRef(in foundPage))
             {
                 page = default;
                 node = null;
                 return false;
             }
 
-            if (foundPage.Page.IsValid)
-            {
-                // we can't share the same instance, Page instance may be modified by
-                // concurrently run iterators
-                page = new TreePage(foundPage.Page.Base, foundPage.Page.PageSize);
-            }
-            else
-            {
-                page = GetReadOnlyTreePage(foundPage.Number);
-            }
+            // we can't share the same instance, Page instance may be modified by
+            // concurrently run iterators
+            page = new TreePage(foundPage.Page.Base, foundPage.Page.PageSize);
 
             if (page.IsLeaf == false)
                 VoronUnrecoverableErrorException.Raise(_llt, "Index points to a non leaf page");
@@ -940,7 +934,8 @@ namespace Voron.Data.BTrees
 
         private bool TryUseRecentTransactionPage(Slice key, out TreeCursor cursor, out TreePage page, out TreeNodeHeader* node, bool backward)
         {
-            if (_recentlyFoundPages == null || _recentlyFoundPages.TryFind(key, out var foundPage) == false)
+            ref readonly var foundPage = ref _recentlyFoundPages == null ? ref Unsafe.NullRef<FoundTreePageDescriptor>() : ref _recentlyFoundPages.Find(key);
+            if (Unsafe.IsNullRef(in foundPage))
             {
                 page = default;
                 node = null;
@@ -948,18 +943,9 @@ namespace Voron.Data.BTrees
                 return false;
             }
 
-            var lastFoundPageNumber = foundPage.Number;
-
-            if (foundPage.Page.IsValid)
-            {
-                // we can't share the same instance, Page instance may be modified by
-                // concurrently run iterators
-                page = new TreePage(foundPage.Page.Base, foundPage.Page.PageSize);
-            }
-            else
-            {
-                page = GetReadOnlyTreePage(lastFoundPageNumber);
-            }
+            // we can't share the same instance, Page instance may be modified by
+            // concurrently run iterators
+            page = new TreePage(foundPage.Page.Base, foundPage.Page.PageSize);
 
             if (page.IsLeaf == false)
                 VoronUnrecoverableErrorException.Raise(_llt, "Index points to a non leaf page");
