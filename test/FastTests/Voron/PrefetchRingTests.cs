@@ -24,11 +24,8 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
     {
         const int maxFiles = 64;
         using var ring = new PrefetchRing(ringEntries: 8, maxFiles, queueSize: 64);
-        if (ring.Handle == null)
-        {
-            Output.WriteLine("io_uring is not available here (kernel or seccomp policy): no ring to register with");
-            return;
-        }
+        if (ring.IsAvailable == false)
+            return; // Windows / macOS
 
         var path = RavenTestHelper.NewDataPath(nameof(DataFilesReleaseTheirRingRegistrationWhenClosed), 0, forceCreateDir: true);
         var open = new List<(Pager Pager, Pager.State State)>();
@@ -76,7 +73,7 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
         }
 
         ring.Dispose(); // no file is registered any more
-        Assert.True(ring.Handle == null);
+        Assert.False(ring.IsAvailable);
     }
 
     [RavenFact(RavenTestCategory.Voron)]
@@ -110,9 +107,7 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
             using (pager)
             using (state)
             {
-                // without io_uring (old kernel, seccomp policy) the PAL falls back to posix_fadvise on this thread
-                var ringAvailable = PrefetchRing.Default.Handle != null;
-                Output.WriteLine($"prefetch ring available: {ringAvailable}");
+                var ringAvailable = PrefetchRing.Default.IsAvailable;
 
                 var expected = content.Length / Environment.SystemPageSize;
                 DropFromPageCache(file);
@@ -134,9 +129,10 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
 
                 if (ringAvailable)
                 {
-                    Assert.True(PrefetchRing.Default.TryGetStats(out var submitted, out _, out _, out var failed));
-                    Assert.True(submitted > 0);
-                    Assert.Equal(0, failed);
+                    var stats = PrefetchRing.Default.GetStats();
+                    Assert.NotNull(stats);
+                    Assert.True(stats.Value.Submitted > 0);
+                    Assert.Equal(0, stats.Value.Failed);
                 }
             }
         }

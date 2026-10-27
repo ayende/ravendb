@@ -1290,14 +1290,15 @@ namespace Raven.Server.Documents
 
         /// <summary>
         /// Queues reads of the pages around <paramref name="document"/> that reading it did not bring in: the rest of its page,
-        /// its section header page and its etag-index entries. Uses the read transaction the document was read with.
+        /// its section header page, and the leaf pages that hold its current etag in the all-documents and collection etag
+        /// indexes (the entries a change of the document removes). Uses the read transaction the document was read with.
         /// </summary>
         public void PrefetchDocument(DocumentsOperationContext context, Document document)
         {
             var collectionName = ExtractCollectionName(context, document.Data);
             var table = context.Transaction.InnerTransaction.OpenTable(DocumentDatabase.GetDocsSchemaForCollection(collectionName),
                 collectionName.GetTableName(CollectionTableType.Documents));
-            table?.Prefetch(document.StorageId);
+            table?.Prefetch(document.StorageId, Schemas.Documents.AllDocsEtagsIndex, Schemas.Documents.CollectionEtagsIndex);
         }
 
         public Document GetByEtag(DocumentsOperationContext context, long etag)

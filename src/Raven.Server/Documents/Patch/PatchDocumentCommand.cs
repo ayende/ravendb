@@ -496,8 +496,14 @@ namespace Raven.Server.Documents.Patch
             var storage = context.DocumentDatabase.DocumentsStorage;
             using (DocumentIdWorker.GetLoweredIdSliceFromId(context, prepared.Id, out Slice lowerId))
             {
-                if (storage.GetTableValueReaderForDocument(context, lowerId, throwOnConflict: false, out TableValueReader current) == false)
-                    return false;
+                // conflicts throw like the script runner's lookup does
+                if (storage.GetTableValueReaderForDocument(context, lowerId, throwOnConflict: true, out TableValueReader current) == false)
+                {
+                    // deleted since the snapshot: what the script runner returns for a missing document (the fast path runs
+                    // only without patch-if-missing / create-if-missing)
+                    PatchResult = new PatchResult { Status = PatchStatus.DocumentDoesNotExist };
+                    return true;
+                }
                 var currentChangeVector = DocumentsStorage.TableValueToChangeVector(context, (int)Schemas.Documents.DocumentsTable.ChangeVector, current);
                 if (ChangeVector.CompareVersion(currentChangeVector, prepared.ChangeVector, context) != 0)
                     return false;
@@ -522,11 +528,16 @@ namespace Raven.Server.Documents.Patch
 
         private bool TryApplySimplePatch(DocumentsOperationContext context)
         {
+            // the fast path is only used without an expected change vector, so the document's own one is the only check
+            Debug.Assert(_expectedChangeVector == null, "a simple patch with an expected change vector");
             var storage = context.DocumentDatabase.DocumentsStorage;
             using (var current = storage.Get(context, _id))
             {
-                if (current?.Data == null)
-                    return false; // missing documents keep the script's semantics
+                if (current == null)
+                {
+                    PatchResult = new PatchResult { Status = PatchStatus.DocumentDoesNotExist };
+                    return true;
+                }
 
                 if (_simplePatch.TryApply(context, current.Id, current.Data, _patch.Args, out var modified) == false)
                     return false;

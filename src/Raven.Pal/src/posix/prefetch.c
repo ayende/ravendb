@@ -33,6 +33,11 @@
  *
  * A ring is an object: rvn_prefetch_ring_create / rvn_prefetch_ring_destroy. The server keeps one for the process;
  * a ring can only be destroyed once no file is registered with it.
+ *
+ * Where io_uring is not allowed (an old kernel or a seccomp policy, as in default Docker), the same queue is drained by
+ * the same thread with posix_fadvise on a duplicate of each registered descriptor, so callers never wait either way.
+ * A request that races the unregistration of its file may reach the descriptor number after it was reused: that is a
+ * wasted read-ahead, never a write.
  */
 
 #define CACHE_LINE 64
@@ -65,6 +70,8 @@ struct prefetch_state
 
     /* set once at init */
     alignas(CACHE_LINE) struct io_uring ring;
+    bool use_io_uring;
+    int *fds; /* without io_uring: a duplicate of each registered file's descriptor, -1 when free */
     int eventfd;
     pthread_t thread;
     uint32_t ring_entries;
@@ -154,6 +161,15 @@ _prefetch_thread(void *arg)
                 atomic_fetch_add_explicit(&s->dropped_stale, 1, memory_order_relaxed);
                 continue;
             }
+            if (s->use_io_uring == false)
+            {
+                int fd = s->fds[slot];
+                if (fd == -1 || posix_fadvise(fd, (off_t)req.offset, (off_t)req.length, POSIX_FADV_WILLNEED) != 0)
+                    atomic_fetch_add_explicit(&s->failed, 1, memory_order_relaxed);
+                else
+                    atomic_fetch_add_explicit(&s->submitted, 1, memory_order_relaxed);
+                continue;
+            }
             struct io_uring_sqe *sqe = _prefetch_get_sqe(s);
             if (sqe == NULL)
             {
@@ -165,9 +181,12 @@ _prefetch_thread(void *arg)
             io_uring_sqe_set_data64(sqe, (uint64_t)req.ticket);
             atomic_fetch_add_explicit(&s->submitted, 1, memory_order_relaxed);
         }
-        if (io_uring_sq_ready(&s->ring) > 0)
-            _prefetch_submit(s);
-        _prefetch_reap(s, false);
+        if (s->use_io_uring)
+        {
+            if (io_uring_sq_ready(&s->ring) > 0)
+                _prefetch_submit(s);
+            _prefetch_reap(s, false);
+        }
 
         /* sleep until a producer wakes us; re-check after announcing, so a push between the drain and the flag is not lost */
         atomic_store_explicit(&s->sleeping, 1, memory_order_seq_cst);
@@ -192,6 +211,7 @@ _prefetch_thread(void *arg)
 PRIVATE void
 _prefetch_free(struct prefetch_state *s)
 {
+    free(s->fds);
     free(s->queue);
     free(s->free_slots);
     free((void *)s->generations);
@@ -236,20 +256,23 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
     s->free_count = max_files;
     pthread_mutex_init(&s->slots_lock, NULL);
 
-    int rc = io_uring_queue_init(s->ring_entries, &s->ring, 0);
-    if (rc < 0)
-    {
-        _prefetch_free(s);
-        *detailed_error_code = -rc;
-        return FAIL_CREATE_IO_RING;
-    }
-    rc = io_uring_register_files_sparse(&s->ring, (unsigned)max_files);
-    if (rc < 0)
+    s->use_io_uring = io_uring_queue_init(s->ring_entries, &s->ring, 0) == 0;
+    if (s->use_io_uring && io_uring_register_files_sparse(&s->ring, (unsigned)max_files) < 0)
     {
         io_uring_queue_exit(&s->ring);
-        _prefetch_free(s);
-        *detailed_error_code = -rc;
-        return FAIL_CREATE_IO_RING;
+        s->use_io_uring = false;
+    }
+    if (s->use_io_uring == false)
+    {
+        s->fds = malloc((size_t)max_files * sizeof(int));
+        if (s->fds == NULL)
+        {
+            _prefetch_free(s);
+            *detailed_error_code = ENOMEM;
+            return FAIL_NOMEM;
+        }
+        for (int32_t i = 0; i < max_files; i++)
+            s->fds[i] = -1;
     }
     s->eventfd = eventfd(0, EFD_CLOEXEC);
     if (s->eventfd == -1 || pthread_create(&s->thread, NULL, _prefetch_thread, s) != 0)
@@ -257,9 +280,10 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
         *detailed_error_code = errno;
         if (s->eventfd != -1)
             close(s->eventfd);
-        io_uring_queue_exit(&s->ring);
+        if (s->use_io_uring)
+            io_uring_queue_exit(&s->ring);
         _prefetch_free(s);
-        return FAIL_CREATE_IO_RING;
+        return FAIL_CREATE_THREAD;
     }
     pthread_setname_np(s->thread, "Rvn.Prefetch");
     *ring = s;
@@ -290,7 +314,8 @@ rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code)
     (void)r;
     pthread_join(s->thread, NULL);
 
-    io_uring_queue_exit(&s->ring);
+    if (s->use_io_uring)
+        io_uring_queue_exit(&s->ring);
     close(s->eventfd);
     pthread_mutex_destroy(&s->slots_lock);
     _prefetch_free(s);
@@ -314,12 +339,26 @@ rvn_prefetch_register(void *ring, int fd, int64_t *ticket, int32_t *detailed_err
         return FAIL_PREFETCH_FILES_EXHAUSTED;
     }
     int32_t slot = s->free_slots[s->free_head];
-    int rc = io_uring_register_files_update(&s->ring, (unsigned)slot, &fd, 1);
-    if (rc < 0)
+    if (s->use_io_uring)
     {
-        pthread_mutex_unlock(&s->slots_lock);
-        *detailed_error_code = -rc;
-        return FAIL_CREATE_IO_RING;
+        int rc = io_uring_register_files_update(&s->ring, (unsigned)slot, &fd, 1);
+        if (rc < 0)
+        {
+            pthread_mutex_unlock(&s->slots_lock);
+            *detailed_error_code = -rc;
+            return FAIL_CREATE_IO_RING;
+        }
+    }
+    else
+    {
+        int dup_fd = dup(fd); /* the pager may close and reopen its descriptor; the duplicate lives until unregister */
+        if (dup_fd == -1)
+        {
+            pthread_mutex_unlock(&s->slots_lock);
+            *detailed_error_code = errno;
+            return FAIL_DUPLICATE_HANDLE;
+        }
+        s->fds[slot] = dup_fd;
     }
     s->free_head = (s->free_head + 1) % s->max_files;
     s->free_count--;
@@ -341,8 +380,16 @@ rvn_prefetch_unregister(void *ring, int64_t ticket)
     pthread_mutex_lock(&s->slots_lock);
     /* queued requests carry the old generation and are dropped; in flight ones hold their own file reference */
     atomic_fetch_add_explicit(&s->generations[slot], 1, memory_order_acq_rel);
-    int none = -1;
-    (void)io_uring_register_files_update(&s->ring, (unsigned)slot, &none, 1);
+    if (s->use_io_uring)
+    {
+        int none = -1;
+        (void)io_uring_register_files_update(&s->ring, (unsigned)slot, &none, 1);
+    }
+    else
+    {
+        close(s->fds[slot]);
+        s->fds[slot] = -1;
+    }
     s->free_slots[(s->free_head + s->free_count) % s->max_files] = slot;
     s->free_count++;
     pthread_mutex_unlock(&s->slots_lock);

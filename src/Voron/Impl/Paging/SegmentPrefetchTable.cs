@@ -29,7 +29,9 @@ internal sealed class SegmentPrefetchTable
         public long Value;
     }
 
-    private const int Stripes = 16;
+    // a counter line per processor (a power of two, so a mask picks it), capped so a server with thousands of data files
+    // does not spend much memory on it
+    private static readonly int Stripes = Math.Min(64, Bits.PowerOf2(Environment.ProcessorCount));
 
     private readonly PrefetchPolicy _policy;
     private readonly int _segmentShift;

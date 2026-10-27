@@ -1653,8 +1653,6 @@ namespace Voron
 
         private unsafe void UnlikelyValidatePage(long pageNumber, PageHeader* current, long index, long old, long bitToSet, Pager.State dataPagerState)
         {
-            // The checksum reads the whole page, and with random access advice each 4 KB half would fault separately (two
-            // reads): ask for the whole page before the first access to it.
             Pager.PrefetchPages(dataPagerState, pageNumber);
 
             // No need to call EnsureMapped here. ValidatePageChecksum is only called for pages in the datafile, 

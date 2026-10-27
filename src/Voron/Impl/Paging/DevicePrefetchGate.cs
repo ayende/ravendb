@@ -62,21 +62,30 @@ public sealed class DevicePrefetchGate : IDisposable
     {
         if (_hasSignal == false)
             return true;
-        if (Volatile.Read(ref _tokens) < bytes)
-            return false;
-        Interlocked.Add(ref _tokens, -bytes);
-        return true;
+        while (true)
+        {
+            var tokens = Volatile.Read(ref _tokens);
+            if (tokens < bytes)
+                return false;
+            if (Interlocked.CompareExchange(ref _tokens, tokens - bytes, tokens) == tokens)
+                return true;
+        }
     }
 
     internal void Sample(long nowMs)
     {
         if (_stat == null)
             return;
+        // The device's stat line (Documentation/block/stat.rst) holds counters since boot. We use three of them:
+        //   field 1  reads completed
+        //   field 4  milliseconds spent on reads, summed over all reads
+        //   field 11 milliseconds weighted by the number of requests in flight
+        // Between two samples, (field 4 delta / field 1 delta) is the average read latency, and (field 11 delta / elapsed
+        // milliseconds) is the average queue depth, the same numbers iostat reports as r_await and aqu-sz.
         Span<long> fields = stackalloc long[11];
         if (ReadStat(_stat, fields) == false)
             return;
-        // fields: 1 reads completed, 4 ms reading, 11 weighted ms in queue
-        Sample(nowMs, fields[0], fields[3], fields[10]);
+        Sample(nowMs, reads: fields[0], readMs: fields[3], weightedMs: fields[10]);
     }
 
     internal void Sample(long nowMs, long reads, long readMs, long weightedMs)
@@ -96,6 +105,9 @@ public sealed class DevicePrefetchGate : IDisposable
         var queueDepth = (weightedMs - _lastWeightedMs) / (double)elapsedMs;
         (_lastMs, _lastReads, _lastReadMs, _lastWeightedMs) = (nowMs, reads, readMs, weightedMs);
 
+        // Congested when the queue is deep, or when reads take more than twice as long as the best we saw recently (with
+        // enough reads in the sample to trust the average). A congested device gets no prefetch and half the budget;
+        // otherwise the budget grows by a fixed step every sample (additive increase, multiplicative decrease).
         var congested = queueDepth > CongestedQueueDepth;
         if (deltaReads >= MinReadsForLatency)
         {

@@ -255,7 +255,9 @@ void delete_global_state(struct handle_global_state *global_state)
 PRIVATE int64_t
 _read_queue_limit_kb(unsigned int major_number, unsigned int minor_number, const char *name)
 {
-    // a partition keeps the queue limits on its parent disk
+    // /sys/dev/block/<major>:<minor> is a link to the device's directory. A partition's directory sits inside its disk's
+    // and has no queue/ of its own; the kernel resolves "../queue" through the link to the disk's limits. For nvme0n1p1
+    // (259:1): /sys/dev/block/259:1/queue does not exist, /sys/dev/block/259:1/../queue is .../nvme0n1/queue.
     const char *dirs[] = {"queue", "../queue"};
     for (int i = 0; i < 2; i++)
     {
@@ -696,11 +698,11 @@ int32_t rvn_write_file_io(
 }
 
 
-/* Starts reading the range into the page cache: through the prefetch ring when the file is registered with one, or with
-   posix_fadvise on the calling thread where io_uring is not available (an old kernel or a seccomp policy). Both only
-   start the read. The kernel reads at most max(io_pages, ra_pages) of a WILLNEED request and silently drops the rest,
-   so a range goes out in requests of the device's size. Returns 1 when the whole range was requested, 0 when part of it
-   was dropped (the ring's queue is full). */
+/* Queues a read of the range into the page cache on the prefetch ring the file is registered with (io_uring, or its
+   posix_fadvise thread where io_uring is not allowed); the caller never waits. The kernel reads at most
+   max(io_pages, ra_pages) of a WILLNEED request and silently drops the rest, so a range goes out in requests of the
+   device's size. Returns 1 when the whole range was queued, 0 when part of it was dropped (the queue is full) or the
+   file is not registered. */
 EXPORT int32_t
 rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 {
@@ -717,10 +719,9 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
     for (int64_t end = offset + length; offset < end; offset += request_size)
     {
         int64_t size = rvn_min(request_size, end - offset);
-        if (ring != NULL)
-            all &= rvn_prefetch_enqueue(ring, ticket, offset, size);
-        else
-            all &= posix_fadvise(handle_ptr->file_fd, offset, size, POSIX_FADV_WILLNEED) == 0;
+        if (ring == NULL)
+            return 0;
+        all &= rvn_prefetch_enqueue(ring, ticket, offset, size);
     }
     return all;
 #endif

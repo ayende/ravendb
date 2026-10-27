@@ -556,7 +556,8 @@ namespace Voron.Data.Fixed
 
         /// <summary>
         /// Queues a read of the leaf page that holds <paramref name="key"/> without reading the leaf: the branch pages on
-        /// the way are read (they are usually in memory), the leaf goes to the pager's prefetch ring.
+        /// the way are read (they are usually in memory), the leaf goes to the pager's prefetch. This does not use or fill
+        /// the per transaction search state: the write transaction searches on its own and finds the leaf in memory.
         /// </summary>
         public void PrefetchLeafFor(TVal key)
         {
@@ -568,6 +569,10 @@ namespace Voron.Data.Fixed
             var page = GetReadOnlyPage(header->RootPageNumber);
             for (var level = 1; ; level++)
             {
+                // Deletions can leave a leaf above the deepest level, so the page in hand is checked: a leaf was already
+                // read. No path is deeper than Depth, so below the last branch level there is a leaf, which we do not read.
+                if (page.IsLeaf)
+                    return;
                 BinarySearch(ref page, key);
                 if (page.LastMatch < 0 && page.LastSearchPosition > 0)
                     page.LastSearchPosition--;

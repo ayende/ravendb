@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Concurrent;
 using System.Collections.Generic;
 using Acornima;
 using Acornima.Ast;
@@ -21,8 +20,12 @@ namespace Raven.Server.Documents.Patch;
 /// </summary>
 internal sealed class SimpleAssignmentPatch
 {
-    private const int MaxCachedScripts = 1024;
-    private static readonly ConcurrentDictionary<string, SimpleAssignmentPatch> Cache = new();
+    private sealed class CacheEntry
+    {
+        public SimpleAssignmentPatch Patch;
+    }
+
+    private static readonly SizeLimitedConcurrentDictionary<string, CacheEntry> Cache = new(size: 1024, StringComparer.Ordinal);
     private static readonly SimpleAssignmentPatch NotSimple = new([]);
     private static readonly ParserOptions ParserOptions = ParserOptions.Default;
 
@@ -55,14 +58,13 @@ internal sealed class SimpleAssignmentPatch
         if (patch?.Script == null || patch.Type != PatchRequestType.Patch || patch.HasFunctions)
             return null;
 
-        if (Cache.TryGetValue(patch.Script, out var parsed) == false)
+        if (Cache.TryGetValue(patch.Script, out var entry) == false)
         {
-            parsed = Parse(patch.Script) ?? NotSimple;
-            if (Cache.Count < MaxCachedScripts)
-                Cache.TryAdd(patch.Script, parsed);
+            entry = new CacheEntry { Patch = Parse(patch.Script) ?? NotSimple };
+            Cache.Set(patch.Script, entry);
         }
 
-        return ReferenceEquals(parsed, NotSimple) ? null : parsed;
+        return ReferenceEquals(entry.Patch, NotSimple) ? null : entry.Patch;
     }
 
     private static SimpleAssignmentPatch Parse(string script)

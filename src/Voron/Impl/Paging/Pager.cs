@@ -57,9 +57,13 @@ public unsafe partial class Pager : IDisposable
         
         var pager = new Pager(options, filename, flags, GetFunctions(options, flags));
         var ring = flags.HasFlag(Pal.OpenFileFlags.Prefetch) ? options.PrefetchRing ?? PrefetchRing.Default : null;
-        void* prefetchRing = ring != null ? ring.Handle : null;
-        var result = Pal.rvn_init_pager(filename, initialFileSize, flags, prefetchRing,
-            out var handle, out var readOnlyMemory, out var writeMemory, out var memorySize, out var error);
+        void* handle;
+        byte* readOnlyMemory, writeMemory;
+        long memorySize;
+        int error;
+        var result = ring != null
+            ? ring.InitPager(filename, initialFileSize, flags, out handle, out readOnlyMemory, out writeMemory, out memorySize, out error)
+            : Pal.rvn_init_pager(filename, initialFileSize, flags, null, out handle, out readOnlyMemory, out writeMemory, out memorySize, out error);
         if (result == PalFlags.FailCodes.FailPrefetchFilesExhausted)
             throw new InvalidOperationException(
                 $"Cannot open '{filename}': {ring!.MaxFiles} data files are already open with the prefetch I/O ring, which is its limit. " +
@@ -72,7 +76,7 @@ public unsafe partial class Pager : IDisposable
         (state.TotalAllocatedSize, state.TotalPhysicalSpace) = pager.GetFileSize(state);
         pager.InstallState(state);
         pager.Initialize(memorySize);
-        pager._prefetchViaRing = prefetchRing != null;
+        pager._prefetchViaRing = ring is { IsAvailable: true };
         Pal.rvn_pager_get_prefetch_request_size(handle, out pager._prefetchRequestSize);
         if (Pal.rvn_pager_get_device_id(handle, out var deviceId, out _) == PalFlags.FailCodes.Success)
             pager._prefetchTable.Gate = PrefetchPolicy.Global.GetGate(deviceId);

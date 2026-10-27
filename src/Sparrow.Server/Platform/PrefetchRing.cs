@@ -4,20 +4,24 @@ using Sparrow.Platform;
 
 namespace Sparrow.Server.Platform;
 
+public readonly record struct PrefetchRingStats(long Submitted, long DroppedFull, long DroppedStale, long Failed);
+
 /// <summary>
-/// An io_uring that the PAL uses to read data file ranges into the page cache. The process uses <see cref="Default"/>;
-/// tests can create their own. Where io_uring is not available (an old kernel, a seccomp policy, Windows, macOS)
-/// <see cref="Handle"/> is null and the PAL starts the reads with posix_fadvise instead.
-/// A ring can only be disposed after every data file registered with it was closed.
+/// The PAL's queue of read-ahead requests for data files: drained by io_uring, or by a posix_fadvise thread where
+/// io_uring is not allowed. The process uses <see cref="Default"/>; tests can create their own. On Windows and macOS
+/// there is no ring (<see cref="IsAvailable"/> is false). A ring can only be disposed after every data file opened
+/// with it was closed.
 /// </summary>
 public sealed unsafe class PrefetchRing : IDisposable
 {
     public static readonly PrefetchRing Default = new(PalConfiguration.PrefetchRingEntries, PalConfiguration.PrefetchMaxFiles, PalConfiguration.PrefetchQueueSize);
 
-    public void* Handle { get; private set; }
+    private void* _handle;
 
-    /// <summary>The number of data files that can be registered with the ring at the same time.</summary>
+    /// <summary>The number of data files that can be open with the ring at the same time.</summary>
     public int MaxFiles { get; }
+
+    public bool IsAvailable => _handle != null;
 
     public PrefetchRing(int ringEntries, int maxFiles, int queueSize)
     {
@@ -27,26 +31,31 @@ public sealed unsafe class PrefetchRing : IDisposable
 
         queueSize = Bits.PowerOf2(queueSize); // the PAL indexes the queue by mask
         var rc = Pal.rvn_prefetch_ring_create(ringEntries, maxFiles, queueSize, out var handle, out var errorCode);
-        if (rc == PalFlags.FailCodes.Success)
-            Handle = handle;
-        else if (rc != PalFlags.FailCodes.FailCreateIoRing) // io_uring is not allowed here: no ring, posix_fadvise instead
+        if (rc != PalFlags.FailCodes.Success)
             PalHelper.ThrowLastError(rc, errorCode, $"Failed to create a prefetch ring ({ringEntries} entries, {maxFiles} files, queue of {queueSize})");
+        _handle = handle;
     }
 
-    public bool TryGetStats(out long submitted, out long droppedFull, out long droppedStale, out long failed)
+    /// <summary>Opens a pager whose file is registered with this ring (when <paramref name="flags"/> include Prefetch).</summary>
+    public PalFlags.FailCodes InitPager(string filename, long initialFileSize, Pal.OpenFileFlags flags,
+        out void* handle, out byte* readAddress, out byte* writeAddress, out long memorySize, out int errorCode) =>
+        Pal.rvn_init_pager(filename, initialFileSize, flags, _handle, out handle, out readAddress, out writeAddress, out memorySize, out errorCode);
+
+    public PrefetchRingStats? GetStats()
     {
-        submitted = droppedFull = droppedStale = failed = 0;
-        return Handle != null && Pal.rvn_prefetch_ring_stats(Handle, out submitted, out droppedFull, out droppedStale, out failed) == PalFlags.FailCodes.Success;
+        if (_handle == null || Pal.rvn_prefetch_ring_stats(_handle, out var submitted, out var droppedFull, out var droppedStale, out var failed) != PalFlags.FailCodes.Success)
+            return null;
+        return new PrefetchRingStats(submitted, droppedFull, droppedStale, failed);
     }
 
     public void Dispose()
     {
-        var handle = Handle;
+        var handle = _handle;
         if (handle == null)
             return;
         var rc = Pal.rvn_prefetch_ring_destroy(handle, out var errorCode);
         if (rc != PalFlags.FailCodes.Success)
-            PalHelper.ThrowLastError(rc, errorCode, "Failed to destroy the prefetch ring: data files are still registered with it");
-        Handle = null;
+            PalHelper.ThrowLastError(rc, errorCode, "Failed to destroy the prefetch ring: data files are still open with it");
+        _handle = null;
     }
 }

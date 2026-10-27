@@ -17,17 +17,15 @@ public class SegmentPrefetchPolicyTests(ITestOutputHelper output) : NoDisposalNe
     private sealed class Harness : IDisposable
     {
         private readonly long _memoryBytes;
-        private readonly bool _cacheHasRoom;
         private long _nowMs;
 
         public readonly PrefetchPolicy Policy = new(startTimer: false);
         public readonly SegmentPrefetchTable Table;
         public readonly List<long> Prefetches = new(); // segment numbers, in the order they were read ahead
 
-        public Harness(long fileSegments, long memorySegments, bool cacheHasRoom = false)
+        public Harness(long fileSegments, long memorySegments)
         {
             _memoryBytes = memorySegments * SegmentSize;
-            _cacheHasRoom = cacheHasRoom;
             Table = new SegmentPrefetchTable(Policy, SegmentSize, fileSegments * SegmentSize);
             Tick();
         }
@@ -50,7 +48,7 @@ public class SegmentPrefetchPolicyTests(ITestOutputHelper output) : NoDisposalNe
         public void Tick(long elapsedMs = 250)
         {
             _nowMs += elapsedMs;
-            Policy.Tick(_nowMs, _memoryBytes, _cacheHasRoom);
+            Policy.Tick(_nowMs, _memoryBytes);
         }
 
         public void Dispose() => Policy.Dispose();
@@ -125,14 +123,6 @@ public class SegmentPrefetchPolicyTests(ITestOutputHelper output) : NoDisposalNe
 
         // every scanned segment, and the one after the last, before the scan reaches it
         Assert.Equal(Enumerable.Range(0, 11).Select(x => (long)x), h.Prefetches.Distinct().Order());
-    }
-
-    [RavenFact(RavenTestCategory.Voron)]
-    public void AColdCacheWarmsUpWhenItHasRoom()
-    {
-        using var cold = new Harness(fileSegments: 640, memorySegments: 64, cacheHasRoom: true);
-        cold.Access(RandomPages(new Random(5), 0, 640, 50_000));
-        Assert.NotEmpty(cold.Prefetches);
     }
 
     [RavenFact(RavenTestCategory.Voron)]
