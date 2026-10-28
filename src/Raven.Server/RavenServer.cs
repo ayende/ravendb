@@ -381,6 +381,7 @@ namespace Raven.Server
 
                             services.Configure<DeflateCompressionProviderOptions>(options => { options.Level = Configuration.Http.DeflateResponseCompressionLevel; });
 
+                            services.AddSingleton<IResponseCompressionProvider, RavenResponseCompressionProvider>();
                             services.AddResponseCompression();
                         }
 
@@ -1827,6 +1828,30 @@ namespace Raven.Server
             public string SsoServerPublicKeyPinningHash;
 
             public readonly DateTime CreatedAt = SystemTime.UtcNow;
+
+            private CachedThumbprint _cachedThumbprint;
+
+            /// <summary>
+            /// The thumbprint of <see cref="Certificate"/>, computed once per connection instead of once per request.
+            /// </summary>
+            public string CertificateThumbprint
+            {
+                get
+                {
+                    var certificate = Certificate;
+                    if (certificate == null)
+                        return null;
+
+                    // Certificate is a public field, so the cache remembers which certificate it was computed for
+                    var cached = _cachedThumbprint;
+                    if (ReferenceEquals(cached?.Certificate, certificate) == false)
+                        _cachedThumbprint = cached = new CachedThumbprint(certificate, certificate.Thumbprint);
+
+                    return cached.Thumbprint;
+                }
+            }
+
+            private sealed record CachedThumbprint(X509Certificate2 Certificate, string Thumbprint);
 
             public AuthenticateConnection(TwoFactor twoFactor)
             {

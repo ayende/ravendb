@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using System.Threading;
 using Sparrow.Binary;
@@ -13,6 +13,10 @@ namespace Sparrow.Server.Threading;
 /// </summary>
 public class AsyncGuard : IDisposable
 {
+    // PERF: each marker gets its own cache line (128 bytes, to cover adjacent line prefetch), otherwise 8 markers
+    // share a line and every enter / exit on one core invalidates the line for the others
+    private const int Stride = 16;
+
     private readonly ulong[] _coreMarkers;
     private readonly int _mask;
     private readonly ManualResetEvent _event;
@@ -23,13 +27,14 @@ public class AsyncGuard : IDisposable
     {
         int len = Bits.PowerOf2(Environment.ProcessorCount * 2);
         _mask = len - 1;
-        _coreMarkers = new ulong[len];
+        _coreMarkers = new ulong[len * Stride];
         _event = new ManualResetEvent(false);
     }
 
     public bool TryEnter(out int idx)
     {
-        idx = Environment.CurrentManagedThreadId & _mask;
+        // the processor rather than the thread, so threads running on different cores touch different markers
+        idx = (Thread.GetCurrentProcessorId() & _mask) * Stride;
         ref var cur = ref _coreMarkers[idx];
         ulong copy = cur;
         while (true)
@@ -86,7 +91,7 @@ public class AsyncGuard : IDisposable
         while (true)
         {
             bool allMarked = true;
-            for (int i = 0; i < _coreMarkers.Length; i++)
+            for (int i = 0; i < _coreMarkers.Length; i += Stride)
             {
                 ref var cur = ref _coreMarkers[i];
                 var copy = cur;
@@ -104,7 +109,7 @@ public class AsyncGuard : IDisposable
             _event.Reset();
 
             bool allCleared = true;
-            for (int i = 0; i<_coreMarkers.Length; i++)
+            for (int i = 0; i < _coreMarkers.Length; i += Stride)
             {
                 var cur = Interlocked.Read(ref _coreMarkers[i]);
                 if (cur != WriterLockMask)

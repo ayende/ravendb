@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
@@ -406,22 +406,22 @@ namespace Raven.Server.Rachis.Remote
                 // don't care
             }
 
-            using (_disposerLock.StartDisposing())
+            if (_disposerLock.TryStartDisposing() == false)
+                return;
+
+            RemoteConnectionsList.TryRemove(_info);
+
+            try
             {
-                RemoteConnectionsList.TryRemove(_info);
-
-                try
-                {
-                    _disconnect(); // force disconnection, to abort read/write
-                }
-                catch (Exception)
-                {
-                    // even if we get an error , we must continue to the actual disposal
-                }
-
-                _releaseBuffer?.Dispose();
-                _context?.Dispose();
+                _disconnect(); // force disconnection, to abort read/write
             }
+            catch (Exception)
+            {
+                // even if we get an error , we must continue to the actual disposal
+            }
+
+            _releaseBuffer?.Dispose();
+            _context?.Dispose();
         }
 
         public RachisHello InitFollower(JsonOperationContext context)

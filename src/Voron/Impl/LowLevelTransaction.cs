@@ -175,7 +175,7 @@ namespace Voron.Impl
 
             PersistentContext = transactionPersistentContext;
 
-            TxStartTime = previous.TxStartTime;
+            _txStartTickCount = previous._txStartTickCount;
             DataPager = previous.DataPager;
             DataPagerState = previous.DataPagerState;
 
@@ -249,7 +249,7 @@ namespace Voron.Impl
                 VoronUnrecoverableErrorException.Raise(env, $"Async commit isn't supported in 32bits environments. We don't carry 32 bits state from previous tx");
 
             CurrentTransactionIdHolder = previous.CurrentTransactionIdHolder;
-            TxStartTime = DateTime.UtcNow;
+            _txStartTickCount = System.Environment.TickCount64;
             DataPager = previous.DataPager;
             DataPagerState = previous.DataPagerState;
             _id = txId;
@@ -296,7 +296,7 @@ namespace Voron.Impl
 
         public LowLevelTransaction(StorageEnvironment env, TransactionPersistentContext transactionPersistentContext, TransactionFlags flags, IFreeSpaceHandling freeSpaceHandling, ByteStringContext context = null)
         {
-            TxStartTime = DateTime.UtcNow;
+            _txStartTickCount = System.Environment.TickCount64;
 
             if (flags == TransactionFlags.ReadWrite)
             {
@@ -561,7 +561,7 @@ namespace Voron.Impl
             }
             else
             {
-                newPage = AllocatePageImpl(1, num, currentPage, zeroPage: false); // allocate new page in a log file but with the same number			
+                newPage = AllocatePageImpl(1, num, currentPage, zeroPage: false); // allocate new page in a log file but with the same number            
                 pageSize = Environment.Options.PageSize;
             }
 
@@ -990,6 +990,8 @@ namespace Voron.Impl
                 // transaction. First the pagers and internal resources, then registered ones by external parties.
                 _env.TransactionCompleted(this);
 
+                FreeRecentlyFoundPages();
+
                 _disposableScope.Dispose();
 
                 if (_disposeAllocator)
@@ -1255,14 +1257,14 @@ namespace Voron.Impl
                   ? Task.Run(() => { CommitStage2_WriteToJournal(waitForDurability: false); return true; })
                   : NoWriteToJournalRequiredTask;
 
-            var usageIncremented = false;
+            var usageSlot = -1;
 
             try
             {
                 _forTestingPurposes?.ActionToCallDuringBeginAsyncCommitAndStartNewTransaction?.Invoke();
 
-                _env.IncrementUsageOnNewTransaction();
-                usageIncremented = true;
+                usageSlot = _env.IncrementUsageOnNewTransaction();
+                nextTx.EnvironmentUsageSlot = usageSlot;
 
                 _env.ActiveTransactions.Add(nextTx);
                 _env.WriteTransactionStarted();
@@ -1278,8 +1280,8 @@ namespace Voron.Impl
 
                 try
                 {
-                    if (usageIncremented)
-                        _env.DecrementUsageOnTransactionCreationFailure();
+                    if (usageSlot != -1)
+                        _env.DecrementUsage(usageSlot);
 
                     EndAsyncCommit();
                 }
@@ -1597,10 +1599,65 @@ namespace Voron.Impl
 
         private EnvironmentStateRecord _envRecord;
         private long _localTxNextPageNumber;
-        public DateTime TxStartTime;
+        // PERF: only diagnostics read the start time, so we keep the cheap tick count and compute the date when asked
+        private long _txStartTickCount;
+
+        public DateTime TxStartTime => DateTime.UtcNow.AddMilliseconds(_txStartTickCount - System.Environment.TickCount64);
         public bool IsCloned;
         internal long? LocalPossibleOldestReadTransaction;
         internal RacyConcurrentBag.Node ActiveTransactionNode;
+
+        // the slot of the environment's transaction count that this transaction incremented
+        internal int EnvironmentUsageSlot;
+
+        // the trees that took a cache of recently found pages from the persistent context, they give it back when we are disposed
+        private TreesWithRecentlyFoundPages _treesWithRecentlyFoundPages;
+        private List<Tree> _moreTreesWithRecentlyFoundPages;
+        private int _treesWithRecentlyFoundPagesCount;
+
+        [InlineArray(InlineTreesWithRecentlyFoundPages)]
+        private struct TreesWithRecentlyFoundPages
+        {
+            private Tree _element;
+        }
+
+        private const int InlineTreesWithRecentlyFoundPages = 8;
+
+        internal RecentlyFoundTreePages AllocateRecentlyFoundPages(Tree tree)
+        {
+            if (IsDisposed)
+                return null;
+
+            if (_treesWithRecentlyFoundPagesCount < InlineTreesWithRecentlyFoundPages)
+                _treesWithRecentlyFoundPages[_treesWithRecentlyFoundPagesCount] = tree;
+            else
+                (_moreTreesWithRecentlyFoundPages ??= []).Add(tree);
+
+            _treesWithRecentlyFoundPagesCount++;
+
+            return PersistentContext.AllocateRecentlyFoundPages();
+        }
+
+        private void FreeRecentlyFoundPages()
+        {
+            var inline = Math.Min(_treesWithRecentlyFoundPagesCount, InlineTreesWithRecentlyFoundPages);
+            for (var i = 0; i < inline; i++)
+            {
+                _treesWithRecentlyFoundPages[i].FreeRecentlyFoundPages(PersistentContext);
+                _treesWithRecentlyFoundPages[i] = null;
+            }
+
+            if (_moreTreesWithRecentlyFoundPages != null)
+            {
+                foreach (var tree in _moreTreesWithRecentlyFoundPages)
+                    tree.FreeRecentlyFoundPages(PersistentContext);
+
+                _moreTreesWithRecentlyFoundPages = null;
+            }
+
+            _treesWithRecentlyFoundPagesCount = 0;
+        }
+
         public Transaction Transaction;
 
         /// <summary>

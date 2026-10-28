@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Http.Extensions;
+using Microsoft.AspNetCore.Http.Features;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Primitives;
@@ -53,10 +54,11 @@ namespace Raven.Server
 
         public void Configure(IApplicationBuilder app, ILoggerFactory loggerFactory)
         {
-            app.UseWebSockets(new WebSocketOptions
+            // PERF: the web sockets middleware allocates a handshake feature for every request it sees, so we only route upgrade requests through it
+            app.UseWhen(IsWebSocketUpgradeCandidate, appBuilder => appBuilder.UseWebSockets(new WebSocketOptions
             {
                 KeepAliveInterval = TimeSpan.FromHours(24)
-            });
+            }));
 
             _router = app.ApplicationServices.GetService<RequestRouter>();
             _server = app.ApplicationServices.GetService<RavenServer>();
@@ -78,6 +80,13 @@ namespace Raven.Server
             }
 
             app.Use(_ => RequestHandler);
+        }
+
+        private static bool IsWebSocketUpgradeCandidate(HttpContext context)
+        {
+            // HTTP/1.1 upgrade, or HTTP/2 extended CONNECT (RFC 8441)
+            return context.Features.Get<IHttpUpgradeFeature>()?.IsUpgradableRequest == true ||
+                   context.Features.Get<IHttpExtendedConnectFeature>()?.IsExtendedConnect == true;
         }
 
         private bool IsServerRunningInASafeManner()
@@ -171,7 +180,10 @@ namespace Raven.Server
                 HttpContext = context
             };
             Exception exception = null;
-            Stopwatch sp = null;
+
+            // PERF: only TrafficWatch and debug logging need the duration here (the router measures requests for the metrics),
+            // so we read the clock only when one of them is on
+            long startTimestamp = 0, endTimestamp = 0;
 
             try
             {
@@ -181,15 +193,20 @@ namespace Raven.Server
                 if (_server.ServerStore.Initialized == false)
                     await _server.ServerStore.InitializationCompleted.WaitAsync();
 
-                sp = Stopwatch.StartNew();
+                if (TrafficWatchManager.HasRegisteredClients || (_logger.IsDebugEnabled && SkipHttpLogging == false))
+                    startTimestamp = Stopwatch.GetTimestamp();
+
                 await _router.HandlePath(requestHandlerContext);
-                sp.Stop();
+
+                if (startTimestamp != 0)
+                    endTimestamp = Stopwatch.GetTimestamp();
             }
             catch (Exception e)
             {
                 try
                 {
-                    sp?.Stop();
+                    if (startTimestamp != 0 && endTimestamp == 0)
+                        endTimestamp = Stopwatch.GetTimestamp();
                     exception = e;
 
                     CheckDatabaseShutdownAndThrowIfNeeded(requestHandlerContext, ref e);
@@ -242,16 +259,18 @@ namespace Raven.Server
             }
             finally
             {
+                var elapsedMilliseconds = endTimestamp == 0 ? 0 : (long)Stopwatch.GetElapsedTime(startTimestamp, endTimestamp).TotalMilliseconds;
+
                 // check if TW has clients
                 if (TrafficWatchManager.HasRegisteredClients)
                 {
                     var database = requestHandlerContext.DatabaseName;
-                    LogTrafficWatch(context, sp?.ElapsedMilliseconds ?? 0, database);
+                    LogTrafficWatch(context, elapsedMilliseconds, database);
                 }
 
                 if (_logger.IsDebugEnabled && SkipHttpLogging == false)
                 {
-                    _logger.Debug($"{context.Request.Method} {context.Request.Path.Value}{context.Request.QueryString.Value} - {context.Response.StatusCode} - {(sp?.ElapsedMilliseconds ?? 0):#,#;;0} ms", exception);
+                    _logger.Debug($"{context.Request.Method} {context.Request.Path.Value}{context.Request.QueryString.Value} - {context.Response.StatusCode} - {elapsedMilliseconds:#,#;;0} ms", exception);
                 }
             }
         }

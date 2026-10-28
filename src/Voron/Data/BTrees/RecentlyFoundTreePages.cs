@@ -26,7 +26,6 @@ namespace Voron.Data.BTrees
         public fixed long PathSequence[MaxCursorPath];
 
         public TreePage Page;
-        public long Number;
 
         public SliceOptions FirstKeyOptions;
         public SliceOptions LastKeyOptions;
@@ -35,7 +34,7 @@ namespace Voron.Data.BTrees
         public int FirstKeyLength;
         public int LastKeyLength;
 
-        public ReadOnlySpan<long> Cursor => MemoryMarshal.CreateReadOnlySpan(ref PathSequence[0], PathLength);
+        public readonly ReadOnlySpan<long> Cursor => MemoryMarshal.CreateReadOnlySpan(ref Unsafe.AsRef(in PathSequence[0]), PathLength);
 
         public void SetFirstKey(ReadOnlySpan<byte> key, SliceOptions option)
         {
@@ -99,32 +98,32 @@ namespace Voron.Data.BTrees
 
         private readonly FoundTreePageDescriptor[] _pageDescriptors = new FoundTreePageDescriptor[CacheSize];
 
-        public bool TryFind(Slice key, out FoundTreePageDescriptor foundPage)
+        /// <summary>
+        /// Returns a reference to the cached page that holds the key, or a null reference (check with <see cref="Unsafe.IsNullRef{T}"/>).
+        /// The reference is valid until the cache is modified.
+        /// </summary>
+        public ref readonly FoundTreePageDescriptor Find(Slice key)
         {
             Debug.Assert(_currentGeneration > 0);
             Debug.Assert(_pageDescriptors.Length == CacheSize);
 
-            // We do not require to initialize this.
-            Unsafe.SkipInit(out foundPage);
-
             if (key.HasValue == false || key.Size == 0)
-                return false;
+                return ref Unsafe.NullRef<FoundTreePageDescriptor>();
 
             uint location = FindMatchingByGeneration(_currentGeneration);
             if (location == 0)
-                return false; // Early skip, we don't need to do anything
-            
-            var keyOption = key.Options;
-            if (keyOption == SliceOptions.Key)
-            {
-                return TryFindKey(location, key, out foundPage);
-            }
+                return ref Unsafe.NullRef<FoundTreePageDescriptor>(); // Early skip, we don't need to do anything
 
-            return TryFindNoKey(location, keyOption, out foundPage);
+            var keyOption = key.Options;
+            int index = keyOption == SliceOptions.Key
+                ? FindKey(location, key)
+                : FindNoKey(location, keyOption);
+
+            // PERF: a reference, the descriptor is too big (with the keys) to copy on every hit
+            return ref index < 0 ? ref Unsafe.NullRef<FoundTreePageDescriptor>() : ref _pageDescriptors[index];
         }
 
-        [SkipLocalsInit]
-        private bool TryFindKey(uint location, ReadOnlySpan<byte> key, out FoundTreePageDescriptor foundPage)
+        private int FindKey(uint location, ReadOnlySpan<byte> key)
         {
             // PERF: We know this is for keys smaller than 128 bits (16 bytes) so we are going to be using that fact.
             var descriptors = _pageDescriptors;
@@ -160,16 +159,13 @@ namespace Voron.Data.BTrees
                         continue;
                 }
 
-                foundPage = current;
-                return true;
+                return i;
             }
 
-            Unsafe.SkipInit(out foundPage);
-            return false;
+            return -1;
         }
 
-        [SkipLocalsInit]
-        private bool TryFindNoKey(uint location, SliceOptions keyOption, out FoundTreePageDescriptor foundPage)
+        private int FindNoKey(uint location, SliceOptions keyOption)
         {
             Debug.Assert(_currentGeneration > 0);
             Debug.Assert(_pageDescriptors.Length == CacheSize);
@@ -196,15 +192,13 @@ namespace Voron.Data.BTrees
                 {
                     case (SliceOptions.BeforeAllKeys, SliceOptions.BeforeAllKeys, _):
                     case (SliceOptions.AfterAllKeys, _, SliceOptions.AfterAllKeys):
-                        foundPage = current;
-                        return true;
+                        return i;
                     default:
                         continue;
                 }
             }
 
-            Unsafe.SkipInit(out foundPage);
-            return false;
+            return -1;
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining | MethodImplOptions.AggressiveOptimization)]
@@ -290,6 +284,7 @@ namespace Voron.Data.BTrees
 
             Debug.Assert(_currentGeneration > 0);
             Debug.Assert(_pageDescriptors.Length == CacheSize);
+            Debug.Assert(page.IsValid, "A hit uses the cached page directly, Reset removes the whole entry when the page is modified");
 
             var currentPage = page.PageNumber;
 
@@ -303,7 +298,6 @@ namespace Voron.Data.BTrees
 
             ref var current = ref _pageDescriptors[(int)position];
             current.Page = page;
-            current.Number = page.PageNumber;
 
             // We update the information regarding the keys to ensure we can get the Span<byte> representing it.
             current.SetFirstKey(firstKey, firstKeyOption);
