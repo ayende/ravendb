@@ -23,7 +23,7 @@ namespace Raven.Server.Web
         public bool CheckForChanges = true;
 
         /// <summary>
-        /// <see cref="Raven.Server.Utils.Metrics.Clock.Nanoseconds"/> when the router started handling the request, 0 when the router didn't.
+        /// <see cref="Sparrow.Utils.Clock.Nanoseconds"/> when the router started handling the request, 0 when the router didn't.
         /// </summary>
         public long RequestStartNanoseconds;
 

@@ -175,7 +175,7 @@ namespace Voron.Impl
 
             PersistentContext = transactionPersistentContext;
 
-            _txStartTickCount = previous._txStartTickCount;
+            _txStartNanoseconds = previous._txStartNanoseconds;
             DataPager = previous.DataPager;
             DataPagerState = previous.DataPagerState;
 
@@ -249,7 +249,7 @@ namespace Voron.Impl
                 VoronUnrecoverableErrorException.Raise(env, $"Async commit isn't supported in 32bits environments. We don't carry 32 bits state from previous tx");
 
             CurrentTransactionIdHolder = previous.CurrentTransactionIdHolder;
-            _txStartTickCount = System.Environment.TickCount64;
+            _txStartNanoseconds = Clock.Nanoseconds;
             DataPager = previous.DataPager;
             DataPagerState = previous.DataPagerState;
             _id = txId;
@@ -296,7 +296,7 @@ namespace Voron.Impl
 
         public LowLevelTransaction(StorageEnvironment env, TransactionPersistentContext transactionPersistentContext, TransactionFlags flags, IFreeSpaceHandling freeSpaceHandling, ByteStringContext context = null)
         {
-            _txStartTickCount = System.Environment.TickCount64;
+            _txStartNanoseconds = Clock.Nanoseconds;
 
             if (flags == TransactionFlags.ReadWrite)
             {
@@ -1598,9 +1598,9 @@ namespace Voron.Impl
         private EnvironmentStateRecord _envRecord;
         private long _localTxNextPageNumber;
         // PERF: only diagnostics read the start time, so we keep the cheap tick count and compute the date when asked
-        private long _txStartTickCount;
+        private long _txStartNanoseconds;
 
-        public DateTime TxStartTime => DateTime.UtcNow.AddMilliseconds(_txStartTickCount - System.Environment.TickCount64);
+        public DateTime TxStartTime => DateTime.UtcNow.AddTicks((_txStartNanoseconds - Clock.Nanoseconds) / 100);
         public bool IsCloned;
         internal long? LocalPossibleOldestReadTransaction;
         internal RacyConcurrentBag.Node ActiveTransactionNode;

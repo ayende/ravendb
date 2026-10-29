@@ -41,6 +41,7 @@ using Sparrow.Logging;
 using Sparrow.LowMemory;
 using Sparrow.Server.Exceptions;
 using Sparrow.Server.Logging;
+using Sparrow.Utils;
 using Voron.Exceptions;
 
 namespace Raven.Server
@@ -183,7 +184,7 @@ namespace Raven.Server
 
             // PERF: only TrafficWatch and debug logging need the duration here (the router measures requests for the metrics),
             // so we read the clock only when one of them is on
-            long startTimestamp = 0, endTimestamp = 0;
+            long startNanoseconds = 0, endNanoseconds = 0;
 
             try
             {
@@ -194,19 +195,19 @@ namespace Raven.Server
                     await _server.ServerStore.InitializationCompleted.WaitAsync();
 
                 if (TrafficWatchManager.HasRegisteredClients || (_logger.IsDebugEnabled && SkipHttpLogging == false))
-                    startTimestamp = Stopwatch.GetTimestamp();
+                    startNanoseconds = Clock.Nanoseconds;
 
                 await _router.HandlePath(requestHandlerContext);
 
-                if (startTimestamp != 0)
-                    endTimestamp = Stopwatch.GetTimestamp();
+                if (startNanoseconds != 0)
+                    endNanoseconds = Clock.Nanoseconds;
             }
             catch (Exception e)
             {
                 try
                 {
-                    if (startTimestamp != 0 && endTimestamp == 0)
-                        endTimestamp = Stopwatch.GetTimestamp();
+                    if (startNanoseconds != 0 && endNanoseconds == 0)
+                        endNanoseconds = Clock.Nanoseconds;
                     exception = e;
 
                     CheckDatabaseShutdownAndThrowIfNeeded(requestHandlerContext, ref e);
@@ -259,7 +260,7 @@ namespace Raven.Server
             }
             finally
             {
-                var elapsedMilliseconds = endTimestamp == 0 ? 0 : (long)Stopwatch.GetElapsedTime(startTimestamp, endTimestamp).TotalMilliseconds;
+                var elapsedMilliseconds = endNanoseconds == 0 ? 0 : (endNanoseconds - startNanoseconds) / Clock.NanosecondsInMillisecond;
 
                 // check if TW has clients
                 if (TrafficWatchManager.HasRegisteredClients)
