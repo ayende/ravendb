@@ -108,6 +108,9 @@ namespace Raven.Server
 
         public readonly RavenConfiguration Configuration;
 
+        // PERF: read on every response, see HttpResponseBodyStream
+        internal readonly long MinResponseSizeToCompressInBytes;
+
         public Timer ServerMaintenanceTimer;
 
         public SystemTime Time = new SystemTime();
@@ -162,6 +165,8 @@ namespace Raven.Server
             Configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
             if (Configuration.Initialized == false)
                 throw new InvalidOperationException("Configuration must be initialized");
+
+            MinResponseSizeToCompressInBytes = Configuration.Http.MinResponseSizeToCompress.GetValue(SizeUnit.Bytes);
 
             Statistics = new ServerStatistics();
 

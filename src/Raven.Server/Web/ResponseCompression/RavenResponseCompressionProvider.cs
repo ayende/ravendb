@@ -54,17 +54,11 @@ namespace Raven.Server.Web.ResponseCompression
         }
     }
 
-    /// <summary>
-    /// Set on a request when the size of its whole response is known before the first byte.
-    /// </summary>
     public sealed class ResponseContentLengthFeature(long length)
     {
         public readonly long Length = length;
     }
 
-    /// <summary>
-    /// Set on a request whose response is too small to be worth compressing.
-    /// </summary>
     public sealed class SkipResponseCompressionFeature
     {
         public static readonly SkipResponseCompressionFeature Instance = new();
