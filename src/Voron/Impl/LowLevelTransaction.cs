@@ -1256,14 +1256,14 @@ namespace Voron.Impl
                   ? Task.Run(() => { CommitStage2_WriteToJournal(waitForDurability: false); return true; })
                   : NoWriteToJournalRequiredTask;
 
-            PerCoreCounter.Decrementor? usage = null;
+            InFlightGuard<PerCoreSlots>.Scope usage = default;
 
             try
             {
                 _forTestingPurposes?.ActionToCallDuringBeginAsyncCommitAndStartNewTransaction?.Invoke();
 
                 usage = _env.IncrementUsageOnNewTransaction();
-                nextTx.EnvironmentUsage = usage.Value;
+                nextTx.EnvironmentUsage = usage;
 
                 _env.ActiveTransactions.Add(nextTx);
                 _env.WriteTransactionStarted();
@@ -1279,8 +1279,7 @@ namespace Voron.Impl
 
                 try
                 {
-                    if (usage.HasValue)
-                        _env.DecrementUsage(usage.Value);
+                    usage.Dispose();
 
                     EndAsyncCommit();
                 }
@@ -1606,8 +1605,8 @@ namespace Voron.Impl
         internal long? LocalPossibleOldestReadTransaction;
         internal RacyConcurrentBag.Node ActiveTransactionNode;
 
-        // decrements the slot of the environment's transaction count that this transaction incremented
-        internal PerCoreCounter.Decrementor EnvironmentUsage;
+        // leaves the environment's guard when the transaction is done
+        internal InFlightGuard<PerCoreSlots>.Scope EnvironmentUsage;
         public Transaction Transaction;
 
         /// <summary>
