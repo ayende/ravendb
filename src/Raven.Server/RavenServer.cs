@@ -381,6 +381,7 @@ namespace Raven.Server
 
                             services.Configure<DeflateCompressionProviderOptions>(options => { options.Level = Configuration.Http.DeflateResponseCompressionLevel; });
 
+                            services.AddSingleton<IResponseCompressionProvider, RavenResponseCompressionProvider>();
                             services.AddResponseCompression();
                         }
 
