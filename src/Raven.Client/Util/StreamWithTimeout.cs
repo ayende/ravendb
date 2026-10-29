@@ -24,10 +24,8 @@ namespace Raven.Client.Util
         internal readonly Stream _stream;
         private readonly Action<object> _abort;
         private readonly object _abortState;
-        private int _writeTimeout;
-        private int _readTimeout;
-        private bool _canBaseStreamTimeoutOnWrite;
-        private bool _canBaseStreamTimeoutOnRead;
+        private int _writeTimeout = (int)DefaultWriteTimeout.TotalMilliseconds;
+        private int _readTimeout = (int)DefaultReadTimeout.TotalMilliseconds;
 
         // linked to the token of the caller, so a timeout can cancel an operation when we can't abort the transport
         private CancellationTokenSource _linked;
@@ -46,101 +44,18 @@ namespace Raven.Client.Util
             _stream = stream;
             _abort = abort;
             _abortState = abortState;
-            SetWriteTimeoutIfNeeded(DefaultWriteTimeout);
-            SetReadTimeoutIfNeeded(DefaultReadTimeout);
-        }
-
-        private void SetReadTimeoutIfNeeded(TimeSpan readTimeout)
-        {
-            try
-            {
-                _readTimeout = (int)readTimeout.TotalMilliseconds;
-                _canBaseStreamTimeoutOnRead = _stream.CanRead && _stream.CanTimeout;
-
-                if (_canBaseStreamTimeoutOnRead)
-                {
-                    var streamReadTimeout = _stream.ReadTimeout;
-                    if (streamReadTimeout > 0)
-                    {
-                        ReadTimeout = streamReadTimeout;
-                        return;
-                    }
-
-                    try
-                    {
-                        _stream.ReadTimeout = _readTimeout;
-                    }
-                    catch
-                    {
-                        if (streamReadTimeout <= _readTimeout)
-                            ReadTimeout = streamReadTimeout;
-                        else
-                            _canBaseStreamTimeoutOnRead = false;
-                    }
-                }
-            }
-            catch
-            {
-                _canBaseStreamTimeoutOnRead = false;
-            }
-        }
-
-        private void SetWriteTimeoutIfNeeded(TimeSpan writeTimeout)
-        {
-            try
-            {
-                _writeTimeout = (int)writeTimeout.TotalMilliseconds;
-                _canBaseStreamTimeoutOnWrite = _stream.CanWrite && _stream.CanTimeout;
-
-                if (_canBaseStreamTimeoutOnWrite)
-                {
-                    var streamWriteTimeout = _stream.WriteTimeout;
-                    if (streamWriteTimeout > 0)
-                    {
-                        WriteTimeout = streamWriteTimeout;
-                        return;
-                    }
-                    try
-                    {
-                        _stream.WriteTimeout = _writeTimeout;
-                    }
-                    catch
-                    {
-                        if (streamWriteTimeout <= _writeTimeout)
-                            WriteTimeout = streamWriteTimeout;
-                        else
-                            _canBaseStreamTimeoutOnWrite = false;
-                    }
-                }
-            }
-            catch
-            {
-                _canBaseStreamTimeoutOnWrite = false;
-            }
         }
 
         public override int ReadTimeout
         {
             get => _readTimeout;
-            set
-            {
-                if (_canBaseStreamTimeoutOnRead)
-                    _stream.ReadTimeout = value; // we only need to set it when base stream supports that, if not we are handling that ourselves
-
-                _readTimeout = value;
-            }
+            set => _readTimeout = value;
         }
 
         public override int WriteTimeout
         {
             get => _writeTimeout;
-            set
-            {
-                if (_canBaseStreamTimeoutOnWrite)
-                    _stream.WriteTimeout = value;  // we only need to set it when base stream supports that, if not we are handling that ourselves
-
-                _writeTimeout = value;
-            }
+            set => _writeTimeout = value;
         }
 
         public override bool CanTimeout => true;
@@ -157,13 +72,6 @@ namespace Raven.Client.Util
 
         public override int Read(byte[] buffer, int offset, int count)
         {
-            if (_canBaseStreamTimeoutOnRead)
-            {
-                var read = _stream.Read(buffer, offset, count);
-                _totalRead += read;
-                return read;
-            }
-
             // _totalRead is counted in ReadAsyncWithTimeout
             return AsyncHelpers.RunSync(() => ReadAsyncWithTimeout(buffer, offset, count, CancellationToken.None));
         }
@@ -245,12 +153,6 @@ namespace Raven.Client.Util
         public override void Write(byte[] buffer, int offset, int count)
         {
             _totalWritten += count;
-
-            if (_canBaseStreamTimeoutOnWrite)
-            {
-                _stream.Write(buffer, offset, count);
-                return;
-            }
 
             AsyncHelpers.RunSync(() => WriteAsyncWithTimeout(buffer, offset, count, CancellationToken.None));
         }
