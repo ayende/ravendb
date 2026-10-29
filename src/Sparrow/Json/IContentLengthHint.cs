@@ -1,8 +1,5 @@
 namespace Sparrow.Json
 {
-    /// <summary>
-    /// Implemented by output streams that can use the total size of the content before they get its first byte.
-    /// </summary>
     internal interface IContentLengthHint
     {
         /// <summary>

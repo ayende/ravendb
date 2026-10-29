@@ -11,8 +11,6 @@ namespace Raven.Server.Web.ResponseCompression
     {
         private const int MaxCachedAcceptEncodings = 32;
 
-        // PERF: the provider depends only on the Accept-Encoding value, and clients send the same few values over and over,
-        // so lookups go to a frozen dictionary that a miss replaces. Racing misses may lose an entry, the next miss adds it again.
         private FrozenDictionary<string, ICompressionProvider> _providersByAcceptEncoding = FrozenDictionary<string, ICompressionProvider>.Empty;
 
         public RavenResponseCompressionProvider(IServiceProvider services, IOptions<ResponseCompressionOptions> options) : base(services, options)

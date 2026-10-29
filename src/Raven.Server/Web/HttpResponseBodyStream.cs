@@ -5,10 +5,6 @@ using Sparrow.Json;
 
 namespace Raven.Server.Web;
 
-/// <summary>
-/// The response body of a request handler. When the writer knows the size of the whole response before it writes it,
-/// a small response skips the compression and a larger one gives the compression its size up front.
-/// </summary>
 internal sealed class HttpResponseBodyStream(HttpContext httpContext, long minResponseSizeToCompress)
     : StreamWithTimeout(httpContext.Response.Body, RequestHandler.AbortConnection, httpContext), IContentLengthHint
 {

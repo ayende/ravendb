@@ -108,7 +108,6 @@ namespace Raven.Server
 
         public readonly RavenConfiguration Configuration;
 
-        // PERF: read on every response, see HttpResponseBodyStream
         internal readonly long MinResponseSizeToCompressInBytes;
 
         public Timer ServerMaintenanceTimer;
