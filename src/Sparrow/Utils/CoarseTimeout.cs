@@ -4,18 +4,16 @@ using System.Threading;
 namespace Sparrow.Utils
 {
     /// <summary>
-    /// Timeouts for operations that rarely time out, where precision of <see cref="Granularity"/> is good enough.
-    /// A single timer moves a hand over a ring of slots and cancels the shared token of each slot it reaches,
-    /// so getting a timeout token is two volatile reads: no allocation, no timer, no lock.
+    /// Timeouts for operations that rarely time out. A single timer moves a hand over a ring of slots and cancels the
+    /// shared token of each slot it reaches, so a long timeout is two volatile reads: no allocation, no timer, no lock.
+    /// A timeout too short (or too long) for the ring gets a token source of its own, which <see cref="TimeoutToken.Dispose"/> releases.
     /// </summary>
     internal static class CoarseTimeout
     {
-        public const int GranularityInMs = 15_000;
+        private const int GranularityInMs = 15_000;
 
-        /// <summary>
-        /// Shorter timeouts are too imprecise here, the token fires up to two slots late.
-        /// </summary>
-        public const int MinimumTimeoutInMs = 4 * GranularityInMs;
+        // the shared tokens fire up to two slots late, too imprecise for shorter timeouts
+        private const int MinimumSharedTimeoutInMs = 4 * GranularityInMs;
 
         private const int SlotCount = 64;
 
@@ -23,18 +21,46 @@ namespace Sparrow.Utils
         private static long _hand;
         private static readonly Timer Ticker = new(OnTick, null, GranularityInMs, GranularityInMs);
 
-        /// <summary>
-        /// A token that is canceled no sooner than <paramref name="timeoutInMs"/> and no later than two slots after it.
-        /// </summary>
-        public static CancellationToken After(int timeoutInMs)
+        public static TimeoutToken After(int timeoutInMs)
         {
+            if (timeoutInMs == Timeout.Infinite)
+                return default;
+
             // one extra slot, so we never take the slot that the hand is about to reach
             long slotsAhead = (timeoutInMs + GranularityInMs - 1) / GranularityInMs + 1;
-            if (slotsAhead >= SlotCount)
-                return new CancellationTokenSource(timeoutInMs).Token;
+            if (timeoutInMs < MinimumSharedTimeoutInMs || slotsAhead >= SlotCount)
+                return new TimeoutToken(new CancellationTokenSource(timeoutInMs));
 
             var hand = Volatile.Read(ref _hand);
-            return Volatile.Read(ref Slots[(int)((hand + slotsAhead) % SlotCount)]).Token;
+            return new TimeoutToken(Volatile.Read(ref Slots[(int)((hand + slotsAhead) % SlotCount)]).Token);
+        }
+
+        public readonly struct TimeoutToken : IDisposable
+        {
+            private readonly CancellationTokenSource _owned;
+
+            public readonly CancellationToken Token;
+
+            internal TimeoutToken(CancellationToken shared)
+            {
+                Token = shared;
+            }
+
+            internal TimeoutToken(CancellationTokenSource owned)
+            {
+                _owned = owned;
+                Token = owned.Token;
+            }
+
+            /// <summary>
+            /// The token belongs to a shared slot, nothing to release.
+            /// </summary>
+            public bool IsShared => _owned == null;
+
+            public void Dispose()
+            {
+                _owned?.Dispose();
+            }
         }
 
         private static CancellationTokenSource[] CreateSlots()

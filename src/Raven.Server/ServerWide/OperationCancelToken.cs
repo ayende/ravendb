@@ -54,7 +54,6 @@ namespace Raven.Server.ServerWide
 
         private void CancelAfterIfNeeded(TimeSpan cancelAfter)
         {
-            // PERF: CancelAfter(Infinite) still allocates a timer and takes the timer queue lock, both when it is set and when the source is disposed
             if (cancelAfter != Timeout.InfiniteTimeSpan)
                 _cts.CancelAfter(cancelAfter);
         }
