@@ -1823,7 +1823,11 @@ namespace Raven.Server
 
             public Dictionary<string, DatabaseAccess> AuthorizedDatabases = new Dictionary<string, DatabaseAccess>(StringComparer.OrdinalIgnoreCase);
             private Dictionary<string, DatabaseAccess> _caseSensitiveAuthorizedDatabases = new Dictionary<string, DatabaseAccess>();
-            public X509Certificate2 Certificate;
+            public readonly X509Certificate2 Certificate;
+
+            // PERF: computed once per connection, X509Certificate2.Thumbprint creates the string on every call
+            public readonly string CertificateThumbprint;
+
             public CertificateDefinition Definition;
             public int WrittenToAuditLog;
 
@@ -1833,33 +1837,11 @@ namespace Raven.Server
 
             public readonly DateTime CreatedAt = SystemTime.UtcNow;
 
-            private CachedThumbprint _cachedThumbprint;
-
-            /// <summary>
-            /// The thumbprint of <see cref="Certificate"/>, computed once per connection instead of once per request.
-            /// </summary>
-            public string CertificateThumbprint
-            {
-                get
-                {
-                    var certificate = Certificate;
-                    if (certificate == null)
-                        return null;
-
-                    // Certificate is a public field, so the cache remembers which certificate it was computed for
-                    var cached = _cachedThumbprint;
-                    if (ReferenceEquals(cached?.Certificate, certificate) == false)
-                        _cachedThumbprint = cached = new CachedThumbprint(certificate, certificate.Thumbprint);
-
-                    return cached.Thumbprint;
-                }
-            }
-
-            private sealed record CachedThumbprint(X509Certificate2 Certificate, string Thumbprint);
-
-            public AuthenticateConnection(TwoFactor twoFactor)
+            public AuthenticateConnection(TwoFactor twoFactor, X509Certificate2 certificate = null)
             {
                 _twoFactor = twoFactor;
+                Certificate = certificate;
+                CertificateThumbprint = certificate?.Thumbprint;
             }
 
             public bool CanAccess(string database, bool requireAdmin, bool requireWrite)
@@ -2013,10 +1995,7 @@ namespace Raven.Server
 
         internal AuthenticateConnection AuthenticateConnectionCertificate(X509Certificate2 certificate, object connectionInfo, StringBuilder log = null)
         {
-            var authenticationStatus = new AuthenticateConnection(TwoFactor)
-            {
-                Certificate = certificate
-            };
+            var authenticationStatus = new AuthenticateConnection(TwoFactor, certificate);
             var wellKnown = Configuration.Security.WellKnownAdminCertificates;
             if (certificate == null)
             {
