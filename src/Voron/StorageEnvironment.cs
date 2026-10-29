@@ -109,8 +109,6 @@ namespace Voron
         internal readonly SemaphoreSlim _transactionWriter = new SemaphoreSlim(1, 1);
         internal int _currentWriteTransactionIdHolder;
         private readonly AsyncManualResetEvent _writeTransactionRunning = new AsyncManualResetEvent();
-        // PERF: every transaction registers itself here, a single shared count would bounce between all the cores
-        // new transactions are rejected from the moment disposal starts
         private readonly InFlightGuard<PerCoreSlots> _transactionsInUse = new();
         private volatile bool _disposeCompleted;
 
@@ -826,7 +824,6 @@ namespace Voron
             }
         }
 
-        /// <returns>Disposed when the transaction is done</returns>
         internal InFlightGuard<PerCoreSlots>.Scope IncrementUsageOnNewTransaction()
         {
             if (_transactionsInUse.TryEnter(out var usage) == false)

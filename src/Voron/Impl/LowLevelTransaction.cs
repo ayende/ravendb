@@ -1605,7 +1605,6 @@ namespace Voron.Impl
         internal long? LocalPossibleOldestReadTransaction;
         internal RacyConcurrentBag.Node ActiveTransactionNode;
 
-        // leaves the environment's guard when the transaction is done
         internal InFlightGuard<PerCoreSlots>.Scope EnvironmentUsage;
         public Transaction Transaction;
 
