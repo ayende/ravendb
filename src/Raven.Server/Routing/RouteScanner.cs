@@ -28,8 +28,6 @@ namespace Raven.Server.Routing
 
         public static readonly Dictionary<string, RouteInformation> AllRoutes = Scan();
 
-        // PERF: the route table is generated at compile time (Raven.Server.SourceGenerators), scanning all the types of the server
-        // and compiling an expression per route used to cost about a second and a half of every startup
         public static Dictionary<string, RouteInformation> Scan(Func<RavenActionAttribute, bool> predicate = null)
         {
             var routes = new Dictionary<string, RouteInformation>(StringComparer.OrdinalIgnoreCase);
