@@ -1,5 +1,6 @@
 using System;
-using System.Collections.Concurrent;
+using System.Collections.Frozen;
+using System.Collections.Generic;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.ResponseCompression;
 using Microsoft.Extensions.Options;
@@ -10,8 +11,9 @@ namespace Raven.Server.Web.ResponseCompression
     {
         private const int MaxCachedAcceptEncodings = 32;
 
-        // the provider selection depends only on the Accept-Encoding value, and clients send the same few values over and over
-        private readonly ConcurrentDictionary<string, ICompressionProvider> _providersByAcceptEncoding = new(StringComparer.Ordinal);
+        // PERF: the provider depends only on the Accept-Encoding value, and clients send the same few values over and over,
+        // so lookups go to a frozen dictionary that a miss replaces. Racing misses may lose an entry, the next miss adds it again.
+        private FrozenDictionary<string, ICompressionProvider> _providersByAcceptEncoding = FrozenDictionary<string, ICompressionProvider>.Empty;
 
         public RavenResponseCompressionProvider(IServiceProvider services, IOptions<ResponseCompressionOptions> options) : base(services, options)
         {
@@ -42,13 +44,17 @@ namespace Raven.Server.Web.ResponseCompression
             if (acceptEncoding.Count != 1 || acceptEncoding[0] is not { } value)
                 return base.GetCompressionProvider(context);
 
-            if (_providersByAcceptEncoding.TryGetValue(value, out var provider))
+            var providers = _providersByAcceptEncoding;
+            if (providers.TryGetValue(value, out var provider))
                 return provider;
 
             provider = base.GetCompressionProvider(context);
 
-            if (_providersByAcceptEncoding.Count < MaxCachedAcceptEncodings)
-                _providersByAcceptEncoding.TryAdd(value, provider);
+            if (providers.Count < MaxCachedAcceptEncodings)
+            {
+                var updated = new Dictionary<string, ICompressionProvider>(providers, StringComparer.Ordinal) { [value] = provider };
+                _providersByAcceptEncoding = updated.ToFrozenDictionary(StringComparer.Ordinal);
+            }
 
             return provider;
         }
