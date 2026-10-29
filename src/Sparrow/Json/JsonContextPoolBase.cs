@@ -165,7 +165,7 @@ namespace Sparrow.Json
                 Context.Reset();
                 // These contexts are reused, so we don't want to use LowerOrDie here.
                 Context.InUse.Lower();
-                Context.InPoolSinceTickCount = PooledItem.CurrentTickCount;
+                Context.InPoolSinceMilliseconds = Clock.Milliseconds;
 
                 parent.Push(Context);
 
@@ -187,7 +187,7 @@ namespace Sparrow.Json
             try
             {
                 var currentTime = DateTime.UtcNow;
-                var currentTickCount = PooledItem.CurrentTickCount;
+                var now = Clock.Milliseconds;
                 var idleTime = TimeSpan.FromMinutes(5);
                 var currentGlobalStack = _globalStack;
 
@@ -199,7 +199,7 @@ namespace Sparrow.Json
                     foreach (var current in _perCoreCache)
                     {
                         var context = current.Item;
-                        var timeInPool = TimeSpan.FromMilliseconds(currentTickCount - context.InPoolSinceTickCount);
+                        var timeInPool = TimeSpan.FromMilliseconds(now - context.InPoolSinceMilliseconds);
                         if (timeInPool <= idleTime)
                             continue;
 
@@ -219,7 +219,7 @@ namespace Sparrow.Json
                     {
                         var context = globalStackEnumerator.Current;
 
-                        var timeInPool = TimeSpan.FromMilliseconds(currentTickCount - context.InPoolSinceTickCount);
+                        var timeInPool = TimeSpan.FromMilliseconds(now - context.InPoolSinceMilliseconds);
                         if (timeInPool <= idleTime)
                             continue;
 

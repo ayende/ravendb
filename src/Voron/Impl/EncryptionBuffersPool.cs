@@ -152,7 +152,7 @@ namespace Voron.Impl
             {
                 Ptr = ptr,
                 Size = size,
-                InPoolSinceTickCount = PooledItem.CurrentTickCount
+                InPoolSinceMilliseconds = Clock.Milliseconds
             };
 
             var addToPerCorePool = ForTestingPurposes == null || ForTestingPurposes.CanAddToPerCorePool;
@@ -303,7 +303,7 @@ namespace Voron.Impl
             try
             {
                 var currentTime = DateTime.UtcNow;
-                var currentTickCount = PooledItem.CurrentTickCount;
+                var now = Clock.Milliseconds;
                 var idleTime = TimeSpan.FromMinutes(10);
 
                 for (int i = 0; i < _items.Length; i++)
@@ -319,7 +319,7 @@ namespace Voron.Impl
                         foreach (var current in currentStack)
                         {
                             var allocation = current.Item;
-                            var timeInPool = TimeSpan.FromMilliseconds(currentTickCount - allocation.InPoolSinceTickCount);
+                            var timeInPool = TimeSpan.FromMilliseconds(now - allocation.InPoolSinceMilliseconds);
                             if (timeInPool <= idleTime)
                                 continue;
 
@@ -339,7 +339,7 @@ namespace Voron.Impl
                         {
                             var allocation = globalStackEnumerator.Current;
 
-                            var timeInPool = TimeSpan.FromMilliseconds(currentTickCount - allocation.InPoolSinceTickCount);
+                            var timeInPool = TimeSpan.FromMilliseconds(now - allocation.InPoolSinceMilliseconds);
                             if (timeInPool <= idleTime)
                                 continue;
 

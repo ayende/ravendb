@@ -622,7 +622,7 @@ namespace Sparrow.Server
             if (memory.InUse.Lower() == false)
                 ThrowSegmentStillInUse();
 
-            memory.InPoolSinceTickCount = PooledItem.CurrentTickCount;
+            memory.InPoolSinceMilliseconds = Clock.Milliseconds;
 
             var pool = SegmentsPool;
 

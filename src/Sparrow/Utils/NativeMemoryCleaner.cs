@@ -76,7 +76,7 @@ namespace Sparrow.Utils
                 if (maxIterations <= MinimumRetainedItemsInQueue)
                     return; 
 
-                long now = PooledItem.CurrentTickCount;
+                long now = Clock.Milliseconds;
                 for (int i = 0; i < maxIterations; i++)
                 {
                     if (_ringBuffer.TryDequeue(out var item) == false)
@@ -88,7 +88,7 @@ namespace Sparrow.Utils
                     Debug.Assert(item.InUse.IsRaised() == false, "Item should not be in use when in the pool.");
                     
                     // Check if the item has been idle for too long or if we are under memory pressure.
-                    var timeInPool = TimeSpan.FromMilliseconds(now - item.InPoolSinceTickCount);
+                    var timeInPool = TimeSpan.FromMilliseconds(now - item.InPoolSinceMilliseconds);
                     bool shouldDispose = _lowMemoryFlag.IsRaised() || timeInPool >= _idleTime;
                     if (shouldDispose == false)
                     {
