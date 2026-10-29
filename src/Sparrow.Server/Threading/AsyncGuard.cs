@@ -18,7 +18,9 @@ public class AsyncGuard : IDisposable
     [StructLayout(LayoutKind.Explicit, Size = 64)]
     private struct Marker
     {
-        // last in the cache line, so the first marker doesn't share a line with the length of the array
+        // at the end of the 64 bytes: every indexing reads the array's length (bounds check), which is 8 bytes before
+        // the first element, so a value at the start of the first marker would share that line and each write to it
+        // would invalidate the line on all the cores
         [FieldOffset(56)]
         public ulong Value;
     }
