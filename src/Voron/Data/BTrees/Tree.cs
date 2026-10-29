@@ -103,17 +103,9 @@ namespace Voron.Data.BTrees
             _header = header;
         }
 
-        /// <summary>
-        /// Called by the transaction when it is disposed, if this tree took a cache of recently found pages.
-        /// </summary>
-        internal void FreeRecentlyFoundPages(TransactionPersistentContext persistentContext)
+        internal void DetachRecentlyFoundPages()
         {
-            var recentlyFoundPages = _recentlyFoundPages;
-            if (recentlyFoundPages == null)
-                return;
-
             _recentlyFoundPages = null;
-            persistentContext.FreeRecentlyFoundPages(recentlyFoundPages);
         }
 
         public bool IsLeafCompressionSupported
@@ -885,13 +877,7 @@ namespace Voron.Data.BTrees
 
         private void AddToRecentlyFoundPages(FastList<long> c, TreePage p, bool leftmostPage, bool rightmostPage)
         {
-            if (_recentlyFoundPages == null)
-            {
-                // PERF: taken with the first page we find, a tree that is opened but never searched doesn't need one
-                _recentlyFoundPages = _llt.AllocateRecentlyFoundPages(this);
-                if (_recentlyFoundPages == null)
-                    return; // the transaction is disposed
-            }
+            _recentlyFoundPages ??= _llt.PersistentContext.AllocateRecentlyFoundPages(this);
 
             Debug.Assert(p.IsCompressed == false);
 

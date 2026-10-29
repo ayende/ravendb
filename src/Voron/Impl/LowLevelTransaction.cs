@@ -991,7 +991,7 @@ namespace Voron.Impl
                 // transaction. First the pagers and internal resources, then registered ones by external parties.
                 _env.TransactionCompleted(this);
 
-                FreeRecentlyFoundPages();
+                PersistentContext.FreeRecentlyFoundPages(this);
 
                 _disposableScope.Dispose();
 
@@ -1608,54 +1608,6 @@ namespace Voron.Impl
         internal RacyConcurrentBag.Node ActiveTransactionNode;
 
         internal InFlightGuard<PerCoreSlots>.Scope EnvironmentUsage;
-
-        // the trees that took a cache of recently found pages from the persistent context, they give it back when we are disposed
-        private TreesWithRecentlyFoundPages _treesWithRecentlyFoundPages;
-        private List<Tree> _moreTreesWithRecentlyFoundPages;
-        private int _treesWithRecentlyFoundPagesCount;
-
-        [InlineArray(InlineTreesWithRecentlyFoundPages)]
-        private struct TreesWithRecentlyFoundPages
-        {
-            private Tree _element;
-        }
-
-        private const int InlineTreesWithRecentlyFoundPages = 8;
-
-        internal RecentlyFoundTreePages AllocateRecentlyFoundPages(Tree tree)
-        {
-            if (IsDisposed)
-                return null;
-
-            if (_treesWithRecentlyFoundPagesCount < InlineTreesWithRecentlyFoundPages)
-                _treesWithRecentlyFoundPages[_treesWithRecentlyFoundPagesCount] = tree;
-            else
-                (_moreTreesWithRecentlyFoundPages ??= []).Add(tree);
-
-            _treesWithRecentlyFoundPagesCount++;
-
-            return PersistentContext.AllocateRecentlyFoundPages();
-        }
-
-        private void FreeRecentlyFoundPages()
-        {
-            var inline = Math.Min(_treesWithRecentlyFoundPagesCount, InlineTreesWithRecentlyFoundPages);
-            for (var i = 0; i < inline; i++)
-            {
-                _treesWithRecentlyFoundPages[i].FreeRecentlyFoundPages(PersistentContext);
-                _treesWithRecentlyFoundPages[i] = null;
-            }
-
-            if (_moreTreesWithRecentlyFoundPages != null)
-            {
-                foreach (var tree in _moreTreesWithRecentlyFoundPages)
-                    tree.FreeRecentlyFoundPages(PersistentContext);
-
-                _moreTreesWithRecentlyFoundPages = null;
-            }
-
-            _treesWithRecentlyFoundPagesCount = 0;
-        }
 
         public Transaction Transaction;
 
