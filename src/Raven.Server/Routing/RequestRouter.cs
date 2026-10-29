@@ -287,7 +287,7 @@ namespace Raven.Server.Routing
             // reported rates track true throughput rather than arrival pressure.
             var requestStartNs = Clock.Nanoseconds;
 
-            var concurrentRequestsSlot = _serverMetrics.Requests.ConcurrentRequests.Increment();
+            var concurrentRequest = _serverMetrics.Requests.ConcurrentRequests.Increment();
 
             try
             {
@@ -434,7 +434,7 @@ namespace Raven.Server.Routing
             }
             finally
             {
-                _serverMetrics.Requests.ConcurrentRequests.Decrement(concurrentRequestsSlot);
+                concurrentRequest.Decrement();
 
                 var elapsedNs = Clock.Nanoseconds - requestStartNs;
                 if (elapsedNs < 0)

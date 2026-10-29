@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Threading;
 using Sparrow.Binary;
 
@@ -13,11 +14,16 @@ namespace Sparrow.Server.Threading;
 /// </summary>
 public class AsyncGuard : IDisposable
 {
-    // PERF: each marker gets its own cache line (128 bytes, to cover adjacent line prefetch), otherwise 8 markers
-    // share a line and every enter / exit on one core invalidates the line for the others
-    private const int Stride = 16;
+    // PERF: a cache line per marker, so entering / exiting on one core doesn't invalidate the markers of the others
+    [StructLayout(LayoutKind.Explicit, Size = 64)]
+    private struct Marker
+    {
+        // last in the cache line, so the first marker doesn't share a line with the length of the array
+        [FieldOffset(56)]
+        public ulong Value;
+    }
 
-    private readonly ulong[] _coreMarkers;
+    private readonly Marker[] _coreMarkers;
     private readonly int _mask;
     private readonly ManualResetEvent _event;
     private bool _locked;
@@ -27,15 +33,14 @@ public class AsyncGuard : IDisposable
     {
         int len = Bits.PowerOf2(Environment.ProcessorCount * 2);
         _mask = len - 1;
-        _coreMarkers = new ulong[len * Stride];
+        _coreMarkers = new Marker[len];
         _event = new ManualResetEvent(false);
     }
 
     public bool TryEnter(out int idx)
     {
-        // the processor rather than the thread, so threads running on different cores touch different markers
-        idx = (Thread.GetCurrentProcessorId() & _mask) * Stride;
-        ref var cur = ref _coreMarkers[idx];
+        idx = Thread.GetCurrentProcessorId() & _mask;
+        ref var cur = ref _coreMarkers[idx].Value;
         ulong copy = cur;
         while (true)
         {
@@ -55,7 +60,7 @@ public class AsyncGuard : IDisposable
     public void Exit(int idx)
     {
         // we use the idx here to ensure that we can call this from a different thread
-        ref var cur = ref _coreMarkers[idx];
+        ref var cur = ref _coreMarkers[idx].Value;
         ulong copy = cur;
         ulong masked;
         while (true)
@@ -91,9 +96,9 @@ public class AsyncGuard : IDisposable
         while (true)
         {
             bool allMarked = true;
-            for (int i = 0; i < _coreMarkers.Length; i += Stride)
+            for (int i = 0; i < _coreMarkers.Length; i++)
             {
-                ref var cur = ref _coreMarkers[i];
+                ref var cur = ref _coreMarkers[i].Value;
                 var copy = cur;
                 Debug.Assert((copy & WriterLockMask) == 0, "(copy & WriterLockMask) == 0 - meaning we already called it?");
                 var result = Interlocked.CompareExchange(ref cur, copy | WriterLockMask, copy);
@@ -109,9 +114,9 @@ public class AsyncGuard : IDisposable
             _event.Reset();
 
             bool allCleared = true;
-            for (int i = 0; i < _coreMarkers.Length; i += Stride)
+            for (int i = 0; i < _coreMarkers.Length; i++)
             {
-                var cur = Interlocked.Read(ref _coreMarkers[i]);
+                var cur = Interlocked.Read(ref _coreMarkers[i].Value);
                 if (cur != WriterLockMask)
                 {
                     allCleared = false;

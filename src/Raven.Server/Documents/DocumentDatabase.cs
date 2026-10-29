@@ -312,8 +312,7 @@ namespace Raven.Server.Documents
 
         public CancellationToken DatabaseShutdown => _databaseShutdown.Token;
 
-        // PERF: every request links its token to the database shutdown, so a single source shared by all of them makes its registration
-        // lock a contention point. Requests link to a per core child of it instead, which is canceled together with it.
+        // PERF: Requests link to a per core, linked to the database shutdown token. Avoids lock contention on registration
         private readonly CancellationTokenSource[] _databaseShutdownForRequests;
 
         public CancellationToken DatabaseShutdownForRequest => _databaseShutdownForRequests[Thread.GetCurrentProcessorId() % _databaseShutdownForRequests.Length].Token;
@@ -953,16 +952,16 @@ namespace Raven.Server.Documents
         {
             private readonly DocumentDatabase _parent;
             private readonly bool _skipUsagesCount;
-            private readonly int _usagesSlot;
+            private readonly PerCoreCounter.Decrementor _usage;
 
             public DatabaseUsage(DocumentDatabase parent, bool skipUsagesCount)
             {
                 _parent = parent;
                 _skipUsagesCount = skipUsagesCount;
-                _usagesSlot = 0;
+                _usage = default;
 
                 if (_skipUsagesCount == false)
-                    _usagesSlot = _parent._usages.Increment();
+                    _usage = _parent._usages.Increment();
 
                 if (_parent.IsShutdownRequested())
                 {
@@ -976,7 +975,7 @@ namespace Raven.Server.Documents
                 if (_skipUsagesCount)
                     return;
 
-                _parent._usages.Decrement(_usagesSlot);
+                _usage.Decrement();
 
                 if (_parent._databaseShutdown.IsCancellationRequested && _parent._usages.Value == 0)
                     _parent._waitForUsagesOnDisposal.Set();

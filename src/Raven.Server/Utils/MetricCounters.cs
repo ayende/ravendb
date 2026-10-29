@@ -53,7 +53,7 @@ namespace Raven.Server.Utils
         {
             public MeterMetric RequestsPerSec { get; internal set; }
 
-            // PERF: every request updates it twice, a single shared field would bounce between all the cores
+            // PERF: every request updates it twice, avoiding cross core contention
             public readonly PerCoreCounter ConcurrentRequests = new();
 
             public long ConcurrentRequestsCount => ConcurrentRequests.Value;
