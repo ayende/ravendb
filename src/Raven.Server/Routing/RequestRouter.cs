@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -287,7 +287,7 @@ namespace Raven.Server.Routing
             // reported rates track true throughput rather than arrival pressure.
             var requestStartNs = Clock.Nanoseconds;
 
-            Interlocked.Increment(ref _serverMetrics.Requests.ConcurrentRequestsCount);
+            var concurrentRequestsSlot = _serverMetrics.Requests.ConcurrentRequests.Increment();
 
             try
             {
@@ -434,7 +434,7 @@ namespace Raven.Server.Routing
             }
             finally
             {
-                Interlocked.Decrement(ref _serverMetrics.Requests.ConcurrentRequestsCount);
+                _serverMetrics.Requests.ConcurrentRequests.Decrement(concurrentRequestsSlot);
 
                 var elapsedNs = Clock.Nanoseconds - requestStartNs;
                 if (elapsedNs < 0)
