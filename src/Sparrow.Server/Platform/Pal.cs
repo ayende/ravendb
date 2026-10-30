@@ -187,8 +187,8 @@ namespace Sparrow.Server.Platform
             void* handle, Int64* offsets, Int32 count);
 
         /// <summary>
-        /// After <see cref="rvn_pager_start_reads"/>: the token reaches the ring's callback once the pages are in the page cache,
-        /// and the offsets must stay valid until then. Returns 1 when queued; 0 when not, and then the token never reaches it.
+        /// The ring reads the 8 KB pages at the offsets and passes the token to its callback once they are all in the page cache;
+        /// the offsets must stay valid until then. Returns 1 when queued; 0 when not, and then the token never reaches it.
         /// </summary>
         [DllImport(LIBRVNPAL)]
         [SuppressGCTransition]
