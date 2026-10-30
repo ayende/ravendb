@@ -233,7 +233,7 @@ _prefetch_read_group(struct prefetch_state *s, int32_t slot, const struct prefet
     struct read_group *g = &s->groups[group];
     s->free_group = g->next_free;
     g->token = req->token;
-    g->pending = req->count; /* > 0, so the group returns to the free list exactly once */
+    g->pending = req->count;
     for (uint32_t i = 0; i < req->count; i++)
     {
         struct io_uring_sqe *sqe = _prefetch_get_sqe(s); /* may reap: the earlier reads of this group can complete here */
