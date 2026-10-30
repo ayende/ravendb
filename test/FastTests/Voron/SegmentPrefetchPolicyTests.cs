@@ -19,7 +19,7 @@ public class SegmentPrefetchPolicyTests(ITestOutputHelper output) : NoDisposalNe
     // a private policy driven by hand: no timer, no real memory
     private sealed class Harness : IDisposable
     {
-        public readonly PrefetchPolicy Policy = new(startTimer: false);
+        public readonly PrefetchPolicy Policy = new(TotalMemory, startTimer: false);
         public readonly SegmentPrefetchTable Table;
         public readonly List<long> Prefetches = new(); // segment numbers, in the order they were read ahead
 
@@ -28,7 +28,7 @@ public class SegmentPrefetchPolicyTests(ITestOutputHelper output) : NoDisposalNe
             Table = new SegmentPrefetchTable(Policy, SegmentSize, fileSegments * SegmentSize);
         }
 
-        public void Memory(long freeBytes) => Policy.Tick(freeBytes, TotalMemory);
+        public void Memory(long freeBytes) => Policy.Tick(freeBytes);
 
         public void Access(IEnumerable<long> pages)
         {
