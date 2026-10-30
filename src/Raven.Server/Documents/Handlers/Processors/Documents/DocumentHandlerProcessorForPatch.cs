@@ -21,27 +21,29 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
     {
     }
 
-    // the merger is a single thread: page faults and patch work done here do not stall the writes queued behind this one
-    private void PrepareOutsideOfMerger(DocumentsOperationContext context, string id, PatchDocumentCommand command, SimpleAssignmentPatch simplePatch, BlittableJsonReaderObject args)
+    // The merger is a single thread: page faults and patch work done here do not stall the writes queued behind this one.
+    // Returns a task that completes once the pages the update modifies are in memory.
+    private Task PrepareOutsideOfMerger(DocumentsOperationContext context, string id, PatchDocumentCommand command, SimpleAssignmentPatch simplePatch, BlittableJsonReaderObject args)
     {
         var storage = RequestHandler.Database.DocumentsStorage;
         using (context.OpenReadTransaction())
         using (var document = storage.Get(context, id, simplePatch == null ? DocumentFields.Data : DocumentFields.All, throwOnConflict: false))
         {
             if (document == null)
-                return;
+                return Task.CompletedTask;
 
-            storage.PrefetchDocument(context, document);
+            var pagesRead = storage.PrefetchDocumentAsync(context, document);
             if (simplePatch == null)
-                return;
+                return pagesRead;
 
             if (simplePatch.TryApply(context, document.Id, document.Data, args, out var modified) == false)
-                return;
+                return pagesRead;
 
             if (modified == null)
                 command.CompleteAsNotModified(context, document.Data);
             else
                 command.SetPrepared(document.Id, document.ChangeVector, document.Flags, modified);
+            return pagesRead;
         }
     }
 
@@ -85,11 +87,13 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
 
             if (simplePatch != null)
                 command.SetSimplePatch(simplePatch);
-            if (debugMode == false)
-                PrepareOutsideOfMerger(context, id, command, simplePatch, patchArgs);
+            var pagesRead = debugMode == false ? PrepareOutsideOfMerger(context, id, command, simplePatch, patchArgs) : Task.CompletedTask;
 
             if (command.PatchResult == null)
+            {
+                await pagesRead;
                 await RequestHandler.Database.TxMerger.Enqueue(command);
+            }
         }
         else
         {

@@ -7,6 +7,7 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Threading.Tasks;
 using Sparrow;
 using Sparrow.Binary;
 using Sparrow.Json;
@@ -739,21 +740,29 @@ namespace Voron.Data.Tables
         }
 
         /// <summary>
-        /// Starts the reads of the pages around the value <paramref name="id"/> that reading it did not bring in: the rest of
-        /// its page, its section header page and the leaf pages of its entries in the given fixed-size indexes.
+        /// Reads the pages that updating the value <paramref name="id"/> modifies and reading it did not bring in: its whole
+        /// page, its section header page and the leaf pages of its entries in the given fixed-size indexes. The task
+        /// completes once they are in memory (see <see cref="Pager.ReadPagesAhead"/>).
         /// </summary>
-        public void Prefetch(long id, params ReadOnlySpan<TableSchema.FixedSizeKeyIndexDef> indexes)
+        public Task PrefetchAsync(long id, params ReadOnlySpan<TableSchema.FixedSizeKeyIndexDef> indexes)
         {
             var llt = _tx.LowLevelTransaction;
-            Pager.WillNeedPages(llt.DataPagerState, id / Constants.Storage.PageSize);
+            Span<long> pages = stackalloc long[2 + indexes.Length];
+            var count = 0;
+            pages[count++] = id / Constants.Storage.PageSize;
             if (id % Constants.Storage.PageSize != 0) // a small value: its section header page tracks its space
-                Pager.WillNeedPages(llt.DataPagerState, RawDataSection.GetSectionPageNumber(llt, id));
+                pages[count++] = RawDataSection.GetSectionPageNumber(llt, id);
 
-            if (indexes.IsEmpty)
-                return;
-            DirectRead(id, out TableValueReader value);
-            foreach (var indexDef in indexes)
-                GetFixedSizeTree(indexDef).PrefetchLeafFor(indexDef.GetValue(value));
+            if (indexes.IsEmpty == false)
+            {
+                DirectRead(id, out TableValueReader value);
+                foreach (var indexDef in indexes)
+                {
+                    if (GetFixedSizeTree(indexDef).TryGetLeafPageNumber(indexDef.GetValue(value), out var leaf))
+                        pages[count++] = leaf;
+                }
+            }
+            return Pager.ReadPagesAhead(llt.DataPagerState, pages[..count]);
         }
 
         /// <summary>

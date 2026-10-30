@@ -6,6 +6,7 @@ using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Raven.Client;
 using Raven.Client.Documents.Attachments;
 using Raven.Client.Documents.Changes;
@@ -1293,12 +1294,16 @@ namespace Raven.Server.Documents
         /// its section header page, and the leaf pages that hold its current etag in the all-documents and collection etag
         /// indexes (the entries a change of the document removes). Uses the read transaction the document was read with.
         /// </summary>
-        public void PrefetchDocument(DocumentsOperationContext context, Document document)
+        /// <summary>
+        /// Reads the pages that updating <paramref name="document"/> modifies (its page, its section header and its entries in
+        /// the etag indexes); the task completes once they are in memory, so the merger does not stall on them.
+        /// </summary>
+        public Task PrefetchDocumentAsync(DocumentsOperationContext context, Document document)
         {
             var collectionName = ExtractCollectionName(context, document.Data);
             var table = context.Transaction.InnerTransaction.OpenTable(DocumentDatabase.GetDocsSchemaForCollection(collectionName),
                 collectionName.GetTableName(CollectionTableType.Documents));
-            table?.Prefetch(document.StorageId, Schemas.Documents.AllDocsEtagsIndex, Schemas.Documents.CollectionEtagsIndex);
+            return table?.PrefetchAsync(document.StorageId, Schemas.Documents.AllDocsEtagsIndex, Schemas.Documents.CollectionEtagsIndex) ?? Task.CompletedTask;
         }
 
         public Document GetByEtag(DocumentsOperationContext context, long etag)

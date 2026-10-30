@@ -1,10 +1,12 @@
 using System;
+using System.Runtime.InteropServices;
+using System.Threading.Tasks;
 using Sparrow.Binary;
 using Sparrow.Platform;
 
 namespace Sparrow.Server.Platform;
 
-public readonly record struct PrefetchRingStats(long Submitted, long DroppedFull, long DroppedStale, long Failed);
+public readonly record struct PrefetchRingStats(long Submitted, long DroppedFull, long DroppedStale, long Failed, long ReadGroups, long Reads, bool UsesIoUring);
 
 /// <summary>
 /// The PAL's queue of read-ahead requests for data files: drained by io_uring, or by a posix_fadvise thread where
@@ -33,7 +35,7 @@ public sealed unsafe class PrefetchRing : IDisposable
             return;
 
         queueSize = Bits.PowerOf2(queueSize); // the PAL indexes the queue by mask
-        var rc = Pal.rvn_prefetch_ring_create(ringEntries, maxFiles, queueSize, out var handle, out var errorCode);
+        var rc = Pal.rvn_prefetch_ring_create(ringEntries, maxFiles, queueSize, &OnReadsDone, out var handle, out var errorCode);
         if (rc != PalFlags.FailCodes.Success)
             PalHelper.ThrowLastError(rc, errorCode, $"Failed to create a prefetch ring ({ringEntries} entries, {maxFiles} files, queue of {queueSize})");
         _handle = handle;
@@ -41,9 +43,49 @@ public sealed unsafe class PrefetchRing : IDisposable
 
     public PrefetchRingStats? GetStats()
     {
-        if (_handle == null || Pal.rvn_prefetch_ring_stats(_handle, out var submitted, out var droppedFull, out var droppedStale, out var failed) != PalFlags.FailCodes.Success)
+        if (_handle == null || Pal.rvn_prefetch_ring_stats(_handle, out var submitted, out var droppedFull, out var droppedStale, out var failed,
+                out var readGroups, out var reads, out var usesIoUring) != PalFlags.FailCodes.Success)
             return null;
-        return new PrefetchRingStats(submitted, droppedFull, droppedStale, failed);
+        return new PrefetchRingStats(submitted, droppedFull, droppedStale, failed, readGroups, reads, usesIoUring != 0);
+    }
+
+    /// <summary>
+    /// Queues a read group of the 8 KB pages at <paramref name="offsets"/> (at most 8) of the file of <paramref name="pagerHandle"/>.
+    /// Returns false when they were not queued (the file has no ring, or the queue is full). Otherwise <paramref name="done"/>
+    /// completes once the pages are in the page cache, or at once where they cannot be read (no io_uring, the file closed).
+    /// </summary>
+    public static bool TryReadPages(void* pagerHandle, ReadOnlySpan<long> offsets, out Task done)
+    {
+        var waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var handle = GCHandle.Alloc(waiter);
+        fixed (long* p = offsets)
+        {
+            if (Pal.rvn_pager_read_pages(pagerHandle, p, offsets.Length, (ulong)GCHandle.ToIntPtr(handle)) == 1)
+            {
+                done = waiter.Task;
+                return true;
+            }
+        }
+        handle.Free();
+        done = Task.CompletedTask;
+        return false;
+    }
+
+    // called by the ring's submitter thread, once per read group; the token is a GCHandle to the group's waiter
+    [UnmanagedCallersOnly]
+    private static void OnReadsDone(ulong token)
+    {
+        try
+        {
+            var handle = GCHandle.FromIntPtr((nint)token);
+            var waiter = (TaskCompletionSource)handle.Target;
+            handle.Free();
+            waiter?.TrySetResult();
+        }
+        catch
+        {
+            // an exception must not reach the native thread (none is expected for a token that TryReadPages made)
+        }
     }
 
     public void Dispose()

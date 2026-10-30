@@ -46,6 +46,9 @@ namespace Raven.Server.Web.System
                     [nameof(PrefetchRingStats.DroppedFull)] = stats?.DroppedFull,
                     [nameof(PrefetchRingStats.DroppedStale)] = stats?.DroppedStale,
                     [nameof(PrefetchRingStats.Failed)] = stats?.Failed,
+                    [nameof(PrefetchRingStats.ReadGroups)] = stats?.ReadGroups,
+                    [nameof(PrefetchRingStats.Reads)] = stats?.Reads,
+                    [nameof(PrefetchRingStats.UsesIoUring)] = stats?.UsesIoUring,
                     ["SegmentReadAheadWarmUp"] = PrefetchPolicy.Global.Generation
                 });
             }

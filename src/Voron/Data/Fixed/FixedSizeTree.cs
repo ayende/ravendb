@@ -555,32 +555,33 @@ namespace Voron.Data.Fixed
         }
 
         /// <summary>
-        /// Starts the read of the leaf page that holds <paramref name="key"/> without waiting for it: the branch pages on the
-        /// way are read (they are usually in memory), the leaf is asked for with <see cref="Pager.WillNeedPages"/>. This does
-        /// not use or fill the per transaction search state: the write transaction searches on its own.
+        /// The leaf page that holds <paramref name="key"/>, found without reading the leaf: the branch pages on the way are
+        /// read (they are usually in memory). False when there is no leaf to read: the tree is embedded or one page, or the
+        /// walk already read the leaf. This does not use or fill the per transaction search state.
         /// </summary>
-        public void PrefetchLeafFor(TVal key)
+        public bool TryGetLeafPageNumber(TVal key, out long pageNumber)
         {
+            pageNumber = -1;
             if (Type != RootObjectType.FixedSizeTree)
-                return; // an embedded tree is part of its parent's value
+                return false; // an embedded tree is part of its parent's value
             var header = (FixedSizeTreeHeader.Large*)_parent.DirectRead(_treeName);
             if (header->Depth < 2)
-                return; // the root is the leaf
+                return false; // the root is the leaf
             var page = GetReadOnlyPage(header->RootPageNumber);
             for (var level = 1; ; level++)
             {
                 // Deletions can leave a leaf above the deepest level, so the page in hand is checked: a leaf was already
                 // read. No path is deeper than Depth, so below the last branch level there is a leaf, which we do not read.
                 if (page.IsLeaf)
-                    return;
+                    return false;
                 BinarySearch(ref page, key);
                 if (page.LastMatch < 0 && page.LastSearchPosition > 0)
                     page.LastSearchPosition--;
                 var childPageNumber = page.GetEntry(page.LastSearchPosition)->PageNumber;
                 if (level == header->Depth - 1)
                 {
-                    Pager.WillNeedPages(_tx.DataPagerState, childPageNumber);
-                    return;
+                    pageNumber = childPageNumber;
+                    return true;
                 }
                 page = GetReadOnlyPage(childPageNumber);
             }
