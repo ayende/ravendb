@@ -29,7 +29,9 @@
  * already holds keeps its file reference and completes harmlessly.
  *
  * Producers (any thread) push to a bounded lock-free queue; a full queue drops the request (it is only a hint).
- * One submitter thread drains the queue, submits in batches and reaps the completions.
+ * One submitter thread drains the queue, submits in batches and reaps the completions. It sleeps on an eventfd that
+ * producers signal, and that the kernel also signals on every completion (io_uring_register_eventfd), so a read that
+ * completes while nothing new is queued still wakes it.
  *
  * A ring is an object: rvn_prefetch_ring_create / rvn_prefetch_ring_destroy. The server keeps one for the process;
  * a ring can only be destroyed once no file is registered with it.
@@ -373,8 +375,16 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
     s->group_free_top = s->max_groups;
     pthread_mutex_init(&s->slots_lock, NULL);
 
+    s->eventfd = eventfd(0, EFD_CLOEXEC);
+    if (s->eventfd == -1)
+    {
+        *detailed_error_code = errno;
+        _prefetch_free(s);
+        return FAIL_CREATE_THREAD;
+    }
     s->use_io_uring = io_uring_queue_init(s->ring_entries, &s->ring, 0) == 0;
-    if (s->use_io_uring && io_uring_register_files_sparse(&s->ring, (unsigned)max_files) < 0)
+    if (s->use_io_uring &&
+        (io_uring_register_files_sparse(&s->ring, (unsigned)max_files) < 0 || io_uring_register_eventfd(&s->ring, s->eventfd) < 0))
     {
         io_uring_queue_exit(&s->ring);
         s->use_io_uring = false;
@@ -384,6 +394,7 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
         s->fds = malloc((size_t)max_files * sizeof(int));
         if (s->fds == NULL)
         {
+            close(s->eventfd);
             _prefetch_free(s);
             *detailed_error_code = ENOMEM;
             return FAIL_NOMEM;
@@ -391,12 +402,10 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
         for (int32_t i = 0; i < max_files; i++)
             s->fds[i] = -1;
     }
-    s->eventfd = eventfd(0, EFD_CLOEXEC);
-    if (s->eventfd == -1 || pthread_create(&s->thread, NULL, _prefetch_thread, s) != 0)
+    if (pthread_create(&s->thread, NULL, _prefetch_thread, s) != 0)
     {
         *detailed_error_code = errno;
-        if (s->eventfd != -1)
-            close(s->eventfd);
+        close(s->eventfd);
         if (s->use_io_uring)
             io_uring_queue_exit(&s->ring);
         _prefetch_free(s);
