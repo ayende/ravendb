@@ -118,7 +118,7 @@ public sealed class PrefetchRing : IDisposable
     {
         var words = _busySlots;
         var start = (uint)Environment.CurrentManagedThreadId; // spreads concurrent callers over the words
-        for (var n = 0u; ; n++)
+        for (var n = 0u; n < words.Length * 100; n++) // a pass can miss a bit freed behind it while others take those ahead
         {
             var w = (int)((start + n) % (uint)words.Length);
             var bits = Volatile.Read(ref words[w]);
@@ -131,6 +131,7 @@ public sealed class PrefetchRing : IDisposable
                 bits = seen;
             }
         }
+        throw new InvalidOperationException("A wait slot was reserved, but no free slot was found");
     }
 
     public void ReturnSlot(int index)

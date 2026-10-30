@@ -186,10 +186,7 @@ namespace Sparrow.Server.Platform
         public static extern Int32 rvn_pager_start_reads(
             void* handle, Int64* offsets, Int32 count);
 
-        /// <summary>
-        /// The ring reads the 8 KB pages at the offsets and passes the group to its callback once; the offsets are copied, and a
-        /// full queue makes this wait. Returns 1 when queued; 0 when not, and then the group never reaches the callback.
-        /// </summary>
+        /// <summary>The ring reads the 8 KB pages at the offsets and passes the group to its callback once</summary>
         [DllImport(LIBRVNPAL)]
         public static extern Int32 rvn_pager_read_pages(
             void* handle, Int64* offsets, Int32 count, UInt32 group);

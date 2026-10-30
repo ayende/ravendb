@@ -76,13 +76,14 @@ public unsafe partial class Pager
     {
         if (ring.TryRentSlot(out var slot))
             return ring.WaitForPages(slot, state.Handle, offsets);
-        var copy = ArrayPool<long>.Shared.Rent(offsets.Length);
-        offsets.CopyTo(copy);
-        return ReadAheadSlotWait.WaitAsync(state, ring, copy, offsets.Length);
+        var copy = offsets.ToArray(); // every wait slot is taken: rare
+        return new ValueTask(ring.RentSlotAsync()
+            .ContinueWith(rented => WaitForPagesOnSlot(state, ring, rented.Result, copy).AsTask(), TaskScheduler.Default)
+            .Unwrap());
     }
 
     // the caller's transaction may have ended while it waited for the slot: the state's lock keeps the handle open
-    internal static ValueTask WaitForPagesOnSlot(State state, PrefetchRing ring, int slot, ReadOnlySpan<long> offsets)
+    private static ValueTask WaitForPagesOnSlot(State state, PrefetchRing ring, int slot, ReadOnlySpan<long> offsets)
     {
         lock (state.WeakSelf)
         {
@@ -109,22 +110,5 @@ public unsafe partial class Pager
         Volatile.Write(ref slot, key);
 
         Pal.rvn_pager_will_need(state.Handle, pageNumber * Constants.Storage.PageSize, (long)numberOfPages * Constants.Storage.PageSize);
-    }
-}
-
-internal static class ReadAheadSlotWait
-{
-    // all wait slots are taken: wait for one without holding a thread
-    public static async ValueTask WaitAsync(Pager.State state, PrefetchRing ring, long[] offsets, int count)
-    {
-        try
-        {
-            var slot = await ring.RentSlotAsync().ConfigureAwait(false);
-            await Pager.WaitForPagesOnSlot(state, ring, slot, offsets.AsSpan(0, count)).ConfigureAwait(false);
-        }
-        finally
-        {
-            ArrayPool<long>.Shared.Return(offsets);
-        }
     }
 }
