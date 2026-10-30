@@ -764,16 +764,17 @@ rvn_pager_will_need(void *handle, int64_t offset, int64_t length)
 #endif
 }
 
-/* The file's prefetch ring reads the 8 KB pages at offsets, then passes token to its on_reads_done once; offsets must stay
-   valid until then. Without io_uring, or when the file was closed, the token is passed without reads. Returns 0 when not
-   queued (no ring, file not registered, no pages, queue full): then the token is never passed. */
+/* The file's prefetch ring reads the 8 KB pages at offsets, then passes group to its on_reads_done once. The offsets are
+   copied; on a full queue this waits for room. Without io_uring, or when the file was closed, group is passed without
+   reads. Returns 0 when not queued (no ring, file not registered, no pages, group out of range): then group is never
+   passed. */
 EXPORT int32_t
-rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint64_t token)
+rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint32_t group)
 {
     struct handle *handle_ptr = handle;
     if (handle_ptr == NULL || handle_ptr->global_state->prefetch_ring == NULL)
         return 0;
-    return rvn_prefetch_enqueue_reads(handle_ptr->global_state->prefetch_ring, handle_ptr->global_state->prefetch_ticket, offsets, count, token);
+    return rvn_prefetch_enqueue_reads(handle_ptr->global_state->prefetch_ring, handle_ptr->global_state->prefetch_ticket, offsets, count, group);
 }
 
 EXPORT int32_t

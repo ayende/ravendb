@@ -278,20 +278,21 @@ rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length)
 }
 
 PRIVATE int32_t
-rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint64_t token)
+rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint32_t group)
 {
     (void)ring;
     (void)ticket;
     (void)offsets;
     (void)count;
-    (void)token;
+    (void)group;
     return 0;
 }
 
 EXPORT int32_t
-rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, 
+rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, int32_t max_groups,
     rvn_reads_done on_reads_done, void *on_reads_done_context, void **ring, int32_t *detailed_error_code)
 {
+    (void)max_groups;
     (void)on_reads_done;
     (void)on_reads_done_context;
     (void)ring_entries;
