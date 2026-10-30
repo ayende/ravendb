@@ -22,7 +22,7 @@ rvn_prefetch_ranges(struct RVN_RANGE_LIST *range_list, int32_t count, int32_t *d
     for (i = 0; i < count; i++)
     {
         struct RVN_RANGE_LIST record = range_list[i];
-        // the kernel drops the part of a WILLNEED request beyond what the device reads at once (see rvn_pager_prefetch)
+        // the kernel drops the part of a WILLNEED request beyond what the device reads at once
         size_t request_size = record.request_size != 0 ? record.request_size : record.number_of_bytes;
         for (size_t done = 0; done < record.number_of_bytes; done += request_size)
         {

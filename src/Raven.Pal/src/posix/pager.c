@@ -274,8 +274,8 @@ _read_queue_limit_kb(unsigned int major_number, unsigned int minor_number, const
 }
 #endif
 
-/* The largest WILLNEED request the device of fd reads whole: the kernel caps one at max(io_pages, ra_pages), which are
-   the device's max_sectors_kb and read_ahead_kb. */
+/* The largest WILLNEED request the device of fd reads whole: the kernel truncates one to max(io_pages, ra_pages), the
+   device's max_sectors_kb and read_ahead_kb (force_page_cache_ra), and silently drops the rest. */
 PRIVATE int64_t
 _prefetch_request_size(int fd)
 {
