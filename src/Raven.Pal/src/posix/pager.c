@@ -764,9 +764,9 @@ rvn_pager_will_need(void *handle, int64_t offset, int64_t length)
 #endif
 }
 
-/* The file's prefetch ring reads the 8 KB pages at offsets and passes token to its on_reads_done once they are all in the
-   page cache; offsets must stay valid until then. Returns 1 when queued; 0 when not (no ring, queue full), and then the
-   token is never passed. */
+/* The file's prefetch ring reads the 8 KB pages at offsets, then passes token to its on_reads_done once; offsets must stay
+   valid until then. Without io_uring, or when the file was closed, the token is passed without reads. Returns 0 when not
+   queued (no ring, file not registered, no pages, queue full): then the token is never passed. */
 EXPORT int32_t
 rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint64_t token)
 {
