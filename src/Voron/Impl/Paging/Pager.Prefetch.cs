@@ -49,11 +49,10 @@ public unsafe partial class Pager
                 return ValueTask.CompletedTask;
 
             var ring = state.Pager._prefetchRing;
-            ValueTask done;
             if (count > CheckedReadAheadLimit)
             {
-                if (ring != null && ring.TryWaitForPages(state.Handle, offsets[..count], out done))
-                    return done;
+                if (ring is { CanWaitForPages: true })
+                    return WaitForPages(state, ring, offsets[..count]);
                 foreach (var offset in offsets[..count]) // nothing started these reads yet
                     Pal.rvn_pager_will_need(state.Handle, offset, Constants.Storage.PageSize);
                 return ValueTask.CompletedTask;
@@ -62,15 +61,36 @@ public unsafe partial class Pager
             int missing;
             fixed (long* p = offsets)
                 missing = Pal.rvn_pager_start_reads(state.Handle, p, count);
-            if (missing == 0 || ring == null || ring.TryWaitForPages(state.Handle, offsets[..missing], out done) == false)
+            if (missing == 0 || ring is not { CanWaitForPages: true })
                 return ValueTask.CompletedTask;
-            return done;
+            return WaitForPages(state, ring, offsets[..missing]);
         }
         finally
         {
             if (rented != null)
                 ArrayPool<long>.Shared.Return(rented);
         }
+    }
+
+    private static ValueTask WaitForPages(State state, PrefetchRing ring, ReadOnlySpan<long> offsets)
+    {
+        if (ring.TryRentSlot(out var slot))
+            return ring.WaitForPages(slot, state.Handle, offsets);
+        var copy = ArrayPool<long>.Shared.Rent(offsets.Length);
+        offsets.CopyTo(copy);
+        return ReadAheadSlotWait.WaitAsync(state, ring, copy, offsets.Length);
+    }
+
+    // the caller's transaction may have ended while it waited for the slot: the state's lock keeps the handle open
+    internal static ValueTask WaitForPagesOnSlot(State state, PrefetchRing ring, int slot, ReadOnlySpan<long> offsets)
+    {
+        lock (state.WeakSelf)
+        {
+            if (state.Disposed == false)
+                return ring.WaitForPages(slot, state.Handle, offsets);
+        }
+        ring.ReturnSlot(slot);
+        return ValueTask.CompletedTask;
     }
 
     private static ref int RecentSlot(int[] recent, long pageNumber) =>
@@ -89,5 +109,22 @@ public unsafe partial class Pager
         Volatile.Write(ref slot, key);
 
         Pal.rvn_pager_will_need(state.Handle, pageNumber * Constants.Storage.PageSize, (long)numberOfPages * Constants.Storage.PageSize);
+    }
+}
+
+internal static class ReadAheadSlotWait
+{
+    // all wait slots are taken: wait for one without holding a thread
+    public static async ValueTask WaitAsync(Pager.State state, PrefetchRing ring, long[] offsets, int count)
+    {
+        try
+        {
+            var slot = await ring.RentSlotAsync().ConfigureAwait(false);
+            await Pager.WaitForPagesOnSlot(state, ring, slot, offsets.AsSpan(0, count)).ConfigureAwait(false);
+        }
+        finally
+        {
+            ArrayPool<long>.Shared.Return(offsets);
+        }
     }
 }

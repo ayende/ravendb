@@ -583,6 +583,102 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
     }
 
     [RavenFact(RavenTestCategory.Voron)]
+    public void AGroupLargerThanTheFreeQueueWaitsForRoom()
+    {
+        using var ring = new PrefetchRing(ringEntries: 8, maxFiles: 4, queueSize: 2); // two cells, 12 pages each
+        if (ring.IsAvailable == false)
+            return;
+
+        const int pages = 100;
+        var path = RavenTestHelper.NewDataPath(nameof(AGroupLargerThanTheFreeQueueWaitsForRoom), 0, forceCreateDir: true);
+        try
+        {
+            var file = Path.Combine(path, Constants.DatabaseFilename);
+            var content = new byte[pages * Constants.Storage.PageSize];
+            Random.Shared.NextBytes(content);
+            File.WriteAllBytes(file, content);
+
+            using (var options = StorageEnvironmentOptions.ForPathForTests(path))
+            {
+                options.PrefetchRing = ring;
+                var (pager, state) = Pager.Create(options, file, content.Length, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
+                using (pager)
+                using (state)
+                {
+                    var offsets = Enumerable.Range(0, pages).Select(x => (long)x * Constants.Storage.PageSize).ToArray();
+                    if (ring.CanWaitForPages)
+                    {
+                        Assert.True(ring.TryRentSlot(out var slot));
+                        Assert.True(ring.WaitForPages(slot, state.Handle, offsets).AsTask().Wait(TimeSpan.FromSeconds(10)));
+                        Assert.Equal(pages, ring.GetStats()!.Value.Reads);
+                    }
+                    else
+                    {
+                        fixed (long* p = offsets)
+                            Assert.Equal(1, Pal.rvn_pager_read_pages(state.Handle, p, pages, 0)); // waits for the submitter to free cells
+                        var sw = Stopwatch.StartNew();
+                        while (ring.GetStats()!.Value.ReadGroups == 0 && sw.Elapsed < TimeSpan.FromSeconds(5))
+                            Thread.Sleep(5);
+                    }
+                    var stats = ring.GetStats()!.Value;
+                    Assert.Equal(1, stats.ReadGroups);
+                    Assert.Equal(0, stats.DroppedFull);
+                }
+            }
+        }
+        finally
+        {
+            IOExtensions.DeleteDirectory(path);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Voron)]
+    public void ReadPagesAheadWaitsForAFreeSlot()
+    {
+        using var ring = new PrefetchRing(ringEntries: 8, maxFiles: 4, queueSize: 64);
+        if (ring.IsAvailable == false || ring.CanWaitForPages == false)
+            return; // only io_uring waits for the reads
+
+        const int pages = 16;
+        var path = RavenTestHelper.NewDataPath(nameof(ReadPagesAheadWaitsForAFreeSlot), 0, forceCreateDir: true);
+        var taken = new List<int>();
+        try
+        {
+            var file = Path.Combine(path, Constants.DatabaseFilename);
+            var content = new byte[pages * Constants.Storage.PageSize];
+            Random.Shared.NextBytes(content);
+            File.WriteAllBytes(file, content);
+
+            using (var options = StorageEnvironmentOptions.ForPathForTests(path))
+            {
+                options.PrefetchRing = ring;
+                var (pager, state) = Pager.Create(options, file, content.Length, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
+                using (pager)
+                using (state)
+                {
+                    DropFromPageCache(file);
+                    while (ring.TryRentSlot(out var slot))
+                        taken.Add(slot);
+
+                    var read = Pager.ReadPagesAhead(state, [3, 5]).AsTask();
+                    Assert.False(read.Wait(TimeSpan.FromMilliseconds(200))); // no slot: it waits
+
+                    ring.ReturnSlot(taken[^1]);
+                    taken.RemoveAt(taken.Count - 1);
+                    Assert.True(read.Wait(TimeSpan.FromSeconds(10)));
+                    Assert.Equal(1, ring.GetStats()!.Value.ReadGroups);
+                }
+            }
+        }
+        finally
+        {
+            foreach (var slot in taken)
+                ring.ReturnSlot(slot);
+            IOExtensions.DeleteDirectory(path);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Voron)]
     public void WaitSlotsAreReused()
     {
         using var ring = new PrefetchRing(ringEntries: 8, maxFiles: 4, queueSize: 64);

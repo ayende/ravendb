@@ -17,27 +17,31 @@ public readonly record struct PrefetchRingStats(long Submitted, long DroppedFull
 /// there is no ring (<see cref="IsAvailable"/> is false). A ring can only be disposed after every data file opened
 /// with it was closed.
 /// </summary>
-public sealed unsafe class PrefetchRing : IDisposable
+public sealed class PrefetchRing : IDisposable
 {
     public static readonly PrefetchRing Default = new(PalConfiguration.PrefetchRingEntries, PalConfiguration.PrefetchMaxFiles, PalConfiguration.PrefetchQueueSize);
 
     private const int WaitSlots = 1024;
 
-    private void* _handle;
+    private unsafe void* _handle;
     private GCHandle _self;
     private readonly bool _usesIoUring;
     private readonly WaitSlot[] _slots;
     private readonly ulong[] _busySlots;
+    private readonly SemaphoreSlim _freeSlots;
 
     /// <summary>The PAL handle, passed to rvn_init_pager; null when there is no ring.</summary>
-    public void* Handle => _handle;
+    public unsafe void* Handle => _handle;
 
     /// <summary>The number of data files that can be open with the ring at the same time.</summary>
     public int MaxFiles { get; }
 
-    public bool IsAvailable => _handle != null;
+    public unsafe bool IsAvailable => _handle != null;
 
-    public PrefetchRing(int ringEntries, int maxFiles, int queueSize)
+    /// <summary>Without io_uring, the posix_fadvise thread cannot tell when a read completes.</summary>
+    public bool CanWaitForPages => _usesIoUring;
+
+    public unsafe PrefetchRing(int ringEntries, int maxFiles, int queueSize)
     {
         MaxFiles = maxFiles;
         if (PlatformDetails.RunningOnLinux == false)
@@ -45,7 +49,8 @@ public sealed unsafe class PrefetchRing : IDisposable
 
         queueSize = Bits.PowerOf2(queueSize); // the PAL indexes the queue by mask
         _self = GCHandle.Alloc(this);
-        var rc = Pal.rvn_prefetch_ring_create(ringEntries, maxFiles, queueSize, &OnReadsDone, (void*)GCHandle.ToIntPtr(_self), out var handle, out var errorCode);
+        var rc = Pal.rvn_prefetch_ring_create(ringEntries, maxFiles, queueSize, WaitSlots, &OnReadsDone, (void*)GCHandle.ToIntPtr(_self),
+            out var handle, out var errorCode);
         if (rc != PalFlags.FailCodes.Success)
         {
             _self.Free();
@@ -55,15 +60,16 @@ public sealed unsafe class PrefetchRing : IDisposable
 
         _usesIoUring = GetStats()?.UsesIoUring == true;
         if (_usesIoUring == false)
-            return; // the posix_fadvise thread cannot tell when a read completes
+            return;
 
         _slots = new WaitSlot[WaitSlots];
         for (var i = 0; i < _slots.Length; i++)
             _slots[i] = new WaitSlot(this, i);
         _busySlots = new ulong[WaitSlots / 64];
+        _freeSlots = new SemaphoreSlim(WaitSlots);
     }
 
-    public PrefetchRingStats? GetStats()
+    public unsafe PrefetchRingStats? GetStats()
     {
         if (_handle == null || Pal.rvn_prefetch_ring_stats(_handle, out var submitted, out var droppedFull, out var droppedStale, out var failed,
                 out var readGroups, out var reads, out var usesIoUring) != PalFlags.FailCodes.Success)
@@ -71,33 +77,48 @@ public sealed unsafe class PrefetchRing : IDisposable
         return new PrefetchRingStats(submitted, droppedFull, droppedStale, failed, readGroups, reads, usesIoUring != 0);
     }
 
-    /// <summary>
-    /// Returns false when the ring cannot wait for the pages. Otherwise <paramref name="done"/> completes once the pages at
-    /// <paramref name="offsets"/> are in the page cache; the ring reads those that are not.
-    /// </summary>
-    public bool TryWaitForPages(void* pagerHandle, ReadOnlySpan<long> offsets, out ValueTask done)
+    /// <summary>Takes a wait slot if one is free. <see cref="WaitForPages"/> returns it; so does <see cref="ReturnSlot"/>.</summary>
+    public bool TryRentSlot(out int slot)
     {
-        done = ValueTask.CompletedTask;
-        if (_usesIoUring == false || TryRentSlot(out var slot) == false)
+        slot = -1;
+        if (_usesIoUring == false || _freeSlots.Wait(0) == false)
             return false;
-
-        var buffer = slot.GetOffsets(offsets.Length);
-        offsets.CopyTo(new Span<long>(buffer, offsets.Length));
-        var version = slot.Version;
-        if (Pal.rvn_pager_read_pages(pagerHandle, buffer, offsets.Length, (ulong)slot.Index) != 1)
-        {
-            ReleaseSlot(slot.Index);
-            return false;
-        }
-        done = new ValueTask(slot, version);
+        slot = TakeFreeSlot();
         return true;
     }
 
-    private bool TryRentSlot(out WaitSlot slot)
+    /// <summary>Completes with a wait slot once one is free.</summary>
+    public async Task<int> RentSlotAsync()
+    {
+        await _freeSlots.WaitAsync().ConfigureAwait(false);
+        return TakeFreeSlot();
+    }
+
+    /// <summary>
+    /// Queues the pages at <paramref name="offsets"/> on the rented <paramref name="slot"/>, and returns the slot to the ring once
+    /// the ring's reads of them complete. Returns a completed task when the file is not registered with the ring.
+    /// </summary>
+    public unsafe ValueTask WaitForPages(int slot, void* pagerHandle, ReadOnlySpan<long> offsets)
+    {
+        var waitSlot = _slots[slot];
+        var version = waitSlot.Version;
+        int queued;
+        fixed (long* p = offsets)
+            queued = Pal.rvn_pager_read_pages(pagerHandle, p, offsets.Length, (uint)slot);
+        if (queued != 1)
+        {
+            ReturnSlot(slot);
+            return ValueTask.CompletedTask;
+        }
+        return new ValueTask(waitSlot, version);
+    }
+
+    // a free semaphore count means a clear bit exists
+    private int TakeFreeSlot()
     {
         var words = _busySlots;
         var start = (uint)Environment.CurrentManagedThreadId; // spreads concurrent callers over the words
-        for (var n = 0u; n < words.Length; n++)
+        for (var n = 0u; ; n++)
         {
             var w = (int)((start + n) % (uint)words.Length);
             var bits = Volatile.Read(ref words[w]);
@@ -106,38 +127,24 @@ public sealed unsafe class PrefetchRing : IDisposable
                 var bit = BitOperations.TrailingZeroCount(~bits);
                 var seen = Interlocked.CompareExchange(ref words[w], bits | (1UL << bit), bits);
                 if (seen == bits)
-                {
-                    slot = _slots[w * 64 + bit];
-                    return true;
-                }
+                    return w * 64 + bit;
                 bits = seen;
             }
         }
-        slot = null;
-        return false;
     }
 
-    private void ReleaseSlot(int index) => Interlocked.And(ref _busySlots[index / 64], ~(1UL << (index % 64)));
+    public void ReturnSlot(int index)
+    {
+        Interlocked.And(ref _busySlots[index / 64], ~(1UL << (index % 64)));
+        _freeSlots.Release();
+    }
 
-    // the ring's slot table holds the offsets until the callback: the submitter reads them after rvn_pager_read_pages returns
+    // a slot's index is the PAL group index: it is not queued again until its callback and GetResult
     private sealed class WaitSlot(PrefetchRing ring, int index) : IValueTaskSource
     {
-        public readonly int Index = index;
         private ManualResetValueTaskSourceCore<bool> _core = new() { RunContinuationsAsynchronously = true };
-        private long* _offsets;
-        private int _capacity;
 
         public short Version => _core.Version;
-
-        public long* GetOffsets(int count)
-        {
-            if (count > _capacity)
-            {
-                _capacity = Math.Max(count, Math.Max(16, _capacity * 2));
-                _offsets = (long*)NativeMemory.Realloc(_offsets, (nuint)_capacity * sizeof(long));
-            }
-            return _offsets;
-        }
 
         public void Complete() => _core.SetResult(true);
 
@@ -145,32 +152,27 @@ public sealed unsafe class PrefetchRing : IDisposable
         {
             _core.GetResult(token);
             _core.Reset();
-            ring.ReleaseSlot(Index);
+            ring.ReturnSlot(index);
         }
 
         public ValueTaskSourceStatus GetStatus(short token) => _core.GetStatus(token);
 
         public void OnCompleted(Action<object> continuation, object state, short token, ValueTaskSourceOnCompletedFlags flags) =>
             _core.OnCompleted(continuation, state, token, flags);
-
-        public void FreeOffsets()
-        {
-            NativeMemory.Free(_offsets);
-            _offsets = null;
-            _capacity = 0;
-        }
     }
 
-    // runs on the ring's submitter thread; the context is the ring's GCHandle and each token is a slot index
+    // runs on the ring's submitter thread; the context is the ring's GCHandle
     [UnmanagedCallersOnly]
-    private static void OnReadsDone(void* context, ulong* tokens, int count)
+    private static unsafe void OnReadsDone(void* context, uint* groups, int count)
     {
-        var ring = (PrefetchRing)GCHandle.FromIntPtr((nint)context).Target;
+        var slots = ((PrefetchRing)GCHandle.FromIntPtr((nint)context).Target)?._slots;
+        if (slots == null)
+            return; // without io_uring nothing waits
         for (var i = 0; i < count; i++)
         {
             try
             {
-                ring!._slots[(int)tokens[i]].Complete();
+                slots[groups[i]].Complete();
             }
             catch
             {
@@ -179,7 +181,7 @@ public sealed unsafe class PrefetchRing : IDisposable
         }
     }
 
-    public void Dispose()
+    public unsafe void Dispose()
     {
         var handle = _handle;
         if (handle == null)
@@ -189,10 +191,5 @@ public sealed unsafe class PrefetchRing : IDisposable
             PalHelper.ThrowLastError(rc, errorCode, "Failed to destroy the prefetch ring: data files are still open with it");
         _handle = null;
         _self.Free();
-        if (_slots != null)
-        {
-            foreach (var slot in _slots)
-                slot.FreeOffsets();
-        }
     }
 }

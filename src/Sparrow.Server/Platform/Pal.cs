@@ -5,7 +5,7 @@ using System.Text;
 using Microsoft.Win32.SafeHandles;
 using Sparrow.Platform;
 using Sparrow.Utils;
-using unsafe ReadsDoneCallback = delegate* unmanaged<void*, ulong*, int, void>;
+using unsafe ReadsDoneCallback = delegate* unmanaged<void*, uint*, int, void>;
 
 namespace Sparrow.Server.Platform
 {
@@ -187,13 +187,12 @@ namespace Sparrow.Server.Platform
             void* handle, Int64* offsets, Int32 count);
 
         /// <summary>
-        /// The ring reads the 8 KB pages at the offsets and passes the token to its callback once they are all in the page cache;
-        /// the offsets must stay valid until then. Returns 1 when queued; 0 when not, and then the token never reaches it.
+        /// The ring reads the 8 KB pages at the offsets and passes the group to its callback once; the offsets are copied, and a
+        /// full queue makes this wait. Returns 1 when queued; 0 when not, and then the group never reaches the callback.
         /// </summary>
         [DllImport(LIBRVNPAL)]
-        [SuppressGCTransition]
         public static extern Int32 rvn_pager_read_pages(
-            void* handle, Int64* offsets, Int32 count, UInt64 token);
+            void* handle, Int64* offsets, Int32 count, UInt32 group);
 
         /// <summary>The largest WILLNEED request the data file's device reads whole (the kernel drops the rest of a larger one).</summary>
         [DllImport(LIBRVNPAL)]
@@ -202,7 +201,8 @@ namespace Sparrow.Server.Platform
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_create(
-            Int32 ringEntries, Int32 maxFiles, Int32 queueSize, ReadsDoneCallback onReadsDone, void* onReadsDoneContext, out void* ring, out Int32 errorCode);
+            Int32 ringEntries, Int32 maxFiles, Int32 queueSize, Int32 maxGroups, ReadsDoneCallback onReadsDone, void* onReadsDoneContext,
+            out void* ring, out Int32 errorCode);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_destroy(
