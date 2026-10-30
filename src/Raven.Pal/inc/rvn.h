@@ -176,9 +176,11 @@ rvn_pager_read_pages(void *handle,
     int32_t count,
     uint64_t token);
 
+typedef void (*rvn_reads_done)(const uint64_t *tokens, int32_t count);
+
 EXPORT int32_t
 rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, 
-    void (*on_reads_done)(const uint64_t *tokens, int32_t count), void **ring, int32_t *detailed_error_code);
+    rvn_reads_done on_reads_done, void **ring, int32_t *detailed_error_code);
 
 EXPORT int32_t
 rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code);

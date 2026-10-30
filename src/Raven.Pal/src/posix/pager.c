@@ -180,6 +180,10 @@ int32_t _open_pager_file(int fd,
         // a fault reads only the pages it touches, instead of the device's read-ahead window
         // (advisory: a failure leaves the default read-around)
         (void)madvise(mem, st.st_size, MADV_RANDOM);
+#if !__APPLE__
+        // the same for reads through the file (the prefetch ring's read groups): madvise covers only the mapping
+        (void)posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
+#endif
     }
 
     if (global_state->open_flags & OPEN_FILE_WRITABLE_MAP)
@@ -393,12 +397,6 @@ rvn_init_pager(const char *filename,
 
     if (open_flags & OPEN_FILE_PREFETCH)
         global_state->prefetch_request_size = _prefetch_request_size(((struct handle *)*handle)->file_fd);
-
-#if !__APPLE__
-    /* the reads of a read group bring exactly the pages they touch, no read-ahead window (shared with the mapping's faults) */
-    if (open_flags & OPEN_FILE_RANDOM_ACCESS)
-        (void)posix_fadvise(((struct handle *)*handle)->file_fd, 0, 0, POSIX_FADV_RANDOM);
-#endif
 
     if ((open_flags & OPEN_FILE_PREFETCH) && prefetch_ring != NULL)
     {

@@ -29,9 +29,7 @@
  * already holds keeps its file reference and completes harmlessly.
  *
  * Producers (any thread) push to a bounded lock-free queue; a full queue drops the request (it is only a hint).
- * One submitter thread drains the queue, submits in batches and reaps the completions. It sleeps on an eventfd that
- * producers signal, and that the kernel also signals on every completion (io_uring_register_eventfd), so a read that
- * completes while nothing new is queued still wakes it.
+ * One submitter thread drains the queue, submits in batches and reaps the completions.
  *
  * A ring is an object: rvn_prefetch_ring_create / rvn_prefetch_ring_destroy. The server keeps one for the process;
  * a ring can only be destroyed once no file is registered with it.
@@ -41,14 +39,10 @@
  * A request that races the unregistration of its file may reach the descriptor number after it was reused: that is a
  * wasted read-ahead, never a write.
  *
- * A read group is the set of pages (any number) that one caller wants in the page cache before it goes on, for example the
- * pages an update or a batch will modify, read before it reaches the transaction merger. The caller owns the array of
- * page offsets and keeps it until its token reaches on_reads_done: the submitter reads it while it prepares the reads. For each page we read 8
- * bytes across the boundary of its two 4 KB halves into a buffer nobody reads: the kernel brings the whole 8 KB page in
- * one I/O and copies 8 bytes. The reads run in parallel; the submitter counts the completions of each group, collects the
- * tokens of the groups whose last read completed, and calls on_reads_done(tokens, count) once per pass (and before it blocks,
- * so a completed group never waits for the submitter). A group that cannot be read (stale ticket, no free group slot, no
- * io_uring) gets a WILLNEED hint instead and completes at once, so the caller never waits for nothing.
+ * A read group is a set of pages that one caller waits for. The caller keeps the array of page offsets until its token
+ * reaches on_reads_done. Each page is read as 8 bytes across the boundary of its two 4 KB halves, so the kernel brings the
+ * whole 8 KB page in one I/O. Completed tokens are passed to on_reads_done before the submitter blocks. A group that cannot
+ * be read gets WILLNEED hints instead and completes at once.
  */
 
 #define CACHE_LINE 64
@@ -60,9 +54,6 @@
 
 struct prefetch_request
 {
-    /* Vyukov bounded queue: a cell at position pos is free while sequence == pos, and holds a request
-       while sequence == pos + 1; emptying it sets sequence = pos + queue size (free for the next lap) */
-    _Atomic uint64_t sequence;
     int64_t ticket;
     uint64_t offset;          /* WILLNEED: the range */
     uint32_t length;
@@ -70,6 +61,23 @@ struct prefetch_request
     uint64_t token;           /* a read group: passed to on_reads_done */
     const int64_t *offsets;   /* a read group: the caller's page offsets */
 };
+
+struct prefetch_cell
+{
+    /* Vyukov bounded queue: a cell at position pos is free while sequence == pos, and holds a request
+       while sequence == pos + 1; emptying it sets sequence = pos + queue size (free for the next lap) */
+    _Atomic uint64_t sequence;
+    struct prefetch_request request;
+};
+
+struct read_group
+{
+    uint64_t token;
+    uint32_t pending;  /* reads not completed yet */
+    int32_t next_free; /* while the group is free */
+};
+
+#define NO_FREE_GROUP (-1)
 
 struct prefetch_state
 {
@@ -88,14 +96,11 @@ struct prefetch_state
     _Atomic uint64_t read_groups;
     _Atomic uint64_t reads;
 
-    /* read groups in flight, owned by the submitter thread: a free stack of slots and each slot's token and pending reads */
-    uint64_t *group_tokens;
-    uint32_t *group_pending;
-    int32_t *group_free;
-    int32_t group_free_top;
+    struct read_group *groups;
+    int32_t free_group; /* head of the free list, or NO_FREE_GROUP */
     uint64_t done[PREFETCH_DONE_BATCH]; /* tokens of completed groups, not passed to on_reads_done yet */
     int32_t done_count;
-    alignas(CACHE_LINE) char sink[CACHE_LINE]; /* the target of every read: written by the kernel, never read */
+    alignas(CACHE_LINE) char sink[CACHE_LINE]; /* registered buffer 0: the target of every read, never read */
 
     /* set once at init */
     alignas(CACHE_LINE) struct io_uring ring;
@@ -107,7 +112,7 @@ struct prefetch_state
     uint64_t queue_mask;
     int32_t max_files;
     int32_t max_groups;
-    void (*on_reads_done)(const uint64_t *tokens, int32_t count);
+    rvn_reads_done on_reads_done;
 
     /* registration, guarded by slots_lock */
     pthread_mutex_t slots_lock;
@@ -116,7 +121,7 @@ struct prefetch_state
     int32_t *free_slots; /* FIFO ring of free slot numbers, so a released slot is reused as late as possible */
     _Atomic uint32_t *generations;
 
-    struct prefetch_request *queue;
+    struct prefetch_cell *queue;
 };
 
 static inline int32_t _ticket_slot(int64_t ticket) { return (int32_t)(uint32_t)ticket; }
@@ -126,15 +131,10 @@ static inline int64_t _make_ticket(int32_t slot, uint32_t generation) { return (
 PRIVATE bool
 _prefetch_dequeue(struct prefetch_state *s, struct prefetch_request *out)
 {
-    struct prefetch_request *cell = &s->queue[s->dequeue_pos & s->queue_mask];
+    struct prefetch_cell *cell = &s->queue[s->dequeue_pos & s->queue_mask];
     if (atomic_load_explicit(&cell->sequence, memory_order_acquire) != s->dequeue_pos + 1)
         return false; /* empty: the producer has not published this cell yet */
-    out->ticket = cell->ticket;
-    out->offset = cell->offset;
-    out->length = cell->length;
-    out->count = cell->count;
-    out->token = cell->token;
-    out->offsets = cell->offsets;
+    *out = cell->request;
     atomic_store_explicit(&cell->sequence, s->dequeue_pos + s->queue_mask + 1, memory_order_release);
     s->dequeue_pos++;
     return true;
@@ -152,18 +152,20 @@ _flush_done(struct prefetch_state *s)
 PRIVATE void
 _group_done(struct prefetch_state *s, uint64_t token)
 {
-    s->done[s->done_count++] = token;
     if (s->done_count == PREFETCH_DONE_BATCH)
         _flush_done(s);
+    s->done[s->done_count++] = token;
 }
 
 PRIVATE void
 _group_read_done(struct prefetch_state *s, int32_t group)
 {
-    if (--s->group_pending[group] != 0)
+    struct read_group *g = &s->groups[group];
+    if (--g->pending != 0)
         return;
-    s->group_free[s->group_free_top++] = group;
-    _group_done(s, s->group_tokens[group]);
+    g->next_free = s->free_group;
+    s->free_group = group;
+    _group_done(s, g->token);
 }
 
 PRIVATE void
@@ -238,14 +240,16 @@ PRIVATE void
 _prefetch_read_group(struct prefetch_state *s, int32_t slot, const struct prefetch_request *req)
 {
     atomic_fetch_add_explicit(&s->read_groups, 1, memory_order_relaxed);
-    if (s->use_io_uring == false || s->group_free_top == 0)
+    if (s->use_io_uring == false || s->free_group == NO_FREE_GROUP)
     {
         _group_hint_and_complete(s, slot, req);
         return;
     }
-    int32_t group = s->group_free[--s->group_free_top];
-    s->group_tokens[group] = req->token;
-    s->group_pending[group] = req->count;
+    int32_t group = s->free_group;
+    struct read_group *g = &s->groups[group];
+    s->free_group = g->next_free;
+    g->token = req->token;
+    g->pending = req->count; /* > 0, so the group returns to the free list exactly once */
     for (uint32_t i = 0; i < req->count; i++)
     {
         struct io_uring_sqe *sqe = _prefetch_get_sqe(s); /* may reap: the earlier reads of this group can complete here */
@@ -255,7 +259,7 @@ _prefetch_read_group(struct prefetch_state *s, int32_t slot, const struct prefet
             _group_read_done(s, group);
             continue;
         }
-        io_uring_prep_read(sqe, slot, s->sink, PREFETCH_READ_LENGTH, (uint64_t)req->offsets[i] + PREFETCH_READ_AT);
+        io_uring_prep_read_fixed(sqe, slot, s->sink, PREFETCH_READ_LENGTH, (uint64_t)req->offsets[i] + PREFETCH_READ_AT, 0);
         sqe->flags |= IOSQE_FIXED_FILE;
         io_uring_sqe_set_data64(sqe, PREFETCH_GROUP_TAG | (uint64_t)group);
         atomic_fetch_add_explicit(&s->reads, 1, memory_order_relaxed);
@@ -314,7 +318,7 @@ rvn_prefetch_ring_submitter(void *arg)
 
         /* sleep until a producer wakes us; re-check after announcing, so a push between the drain and the flag is not lost */
         atomic_store_explicit(&s->sleeping, 1, memory_order_seq_cst);
-        struct prefetch_request *cell = &s->queue[s->dequeue_pos & s->queue_mask];
+        struct prefetch_cell *cell = &s->queue[s->dequeue_pos & s->queue_mask];
         if (atomic_load_explicit(&cell->sequence, memory_order_seq_cst) == s->dequeue_pos + 1)
         {
             atomic_store_explicit(&s->sleeping, 0, memory_order_relaxed);
@@ -342,9 +346,7 @@ PRIVATE void
 _prefetch_free(struct prefetch_state *s)
 {
     free(s->fds);
-    free(s->group_tokens);
-    free(s->group_pending);
-    free(s->group_free);
+    free(s->groups);
     free(s->queue);
     free(s->free_slots);
     free((void *)s->generations);
@@ -353,7 +355,7 @@ _prefetch_free(struct prefetch_state *s)
 
 EXPORT int32_t
 rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size,
-    void (*on_reads_done)(const uint64_t *tokens, int32_t count), void **ring, int32_t *detailed_error_code)
+    rvn_reads_done on_reads_done, void **ring, int32_t *detailed_error_code)
 {
     *ring = NULL;
     *detailed_error_code = 0;
@@ -376,14 +378,11 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
     uint64_t size = (uint64_t)queue_size;
     s->queue_mask = size - 1;
 
-    s->queue = calloc(size, sizeof(struct prefetch_request));
+    s->queue = calloc(size, sizeof(struct prefetch_cell));
     s->free_slots = calloc((size_t)max_files, sizeof(int32_t));
     s->generations = calloc((size_t)max_files, sizeof(_Atomic uint32_t));
-    s->group_tokens = calloc((size_t)s->max_groups, sizeof(uint64_t));
-    s->group_pending = calloc((size_t)s->max_groups, sizeof(uint32_t));
-    s->group_free = calloc((size_t)s->max_groups, sizeof(int32_t));
-    if (s->queue == NULL || s->free_slots == NULL || s->generations == NULL ||
-        s->group_tokens == NULL || s->group_pending == NULL || s->group_free == NULL)
+    s->groups = calloc((size_t)s->max_groups, sizeof(struct read_group));
+    if (s->queue == NULL || s->free_slots == NULL || s->generations == NULL || s->groups == NULL)
     {
         _prefetch_free(s);
         *detailed_error_code = ENOMEM;
@@ -395,8 +394,8 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
         s->free_slots[i] = i;
     s->free_count = max_files;
     for (int32_t i = 0; i < s->max_groups; i++)
-        s->group_free[i] = i;
-    s->group_free_top = s->max_groups;
+        s->groups[i].next_free = i + 1 < s->max_groups ? i + 1 : NO_FREE_GROUP;
+    s->free_group = 0;
     pthread_mutex_init(&s->slots_lock, NULL);
 
     s->eventfd = eventfd(0, EFD_CLOEXEC);
@@ -407,8 +406,10 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
         return FAIL_CREATE_THREAD;
     }
     s->use_io_uring = io_uring_queue_init(s->ring_entries, &s->ring, 0) == 0;
+    struct iovec sink = { .iov_base = s->sink, .iov_len = sizeof(s->sink) };
     if (s->use_io_uring &&
-        (io_uring_register_files_sparse(&s->ring, (unsigned)max_files) < 0 || io_uring_register_eventfd(&s->ring, s->eventfd) < 0))
+        (io_uring_register_files_sparse(&s->ring, (unsigned)max_files) < 0 || io_uring_register_eventfd(&s->ring, s->eventfd) < 0 ||
+         io_uring_register_buffers(&s->ring, &sink, 1) < 0))
     {
         io_uring_queue_exit(&s->ring);
         s->use_io_uring = false;
@@ -552,7 +553,7 @@ _prefetch_push(struct prefetch_state *s, const struct prefetch_request *req)
 {
     /* pos must outlive the loop: a failed CAS reloads it, and the publish below needs it */
     uint64_t pos = atomic_load_explicit(&s->enqueue_pos, memory_order_relaxed);
-    struct prefetch_request *cell;
+    struct prefetch_cell *cell;
     for (;;)
     {
         cell = &s->queue[pos & s->queue_mask];
@@ -573,12 +574,7 @@ _prefetch_push(struct prefetch_state *s, const struct prefetch_request *req)
             pos = atomic_load_explicit(&s->enqueue_pos, memory_order_relaxed);
         }
     }
-    cell->ticket = req->ticket;
-    cell->offset = req->offset;
-    cell->length = req->length;
-    cell->count = req->count;
-    cell->token = req->token;
-    cell->offsets = req->offsets;
+    cell->request = *req;
     /* seq_cst, not release: with the submitter's seq_cst store of sleeping and its re-check this is a Dekker pair,
        so either we see sleeping == 1 and wake it, or it sees this cell and does not sleep */
     atomic_store_explicit(&cell->sequence, pos + 1, memory_order_seq_cst);
