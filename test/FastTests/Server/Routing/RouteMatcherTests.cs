@@ -77,6 +77,19 @@ namespace FastTests.Server.Routing
             Assert.Null(Match(matcher, path));
         }
 
+        [RavenTheory(RavenTestCategory.Core)]
+        [InlineData("/a_b", "/a_b")]
+        [InlineData("/A_B", "/a_b")]
+        [InlineData("/aXb", "/axb")]
+        [InlineData("/a\u007Fb", null)] // folds like '_', the leaf compare rejects it
+        [InlineData("/a?b", null)]
+        public void FoldsOnlyTheCaseOfLetters(string path, string expectedRoute)
+        {
+            var matcher = Build("/a_b", "/axb", "/a-b");
+
+            Assert.Equal(expectedRoute, Match(matcher, path));
+        }
+
         [RavenFact(RavenTestCategory.Core)]
         public void MatchesTheMethodIgnoringCase()
         {
@@ -119,6 +132,8 @@ namespace FastTests.Server.Routing
         [InlineData("/databases/*/transformers/$", "/a")] // not in a database route either
         [InlineData("/studio/$", "/STUDIO/$")] // duplicate prefix route, ignoring case
         [InlineData("/databases/*/docs", "/databases/info")] // a route that starts like the capture
+        [InlineData("/databases/info", "/a")] // even when there are no database routes
+        [InlineData("/a_", "/a\u007F")] // '_' and DEL fold to the same char
         public void RejectsInvalidRoutes(string first, string second)
         {
             Assert.Throws<InvalidOperationException>(() => Build(first, second));

@@ -36,15 +36,9 @@ namespace Raven.Server.Routing
     // POST /databases/db/tasks    POST Databases has no route of length 6 -> no match
     // GET /studio/index.html      GET Routes has no route of length 18, the path starts with /studio/ -> GET /studio/$
     //
-    // A node checks a single char, so the compare at the leaf decides. Both cases of a letter lead to the same child, and the
+    // A node checks a single char, so the compare at the leaf decides. A node folds the char to lower case (see Fold), and the
     // leaf compare ignores case, so the match ignores case. The nodes of all the trees are in _nodes, and their child slots
     // are in _children.
-
-    /// <summary>
-    /// Finds the route of a request. Routes are ASCII and matched ignoring (ASCII) case, '/databases/*' captures the
-    /// database name (until the next '/') and a route that ends with '$' matches every path that starts with it. Only the
-    /// Studio files use '$', so we allow it only after one of the known prefixes.
-    /// </summary>
     public sealed class RouteMatcher<T>
     {
         private readonly struct Node(int position, char low, char high, int childrenStart, int value, string literal)
@@ -52,7 +46,7 @@ namespace Raven.Server.Routing
             // the position of the char that an inner node selects by, -1 for a leaf
             public readonly int Position = position;
 
-            // an inner node has a slot in _children for every char from Low to High, the index of the next node (0 if there is none)
+            // an inner node has a slot in _children for every folded char from Low to High, the index of the next node (0 if there is none)
             public readonly char Low = low;
             public readonly char High = high;
             public readonly int ChildrenStart = childrenStart;
@@ -69,9 +63,7 @@ namespace Raven.Server.Routing
             [MethodImpl(MethodImplOptions.AggressiveInlining)]
             public int FindNext(ReadOnlySpan<char> path, int[] children)
             {
-                // a single unsigned compare checks both Low <= c and c <= High, as a c below Low gives a negative offset,
-                // which is a large unsigned value
-                int offset = path[Position] - Low;
+                int offset = Fold(path[Position]) - Low;
                 if ((uint)offset > (uint)(High - Low))
                     return 0;
 
@@ -141,6 +133,9 @@ namespace Raven.Server.Routing
                 int capture = path.IndexOf('*');
                 if (capture < 0)
                 {
+                    if (path.StartsWith(DatabasesPrefix, StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException($"A route that starts with '{DatabasesPrefix}' must capture the database name, as '{DatabasesCapture}/', but got: {method} {path}");
+
                     methodRoutes.Routes.Add((path, id));
                     continue;
                 }
@@ -154,18 +149,12 @@ namespace Raven.Server.Routing
 
             _methods = byMethod
                 .OrderByDescending(x => x.Value.Routes.Count + x.Value.Databases.Count)
-                .Select(x =>
-                {
-                    if (x.Value.Databases.Count > 0)
-                        EnsureUnambiguous(x.Key, x.Value.Routes);
-
-                    return new MethodRoutes(
-                        // PERF: Kestrel gives the known methods as the interned literals, so the common case is a reference comparison
-                        string.Intern(x.Key.ToUpperInvariant()),
-                        builder.Build(x.Key, x.Value.Routes),
-                        x.Value.Databases.Count == 0 ? null : builder.Build(x.Key, x.Value.Databases),
-                        x.Value.ByPrefix.Any(id => id >= 0) ? x.Value.ByPrefix : []);
-                })
+                .Select(x => new MethodRoutes(
+                    // PERF: Kestrel gives the known methods as the interned literals, so the common case is a reference comparison
+                    string.Intern(x.Key.ToUpperInvariant()),
+                    builder.Build(x.Key, x.Value.Routes),
+                    x.Value.Databases.Count == 0 ? null : builder.Build(x.Key, x.Value.Databases),
+                    x.Value.ByPrefix.Any(id => id >= 0) ? x.Value.ByPrefix : []))
                 .ToArray();
 
             _values = values.ToArray();
@@ -297,14 +286,10 @@ namespace Raven.Server.Routing
                 throw new InvalidOperationException($"Cannot use non ASCII chars in routes, but got: {method} {path}");
         }
 
-        private static void EnsureUnambiguous(string method, List<(string Path, int)> routes)
-        {
-            foreach (var (path, _) in routes)
-            {
-                if (path.StartsWith(DatabasesPrefix, StringComparison.OrdinalIgnoreCase))
-                    throw new InvalidOperationException($"The route {method} {path} is ambiguous with the routes that capture the database name");
-            }
-        }
+        // PERF: folds the ASCII letters to lower case, so a node needs child slots for a single case. It also folds a few other
+        // chars together (e.g. '_' and DEL), the leaf compare rejects those.
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        private static int Fold(char c) => c | 0x20;
 
         private sealed class Builder
         {
@@ -340,34 +325,33 @@ namespace Raven.Server.Routing
                     return Nodes.Count - 1;
                 }
 
-                // the position that splits the candidates best, there is always one since they are distinct (ignoring case) and of the same length
+                // the position whose largest group is the smallest, and on a tie the one with more groups
                 int position = -1;
-                List<IGrouping<char, (string Path, int Value)>> groups = null;
+                int largest = int.MaxValue;
+                List<IGrouping<int, (string Path, int Value)>> groups = null;
                 for (int i = 0; i < candidates[0].Path.Length; i++)
                 {
-                    var byChar = candidates.GroupBy(x => char.ToLowerInvariant(x.Path[i])).ToList();
-                    if (groups == null || byChar.Max(g => g.Count()) < groups.Max(g => g.Count()) ||
-                        (byChar.Max(g => g.Count()) == groups.Max(g => g.Count()) && byChar.Count > groups.Count))
+                    var byChar = candidates.GroupBy(x => Fold(x.Path[i])).ToList();
+                    int byCharLargest = byChar.Max(g => g.Count());
+                    if (byCharLargest < largest || (byCharLargest == largest && byChar.Count > groups.Count))
                     {
                         position = i;
+                        largest = byCharLargest;
                         groups = byChar;
                     }
                 }
 
-                var children = groups.Select(g => (Char: g.Key, Node: AddNode(g.ToList()))).ToList();
+                if (largest == candidates.Count)
+                    throw new InvalidOperationException($"Cannot tell apart the routes: {string.Join(", ", candidates.Select(x => x.Path))}");
 
-                // the children are reachable by both cases of the character
-                var entries = children
-                    .SelectMany(x => new[] { (Char: x.Char, x.Node), (Char: char.ToUpperInvariant(x.Char), x.Node) })
-                    .Distinct()
-                    .ToList();
+                var children = groups.Select(g => (Folded: g.Key, Node: AddNode(g.ToList()))).ToList();
 
-                char low = entries.Min(x => x.Char);
-                char high = entries.Max(x => x.Char);
+                char low = (char)children.Min(x => x.Folded);
+                char high = (char)children.Max(x => x.Folded);
                 int childrenStart = Children.Count;
-                for (char c = low; c <= high; c++)
+                for (int c = low; c <= high; c++)
                     Children.Add(0);
-                foreach (var (c, node) in entries)
+                foreach (var (c, node) in children)
                     Children[childrenStart + c - low] = node;
 
                 Nodes.Add(new Node(position, low, high, childrenStart, value: -1, literal: null));
