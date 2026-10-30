@@ -173,6 +173,11 @@ namespace Sparrow.Server.Platform
         public static extern Int32 rvn_pager_prefetch(
             void* handle, Int64 offset, Int64 length);
 
+        /// <summary>Starts reading the range into the page cache, without waiting.</summary>
+        [DllImport(LIBRVNPAL)]
+        public static extern Int32 rvn_pager_will_need(
+            void* handle, Int64 offset, Int64 length);
+
         /// <summary>
         /// Starts reading the 8 KB pages at the offsets into the page cache, without waiting. Moves the offsets of the pages that
         /// were not in the page cache to the front and returns their number.

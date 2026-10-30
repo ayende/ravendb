@@ -65,7 +65,6 @@ public unsafe partial class Pager
     private static ref int RecentSlot(int[] recent, long pageNumber) =>
         ref recent[(int)(((ulong)pageNumber * 0x9E3779B97F4A7C15UL) >> (64 - RecentHintsBits))]; // Fibonacci hashing
 
-    [SkipLocalsInit]
     public static void WillNeedPages(State state, long pageNumber, int numberOfPages = 1)
     {
         if (WillNeedSupported == false || state.Pager.Options.RunningOn32Bits)
@@ -78,14 +77,6 @@ public unsafe partial class Pager
             return;
         Volatile.Write(ref slot, key);
 
-        const int batch = 64;
-        var offsets = stackalloc long[batch];
-        for (var done = 0; done < numberOfPages; done += batch)
-        {
-            var count = Math.Min(batch, numberOfPages - done);
-            for (var i = 0; i < count; i++)
-                offsets[i] = (pageNumber + done + i) * Constants.Storage.PageSize;
-            Pal.rvn_pager_start_reads(state.Handle, offsets, count);
-        }
+        Pal.rvn_pager_will_need(state.Handle, pageNumber * Constants.Storage.PageSize, (long)numberOfPages * Constants.Storage.PageSize);
     }
 }
