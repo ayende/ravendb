@@ -1,7 +1,6 @@
 ﻿#nullable enable
 
 using System;
-using System.Collections;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -167,11 +166,6 @@ public unsafe partial class Pager : IDisposable
         _ = Pal.rvn_discard_virtual_memory(baseAddress + offset, numberOfPages * Constants.Storage.PageSize, out _);
     }
 
-    public void TryPrefetchingWholeFile(State state)
-    {
-        MaybePrefetchMemory(state, 0, state.NumberOfAllocatedPages);
-    }
-
     public void TrySetSequentialReadAheadHint(State state)
     {
         // posix_fadvise(POSIX_FADV_SEQUENTIAL) is Linux-only (absent on macOS). On Windows the read-ahead is
@@ -200,49 +194,6 @@ public unsafe partial class Pager : IDisposable
             return false;
         
         return _functions.EnsureMapped(this, state, ref txState, page, numberOfPages);
-    }
-
-    public struct PageIterator : IEnumerator<long>
-    {
-        private readonly long _startPage;
-        private readonly long _endPage;
-        private long _currentPage;
-
-        public PageIterator(long pageNumber, long pagesToPrefetch)
-        {
-            this._startPage = pageNumber;
-            this._endPage = pageNumber + pagesToPrefetch;
-            this._currentPage = pageNumber;
-        }
-
-        [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        public bool MoveNext()
-        {
-            this._currentPage++;
-            return _currentPage < _endPage;
-        }
-
-        public void Reset()
-        {
-            this._currentPage = this._startPage;
-        }
-
-        object IEnumerator.Current => Current;
-
-        public long Current
-        {
-            [MethodImpl(MethodImplOptions.AggressiveInlining)]
-            get => _currentPage;
-        }
-
-        public void Dispose() { }
-    }
-
-
-    [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public void MaybePrefetchMemory(State state, long pageNumber, long pagesToPrefetch)
-    {
-        MaybePrefetchMemory(state, new PageIterator(pageNumber, pagesToPrefetch));
     }
 
     public void MaybePrefetchMemory<T>(State state, T pagesToPrefetch) where T : struct, IEnumerator<long>
