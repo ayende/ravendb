@@ -5,7 +5,9 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading;
+using System.Threading.Tasks;
 using Raven.Client;
 using Raven.Client.Documents.Attachments;
 using Raven.Client.Documents.Changes;
@@ -41,6 +43,7 @@ using Voron.Data;
 using Voron.Data.Fixed;
 using Voron.Data.Tables;
 using Voron.Exceptions;
+using Voron.Impl.Paging;
 using Voron.Impl;
 using static Raven.Server.Documents.Schemas.Collections;
 using static Raven.Server.Documents.Schemas.Documents;
@@ -1286,6 +1289,56 @@ namespace Raven.Server.Documents
             context.DocumentDatabase.HugeDocuments.AddIfDocIsHuge(doc);
 
             return doc;
+        }
+
+        /// <summary>
+        /// Queues reads of the pages around <paramref name="document"/> that reading it did not bring in: the rest of its page,
+        /// its section header page, and the leaf pages that hold its current etag in the all-documents and collection etag
+        /// indexes (the entries a change of the document removes). Uses the read transaction the document was read with.
+        /// </summary>
+        /// <summary>
+        /// Reads the pages that updating <paramref name="document"/> modifies (its page, its section header and its entries in
+        /// the etag indexes); the task completes once they are in memory, so the merger does not stall on them.
+        /// </summary>
+        public Task PrefetchDocumentAsync(DocumentsOperationContext context, Document document)
+        {
+            Span<long> pages = stackalloc long[PagesToUpdatePerDocument];
+            var count = GetPagesToUpdate(context, document, pages);
+            return Pager.ReadPagesAhead(context.Transaction.InnerTransaction.LowLevelTransaction.DataPagerState, pages[..count]);
+        }
+
+        /// <summary>
+        /// <see cref="PrefetchDocumentAsync"/> for the existing documents among <paramref name="ids"/>, as one read group: an id
+        /// without a document costs only the lookup (which reads the id tree's leaf, for an insert there).
+        /// </summary>
+        public Task PrefetchDocumentsAsync(DocumentsOperationContext context, IEnumerable<string> ids)
+        {
+            var pages = new List<long>();
+            Span<long> documentPages = stackalloc long[PagesToUpdatePerDocument];
+            foreach (var id in ids)
+            {
+                using (var document = Get(context, id, DocumentFields.Data, throwOnConflict: false))
+                {
+                    if (document == null)
+                        continue;
+                    var count = GetPagesToUpdate(context, document, documentPages);
+                    foreach (var page in documentPages[..count])
+                        pages.Add(page);
+                }
+            }
+            return pages.Count == 0
+                ? Task.CompletedTask
+                : Pager.ReadPagesAhead(context.Transaction.InnerTransaction.LowLevelTransaction.DataPagerState, CollectionsMarshal.AsSpan(pages));
+        }
+
+        private const int PagesToUpdatePerDocument = 4; // its page, its section header, its two etag index leaves
+
+        private int GetPagesToUpdate(DocumentsOperationContext context, Document document, Span<long> pages)
+        {
+            var collectionName = ExtractCollectionName(context, document.Data);
+            var table = context.Transaction.InnerTransaction.OpenTable(DocumentDatabase.GetDocsSchemaForCollection(collectionName),
+                collectionName.GetTableName(CollectionTableType.Documents));
+            return table?.GetPagesToUpdate(document.StorageId, pages, Schemas.Documents.AllDocsEtagsIndex, Schemas.Documents.CollectionEtagsIndex) ?? 0;
         }
 
         public Document GetByEtag(DocumentsOperationContext context, long etag)
