@@ -99,7 +99,6 @@ namespace Voron.Data.BTrees
         // the tree that took it from its transaction's persistent context
         internal Tree Owner;
 
-        /// <returns>The index of the cached page that holds the key, -1 when there is none</returns>
         public int Find(Slice key)
         {
             Debug.Assert(_currentGeneration > 0);
