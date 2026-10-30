@@ -7,7 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <sched.h>
+#include <limits.h>
+#include <time.h>
+#include <linux/futex.h>
 #include <stdalign.h>
 #include <stdatomic.h>
 #include <sys/eventfd.h>
@@ -75,9 +77,11 @@ struct prefetch_state
     /* written by every producer */
     alignas(CACHE_LINE) _Atomic uint64_t enqueue_pos;
     _Atomic uint64_t dropped_full;
+    _Atomic uint32_t space_waiters;
     /* written by the submitter, read by every producer */
     alignas(CACHE_LINE) _Atomic int32_t sleeping;
     _Atomic int32_t stopping;
+    _Atomic uint32_t space_seq; /* a futex word: bumped when cells were freed and a producer waits */
     /* owned by the submitter thread (the only consumer); the counters are read by rvn_prefetch_ring_stats */
     alignas(CACHE_LINE) uint64_t dequeue_pos;
     uint32_t inflight;
@@ -163,11 +167,50 @@ _prefetch_complete(struct prefetch_state *s, struct io_uring_cqe *cqe)
 }
 
 PRIVATE void
+_futex_wait(_Atomic uint32_t *word, uint32_t expected, long timeout_ns)
+{
+    struct timespec timeout = { .tv_sec = 0, .tv_nsec = timeout_ns };
+    (void)syscall(SYS_futex, (uint32_t *)word, FUTEX_WAIT_PRIVATE, expected, &timeout, NULL, 0);
+}
+
+PRIVATE void
+_futex_wake_all(_Atomic uint32_t *word)
+{
+    (void)syscall(SYS_futex, (uint32_t *)word, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
+}
+
+/* Submitter side of a full queue: wakes the producers waiting for free cells, if any */
+PRIVATE void
+_signal_space(struct prefetch_state *s)
+{
+    atomic_thread_fence(memory_order_seq_cst); /* the cells we freed are visible before we look for waiters */
+    if (atomic_load_explicit(&s->space_waiters, memory_order_relaxed) == 0)
+        return;
+    atomic_fetch_add_explicit(&s->space_seq, 1, memory_order_seq_cst);
+    _futex_wake_all(&s->space_seq);
+}
+
+/* Producer side of a full queue: sleeps until the submitter frees cells, or 10 ms pass */
+PRIVATE void
+_wait_for_space(struct prefetch_state *s, struct prefetch_cell *cell, uint64_t pos)
+{
+    uint32_t seen = atomic_load_explicit(&s->space_seq, memory_order_seq_cst);
+    atomic_fetch_add_explicit(&s->space_waiters, 1, memory_order_seq_cst);
+    /* with _signal_space a Dekker pair: either we see the freed cell, or the submitter sees us waiting */
+    if ((int64_t)(atomic_load_explicit(&cell->sequence, memory_order_seq_cst) - pos) < 0)
+        _futex_wait(&s->space_seq, seen, 10 * 1000 * 1000);
+    atomic_fetch_sub_explicit(&s->space_waiters, 1, memory_order_relaxed);
+}
+
+PRIVATE void
 _prefetch_reap(struct prefetch_state *s, bool wait_for_one)
 {
     struct io_uring_cqe *cqe;
     if (wait_for_one)
+    {
         _flush_done(s); /* completed groups must not wait while we block */
+        _signal_space(s);
+    }
     if (wait_for_one && s->inflight > 0 && io_uring_wait_cqe(&s->ring, &cqe) == 0)
         _prefetch_complete(s, cqe);
     while (s->inflight > 0 && io_uring_peek_cqe(&s->ring, &cqe) == 0)
@@ -268,6 +311,7 @@ rvn_prefetch_ring_submitter(void *arg)
             _prefetch_reap(s, false);
         }
         _flush_done(s);
+        _signal_space(s);
 
         /* sleep until a producer or a completion signals the eventfd; re-check after announcing, so a push between the drain
            and the flag is not lost */
@@ -505,7 +549,6 @@ rvn_prefetch_unregister(void *ring, int64_t ticket)
 PRIVATE int32_t
 _prefetch_push(struct prefetch_state *s, const struct prefetch_request *req, bool wait)
 {
-    uint32_t waits = 0;
     /* pos must outlive the loop: a failed CAS reloads it, and the publish below needs it */
     uint64_t pos = atomic_load_explicit(&s->enqueue_pos, memory_order_relaxed);
     struct prefetch_cell *cell;
@@ -526,10 +569,7 @@ _prefetch_push(struct prefetch_state *s, const struct prefetch_request *req, boo
                 atomic_fetch_add_explicit(&s->dropped_full, 1, memory_order_relaxed);
                 return 0;
             }
-            if (waits++ < 64)
-                sched_yield();
-            else
-                usleep(50);
+            _wait_for_space(s, cell, pos);
             pos = atomic_load_explicit(&s->enqueue_pos, memory_order_relaxed);
         }
         else
