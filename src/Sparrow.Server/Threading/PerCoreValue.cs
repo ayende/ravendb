@@ -1,7 +1,7 @@
 using System;
-using System.Runtime.InteropServices;
 using System.Threading;
 using Sparrow.Binary;
+using Sparrow.Threading;
 
 namespace Sparrow.Server.Threading;
 
@@ -41,24 +41,14 @@ public struct PerCoreMax : IPerCoreOp
 /// </summary>
 public sealed class PerCoreValue<TOp> where TOp : struct, IPerCoreOp
 {
-    [StructLayout(LayoutKind.Explicit, Size = 64)]
-    private struct PaddedValue
-    {
-        // at the end of the 64 bytes: every indexing reads the array's length (bounds check), which is 8 bytes before
-        // the first element, so a value at the start of the first slot would share that line and each write to it
-        // would invalidate the line on all the cores
-        [FieldOffset(56)]
-        public long Value;
-    }
-
-    private readonly PaddedValue[] _slots;
+    private readonly PaddedLong[] _slots;
     private readonly int _mask;
 
     public PerCoreValue(long initialValue = 0)
     {
         int count = Bits.PowerOf2(Environment.ProcessorCount);
         _mask = count - 1;
-        _slots = new PaddedValue[count];
+        _slots = new PaddedLong[count];
         Reset(initialValue);
     }
 
