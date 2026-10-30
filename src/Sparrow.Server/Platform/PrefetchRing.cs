@@ -9,7 +9,19 @@ using Sparrow.Platform;
 
 namespace Sparrow.Server.Platform;
 
-public readonly record struct PrefetchRingStats(long Submitted, long DroppedFull, long DroppedStale, long Failed, long ReadGroups, long Reads, bool UsesIoUring);
+[StructLayout(LayoutKind.Sequential)]
+public readonly struct PrefetchRingStats
+{
+    public readonly long Submitted;
+    public readonly long DroppedFull;
+    public readonly long DroppedStale;
+    public readonly long Failed;
+    public readonly long ReadGroups;
+    public readonly long Reads;
+    private readonly long _usesIoUring;
+
+    public bool UsesIoUring => _usesIoUring != 0;
+}
 
 /// <summary>
 /// The PAL's queue of read-ahead requests for data files: drained by io_uring, or by a posix_fadvise thread where
@@ -71,9 +83,9 @@ public sealed class PrefetchRing : IDisposable
 
     public unsafe PrefetchRingStats? GetStats()
     {
-        if (_handle == null || Pal.rvn_prefetch_ring_stats(_handle, out var s) != PalFlags.FailCodes.Success)
+        if (_handle == null || Pal.rvn_prefetch_ring_stats(_handle, out var stats) != PalFlags.FailCodes.Success)
             return null;
-        return new PrefetchRingStats(s.Submitted, s.DroppedFull, s.DroppedStale, s.Failed, s.ReadGroups, s.Reads, s.UsesIoUring != 0);
+        return stats;
     }
 
     /// <summary>Takes a wait slot if one is free. <see cref="WaitForPages"/> returns it; so does <see cref="ReturnSlot"/>.</summary>

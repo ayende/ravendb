@@ -19,18 +19,6 @@ namespace Sparrow.Server.Platform
         }
 
         [StructLayout(LayoutKind.Sequential)]
-        public struct PrefetchRingCounters
-        {
-            public Int64 Submitted;
-            public Int64 DroppedFull;
-            public Int64 DroppedStale;
-            public Int64 Failed;
-            public Int64 ReadGroups;
-            public Int64 Reads;
-            public Int64 UsesIoUring;
-        }
-
-        [StructLayout(LayoutKind.Sequential)]
         public struct PagerPrefetchInfo
         {
             public Int64 RequestSize;

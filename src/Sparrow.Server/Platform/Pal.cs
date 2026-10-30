@@ -210,7 +210,7 @@ namespace Sparrow.Server.Platform
 
         [DllImport(LIBRVNPAL)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_stats(
-            void* ring, out PalDefinitions.PrefetchRingCounters stats);
+            void* ring, out PrefetchRingStats stats);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_close_pager(
