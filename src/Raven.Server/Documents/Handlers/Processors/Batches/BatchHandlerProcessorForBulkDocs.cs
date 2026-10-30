@@ -49,7 +49,7 @@ internal sealed class BatchHandlerProcessorForBulkDocs : AbstractBatchHandlerPro
 
     // The merger is a single thread: the pages that putting, patching or deleting existing documents modifies are read here,
     // so it does not stall on them. A new document (an id the server completes, or a prefix) has none to read.
-    private Task PrefetchDocumentsAsync(MergedBatchCommand command)
+    private ValueTask PrefetchDocumentsAsync(MergedBatchCommand command)
     {
         var database = RequestHandler.Database;
         List<string> ids = null;
@@ -63,7 +63,7 @@ internal sealed class BatchHandlerProcessorForBulkDocs : AbstractBatchHandlerPro
             (ids ??= new List<string>()).Add(cmd.Id);
         }
         if (ids == null)
-            return Task.CompletedTask;
+            return ValueTask.CompletedTask;
 
         using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext documentsContext))
         using (documentsContext.OpenReadTransaction())

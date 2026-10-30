@@ -1,11 +1,11 @@
 using System;
+using System.Buffers;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Runtime.CompilerServices;
-using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Raven.Client;
@@ -1292,15 +1292,10 @@ namespace Raven.Server.Documents
         }
 
         /// <summary>
-        /// Queues reads of the pages around <paramref name="document"/> that reading it did not bring in: the rest of its page,
-        /// its section header page, and the leaf pages that hold its current etag in the all-documents and collection etag
-        /// indexes (the entries a change of the document removes). Uses the read transaction the document was read with.
-        /// </summary>
-        /// <summary>
         /// Reads the pages that updating <paramref name="document"/> modifies (its page, its section header and its entries in
         /// the etag indexes); the task completes once they are in memory, so the merger does not stall on them.
         /// </summary>
-        public Task PrefetchDocumentAsync(DocumentsOperationContext context, Document document)
+        public ValueTask PrefetchDocumentAsync(DocumentsOperationContext context, Document document)
         {
             Span<long> pages = stackalloc long[PagesToUpdatePerDocument];
             var count = GetPagesToUpdate(context, document, pages);
@@ -1311,24 +1306,28 @@ namespace Raven.Server.Documents
         /// <see cref="PrefetchDocumentAsync"/> for the existing documents among <paramref name="ids"/>, as one read group: an id
         /// without a document costs only the lookup (which reads the id tree's leaf, for an insert there).
         /// </summary>
-        public Task PrefetchDocumentsAsync(DocumentsOperationContext context, IEnumerable<string> ids)
+        public ValueTask PrefetchDocumentsAsync(DocumentsOperationContext context, IReadOnlyCollection<string> ids)
         {
-            var pages = new List<long>();
-            Span<long> documentPages = stackalloc long[PagesToUpdatePerDocument];
-            foreach (var id in ids)
+            var pages = ArrayPool<long>.Shared.Rent(ids.Count * PagesToUpdatePerDocument);
+            try
             {
-                using (var document = Get(context, id, DocumentFields.Data, throwOnConflict: false))
+                var count = 0;
+                foreach (var id in ids)
                 {
-                    if (document == null)
-                        continue;
-                    var count = GetPagesToUpdate(context, document, documentPages);
-                    foreach (var page in documentPages[..count])
-                        pages.Add(page);
+                    using (var document = Get(context, id, DocumentFields.Data, throwOnConflict: false))
+                    {
+                        if (document != null)
+                            count += GetPagesToUpdate(context, document, pages.AsSpan(count, PagesToUpdatePerDocument));
+                    }
                 }
+                return count == 0
+                    ? ValueTask.CompletedTask
+                    : Pager.ReadPagesAhead(context.Transaction.InnerTransaction.LowLevelTransaction.DataPagerState, pages.AsSpan(0, count));
             }
-            return pages.Count == 0
-                ? Task.CompletedTask
-                : Pager.ReadPagesAhead(context.Transaction.InnerTransaction.LowLevelTransaction.DataPagerState, CollectionsMarshal.AsSpan(pages));
+            finally
+            {
+                ArrayPool<long>.Shared.Return(pages);
+            }
         }
 
         private const int PagesToUpdatePerDocument = 4; // its page, its section header, its two etag index leaves

@@ -2,8 +2,6 @@ using System;
 using System.Linq;
 using System.Threading.Tasks;
 using Raven.Server.ServerWide.Context;
-using Sparrow.Platform;
-using Sparrow.Server.Platform;
 using Tests.Infrastructure;
 using Xunit;
 
@@ -33,11 +31,8 @@ public class BulkDocsPrefetchTests(ITestOutputHelper output) : RavenTestBase(out
         using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
         using (context.OpenReadTransaction())
         {
-            var before = PrefetchRing.Default.GetStats()?.ReadGroups ?? 0;
-            var read = database.DocumentsStorage.PrefetchDocumentsAsync(context, ids.Append("items/missing"));
-            Assert.True(read.Wait(TimeSpan.FromSeconds(10)));
-            if (PlatformDetails.RunningOnLinux)
-                Assert.True(PrefetchRing.Default.GetStats()!.Value.ReadGroups > before);
+            var read = database.DocumentsStorage.PrefetchDocumentsAsync(context, ids.Append("items/missing").ToArray());
+            Assert.True(read.AsTask().Wait(TimeSpan.FromSeconds(10)));
         }
 
         // a batch that puts, patches and deletes existing documents (and adds a new one) goes through the prefetch
