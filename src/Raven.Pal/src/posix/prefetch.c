@@ -251,6 +251,7 @@ _prefetch_read_group(struct prefetch_state *s, int32_t slot, const struct prefet
         struct io_uring_sqe *sqe = _prefetch_get_sqe(s); /* may reap: the earlier reads of this group can complete here */
         if (sqe == NULL)
         {
+            atomic_fetch_add_explicit(&s->failed, 1, memory_order_relaxed); /* the submit failed and the SQ is still full */
             _group_read_done(s, group);
             continue;
         }
