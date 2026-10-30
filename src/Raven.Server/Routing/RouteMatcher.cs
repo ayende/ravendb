@@ -7,8 +7,8 @@ using System.Text;
 namespace Raven.Server.Routing
 {
     /// <summary>
-    /// Finds the route of a request. Routes are ASCII and matched ignoring (ASCII) case, a '*' captures a single
-    /// segment (until the next '/') and a route that ends with '$' matches every path that starts with it.
+    /// Finds the route of a request. Routes are ASCII and matched ignoring (ASCII) case, '/databases/*' captures the
+    /// database name (until the next '/') and a route that ends with '$' matches every path that starts with it.
     /// </summary>
     /// <remarks>
     /// PERF: for the routes of the same length we build a decision tree, every node selects the candidates by the character
@@ -38,29 +38,18 @@ namespace Raven.Server.Routing
             public (string Prefix, int Value)[] Prefixes = [];
         }
 
-        private sealed class CaptureRoutes(string prefix, Routes routes)
-        {
-            // the path before the '*'
-            public readonly string Prefix = prefix;
-
-            // the path after the captured segment
-            public readonly Routes Routes = routes;
-        }
-
-        private sealed class MethodRoutes(string method, Routes routes, Routes databases, CaptureRoutes[] captures)
+        private sealed class MethodRoutes(string method, Routes routes, Routes databases)
         {
             public readonly string Method = method;
             public readonly Routes Routes = routes;
 
-            // the routes that capture after /databases/ (null if there are none)
+            // the path after the database name, for the routes that start with /databases/* (null if there are none)
             public readonly Routes Databases = databases;
-
-            // the routes that capture after any other prefix
-            public readonly CaptureRoutes[] Captures = captures;
         }
 
         // PERF: most requests are for a database, comparing to a constant is a couple of vector instructions, as the JIT unrolls it
         private const string DatabasesPrefix = "/databases/";
+        private const string DatabasesCapture = DatabasesPrefix + "*";
 
         private readonly MethodRoutes[] _methods;
         private readonly T[] _values;
@@ -71,14 +60,14 @@ namespace Raven.Server.Routing
         {
             var builder = new Builder();
             var values = new List<T>();
-            var byMethod = new Dictionary<string, (List<(string, int)> Routes, Dictionary<string, List<(string, int)>> Captures)>(StringComparer.OrdinalIgnoreCase);
+            var byMethod = new Dictionary<string, (List<(string, int)> Routes, List<(string, int)> Databases)>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var (method, path, value) in routes)
             {
                 EnsureIsAscii(method, path);
 
                 if (byMethod.TryGetValue(method, out var methodRoutes) == false)
-                    byMethod[method] = methodRoutes = (new List<(string, int)>(), new Dictionary<string, List<(string, int)>>(StringComparer.OrdinalIgnoreCase));
+                    byMethod[method] = methodRoutes = (new List<(string, int)>(), new List<(string, int)>());
 
                 values.Add(value);
                 int id = values.Count - 1;
@@ -90,33 +79,25 @@ namespace Raven.Server.Routing
                     continue;
                 }
 
-                if (path.IndexOf('*', capture + 1) >= 0 || (capture + 1 < path.Length && path[capture + 1] != '/'))
-                    throw new InvalidOperationException($"A route can capture a single segment, with '*' followed by '/' or at the end, but got: {method} {path}");
+                if (path.StartsWith(DatabasesCapture, StringComparison.OrdinalIgnoreCase) == false || capture != DatabasesPrefix.Length ||
+                    path.IndexOf('*', capture + 1) >= 0 || (capture + 1 < path.Length && path[capture + 1] != '/'))
+                    throw new InvalidOperationException($"A route can capture only the database name, as '{DatabasesCapture}/', but got: {method} {path}");
 
-                var prefix = path[..capture];
-                if (methodRoutes.Captures.TryGetValue(prefix, out var captured) == false)
-                    methodRoutes.Captures[prefix] = captured = new List<(string, int)>();
-
-                captured.Add((path[(capture + 1)..], id));
+                methodRoutes.Databases.Add((path[(capture + 1)..], id));
             }
 
             _methods = byMethod
-                .OrderByDescending(x => x.Value.Routes.Count + x.Value.Captures.Sum(c => c.Value.Count))
+                .OrderByDescending(x => x.Value.Routes.Count + x.Value.Databases.Count)
                 .Select(x =>
                 {
-                    EnsureUnambiguous(x.Key, x.Value.Routes, x.Value.Captures.Keys);
-
-                    x.Value.Captures.TryGetValue(DatabasesPrefix, out var databases);
+                    if (x.Value.Databases.Count > 0)
+                        EnsureUnambiguous(x.Key, x.Value.Routes);
 
                     return new MethodRoutes(
                         // PERF: Kestrel gives the known methods as the interned literals, so the common case is a reference comparison
                         string.Intern(x.Key.ToUpperInvariant()),
                         builder.Build(x.Key, x.Value.Routes),
-                        databases == null ? null : builder.Build(x.Key, databases),
-                        x.Value.Captures
-                            .Where(c => string.Equals(c.Key, DatabasesPrefix, StringComparison.OrdinalIgnoreCase) == false)
-                            .Select(c => new CaptureRoutes(c.Key, builder.Build(x.Key, c.Value)))
-                            .ToArray());
+                        x.Value.Databases.Count == 0 ? null : builder.Build(x.Key, x.Value.Databases));
                 })
                 .ToArray();
 
@@ -140,22 +121,12 @@ namespace Raven.Server.Routing
             {
                 ReadOnlySpan<char> span = path;
 
-                int id;
                 if (methodRoutes.Databases != null &&
                     span.StartsWith(DatabasesPrefix, StringComparison.OrdinalIgnoreCase) &&
-                    TryMatchCaptured(methodRoutes.Databases, DatabasesPrefix.Length, span, ref match, out id))
+                    TryMatchDatabase(methodRoutes.Databases, span, ref match, out int id))
                 {
                     value = _values[id];
                     return true;
-                }
-
-                foreach (var capture in methodRoutes.Captures)
-                {
-                    if (StartsWith(span, capture.Prefix) && TryMatchCaptured(capture.Routes, capture.Prefix.Length, span, ref match, out id))
-                    {
-                        value = _values[id];
-                        return true;
-                    }
                 }
 
                 int routeId = Find(methodRoutes.Routes, span, out int routePrefixLength);
@@ -174,21 +145,21 @@ namespace Raven.Server.Routing
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool TryMatchCaptured(Routes routes, int prefixLength, ReadOnlySpan<char> path, ref RouteMatch match, out int id)
+        private bool TryMatchDatabase(Routes routes, ReadOnlySpan<char> path, ref RouteMatch match, out int id)
         {
-            var segment = path.Slice(prefixLength);
-            int segmentLength = segment.IndexOf('/');
-            if (segmentLength < 0)
-                segmentLength = segment.Length;
+            var name = path.Slice(DatabasesPrefix.Length);
+            int nameLength = name.IndexOf('/');
+            if (nameLength < 0)
+                nameLength = name.Length;
 
-            id = Find(routes, segment.Slice(segmentLength), out int matchedPrefixLength);
+            id = Find(routes, name.Slice(nameLength), out int matchedPrefixLength);
             if (id < 0)
                 return false;
 
-            match.CaptureStart = prefixLength;
-            match.CaptureLength = segmentLength;
+            match.CaptureStart = DatabasesPrefix.Length;
+            match.CaptureLength = nameLength;
             if (matchedPrefixLength >= 0)
-                match.MatchLength = prefixLength + segmentLength + matchedPrefixLength;
+                match.MatchLength = DatabasesPrefix.Length + nameLength + matchedPrefixLength;
 
             return true;
         }
@@ -265,23 +236,13 @@ namespace Raven.Server.Routing
                 throw new InvalidOperationException($"Cannot use non ASCII chars in routes, but got: {method} {path}");
         }
 
-        private static void EnsureUnambiguous(string method, List<(string Path, int)> routes, IEnumerable<string> capturePrefixes)
+        private static void EnsureUnambiguous(string method, List<(string Path, int)> routes)
         {
-            // a path can match a single capture prefix, and a route that starts like a capture prefix would compete with its captures
-            var prefixes = capturePrefixes.ToList();
-            foreach (var prefix in prefixes)
+            // we look for the database routes first, so a route that starts like them would never match
+            foreach (var (path, _) in routes)
             {
-                foreach (var other in prefixes)
-                {
-                    if (ReferenceEquals(prefix, other) == false && other.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidOperationException($"The routes of {method} capture after both '{prefix}' and '{other}', which is ambiguous");
-                }
-
-                foreach (var (path, _) in routes)
-                {
-                    if (path.TrimEnd('$').StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
-                        throw new InvalidOperationException($"The route {method} {path} is ambiguous with the routes that capture after '{prefix}'");
-                }
+                if (path.TrimEnd('$').StartsWith(DatabasesPrefix, StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException($"The route {method} {path} is ambiguous with the routes that capture the database name");
             }
         }
 

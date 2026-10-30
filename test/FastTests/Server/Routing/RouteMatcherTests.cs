@@ -21,11 +21,11 @@ namespace FastTests.Server.Routing
         [RavenFact(RavenTestCategory.Core)]
         public void CanMatch()
         {
-            var matcher = Build("/admin/databases", "/databases/*/docs", "/databases/*/queries", "/fs/*/files", "/admin/debug-info");
+            var matcher = Build("/admin/databases", "/databases/*/docs", "/databases/*/queries", "/admin/debug-info");
 
             Assert.Equal("/admin/databases", Match(matcher, "/admin/databases"));
             Assert.Equal("/admin/debug-info", Match(matcher, "/admin/debug-info"));
-            Assert.Equal("/fs/*/files", Match(matcher, "/fs/abc/files"));
+            Assert.Equal("/databases/*/queries", Match(matcher, "/databases/abc/queries"));
         }
 
         [RavenFact(RavenTestCategory.Core)]
@@ -39,16 +39,16 @@ namespace FastTests.Server.Routing
         }
 
         [RavenTheory(RavenTestCategory.Core)]
-        [InlineData("databases/northwind/docs", "databases/*/docs", "northwind")]
-        [InlineData("databases", "databases", null)]
-        [InlineData("databases/northwind/indexes/Raven/DocumentsByEntityName", "databases/*/indexes/$", "northwind")]
-        [InlineData("Databases/northwind/Docs", "databases/*/docs", "northwind")]
-        [InlineData("Databases/רוח-צפונית/Docs", "databases/*/docs", "רוח-צפונית")]
-        [InlineData("DATABASES/x/QUERIES", "databases/*/queries", "x")]
-        [InlineData("databases//docs", "databases/*/docs", "")]
+        [InlineData("/databases/northwind/docs", "/databases/*/docs", "northwind")]
+        [InlineData("/databases", "/databases", null)]
+        [InlineData("/databases/northwind/indexes/Raven/DocumentsByEntityName", "/databases/*/indexes/$", "northwind")]
+        [InlineData("/Databases/northwind/Docs", "/databases/*/docs", "northwind")]
+        [InlineData("/Databases/רוח-צפונית/Docs", "/databases/*/docs", "רוח-צפונית")]
+        [InlineData("/DATABASES/x/QUERIES", "/databases/*/queries", "x")]
+        [InlineData("/databases//docs", "/databases/*/docs", "")]
         public void CanMatchWithCapture(string path, string expectedRoute, string expectedCapture)
         {
-            var matcher = Build("admin/databases", "databases/*/docs", "databases", "databases/*/queries", "databases/*/indexes/$", "fs/*/files", "admin/debug-info");
+            var matcher = Build("/admin/databases", "/databases/*/docs", "/databases", "/databases/*/queries", "/databases/*/indexes/$", "/admin/debug-info");
 
             Assert.True(matcher.TryMatch("GET", path, out var match, out var route));
             Assert.Equal(expectedRoute, route);
@@ -111,9 +111,9 @@ namespace FastTests.Server.Routing
         [InlineData("/docs", "/döcs")] // not ASCII
         [InlineData("/databases/*x/docs", "/a")] // a capture must be a whole segment
         [InlineData("/databases/*/docs/*", "/a")] // a single capture
+        [InlineData("/fs/*/files", "/a")] // only the database name is captured
         [InlineData("/studio/$/x", "/a")] // '$' only at the end
         [InlineData("/databases/*/docs", "/databases/info")] // a route that starts like the capture
-        [InlineData("/databases/*/docs", "/databases/admin/*/x")] // overlapping captures
         public void RejectsInvalidRoutes(string first, string second)
         {
             Assert.Throws<InvalidOperationException>(() => Build(first, second));
