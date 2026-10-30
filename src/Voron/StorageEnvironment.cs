@@ -16,6 +16,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Sparrow.Logging;
+using Sparrow.Platform;
 using Sparrow.Server;
 using Sparrow.Server.Exceptions;
 using Sparrow.Server.Logging;
@@ -208,8 +209,9 @@ namespace Voron
                 if (IsNew == false && _options.ManualSyncing == false)
                     SuggestSyncDataFile(); // let's suggest syncing data file after the recovery
 
-                // Ensure we are always have the prefetcher available.
-                GC.KeepAlive(GlobalPrefetchingBehavior.GlobalPrefetcher.Value);
+                // Ensure we are always have the prefetcher available (on Linux the PAL prefetch ring does its work)
+                if (PlatformDetails.RunningOnLinux == false)
+                    GC.KeepAlive(GlobalPrefetchingBehavior.GlobalPrefetcher.Value);
             }
             catch (Exception)
             {
