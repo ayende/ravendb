@@ -15,9 +15,6 @@ public interface IPerCoreOp
     long Combine(long a, long b);
 }
 
-/// <summary>
-/// The value is the sum of the slots, like the number of operations in flight.
-/// </summary>
 public struct PerCoreSum : IPerCoreOp
 {
     public void Apply(ref long slot, long value) => Interlocked.Add(ref slot, value);
@@ -25,18 +22,13 @@ public struct PerCoreSum : IPerCoreOp
     public long Combine(long a, long b) => a + b;
 }
 
-/// <summary>
-/// The value is the maximum of the slots, like the time of the last access.
-/// </summary>
-/// <remarks>
-/// Raising is intentionally racy, a thread that was preempted between reading the clock and raising the value can
-/// store an older value than another thread of the same core did. For a time that is used with a coarse granularity
-/// (seconds or minutes), being a few milliseconds behind is harmless.
-/// </remarks>
 public struct PerCoreMax : IPerCoreOp
 {
     public void Apply(ref long slot, long value)
     {
+        // Intentionally racy: a thread that was preempted between reading the time and raising the slot can store an older
+        // value than another thread of the same core did. For a time that is used in seconds or minutes, being a few
+        // milliseconds behind is harmless.
         // PERF: the value usually didn't change since the last time (a time in milliseconds), so we skip writing to the cache line
         if (value > slot)
             slot = value;
@@ -61,17 +53,12 @@ public sealed class PerCoreValue<TOp> where TOp : struct, IPerCoreOp
         public long Value;
     }
 
-    // bounds the memory on large machines, a few cores sharing a slot still contend far less than all of them
-    private const int DefaultMaxSlots = 32;
-
     private readonly PaddedValue[] _slots;
     private readonly int _mask;
 
-    /// <param name="initialValue">The value of every slot.</param>
-    /// <param name="maxSlots">Upper bound on the slots, <see cref="Value"/> reads all of them.</param>
-    public PerCoreValue(long initialValue = 0, int maxSlots = DefaultMaxSlots)
+    public PerCoreValue(long initialValue = 0, int maxSlots = int.MaxValue)
     {
-        int count = Math.Min(Bits.PowerOf2(Environment.ProcessorCount), Bits.PowerOf2(maxSlots));
+        int count = Bits.PowerOf2(Math.Min(Environment.ProcessorCount, maxSlots));
         _mask = count - 1;
         _slots = new PaddedValue[count];
         Reset(initialValue);
