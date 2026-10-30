@@ -507,7 +507,8 @@ namespace Raven.Server.Documents.Patch
                     return false;
             }
 
-            // the merger is the only writer, so the document is still at the snapshot's change vector here
+            // checked above in this write transaction: no other write can change the document until it commits, so this put's
+            // own change vector check passes
             var putResult = storage.Put(context, prepared.Id, prepared.ChangeVector, prepared.Document,
                 flags: prepared.Flags.Strip(DocumentFlags.FromClusterTransaction),
                 knownCollectionName: prepared.Collection, knownMetadata: prepared.Metadata);
