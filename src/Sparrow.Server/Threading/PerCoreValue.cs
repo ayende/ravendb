@@ -56,9 +56,9 @@ public sealed class PerCoreValue<TOp> where TOp : struct, IPerCoreOp
     private readonly PaddedValue[] _slots;
     private readonly int _mask;
 
-    public PerCoreValue(long initialValue = 0, int maxSlots = int.MaxValue)
+    public PerCoreValue(long initialValue = 0)
     {
-        int count = Bits.PowerOf2(Math.Min(Environment.ProcessorCount, maxSlots));
+        int count = Bits.PowerOf2(Environment.ProcessorCount);
         _mask = count - 1;
         _slots = new PaddedValue[count];
         Reset(initialValue);
@@ -83,6 +83,24 @@ public sealed class PerCoreValue<TOp> where TOp : struct, IPerCoreOp
             for (int i = 1; i < _slots.Length; i++)
                 value = default(TOp).Combine(value, Volatile.Read(ref _slots[i].Value));
             return value;
+        }
+    }
+
+    /// <summary>
+    /// True when every slot is 0. It stops at the first slot that isn't, so it is cheaper than <see cref="Value"/> while the
+    /// slots are being updated, and for a sum whose slots are never negative it is the same as a value of 0.
+    /// </summary>
+    public bool IsZero
+    {
+        get
+        {
+            for (int i = 0; i < _slots.Length; i++)
+            {
+                if (Volatile.Read(ref _slots[i].Value) != 0)
+                    return false;
+            }
+
+            return true;
         }
     }
 

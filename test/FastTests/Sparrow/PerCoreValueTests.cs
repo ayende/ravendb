@@ -40,6 +40,19 @@ namespace FastTests.Sparrow
         }
 
         [RavenFact(RavenTestCategory.Core)]
+        public void IsZeroUntilAnySlotIsNot()
+        {
+            var sum = new PerCoreValue<PerCoreSum>();
+            Assert.True(sum.IsZero);
+
+            var slot = sum.Apply(1);
+            Assert.False(sum.IsZero);
+
+            slot.Apply(-1);
+            Assert.True(sum.IsZero);
+        }
+
+        [RavenFact(RavenTestCategory.Core)]
         public void MaxRaisesButDoesNotLower()
         {
             var max = new PerCoreValue<PerCoreMax>(10);
