@@ -21,6 +21,32 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
     {
     }
 
+    // The merger is a single thread: page faults and patch work done here do not stall the writes queued behind this one.
+    // Returns a task that completes once the pages the update modifies are in memory.
+    private Task PrepareOutsideOfMerger(DocumentsOperationContext context, string id, PatchDocumentCommand command, SimpleAssignmentPatch simplePatch, BlittableJsonReaderObject args)
+    {
+        var storage = RequestHandler.Database.DocumentsStorage;
+        using (context.OpenReadTransaction())
+        using (var document = storage.Get(context, id, simplePatch == null ? DocumentFields.Data : DocumentFields.All, throwOnConflict: false))
+        {
+            if (document == null)
+                return Task.CompletedTask;
+
+            var pagesRead = storage.PrefetchDocumentAsync(context, document);
+            if (simplePatch == null)
+                return pagesRead;
+
+            if (simplePatch.TryApply(context, document.Id, document.Data, args, out var modified) == false)
+                return pagesRead;
+
+            if (modified == null)
+                command.CompleteAsNotModified(context, document.Data);
+            else
+                command.SetPrepared(document.Id, document.ChangeVector, document.Flags, modified);
+            return pagesRead;
+        }
+    }
+
     [AsyncMethodBuilder(typeof(PoolingAsyncValueTaskMethodBuilder))]
     protected override async ValueTask HandleDocumentPatchAsync(string id, string cv, BlittableJsonReaderObject patchRequest, bool skipPatchIfChangeVectorMismatch, bool debugMode,
         bool isTest, DocumentsOperationContext context)
@@ -55,7 +81,19 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
 
         if (isTest == false)
         {
-            await RequestHandler.Database.TxMerger.Enqueue(command);
+            var simplePatch = debugMode == false && changeVector == null && patchIfMissing == null && createIfMissingCmd == null
+                ? SimpleAssignmentPatch.TryGet(patch)
+                : null;
+
+            if (simplePatch != null)
+                command.SetSimplePatch(simplePatch);
+            var pagesRead = debugMode == false ? PrepareOutsideOfMerger(context, id, command, simplePatch, patchArgs) : Task.CompletedTask;
+
+            if (command.PatchResult == null)
+            {
+                await pagesRead;
+                await RequestHandler.Database.TxMerger.Enqueue(command);
+            }
         }
         else
         {

@@ -34,7 +34,9 @@ enum
     OPEN_FILE_LOCK_MEMORY = (1 << 6),
     OPEN_FILE_DO_NOT_CONSIDER_MEMORY_LOCK_FAILURE_AS_CATASTROPHIC_ERROR = (1 << 7),
     OPEN_FILE_COPY_ON_WRITE = (1 << 8),
-    OPEN_FILE_DO_NOT_MAP = (1<<9)
+    OPEN_FILE_DO_NOT_MAP = (1<<9),
+    OPEN_FILE_RANDOM_ACCESS = (1<<10),
+    OPEN_FILE_PREFETCH = (1<<11)
 };
 
 enum
@@ -60,6 +62,7 @@ struct RVN_RANGE_LIST
 {
     void *virtual_address;
     size_t number_of_bytes;
+    size_t request_size; /* the largest WILLNEED request the device reads whole (0: one request) */
 };
 
 typedef void (*MemoryLockCallback)(int64_t size, char* filename);
@@ -142,6 +145,7 @@ EXPORT int32_t
 rvn_init_pager(const char* filename,
     int64_t initial_file_size,
     int32_t open_flags,
+    void* prefetch_ring,
     void** handle,
     void** memory,
     void** writable_memory,
@@ -156,6 +160,32 @@ rvn_increase_pager_size(void* handle,
     void **writable_memory,
     int64_t* memory_size,
     int32_t* detailed_error_code);
+
+EXPORT int32_t
+rvn_pager_prefetch(void *handle,
+    int64_t offset,
+    int64_t length);
+
+EXPORT int32_t
+rvn_pager_get_prefetch_request_size(void *handle,
+    int64_t *request_size);
+
+EXPORT int32_t
+rvn_pager_read_pages(void *handle,
+    const int64_t *offsets,
+    int32_t count,
+    uint64_t token);
+
+EXPORT int32_t
+rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, 
+    void (*on_reads_done)(const uint64_t *tokens, int32_t count), void **ring, int32_t *detailed_error_code);
+
+EXPORT int32_t
+rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code);
+
+EXPORT int32_t
+rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed,
+    int64_t *read_groups, int64_t *reads, int32_t *uses_io_uring);
 
 EXPORT int32_t
 rvn_close_pager(

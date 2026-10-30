@@ -587,12 +587,14 @@ EXPORT int32_t
 rvn_init_pager(const char *filename,
                int64_t initial_file_size,
                int32_t open_flags,
+               void *prefetch_ring,
                void **handle,
                void **memory,
                void **writable_memory,
                int64_t *memory_size,
                int32_t *detailed_error_code)
 {
+    (void)prefetch_ring; // no prefetch ring on Windows
     *memory_size = 0;
     *memory = NULL;
     *handle = NULL;
@@ -858,4 +860,63 @@ rvn_writer rvn_get_writer(void *handle)
     default:
         return io_ring_setup_successful() ? rvn_write_io_ring : rvn_write_file_io;
     }
+}
+
+EXPORT int32_t
+rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
+{
+    // no prefetch ring on Windows: the data file is opened with FILE_FLAG_RANDOM_ACCESS and the memory manager pages it in
+    (void)handle;
+    (void)offset;
+    (void)length;
+    return 0;
+}
+
+EXPORT int32_t
+rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint64_t token)
+{
+    (void)handle;
+    (void)offsets;
+    (void)count;
+    (void)token;
+    return 0;
+}
+
+EXPORT int32_t
+rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, 
+    void (*on_reads_done)(const uint64_t *tokens, int32_t count), void **ring, int32_t *detailed_error_code)
+{
+    (void)on_reads_done;
+    (void)ring_entries;
+    (void)max_files;
+    (void)queue_size;
+    *ring = NULL;
+    *detailed_error_code = 0;
+    return FAIL_CREATE_IO_RING; // no prefetch ring on Windows
+}
+
+EXPORT int32_t
+rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code)
+{
+    (void)ring;
+    *detailed_error_code = 0;
+    return FAIL_INVALID_HANDLE;
+}
+
+EXPORT int32_t
+rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed,
+    int64_t *read_groups, int64_t *reads, int32_t *uses_io_uring)
+{
+    (void)ring;
+    *submitted = *dropped_full = *dropped_stale = *failed = *read_groups = *reads = 0;
+    *uses_io_uring = 0;
+    return FAIL_INVALID_HANDLE;
+}
+
+EXPORT int32_t
+rvn_pager_get_prefetch_request_size(void *handle, int64_t *request_size)
+{
+    (void)handle;
+    *request_size = 0; // PrefetchVirtualMemory takes a whole range
+    return SUCCESS;
 }
