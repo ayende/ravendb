@@ -181,7 +181,7 @@ int32_t _open_pager_file(int fd,
         // (advisory: a failure leaves the default read-around)
         (void)madvise(mem, st.st_size, MADV_RANDOM);
 #if !__APPLE__
-        // the same for reads through the file (the prefetch ring's read groups): madvise covers only the mapping
+        // the same for reads through the descriptor (the prefetch ring, rvn_pager_start_reads): madvise covers only the mapping
         (void)posix_fadvise(fd, 0, 0, POSIX_FADV_RANDOM);
 #endif
     }
@@ -764,9 +764,9 @@ rvn_pager_will_need(void *handle, int64_t offset, int64_t length)
 #endif
 }
 
-/* After rvn_pager_start_reads: the file's prefetch ring passes token to its on_reads_done once the pages are in the page
-   cache. offsets must stay valid until then. Returns 1 when queued, 0 when not (no ring, queue full): then the token is
-   never passed. */
+/* The file's prefetch ring reads the 8 KB pages at offsets and passes token to its on_reads_done once they are all in the
+   page cache; offsets must stay valid until then. Returns 1 when queued; 0 when not (no ring, queue full), and then the
+   token is never passed. */
 EXPORT int32_t
 rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint64_t token)
 {

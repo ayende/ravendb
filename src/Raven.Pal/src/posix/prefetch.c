@@ -19,39 +19,26 @@
 #include "internal_posix.h"
 
 /*
- * A process wide io_uring used only to prefetch file ranges into the page cache (FADVISE / WILLNEED).
- * It is separate from the journal ring: prefetches are hints, they are fire and forget, and they must never
- * queue behind (or in front of) durable writes.
+ * An io_uring for reads into the page cache, separate from the journal ring so it never queues behind or in front of
+ * durable writes. Any thread queues requests; one submitter thread runs them. Two kinds of requests:
+ *  - WILLNEED range: a hint, dropped when the queue is full.
+ *  - read group: an 8-byte read across the 4 KB boundary inside each 8 KB page, so each page comes in one I/O. The token
+ *    reaches on_reads_done once all of the group's reads complete, and the caller keeps the offsets until then.
  *
- * The pager registers a data file with a ring when it opens it (OPEN_FILE_PREFETCH) and unregisters it when the last handle
- * closes. A registration puts the file in the ring's fixed file table; the ring holds its own reference to the
- * file, so a request can never reach another file that reused the same descriptor number. The pager keeps a
- * ticket = (generation << 32) | slot. Every registration and unregistration increments the slot's generation, so
- * the submitter drops queued requests whose ticket is from an earlier registration. A request that the kernel
- * already holds keeps its file reference and completes harmlessly.
+ * A registered file is in the ring's fixed file table, and the ring holds its own reference to it, so a request never
+ * reaches another file that reused the descriptor number. A ticket is (generation << 32) | slot; registering and
+ * unregistering bump the slot's generation, so the submitter drops queued requests of an earlier registration.
  *
- * Producers (any thread) push to a bounded lock-free queue; a full queue drops the request (it is only a hint).
- * One submitter thread drains the queue, submits in batches and reaps the completions.
- *
- * A ring is an object: rvn_prefetch_ring_create / rvn_prefetch_ring_destroy. The server keeps one for the process;
- * a ring can only be destroyed once no file is registered with it.
- *
- * Where io_uring is not allowed (an old kernel or a seccomp policy, as in default Docker), the same queue is drained by
- * the same thread with posix_fadvise on a duplicate of each registered descriptor, so callers never wait either way.
- * A request that races the unregistration of its file may reach the descriptor number after it was reused: that is a
- * wasted read-ahead, never a write.
- *
- * A read group is a set of pages that one caller waits for; rvn_prefetch_start_reads has already started their reads. The
- * caller keeps the array of page offsets until its token reaches on_reads_done. Each page is read as 8 bytes across the
- * boundary of its two 4 KB halves, so the kernel brings the whole 8 KB page in one I/O. Completed tokens are passed to
- * on_reads_done before the submitter blocks. A group that cannot be read completes at once.
+ * Without io_uring, the submitter runs WILLNEED with posix_fadvise on a duplicate descriptor, and read groups complete at
+ * once without reads. A request that races an unregistration may then reach a reused descriptor number: a wasted
+ * read-ahead, never a write.
  */
 
 #define CACHE_LINE 64
-#define PREFETCH_READ_AT (4096 - 4) /* 8 bytes, 4 on each side of the boundary between the two 4 KB halves of a page */
+#define PREFETCH_READ_AT (4096 - 4) /* 4 bytes on each side of the 4 KB boundary inside a page */
 #define PREFETCH_READ_LENGTH 8
 #define PREFETCH_PAGE_SIZE 8192
-#define PREFETCH_GROUP_TAG (1ULL << 63) /* in a read's user_data: the group slot; WILLNEED requests use 0 */
+#define PREFETCH_GROUP_TAG (1ULL << 63) /* user_data of a group read: the tag | the group index; WILLNEED uses 0 */
 #define PREFETCH_DONE_BATCH 64
 
 #ifndef RWF_NOWAIT
@@ -61,11 +48,11 @@
 struct prefetch_request
 {
     int64_t ticket;
-    uint64_t offset;          /* WILLNEED: the range */
+    uint64_t offset;          /* WILLNEED range */
     uint32_t length;
-    uint32_t count;           /* a read group: the number of pages in offsets; 0 for a WILLNEED request */
-    uint64_t token;           /* a read group: passed to on_reads_done */
-    const int64_t *offsets;   /* a read group: the caller's page offsets */
+    uint32_t count;           /* read group: the number of offsets; 0 for WILLNEED */
+    uint64_t token;
+    const int64_t *offsets;
 };
 
 struct prefetch_cell
@@ -79,7 +66,7 @@ struct prefetch_cell
 struct read_group
 {
     uint64_t token;
-    uint32_t pending;  /* reads not completed yet */
+    uint32_t pending;
     int32_t next_free;
 };
 
@@ -103,8 +90,8 @@ struct prefetch_state
     _Atomic uint64_t reads;
 
     struct read_group *groups;
-    int32_t free_group; /* head of the free list, or NO_FREE_GROUP */
-    uint64_t done[PREFETCH_DONE_BATCH]; /* tokens of completed groups, not passed to on_reads_done yet */
+    int32_t free_group;
+    uint64_t done[PREFETCH_DONE_BATCH]; /* completed tokens not yet passed to on_reads_done */
     int32_t done_count;
     alignas(CACHE_LINE) char sink[CACHE_LINE]; /* registered buffer 0: the target of every read, never read */
 
@@ -140,7 +127,7 @@ _prefetch_dequeue(struct prefetch_state *s, struct prefetch_request *out)
 {
     struct prefetch_cell *cell = &s->queue[s->dequeue_pos & s->queue_mask];
     if (atomic_load_explicit(&cell->sequence, memory_order_acquire) != s->dequeue_pos + 1)
-        return false; /* empty: the producer has not published this cell yet */
+        return false; /* empty, or the producer has not published the cell yet */
     *out = cell->request;
     atomic_store_explicit(&cell->sequence, s->dequeue_pos + s->queue_mask + 1, memory_order_release);
     s->dequeue_pos++;
@@ -192,7 +179,7 @@ _prefetch_reap(struct prefetch_state *s, bool wait_for_one)
 {
     struct io_uring_cqe *cqe;
     if (wait_for_one)
-        _flush_done(s); /* before we block: the groups that are done must not wait for us */
+        _flush_done(s); /* completed groups must not wait while we block */
     if (wait_for_one && s->inflight > 0 && io_uring_wait_cqe(&s->ring, &cqe) == 0)
         _prefetch_complete(s, cqe);
     while (s->inflight > 0 && io_uring_peek_cqe(&s->ring, &cqe) == 0)
@@ -207,8 +194,8 @@ _prefetch_submit(struct prefetch_state *s)
         s->inflight += (uint32_t)rc; /* only what the kernel took; the rest stays in the SQ for the next submit */
 }
 
-/* An SQE for the next request. In flight + prepared never exceed the SQ size, and the CQ is twice the SQ size,
-   so completions cannot overflow; when the ring is full we submit what we have and wait for one completion. */
+/* In flight + prepared never exceed the SQ size, so the CQ (twice that) cannot overflow: when full, submit and wait for
+   one completion. */
 PRIVATE struct io_uring_sqe *
 _prefetch_get_sqe(struct prefetch_state *s)
 {
@@ -236,7 +223,7 @@ _prefetch_read_group(struct prefetch_state *s, int32_t slot, const struct prefet
     g->pending = req->count;
     for (uint32_t i = 0; i < req->count; i++)
     {
-        struct io_uring_sqe *sqe = _prefetch_get_sqe(s); /* may reap: the earlier reads of this group can complete here */
+        struct io_uring_sqe *sqe = _prefetch_get_sqe(s); /* may reap: this group's earlier reads can complete here */
         if (sqe == NULL)
         {
             atomic_fetch_add_explicit(&s->failed, 1, memory_order_relaxed); /* the submit failed and the SQ is still full */
@@ -300,7 +287,8 @@ rvn_prefetch_ring_submitter(void *arg)
         }
         _flush_done(s);
 
-        /* sleep until a producer wakes us; re-check after announcing, so a push between the drain and the flag is not lost */
+        /* sleep until a producer or a completion signals the eventfd; re-check after announcing, so a push between the drain
+           and the flag is not lost */
         atomic_store_explicit(&s->sleeping, 1, memory_order_seq_cst);
         struct prefetch_cell *cell = &s->queue[s->dequeue_pos & s->queue_mask];
         if (atomic_load_explicit(&cell->sequence, memory_order_seq_cst) == s->dequeue_pos + 1)
@@ -320,7 +308,7 @@ rvn_prefetch_ring_submitter(void *arg)
         if (req.count != 0)
             _group_done(s, req.token);
     }
-    while (s->inflight > 0) /* the kernel still uses the SQEs' memory until it completes them */
+    while (s->inflight > 0) /* in-flight reads write into the sink, which is freed with the state */
         _prefetch_reap(s, true);
     _flush_done(s);
     return NULL;
@@ -359,7 +347,7 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
     s->max_files = max_files;
     s->on_reads_done = on_reads_done;
     s->on_reads_done_context = on_reads_done_context;
-    s->max_groups = ring_entries + 1; /* every group in flight holds one of the ring's entries, but the one being prepared */
+    s->max_groups = ring_entries + 1; /* each group in flight holds a ring entry, except the one being prepared */
     uint64_t size = (uint64_t)queue_size;
     s->queue_mask = size - 1;
 
@@ -550,7 +538,7 @@ _prefetch_push(struct prefetch_state *s, const struct prefetch_request *req)
         }
         else if (diff < 0)
         {
-            /* the cell still holds a request from the previous lap: the queue is full, drop this hint */
+            /* the cell still holds a request from the previous lap: the queue is full */
             atomic_fetch_add_explicit(&s->dropped_full, 1, memory_order_relaxed);
             return 0;
         }
@@ -594,9 +582,8 @@ rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length)
     return _prefetch_push(s, &req);
 }
 
-/* Queues a read group of the 8 KB pages at offsets; the caller keeps offsets until the token reaches on_reads_done.
-   Returns 1 when queued: the token reaches on_reads_done once, later. Returns 0 when not queued (queue full, file not
-   registered, no pages): the token never reaches on_reads_done. */
+/* Returns 1 when queued: the token reaches on_reads_done once, and offsets must stay valid until then. Returns 0 when not
+   queued (queue full, file not registered, no pages): the token never reaches on_reads_done. */
 PRIVATE int32_t
 rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint64_t token)
 {
@@ -636,7 +623,7 @@ rvn_prefetch_start_reads(int fd, int64_t *offsets, int32_t count)
         ssize_t rc = _pread_nowait(fd, sink, sizeof(sink), offset + PREFETCH_READ_AT);
         if (rc == PREFETCH_READ_LENGTH)
             continue;
-        if (rc == -1 && (errno == EOPNOTSUPP || errno == ENOSYS)) /* no RWF_NOWAIT here */
+        if (rc == -1 && (errno == EOPNOTSUPP || errno == ENOSYS)) /* the file system or the kernel has no RWF_NOWAIT */
             (void)posix_fadvise(fd, (off_t)offset, PREFETCH_PAGE_SIZE, POSIX_FADV_WILLNEED);
         offsets[missing++] = offset;
     }
