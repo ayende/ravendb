@@ -165,11 +165,22 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
                     var pageNumbers = Enumerable.Range(0, pages).Select(x => (long)x).ToArray();
                     Assert.True(Pager.ReadPagesAhead(state, pageNumbers).AsTask().Wait(TimeSpan.FromSeconds(10)));
                     var stats = ring.GetStats()!.Value;
+                    var expected = content.Length / Environment.SystemPageSize;
                     if (stats.UsesIoUring)
                     {
                         Assert.Equal(1, stats.ReadGroups);
                         Assert.Equal(pages, stats.Reads);
-                        Assert.Equal(content.Length / Environment.SystemPageSize, ResidentPages(state.ReadAddress, content.Length));
+                        Assert.Equal(expected, ResidentPages(state.ReadAddress, content.Length));
+                    }
+                    else
+                    {
+                        // nothing waits for the reads, but they were started
+                        Assert.Equal(0, stats.ReadGroups);
+                        var sw = Stopwatch.StartNew();
+                        int resident;
+                        while ((resident = ResidentPages(state.ReadAddress, content.Length)) < expected && sw.Elapsed < TimeSpan.FromSeconds(5))
+                            Thread.Sleep(10);
+                        Assert.Equal(expected, resident);
                     }
                 }
             }
@@ -513,6 +524,55 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
 
                     Assert.True(Pager.ReadPagesAhead(state, [2, 4, 8]).IsCompletedSuccessfully);
                     Assert.Equal(0, ring.GetStats()!.Value.ReadGroups);
+                }
+            }
+        }
+        finally
+        {
+            IOExtensions.DeleteDirectory(path);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Voron)]
+    public void ALargeGroupInMemoryCompletes()
+    {
+        using var ring = new PrefetchRing(ringEntries: 8, maxFiles: 4, queueSize: 64);
+        if (ring.IsAvailable == false)
+            return;
+
+        const int pages = 64; // above the limit: no check on the caller's thread
+        var path = RavenTestHelper.NewDataPath(nameof(ALargeGroupInMemoryCompletes), 0, forceCreateDir: true);
+        try
+        {
+            var file = Path.Combine(path, Constants.DatabaseFilename);
+            var content = new byte[pages * Constants.Storage.PageSize];
+            Random.Shared.NextBytes(content);
+            File.WriteAllBytes(file, content);
+
+            using (var options = StorageEnvironmentOptions.ForPathForTests(path))
+            {
+                options.PrefetchRing = ring;
+                var (pager, state) = Pager.Create(options, file, content.Length, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
+                using (pager)
+                using (state)
+                {
+                    for (var page = 0; page < pages; page++)
+                        TouchPage(state.ReadAddress + page * Constants.Storage.PageSize);
+
+                    var read = Pager.ReadPagesAhead(state, Enumerable.Range(0, pages).Select(x => (long)x).ToArray());
+                    var stats = ring.GetStats()!.Value;
+                    if (stats.UsesIoUring)
+                    {
+                        Assert.True(read.AsTask().Wait(TimeSpan.FromSeconds(10)));
+                        stats = ring.GetStats()!.Value;
+                        Assert.Equal(1, stats.ReadGroups);
+                        Assert.Equal(pages, stats.Reads);
+                    }
+                    else
+                    {
+                        Assert.True(read.IsCompletedSuccessfully);
+                        Assert.Equal(0, stats.ReadGroups);
+                    }
                 }
             }
         }

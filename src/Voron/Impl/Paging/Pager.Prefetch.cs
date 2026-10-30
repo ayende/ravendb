@@ -20,10 +20,10 @@ public unsafe partial class Pager
     private const int RecentHintsBits = 12;
     private int[] _recentHints;
 
-    /// <summary>
-    /// Completes once the pages are in the page cache. Recently requested pages are skipped; the reads of the others start
-    /// before this returns.
-    /// </summary>
+    // above this, one wait on the ring costs less than a non-blocking read of each page on the caller's thread
+    private const int CheckedReadAheadLimit = 16;
+
+    /// <summary>Completes once the pages are in the page cache. Recently requested pages are skipped.</summary>
     [SkipLocalsInit]
     public static ValueTask ReadPagesAhead(State state, ReadOnlySpan<long> pageNumbers)
     {
@@ -48,12 +48,23 @@ public unsafe partial class Pager
             if (count == 0)
                 return ValueTask.CompletedTask;
 
+            var ring = state.Pager._prefetchRing;
+            ValueTask done;
+            if (count > CheckedReadAheadLimit)
+            {
+                if (ring != null && ring.TryWaitForPages(state.Handle, offsets[..count], out done))
+                    return done;
+                foreach (var offset in offsets[..count]) // nothing started these reads yet
+                    Pal.rvn_pager_will_need(state.Handle, offset, Constants.Storage.PageSize);
+                return ValueTask.CompletedTask;
+            }
+
             int missing;
             fixed (long* p = offsets)
                 missing = Pal.rvn_pager_start_reads(state.Handle, p, count);
-            if (missing == 0 || state.Pager._prefetchRing == null)
+            if (missing == 0 || ring == null || ring.TryWaitForPages(state.Handle, offsets[..missing], out done) == false)
                 return ValueTask.CompletedTask;
-            return state.Pager._prefetchRing.WaitForPagesAsync(state.Handle, offsets[..missing]);
+            return done;
         }
         finally
         {

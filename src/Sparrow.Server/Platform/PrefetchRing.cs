@@ -72,13 +72,14 @@ public sealed unsafe class PrefetchRing : IDisposable
     }
 
     /// <summary>
-    /// After <see cref="Pal.rvn_pager_start_reads"/>: completes once the pages at <paramref name="offsets"/> are in the page
-    /// cache. Completes at once when the ring cannot wait for them; their reads are already started.
+    /// Returns false when the ring cannot wait for the pages. Otherwise <paramref name="done"/> completes once the pages at
+    /// <paramref name="offsets"/> are in the page cache; the ring reads those that are not.
     /// </summary>
-    public ValueTask WaitForPagesAsync(void* pagerHandle, ReadOnlySpan<long> offsets)
+    public bool TryWaitForPages(void* pagerHandle, ReadOnlySpan<long> offsets, out ValueTask done)
     {
+        done = ValueTask.CompletedTask;
         if (_usesIoUring == false || TryRentSlot(out var slot) == false)
-            return ValueTask.CompletedTask;
+            return false;
 
         var buffer = slot.GetOffsets(offsets.Length);
         offsets.CopyTo(new Span<long>(buffer, offsets.Length));
@@ -86,9 +87,10 @@ public sealed unsafe class PrefetchRing : IDisposable
         if (Pal.rvn_pager_read_pages(pagerHandle, buffer, offsets.Length, (ulong)slot.Index) != 1)
         {
             ReleaseSlot(slot.Index);
-            return ValueTask.CompletedTask;
+            return false;
         }
-        return new ValueTask(slot, version);
+        done = new ValueTask(slot, version);
+        return true;
     }
 
     private bool TryRentSlot(out WaitSlot slot)
