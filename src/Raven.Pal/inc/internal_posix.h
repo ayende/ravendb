@@ -111,6 +111,15 @@ rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, i
 PRIVATE int32_t
 rvn_prefetch_start_reads(int fd, int64_t *offsets, int32_t count);
 
+PRIVATE ssize_t
+_preadv2_nowait(int fd, void *buffer, size_t length, int64_t offset);
+
+PRIVATE void
+_futex_wait(uint32_t *word, uint32_t expected, long timeout_ns);
+
+PRIVATE void
+_futex_wake_all(uint32_t *word);
+
 PRIVATE
 int32_t _setup_io_ring(struct handle_global_state *global_state, int32_t *detailed_error_code);
 

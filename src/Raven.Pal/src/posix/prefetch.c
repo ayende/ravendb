@@ -7,14 +7,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
-#include <limits.h>
-#include <time.h>
-#include <linux/futex.h>
 #include <stdalign.h>
 #include <stdatomic.h>
 #include <sys/eventfd.h>
-#include <sys/syscall.h>
-#include <sys/uio.h>
 
 #include "rvn.h"
 #include "rvn_internal.h"
@@ -46,10 +41,6 @@
 #define PREFETCH_GROUP_TAG (1ULL << 63) /* user_data of a group read: the tag | the group index; WILLNEED uses 0 */
 #define PREFETCH_DONE_BATCH 64
 #define PREFETCH_CELL_PAGES 12 /* a cell is two cache lines */
-
-#ifndef RWF_NOWAIT
-#define RWF_NOWAIT 0x00000008
-#endif
 
 struct prefetch_request
 {
@@ -166,19 +157,6 @@ _prefetch_complete(struct prefetch_state *s, struct io_uring_cqe *cqe)
         _group_read_done(s, (uint32_t)(data & ~PREFETCH_GROUP_TAG));
 }
 
-PRIVATE void
-_futex_wait(_Atomic uint32_t *word, uint32_t expected, long timeout_ns)
-{
-    struct timespec timeout = { .tv_sec = 0, .tv_nsec = timeout_ns };
-    (void)syscall(SYS_futex, (uint32_t *)word, FUTEX_WAIT_PRIVATE, expected, &timeout, NULL, 0);
-}
-
-PRIVATE void
-_futex_wake_all(_Atomic uint32_t *word)
-{
-    (void)syscall(SYS_futex, (uint32_t *)word, FUTEX_WAKE_PRIVATE, INT_MAX, NULL, NULL, 0);
-}
-
 /* Submitter side of a full queue: wakes the producers waiting for free cells, if any */
 PRIVATE void
 _signal_space(struct prefetch_state *s)
@@ -187,7 +165,7 @@ _signal_space(struct prefetch_state *s)
     if (atomic_load_explicit(&s->space_waiters, memory_order_relaxed) == 0)
         return;
     atomic_fetch_add_explicit(&s->space_seq, 1, memory_order_seq_cst);
-    _futex_wake_all(&s->space_seq);
+    _futex_wake_all((uint32_t *)&s->space_seq);
 }
 
 /* Producer side of a full queue: sleeps until the submitter frees cells, or 10 ms pass */
@@ -198,7 +176,7 @@ _wait_for_space(struct prefetch_state *s, struct prefetch_cell *cell, uint64_t p
     atomic_fetch_add_explicit(&s->space_waiters, 1, memory_order_seq_cst);
     /* with _signal_space a Dekker pair: either we see the freed cell, or the submitter sees us waiting */
     if ((int64_t)(atomic_load_explicit(&cell->sequence, memory_order_seq_cst) - pos) < 0)
-        _futex_wait(&s->space_seq, seen, 10 * 1000 * 1000);
+        _futex_wait((uint32_t *)&s->space_seq, seen, 10 * 1000 * 1000);
     atomic_fetch_sub_explicit(&s->space_waiters, 1, memory_order_relaxed);
 }
 
@@ -634,17 +612,6 @@ rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, i
     return 1;
 }
 
-PRIVATE ssize_t
-_pread_nowait(int fd, void *buffer, size_t length, int64_t offset)
-{
-    struct iovec iov = { .iov_base = buffer, .iov_len = length };
-#if __SIZEOF_LONG__ == 8
-    return syscall(SYS_preadv2, fd, &iov, 1, (long)offset, 0L, RWF_NOWAIT);
-#else
-    return syscall(SYS_preadv2, fd, &iov, 1, (long)(uint32_t)offset, (long)((uint64_t)offset >> 32), RWF_NOWAIT);
-#endif
-}
-
 /* A non-blocking 8-byte read of each 8 KB page: it returns at once when the page is in the page cache, and otherwise starts
    reading it (the file has FADV_RANDOM, so exactly that page). Moves the offsets of the pages that were not in the page cache
    to the front and returns their number. */
@@ -656,7 +623,7 @@ rvn_prefetch_start_reads(int fd, int64_t *offsets, int32_t count)
     for (int32_t i = 0; i < count; i++)
     {
         int64_t offset = offsets[i];
-        ssize_t rc = _pread_nowait(fd, sink, sizeof(sink), offset + PREFETCH_READ_AT);
+        ssize_t rc = _preadv2_nowait(fd, sink, sizeof(sink), offset + PREFETCH_READ_AT);
         if (rc == PREFETCH_READ_LENGTH)
             continue;
         if (rc == -1 && (errno == EOPNOTSUPP || errno == ENOSYS)) /* the file system or the kernel has no RWF_NOWAIT */
