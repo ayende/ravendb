@@ -71,10 +71,9 @@ public sealed class PrefetchRing : IDisposable
 
     public unsafe PrefetchRingStats? GetStats()
     {
-        if (_handle == null || Pal.rvn_prefetch_ring_stats(_handle, out var submitted, out var droppedFull, out var droppedStale, out var failed,
-                out var readGroups, out var reads, out var usesIoUring) != PalFlags.FailCodes.Success)
+        if (_handle == null || Pal.rvn_prefetch_ring_stats(_handle, out var s) != PalFlags.FailCodes.Success)
             return null;
-        return new PrefetchRingStats(submitted, droppedFull, droppedStale, failed, readGroups, reads, usesIoUring != 0);
+        return new PrefetchRingStats(s.Submitted, s.DroppedFull, s.DroppedStale, s.Failed, s.ReadGroups, s.Reads, s.UsesIoUring != 0);
     }
 
     /// <summary>Takes a wait slot if one is free. <see cref="WaitForPages"/> returns it; so does <see cref="ReturnSlot"/>.</summary>
@@ -95,16 +94,20 @@ public sealed class PrefetchRing : IDisposable
     }
 
     /// <summary>
-    /// Queues the pages at <paramref name="offsets"/> on the rented <paramref name="slot"/>, and returns the slot to the ring once
-    /// the ring's reads of them complete. Returns a completed task when the file is not registered with the ring.
+    /// Queues the pages at <paramref name="offsets"/> of the file with <paramref name="ticket"/> on the rented <paramref name="slot"/>,
+    /// and returns the slot to the ring once the ring's reads of them complete.
     /// </summary>
-    public unsafe ValueTask WaitForPages(int slot, void* pagerHandle, ReadOnlySpan<long> offsets)
+    public unsafe ValueTask WaitForPages(int slot, long ticket, ReadOnlySpan<long> offsets)
     {
         var waitSlot = _slots[slot];
         var version = waitSlot.Version;
-        int queued;
-        fixed (long* p = offsets)
-            queued = Pal.rvn_pager_read_pages(pagerHandle, p, offsets.Length, (uint)slot);
+        var queued = 0;
+        var handle = _handle;
+        if (handle != null)
+        {
+            fixed (long* p = offsets)
+                queued = Pal.rvn_prefetch_ring_read_pages(handle, ticket, p, offsets.Length, (uint)slot);
+        }
         if (queued != 1)
         {
             ReturnSlot(slot);

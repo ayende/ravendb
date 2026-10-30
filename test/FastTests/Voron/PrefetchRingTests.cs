@@ -393,7 +393,8 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
                 using (pager)
                 using (state)
                 {
-                    Assert.Equal(PalFlags.FailCodes.Success, Pal.rvn_pager_get_prefetch_request_size(state.Handle, out var requestSize));
+                    Assert.Equal(PalFlags.FailCodes.Success, Pal.rvn_pager_get_prefetch_info(state.Handle, out var info));
+                    var requestSize = info.RequestSize;
                     var expected = PlatformDetails.RunningOnLinux ? ExpectedRequestSize(state) : PlatformDetails.RunningOnWindows ? 0 : 128 * 1024;
                     Output.WriteLine($"prefetch request size: {requestSize / 1024} KB (expected {expected / 1024} KB)");
                     Assert.Equal(expected, requestSize);
@@ -606,16 +607,18 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
                 using (state)
                 {
                     var offsets = Enumerable.Range(0, pages).Select(x => (long)x * Constants.Storage.PageSize).ToArray();
+                    Assert.Equal(PalFlags.FailCodes.Success, Pal.rvn_pager_get_prefetch_info(state.Handle, out var info));
+                    Assert.NotEqual(-1, info.Ticket);
                     if (ring.CanWaitForPages)
                     {
                         Assert.True(ring.TryRentSlot(out var slot));
-                        Assert.True(ring.WaitForPages(slot, state.Handle, offsets).AsTask().Wait(TimeSpan.FromSeconds(10)));
+                        Assert.True(ring.WaitForPages(slot, info.Ticket, offsets).AsTask().Wait(TimeSpan.FromSeconds(10)));
                         Assert.Equal(pages, ring.GetStats()!.Value.Reads);
                     }
                     else
                     {
                         fixed (long* p = offsets)
-                            Assert.Equal(1, Pal.rvn_pager_read_pages(state.Handle, p, pages, 0)); // waits for the submitter to free cells
+                            Assert.Equal(1, Pal.rvn_prefetch_ring_read_pages(ring.Handle, info.Ticket, p, pages, 0)); // waits for the submitter to free cells
                         var sw = Stopwatch.StartNew();
                         while (ring.GetStats()!.Value.ReadGroups == 0 && sw.Elapsed < TimeSpan.FromSeconds(5))
                             Thread.Sleep(5);

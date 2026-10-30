@@ -186,15 +186,18 @@ namespace Sparrow.Server.Platform
         public static extern Int32 rvn_pager_start_reads(
             void* handle, Int64* offsets, Int32 count);
 
+        /// <summary>
+        /// The largest WILLNEED request the data file's device reads whole, and the file's ticket on its prefetch ring (-1 when
+        /// not registered).
+        /// </summary>
+        [DllImport(LIBRVNPAL)]
+        public static extern PalFlags.FailCodes rvn_pager_get_prefetch_info(
+            void* handle, out PalDefinitions.PagerPrefetchInfo info);
+
         /// <summary>The ring reads the 8 KB pages at the offsets and passes the group to its callback once</summary>
         [DllImport(LIBRVNPAL)]
-        public static extern Int32 rvn_pager_read_pages(
-            void* handle, Int64* offsets, Int32 count, UInt32 group);
-
-        /// <summary>The largest WILLNEED request the data file's device reads whole (the kernel drops the rest of a larger one).</summary>
-        [DllImport(LIBRVNPAL)]
-        public static extern PalFlags.FailCodes rvn_pager_get_prefetch_request_size(
-            void* handle, out Int64 requestSize);
+        public static extern Int32 rvn_prefetch_ring_read_pages(
+            void* ring, Int64 ticket, Int64* offsets, Int32 count, UInt32 group);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_create(
@@ -207,8 +210,7 @@ namespace Sparrow.Server.Platform
 
         [DllImport(LIBRVNPAL)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_stats(
-            void* ring, out Int64 submitted, out Int64 droppedFull, out Int64 droppedStale, out Int64 failed,
-            out Int64 readGroups, out Int64 reads, out Int32 usesIoUring);
+            void* ring, out PalDefinitions.PrefetchRingCounters stats);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_close_pager(

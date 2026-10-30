@@ -43,6 +43,7 @@ public unsafe partial class Pager : IDisposable
     private SegmentPrefetchTable _prefetchTable;
     private long _prefetchRequestSize;
     private PrefetchRing? _prefetchRing;
+    private long _prefetchTicket;
     private DateTime _lastIncrease;
     private long _increaseSize;
 
@@ -71,7 +72,9 @@ public unsafe partial class Pager : IDisposable
         pager.InstallState(state);
         pager.Initialize(memorySize);
         pager._prefetchRing = ring is { IsAvailable: true } ? ring : null;
-        Pal.rvn_pager_get_prefetch_request_size(handle, out pager._prefetchRequestSize);
+        Pal.rvn_pager_get_prefetch_info(handle, out var prefetchInfo);
+        pager._prefetchRequestSize = prefetchInfo.RequestSize;
+        pager._prefetchTicket = prefetchInfo.Ticket;
         return (pager, state);
     }
 

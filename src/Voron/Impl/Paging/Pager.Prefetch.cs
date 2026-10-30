@@ -52,7 +52,7 @@ public unsafe partial class Pager
             if (count > CheckedReadAheadLimit)
             {
                 if (ring is { CanWaitForPages: true })
-                    return WaitForPages(state, ring, offsets[..count]);
+                    return WaitForPages(state.Pager, ring, offsets[..count]);
                 foreach (var offset in offsets[..count]) // nothing started these reads yet
                     Pal.rvn_pager_will_need(state.Handle, offset, Constants.Storage.PageSize);
                 return ValueTask.CompletedTask;
@@ -63,7 +63,7 @@ public unsafe partial class Pager
                 missing = Pal.rvn_pager_start_reads(state.Handle, p, count);
             if (missing == 0 || ring is not { CanWaitForPages: true })
                 return ValueTask.CompletedTask;
-            return WaitForPages(state, ring, offsets[..missing]);
+            return WaitForPages(state.Pager, ring, offsets[..missing]);
         }
         finally
         {
@@ -72,26 +72,15 @@ public unsafe partial class Pager
         }
     }
 
-    private static ValueTask WaitForPages(State state, PrefetchRing ring, ReadOnlySpan<long> offsets)
+    private static ValueTask WaitForPages(Pager pager, PrefetchRing ring, ReadOnlySpan<long> offsets)
     {
+        var ticket = pager._prefetchTicket;
         if (ring.TryRentSlot(out var slot))
-            return ring.WaitForPages(slot, state.Handle, offsets);
+            return ring.WaitForPages(slot, ticket, offsets);
         var copy = offsets.ToArray(); // every wait slot is taken: rare
         return new ValueTask(ring.RentSlotAsync()
-            .ContinueWith(rented => WaitForPagesOnSlot(state, ring, rented.Result, copy).AsTask(), TaskScheduler.Default)
+            .ContinueWith(rented => ring.WaitForPages(rented.Result, ticket, copy).AsTask(), TaskScheduler.Default)
             .Unwrap());
-    }
-
-    // the caller's transaction may have ended while it waited for the slot: the state's lock keeps the handle open
-    private static ValueTask WaitForPagesOnSlot(State state, PrefetchRing ring, int slot, ReadOnlySpan<long> offsets)
-    {
-        lock (state.WeakSelf)
-        {
-            if (state.Disposed == false)
-                return ring.WaitForPages(slot, state.Handle, offsets);
-        }
-        ring.ReturnSlot(slot);
-        return ValueTask.CompletedTask;
     }
 
     private static ref int RecentSlot(int[] recent, long pageNumber) =>
