@@ -873,8 +873,20 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 }
 
 EXPORT int32_t
-rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, void **ring, int32_t *detailed_error_code)
+rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint64_t token)
 {
+    (void)handle;
+    (void)offsets;
+    (void)count;
+    (void)token;
+    return 0;
+}
+
+EXPORT int32_t
+rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, 
+    void (*on_reads_done)(const uint64_t *tokens, int32_t count), void **ring, int32_t *detailed_error_code)
+{
+    (void)on_reads_done;
     (void)ring_entries;
     (void)max_files;
     (void)queue_size;
@@ -892,10 +904,12 @@ rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code)
 }
 
 EXPORT int32_t
-rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed)
+rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed,
+    int64_t *read_groups, int64_t *reads, int32_t *uses_io_uring)
 {
     (void)ring;
-    *submitted = *dropped_full = *dropped_stale = *failed = 0;
+    *submitted = *dropped_full = *dropped_stale = *failed = *read_groups = *reads = 0;
+    *uses_io_uring = 0;
     return FAIL_INVALID_HANDLE;
 }
 

@@ -394,6 +394,12 @@ rvn_init_pager(const char *filename,
     if (open_flags & OPEN_FILE_PREFETCH)
         global_state->prefetch_request_size = _prefetch_request_size(((struct handle *)*handle)->file_fd);
 
+#if !__APPLE__
+    /* the reads of a read group bring exactly the pages they touch, no read-ahead window (shared with the mapping's faults) */
+    if (open_flags & OPEN_FILE_RANDOM_ACCESS)
+        (void)posix_fadvise(((struct handle *)*handle)->file_fd, 0, 0, POSIX_FADV_RANDOM);
+#endif
+
     if ((open_flags & OPEN_FILE_PREFETCH) && prefetch_ring != NULL)
     {
         rc = rvn_prefetch_register(prefetch_ring, ((struct handle *)*handle)->file_fd, &global_state->prefetch_ticket, detailed_error_code);
@@ -726,6 +732,18 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
     }
     return all;
 #endif
+}
+
+/* Reads the 8 KB pages at offsets into the page cache; the file's prefetch ring passes token to its on_reads_done once they
+   are in. The caller keeps offsets until then. Returns 1 when queued, 0 when not (no ring, queue full): then the token is
+   never passed. */
+EXPORT int32_t
+rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint64_t token)
+{
+    struct handle *handle_ptr = handle;
+    if (handle_ptr == NULL || handle_ptr->global_state->prefetch_ring == NULL)
+        return 0;
+    return rvn_prefetch_enqueue_reads(handle_ptr->global_state->prefetch_ring, handle_ptr->global_state->prefetch_ticket, offsets, count, token);
 }
 
 EXPORT int32_t
