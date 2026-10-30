@@ -171,6 +171,11 @@ rvn_pager_get_prefetch_request_size(void *handle,
     int64_t *request_size);
 
 EXPORT int32_t
+rvn_pager_will_need(void *handle,
+    int64_t offset,
+    int64_t length);
+
+EXPORT int32_t
 rvn_pager_start_reads(void *handle,
     int64_t *offsets,
     int32_t count);

@@ -873,6 +873,15 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 }
 
 EXPORT int32_t
+rvn_pager_will_need(void *handle, int64_t offset, int64_t length)
+{
+    (void)handle;
+    (void)offset;
+    (void)length;
+    return 0;
+}
+
+EXPORT int32_t
 rvn_pager_start_reads(void *handle, int64_t *offsets, int32_t count)
 {
     (void)handle;
