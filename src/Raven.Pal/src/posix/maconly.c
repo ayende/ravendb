@@ -290,9 +290,10 @@ rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, i
 
 EXPORT int32_t
 rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, 
-    rvn_reads_done on_reads_done, void **ring, int32_t *detailed_error_code)
+    rvn_reads_done on_reads_done, void *on_reads_done_context, void **ring, int32_t *detailed_error_code)
 {
     (void)on_reads_done;
+    (void)on_reads_done_context;
     (void)ring_entries;
     (void)max_files;
     (void)queue_size;

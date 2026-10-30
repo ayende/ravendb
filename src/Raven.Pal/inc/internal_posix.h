@@ -108,6 +108,9 @@ rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length)
 PRIVATE int32_t
 rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint64_t token);
 
+PRIVATE int32_t
+rvn_prefetch_start_reads(int fd, int64_t *offsets, int32_t count);
+
 PRIVATE
 int32_t _setup_io_ring(struct handle_global_state *global_state, int32_t *detailed_error_code);
 

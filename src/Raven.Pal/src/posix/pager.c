@@ -732,8 +732,23 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 #endif
 }
 
-/* Reads the 8 KB pages at offsets into the page cache; the file's prefetch ring passes token to its on_reads_done once they
-   are in. The caller keeps offsets until then. Returns 1 when queued, 0 when not (no ring, queue full): then the token is
+/* Starts reading the 8 KB pages at offsets into the page cache, without waiting. Moves the offsets of the pages that were
+   not in the page cache to the front and returns their number. */
+EXPORT int32_t
+rvn_pager_start_reads(void *handle, int64_t *offsets, int32_t count)
+{
+    struct handle *handle_ptr = handle;
+    if (handle_ptr == NULL || offsets == NULL || count <= 0)
+        return 0;
+#if __APPLE__
+    return 0;
+#else
+    return rvn_prefetch_start_reads(handle_ptr->file_fd, offsets, count);
+#endif
+}
+
+/* After rvn_pager_start_reads: the file's prefetch ring passes token to its on_reads_done once the pages are in the page
+   cache. offsets must stay valid until then. Returns 1 when queued, 0 when not (no ring, queue full): then the token is
    never passed. */
 EXPORT int32_t
 rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint64_t token)

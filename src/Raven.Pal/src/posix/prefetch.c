@@ -10,6 +10,8 @@
 #include <stdalign.h>
 #include <stdatomic.h>
 #include <sys/eventfd.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
 
 #include "rvn.h"
 #include "rvn_internal.h"
@@ -39,10 +41,10 @@
  * A request that races the unregistration of its file may reach the descriptor number after it was reused: that is a
  * wasted read-ahead, never a write.
  *
- * A read group is a set of pages that one caller waits for. The caller keeps the array of page offsets until its token
- * reaches on_reads_done. Each page is read as 8 bytes across the boundary of its two 4 KB halves, so the kernel brings the
- * whole 8 KB page in one I/O. Completed tokens are passed to on_reads_done before the submitter blocks. A group that cannot
- * be read gets WILLNEED hints instead and completes at once.
+ * A read group is a set of pages that one caller waits for; rvn_prefetch_start_reads has already started their reads. The
+ * caller keeps the array of page offsets until its token reaches on_reads_done. Each page is read as 8 bytes across the
+ * boundary of its two 4 KB halves, so the kernel brings the whole 8 KB page in one I/O. Completed tokens are passed to
+ * on_reads_done before the submitter blocks. A group that cannot be read completes at once.
  */
 
 #define CACHE_LINE 64
@@ -51,6 +53,10 @@
 #define PREFETCH_PAGE_SIZE 8192
 #define PREFETCH_GROUP_TAG (1ULL << 63) /* in a read's user_data: the group slot; WILLNEED requests use 0 */
 #define PREFETCH_DONE_BATCH 64
+
+#ifndef RWF_NOWAIT
+#define RWF_NOWAIT 0x00000008
+#endif
 
 struct prefetch_request
 {
@@ -113,6 +119,7 @@ struct prefetch_state
     int32_t max_files;
     int32_t max_groups;
     rvn_reads_done on_reads_done;
+    void *on_reads_done_context;
 
     /* registration, guarded by slots_lock */
     pthread_mutex_t slots_lock;
@@ -145,7 +152,7 @@ _flush_done(struct prefetch_state *s)
 {
     if (s->done_count == 0)
         return;
-    s->on_reads_done(s->done, s->done_count);
+    s->on_reads_done(s->on_reads_done_context, s->done, s->done_count);
     s->done_count = 0;
 }
 
@@ -213,36 +220,13 @@ _prefetch_get_sqe(struct prefetch_state *s)
     return io_uring_get_sqe(&s->ring);
 }
 
-/* A WILLNEED hint for each page of a group that we do not read, then the group is done */
-PRIVATE void
-_group_hint_and_complete(struct prefetch_state *s, int32_t slot, const struct prefetch_request *req)
-{
-    for (uint32_t i = 0; i < req->count; i++)
-    {
-        if (s->use_io_uring)
-        {
-            struct io_uring_sqe *sqe = _prefetch_get_sqe(s);
-            if (sqe == NULL)
-                break;
-            io_uring_prep_fadvise(sqe, slot, (uint64_t)req->offsets[i], PREFETCH_PAGE_SIZE, POSIX_FADV_WILLNEED);
-            sqe->flags |= IOSQE_FIXED_FILE;
-            io_uring_sqe_set_data64(sqe, 0);
-        }
-        else if (s->fds[slot] != -1)
-        {
-            (void)posix_fadvise(s->fds[slot], (off_t)req->offsets[i], PREFETCH_PAGE_SIZE, POSIX_FADV_WILLNEED);
-        }
-    }
-    _group_done(s, req->token);
-}
-
 PRIVATE void
 _prefetch_read_group(struct prefetch_state *s, int32_t slot, const struct prefetch_request *req)
 {
     atomic_fetch_add_explicit(&s->read_groups, 1, memory_order_relaxed);
     if (s->use_io_uring == false || s->free_group == NO_FREE_GROUP)
     {
-        _group_hint_and_complete(s, slot, req);
+        _group_done(s, req->token);
         return;
     }
     int32_t group = s->free_group;
@@ -355,7 +339,7 @@ _prefetch_free(struct prefetch_state *s)
 
 EXPORT int32_t
 rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size,
-    rvn_reads_done on_reads_done, void **ring, int32_t *detailed_error_code)
+    rvn_reads_done on_reads_done, void *on_reads_done_context, void **ring, int32_t *detailed_error_code)
 {
     *ring = NULL;
     *detailed_error_code = 0;
@@ -374,6 +358,7 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
     s->ring_entries = (uint32_t)ring_entries;
     s->max_files = max_files;
     s->on_reads_done = on_reads_done;
+    s->on_reads_done_context = on_reads_done_context;
     s->max_groups = ring_entries + 1; /* every group in flight holds one of the ring's entries, but the one being prepared */
     uint64_t size = (uint64_t)queue_size;
     s->queue_mask = size - 1;
@@ -624,6 +609,38 @@ rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, i
     req.token = token;
     req.offsets = offsets;
     return _prefetch_push(s, &req);
+}
+
+PRIVATE ssize_t
+_pread_nowait(int fd, void *buffer, size_t length, int64_t offset)
+{
+    struct iovec iov = { .iov_base = buffer, .iov_len = length };
+#if __SIZEOF_LONG__ == 8
+    return syscall(SYS_preadv2, fd, &iov, 1, (long)offset, 0L, RWF_NOWAIT);
+#else
+    return syscall(SYS_preadv2, fd, &iov, 1, (long)(uint32_t)offset, (long)((uint64_t)offset >> 32), RWF_NOWAIT);
+#endif
+}
+
+/* A non-blocking 8-byte read of each 8 KB page: it returns at once when the page is in the page cache, and otherwise starts
+   reading it (the file has FADV_RANDOM, so exactly that page). Moves the offsets of the pages that were not in the page cache
+   to the front and returns their number. */
+PRIVATE int32_t
+rvn_prefetch_start_reads(int fd, int64_t *offsets, int32_t count)
+{
+    char sink[PREFETCH_READ_LENGTH];
+    int32_t missing = 0;
+    for (int32_t i = 0; i < count; i++)
+    {
+        int64_t offset = offsets[i];
+        ssize_t rc = _pread_nowait(fd, sink, sizeof(sink), offset + PREFETCH_READ_AT);
+        if (rc == PREFETCH_READ_LENGTH)
+            continue;
+        if (rc == -1 && (errno == EOPNOTSUPP || errno == ENOSYS)) /* no RWF_NOWAIT here */
+            (void)posix_fadvise(fd, (off_t)offset, PREFETCH_PAGE_SIZE, POSIX_FADV_WILLNEED);
+        offsets[missing++] = offset;
+    }
+    return missing;
 }
 
 EXPORT int32_t

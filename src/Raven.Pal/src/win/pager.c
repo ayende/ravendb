@@ -873,6 +873,15 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 }
 
 EXPORT int32_t
+rvn_pager_start_reads(void *handle, int64_t *offsets, int32_t count)
+{
+    (void)handle;
+    (void)offsets;
+    (void)count;
+    return 0;
+}
+
+EXPORT int32_t
 rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint64_t token)
 {
     (void)handle;
@@ -884,9 +893,10 @@ rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint64
 
 EXPORT int32_t
 rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, 
-    rvn_reads_done on_reads_done, void **ring, int32_t *detailed_error_code)
+    rvn_reads_done on_reads_done, void *on_reads_done_context, void **ring, int32_t *detailed_error_code)
 {
     (void)on_reads_done;
+    (void)on_reads_done_context;
     (void)ring_entries;
     (void)max_files;
     (void)queue_size;
