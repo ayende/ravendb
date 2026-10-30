@@ -26,9 +26,7 @@ public struct PerCoreMax : IPerCoreOp
 {
     public void Apply(ref long slot, long value)
     {
-        // Intentionally racy: a thread that was preempted between reading the time and raising the slot can store an older
-        // value than another thread of the same core did. For a time that is used in seconds or minutes, being a few
-        // milliseconds behind is harmless.
+        // racy on purpose, a preempted thread may store a slightly older value, harmless for a coarse time
         // PERF: the value usually didn't change since the last time (a time in milliseconds), so we skip writing to the cache line
         if (value > slot)
             slot = value;
