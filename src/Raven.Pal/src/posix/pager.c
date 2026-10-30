@@ -733,8 +733,8 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 #endif
 }
 
-/* Reads the 8 KB pages at offsets into the page cache; on_reads_done(token) of the file's prefetch ring is called once they
-   are in. Returns 1 when queued, 0 when not (no ring, queue full): then the callback is not called. */
+/* Reads the 8 KB pages at offsets into the page cache; the file's prefetch ring passes token to its on_reads_done once they
+   are in. Returns 1 when queued, 0 when not (no ring, queue full): then the token is never passed. */
 EXPORT int32_t
 rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint64_t token)
 {

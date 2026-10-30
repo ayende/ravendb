@@ -740,14 +740,13 @@ namespace Voron.Data.Tables
         }
 
         /// <summary>
-        /// Reads the pages that updating the value <paramref name="id"/> modifies and reading it did not bring in: its whole
-        /// page, its section header page and the leaf pages of its entries in the given fixed-size indexes. The task
-        /// completes once they are in memory (see <see cref="Pager.ReadPagesAhead"/>).
+        /// The pages that updating the value <paramref name="id"/> modifies and reading it did not bring in: its whole page,
+        /// its section header page and the leaf pages of its entries in the given fixed-size indexes. Returns how many it put
+        /// in <paramref name="pages"/>, which needs room for 2 + <paramref name="indexes"/>.Length.
         /// </summary>
-        public Task PrefetchAsync(long id, params ReadOnlySpan<TableSchema.FixedSizeKeyIndexDef> indexes)
+        public int GetPagesToUpdate(long id, Span<long> pages, params ReadOnlySpan<TableSchema.FixedSizeKeyIndexDef> indexes)
         {
             var llt = _tx.LowLevelTransaction;
-            Span<long> pages = stackalloc long[2 + indexes.Length];
             var count = 0;
             pages[count++] = id / Constants.Storage.PageSize;
             if (id % Constants.Storage.PageSize != 0) // a small value: its section header page tracks its space
@@ -762,7 +761,7 @@ namespace Voron.Data.Tables
                         pages[count++] = leaf;
                 }
             }
-            return Pager.ReadPagesAhead(llt.DataPagerState, pages[..count]);
+            return count;
         }
 
         /// <summary>

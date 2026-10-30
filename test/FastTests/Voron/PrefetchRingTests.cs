@@ -119,12 +119,12 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
                     Assert.True(Pager.ReadPagesAhead(state, [3, 17]).IsCompleted);
                     Assert.Equal(1, ring.GetStats()!.Value.ReadGroups);
 
-                    // only the new page is read; a group holds at most 8 pages
+                    // only the new pages are read, in groups of up to 8 pages
                     Assert.True(Pager.ReadPagesAhead(state, [3, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]).Wait(TimeSpan.FromSeconds(10)));
                     stats = ring.GetStats()!.Value;
-                    Assert.Equal(2, stats.ReadGroups);
+                    Assert.Equal(1 + 2, stats.ReadGroups);
                     if (usesIoUring)
-                        Assert.Equal(3 + 8, stats.Reads);
+                        Assert.Equal(3 + 10, stats.Reads);
                 }
             }
         }

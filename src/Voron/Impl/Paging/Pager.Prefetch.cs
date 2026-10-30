@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using Sparrow.Platform;
@@ -27,9 +28,9 @@ public unsafe partial class Pager
 
     /// <summary>
     /// Reads the pages into the page cache and returns a task that completes once they are all in, without holding a thread:
-    /// the reads go through the prefetch ring, in parallel. Pages asked for a moment ago are skipped, and so is the wait when
-    /// all of them are, so hot pages cost neither a system call nor a wait. Where the ring cannot take them
-    /// (no ring, queue full), the reads start with madvise and the task is already complete.
+    /// the reads go through the prefetch ring, in parallel, in groups of up to 8 pages. Pages asked for a moment ago are
+    /// skipped, and so is the wait when all of them are, so hot pages cost neither a system call nor a wait. Where the ring
+    /// cannot take a group (no ring, queue full), its reads start with madvise and it does not delay the task.
     /// </summary>
     public static Task ReadPagesAhead(State state, ReadOnlySpan<long> pageNumbers)
     {
@@ -37,31 +38,57 @@ public unsafe partial class Pager
             return Task.CompletedTask;
 
         var recent = state.Pager._recentHints ??= new int[1 << RecentHintsBits];
-        Span<long> offsets = stackalloc long[MaxReadAheadPages];
+        Span<long> group = stackalloc long[MaxReadAheadPages];
         var count = 0;
+        Task pending = null;
+        List<Task> morePending = null;
         foreach (var pageNumber in pageNumbers)
         {
-            if (pageNumber < 0 || count == MaxReadAheadPages)
+            if (pageNumber < 0)
                 continue;
             if (Volatile.Read(ref RecentSlot(recent, pageNumber)) == (int)(pageNumber + 1))
-                continue;
+                continue; // asked for a moment ago (a page repeated across groups is caught here too)
             var offset = pageNumber * Constants.Storage.PageSize;
-            if (offsets[..count].Contains(offset))
+            if (group[..count].Contains(offset))
                 continue;
-            offsets[count++] = offset;
+            group[count++] = offset;
+            if (count == MaxReadAheadPages)
+            {
+                Track(ReadGroup(state, recent, group), ref pending, ref morePending);
+                count = 0;
+            }
         }
+        if (count > 0)
+            Track(ReadGroup(state, recent, group[..count]), ref pending, ref morePending);
 
-        if (count == 0)
-            return Task.CompletedTask;
+        if (morePending != null)
+            return Task.WhenAll(morePending);
+        return pending ?? Task.CompletedTask;
 
-        if (PrefetchRing.TryReadPages(state.Handle, offsets[..count], out var done) == false)
+        static void Track(Task read, ref Task pending, ref List<Task> morePending)
         {
-            foreach (var offset in offsets[..count])
+            if (read.IsCompleted)
+                return;
+            if (pending == null)
+            {
+                pending = read;
+                return;
+            }
+            morePending ??= [pending];
+            morePending.Add(read);
+        }
+    }
+
+    private static Task ReadGroup(State state, int[] recent, ReadOnlySpan<long> offsets)
+    {
+        if (PrefetchRing.TryReadPages(state.Handle, offsets, out var done) == false)
+        {
+            foreach (var offset in offsets)
                 WillNeedPages(state, offset / Constants.Storage.PageSize);
             return Task.CompletedTask;
         }
 
-        foreach (var offset in offsets[..count])
+        foreach (var offset in offsets)
         {
             var pageNumber = offset / Constants.Storage.PageSize;
             Volatile.Write(ref RecentSlot(recent, pageNumber), (int)(pageNumber + 1));

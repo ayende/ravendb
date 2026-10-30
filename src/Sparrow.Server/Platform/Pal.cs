@@ -10,7 +10,7 @@ namespace Sparrow.Server.Platform
 {
     public static unsafe class Pal
     {
-        public const int PAL_VER = 70910; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70911; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -174,8 +174,8 @@ namespace Sparrow.Server.Platform
 
         /// <summary>
         /// Reads the 8 KB pages at the offsets into the page cache (8 bytes across each page's 4 KB boundary, in parallel). The
-        /// file's prefetch ring calls its read callback with the token once they are all in. Returns 1 when queued, 0 when not
-        /// (no ring, queue full): then the callback is not called.
+        /// file's prefetch ring passes the token to its read callback once they are all in (callbacks are batched). Returns 1
+        /// when queued, 0 when not (no ring, queue full): then the token is never passed.
         /// </summary>
         [DllImport(LIBRVNPAL)]
         [SuppressGCTransition]
@@ -189,7 +189,7 @@ namespace Sparrow.Server.Platform
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_create(
-            Int32 ringEntries, Int32 maxFiles, Int32 queueSize, delegate* unmanaged<UInt64, void> onReadsDone, out void* ring, out Int32 errorCode);
+            Int32 ringEntries, Int32 maxFiles, Int32 queueSize, delegate* unmanaged<UInt64*, Int32, void> onReadsDone, out void* ring, out Int32 errorCode);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_destroy(

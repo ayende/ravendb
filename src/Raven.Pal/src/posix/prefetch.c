@@ -44,9 +44,10 @@
  * A read group is a set of pages (up to PREFETCH_GROUP_MAX) that a caller wants in the page cache before it goes on, for
  * example the pages an update will modify, read before the update reaches the transaction merger. For each page we read 8
  * bytes across the boundary of its two 4 KB halves into a buffer nobody reads: the kernel brings the whole 8 KB page in
- * one I/O and copies 8 bytes. The reads run in parallel; the submitter counts the completions of each group and, when the
- * last read of a group completes, calls on_reads_done(token) once. A group that cannot be read (stale ticket, no free group
- * slot, no io_uring) gets a WILLNEED hint instead and completes at once, so the caller never waits for nothing.
+ * one I/O and copies 8 bytes. The reads run in parallel; the submitter counts the completions of each group, collects the
+ * tokens of the groups whose last read completed, and calls on_reads_done(tokens, count) once per pass (and before it blocks,
+ * so a completed group never waits for the submitter). A group that cannot be read (stale ticket, no free group slot, no
+ * io_uring) gets a WILLNEED hint instead and completes at once, so the caller never waits for nothing.
  */
 
 #define CACHE_LINE 64
@@ -55,6 +56,7 @@
 #define PREFETCH_READ_LENGTH 8
 #define PREFETCH_PAGE_SIZE 8192
 #define PREFETCH_GROUP_TAG (1ULL << 63) /* in a read's user_data: the group slot; WILLNEED requests use 0 */
+#define PREFETCH_DONE_BATCH 64
 
 struct prefetch_request
 {
@@ -92,6 +94,8 @@ struct prefetch_state
     uint32_t *group_pending;
     int32_t *group_free;
     int32_t group_free_top;
+    uint64_t done[PREFETCH_DONE_BATCH]; /* tokens of completed groups, not passed to on_reads_done yet */
+    int32_t done_count;
     alignas(CACHE_LINE) char sink[CACHE_LINE]; /* the target of every read: written by the kernel, never read */
 
     /* set once at init */
@@ -104,7 +108,7 @@ struct prefetch_state
     uint64_t queue_mask;
     int32_t max_files;
     int32_t max_groups;
-    void (*on_reads_done)(uint64_t token);
+    void (*on_reads_done)(const uint64_t *tokens, int32_t count);
 
     /* registration, guarded by slots_lock */
     pthread_mutex_t slots_lock;
@@ -139,12 +143,29 @@ _prefetch_dequeue(struct prefetch_state *s, struct prefetch_request *out)
 }
 
 PRIVATE void
+_flush_done(struct prefetch_state *s)
+{
+    if (s->done_count == 0)
+        return;
+    s->on_reads_done(s->done, s->done_count);
+    s->done_count = 0;
+}
+
+PRIVATE void
+_group_done(struct prefetch_state *s, uint64_t token)
+{
+    s->done[s->done_count++] = token;
+    if (s->done_count == PREFETCH_DONE_BATCH)
+        _flush_done(s);
+}
+
+PRIVATE void
 _group_read_done(struct prefetch_state *s, int32_t group)
 {
     if (--s->group_pending[group] != 0)
         return;
     s->group_free[s->group_free_top++] = group;
-    s->on_reads_done(s->group_tokens[group]);
+    _group_done(s, s->group_tokens[group]);
 }
 
 PRIVATE void
@@ -163,6 +184,8 @@ PRIVATE void
 _prefetch_reap(struct prefetch_state *s, bool wait_for_one)
 {
     struct io_uring_cqe *cqe;
+    if (wait_for_one)
+        _flush_done(s); /* before we block: the groups that are done must not wait for us */
     if (wait_for_one && s->inflight > 0 && io_uring_wait_cqe(&s->ring, &cqe) == 0)
         _prefetch_complete(s, cqe);
     while (s->inflight > 0 && io_uring_peek_cqe(&s->ring, &cqe) == 0)
@@ -210,7 +233,7 @@ _group_hint_and_complete(struct prefetch_state *s, int32_t slot, const struct pr
             (void)posix_fadvise(s->fds[slot], (off_t)req->offsets[i], PREFETCH_PAGE_SIZE, POSIX_FADV_WILLNEED);
         }
     }
-    s->on_reads_done(req->token);
+    _group_done(s, req->token);
 }
 
 PRIVATE void
@@ -254,7 +277,7 @@ _prefetch_thread(void *arg)
             {
                 atomic_fetch_add_explicit(&s->dropped_stale, 1, memory_order_relaxed);
                 if (req.count != 0)
-                    s->on_reads_done(req.token); /* the file was closed: nothing to wait for */
+                    _group_done(s, req.token); /* the file was closed: nothing to wait for */
                 continue;
             }
             if (req.count != 0)
@@ -288,6 +311,7 @@ _prefetch_thread(void *arg)
                 _prefetch_submit(s);
             _prefetch_reap(s, false);
         }
+        _flush_done(s);
 
         /* sleep until a producer wakes us; re-check after announcing, so a push between the drain and the flag is not lost */
         atomic_store_explicit(&s->sleeping, 1, memory_order_seq_cst);
@@ -307,10 +331,11 @@ _prefetch_thread(void *arg)
     while (_prefetch_dequeue(s, &req)) /* stopping: a group still in the queue completes without its reads */
     {
         if (req.count != 0)
-            s->on_reads_done(req.token);
+            _group_done(s, req.token);
     }
     while (s->inflight > 0) /* the kernel still uses the SQEs' memory until it completes them */
         _prefetch_reap(s, true);
+    _flush_done(s);
     return NULL;
 }
 
@@ -328,8 +353,8 @@ _prefetch_free(struct prefetch_state *s)
 }
 
 EXPORT int32_t
-rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size, void (*on_reads_done)(uint64_t token),
-    void **ring, int32_t *detailed_error_code)
+rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_size,
+    void (*on_reads_done)(const uint64_t *tokens, int32_t count), void **ring, int32_t *detailed_error_code)
 {
     *ring = NULL;
     *detailed_error_code = 0;
@@ -589,8 +614,8 @@ rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length)
     return _prefetch_push(s, &req);
 }
 
-/* Queues a read group of the 8 KB pages at offsets. Returns 1 when queued: on_reads_done(token) is called once, later.
-   Returns 0 when not queued (queue full, file not registered, bad count): on_reads_done is not called. */
+/* Queues a read group of the 8 KB pages at offsets. Returns 1 when queued: the token reaches on_reads_done once, later.
+   Returns 0 when not queued (queue full, file not registered, bad count): the token never reaches on_reads_done. */
 PRIVATE int32_t
 rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint64_t token)
 {

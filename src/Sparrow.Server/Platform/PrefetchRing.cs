@@ -71,20 +71,24 @@ public sealed unsafe class PrefetchRing : IDisposable
         return false;
     }
 
-    // called by the ring's submitter thread, once per read group; the token is a GCHandle to the group's waiter
+    // called by the ring's submitter thread with the read groups that completed since its last call; a token is a GCHandle to
+    // the group's waiter
     [UnmanagedCallersOnly]
-    private static void OnReadsDone(ulong token)
+    private static void OnReadsDone(ulong* tokens, int count)
     {
-        try
+        for (var i = 0; i < count; i++)
         {
-            var handle = GCHandle.FromIntPtr((nint)token);
-            var waiter = (TaskCompletionSource)handle.Target;
-            handle.Free();
-            waiter?.TrySetResult();
-        }
-        catch
-        {
-            // an exception must not reach the native thread (none is expected for a token that TryReadPages made)
+            try
+            {
+                var handle = GCHandle.FromIntPtr((nint)tokens[i]);
+                var waiter = (TaskCompletionSource)handle.Target;
+                handle.Free();
+                waiter?.TrySetResult();
+            }
+            catch
+            {
+                // an exception must not reach the native thread (none is expected for a token that TryReadPages made)
+            }
         }
     }
 
