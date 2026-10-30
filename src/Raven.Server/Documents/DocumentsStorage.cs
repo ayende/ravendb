@@ -1308,8 +1308,8 @@ namespace Raven.Server.Documents
         }
 
         /// <summary>
-        /// <see cref="PrefetchDocumentAsync"/> for the existing documents among <paramref name="ids"/>: their pages share read
-        /// groups, and an id without a document costs only the lookup (which reads the id tree's leaf, for an insert there).
+        /// <see cref="PrefetchDocumentAsync"/> for the existing documents among <paramref name="ids"/>, as one read group: an id
+        /// without a document costs only the lookup (which reads the id tree's leaf, for an insert there).
         /// </summary>
         public Task PrefetchDocumentsAsync(DocumentsOperationContext context, IEnumerable<string> ids)
         {

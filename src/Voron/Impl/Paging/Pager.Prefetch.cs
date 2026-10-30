@@ -1,5 +1,5 @@
 using System;
-using System.Collections.Generic;
+using System.Buffers;
 using System.Threading;
 using System.Threading.Tasks;
 using Sparrow.Platform;
@@ -18,8 +18,6 @@ public unsafe partial class Pager
     //    waits for that without holding a thread, so the merger does not stall on the fault.
     private static readonly bool WillNeedSupported = PlatformDetails.RunningOnLinux;
 
-    private const int MaxReadAheadPages = 8; // the PAL's read group size
-
     // Hot pages (index leaves, section headers) are asked for on almost every request, so we remember the recent ones:
     // a slot holds the page number + 1 (0 is empty), and a page leaves the table when another page takes its slot, so a
     // hot page is asked for again after a while.
@@ -28,9 +26,9 @@ public unsafe partial class Pager
 
     /// <summary>
     /// Reads the pages into the page cache and returns a task that completes once they are all in, without holding a thread:
-    /// the reads go through the prefetch ring, in parallel, in groups of up to 8 pages. Pages asked for a moment ago are
-    /// skipped, and so is the wait when all of them are, so hot pages cost neither a system call nor a wait. Where the ring
-    /// cannot take a group (no ring, queue full), its reads start with madvise and it does not delay the task.
+    /// the reads go through the prefetch ring as one read group, in parallel. Pages asked for a moment ago are skipped, and so
+    /// is the wait when all of them are, so hot pages cost neither a system call nor a wait. Where the ring cannot take the
+    /// group (no ring, queue full), the reads start with madvise and the task is already complete.
     /// </summary>
     public static Task ReadPagesAhead(State state, ReadOnlySpan<long> pageNumbers)
     {
@@ -38,62 +36,37 @@ public unsafe partial class Pager
             return Task.CompletedTask;
 
         var recent = state.Pager._recentHints ??= new int[1 << RecentHintsBits];
-        Span<long> group = stackalloc long[MaxReadAheadPages];
-        var count = 0;
-        Task pending = null;
-        List<Task> morePending = null;
-        foreach (var pageNumber in pageNumbers)
+        long[] rented = null;
+        Span<long> offsets = pageNumbers.Length <= 64 ? stackalloc long[pageNumbers.Length] : (rented = ArrayPool<long>.Shared.Rent(pageNumbers.Length));
+        try
         {
-            if (pageNumber < 0)
-                continue;
-            if (Volatile.Read(ref RecentSlot(recent, pageNumber)) == (int)(pageNumber + 1))
-                continue; // asked for a moment ago (a page repeated across groups is caught here too)
-            var offset = pageNumber * Constants.Storage.PageSize;
-            if (group[..count].Contains(offset))
-                continue;
-            group[count++] = offset;
-            if (count == MaxReadAheadPages)
+            var count = 0;
+            foreach (var pageNumber in pageNumbers)
             {
-                Track(ReadGroup(state, recent, group), ref pending, ref morePending);
-                count = 0;
+                if (pageNumber < 0)
+                    continue;
+                ref var slot = ref RecentSlot(recent, pageNumber);
+                var key = (int)(pageNumber + 1); // a file of more than 16 TB may skip a page on a collision of the low bits
+                if (Volatile.Read(ref slot) == key)
+                    continue; // asked for a moment ago, or earlier in this group
+                Volatile.Write(ref slot, key);
+                offsets[count++] = pageNumber * Constants.Storage.PageSize;
             }
-        }
-        if (count > 0)
-            Track(ReadGroup(state, recent, group[..count]), ref pending, ref morePending);
 
-        if (morePending != null)
-            return Task.WhenAll(morePending);
-        return pending ?? Task.CompletedTask;
+            if (count == 0)
+                return Task.CompletedTask;
+            if (PrefetchRing.TryReadPages(state.Handle, offsets[..count], out var done))
+                return done;
 
-        static void Track(Task read, ref Task pending, ref List<Task> morePending)
-        {
-            if (read.IsCompleted)
-                return;
-            if (pending == null)
-            {
-                pending = read;
-                return;
-            }
-            morePending ??= [pending];
-            morePending.Add(read);
-        }
-    }
-
-    private static Task ReadGroup(State state, int[] recent, ReadOnlySpan<long> offsets)
-    {
-        if (PrefetchRing.TryReadPages(state.Handle, offsets, out var done) == false)
-        {
-            foreach (var offset in offsets)
-                WillNeedPages(state, offset / Constants.Storage.PageSize);
+            foreach (var offset in offsets[..count])
+                StartRead(state, offset / Constants.Storage.PageSize, 1);
             return Task.CompletedTask;
         }
-
-        foreach (var offset in offsets)
+        finally
         {
-            var pageNumber = offset / Constants.Storage.PageSize;
-            Volatile.Write(ref RecentSlot(recent, pageNumber), (int)(pageNumber + 1));
+            if (rented != null)
+                ArrayPool<long>.Shared.Return(rented);
         }
-        return done;
     }
 
     private static ref int RecentSlot(int[] recent, long pageNumber) =>
@@ -114,9 +87,14 @@ public unsafe partial class Pager
         if (Volatile.Read(ref slot) == key)
             return;
 
+        if (StartRead(state, pageNumber, numberOfPages))
+            Volatile.Write(ref slot, key);
+    }
+
+    private static bool StartRead(State state, long pageNumber, int numberOfPages)
+    {
         var range = new PalDefinitions.PrefetchRanges(state.ReadAddress + pageNumber * Constants.Storage.PageSize,
             (long)numberOfPages * Constants.Storage.PageSize, state.Pager._prefetchRequestSize);
-        if (Pal.rvn_prefetch_ranges(&range, 1, out _) == PalFlags.FailCodes.Success)
-            Volatile.Write(ref slot, key);
+        return Pal.rvn_prefetch_ranges(&range, 1, out _) == PalFlags.FailCodes.Success;
     }
 }

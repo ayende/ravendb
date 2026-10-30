@@ -50,25 +50,30 @@ public sealed unsafe class PrefetchRing : IDisposable
     }
 
     /// <summary>
-    /// Queues a read group of the 8 KB pages at <paramref name="offsets"/> (at most 8) of the file of <paramref name="pagerHandle"/>.
+    /// Queues one read group: the 8 KB pages at <paramref name="offsets"/> of the file of <paramref name="pagerHandle"/>.
     /// Returns false when they were not queued (the file has no ring, or the queue is full). Otherwise <paramref name="done"/>
     /// completes once the pages are in the page cache, or at once where they cannot be read (no io_uring, the file closed).
     /// </summary>
     public static bool TryReadPages(void* pagerHandle, ReadOnlySpan<long> offsets, out Task done)
     {
-        var waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // the submitter reads the offsets while it prepares the reads, so they live in native memory until the callback
+        var waiter = new ReadGroupWaiter((long*)NativeMemory.Alloc((nuint)offsets.Length, sizeof(long)));
+        offsets.CopyTo(new Span<long>(waiter.Offsets, offsets.Length));
         var handle = GCHandle.Alloc(waiter);
-        fixed (long* p = offsets)
+        if (Pal.rvn_pager_read_pages(pagerHandle, waiter.Offsets, offsets.Length, (ulong)GCHandle.ToIntPtr(handle)) == 1)
         {
-            if (Pal.rvn_pager_read_pages(pagerHandle, p, offsets.Length, (ulong)GCHandle.ToIntPtr(handle)) == 1)
-            {
-                done = waiter.Task;
-                return true;
-            }
+            done = waiter.Task;
+            return true;
         }
         handle.Free();
+        NativeMemory.Free(waiter.Offsets);
         done = Task.CompletedTask;
         return false;
+    }
+
+    private sealed class ReadGroupWaiter(long* offsets) : TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously)
+    {
+        public readonly long* Offsets = offsets;
     }
 
     // called by the ring's submitter thread with the read groups that completed since its last call; a token is a GCHandle to
@@ -81,9 +86,10 @@ public sealed unsafe class PrefetchRing : IDisposable
             try
             {
                 var handle = GCHandle.FromIntPtr((nint)tokens[i]);
-                var waiter = (TaskCompletionSource)handle.Target;
+                var waiter = (ReadGroupWaiter)handle.Target;
                 handle.Free();
-                waiter?.TrySetResult();
+                NativeMemory.Free(waiter!.Offsets);
+                waiter.TrySetResult();
             }
             catch
             {

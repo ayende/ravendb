@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading;
 using Raven.Server.Utils;
 using Sparrow.Platform;
@@ -119,12 +120,54 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
                     Assert.True(Pager.ReadPagesAhead(state, [3, 17]).IsCompleted);
                     Assert.Equal(1, ring.GetStats()!.Value.ReadGroups);
 
-                    // only the new pages are read, in groups of up to 8 pages
+                    // only the new pages are read, in one group
                     Assert.True(Pager.ReadPagesAhead(state, [3, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29]).Wait(TimeSpan.FromSeconds(10)));
                     stats = ring.GetStats()!.Value;
-                    Assert.Equal(1 + 2, stats.ReadGroups);
+                    Assert.Equal(2, stats.ReadGroups);
                     if (usesIoUring)
                         Assert.Equal(3 + 10, stats.Reads);
+                }
+            }
+        }
+        finally
+        {
+            IOExtensions.DeleteDirectory(path);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Voron)]
+    public void AGroupLargerThanTheRingIsReadWhole()
+    {
+        using var ring = new PrefetchRing(ringEntries: 8, maxFiles: 4, queueSize: 64);
+        if (ring.IsAvailable == false)
+            return;
+
+        const int pages = 256; // 32 times the ring's 8 entries
+        var path = RavenTestHelper.NewDataPath(nameof(AGroupLargerThanTheRingIsReadWhole), 0, forceCreateDir: true);
+        try
+        {
+            var file = Path.Combine(path, Constants.DatabaseFilename);
+            var content = new byte[pages * Constants.Storage.PageSize];
+            Random.Shared.NextBytes(content);
+            File.WriteAllBytes(file, content);
+
+            using (var options = StorageEnvironmentOptions.ForPathForTests(path))
+            {
+                options.PrefetchRing = ring;
+                var (pager, state) = Pager.Create(options, file, content.Length, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
+                using (pager)
+                using (state)
+                {
+                    DropFromPageCache(file);
+                    var pageNumbers = Enumerable.Range(0, pages).Select(x => (long)x).ToArray();
+                    Assert.True(Pager.ReadPagesAhead(state, pageNumbers).Wait(TimeSpan.FromSeconds(10)));
+                    var stats = ring.GetStats()!.Value;
+                    Assert.Equal(1, stats.ReadGroups);
+                    if (stats.UsesIoUring)
+                    {
+                        Assert.Equal(pages, stats.Reads);
+                        Assert.Equal(content.Length / Environment.SystemPageSize, ResidentPages(state.ReadAddress, content.Length));
+                    }
                 }
             }
         }

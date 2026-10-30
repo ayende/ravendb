@@ -41,8 +41,9 @@
  * A request that races the unregistration of its file may reach the descriptor number after it was reused: that is a
  * wasted read-ahead, never a write.
  *
- * A read group is a set of pages (up to PREFETCH_GROUP_MAX) that a caller wants in the page cache before it goes on, for
- * example the pages an update will modify, read before the update reaches the transaction merger. For each page we read 8
+ * A read group is the set of pages (any number) that one caller wants in the page cache before it goes on, for example the
+ * pages an update or a batch will modify, read before it reaches the transaction merger. The caller owns the array of
+ * page offsets and keeps it until its token reaches on_reads_done: the submitter reads it while it prepares the reads. For each page we read 8
  * bytes across the boundary of its two 4 KB halves into a buffer nobody reads: the kernel brings the whole 8 KB page in
  * one I/O and copies 8 bytes. The reads run in parallel; the submitter counts the completions of each group, collects the
  * tokens of the groups whose last read completed, and calls on_reads_done(tokens, count) once per pass (and before it blocks,
@@ -51,7 +52,6 @@
  */
 
 #define CACHE_LINE 64
-#define PREFETCH_GROUP_MAX 8
 #define PREFETCH_READ_AT (4096 - 4) /* 8 bytes, 4 on each side of the boundary between the two 4 KB halves of a page */
 #define PREFETCH_READ_LENGTH 8
 #define PREFETCH_PAGE_SIZE 8192
@@ -64,11 +64,11 @@ struct prefetch_request
        while sequence == pos + 1; emptying it sets sequence = pos + queue size (free for the next lap) */
     _Atomic uint64_t sequence;
     int64_t ticket;
-    uint64_t offset;   /* WILLNEED: the range */
+    uint64_t offset;          /* WILLNEED: the range */
     uint32_t length;
-    uint32_t count;    /* a read group: the number of pages in offsets; 0 for a WILLNEED request */
-    uint64_t token;    /* a read group: passed to on_reads_done */
-    uint64_t offsets[PREFETCH_GROUP_MAX];
+    uint32_t count;           /* a read group: the number of pages in offsets; 0 for a WILLNEED request */
+    uint64_t token;           /* a read group: passed to on_reads_done */
+    const int64_t *offsets;   /* a read group: the caller's page offsets */
 };
 
 struct prefetch_state
@@ -135,8 +135,7 @@ _prefetch_dequeue(struct prefetch_state *s, struct prefetch_request *out)
     out->length = cell->length;
     out->count = cell->count;
     out->token = cell->token;
-    for (uint32_t i = 0; i < cell->count; i++)
-        out->offsets[i] = cell->offsets[i];
+    out->offsets = cell->offsets;
     atomic_store_explicit(&cell->sequence, s->dequeue_pos + s->queue_mask + 1, memory_order_release);
     s->dequeue_pos++;
     return true;
@@ -224,7 +223,7 @@ _group_hint_and_complete(struct prefetch_state *s, int32_t slot, const struct pr
             struct io_uring_sqe *sqe = _prefetch_get_sqe(s);
             if (sqe == NULL)
                 break;
-            io_uring_prep_fadvise(sqe, slot, req->offsets[i], PREFETCH_PAGE_SIZE, POSIX_FADV_WILLNEED);
+            io_uring_prep_fadvise(sqe, slot, (uint64_t)req->offsets[i], PREFETCH_PAGE_SIZE, POSIX_FADV_WILLNEED);
             sqe->flags |= IOSQE_FIXED_FILE;
             io_uring_sqe_set_data64(sqe, 0);
         }
@@ -256,7 +255,7 @@ _prefetch_read_group(struct prefetch_state *s, int32_t slot, const struct prefet
             _group_read_done(s, group);
             continue;
         }
-        io_uring_prep_read(sqe, slot, s->sink, PREFETCH_READ_LENGTH, req->offsets[i] + PREFETCH_READ_AT);
+        io_uring_prep_read(sqe, slot, s->sink, PREFETCH_READ_LENGTH, (uint64_t)req->offsets[i] + PREFETCH_READ_AT);
         sqe->flags |= IOSQE_FIXED_FILE;
         io_uring_sqe_set_data64(sqe, PREFETCH_GROUP_TAG | (uint64_t)group);
         atomic_fetch_add_explicit(&s->reads, 1, memory_order_relaxed);
@@ -373,7 +372,7 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
     s->ring_entries = (uint32_t)ring_entries;
     s->max_files = max_files;
     s->on_reads_done = on_reads_done;
-    s->max_groups = ring_entries; /* every group in flight holds at least one of the ring's entries */
+    s->max_groups = ring_entries + 1; /* every group in flight holds one of the ring's entries, but the one being prepared */
     uint64_t size = (uint64_t)queue_size;
     s->queue_mask = size - 1;
 
@@ -578,8 +577,7 @@ _prefetch_push(struct prefetch_state *s, const struct prefetch_request *req)
     cell->length = req->length;
     cell->count = req->count;
     cell->token = req->token;
-    for (uint32_t i = 0; i < req->count; i++)
-        cell->offsets[i] = req->offsets[i];
+    cell->offsets = req->offsets;
     /* seq_cst, not release: with the submitter's seq_cst store of sleeping and its re-check this is a Dekker pair,
        so either we see sleeping == 1 and wake it, or it sees this cell and does not sleep */
     atomic_store_explicit(&cell->sequence, pos + 1, memory_order_seq_cst);
@@ -614,20 +612,20 @@ rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length)
     return _prefetch_push(s, &req);
 }
 
-/* Queues a read group of the 8 KB pages at offsets. Returns 1 when queued: the token reaches on_reads_done once, later.
-   Returns 0 when not queued (queue full, file not registered, bad count): the token never reaches on_reads_done. */
+/* Queues a read group of the 8 KB pages at offsets; the caller keeps offsets until the token reaches on_reads_done.
+   Returns 1 when queued: the token reaches on_reads_done once, later. Returns 0 when not queued (queue full, file not
+   registered, no pages): the token never reaches on_reads_done. */
 PRIVATE int32_t
 rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint64_t token)
 {
     struct prefetch_state *s = ring;
-    if (_prefetch_valid_ticket(s, ticket) == false || count <= 0 || count > PREFETCH_GROUP_MAX)
+    if (_prefetch_valid_ticket(s, ticket) == false || offsets == NULL || count <= 0)
         return 0;
     struct prefetch_request req = {0};
     req.ticket = ticket;
     req.count = (uint32_t)count;
     req.token = token;
-    for (int32_t i = 0; i < count; i++)
-        req.offsets[i] = (uint64_t)offsets[i];
+    req.offsets = offsets;
     return _prefetch_push(s, &req);
 }
 
