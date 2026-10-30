@@ -74,7 +74,7 @@ struct read_group
 {
     uint64_t token;
     uint32_t pending;  /* reads not completed yet */
-    int32_t next_free; /* while the group is free */
+    int32_t next_free; /* the next group on the free list, or NO_FREE_GROUP; unused while this group is in flight */
 };
 
 #define NO_FREE_GROUP (-1)
