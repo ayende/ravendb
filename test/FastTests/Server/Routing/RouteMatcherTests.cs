@@ -41,14 +41,13 @@ namespace FastTests.Server.Routing
         [RavenTheory(RavenTestCategory.Core)]
         [InlineData("/databases/northwind/docs", "/databases/*/docs", "northwind")]
         [InlineData("/databases", "/databases", null)]
-        [InlineData("/databases/northwind/indexes/Raven/DocumentsByEntityName", "/databases/*/indexes/$", "northwind")]
         [InlineData("/Databases/northwind/Docs", "/databases/*/docs", "northwind")]
         [InlineData("/Databases/רוח-צפונית/Docs", "/databases/*/docs", "רוח-צפונית")]
         [InlineData("/DATABASES/x/QUERIES", "/databases/*/queries", "x")]
         [InlineData("/databases//docs", "/databases/*/docs", "")]
         public void CanMatchWithCapture(string path, string expectedRoute, string expectedCapture)
         {
-            var matcher = Build("/admin/databases", "/databases/*/docs", "/databases", "/databases/*/queries", "/databases/*/indexes/$", "/admin/debug-info");
+            var matcher = Build("/admin/databases", "/databases/*/docs", "/databases", "/databases/*/queries", "/admin/debug-info");
 
             Assert.True(matcher.TryMatch("GET", path, out var match, out var route));
             Assert.Equal(expectedRoute, route);
@@ -62,6 +61,8 @@ namespace FastTests.Server.Routing
         [InlineData("/databases/db/docsx")]
         [InlineData("/databases/db")]
         [InlineData("/databases/")]
+        [InlineData("/studio")]
+        [InlineData("/studiox/index.html")]
         [InlineData("/admin")]
         [InlineData("/admin/databasesx")]
         [InlineData("")]
@@ -95,11 +96,12 @@ namespace FastTests.Server.Routing
         [InlineData("/STUDIO/app/index.html", "/studio/$", 8)]
         [InlineData("/studio/upgrade-info", "/studio/upgrade-info", 20)]
         [InlineData("/studio/upgrade-infox", "/studio/$", 8)] // a prefix route still matches when a longer route almost does
-        [InlineData("/databases/db/transformers/a/b", "/databases/*/transformers/$", 27)]
-        [InlineData("/databases/db/transformers/", "/databases/*/transformers/$", 27)]
+        [InlineData("/wizard/setup.js", "/wizard/$", 8)]
+        [InlineData("/EULA/index.html", "/eula/$", 6)]
+        [InlineData("/2fa/", "/2fa/$", 5)]
         public void MatchesPrefixRoutes(string path, string expectedRoute, int expectedMatchLength)
         {
-            var matcher = Build("/studio/$", "/studio/upgrade-info", "/databases/*/transformers/$", "/databases/*/docs");
+            var matcher = Build("/studio/$", "/studio/upgrade-info", "/wizard/$", "/eula/$", "/2fa/$", "/databases/*/docs");
 
             Assert.True(matcher.TryMatch("GET", path, out var match, out var route));
             Assert.Equal(expectedRoute, route);
@@ -113,6 +115,9 @@ namespace FastTests.Server.Routing
         [InlineData("/databases/*/docs/*", "/a")] // a single capture
         [InlineData("/fs/*/files", "/a")] // only the database name is captured
         [InlineData("/studio/$/x", "/a")] // '$' only at the end
+        [InlineData("/docs/$", "/a")] // '$' only after a known prefix
+        [InlineData("/databases/*/transformers/$", "/a")] // not in a database route either
+        [InlineData("/studio/$", "/STUDIO/$")] // duplicate prefix route, ignoring case
         [InlineData("/databases/*/docs", "/databases/info")] // a route that starts like the capture
         public void RejectsInvalidRoutes(string first, string second)
         {

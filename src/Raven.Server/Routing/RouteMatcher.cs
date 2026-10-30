@@ -6,50 +6,103 @@ using System.Text;
 
 namespace Raven.Server.Routing
 {
+    // How a request finds its route, with only these routes as an example:
+    //
+    //   GET  /databases/*/docs    GET  /databases/*/task    GET  /databases/*/tasks    GET  /studio/$
+    //   POST /databases/*/docs    GET  /topology            GET  /info/tcp
+    //
+    // At startup we group the routes by method, and split the routes of each method:
+    //
+    //   GET   Routes      the whole path                    /topology, /info/tcp
+    //         Databases   the path after the database name  /docs, /task, /tasks
+    //         ByPrefix    the routes that end with '$'      /studio/
+    //   POST  Databases                                     /docs
+    //
+    // Routes and Databases are a decision tree for each path length. An inner node selects by the char at a single position,
+    // and a leaf holds the single route that remains:
+    //
+    //   GET Databases                               GET Routes
+    //     length 5:  path[1]  'd' -> "/docs"          length 9:  path[1]  'i' -> "/info/tcp"
+    //                         't' -> "/task"                              't' -> "/topology"
+    //     length 6:  "/tasks" (a single route, so it is a leaf)
+    //
+    // GET /databases/Northwind/docs
+    //   1. the method is GET (see FindMethod)
+    //   2. it starts with /databases/, so the name is "Northwind" (until the next '/') and the rest is "/docs"
+    //   3. GET Databases, length 5: path[1] is 'd' -> the leaf "/docs", the whole rest is "/docs" -> match
+    //
+    // GET /topology               not /databases/, GET Routes, length 9: path[1] is 't' -> "/topology" -> match
+    // GET /databases/db/dogs      GET Databases, length 5: path[1] is 'd' -> "/docs", but "/dogs" is not "/docs" -> no match
+    // POST /databases/db/tasks    POST Databases has no route of length 6 -> no match
+    // GET /studio/index.html      GET Routes has no route of length 18, the path starts with /studio/ -> GET /studio/$
+    //
+    // A node checks a single char, so the compare at the leaf decides. Both cases of a letter lead to the same child, and the
+    // leaf compare ignores case, so the match ignores case. The nodes of all the trees are in _nodes, and their child slots
+    // are in _children.
+
     /// <summary>
     /// Finds the route of a request. Routes are ASCII and matched ignoring (ASCII) case, '/databases/*' captures the
-    /// database name (until the next '/') and a route that ends with '$' matches every path that starts with it.
+    /// database name (until the next '/') and a route that ends with '$' matches every path that starts with it. Only the
+    /// Studio files use '$', so we allow it only after one of the known prefixes.
     /// </summary>
-    /// <remarks>
-    /// PERF: for the routes of the same length we build a decision tree, every node selects the candidates by the character
-    /// at a single position until a single candidate remains, which we then compare to the whole path. So a lookup is a few
-    /// array reads and a single comparison.
-    /// </remarks>
     public sealed class RouteMatcher<T>
     {
-        // Position < 0 is a leaf, its value is _values[Value] if the path is Literal (no match when Value < 0).
-        // Otherwise, the next node is _children[ChildrenStart + path[Position] - Low], when Low <= path[Position] <= High.
         private readonly struct Node(int position, char low, char high, int childrenStart, int value, string literal)
         {
+            // the position of the char that an inner node selects by, -1 for a leaf
             public readonly int Position = position;
+
+            // an inner node has a slot in _children for every char from Low to High, the index of the next node (0 if there is none)
             public readonly char Low = low;
             public readonly char High = high;
             public readonly int ChildrenStart = childrenStart;
+
+            // the index in _values of the route of a leaf, -1 for node 0, which matches nothing
             public readonly int Value = value;
             public readonly string Literal = literal;
+
+            public bool IsLeaf => Position < 0;
+
+            // PERF: clients send the path as the route was written, so we check the exact match first
+            public bool IsMatch(ReadOnlySpan<char> path) => Value >= 0 && (path.SequenceEqual(Literal) || Ascii.EqualsIgnoreCase(path, Literal));
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public int FindNext(ReadOnlySpan<char> path, int[] children)
+            {
+                // a single unsigned compare checks both Low <= c and c <= High, as a c below Low gives a negative offset,
+                // which is a large unsigned value
+                int offset = path[Position] - Low;
+                if ((uint)offset > (uint)(High - Low))
+                    return 0;
+
+                return children[ChildrenStart + offset];
+            }
         }
 
-        private sealed class Routes
-        {
-            // the root node of the routes of each length, 0 is the no match node
-            public int[] RootByLength = [];
-
-            // the routes that end with '$', longest first
-            public (string Prefix, int Value)[] Prefixes = [];
-        }
-
-        private sealed class MethodRoutes(string method, Routes routes, Routes databases)
+        private sealed class MethodRoutes(string method, int[] routes, int[] databases, int[] byPrefix)
         {
             public readonly string Method = method;
-            public readonly Routes Routes = routes;
 
-            // the path after the database name, for the routes that start with /databases/* (null if there are none)
-            public readonly Routes Databases = databases;
+            // the root node of the routes of each length, 0 is the no match node
+            public readonly int[] Routes = routes;
+
+            // the same, for the path after the database name of the routes that start with /databases/* (null if there are none)
+            public readonly int[] Databases = databases;
+
+            // the value of the route that ends with '$' for each of the Prefixes, -1 if there is none (empty if there are none at all)
+            public readonly int[] ByPrefix = byPrefix;
         }
 
         // PERF: most requests are for a database, comparing to a constant is a couple of vector instructions, as the JIT unrolls it
         private const string DatabasesPrefix = "/databases/";
         private const string DatabasesCapture = DatabasesPrefix + "*";
+
+        // PERF: the prefixes of the routes that end with '$', we compare them as constants in FindPrefix
+        private const string StudioPrefix = "/studio/";
+        private const string WizardPrefix = "/wizard/";
+        private const string EulaPrefix = "/eula/";
+        private const string TwoFactorPrefix = "/2fa/";
+        private static readonly string[] Prefixes = [StudioPrefix, WizardPrefix, EulaPrefix, TwoFactorPrefix];
 
         private readonly MethodRoutes[] _methods;
         private readonly T[] _values;
@@ -60,17 +113,30 @@ namespace Raven.Server.Routing
         {
             var builder = new Builder();
             var values = new List<T>();
-            var byMethod = new Dictionary<string, (List<(string, int)> Routes, List<(string, int)> Databases)>(StringComparer.OrdinalIgnoreCase);
+            var byMethod = new Dictionary<string, (List<(string, int)> Routes, List<(string, int)> Databases, int[] ByPrefix)>(StringComparer.OrdinalIgnoreCase);
 
             foreach (var (method, path, value) in routes)
             {
                 EnsureIsAscii(method, path);
 
                 if (byMethod.TryGetValue(method, out var methodRoutes) == false)
-                    byMethod[method] = methodRoutes = (new List<(string, int)>(), new List<(string, int)>());
+                    byMethod[method] = methodRoutes = (new List<(string, int)>(), new List<(string, int)>(), Enumerable.Repeat(-1, Prefixes.Length).ToArray());
 
                 values.Add(value);
                 int id = values.Count - 1;
+
+                if (path.Contains('$'))
+                {
+                    int prefix = Array.FindIndex(Prefixes, x => string.Equals(path, x + "$", StringComparison.OrdinalIgnoreCase));
+                    if (prefix < 0)
+                        throw new InvalidOperationException($"A route can end with '$' only after one of {string.Join(", ", Prefixes)}, but got: {method} {path}");
+
+                    if (methodRoutes.ByPrefix[prefix] >= 0)
+                        throw new InvalidOperationException($"A duplicate route found: {method} {path}");
+
+                    methodRoutes.ByPrefix[prefix] = id;
+                    continue;
+                }
 
                 int capture = path.IndexOf('*');
                 if (capture < 0)
@@ -97,7 +163,8 @@ namespace Raven.Server.Routing
                         // PERF: Kestrel gives the known methods as the interned literals, so the common case is a reference comparison
                         string.Intern(x.Key.ToUpperInvariant()),
                         builder.Build(x.Key, x.Value.Routes),
-                        x.Value.Databases.Count == 0 ? null : builder.Build(x.Key, x.Value.Databases));
+                        x.Value.Databases.Count == 0 ? null : builder.Build(x.Key, x.Value.Databases),
+                        x.Value.ByPrefix.Any(id => id >= 0) ? x.Value.ByPrefix : []);
                 })
                 .ToArray();
 
@@ -121,22 +188,31 @@ namespace Raven.Server.Routing
             {
                 ReadOnlySpan<char> span = path;
 
+                int id;
                 if (methodRoutes.Databases != null &&
                     span.StartsWith(DatabasesPrefix, StringComparison.OrdinalIgnoreCase) &&
-                    TryMatchDatabase(methodRoutes.Databases, span, ref match, out int id))
+                    (id = FindDatabaseRoute(methodRoutes.Databases, span, ref match)) >= 0)
                 {
                     value = _values[id];
                     return true;
                 }
 
-                int routeId = Find(methodRoutes.Routes, span, out int routePrefixLength);
-                if (routeId >= 0)
+                id = Find(methodRoutes.Routes, span);
+                if (id >= 0)
                 {
-                    if (routePrefixLength >= 0)
-                        match.MatchLength = routePrefixLength;
-
-                    value = _values[routeId];
+                    value = _values[id];
                     return true;
+                }
+
+                if (methodRoutes.ByPrefix.Length != 0)
+                {
+                    int prefix = FindPrefix(span);
+                    if (prefix >= 0 && (id = methodRoutes.ByPrefix[prefix]) >= 0)
+                    {
+                        match.MatchLength = Prefixes[prefix].Length;
+                        value = _values[id];
+                        return true;
+                    }
                 }
             }
 
@@ -145,25 +221,25 @@ namespace Raven.Server.Routing
         }
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
-        private bool TryMatchDatabase(Routes routes, ReadOnlySpan<char> path, ref RouteMatch match, out int id)
+        private int FindDatabaseRoute(int[] routes, ReadOnlySpan<char> path, ref RouteMatch match)
         {
             var name = path.Slice(DatabasesPrefix.Length);
             int nameLength = name.IndexOf('/');
             if (nameLength < 0)
                 nameLength = name.Length;
 
-            id = Find(routes, name.Slice(nameLength), out int matchedPrefixLength);
-            if (id < 0)
-                return false;
+            int id = Find(routes, name.Slice(nameLength));
+            if (id >= 0)
+            {
+                match.CaptureStart = DatabasesPrefix.Length;
+                match.CaptureLength = nameLength;
+            }
 
-            match.CaptureStart = DatabasesPrefix.Length;
-            match.CaptureLength = nameLength;
-            if (matchedPrefixLength >= 0)
-                match.MatchLength = DatabasesPrefix.Length + nameLength + matchedPrefixLength;
-
-            return true;
+            return id;
         }
 
+        // PERF: _methods is sorted by the number of routes (GET, POST, ...), so we usually find the method in 1 to 3
+        // reference compares, which is cheaper than hashing the method
         private MethodRoutes FindMethod(string method)
         {
             var methods = _methods;
@@ -182,52 +258,37 @@ namespace Raven.Server.Routing
             return null;
         }
 
-        // returns the index of the value of the route, prefixLength is the length of the matched prefix for a route that ends with '$' (else -1)
-        private int Find(Routes routes, ReadOnlySpan<char> path, out int prefixLength)
+        // returns the index of the value of the route, -1 if there is none
+        private int Find(int[] rootByLength, ReadOnlySpan<char> path)
         {
-            prefixLength = -1;
+            if ((uint)path.Length >= (uint)rootByLength.Length)
+                return -1;
 
-            var rootByLength = routes.RootByLength;
-            if ((uint)path.Length < (uint)rootByLength.Length)
+            var nodes = _nodes;
+            var children = _children;
+            int index = rootByLength[path.Length];
+            while (true)
             {
-                var nodes = _nodes;
-                var children = _children;
-                int index = rootByLength[path.Length];
-                while (true)
-                {
-                    ref readonly var node = ref nodes[index];
-                    if (node.Position < 0)
-                    {
-                        // PERF: clients send the path as the route was written, so we check the exact match first
-                        if (node.Value >= 0 && (path.SequenceEqual(node.Literal) || Ascii.EqualsIgnoreCase(path, node.Literal)))
-                            return node.Value;
-                        break;
-                    }
+                ref readonly var node = ref nodes[index];
+                if (node.IsLeaf)
+                    return node.IsMatch(path) ? node.Value : -1;
 
-                    int offset = path[node.Position] - node.Low;
-                    if ((uint)offset > (uint)(node.High - node.Low))
-                        break;
-
-                    index = children[node.ChildrenStart + offset];
-                }
+                index = node.FindNext(path, children);
             }
-
-            foreach (var (prefix, value) in routes.Prefixes)
-            {
-                if (StartsWith(path, prefix))
-                {
-                    prefixLength = prefix.Length;
-                    return value;
-                }
-            }
-
-            return -1;
         }
 
-        private static bool StartsWith(ReadOnlySpan<char> path, string prefix)
+        // returns the index in Prefixes of the prefix that the path starts with, -1 if there is none
+        private static int FindPrefix(ReadOnlySpan<char> path)
         {
-            return path.StartsWith(prefix) ||
-                   (path.Length >= prefix.Length && Ascii.EqualsIgnoreCase(path.Slice(0, prefix.Length), prefix));
+            if (path.StartsWith(StudioPrefix, StringComparison.OrdinalIgnoreCase))
+                return 0;
+            if (path.StartsWith(WizardPrefix, StringComparison.OrdinalIgnoreCase))
+                return 1;
+            if (path.StartsWith(EulaPrefix, StringComparison.OrdinalIgnoreCase))
+                return 2;
+            if (path.StartsWith(TwoFactorPrefix, StringComparison.OrdinalIgnoreCase))
+                return 3;
+            return -1;
         }
 
         private static void EnsureIsAscii(string method, string path)
@@ -238,10 +299,9 @@ namespace Raven.Server.Routing
 
         private static void EnsureUnambiguous(string method, List<(string Path, int)> routes)
         {
-            // we look for the database routes first, so a route that starts like them would never match
             foreach (var (path, _) in routes)
             {
-                if (path.TrimEnd('$').StartsWith(DatabasesPrefix, StringComparison.OrdinalIgnoreCase))
+                if (path.StartsWith(DatabasesPrefix, StringComparison.OrdinalIgnoreCase))
                     throw new InvalidOperationException($"The route {method} {path} is ambiguous with the routes that capture the database name");
             }
         }
@@ -252,40 +312,24 @@ namespace Raven.Server.Routing
             public readonly List<Node> Nodes = [new Node(position: -1, low: default, high: default, childrenStart: 0, value: -1, literal: null)];
             public readonly List<int> Children = [];
 
-            public Routes Build(string method, List<(string Path, int Value)> routes)
+            // returns the root node of the routes of each length
+            public int[] Build(string method, List<(string Path, int Value)> routes)
             {
-                var exact = new List<(string Path, int Value)>();
-                var prefixes = new List<(string Prefix, int Value)>();
                 var unique = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (var (path, value) in routes)
+                foreach (var (path, _) in routes)
                 {
-                    int end = path.IndexOf('$');
-                    if (end >= 0 && end != path.Length - 1)
-                        throw new InvalidOperationException($"A route can have '$' only at its end, but got: {method} {path}");
-
                     if (unique.Add(path) == false)
                         throw new InvalidOperationException($"A duplicate route found: {method} {path}");
-
-                    if (end >= 0)
-                        prefixes.Add((path[..end], value));
-                    else
-                        exact.Add((path, value));
                 }
 
-                var result = new Routes
-                {
-                    Prefixes = prefixes.OrderByDescending(x => x.Prefix.Length).ToArray()
-                };
+                if (routes.Count == 0)
+                    return [];
 
-                if (exact.Count > 0)
-                {
-                    result.RootByLength = new int[exact.Max(x => x.Path.Length) + 1];
-                    foreach (var sameLength in exact.GroupBy(x => x.Path.Length))
-                        result.RootByLength[sameLength.Key] = AddNode(sameLength.ToList());
-                }
+                var rootByLength = new int[routes.Max(x => x.Path.Length) + 1];
+                foreach (var sameLength in routes.GroupBy(x => x.Path.Length))
+                    rootByLength[sameLength.Key] = AddNode(sameLength.ToList());
 
-                return result;
+                return rootByLength;
             }
 
             private int AddNode(List<(string Path, int Value)> candidates)
