@@ -277,8 +277,8 @@ rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length)
     return 0;
 }
 
-PRIVATE int32_t
-rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint32_t group)
+EXPORT int32_t
+rvn_prefetch_ring_read_pages(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint32_t group)
 {
     (void)ring;
     (void)ticket;
@@ -312,11 +312,9 @@ rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code)
 }
 
 EXPORT int32_t
-rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed,
-    int64_t *read_groups, int64_t *reads, int32_t *uses_io_uring)
+rvn_prefetch_ring_stats(void *ring, struct rvn_prefetch_ring_stats *stats)
 {
     (void)ring;
-    *submitted = *dropped_full = *dropped_stale = *failed = *read_groups = *reads = 0;
-    *uses_io_uring = 0;
+    memset(stats, 0, sizeof(*stats));
     return FAIL_INVALID_HANDLE;
 }

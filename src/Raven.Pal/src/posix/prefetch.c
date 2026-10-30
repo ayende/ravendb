@@ -588,9 +588,9 @@ rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length)
     return _prefetch_push(s, &req, false);
 }
 
-/* Returns 1 when queued: group reaches on_reads_done once */
-PRIVATE int32_t
-rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint32_t group)
+/* Async read of the 8 KB pages at offsets; calls on_reads_done with group when done. Returns 1 when queued */
+EXPORT int32_t
+rvn_prefetch_ring_read_pages(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint32_t group)
 {
     struct prefetch_state *s = ring;
     if (_prefetch_valid_ticket(s, ticket) == false || offsets == NULL || count <= 0 || group >= s->max_groups)
@@ -629,22 +629,18 @@ rvn_prefetch_start_reads(int fd, int64_t *offsets, int32_t count)
 }
 
 EXPORT int32_t
-rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed,
-    int64_t *read_groups, int64_t *reads, int32_t *uses_io_uring)
+rvn_prefetch_ring_stats(void *ring, struct rvn_prefetch_ring_stats *stats)
 {
     struct prefetch_state *s = ring;
+    memset(stats, 0, sizeof(*stats));
     if (s == NULL)
-    {
-        *submitted = *dropped_full = *dropped_stale = *failed = *read_groups = *reads = 0;
-        *uses_io_uring = 0;
         return FAIL_INVALID_HANDLE;
-    }
-    *submitted = (int64_t)atomic_load(&s->submitted);
-    *dropped_full = (int64_t)atomic_load(&s->dropped_full);
-    *dropped_stale = (int64_t)atomic_load(&s->dropped_stale);
-    *failed = (int64_t)atomic_load(&s->failed);
-    *read_groups = (int64_t)atomic_load(&s->read_groups);
-    *reads = (int64_t)atomic_load(&s->reads);
-    *uses_io_uring = s->use_io_uring ? 1 : 0;
+    stats->submitted = (int64_t)atomic_load(&s->submitted);
+    stats->dropped_full = (int64_t)atomic_load(&s->dropped_full);
+    stats->dropped_stale = (int64_t)atomic_load(&s->dropped_stale);
+    stats->failed = (int64_t)atomic_load(&s->failed);
+    stats->read_groups = (int64_t)atomic_load(&s->read_groups);
+    stats->reads = (int64_t)atomic_load(&s->reads);
+    stats->uses_io_uring = s->use_io_uring ? 1 : 0;
     return SUCCESS;
 }

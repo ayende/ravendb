@@ -891,9 +891,10 @@ rvn_pager_start_reads(void *handle, int64_t *offsets, int32_t count)
 }
 
 EXPORT int32_t
-rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint32_t group)
+rvn_prefetch_ring_read_pages(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint32_t group)
 {
-    (void)handle;
+    (void)ring;
+    (void)ticket;
     (void)offsets;
     (void)count;
     (void)group;
@@ -924,19 +925,18 @@ rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code)
 }
 
 EXPORT int32_t
-rvn_prefetch_ring_stats(void *ring, int64_t *submitted, int64_t *dropped_full, int64_t *dropped_stale, int64_t *failed,
-    int64_t *read_groups, int64_t *reads, int32_t *uses_io_uring)
+rvn_prefetch_ring_stats(void *ring, struct rvn_prefetch_ring_stats *stats)
 {
     (void)ring;
-    *submitted = *dropped_full = *dropped_stale = *failed = *read_groups = *reads = 0;
-    *uses_io_uring = 0;
+    memset(stats, 0, sizeof(*stats));
     return FAIL_INVALID_HANDLE;
 }
 
 EXPORT int32_t
-rvn_pager_get_prefetch_request_size(void *handle, int64_t *request_size)
+rvn_pager_get_prefetch_info(void *handle, struct rvn_pager_prefetch_info *info)
 {
     (void)handle;
-    *request_size = 0; // PrefetchVirtualMemory takes a whole range
+    info->request_size = 0; // PrefetchVirtualMemory takes a whole range
+    info->ticket = -1;
     return SUCCESS;
 }

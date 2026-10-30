@@ -763,20 +763,12 @@ rvn_pager_will_need(void *handle, int64_t offset, int64_t length)
 #endif
 }
 
-/* Async read of the 8 KB pages at offsets; calls on_reads_done with group when done */
+/* ticket: the file's registration with its prefetch ring, -1 when not registered */
 EXPORT int32_t
-rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint32_t group)
+rvn_pager_get_prefetch_info(void *handle, struct rvn_pager_prefetch_info *info)
 {
     struct handle *handle_ptr = handle;
-    if (handle_ptr == NULL || handle_ptr->global_state->prefetch_ring == NULL)
-        return 0;
-    return rvn_prefetch_enqueue_reads(handle_ptr->global_state->prefetch_ring, handle_ptr->global_state->prefetch_ticket, offsets, count, group);
-}
-
-EXPORT int32_t
-rvn_pager_get_prefetch_request_size(void *handle, int64_t *request_size)
-{
-    struct handle *handle_ptr = handle;
-    *request_size = handle_ptr == NULL ? DEFAULT_PREFETCH_REQUEST_SIZE : handle_ptr->global_state->prefetch_request_size;
+    info->request_size = handle_ptr == NULL ? DEFAULT_PREFETCH_REQUEST_SIZE : handle_ptr->global_state->prefetch_request_size;
+    info->ticket = handle_ptr == NULL ? -1 : handle_ptr->global_state->prefetch_ticket;
     return SUCCESS;
 }
