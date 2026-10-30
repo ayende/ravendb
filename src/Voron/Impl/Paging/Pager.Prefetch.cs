@@ -8,24 +8,18 @@ namespace Voron.Impl.Paging;
 
 public unsafe partial class Pager
 {
-    // Data files are opened with random access advice, so a page fault reads only the 4 KB it touches. Where we know that
-    // whole pages will be needed right before we touch them ourselves, WillNeedPages starts the exact read with a madvise,
-    // so the fault waits on one read instead of one for each 4 KB half.
+    // Data files on Linux are opened with `MADV_RANDOM`, faulting at 4 KB at a time (vs. Voron's 8kb pages)
+    // This help us avoid separate faults
     private static readonly bool WillNeedSupported = PlatformDetails.RunningOnLinux;
 
-    // Hot pages (index leaves, section headers) are asked for on almost every request, so we remember the recent ones:
-    // a slot holds the page number + 1 (0 is empty), and a page leaves the table when another page takes its slot, so a
-    // hot page is asked for again after a while.
+    // Avoid repeated prefetching (syscall overhead only), slot is page num+1 (0 means empty)
+    // duplicates will override, so it automatically refresh. Optimization only, not correctness, so we can afford to miss
     private const int RecentHintsBits = 12;
     private int[] _recentHints;
 
     private static ref int RecentSlot(int[] recent, long pageNumber) =>
         ref recent[(int)(((ulong)pageNumber * 0x9E3779B97F4A7C15UL) >> (64 - RecentHintsBits))]; // Fibonacci hashing
 
-    /// <summary>
-    /// Starts reading the pages into the page cache now (a madvise call) and returns. A range that starts at a page that
-    /// was asked for a moment ago is skipped.
-    /// </summary>
     public static void WillNeedPages(State state, long pageNumber, int numberOfPages = 1)
     {
         if (WillNeedSupported == false || state.Pager.Options.RunningOn32Bits)
@@ -33,7 +27,7 @@ public unsafe partial class Pager
 
         var recent = state.Pager._recentHints ??= new int[1 << RecentHintsBits];
         ref var slot = ref RecentSlot(recent, pageNumber);
-        var key = (int)(pageNumber + 1); // a file of more than 16 TB may skip a request on a collision of the low bits
+        var key = (int)(pageNumber + 1);
         if (Volatile.Read(ref slot) == key)
             return;
 

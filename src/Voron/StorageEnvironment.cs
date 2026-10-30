@@ -1651,9 +1651,6 @@ namespace Voron
             UnlikelyValidatePage(pageNumber, current, index, old, bitToSet, dataPagerState);
         }
 
-        // The first access to a page since load validates its checksum, which reads the whole page. With random access
-        // advice each 4 KB half would fault on its own (two reads), so a read transaction asks for the whole page before
-        // anything touches it. Not on the merger: there the system call cost more than it saved (NVMe A-zipfian, -5%).
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal void HintFirstTouch(Pager.State dataPagerState, long pageNumber)
         {
@@ -1672,7 +1669,6 @@ namespace Voron
             if (pageNumber != current->PageNumber)
                 ThrowInvalidPageNumber(pageNumber, current);
 
-            // the checksum reads every page of an overflow: one read for the rest of them, instead of a fault per 4 KB
             if ((current->Flags & PageFlags.Overflow) == PageFlags.Overflow)
             {
                 var pages = Paging.GetNumberOfOverflowPages(current->OverflowSize);
