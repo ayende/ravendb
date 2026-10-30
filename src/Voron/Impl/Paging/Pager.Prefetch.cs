@@ -1,5 +1,6 @@
 using System;
 using System.Buffers;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Sparrow.Platform;
@@ -20,13 +21,14 @@ public unsafe partial class Pager
     private int[] _recentHints;
 
     /// <summary>
-    /// Completes once the pages are in the page cache. Recently requested pages are skipped; when the ring cannot take the
-    /// group, the reads start with madvise and the task is already complete.
+    /// Completes once the pages are in the page cache. Recently requested pages are skipped; the reads of the others start
+    /// before this returns.
     /// </summary>
-    public static Task ReadPagesAhead(State state, ReadOnlySpan<long> pageNumbers)
+    [SkipLocalsInit]
+    public static ValueTask ReadPagesAhead(State state, ReadOnlySpan<long> pageNumbers)
     {
         if (WillNeedSupported == false || state.Pager.Options.RunningOn32Bits)
-            return Task.CompletedTask;
+            return ValueTask.CompletedTask;
 
         var recent = state.Pager._recentHints ??= new int[1 << RecentHintsBits];
         long[] rented = null;
@@ -36,8 +38,6 @@ public unsafe partial class Pager
             var count = 0;
             foreach (var pageNumber in pageNumbers)
             {
-                if (pageNumber < 0)
-                    continue;
                 ref var slot = ref RecentSlot(recent, pageNumber);
                 var key = (int)(pageNumber + 1);
                 if (Volatile.Read(ref slot) == key)
@@ -45,15 +45,15 @@ public unsafe partial class Pager
                 Volatile.Write(ref slot, key);
                 offsets[count++] = pageNumber * Constants.Storage.PageSize;
             }
-
             if (count == 0)
-                return Task.CompletedTask;
-            if (PrefetchRing.TryReadPages(state.Handle, offsets[..count], out var done))
-                return done;
+                return ValueTask.CompletedTask;
 
-            foreach (var offset in offsets[..count])
-                StartRead(state, offset / Constants.Storage.PageSize, 1);
-            return Task.CompletedTask;
+            int missing;
+            fixed (long* p = offsets)
+                missing = Pal.rvn_pager_start_reads(state.Handle, p, count);
+            if (missing == 0 || state.Pager._prefetchRing == null)
+                return ValueTask.CompletedTask;
+            return state.Pager._prefetchRing.WaitForPagesAsync(state.Handle, offsets[..missing]);
         }
         finally
         {
@@ -65,6 +65,7 @@ public unsafe partial class Pager
     private static ref int RecentSlot(int[] recent, long pageNumber) =>
         ref recent[(int)(((ulong)pageNumber * 0x9E3779B97F4A7C15UL) >> (64 - RecentHintsBits))]; // Fibonacci hashing
 
+    [SkipLocalsInit]
     public static void WillNeedPages(State state, long pageNumber, int numberOfPages = 1)
     {
         if (WillNeedSupported == false || state.Pager.Options.RunningOn32Bits)
@@ -75,15 +76,16 @@ public unsafe partial class Pager
         var key = (int)(pageNumber + 1);
         if (Volatile.Read(ref slot) == key)
             return;
+        Volatile.Write(ref slot, key);
 
-        if (StartRead(state, pageNumber, numberOfPages))
-            Volatile.Write(ref slot, key);
-    }
-
-    private static bool StartRead(State state, long pageNumber, int numberOfPages)
-    {
-        var range = new PalDefinitions.PrefetchRanges(state.ReadAddress + pageNumber * Constants.Storage.PageSize,
-            (long)numberOfPages * Constants.Storage.PageSize, state.Pager._prefetchRequestSize);
-        return Pal.rvn_prefetch_ranges(&range, 1, out _) == PalFlags.FailCodes.Success;
+        const int batch = 64;
+        var offsets = stackalloc long[batch];
+        for (var done = 0; done < numberOfPages; done += batch)
+        {
+            var count = Math.Min(batch, numberOfPages - done);
+            for (var i = 0; i < count; i++)
+                offsets[i] = (pageNumber + done + i) * Constants.Storage.PageSize;
+            Pal.rvn_pager_start_reads(state.Handle, offsets, count);
+        }
     }
 }

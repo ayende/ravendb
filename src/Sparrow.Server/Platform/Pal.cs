@@ -5,6 +5,7 @@ using System.Text;
 using Microsoft.Win32.SafeHandles;
 using Sparrow.Platform;
 using Sparrow.Utils;
+using unsafe ReadsDoneCallback = delegate* unmanaged<void*, ulong*, int, void>;
 
 namespace Sparrow.Server.Platform
 {
@@ -173,8 +174,16 @@ namespace Sparrow.Server.Platform
             void* handle, Int64 offset, Int64 length);
 
         /// <summary>
-        /// Queues a read group of the 8 KB pages at the offsets. Returns 1 when queued: the token reaches the ring's callback
-        /// once, after the pages are in the page cache. Returns 0 when not queued: the token never reaches it.
+        /// Starts reading the 8 KB pages at the offsets into the page cache, without waiting. Moves the offsets of the pages that
+        /// were not in the page cache to the front and returns their number.
+        /// </summary>
+        [DllImport(LIBRVNPAL)]
+        public static extern Int32 rvn_pager_start_reads(
+            void* handle, Int64* offsets, Int32 count);
+
+        /// <summary>
+        /// After <see cref="rvn_pager_start_reads"/>: the token reaches the ring's callback once the pages are in the page cache,
+        /// and the offsets must stay valid until then. Returns 1 when queued; 0 when not, and then the token never reaches it.
         /// </summary>
         [DllImport(LIBRVNPAL)]
         [SuppressGCTransition]
@@ -188,7 +197,7 @@ namespace Sparrow.Server.Platform
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_create(
-            Int32 ringEntries, Int32 maxFiles, Int32 queueSize, delegate* unmanaged<UInt64*, Int32, void> onReadsDone, out void* ring, out Int32 errorCode);
+            Int32 ringEntries, Int32 maxFiles, Int32 queueSize, ReadsDoneCallback onReadsDone, void* onReadsDoneContext, out void* ring, out Int32 errorCode);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_destroy(
