@@ -34,8 +34,6 @@ namespace Voron.Data.BTrees
         public int FirstKeyLength;
         public int LastKeyLength;
 
-        public readonly ReadOnlySpan<long> Cursor => MemoryMarshal.CreateReadOnlySpan(ref Unsafe.AsRef(in PathSequence[0]), PathLength);
-
         public void SetFirstKey(ReadOnlySpan<byte> key, SliceOptions option)
         {
             FirstKeyOptions = option;
@@ -101,29 +99,31 @@ namespace Voron.Data.BTrees
         // the tree that took it from its transaction's persistent context
         internal Tree Owner;
 
-        /// <summary>
-        /// Returns a reference to the cached page that holds the key, or a null reference (check with <see cref="Unsafe.IsNullRef{T}"/>).
-        /// The reference is valid until the cache is modified.
-        /// </summary>
-        public ref readonly FoundTreePageDescriptor Find(Slice key)
+        /// <returns>The index of the cached page that holds the key, -1 when there is none</returns>
+        public int Find(Slice key)
         {
             Debug.Assert(_currentGeneration > 0);
             Debug.Assert(_pageDescriptors.Length == CacheSize);
 
             if (key.HasValue == false || key.Size == 0)
-                return ref Unsafe.NullRef<FoundTreePageDescriptor>();
+                return -1;
 
             uint location = FindMatchingByGeneration(_currentGeneration);
             if (location == 0)
-                return ref Unsafe.NullRef<FoundTreePageDescriptor>(); // Early skip, we don't need to do anything
+                return -1; // Early skip, we don't need to do anything
 
             var keyOption = key.Options;
-            int index = keyOption == SliceOptions.Key
+            return keyOption == SliceOptions.Key
                 ? FindKey(location, key)
                 : FindNoKey(location, keyOption);
+        }
 
-            // PERF: a reference, the descriptor is too big (with the keys) to copy on every hit
-            return ref index < 0 ? ref Unsafe.NullRef<FoundTreePageDescriptor>() : ref _pageDescriptors[index];
+        public TreePage GetPage(int index) => _pageDescriptors[index].Page;
+
+        public ReadOnlySpan<long> GetCursor(int index)
+        {
+            ref var descriptor = ref _pageDescriptors[index];
+            return MemoryMarshal.CreateReadOnlySpan(ref descriptor.PathSequence[0], descriptor.PathLength);
         }
 
         private int FindKey(uint location, ReadOnlySpan<byte> key)
