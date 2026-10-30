@@ -20,10 +20,8 @@ public unsafe partial class Pager
     private int[] _recentHints;
 
     /// <summary>
-    /// Reads the pages into the page cache and returns a task that completes once they are all in, without holding a thread:
-    /// the reads go through the prefetch ring as one read group, in parallel. Pages asked for a moment ago are skipped, and so
-    /// is the wait when all of them are, so hot pages cost neither a system call nor a wait. Where the ring cannot take the
-    /// group (no ring, queue full), the reads start with madvise and the task is already complete.
+    /// Completes once the pages are in the page cache. Recently requested pages are skipped; when the ring cannot take the
+    /// group, the reads start with madvise and the task is already complete.
     /// </summary>
     public static Task ReadPagesAhead(State state, ReadOnlySpan<long> pageNumbers)
     {
@@ -41,7 +39,7 @@ public unsafe partial class Pager
                 if (pageNumber < 0)
                     continue;
                 ref var slot = ref RecentSlot(recent, pageNumber);
-                var key = (int)(pageNumber + 1); // a file of more than 16 TB may skip a page on a collision of the low bits
+                var key = (int)(pageNumber + 1);
                 if (Volatile.Read(ref slot) == key)
                     continue; // asked for a moment ago, or earlier in this group
                 Volatile.Write(ref slot, key);

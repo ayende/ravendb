@@ -173,9 +173,8 @@ namespace Sparrow.Server.Platform
             void* handle, Int64 offset, Int64 length);
 
         /// <summary>
-        /// Reads the 8 KB pages at the offsets into the page cache (8 bytes across each page's 4 KB boundary, in parallel). The
-        /// file's prefetch ring passes the token to its read callback once they are all in (callbacks are batched). Returns 1
-        /// when queued, 0 when not (no ring, queue full): then the token is never passed.
+        /// Queues a read group of the 8 KB pages at the offsets. Returns 1 when queued: the token reaches the ring's callback
+        /// once, after the pages are in the page cache. Returns 0 when not queued: the token never reaches it.
         /// </summary>
         [DllImport(LIBRVNPAL)]
         [SuppressGCTransition]

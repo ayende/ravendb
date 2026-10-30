@@ -50,13 +50,12 @@ public sealed unsafe class PrefetchRing : IDisposable
     }
 
     /// <summary>
-    /// Queues one read group: the 8 KB pages at <paramref name="offsets"/> of the file of <paramref name="pagerHandle"/>.
-    /// Returns false when they were not queued (the file has no ring, or the queue is full). Otherwise <paramref name="done"/>
-    /// completes once the pages are in the page cache, or at once where they cannot be read (no io_uring, the file closed).
+    /// Returns false when the read group was not queued. Otherwise <paramref name="done"/> completes once the pages are in the
+    /// page cache, or soon after if they cannot be read.
     /// </summary>
     public static bool TryReadPages(void* pagerHandle, ReadOnlySpan<long> offsets, out Task done)
     {
-        // the submitter reads the offsets while it prepares the reads, so they live in native memory until the callback
+        // the submitter reads the offsets after this returns, so they stay in native memory until the callback
         var waiter = new ReadGroupWaiter((long*)NativeMemory.Alloc((nuint)offsets.Length, sizeof(long)));
         offsets.CopyTo(new Span<long>(waiter.Offsets, offsets.Length));
         var handle = GCHandle.Alloc(waiter);
@@ -76,8 +75,7 @@ public sealed unsafe class PrefetchRing : IDisposable
         public readonly long* Offsets = offsets;
     }
 
-    // called by the ring's submitter thread with the read groups that completed since its last call; a token is a GCHandle to
-    // the group's waiter
+    // runs on the ring's submitter thread; each token is a GCHandle to a ReadGroupWaiter
     [UnmanagedCallersOnly]
     private static void OnReadsDone(ulong* tokens, int count)
     {
@@ -93,7 +91,7 @@ public sealed unsafe class PrefetchRing : IDisposable
             }
             catch
             {
-                // an exception must not reach the native thread (none is expected for a token that TryReadPages made)
+                // an exception must not reach the native thread
             }
         }
     }
