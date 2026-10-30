@@ -56,15 +56,14 @@ struct prefetch_state
 {
     /* written by every producer */
     alignas(CACHE_LINE) _Atomic uint64_t enqueue_pos;
+    _Atomic uint64_t dropped_full;
     /* written by the submitter, read by every producer */
     alignas(CACHE_LINE) _Atomic int32_t sleeping;
     _Atomic int32_t stopping;
-    /* owned by the submitter thread (the only consumer) */
+    /* owned by the submitter thread (the only consumer); the counters are read by rvn_prefetch_ring_stats */
     alignas(CACHE_LINE) uint64_t dequeue_pos;
     uint32_t inflight;
-    /* statistics, written by producers and the submitter */
-    alignas(CACHE_LINE) _Atomic uint64_t submitted;
-    _Atomic uint64_t dropped_full;
+    _Atomic uint64_t submitted;
     _Atomic uint64_t dropped_stale;
     _Atomic uint64_t failed;
 
@@ -147,7 +146,7 @@ _prefetch_get_sqe(struct prefetch_state *s)
 }
 
 PRIVATE void *
-_prefetch_thread(void *arg)
+rvn_prefetch_ring_submitter(void *arg)
 {
     struct prefetch_state *s = arg;
     struct prefetch_request req;
@@ -173,7 +172,7 @@ _prefetch_thread(void *arg)
             struct io_uring_sqe *sqe = _prefetch_get_sqe(s);
             if (sqe == NULL)
             {
-                atomic_fetch_add_explicit(&s->dropped_full, 1, memory_order_relaxed);
+                atomic_fetch_add_explicit(&s->failed, 1, memory_order_relaxed); /* the submit failed and the SQ is still full */
                 continue;
             }
             io_uring_prep_fadvise(sqe, slot, req.offset, req.length, POSIX_FADV_WILLNEED);
@@ -275,9 +274,10 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
             s->fds[i] = -1;
     }
     s->eventfd = eventfd(0, EFD_CLOEXEC);
-    if (s->eventfd == -1 || pthread_create(&s->thread, NULL, _prefetch_thread, s) != 0)
+    int rc = s->eventfd == -1 ? errno : pthread_create(&s->thread, NULL, rvn_prefetch_ring_submitter, s); /* returns the error, errno is not set */
+    if (rc != 0)
     {
-        *detailed_error_code = errno;
+        *detailed_error_code = rc;
         if (s->eventfd != -1)
             close(s->eventfd);
         if (s->use_io_uring)
@@ -354,8 +354,8 @@ rvn_prefetch_register(void *ring, int fd, int64_t *ticket, int32_t *detailed_err
         int dup_fd = dup(fd); /* the pager may close and reopen its descriptor; the duplicate lives until unregister */
         if (dup_fd == -1)
         {
-            pthread_mutex_unlock(&s->slots_lock);
             *detailed_error_code = errno;
+            pthread_mutex_unlock(&s->slots_lock);
             return FAIL_DUPLICATE_HANDLE;
         }
         s->fds[slot] = dup_fd;
