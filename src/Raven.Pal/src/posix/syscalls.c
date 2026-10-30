@@ -5,7 +5,6 @@
 #endif
 #include <unistd.h>
 #include <limits.h>
-#include <time.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <linux/futex.h>
@@ -32,10 +31,9 @@ _preadv2_nowait(int fd, void *buffer, size_t length, int64_t offset)
 }
 
 PRIVATE void
-_futex_wait(uint32_t *word, uint32_t expected, long timeout_ns)
+_futex_wait(uint32_t *word, uint32_t expected)
 {
-    struct timespec timeout = { .tv_sec = 0, .tv_nsec = timeout_ns };
-    (void)syscall(SYS_futex, word, FUTEX_WAIT_PRIVATE, expected, &timeout, NULL, 0);
+    (void)syscall(SYS_futex, word, FUTEX_WAIT_PRIVATE, expected, NULL, NULL, 0);
 }
 
 PRIVATE void

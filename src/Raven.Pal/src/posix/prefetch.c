@@ -168,7 +168,7 @@ _signal_space(struct prefetch_state *s)
     _futex_wake_all((uint32_t *)&s->space_seq);
 }
 
-/* Producer side of a full queue: sleeps until the submitter frees cells, or 10 ms pass */
+/* Producer side of a full queue: sleeps until the submitter frees cells */
 PRIVATE void
 _wait_for_space(struct prefetch_state *s, struct prefetch_cell *cell, uint64_t pos)
 {
@@ -176,7 +176,7 @@ _wait_for_space(struct prefetch_state *s, struct prefetch_cell *cell, uint64_t p
     atomic_fetch_add_explicit(&s->space_waiters, 1, memory_order_seq_cst);
     /* with _signal_space a Dekker pair: either we see the freed cell, or the submitter sees us waiting */
     if ((int64_t)(atomic_load_explicit(&cell->sequence, memory_order_seq_cst) - pos) < 0)
-        _futex_wait((uint32_t *)&s->space_seq, seen, 10 * 1000 * 1000);
+        _futex_wait((uint32_t *)&s->space_seq, seen);
     atomic_fetch_sub_explicit(&s->space_waiters, 1, memory_order_relaxed);
 }
 

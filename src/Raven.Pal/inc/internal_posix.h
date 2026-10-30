@@ -115,7 +115,7 @@ PRIVATE ssize_t
 _preadv2_nowait(int fd, void *buffer, size_t length, int64_t offset);
 
 PRIVATE void
-_futex_wait(uint32_t *word, uint32_t expected, long timeout_ns);
+_futex_wait(uint32_t *word, uint32_t expected);
 
 PRIVATE void
 _futex_wake_all(uint32_t *word);
