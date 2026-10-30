@@ -732,8 +732,7 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
 #endif
 }
 
-/* Starts reading the 8 KB pages at offsets into the page cache, without waiting. Moves the offsets of the pages that were
-   not in the page cache to the front and returns their number. */
+/* Starts reading the pages not in the page cache, without waiting; returns them at the front of offsets */
 EXPORT int32_t
 rvn_pager_start_reads(void *handle, int64_t *offsets, int32_t count)
 {
@@ -764,10 +763,7 @@ rvn_pager_will_need(void *handle, int64_t offset, int64_t length)
 #endif
 }
 
-/* The file's prefetch ring reads the 8 KB pages at offsets, then passes group to its on_reads_done once. The offsets are
-   copied; on a full queue this waits for room. Without io_uring, or when the file was closed, group is passed without
-   reads. Returns 0 when not queued (no ring, file not registered, no pages, group out of range): then group is never
-   passed. */
+/* Async read of the 8 KB pages at offsets; calls on_reads_done with group when done */
 EXPORT int32_t
 rvn_pager_read_pages(void *handle, const int64_t *offsets, int32_t count, uint32_t group)
 {

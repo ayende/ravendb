@@ -30,8 +30,7 @@
  * unregistering bump the slot's generation, so the submitter drops queued requests of an earlier registration.
  *
  * Without io_uring, the submitter runs WILLNEED with posix_fadvise on a duplicate descriptor, and read groups complete at
- * once without reads. A request that races an unregistration may then reach a reused descriptor number: a wasted
- * read-ahead, never a write.
+ * once without reads.
  */
 
 #define CACHE_LINE 64
@@ -126,13 +125,27 @@ _prefetch_dequeue(struct prefetch_state *s, struct prefetch_request *out)
     return true;
 }
 
+/* Submitter side of a full queue: wakes the producers waiting for free cells, if any */
+PRIVATE void
+_signal_space(struct prefetch_state *s)
+{
+    atomic_thread_fence(memory_order_seq_cst); /* the cells we freed are visible before we look for waiters */
+    if (atomic_load_explicit(&s->space_waiters, memory_order_relaxed) == 0)
+        return;
+    atomic_fetch_add_explicit(&s->space_seq, 1, memory_order_seq_cst);
+    _futex_wake_all((uint32_t *)&s->space_seq);
+}
+
+/* passes the completed groups to on_reads_done, and wakes the producers waiting for free cells */
 PRIVATE void
 _flush_done(struct prefetch_state *s)
 {
-    if (s->done_count == 0)
-        return;
-    s->on_reads_done(s->on_reads_done_context, s->done, s->done_count);
-    s->done_count = 0;
+    if (s->done_count != 0)
+    {
+        s->on_reads_done(s->on_reads_done_context, s->done, s->done_count);
+        s->done_count = 0;
+    }
+    _signal_space(s);
 }
 
 PRIVATE void
@@ -157,17 +170,6 @@ _prefetch_complete(struct prefetch_state *s, struct io_uring_cqe *cqe)
         _group_read_done(s, (uint32_t)(data & ~PREFETCH_GROUP_TAG));
 }
 
-/* Submitter side of a full queue: wakes the producers waiting for free cells, if any */
-PRIVATE void
-_signal_space(struct prefetch_state *s)
-{
-    atomic_thread_fence(memory_order_seq_cst); /* the cells we freed are visible before we look for waiters */
-    if (atomic_load_explicit(&s->space_waiters, memory_order_relaxed) == 0)
-        return;
-    atomic_fetch_add_explicit(&s->space_seq, 1, memory_order_seq_cst);
-    _futex_wake_all((uint32_t *)&s->space_seq);
-}
-
 /* Producer side of a full queue: sleeps until the submitter frees cells */
 PRIVATE void
 _wait_for_space(struct prefetch_state *s, struct prefetch_cell *cell, uint64_t pos)
@@ -185,10 +187,7 @@ _prefetch_reap(struct prefetch_state *s, bool wait_for_one)
 {
     struct io_uring_cqe *cqe;
     if (wait_for_one)
-    {
-        _flush_done(s); /* completed groups must not wait while we block */
-        _signal_space(s);
-    }
+        _flush_done(s); /* completed groups and waiting producers must not wait while we block */
     if (wait_for_one && s->inflight > 0 && io_uring_wait_cqe(&s->ring, &cqe) == 0)
         _prefetch_complete(s, cqe);
     while (s->inflight > 0 && io_uring_peek_cqe(&s->ring, &cqe) == 0)
@@ -289,7 +288,6 @@ rvn_prefetch_ring_submitter(void *arg)
             _prefetch_reap(s, false);
         }
         _flush_done(s);
-        _signal_space(s);
 
         /* sleep until a producer or a completion signals the eventfd; re-check after announcing, so a push between the drain
            and the flag is not lost */
@@ -590,8 +588,7 @@ rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length)
     return _prefetch_push(s, &req, false);
 }
 
-/* Returns 1 when queued: group reaches on_reads_done once. Returns 0 when not queued (file not registered, no pages, group
-   out of range): group never reaches on_reads_done. */
+/* Returns 1 when queued: group reaches on_reads_done once */
 PRIVATE int32_t
 rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint32_t group)
 {
@@ -612,9 +609,7 @@ rvn_prefetch_enqueue_reads(void *ring, int64_t ticket, const int64_t *offsets, i
     return 1;
 }
 
-/* A non-blocking 8-byte read of each 8 KB page: it returns at once when the page is in the page cache, and otherwise starts
-   reading it (the file has FADV_RANDOM, so exactly that page). Moves the offsets of the pages that were not in the page cache
-   to the front and returns their number. */
+/* Starts reading the pages not in the page cache, without waiting; returns them at the front of offsets */
 PRIVATE int32_t
 rvn_prefetch_start_reads(int fd, int64_t *offsets, int32_t count)
 {
