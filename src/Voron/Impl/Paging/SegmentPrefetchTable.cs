@@ -26,15 +26,12 @@ internal sealed class SegmentPrefetchTable
         _segments = new byte[Math.Max(1, (fileSize >> _segmentShift) + 1)];
     }
 
-    /// <summary>
-    /// Returns true with the segment of <paramref name="pageNumber"/> when it was not read ahead in the current warm-up.
-    /// </summary>
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
     public bool ShouldPrefetchSegment(long pageNumber, out long offset, out long bytes)
     {
         offset = 0;
         bytes = 0;
-        var generation = (byte)_policy.Generation;
+        var generation = _policy.Generation;
         if (generation == 0)
             return false; // memory is full
 

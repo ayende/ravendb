@@ -212,9 +212,6 @@ public unsafe partial class Pager : IDisposable
         } while (pagesToPrefetch.MoveNext());
     }
 
-    // Linux: through the PAL prefetch ring, non blocking, from the reading thread (a file that is not registered with the ring,
-    // such as the temporary data file of a pure memory environment, is not prefetched). Windows and macOS: the global
-    // prefetcher thread advises the kernel, so the reading thread does not wait on madvise.
     private void PrefetchSegment(State state, long offset, long bytes)
     {
         if (PlatformDetails.RunningOnLinux)
