@@ -763,7 +763,6 @@ rvn_pager_will_need(void *handle, int64_t offset, int64_t length)
 #endif
 }
 
-/* ticket: the file's registration with its prefetch ring, -1 when not registered */
 EXPORT int32_t
 rvn_pager_get_prefetch_info(void *handle, struct rvn_pager_prefetch_info *info)
 {
