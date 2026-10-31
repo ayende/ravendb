@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
@@ -14,6 +14,8 @@ using Raven.Client.Extensions;
 using Raven.Server.Documents.TimeSeries;
 using Raven.Server.Documents.TransactionMerger.Commands;
 using Raven.Server.ServerWide.Context;
+using Sparrow;
+using Sparrow.Json;
 using Sparrow.Json.Parsing;
 
 namespace Raven.Server.Documents.Handlers.Batches.Commands;
@@ -54,6 +56,18 @@ public sealed class MergedBatchCommand : TransactionMergedCommand
         return sb.ToString();
     }
 
+    // a request thread parsed the document on another core, and putting it copies it into the table
+    private static unsafe void PrefetchDocument(BlittableJsonReaderObject document)
+    {
+        if (document == null || PortableIntrinsics.CanPrefetch == false)
+            return;
+
+        byte* p = document.BasePointer;
+        int length = Math.Min(document.Size, 1024);
+        for (int offset = 0; offset < length; offset += 64)
+            PortableIntrinsics.PrefetchRead(p + offset);
+    }
+
     protected override long ExecuteCmd(DocumentsOperationContext context)
     {
         if (IsClusterTransaction)
@@ -71,6 +85,8 @@ public sealed class MergedBatchCommand : TransactionMergedCommand
         for (int i = ParsedCommands.Offset; i < ParsedCommands.Count; i++)
         {
             var cmd = ParsedCommands.Array[i];
+            if (i + 1 < ParsedCommands.Count)
+                PrefetchDocument(ParsedCommands.Array[i + 1].Document);
 
             switch (cmd.Type)
             {
