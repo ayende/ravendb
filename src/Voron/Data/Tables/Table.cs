@@ -49,6 +49,7 @@ namespace Voron.Data.Tables
         public long NumberOfEntries { get; private set; }
 
         private long _overflowPageCount;
+        private bool _statsModified;
         private NewPageAllocator _tablePageAllocator;
         private NewPageAllocator _globalPageAllocator;
 
@@ -592,13 +593,7 @@ namespace Voron.Data.Tables
 
             NumberOfEntries--;
 
-            using (_tableTree.DirectAdd(TableSchema.StatsSlice, sizeof(TableSchemaStats), out byte* updatePtr))
-            {
-                var stats = (TableSchemaStats*)updatePtr;
-
-                stats->NumberOfEntries = NumberOfEntries;
-                stats->OverflowPageCount = _overflowPageCount;
-            }
+            _statsModified = true;
 
             if (largeValue)
                 return;
@@ -819,13 +814,7 @@ namespace Voron.Data.Tables
 
             NumberOfEntries++;
 
-            using (_tableTree.DirectAdd(TableSchema.StatsSlice, sizeof(TableSchemaStats), out byte* ptr))
-            {
-                var stats = (TableSchemaStats*)ptr;
-
-                stats->NumberOfEntries = NumberOfEntries;
-                stats->OverflowPageCount = _overflowPageCount;
-            }
+            _statsModified = true;
 
             return id;
         }
@@ -1240,13 +1229,7 @@ namespace Voron.Data.Tables
 
             NumberOfEntries++;
 
-            using (_tableTree.DirectAdd(TableSchema.StatsSlice, sizeof(TableSchemaStats), out byte* ptr))
-            {
-                var stats = (TableSchemaStats*)ptr;
-
-                stats->NumberOfEntries = NumberOfEntries;
-                stats->OverflowPageCount = _overflowPageCount;
-            }
+            _statsModified = true;
 
             return id;
         }
@@ -2588,6 +2571,17 @@ namespace Voron.Data.Tables
             AssertValidTable();
 
             AssertValidIndexes();
+
+            if (_statsModified)
+            {
+                using (_tableTree.DirectAdd(TableSchema.StatsSlice, sizeof(TableSchemaStats), out byte* statsPtr))
+                {
+                    var stats = (TableSchemaStats*)statsPtr;
+                    stats->NumberOfEntries = NumberOfEntries;
+                    stats->OverflowPageCount = _overflowPageCount;
+                }
+                _statsModified = false;
+            }
 
             if (_resolvedIndexTrees == null)
                 return;
