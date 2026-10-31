@@ -31,7 +31,7 @@ public class BulkDocsPrefetchTests(ITestOutputHelper output) : RavenTestBase(out
         using (database.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
         using (context.OpenReadTransaction())
         {
-            var read = database.DocumentsStorage.PrefetchDocumentsAsync(context, ids.Append("items/missing").ToArray());
+            var read = database.DocumentsStorage.PrefetchDocumentsAsync(context, ids.Append("items/missing").ToList());
             Assert.True(read.AsTask().Wait(TimeSpan.FromSeconds(10)));
         }
 

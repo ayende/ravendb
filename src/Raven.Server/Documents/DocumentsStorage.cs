@@ -1295,6 +1295,7 @@ namespace Raven.Server.Documents
         /// Reads the pages that updating <paramref name="document"/> modifies (its page, its section header and its entries in
         /// the etag indexes); the task completes once they are in memory, so the merger does not stall on them.
         /// </summary>
+        [SkipLocalsInit]
         public ValueTask PrefetchDocumentAsync(DocumentsOperationContext context, Document document)
         {
             Span<long> pages = stackalloc long[PagesToUpdatePerDocument];
@@ -1306,9 +1307,12 @@ namespace Raven.Server.Documents
         /// <see cref="PrefetchDocumentAsync"/> for the existing documents among <paramref name="ids"/>, as one read group: an id
         /// without a document costs only the lookup (which reads the id tree's leaf, for an insert there).
         /// </summary>
-        public ValueTask PrefetchDocumentsAsync(DocumentsOperationContext context, IReadOnlyCollection<string> ids)
+        [SkipLocalsInit]
+        public ValueTask PrefetchDocumentsAsync(DocumentsOperationContext context, List<string> ids)
         {
-            var pages = ArrayPool<long>.Shared.Rent(ids.Count * PagesToUpdatePerDocument);
+            var size = ids.Count * PagesToUpdatePerDocument;
+            long[] rented = null;
+            Span<long> pages = size <= 64 ? stackalloc long[size] : (rented = ArrayPool<long>.Shared.Rent(size));
             try
             {
                 var count = 0;
@@ -1317,16 +1321,17 @@ namespace Raven.Server.Documents
                     using (var document = Get(context, id, DocumentFields.Data, throwOnConflict: false))
                     {
                         if (document != null)
-                            count += GetPagesToUpdate(context, document, pages.AsSpan(count, PagesToUpdatePerDocument));
+                            count += GetPagesToUpdate(context, document, pages.Slice(count, PagesToUpdatePerDocument));
                     }
                 }
                 return count == 0
                     ? ValueTask.CompletedTask
-                    : Pager.ReadPagesAhead(context.Transaction.InnerTransaction.LowLevelTransaction.DataPagerState, pages.AsSpan(0, count));
+                    : Pager.ReadPagesAhead(context.Transaction.InnerTransaction.LowLevelTransaction.DataPagerState, pages[..count]);
             }
             finally
             {
-                ArrayPool<long>.Shared.Return(pages);
+                if (rented != null)
+                    ArrayPool<long>.Shared.Return(rented);
             }
         }
 
