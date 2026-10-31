@@ -555,7 +555,7 @@ namespace Voron.Data.BTrees
 
             var newPage = GetWriteableTreePage(pageNumber);
             newPage.Dirty = true;
-            _recentlyFoundPages?.Reset(pageNumber);
+            _recentlyFoundPages?.UpdatePage(pageNumber, newPage);
 
             if (IsLeafCompressionSupported && newPage.IsCompressed)
                 DecompressionsCache.Invalidate(pageNumber, DecompressionUsage.Read);
@@ -949,6 +949,14 @@ namespace Voron.Data.BTrees
                 page = GetReadOnlyTreePage(foundPage.Number);
             }
 
+            if (page.IsCompressed)
+            {
+                // compressed after it was cached
+                page = default;
+                node = null;
+                return false;
+            }
+
             if (page.IsLeaf == false)
                 VoronUnrecoverableErrorException.Raise(_llt, "Index points to a non leaf page");
 
@@ -978,6 +986,15 @@ namespace Voron.Data.BTrees
             else
             {
                 page = GetReadOnlyTreePage(lastFoundPageNumber);
+            }
+
+            if (page.IsCompressed)
+            {
+                // compressed after it was cached
+                page = default;
+                node = null;
+                cursor = default;
+                return false;
             }
 
             if (page.IsLeaf == false)

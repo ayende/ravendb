@@ -235,35 +235,24 @@ namespace Voron.Data.BTrees
                     ).ExtractMostSignificantBits();
         }
 
-        public void Reset(long num)
+        // A split or a rebalance clears the cache, so until then the cached key range of a modified leaf still routes to it
+        public void UpdatePage(long num, TreePage page)
         {
             Debug.Assert(_currentGeneration > 0);
             Debug.Assert(_pageDescriptors.Length == CacheSize);
 
-            var matchesByGeneration = FindMatchingByGeneration(_currentGeneration);
-            var matchesByPageNumber = FindMatchingByPageNumber(num);
-
-            var matches = matchesByPageNumber & matchesByGeneration;
+            var matches = FindMatchingByPageNumber(num) & FindMatchingByGeneration(_currentGeneration);
 
             int i = -1;
             while (matches != 0)
             {
-                // We will find the next matching item in the cache and advance the pointer to its rightful place.
                 int advance = BitOperations.TrailingZeroCount(matches) + 1;
                 i += advance;
-
-                Debug.Assert(_pageNumberCache[i] == num);
-
-                // We will advance the bitmask to the location. If there are no more, it will be zero and fail
-                // the re-entry check on the while loop. 
                 matches >>= advance;
 
-                // This just reset the cached page instance. 
-                _pageGenerationCache = _pageGenerationCache.WithElement(i, (uint)0);
-                _pageNumberCache = _pageNumberCache.WithElement(i, -1L);
+                Debug.Assert(_pageNumberCache[i] == num);
+                _pageDescriptors[i].Page = page;
             }
-
-            Debug.Assert((FindMatchingByPageNumber(num) & FindMatchingByGeneration(_currentGeneration)) == 0);
         }
 
         public void Clear()
