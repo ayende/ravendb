@@ -32,6 +32,11 @@ namespace Sparrow.Json.Parsing
         {
         }
 
+        public DynamicJsonValue(int capacity)
+        {
+            Properties.Capacity = capacity;
+        }
+
         public DynamicJsonValue(string key, object value)
         {
             Properties.Add((key, value));

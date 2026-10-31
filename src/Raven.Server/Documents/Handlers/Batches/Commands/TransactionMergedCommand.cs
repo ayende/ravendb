@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Raven.Client;
 using Raven.Client.Documents.Commands.Batches;
 using Raven.Server.Documents.TransactionMerger.Commands;
@@ -39,21 +39,30 @@ public abstract class TransactionMergedCommand : DocumentMergedTransactionComman
 
         if (IncludeReply == false)
             return;
-        
-        // Make sure all the metadata fields are always been add
-        var putReply = new DynamicJsonValue
+
+        Reply.Add(new PutReply(putResult));
+    }
+
+    // built when the response is written, off the merger thread
+    private sealed class PutReply(DocumentsStorage.PutOperationResults putResult) : IDynamicJson
+    {
+        public DynamicJsonValue ToJson()
         {
-            ["Type"] = nameof(CommandType.PUT),
-            [Constants.Documents.Metadata.Id] = putResult.Id,
-            [Constants.Documents.Metadata.Collection] = putResult.Collection.Name,
-            [Constants.Documents.Metadata.ChangeVector] = putResult.ChangeVector,
-            [Constants.Documents.Metadata.LastModified] = putResult.LastModified
-        };
+            // Make sure all the metadata fields are always been add
+            var putReply = new DynamicJsonValue(capacity: 6)
+            {
+                ["Type"] = nameof(CommandType.PUT),
+                [Constants.Documents.Metadata.Id] = putResult.Id,
+                [Constants.Documents.Metadata.Collection] = putResult.Collection.Name,
+                [Constants.Documents.Metadata.ChangeVector] = putResult.ChangeVector,
+                [Constants.Documents.Metadata.LastModified] = putResult.LastModified
+            };
 
-        if (putResult.Flags != DocumentFlags.None)
-            putReply[Constants.Documents.Metadata.Flags] = putResult.Flags;
+            if (putResult.Flags != DocumentFlags.None)
+                putReply[Constants.Documents.Metadata.Flags] = putResult.Flags;
 
-        Reply.Add(putReply);
+            return putReply;
+        }
     }
 
     protected void AddDeleteResult(DocumentsStorage.DeleteOperationResult? deleted, string id)
