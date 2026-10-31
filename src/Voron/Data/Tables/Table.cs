@@ -40,6 +40,7 @@ namespace Voron.Data.Tables
         private FixedSizeTree _activeCandidateSection;
 
         private Tree[] _resolvedIndexTrees;
+        private Tree[] _resolvedGlobalIndexTrees;
 
         public readonly Slice Name;
         private readonly byte _tableType;
@@ -1434,13 +1435,12 @@ namespace Voron.Data.Tables
         {
             DisposableExceptions.ThrowIfDisposedOnDebug(_tx);
 
-            // a global index lives in the transaction's root, where the transaction already caches it
-            if (idx.IsGlobal)
-                return _tx.ReadTree(idx.Name, isIndexTree: true, newPageAllocator: GlobalPageAllocator);
-
             Debug.Assert(idx.CachePosition >= 0, $"tree index {idx.Name} has no cache position - it never went through TableSchema.DefineIndex/DefineKey");
 
-            var trees = _resolvedIndexTrees ??= new Tree[_schema.TreeIndexCount];
+            // PrepareForCommit writes the headers of _resolvedIndexTrees into the table tree; global trees live in the root
+            var trees = idx.IsGlobal
+                ? _resolvedGlobalIndexTrees ??= new Tree[_schema.TreeIndexCount]
+                : _resolvedIndexTrees ??= new Tree[_schema.TreeIndexCount];
             ref Tree tree = ref trees[idx.CachePosition];
             if (tree != null)
             {
@@ -1448,6 +1448,9 @@ namespace Voron.Data.Tables
                     $"index tree cache position {idx.CachePosition} holds '{tree.Name}' but was asked for '{idx.Name}' on table {Name}");
                 return tree;
             }
+
+            if (idx.IsGlobal)
+                return tree = _tx.ReadTree(idx.Name, isIndexTree: true, newPageAllocator: GlobalPageAllocator);
 
             var treeHeader = (TreeRootHeader*)_tableTree.DirectRead(idx.Name);
             if (treeHeader == null)
