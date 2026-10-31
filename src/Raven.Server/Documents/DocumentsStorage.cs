@@ -2947,8 +2947,11 @@ namespace Raven.Server.Documents
         {
             if (oldChangeVector != null)
             {
+                // the order of a single change vector is its version, so UpdateVersion has already updated it
+                var single = oldChangeVector.IsSingle;
                 oldChangeVector = oldChangeVector.UpdateVersion(DocumentDatabase.ServerStore.NodeTag, Environment.Base64Id, newEtag, context);
-                oldChangeVector = oldChangeVector.UpdateOrder(DocumentDatabase.ServerStore.NodeTag, Environment.Base64Id, newEtag, context);
+                if (single == false)
+                    oldChangeVector = oldChangeVector.UpdateOrder(DocumentDatabase.ServerStore.NodeTag, Environment.Base64Id, newEtag, context);
                 return oldChangeVector;
             }
             return ConflictsStorage.GetMergedConflictChangeVectorsAndDeleteConflicts(context, lowerId, newEtag);
