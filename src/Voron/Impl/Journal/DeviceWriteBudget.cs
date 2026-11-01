@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.Threading;
 using Sparrow.Logging;
 using Sparrow.Server.Logging;
@@ -32,6 +33,9 @@ namespace Voron.Impl.Journal
     /// * Journal zeroing / pool prewarming - prepaying the filesystem extent-conversion cost
     ///   only pays on a fast local device; on a budgeted volume the fill competes with every
     ///   journal on the disk (measured 8-17% of throughput on gp3 under load).
+    ///
+    /// * Segment read-ahead (the warm-up) - the bytes it may start each sample interval halve while the device
+    ///   queue is above the drain threshold and double while the read-aheads use all of them.
     /// </summary>
     public sealed class DeviceWriteBudget
     {
@@ -59,7 +63,7 @@ namespace Voron.Impl.Journal
         public static DeviceWriteBudget CreateUnshared(StorageEnvironmentOptions opts) =>
             new(queueReader: null, pathOnDevice: "(unshared)", opts.SyncWritebackBarrierCostThresholdTicks, opts.SyncWritebackDrainQueueDepthThreshold, opts.PipelineJournalWritesAboveLatencyInTicks);
 
-        private const long SampleIntervalMs = 1_000;
+        internal long SampleIntervalMs = 1_000;
         private const long ExitQuietMs = 30_000;
         internal const int RecentWriteActivityWindowMs = 3;
         // in Stopwatch.GetTimestamp units (Stopwatch.Frequency per second - NOT TimeSpan ticks)
@@ -207,6 +211,52 @@ namespace Voron.Impl.Journal
             return false;
         }
 
+        internal const long MinReadAheadBytesPerInterval = 4 * Global.Constants.Size.Megabyte;
+        internal const long MaxReadAheadBytesPerInterval = 4L * Global.Constants.Size.Gigabyte;
+        private long _readAheadBytesPerInterval = MinReadAheadBytesPerInterval;
+        private long _readAheadBytesLeft = MinReadAheadBytesPerInterval;
+        private int _readAheadRefused;
+
+        public long ReadAheadBytesPerInterval => Volatile.Read(ref _readAheadBytesPerInterval);
+
+        public double QueueDepth => _queueDepth.Current;
+
+        public bool TryStartReadAhead(long bytes)
+        {
+            if (_queueReader == null)
+                return true; // no queue signal, no budget
+
+            SampleQueue();
+
+            if (Volatile.Read(ref _readAheadBytesLeft) >= bytes)
+            {
+                if (Interlocked.Add(ref _readAheadBytesLeft, -bytes) >= 0)
+                    return true;
+                Interlocked.Add(ref _readAheadBytesLeft, bytes);
+            }
+
+            if (Volatile.Read(ref _readAheadRefused) == 0)
+                Volatile.Write(ref _readAheadRefused, 1);
+            return false;
+        }
+
+        internal void AdjustReadAhead(double queueDepth)
+        {
+            var budget = _readAheadBytesPerInterval;
+            if (queueDepth > _enterQueueDepth)
+                budget /= 2;
+            else if (Interlocked.Exchange(ref _readAheadRefused, 0) == 1)
+                budget *= 2;
+            budget = Math.Clamp(budget, MinReadAheadBytesPerInterval, MaxReadAheadBytesPerInterval);
+
+            Volatile.Write(ref _readAheadBytesPerInterval, budget);
+            Volatile.Write(ref _readAheadBytesLeft, budget);
+        }
+
+        public static IEnumerable<DeviceWriteBudget> Devices => DevicesById.Values;
+
+        public string PathOnDevice => _pathOnDevice;
+
         private (long NowMs, double QueueDepth) SampleQueue()
         {
             var nowMs = _clock.ElapsedMilliseconds;
@@ -220,7 +270,9 @@ namespace Voron.Impl.Journal
 
             try
             {
-                _queueDepth.Update(_queueReader.Read());
+                var queueDepth = _queueReader.Read();
+                _queueDepth.Update(queueDepth);
+                AdjustReadAhead(queueDepth);
             }
             catch
             {
