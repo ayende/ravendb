@@ -253,9 +253,15 @@ namespace Voron.Impl.Journal
 
         public static IEnumerable<DeviceWriteBudget> Devices => DevicesById.Values;
 
+        public static void Tick()
+        {
+            foreach (var device in DevicesById.Values)
+                device.SampleQueue();
+        }
+
         public string PathOnDevice => _pathOnDevice;
 
-        internal (long NowMs, double QueueDepth) SampleQueue()
+        private (long NowMs, double QueueDepth) SampleQueue()
         {
             var nowMs = _clock.ElapsedMilliseconds;
             if (_queueReader == null)

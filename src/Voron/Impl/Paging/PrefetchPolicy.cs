@@ -36,8 +36,7 @@ public sealed class PrefetchPolicy : IDisposable
         _timer = new Timer(_ =>
         {
             Tick(LowMemoryNotification.Instance.LastMemoryInfo.AvailableMemory.GetValue(SizeUnit.Bytes));
-            foreach (var device in DeviceWriteBudget.Devices)
-                device.SampleQueue();
+            DeviceWriteBudget.Tick();
         }, null, 0, TickMs);
     }
 
