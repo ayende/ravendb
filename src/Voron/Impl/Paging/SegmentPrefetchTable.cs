@@ -14,13 +14,13 @@ namespace Voron.Impl.Paging;
 internal sealed class SegmentPrefetchTable
 {
     private readonly PrefetchPolicy _policy;
-    private readonly Func<DeviceWriteBudget> _deviceBudget;
+    private readonly DeviceWriteBudget _deviceBudget;
     private readonly int _segmentShift;
     private byte[] _segments;
 
     public readonly long SegmentSize;
 
-    public SegmentPrefetchTable(PrefetchPolicy policy, Func<DeviceWriteBudget> deviceBudget, long segmentSize, long fileSize)
+    public SegmentPrefetchTable(PrefetchPolicy policy, DeviceWriteBudget deviceBudget, long segmentSize, long fileSize)
     {
         _policy = policy;
         _deviceBudget = deviceBudget;
@@ -45,7 +45,7 @@ internal sealed class SegmentPrefetchTable
         if (segments[index] == generation)
             return false;
 
-        if (_deviceBudget?.Invoke()?.TryStartReadAhead(SegmentSize) == false)
+        if (_deviceBudget?.TryStartReadAhead(SegmentSize) == false)
             return false; // the device is busy: a later touch reads the segment ahead
 
         segments[index] = generation;

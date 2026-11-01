@@ -34,8 +34,7 @@ namespace Voron.Impl.Journal
     ///   only pays on a fast local device; on a budgeted volume the fill competes with every
     ///   journal on the disk (measured 8-17% of throughput on gp3 under load).
     ///
-    /// * Segment read-ahead (the warm-up) - the bytes it may start each sample interval halve while the device
-    ///   queue is above the drain threshold and double while the read-aheads use all of them.
+    /// * Segment read-ahead (the warm-up) - uses only spare device capacity: it backs off while the device queue is long.
     /// </summary>
     public sealed class DeviceWriteBudget
     {
@@ -63,7 +62,7 @@ namespace Voron.Impl.Journal
         public static DeviceWriteBudget CreateUnshared(StorageEnvironmentOptions opts) =>
             new(queueReader: null, pathOnDevice: "(unshared)", opts.SyncWritebackBarrierCostThresholdTicks, opts.SyncWritebackDrainQueueDepthThreshold, opts.PipelineJournalWritesAboveLatencyInTicks);
 
-        internal long SampleIntervalMs = 1_000;
+        private const long SampleIntervalMs = 1_000;
         private const long ExitQuietMs = 30_000;
         internal const int RecentWriteActivityWindowMs = 3;
         // in Stopwatch.GetTimestamp units (Stopwatch.Frequency per second - NOT TimeSpan ticks)
@@ -226,8 +225,6 @@ namespace Voron.Impl.Journal
             if (_queueReader == null)
                 return true; // no queue signal, no budget
 
-            SampleQueue();
-
             if (Volatile.Read(ref _readAheadBytesLeft) >= bytes)
             {
                 if (Interlocked.Add(ref _readAheadBytesLeft, -bytes) >= 0)
@@ -243,9 +240,10 @@ namespace Voron.Impl.Journal
         internal void AdjustReadAhead(double queueDepth)
         {
             var budget = _readAheadBytesPerInterval;
+            var refused = Interlocked.Exchange(ref _readAheadRefused, 0) == 1;
             if (queueDepth > _enterQueueDepth)
                 budget /= 2;
-            else if (Interlocked.Exchange(ref _readAheadRefused, 0) == 1)
+            else if (refused)
                 budget *= 2;
             budget = Math.Clamp(budget, MinReadAheadBytesPerInterval, MaxReadAheadBytesPerInterval);
 
@@ -257,7 +255,7 @@ namespace Voron.Impl.Journal
 
         public string PathOnDevice => _pathOnDevice;
 
-        private (long NowMs, double QueueDepth) SampleQueue()
+        internal (long NowMs, double QueueDepth) SampleQueue()
         {
             var nowMs = _clock.ElapsedMilliseconds;
             if (_queueReader == null)

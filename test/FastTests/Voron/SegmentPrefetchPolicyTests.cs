@@ -27,7 +27,7 @@ public class SegmentPrefetchPolicyTests(ITestOutputHelper output) : NoDisposalNe
 
         public Harness(long fileSegments, DeviceWriteBudget device = null)
         {
-            Table = new SegmentPrefetchTable(Policy, device == null ? null : () => device, SegmentSize, fileSegments * SegmentSize);
+            Table = new SegmentPrefetchTable(Policy, device, SegmentSize, fileSegments * SegmentSize);
         }
 
         public void Memory(long freeBytes) => Policy.Tick(freeBytes);
@@ -144,12 +144,9 @@ public class SegmentPrefetchPolicyTests(ITestOutputHelper output) : NoDisposalNe
         public override void Dispose() { }
     }
 
-    // queue depth threshold 5, as Storage.SyncWritebackDrainQueueDepthThreshold; samples only when the test adjusts
+    // queue depth threshold 5, as Storage.SyncWritebackDrainQueueDepthThreshold
     private static DeviceWriteBudget Device() =>
-        new(new FixedQueueDepth(), "test", syncCostThresholdTicks: long.MaxValue, queueDepthThreshold: 5, classifyAboveLatencyTicks: 0)
-        {
-            SampleIntervalMs = long.MaxValue
-        };
+        new(new FixedQueueDepth(), "test", syncCostThresholdTicks: long.MaxValue, queueDepthThreshold: 5, classifyAboveLatencyTicks: 0);
 
     [RavenFact(RavenTestCategory.Voron)]
     public void ReadAheadThatUsesItsWholeBudgetGetsTwiceAsMuchWhileTheQueueIsShort()
