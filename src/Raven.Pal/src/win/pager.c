@@ -925,6 +925,15 @@ rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code)
 }
 
 EXPORT int32_t
+rvn_prefetch_ring_fail_submits(void *ring, int32_t count, int32_t error)
+{
+    (void)ring;
+    (void)count;
+    (void)error;
+    return FAIL_INVALID_HANDLE;
+}
+
+EXPORT int32_t
 rvn_prefetch_ring_stats(void *ring, struct rvn_prefetch_ring_stats *stats)
 {
     (void)ring;

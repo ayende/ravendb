@@ -23,16 +23,17 @@
  * durable writes. Any thread queues requests; one submitter thread runs them. Two kinds of requests:
  *  - WILLNEED range: a hint, dropped when the queue is full.
  *  - read group: an 8-byte read across the 4 KB boundary inside each 8 KB page, so each page comes in one I/O. The offsets
- *    are copied into the queue, up to PREFETCH_CELL_PAGES per cell; on a full queue the producer waits for free cells. The
- *    caller owns the group index: the index reaches on_reads_done once all of the group's reads complete, and it must not
- *    be queued again before that.
+ *    are copied into the queue, up to PREFETCH_CELL_PAGES per cell, all of a group's cells or none: on a full queue the
+ *    group is dropped. The caller owns the group index: the index reaches on_reads_done once all of the group's reads
+ *    complete, and it must not be queued again before that.
+ * A producer never waits: a full queue means the device is already busy, and the reader faults the pages itself.
  *
  * A registered file is in the ring's fixed file table, and the ring holds its own reference to it, so a request never
  * reaches another file that reused the descriptor number. A ticket is (generation << 32) | slot; registering and
  * unregistering bump the slot's generation, so the submitter drops queued requests of an earlier registration.
  *
  * Without io_uring, the submitter runs WILLNEED with posix_fadvise on a duplicate descriptor, and read groups complete at
- * once without reads.
+ * once without reads. There a hint racing an unregister can reach a file that reused the number: a harmless read-ahead.
  */
 
 #define CACHE_LINE 64
@@ -69,11 +70,9 @@ struct prefetch_state
     /* written by every producer */
     alignas(CACHE_LINE) _Atomic uint64_t enqueue_pos;
     _Atomic uint64_t dropped_full;
-    _Atomic uint32_t space_waiters;
     /* written by the submitter, read by every producer */
     alignas(CACHE_LINE) _Atomic int32_t sleeping;
     _Atomic int32_t stopping;
-    _Atomic uint32_t space_seq; /* a futex word: bumped when cells were freed and a producer waits */
     /* owned by the submitter thread (the only consumer); the counters are read by rvn_prefetch_ring_stats */
     alignas(CACHE_LINE) uint64_t dequeue_pos;
     uint32_t inflight;
@@ -84,6 +83,8 @@ struct prefetch_state
     _Atomic uint64_t reads;
 
     uint32_t backoff_ms;     /* the wait before retrying a submit that failed with nothing in flight, 0 after a success */
+    _Atomic int32_t failing_submits;      /* tests: the next submits fail, without reaching the kernel */
+    _Atomic int32_t failing_submit_error; /* tests: their result, -errno */
     bool ring_failed;        /* a submit failed for good: the rest of the requests complete without reads */
     uint32_t *group_pending; /* by group index */
     uint32_t done[PREFETCH_DONE_BATCH]; /* completed group indexes not yet passed to on_reads_done */
@@ -129,18 +130,7 @@ _prefetch_dequeue(struct prefetch_state *s, struct prefetch_request *out)
     return true;
 }
 
-/* Submitter side of a full queue: wakes the producers waiting for free cells, if any */
-PRIVATE void
-_signal_space(struct prefetch_state *s)
-{
-    atomic_thread_fence(memory_order_seq_cst); /* the cells we freed are visible before we look for waiters */
-    if (atomic_load_explicit(&s->space_waiters, memory_order_relaxed) == 0)
-        return;
-    atomic_fetch_add_explicit(&s->space_seq, 1, memory_order_seq_cst);
-    _futex_wake_all((uint32_t *)&s->space_seq);
-}
-
-/* passes the completed groups to on_reads_done, and wakes the producers waiting for free cells */
+/* passes the completed groups to on_reads_done */
 PRIVATE void
 _flush_done(struct prefetch_state *s)
 {
@@ -149,7 +139,6 @@ _flush_done(struct prefetch_state *s)
         s->on_reads_done(s->on_reads_done_context, s->done, s->done_count);
         s->done_count = 0;
     }
-    _signal_space(s);
 }
 
 PRIVATE void
@@ -176,24 +165,12 @@ _prefetch_complete(struct prefetch_state *s, struct io_uring_cqe *cqe)
         _group_read_done(s, (uint32_t)(data & ~PREFETCH_GROUP_TAG));
 }
 
-/* Producer side of a full queue: sleeps until the submitter frees cells */
-PRIVATE void
-_wait_for_space(struct prefetch_state *s, struct prefetch_cell *cell, uint64_t pos)
-{
-    uint32_t seen = atomic_load_explicit(&s->space_seq, memory_order_seq_cst);
-    atomic_fetch_add_explicit(&s->space_waiters, 1, memory_order_seq_cst);
-    /* with _signal_space a Dekker pair: either we see the freed cell, or the submitter sees us waiting */
-    if ((int64_t)(atomic_load_explicit(&cell->sequence, memory_order_seq_cst) - pos) < 0)
-        _futex_wait((uint32_t *)&s->space_seq, seen);
-    atomic_fetch_sub_explicit(&s->space_waiters, 1, memory_order_relaxed);
-}
-
 PRIVATE void
 _prefetch_reap(struct prefetch_state *s, bool wait_for_one)
 {
     struct io_uring_cqe *cqe;
     if (wait_for_one)
-        _flush_done(s); /* completed groups and waiting producers must not wait while we block */
+        _flush_done(s); /* completed groups must not wait while we block */
     if (wait_for_one && s->inflight > 0 && io_uring_wait_cqe(&s->ring, &cqe) == 0)
         _prefetch_complete(s, cqe);
     while (s->inflight > 0 && io_uring_peek_cqe(&s->ring, &cqe) == 0)
@@ -213,12 +190,6 @@ _prefetch_complete_pending_groups(struct prefetch_state *s)
     }
 }
 
-#ifdef RVN_TEST_HOOKS
-/* test-prefetch.c: the next submits fail with this error, before reaching the kernel */
-PRIVATE _Atomic int32_t rvn_test_failing_submits;
-PRIVATE _Atomic int32_t rvn_test_submit_error;
-#endif
-
 /* Submits the prepared requests; the kernel may take only some, the rest stay in the SQ. Returns 0 when the caller can
    go on: something was submitted or the failure clears by itself (the caller retries); -1 when the ring failed for good,
    and then the prepared requests never run */
@@ -226,15 +197,13 @@ PRIVATE int
 _prefetch_submit(struct prefetch_state *s)
 {
     int rc;
-#ifdef RVN_TEST_HOOKS
-    if (atomic_load(&rvn_test_failing_submits) > 0)
+    if (atomic_load_explicit(&s->failing_submits, memory_order_relaxed) > 0) /* rvn_prefetch_ring_fail_submits, for tests */
     {
-        atomic_fetch_sub(&rvn_test_failing_submits, 1);
-        rc = atomic_load(&rvn_test_submit_error);
+        atomic_fetch_sub_explicit(&s->failing_submits, 1, memory_order_relaxed);
+        rc = atomic_load_explicit(&s->failing_submit_error, memory_order_relaxed);
     }
     else
-#endif
-    rc = io_uring_submit(&s->ring);
+        rc = io_uring_submit(&s->ring);
     if (rc > 0)
     {
         s->inflight += (uint32_t)rc;
@@ -263,14 +232,14 @@ _prefetch_next_backoff(struct prefetch_state *s)
 PRIVATE void
 _prefetch_backoff(struct prefetch_state *s)
 {
-    _flush_done(s); /* completed groups and waiting producers must not wait while we sleep */
+    _flush_done(s); /* completed groups must not wait while we sleep */
     int ms = _prefetch_next_backoff(s);
     struct timespec delay = {.tv_sec = 0, .tv_nsec = (long)ms * 1000000};
     nanosleep(&delay, NULL);
 }
 
 /* In flight + prepared never exceed the SQ size, so the CQ (twice that) cannot overflow: when full, submit and wait for
-   one completion. Returns NULL once the ring failed. */
+   one completion. Returns NULL once the ring failed, or when it stops while submits fail. */
 PRIVATE struct io_uring_sqe *
 _prefetch_get_sqe(struct prefetch_state *s)
 {
@@ -280,6 +249,8 @@ _prefetch_get_sqe(struct prefetch_state *s)
             break;
         if (s->inflight > 0)
             _prefetch_reap(s, true);
+        else if (atomic_load_explicit(&s->stopping, memory_order_acquire))
+            return NULL; /* stopping while submits fail: the stop path completes the groups */
         else
             _prefetch_backoff(s); /* nothing in flight frees an entry: wait a moment and submit again */
     }
@@ -327,22 +298,23 @@ rvn_prefetch_ring_submitter(void *arg)
                 atomic_fetch_add_explicit(&s->dropped_stale, 1, memory_order_relaxed);
             if (req.count != 0)
             {
-                _prefetch_read_cell(s, slot, &req, stale == false && s->use_io_uring && s->ring_failed == false);
+                bool read = stale == false && s->use_io_uring;
+                if (read && s->ring_failed)
+                {
+                    atomic_fetch_add_explicit(&s->failed, req.count, memory_order_relaxed); /* reads the failed ring never runs */
+                    read = false;
+                }
+                _prefetch_read_cell(s, slot, &req, read);
                 continue;
             }
             if (stale)
                 continue;
             if (s->use_io_uring == false)
             {
-                /* unregister closes the duplicate under slots_lock: holding it keeps the descriptor the file's while we use it */
-                pthread_mutex_lock(&s->slots_lock);
-                bool current = atomic_load_explicit(&s->generations[slot], memory_order_relaxed) == _ticket_generation(req.ticket);
-                int fd = current ? s->fds[slot] : -1;
-                int rc = fd == -1 ? -1 : posix_fadvise(fd, (off_t)req.offsets[0], (off_t)req.length, POSIX_FADV_WILLNEED);
-                pthread_mutex_unlock(&s->slots_lock);
-                if (current == false)
-                    atomic_fetch_add_explicit(&s->dropped_stale, 1, memory_order_relaxed);
-                else if (rc != 0)
+                /* no lock: if unregister closes the descriptor after the generation check and another file gets its number,
+                   the hint reads ahead part of that file, which is harmless */
+                int fd = s->fds[slot];
+                if (fd == -1 || posix_fadvise(fd, (off_t)req.offsets[0], (off_t)req.length, POSIX_FADV_WILLNEED) != 0)
                     atomic_fetch_add_explicit(&s->failed, 1, memory_order_relaxed);
                 else
                     atomic_fetch_add_explicit(&s->submitted, 1, memory_order_relaxed);
@@ -629,44 +601,43 @@ _prefetch_wake(struct prefetch_state *s)
     }
 }
 
-/* Returns 1 when queued. On a full queue, returns 0 (a dropped hint), or waits for the submitter to free a cell. The caller
-   wakes the submitter once its pushes are done. */
-PRIVATE int32_t
-_prefetch_push(struct prefetch_state *s, const struct prefetch_request *req, bool wait)
+/* Claims count consecutive cells, all or none, without waiting: returns the first position, or -1 when the queue has no
+   room (the caller drops the request). The one consumer frees cells in order, so when the last of them is free for this
+   lap, so are the ones before it. */
+PRIVATE int64_t
+_prefetch_claim(struct prefetch_state *s, uint32_t count)
 {
-    /* pos must outlive the loop: a failed CAS reloads it, and the publish below needs it */
     uint64_t pos = atomic_load_explicit(&s->enqueue_pos, memory_order_relaxed);
-    struct prefetch_cell *cell;
     for (;;)
     {
-        cell = &s->queue[pos & s->queue_mask];
-        int64_t diff = (int64_t)atomic_load_explicit(&cell->sequence, memory_order_acquire) - (int64_t)pos;
+        uint64_t last = pos + count - 1;
+        int64_t diff = (int64_t)atomic_load_explicit(&s->queue[last & s->queue_mask].sequence, memory_order_acquire) - (int64_t)last;
+        if (count > s->queue_mask + 1 || diff < 0) /* larger than the queue, or a cell still holds a request of the previous lap */
+        {
+            atomic_fetch_add_explicit(&s->dropped_full, 1, memory_order_relaxed);
+            return -1;
+        }
         if (diff == 0)
         {
-            if (atomic_compare_exchange_weak_explicit(&s->enqueue_pos, &pos, pos + 1, memory_order_relaxed, memory_order_relaxed))
-                break;
-        }
-        else if (diff < 0)
-        {
-            /* the cell still holds a request from the previous lap: the queue is full */
-            if (wait == false)
-            {
-                atomic_fetch_add_explicit(&s->dropped_full, 1, memory_order_relaxed);
-                return 0;
-            }
-            _prefetch_wake(s); /* the cells we pushed so far must drain before ours frees */
-            _wait_for_space(s, cell, pos);
-            pos = atomic_load_explicit(&s->enqueue_pos, memory_order_relaxed);
+            /* a failed CAS reloads pos */
+            if (atomic_compare_exchange_weak_explicit(&s->enqueue_pos, &pos, pos + count, memory_order_relaxed, memory_order_relaxed))
+                return (int64_t)pos;
         }
         else
         {
-            pos = atomic_load_explicit(&s->enqueue_pos, memory_order_relaxed);
+            pos = atomic_load_explicit(&s->enqueue_pos, memory_order_relaxed); /* another producer claimed it */
         }
     }
+}
+
+/* Fills a claimed cell; the caller wakes the submitter once its cells are published */
+PRIVATE void
+_prefetch_publish(struct prefetch_state *s, uint64_t pos, const struct prefetch_request *req)
+{
+    struct prefetch_cell *cell = &s->queue[pos & s->queue_mask];
     cell->request = *req;
     /* seq_cst, not release: the store half of the Dekker pair in _prefetch_wake */
     atomic_store_explicit(&cell->sequence, pos + 1, memory_order_seq_cst);
-    return 1;
 }
 
 PRIVATE bool
@@ -689,31 +660,42 @@ rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length,
     int32_t all = 1;
     for (int64_t end = offset + length; offset < end; offset += request_size)
     {
+        int64_t pos = _prefetch_claim(s, 1);
+        if (pos == -1)
+        {
+            all = 0;
+            break; /* a full queue: the rest of the range would be dropped too */
+        }
         req.offsets[0] = offset;
         req.length = (uint32_t)rvn_min(rvn_min(request_size, end - offset), (int64_t)UINT32_MAX);
-        all &= _prefetch_push(s, &req, false);
+        _prefetch_publish(s, (uint64_t)pos, &req);
     }
     _prefetch_wake(s);
     return all;
 }
 
-/* Async read of the 8 KB pages at offsets; calls on_reads_done with group when done. Returns 1 when queued */
+/* Async read of the 8 KB pages at offsets; calls on_reads_done with group when done. Never waits: returns 1 when queued,
+   0 when the queue has no room for the whole group (dropped, on_reads_done is not called) */
 EXPORT int32_t
 rvn_prefetch_ring_read_pages(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint32_t group)
 {
     struct prefetch_state *s = ring;
     if (_prefetch_valid_ticket(s, ticket) == false || offsets == NULL || count <= 0 || group >= s->max_groups)
         return 0;
+    uint32_t cells = ((uint32_t)count + PREFETCH_CELL_PAGES - 1) / PREFETCH_CELL_PAGES;
+    int64_t pos = _prefetch_claim(s, cells); /* all or none: a group missing a cell would never complete */
+    if (pos == -1)
+        return 0;
     struct prefetch_request req = {0};
     req.ticket = ticket;
     req.group = group;
     req.total = (uint32_t)count;
-    for (int32_t done = 0; done < count; done += PREFETCH_CELL_PAGES)
+    for (int32_t done = 0; done < count; done += PREFETCH_CELL_PAGES, pos++)
     {
         req.first = done == 0;
         req.count = (uint16_t)rvn_min(PREFETCH_CELL_PAGES, count - done);
         memcpy(req.offsets, offsets + done, req.count * sizeof(int64_t));
-        _prefetch_push(s, &req, true);
+        _prefetch_publish(s, (uint64_t)pos, &req);
     }
     _prefetch_wake(s);
     return 1;
@@ -736,6 +718,18 @@ rvn_prefetch_start_reads(int fd, int64_t *offsets, int32_t count)
         offsets[missing++] = offset;
     }
     return missing;
+}
+
+/* For tests: the ring's next count submits fail with error (an errno) before reaching the kernel */
+EXPORT int32_t
+rvn_prefetch_ring_fail_submits(void *ring, int32_t count, int32_t error)
+{
+    struct prefetch_state *s = ring;
+    if (s == NULL)
+        return FAIL_INVALID_HANDLE;
+    atomic_store_explicit(&s->failing_submit_error, -error, memory_order_relaxed);
+    atomic_store_explicit(&s->failing_submits, count, memory_order_relaxed);
+    return SUCCESS;
 }
 
 EXPORT int32_t

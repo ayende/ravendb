@@ -40,16 +40,22 @@ public sealed record DeviceIoStats
 /// The one reader of a block device's I/O counters (/sys/dev/block/&lt;major&gt;:&lt;minor&gt;/stat on Linux, the LogicalDisk
 /// performance counters on Windows). A timer samples every device once per <see cref="SampleIntervalMs"/>; the users read
 /// <see cref="Current"/> or handle <see cref="Sampled"/>. <see cref="ForDevice"/> and <see cref="ForPath"/> return null when
-/// the platform gives no counters for the device (macOS, containers without sysfs, no access to the performance counters):
-/// the caller must treat that as "no signal", never as "the device is idle".
+/// the platform gives no counters for the device (macOS, containers without sysfs, no performance counter instance), and
+/// for <see cref="RetryIntervalMs"/> after opening the counters failed: the caller must treat that as "no signal", never as
+/// "the device is idle", and may ask again later.
 /// </summary>
 public sealed class DeviceIoSampler
 {
     public const int SampleIntervalMs = 1000;
+    public const int RetryIntervalMs = 60_000;
 
     private static readonly RavenLogger Logger = RavenLogManager.Instance.GetLoggerForSparrowServer(typeof(DeviceIoSampler));
     private static readonly ConcurrentDictionary<ulong, Lazy<DeviceIoSampler>> ByDevice = new();
     private static readonly ConcurrentDictionary<string, ulong> DeviceByPath = new();
+    internal static readonly ConcurrentDictionary<ulong, long> RetryAt = new(); // after a failure to open the counters
+
+    /// <summary>For tests: opens a device's counters first; null opens the real ones.</summary>
+    internal static Func<ulong, string, DeviceCounters> OpenCountersForTesting;
     private static readonly Lazy<Timer> SampleTimer = new(() => new Timer(_ => SampleAll(), null, SampleIntervalMs, SampleIntervalMs));
     private static int _sampling;
 
@@ -80,8 +86,19 @@ public sealed class DeviceIoSampler
         {
             foreach (var sampler in ByDevice.Values)
             {
-                if (sampler.IsValueCreated && sampler.Value != null)
-                    yield return sampler.Value;
+                if (sampler.IsValueCreated == false)
+                    continue;
+                DeviceIoSampler value;
+                try
+                {
+                    value = sampler.Value;
+                }
+                catch
+                {
+                    continue; // a failed open, about to be removed by ForDevice
+                }
+                if (value != null)
+                    yield return value;
             }
         }
     }
@@ -90,7 +107,26 @@ public sealed class DeviceIoSampler
     /// <param name="pathOnDevice">a file or directory on the device</param>
     public static DeviceIoSampler ForDevice(ulong deviceId, string pathOnDevice)
     {
-        return ByDevice.GetOrAdd(deviceId, static (id, path) => new Lazy<DeviceIoSampler>(() => Create(id, path)), pathOnDevice).Value;
+        if (ByDevice.TryGetValue(deviceId, out var existing) == false)
+        {
+            if (RetryAt.TryGetValue(deviceId, out var retryAt) && Environment.TickCount64 < retryAt)
+                return null;
+            existing = ByDevice.GetOrAdd(deviceId, static (id, path) => new Lazy<DeviceIoSampler>(() => Create(id, path)), pathOnDevice);
+        }
+
+        try
+        {
+            return existing.Value; // null: the device has no counters, which does not change
+        }
+        catch (Exception e)
+        {
+            // opening the counters failed (out of descriptors, performance counters not ready): forget it and try again later
+            ByDevice.TryRemove(new KeyValuePair<ulong, Lazy<DeviceIoSampler>>(deviceId, existing));
+            RetryAt[deviceId] = Environment.TickCount64 + RetryIntervalMs;
+            if (Logger.IsInfoEnabled)
+                Logger.Info($"Cannot read the I/O counters of the device that holds '{pathOnDevice}', trying again in {RetryIntervalMs / 1000} seconds", e);
+            return null;
+        }
     }
 
     public static DeviceIoSampler ForPath(string path)
@@ -128,18 +164,7 @@ public sealed class DeviceIoSampler
 
     private static DeviceIoSampler Create(ulong deviceId, string pathOnDevice)
     {
-        DeviceCounters counters;
-        try
-        {
-            counters = DeviceCounters.TryCreate(deviceId, pathOnDevice);
-        }
-        catch (Exception e)
-        {
-            if (Logger.IsInfoEnabled)
-                Logger.Info($"Cannot read the I/O counters of the device that holds '{pathOnDevice}'", e);
-            return null;
-        }
-
+        var counters = OpenCountersForTesting?.Invoke(deviceId, pathOnDevice) ?? DeviceCounters.TryCreate(deviceId, pathOnDevice);
         if (counters == null)
             return null;
 

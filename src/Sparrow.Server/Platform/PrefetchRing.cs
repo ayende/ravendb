@@ -82,6 +82,13 @@ public sealed class PrefetchRing : IDisposable
         _freeSlots = new SemaphoreSlim(WaitSlots);
     }
 
+    /// <summary>For tests: the next <paramref name="count"/> submits fail with <paramref name="errno"/>, as the kernel would.</summary>
+    internal unsafe void FailSubmitsForTesting(int count, int errno)
+    {
+        if (_handle != null)
+            Pal.rvn_prefetch_ring_fail_submits(_handle, count, errno);
+    }
+
     public unsafe PrefetchRingStats? GetStats()
     {
         if (_handle == null || Pal.rvn_prefetch_ring_stats(_handle, out var stats) != PalFlags.FailCodes.Success)

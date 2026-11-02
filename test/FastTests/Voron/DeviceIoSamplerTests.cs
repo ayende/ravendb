@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Threading;
 using Sparrow.Server.Utils;
 using Tests.Infrastructure;
 using Voron.Impl.Journal;
@@ -109,6 +110,37 @@ public class DeviceIoSamplerTests(ITestOutputHelper output) : NoDisposalNeeded(o
         for (var i = 0; i < 8; i++)
             sampler.Sample(Stopwatch.GetTimestamp());
         Assert.True(device.ShouldDrain());
+    }
+
+    [RavenFact(RavenTestCategory.Voron | RavenTestCategory.Monitoring)]
+    public void ADeviceWhoseCountersFailedToOpenIsTriedAgainLater()
+    {
+        const ulong device = 0xFFFF_FFFF_FFFF_FF01; // no real device has this id
+        var attempts = 0;
+        DeviceIoSampler.OpenCountersForTesting = (id, _) =>
+        {
+            if (id != device)
+                return null;
+            if (Interlocked.Increment(ref attempts) == 1)
+                throw new IOException("Too many open files");
+            return new FixedCounters();
+        };
+        try
+        {
+            Assert.Null(DeviceIoSampler.ForDevice(device, "test"));
+            Assert.Null(DeviceIoSampler.ForDevice(device, "test")); // too soon to try again
+            Assert.Equal(1, attempts);
+
+            DeviceIoSampler.RetryAt[device] = 0; // the retry interval passed
+            var sampler = DeviceIoSampler.ForDevice(device, "test");
+            Assert.NotNull(sampler);
+            Assert.Same(sampler, DeviceIoSampler.ForDevice(device, "test"));
+            Assert.Equal(2, attempts);
+        }
+        finally
+        {
+            DeviceIoSampler.OpenCountersForTesting = null;
+        }
     }
 
     private sealed class FixedCounters : DeviceCounters

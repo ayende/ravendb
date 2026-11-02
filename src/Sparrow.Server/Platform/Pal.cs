@@ -200,10 +200,11 @@ namespace Sparrow.Server.Platform
             void* handle, out PalDefinitions.PagerPrefetchInfo info);
 
         /// <summary>
-        /// The ring reads the 8 KB pages at the offsets and passes the group to its callback once. Waits on a full queue, so it
-        /// keeps the GC transition.
+        /// The ring reads the 8 KB pages at the offsets and passes the group to its callback once. Returns 1 when queued, 0 when
+        /// the queue had no room for the whole group (dropped: no callback). Never waits.
         /// </summary>
         [DllImport(LIBRVNPAL)]
+        [SuppressGCTransition]
         public static extern Int32 rvn_prefetch_ring_read_pages(
             void* ring, Int64 ticket, Int64* offsets, Int32 count, UInt32 group);
 
@@ -215,6 +216,11 @@ namespace Sparrow.Server.Platform
         [DllImport(LIBRVNPAL, SetLastError = true)]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_destroy(
             void* ring, out Int32 errorCode);
+
+        /// <summary>For tests: the ring's next <paramref name="count"/> submits fail with <paramref name="error"/> (an errno).</summary>
+        [DllImport(LIBRVNPAL)]
+        [SuppressGCTransition]
+        public static extern PalFlags.FailCodes rvn_prefetch_ring_fail_submits(void* ring, Int32 count, Int32 error);
 
         [DllImport(LIBRVNPAL)]
         [SuppressGCTransition]

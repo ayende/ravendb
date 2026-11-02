@@ -195,6 +195,7 @@ rvn_prefetch_ring_create(int32_t ring_entries, int32_t max_files, int32_t queue_
 EXPORT int32_t
 rvn_prefetch_ring_destroy(void *ring, int32_t *detailed_error_code);
 
+/* never waits: returns 0 when the queue has no room for the whole group */
 EXPORT int32_t
 rvn_prefetch_ring_read_pages(void *ring, int64_t ticket, const int64_t *offsets, int32_t count, uint32_t group);
 
@@ -211,6 +212,10 @@ struct rvn_prefetch_ring_stats
 
 EXPORT int32_t
 rvn_prefetch_ring_stats(void *ring, struct rvn_prefetch_ring_stats *stats);
+
+/* For tests: the ring's next count submits fail with error (an errno) before reaching the kernel */
+EXPORT int32_t
+rvn_prefetch_ring_fail_submits(void *ring, int32_t count, int32_t error);
 
 EXPORT int32_t
 rvn_close_pager(
