@@ -36,6 +36,7 @@ internal sealed class DocumentHandlerProcessorForPatch : AbstractDocumentHandler
             {
                 if (modified == null)
                 {
+                    PatchDocumentCommand.ValidateId(context, id); // the merger is skipped, so its check is done here
                     command.CompleteAsNotModified(context, document.Data);
                     return ValueTask.CompletedTask;
                 }
