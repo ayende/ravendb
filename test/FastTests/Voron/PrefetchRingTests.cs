@@ -844,6 +844,46 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
     }
 
     [RavenFact(RavenTestCategory.Voron)]
+    public void ScanHintsReadTheirPagesAheadEvenWhenMemoryIsFull()
+    {
+        using var ring = new PrefetchRing(ringEntries: 8, maxFiles: 4, queueSize: 64);
+        if (ring.IsAvailable == false)
+            return; // Windows / macOS
+
+        var path = RavenTestHelper.NewDataPath(nameof(ScanHintsReadTheirPagesAheadEvenWhenMemoryIsFull), 0, forceCreateDir: true);
+        try
+        {
+            var file = Path.Combine(path, Constants.DatabaseFilename);
+            File.WriteAllBytes(file, new byte[64 * Constants.Storage.PageSize]);
+            using var options = StorageEnvironmentOptions.ForPathForTests(path);
+            options.PrefetchRing = ring;
+            var (pager, state) = Pager.Create(options, file, 64 * Constants.Storage.PageSize, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
+            using (pager)
+            using (state)
+            {
+                PrefetchPolicy.Global.Tick(freeBytes: 0); // memory is full: no first-touch warm-up
+
+                // pages 1-3 are one run, 40 another; -1 and pages past the end are not pages of the file
+                pager.MaybePrefetchMemory(state, new List<long> { 1, 2, 3, 40, -1, 64, 1000 }.GetEnumerator());
+                var sw = Stopwatch.StartNew();
+                while (ring.GetStats()!.Value.Submitted < 2 && sw.Elapsed < TimeSpan.FromSeconds(5))
+                    Thread.Sleep(5);
+                Assert.Equal(2, ring.GetStats()!.Value.Submitted);
+
+                pager.MaybePrefetchMemory(state, new List<long> { 1, 2, 3, 40 }.GetEnumerator()); // requested a moment ago
+                Thread.Sleep(100);
+                var stats = ring.GetStats()!.Value;
+                Assert.Equal(2, stats.Submitted);
+                Assert.Equal(0, stats.Failed);
+            }
+        }
+        finally
+        {
+            IOExtensions.DeleteDirectory(path);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Voron)]
     public void AFullQueueDropsAGroupInsteadOfWaiting()
     {
         // 4 cells of 12 pages

@@ -208,23 +208,52 @@ public unsafe partial class Pager : IDisposable
         return _functions.EnsureMapped(this, state, ref txState, page, numberOfPages);
     }
 
+    /// <summary>
+    /// Reads ahead the pages the caller is about to read (iterators, scans, term lookups), also while memory is full: unlike
+    /// the segment read-ahead of a first touch, they are used at once. Adjacent pages go in one request; pages requested a
+    /// moment ago are skipped, and the device's read-ahead budget applies.
+    /// </summary>
     public void MaybePrefetchMemory<T>(State state, T pagesToPrefetch) where T : struct, IEnumerator<long>
     {
         if (!_canPrefetch)
             return;
 
-        if (pagesToPrefetch.MoveNext() == false)
-            return;
-
-        do
+        var recent = _recentHints ??= new int[1 << RecentHintsBits];
+        long runStart = 0, runPages = 0;
+        while (pagesToPrefetch.MoveNext())
         {
-            long pageNumber = pagesToPrefetch.Current;
-            if (_prefetchTable.ShouldPrefetchSegment(pageNumber, state.NumberOfAllocatedPages, out var offset, out long bytes))
-                PrefetchSegment(state, offset, bytes);
-        } while (pagesToPrefetch.MoveNext());
+            var pageNumber = pagesToPrefetch.Current;
+            if ((ulong)pageNumber >= (ulong)state.NumberOfAllocatedPages)
+                continue; // a hint can carry -1 or a stale page number
+            ref var slot = ref RecentSlot(recent, pageNumber);
+            var key = (int)(pageNumber + 1);
+            if (Volatile.Read(ref slot) == key)
+                continue;
+            Volatile.Write(ref slot, key);
+
+            if (runPages != 0 && pageNumber == runStart + runPages)
+            {
+                runPages++;
+                continue;
+            }
+            ReadRunAhead(state, runStart, runPages);
+            runStart = pageNumber;
+            runPages = 1;
+        }
+        ReadRunAhead(state, runStart, runPages);
     }
 
-    private void PrefetchSegment(State state, long offset, long bytes)
+    private void ReadRunAhead(State state, long firstPage, long pages)
+    {
+        if (pages == 0)
+            return;
+        var bytes = pages * Constants.Storage.PageSize;
+        if (DeviceBudget?.TryStartReadAhead(bytes) == false)
+            return; // the device is busy
+        PrefetchRange(state, firstPage * Constants.Storage.PageSize, bytes);
+    }
+
+    private void PrefetchRange(State state, long offset, long bytes)
     {
         if (PlatformDetails.RunningOnLinux)
             Pal.rvn_pager_prefetch(state.Handle, offset, bytes);

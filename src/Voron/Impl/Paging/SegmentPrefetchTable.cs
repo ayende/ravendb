@@ -7,9 +7,9 @@ using Voron.Impl.Journal;
 namespace Voron.Impl.Paging;
 
 /// <summary>
-/// The per data file state of <see cref="PrefetchPolicy"/>: the warm-up in which each segment was last read ahead. It is
-/// updated on every page access without synchronization: two threads may both read ahead the same segment, which is
-/// harmless.
+/// The per data file state of <see cref="PrefetchPolicy"/>: the warm-up in which each segment was last read ahead on a
+/// first touch. It is updated on every page access without synchronization: two threads may both read ahead the same
+/// segment, which is harmless.
 /// </summary>
 internal sealed class SegmentPrefetchTable
 {
