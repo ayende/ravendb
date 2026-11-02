@@ -183,8 +183,8 @@ namespace Sparrow.Server.Platform
             void* handle, Int64 offset, Int64 length);
 
         /// <summary>
-        /// Starts reading the 8 KB pages at the offsets into the page cache, without waiting. Moves the offsets of the pages that
-        /// were not in the page cache to the front and returns their number.
+        /// Finds the 8 KB pages at the offsets that are not in the page cache, without waiting: moves their offsets to the front and
+        /// returns their number. Some kernels (7.0) also start reading them, others (5.10) do not.
         /// </summary>
         [DllImport(LIBRVNPAL)]
         public static extern Int32 rvn_pager_start_reads(

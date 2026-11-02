@@ -701,7 +701,7 @@ rvn_prefetch_ring_read_pages(void *ring, int64_t ticket, const int64_t *offsets,
     return 1;
 }
 
-/* Starts reading the pages not in the page cache, without waiting; returns them at the front of offsets */
+/* Returns the pages not in the page cache at the front of offsets. Some kernels (7.0) also start their reads, others (5.10) do not */
 PRIVATE int32_t
 rvn_prefetch_start_reads(int fd, int64_t *offsets, int32_t count)
 {

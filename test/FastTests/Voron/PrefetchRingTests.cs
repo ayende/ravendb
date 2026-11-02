@@ -460,55 +460,71 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
     }
 
     [RavenFact(RavenTestCategory.Voron)]
-    public void StartReadsReportsAndReadsOnlyThePagesNotInMemory()
+    public void StartReadsReportsThePagesNotInMemory()
+    {
+        WithPage5InMemory(nameof(StartReadsReportsThePagesNotInMemory), Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch, (state, page) =>
+        {
+            var offsets = stackalloc long[] { 3 * Constants.Storage.PageSize, 5 * Constants.Storage.PageSize, 7 * Constants.Storage.PageSize };
+            var missing = Pal.rvn_pager_start_reads(state.Handle, offsets, 3);
+            if (missing == 3)
+            {
+                Output.WriteLine("this file system has no RWF_NOWAIT: every page counts as missing");
+                return;
+            }
+
+            // whether the reads of the missing pages start depends on the kernel: 7.0 starts them, 5.10 does not
+            Assert.Equal(2, missing);
+            Assert.Equal(3 * Constants.Storage.PageSize, offsets[0]);
+            Assert.Equal(7 * Constants.Storage.PageSize, offsets[1]);
+        });
+    }
+
+    [RavenFact(RavenTestCategory.Voron)]
+    public void ReadAheadWithoutARingReadsOnlyThePagesNotInMemory()
+    {
+        // no prefetch flag: the file has no ring to wait on, so the pages are read ahead without waiting
+        WithPage5InMemory(nameof(ReadAheadWithoutARingReadsOnlyThePagesNotInMemory), Pal.OpenFileFlags.RandomAccess, (state, page) =>
+        {
+            Assert.True(Pager.ReadPagesAhead(state, new long[] { 3, 5, 7 }).IsCompletedSuccessfully);
+
+            var expected = Constants.Storage.PageSize / Environment.SystemPageSize;
+            Assert.Equal(expected, WaitForResident((byte*)page(3), expected));
+            Assert.Equal(expected, WaitForResident((byte*)page(7), expected));
+            Assert.Equal(0, ResidentPages((byte*)page(4), Constants.Storage.PageSize));
+            Assert.Equal(0, ResidentPages((byte*)page(6), Constants.Storage.PageSize));
+        });
+    }
+
+    private delegate void PagesTest(Pager.State state, Func<long, IntPtr> page);
+
+    // a 16 page data file out of the page cache, but for page 5
+    private void WithPage5InMemory(string name, Pal.OpenFileFlags flags, PagesTest test)
     {
         if (PlatformDetails.RunningOnLinux == false)
             return;
 
-        const int pages = 16;
-        var path = RavenTestHelper.NewDataPath(nameof(StartReadsReportsAndReadsOnlyThePagesNotInMemory), 0, forceCreateDir: true);
+        var path = RavenTestHelper.NewDataPath(name, 0, forceCreateDir: true);
         try
         {
             var file = Path.Combine(path, Constants.DatabaseFilename);
-            var content = new byte[pages * Constants.Storage.PageSize];
+            var content = new byte[16 * Constants.Storage.PageSize];
             Random.Shared.NextBytes(content);
             File.WriteAllBytes(file, content);
 
-            using (var options = StorageEnvironmentOptions.ForPathForTests(path))
+            using var options = StorageEnvironmentOptions.ForPathForTests(path);
+            var (pager, state) = Pager.Create(options, file, content.Length, flags);
+            using (pager)
+            using (state)
             {
-                var (pager, state) = Pager.Create(options, file, content.Length, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
-                using (pager)
-                using (state)
+                IntPtr Page(long n) => (IntPtr)(state.ReadAddress + n * Constants.Storage.PageSize);
+                DropFromPageCache(file);
+                if (ResidentPages((byte*)Page(5), Constants.Storage.PageSize) == Constants.Storage.PageSize / Environment.SystemPageSize)
                 {
-                    var expected = Constants.Storage.PageSize / Environment.SystemPageSize;
-                    byte* Page(long n) => state.ReadAddress + n * Constants.Storage.PageSize;
-                    DropFromPageCache(file);
-                    if (ResidentPages(Page(5), Constants.Storage.PageSize) == expected)
-                    {
-                        Output.WriteLine("this file system keeps the pages in memory (tmpfs?): nothing to check");
-                        return;
-                    }
-                    TouchPage(Page(5));
-
-                    var offsets = stackalloc long[] { 3 * Constants.Storage.PageSize, 5 * Constants.Storage.PageSize, 7 * Constants.Storage.PageSize };
-                    var missing = Pal.rvn_pager_start_reads(state.Handle, offsets, 3);
-                    if (missing == 3)
-                    {
-                        Output.WriteLine("this file system has no RWF_NOWAIT: every page counts as missing");
-                    }
-                    else
-                    {
-                        Assert.Equal(2, missing);
-                        Assert.Equal(3 * Constants.Storage.PageSize, offsets[0]);
-                        Assert.Equal(7 * Constants.Storage.PageSize, offsets[1]);
-                    }
-
-                    // the reads were started: whole pages, and nothing around them
-                    Assert.Equal(expected, WaitForResident(Page(3), expected));
-                    Assert.Equal(expected, WaitForResident(Page(7), expected));
-                    Assert.Equal(0, ResidentPages(Page(4), Constants.Storage.PageSize));
-                    Assert.Equal(0, ResidentPages(Page(6), Constants.Storage.PageSize));
+                    Output.WriteLine("this file system keeps the pages in memory (tmpfs?): nothing to check");
+                    return;
                 }
+                TouchPage((byte*)Page(5));
+                test(state, Page);
             }
         }
         finally

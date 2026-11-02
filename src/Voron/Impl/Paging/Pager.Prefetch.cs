@@ -51,28 +51,30 @@ public unsafe partial class Pager
             if (count == 0)
                 return ValueTask.CompletedTask;
 
-            var ring = state.Pager._prefetchRing;
             if (count > CheckedReadAheadLimit)
-            {
-                if (ring is { CanWaitForPages: true })
-                    return WaitForPages(state.Pager, ring, offsets[..count]);
-                foreach (var offset in offsets[..count]) // nothing started these reads yet
-                    Pal.rvn_pager_will_need(state.Handle, offset, Constants.Storage.PageSize);
-                return ValueTask.CompletedTask;
-            }
+                return ReadAhead(state, offsets[..count]);
 
             int missing;
             fixed (long* p = offsets)
                 missing = Pal.rvn_pager_start_reads(state.Handle, p, count);
-            if (missing == 0 || ring is not { CanWaitForPages: true })
-                return ValueTask.CompletedTask;
-            return WaitForPages(state.Pager, ring, offsets[..missing]);
+            return missing == 0 ? ValueTask.CompletedTask : ReadAhead(state, offsets[..missing]);
         }
         finally
         {
             if (rented != null)
                 ArrayPool<long>.Shared.Return(rented);
         }
+    }
+
+    // The pages may not be read yet: some kernels (5.10) report a page missing from the page cache without starting its read
+    private static ValueTask ReadAhead(State state, ReadOnlySpan<long> offsets)
+    {
+        var ring = state.Pager._prefetchRing;
+        if (ring is { CanWaitForPages: true })
+            return WaitForPages(state.Pager, ring, offsets);
+        foreach (var offset in offsets)
+            Pal.rvn_pager_will_need(state.Handle, offset, Constants.Storage.PageSize);
+        return ValueTask.CompletedTask;
     }
 
     private static ValueTask WaitForPages(Pager pager, PrefetchRing ring, ReadOnlySpan<long> offsets)
