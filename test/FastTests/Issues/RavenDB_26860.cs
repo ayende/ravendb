@@ -27,6 +27,14 @@ namespace FastTests.Issues
         }
 
         [RavenFact(RavenTestCategory.Configuration | RavenTestCategory.Voron)]
+        public void PrefetchRingMaxFilesDefaultsToTheProcessLimit()
+        {
+            var configuration = RavenConfiguration.CreateForServer(null);
+            configuration.Initialize();
+            Assert.Null(configuration.Storage.PrefetchRingMaxFiles); // PalConfiguration.FilesTheProcessCanOpen
+        }
+
+        [RavenFact(RavenTestCategory.Configuration | RavenTestCategory.Voron)]
         public void ZeroPrefetchRingMaxFilesTurnsTheRingOff()
         {
             var configuration = RavenConfiguration.CreateForServer(null);

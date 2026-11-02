@@ -830,6 +830,19 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
         Assert.True(read.Wait(TimeSpan.FromSeconds(10)));
     }
 
+    [RavenMultiplatformFact(RavenTestCategory.Voron, RavenPlatform.Linux)]
+    public void TheDefaultFileTableHoldsAsManyFilesAsTheProcessCanOpen()
+    {
+        // "Max open files            1048576              1048576              files"
+        var line = File.ReadAllLines("/proc/self/limits").Single(l => l.StartsWith("Max open files"));
+        var soft = line["Max open files".Length..].Split(' ', StringSplitOptions.RemoveEmptyEntries)[0];
+        var expected = soft == "unlimited" ? 1 << 20 : (int)Math.Min(long.Parse(soft), 1 << 20);
+
+        Assert.Equal(expected, PalConfiguration.FilesTheProcessCanOpen());
+        if (PalConfiguration.PrefetchMaxFiles == null)
+            Assert.Equal(expected, PrefetchRing.Default.MaxFiles);
+    }
+
     [RavenFact(RavenTestCategory.Voron)]
     public void AFullQueueDropsAGroupInsteadOfWaiting()
     {

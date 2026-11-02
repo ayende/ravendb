@@ -31,7 +31,8 @@ public readonly struct PrefetchRingStats
 /// </summary>
 public sealed class PrefetchRing : IDisposable
 {
-    public static readonly PrefetchRing Default = new(PalConfiguration.PrefetchRingEntries, PalConfiguration.PrefetchMaxFiles, PalConfiguration.PrefetchQueueSize);
+    public static readonly PrefetchRing Default = new(PalConfiguration.PrefetchRingEntries,
+        PalConfiguration.PrefetchMaxFiles ?? PalConfiguration.FilesTheProcessCanOpen(), PalConfiguration.PrefetchQueueSize);
 
     private const int WaitSlots = 1024;
 

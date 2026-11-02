@@ -275,10 +275,10 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.WriteMode", ConfigurationEntryScope.ServerWideOnly)]
         public Pal.RvnWriteMode WriteMode { get; set; }
 
-        [Description("EXPERT: The number of data files that can be registered with the prefetch I/O ring (Linux). Opening a data file beyond this number fails. 0 disables the ring and the read-ahead of data files.")]
-        [DefaultValue(4096)]
+        [Description("EXPERT: The number of data files that can be registered with the prefetch I/O ring (Linux). Opening a data file beyond this number fails. By default, the process's limit on open files (RLIMIT_NOFILE). 0 disables the ring and the read-ahead of data files.")]
+        [DefaultValue(null)]
         [ConfigurationEntry("Storage.PrefetchRingMaxFiles", ConfigurationEntryScope.ServerWideOnly)]
-        public int PrefetchRingMaxFiles { get; set; }
+        public int? PrefetchRingMaxFiles { get; set; }
 
         [Description("EXPERT: The number of prefetch requests the prefetch I/O ring (Linux) keeps in flight.")]
         [DefaultValue(256)]
