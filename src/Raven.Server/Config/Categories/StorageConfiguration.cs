@@ -131,12 +131,6 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.PrefetchBatchSizeInKb", ConfigurationEntryScope.ServerWideOrPerDatabase)]
         public Size PrefetchBatchSize { get; set; }
 
-        [Description("How many gigabytes of memory should be prefetched before restarting the prefetch tracker table. Experts only.")]
-        [DefaultValue(8)]
-        [SizeUnit(SizeUnit.Gigabytes)]
-        [ConfigurationEntry("Storage.PrefetchResetThresholdInGb", ConfigurationEntryScope.ServerWideOrPerDatabase)]
-        public Size PrefetchResetThreshold { get; set; }
-
         [Description("Minimal available free space in percentages on any disk used by a database before creating an alert. Set to null to disable.")]
         [DefaultValue(15)]
         [ConfigurationEntry("Storage.FreeSpaceAlertThresholdInPercentages", ConfigurationEntryScope.ServerWideOrPerDatabase)]
@@ -281,7 +275,7 @@ namespace Raven.Server.Config.Categories
         [ConfigurationEntry("Storage.WriteMode", ConfigurationEntryScope.ServerWideOnly)]
         public Pal.RvnWriteMode WriteMode { get; set; }
 
-        [Description("EXPERT: The number of data files that can be registered with the prefetch I/O ring (Linux). Opening a data file beyond this number fails.")]
+        [Description("EXPERT: The number of data files that can be registered with the prefetch I/O ring (Linux). Opening a data file beyond this number fails. 0 disables the ring and the read-ahead of data files.")]
         [DefaultValue(4096)]
         [ConfigurationEntry("Storage.PrefetchRingMaxFiles", ConfigurationEntryScope.ServerWideOnly)]
         public int PrefetchRingMaxFiles { get; set; }
@@ -310,6 +304,18 @@ namespace Raven.Server.Config.Categories
                 return;
 
             ValidateIoRingConfiguration();
+            ValidatePrefetchRingConfiguration();
+        }
+
+        private void ValidatePrefetchRingConfiguration()
+        {
+            if (PrefetchRingMaxFiles < 0)
+                throw new InvalidOperationException(
+                    $"'{RavenConfiguration.GetKey(x => x.Storage.PrefetchRingMaxFiles)}' is set to {PrefetchRingMaxFiles}. Use 0 to disable the prefetch ring, or a positive number of data files.");
+            if (PrefetchRingEntries < 1)
+                throw new InvalidOperationException($"'{RavenConfiguration.GetKey(x => x.Storage.PrefetchRingEntries)}' is set to {PrefetchRingEntries}, it must be at least 1.");
+            if (PrefetchRingQueueSize < 1)
+                throw new InvalidOperationException($"'{RavenConfiguration.GetKey(x => x.Storage.PrefetchRingQueueSize)}' is set to {PrefetchRingQueueSize}, it must be at least 1.");
         }
 
         private void ValidateIoRingConfiguration()

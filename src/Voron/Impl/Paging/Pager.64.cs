@@ -48,7 +48,7 @@ public unsafe partial class Pager
             if (state.Disposed)
                 goto AlreadyDisposed;
 
-            if (pager._canPrefetch && pager._prefetchTable.ShouldPrefetchSegment(pageNumber, out long offsetFromFileBase, out long bytes))
+            if (pager._canPrefetch && pager._prefetchTable.ShouldPrefetchSegment(pageNumber, state.NumberOfAllocatedPages, out long offsetFromFileBase, out long bytes))
                 pager.PrefetchSegment(state, offsetFromFileBase, bytes);
 
             return state.ReadAddress + pageNumber * Constants.Storage.PageSize;

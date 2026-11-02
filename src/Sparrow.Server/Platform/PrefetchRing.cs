@@ -25,9 +25,9 @@ public readonly struct PrefetchRingStats
 
 /// <summary>
 /// The PAL's queue of read-ahead requests for data files: drained by io_uring, or by a posix_fadvise thread where
-/// io_uring is not allowed. The process uses <see cref="Default"/>; tests can create their own. On Windows and macOS
-/// there is no ring (<see cref="IsAvailable"/> is false). A ring can only be disposed after every data file opened
-/// with it was closed.
+/// io_uring is not allowed. The process uses <see cref="Default"/>; tests can create their own. On Windows and macOS,
+/// and with no files allowed (maxFiles 0), there is no ring (<see cref="IsAvailable"/> is false) and data files have no
+/// read-ahead. A ring can only be disposed after every data file opened with it was closed.
 /// </summary>
 public sealed class PrefetchRing : IDisposable
 {
@@ -55,8 +55,9 @@ public sealed class PrefetchRing : IDisposable
 
     public unsafe PrefetchRing(int ringEntries, int maxFiles, int queueSize)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(maxFiles);
         MaxFiles = maxFiles;
-        if (PlatformDetails.RunningOnLinux == false)
+        if (PlatformDetails.RunningOnLinux == false || maxFiles == 0)
             return;
 
         queueSize = Bits.PowerOf2(queueSize); // the PAL indexes the queue by mask

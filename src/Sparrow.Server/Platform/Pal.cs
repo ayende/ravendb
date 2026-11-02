@@ -11,7 +11,7 @@ namespace Sparrow.Server.Platform
 {
     public static unsafe class Pal
     {
-        public const int PAL_VER = 70913; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
+        public const int PAL_VER = 70914; // Should match auto generated rc from rvn_get_pal_ver() @ src/rvngetpalver.c
 
         static Pal()
         {
@@ -120,7 +120,8 @@ namespace Sparrow.Server.Platform
             public long PagesDeferredHot; 
         }
 
-        [DllImport(LIBRVNPAL, SetLastError = true)]
+        [DllImport(LIBRVNPAL)]
+        [SuppressGCTransition]
         public static extern PalFlags.ErrnoSpecialCodes rvn_get_error_meaning(Int32 error);
 
         [DllImport(LIBRVNPAL, SetLastError = true)]
@@ -167,7 +168,10 @@ namespace Sparrow.Server.Platform
             out void* mem,
             out Int32 errorCode);
             
-        /// <summary>Starts reading the range into the page cache (prefetch ring, or posix_fadvise without io_uring). Returns 1 when requested, 0 when dropped.</summary>
+        /// <summary>
+        /// Starts reading the range into the page cache (prefetch ring, or posix_fadvise without io_uring). Returns 1 when requested,
+        /// 0 when dropped. Queues the requests and wakes the ring once: no blocking call.
+        /// </summary>
         [DllImport(LIBRVNPAL)]
         [SuppressGCTransition]
         public static extern Int32 rvn_pager_prefetch(
@@ -191,10 +195,14 @@ namespace Sparrow.Server.Platform
         /// not registered).
         /// </summary>
         [DllImport(LIBRVNPAL)]
+        [SuppressGCTransition]
         public static extern PalFlags.FailCodes rvn_pager_get_prefetch_info(
             void* handle, out PalDefinitions.PagerPrefetchInfo info);
 
-        /// <summary>The ring reads the 8 KB pages at the offsets and passes the group to its callback once</summary>
+        /// <summary>
+        /// The ring reads the 8 KB pages at the offsets and passes the group to its callback once. Waits on a full queue, so it
+        /// keeps the GC transition.
+        /// </summary>
         [DllImport(LIBRVNPAL)]
         public static extern Int32 rvn_prefetch_ring_read_pages(
             void* ring, Int64 ticket, Int64* offsets, Int32 count, UInt32 group);
@@ -209,6 +217,7 @@ namespace Sparrow.Server.Platform
             void* ring, out Int32 errorCode);
 
         [DllImport(LIBRVNPAL)]
+        [SuppressGCTransition]
         public static extern PalFlags.FailCodes rvn_prefetch_ring_stats(
             void* ring, out PrefetchRingStats stats);
 

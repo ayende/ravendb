@@ -6,6 +6,7 @@ using Raven.Server.Utils;
 using Sparrow.Extensions;
 using Sparrow.Json;
 using Sparrow.Json.Parsing;
+using Sparrow.LowMemory;
 
 namespace Raven.Server.Documents.Patch;
 
@@ -21,8 +22,26 @@ namespace Raven.Server.Documents.Patch;
 internal sealed class SimpleAssignmentPatch
 {
     private static readonly SizeLimitedConcurrentDictionary<string, SimpleAssignmentPatch> Cache = new(size: 1024, StringComparer.Ordinal);
+    internal static readonly ILowMemoryHandler LowMemoryHandler = new ClearCacheOnLowMemory(); // the notification holds its handlers weakly
     private static readonly SimpleAssignmentPatch NotSimple = new([]);
     private static readonly ParserOptions ParserOptions = ParserOptions.Default;
+
+    static SimpleAssignmentPatch()
+    {
+        LowMemoryNotification.Instance.RegisterLowMemoryHandler(LowMemoryHandler);
+    }
+
+    // the cache holds whole scripts: drop them under memory pressure, as ScriptRunnerCache does
+    private sealed class ClearCacheOnLowMemory : ILowMemoryHandler
+    {
+        public void LowMemory(LowMemorySeverity lowMemorySeverity) => Cache.Clear();
+
+        public void LowMemoryOver()
+        {
+        }
+    }
+
+    internal static bool IsCached(string script) => Cache.TryGetValue(script, out _);
 
     private enum UpdateKind
     {
@@ -333,34 +352,17 @@ internal sealed class SimpleAssignmentPatch
         }
     }
 
-    // JsBlittableBridge.WriteNumber: keep the original property's number type, otherwise an integer if the value is integral
     private static object ToWrittenNumber(BlittableJsonReaderObject document, string field, double d)
     {
+        var originalType = BlittableJsonToken.Null; // a new property
         var propertyIndex = document.GetPropertyIndex(field);
         if (propertyIndex != -1)
         {
             var property = new BlittableJsonReaderObject.PropertyDetails();
             document.GetPropertyByIndex(propertyIndex, ref property);
-            var type = property.Token & BlittableJsonReaderBase.TypesMask;
-            if (type == BlittableJsonToken.LazyNumber)
-                return d;
+            originalType = property.Token & BlittableJsonReaderBase.TypesMask;
         }
 
-        if (IsDoubleType(d))
-            return d;
-        return (long)d;
-
-        static bool IsDoubleType(double d)
-        {
-            var roundedNumber = Math.Round(d, 0);
-            if (roundedNumber.AlmostEquals(d))
-            {
-                var digitsAfterDecimalPoint = Math.Abs(roundedNumber - d);
-                if (digitsAfterDecimalPoint == 0 && Math.Abs(roundedNumber) <= long.MaxValue)
-                    return false;
-            }
-
-            return true;
-        }
+        return JsBlittableBridge.WriteAsDouble(originalType, d) ? d : (object)(long)d; // object: a plain ?: would make both a double
     }
 }

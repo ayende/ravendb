@@ -718,17 +718,10 @@ rvn_pager_prefetch(void *handle, int64_t offset, int64_t length)
     return 0; // no posix_fadvise
 #else
     void *ring = handle_ptr->global_state->prefetch_ring;
-    int64_t ticket = handle_ptr->global_state->prefetch_ticket;
-    int64_t request_size = handle_ptr->global_state->prefetch_request_size;
-    int32_t all = 1;
-    for (int64_t end = offset + length; offset < end; offset += request_size)
-    {
-        int64_t size = rvn_min(request_size, end - offset);
-        if (ring == NULL)
-            return 0;
-        all &= rvn_prefetch_enqueue(ring, ticket, offset, size);
-    }
-    return all;
+    if (ring == NULL)
+        return 0;
+    return rvn_prefetch_enqueue(ring, handle_ptr->global_state->prefetch_ticket, offset, length,
+                                handle_ptr->global_state->prefetch_request_size);
 #endif
 }
 

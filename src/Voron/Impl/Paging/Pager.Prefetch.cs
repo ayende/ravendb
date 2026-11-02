@@ -23,11 +23,14 @@ public unsafe partial class Pager
     // above this, one wait on the ring costs less than a non-blocking read of each page on the caller's thread
     private const int CheckedReadAheadLimit = 16;
 
+    /// <summary>False where <see cref="ReadPagesAhead"/> and <see cref="WillNeedPages"/> do nothing: callers can skip finding the pages.</summary>
+    public static bool CanReadPagesAhead(StorageEnvironmentOptions options) => WillNeedSupported && options.RunningOn32Bits == false;
+
     /// <summary>Completes once the pages are in the page cache. Recently requested pages are skipped.</summary>
     [SkipLocalsInit]
     public static ValueTask ReadPagesAhead(State state, ReadOnlySpan<long> pageNumbers)
     {
-        if (WillNeedSupported == false || state.Pager.Options.RunningOn32Bits)
+        if (CanReadPagesAhead(state.Pager.Options) == false)
             return ValueTask.CompletedTask;
 
         var recent = state.Pager._recentHints ??= new int[1 << RecentHintsBits];
@@ -88,7 +91,7 @@ public unsafe partial class Pager
 
     public static void WillNeedPages(State state, long pageNumber, int numberOfPages = 1)
     {
-        if (WillNeedSupported == false || state.Pager.Options.RunningOn32Bits)
+        if (CanReadPagesAhead(state.Pager.Options) == false)
             return;
 
         var recent = state.Pager._recentHints ??= new int[1 << RecentHintsBits];

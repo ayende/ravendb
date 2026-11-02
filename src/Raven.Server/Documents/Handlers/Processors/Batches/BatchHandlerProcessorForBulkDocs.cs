@@ -21,6 +21,7 @@ using Sparrow.Json.Parsing;
 using Sparrow.Server;
 using Index = Raven.Server.Documents.Indexes.Index;
 using System.Runtime.CompilerServices;
+using Voron.Impl.Paging;
 
 namespace Raven.Server.Documents.Handlers.Processors.Batches;
 
@@ -52,6 +53,9 @@ internal sealed class BatchHandlerProcessorForBulkDocs : AbstractBatchHandlerPro
     private ValueTask PrefetchDocumentsAsync(MergedBatchCommand command)
     {
         var database = RequestHandler.Database;
+        if (Pager.CanReadPagesAhead(database.DocumentsStorage.Environment.Options) == false)
+            return ValueTask.CompletedTask;
+
         List<string> ids = null;
         foreach (var cmd in command.ParsedCommands)
         {

@@ -80,6 +80,8 @@ public unsafe partial class Pager : IDisposable
         Pal.rvn_pager_get_prefetch_info(handle, out var prefetchInfo);
         pager._prefetchRequestSize = prefetchInfo.RequestSize;
         pager._prefetchTicket = prefetchInfo.Ticket;
+        if (PlatformDetails.RunningOnLinux && prefetchInfo.Ticket == -1)
+            pager._canPrefetch = false; // segment read-ahead goes through the ring: a file it does not hold (scratch, journal, no ring) has none
         return (pager, state);
     }
 
@@ -217,7 +219,7 @@ public unsafe partial class Pager : IDisposable
         do
         {
             long pageNumber = pagesToPrefetch.Current;
-            if (_prefetchTable.ShouldPrefetchSegment(pageNumber, out var offset, out long bytes))
+            if (_prefetchTable.ShouldPrefetchSegment(pageNumber, state.NumberOfAllocatedPages, out var offset, out long bytes))
                 PrefetchSegment(state, offset, bytes);
         } while (pagesToPrefetch.MoveNext());
     }
@@ -426,7 +428,7 @@ public unsafe partial class Pager : IDisposable
     }
 
     private static readonly long IncreaseByPowerOf2Threshold = new Size(512, SizeUnit.Megabytes).GetValue(SizeUnit.Bytes);
-    private readonly bool _canPrefetch;
+    private bool _canPrefetch;
 
     private static long GetNearestFileSize(long neededSize)
     {

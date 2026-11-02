@@ -69,6 +69,15 @@ namespace FastTests.Voron
             Assert.True(sample.WritesPerSecond > 0, $"no writes reached the device: {sample}");
         }
 
+        [RavenFact(RavenTestCategory.Voron)]
+        public void FirstTouchHintIgnoresPagesOutsideTheFile()
+        {
+            RequireFileBasedPager();
+            var state = Env.CurrentStateRecord.DataPagerState;
+            foreach (var page in new[] { -1L, -64L, long.MinValue, long.MaxValue })
+                Env.HintFirstTouch(state, page);
+        }
+
         private unsafe ulong DataFileDeviceId()
         {
             var state = Env.CurrentStateRecord.DataPagerState;

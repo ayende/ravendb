@@ -264,6 +264,17 @@ namespace FastTests.Client.Documents
             }
         }
 
+        [RavenFact(RavenTestCategory.Patching)]
+        public void LowMemoryClearsTheScriptCache()
+        {
+            var script = $"this.Name = args.v; // {Guid.NewGuid()}";
+            SimpleAssignmentPatch.TryGet(new Raven.Server.Documents.Patch.PatchRequest(script, PatchRequestType.Patch));
+            Assert.True(SimpleAssignmentPatch.IsCached(script));
+
+            SimpleAssignmentPatch.LowMemoryHandler.LowMemory(global::Sparrow.LowMemory.LowMemorySeverity.ExtremelyLow);
+            Assert.False(SimpleAssignmentPatch.IsCached(script));
+        }
+
         private static string Body(IDocumentStore store, string id)
         {
             using (var commands = store.Commands())

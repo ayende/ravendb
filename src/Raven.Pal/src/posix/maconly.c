@@ -268,12 +268,13 @@ rvn_prefetch_unregister(void *ring, int64_t ticket)
 }
 
 PRIVATE int32_t
-rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length)
+rvn_prefetch_enqueue(void *ring, int64_t ticket, int64_t offset, int64_t length, int64_t request_size)
 {
     (void)ring;
     (void)ticket;
     (void)offset;
     (void)length;
+    (void)request_size;
     return 0;
 }
 

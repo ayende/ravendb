@@ -22,6 +22,33 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
     private const int PosixFadviseDontNeed = 4;
 
     [RavenFact(RavenTestCategory.Voron)]
+    public void ARingWithNoFilesIsOffAndDataFilesStillOpen()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => new PrefetchRing(ringEntries: 8, maxFiles: -1, queueSize: 64));
+
+        using var ring = new PrefetchRing(ringEntries: 8, maxFiles: 0, queueSize: 64);
+        Assert.False(ring.IsAvailable);
+
+        var path = RavenTestHelper.NewDataPath(nameof(ARingWithNoFilesIsOffAndDataFilesStillOpen), 0, forceCreateDir: true);
+        try
+        {
+            using var options = StorageEnvironmentOptions.ForPathForTests(path);
+            options.PrefetchRing = ring;
+            for (var i = 0; i < 3; i++)
+            {
+                var (pager, state) = Pager.Create(options, Path.Combine(path, $"{i}.voron"), 64 * 1024, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
+                using (pager)
+                using (state)
+                    Assert.True(Pager.ReadPagesAhead(state, [1, 2, 3]).IsCompleted); // nothing to wait for without a ring
+            }
+        }
+        finally
+        {
+            IOExtensions.DeleteDirectory(path);
+        }
+    }
+
+    [RavenFact(RavenTestCategory.Voron)]
     public void DataFilesReleaseTheirRingRegistrationWhenClosed()
     {
         const int maxFiles = 64;
