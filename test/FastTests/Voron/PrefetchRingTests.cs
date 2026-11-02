@@ -325,13 +325,17 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
         Random.Shared.NextBytes(content);
         File.WriteAllBytes(file, content);
 
+        // a ring of its own: the default ring also counts the reads of the other tests' data files, and a file closed while its
+        // reads are queued fails them
+        using var ring = new PrefetchRing(ringEntries: 32, maxFiles: 4, queueSize: 64);
         using (var options = StorageEnvironmentOptions.ForPathForTests(path))
         {
+            options.PrefetchRing = ring;
             var (pager, state) = Pager.Create(options, file, content.Length, Pal.OpenFileFlags.RandomAccess | Pal.OpenFileFlags.Prefetch);
             using (pager)
             using (state)
             {
-                var ringAvailable = PrefetchRing.Default.IsAvailable;
+                var ringAvailable = ring.IsAvailable;
 
                 var expected = content.Length / Environment.SystemPageSize;
                 DropFromPageCache(file);
@@ -353,7 +357,7 @@ public unsafe class PrefetchRingTests(ITestOutputHelper output) : NoDisposalNeed
 
                 if (ringAvailable)
                 {
-                    var stats = PrefetchRing.Default.GetStats();
+                    var stats = ring.GetStats();
                     Assert.NotNull(stats);
                     Assert.True(stats.Value.Submitted > 0);
                     Assert.Equal(0, stats.Value.Failed);
