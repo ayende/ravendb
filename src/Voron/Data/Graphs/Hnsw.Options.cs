@@ -43,24 +43,26 @@ public partial class Hnsw
 
         // Remember that we have to fit a page header, and we want to
         // minimize wasted space, so we will allocate the vectors in batches.
-        public int VectorBatchInPages => VectorSizeBytes switch
-        {
-            < 768 => 1, // small enough it doesn't matter, use a 
-
-            768 => 2, // 2 pages, 21 vectors,   192 bytes wasted,  10 bytes / vector wasted
-            1024 => 2, // 2 pages, 15 vectors,   960 bytes wasted,  64 bytes / vector wasted
-            1536 => 4, // 4 pages, 21 vectors,   448 bytes wasted,  22 bytes / vector wasted
-
-            < 2048 => 4,
-            2048 => 4, // 4 pages, 15 vectors, 1,984 bytes wasted, 138 bytes / vector wasted
-            3072 => 2, // 2 pages,  5 vectors,   960 bytes wasted, 192 bytes / vector wasted
-            < 4096 => 4,
-            4096 => 4, // 4 pages,  7 vectors, 4,032 bytes wasted, 576 bytes / vector wasted
-            6144 => 4, // 4 pages,  5 vectors, 1,984 bytes wasted, 375 bytes / vector wasted
-            12288 => 8, // 8 pages, 5 vectors, 4,032 bytes wasted, 807 bytes / vector wasted
-
-            // in all sizes, we get a pretty good rate if we go with 5 vectors in a batch
-            _ => Paging.GetNumberOfOverflowPages(VectorSizeBytes * 5)
-        };
+        public int VectorBatchInPages => GetVectorBatchInPages(VectorSizeBytes);
     }
+
+    public static int GetVectorBatchInPages(int vectorSizeBytes) => vectorSizeBytes switch
+    {
+        < 768 => 1, // small enough it doesn't matter, use a 
+
+        768 => 2, // 2 pages, 21 vectors,   192 bytes wasted,  10 bytes / vector wasted
+        1024 => 2, // 2 pages, 15 vectors,   960 bytes wasted,  64 bytes / vector wasted
+        1536 => 4, // 4 pages, 21 vectors,   448 bytes wasted,  22 bytes / vector wasted
+
+        < 2048 => 4,
+        2048 => 4, // 4 pages, 15 vectors, 1,984 bytes wasted, 138 bytes / vector wasted
+        3072 => 2, // 2 pages,  5 vectors,   960 bytes wasted, 192 bytes / vector wasted
+        < 4096 => 4,
+        4096 => 4, // 4 pages,  7 vectors, 4,032 bytes wasted, 576 bytes / vector wasted
+        6144 => 4, // 4 pages,  5 vectors, 1,984 bytes wasted, 375 bytes / vector wasted
+        12288 => 8, // 8 pages, 5 vectors, 4,032 bytes wasted, 807 bytes / vector wasted
+
+        // in all sizes, we get a pretty good rate if we go with 5 vectors in a batch
+        _ => Paging.GetNumberOfOverflowPages(vectorSizeBytes * 5)
+    };
 }

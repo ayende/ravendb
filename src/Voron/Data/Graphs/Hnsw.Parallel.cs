@@ -116,7 +116,7 @@ public partial class Hnsw
     {
         private int _nextNodeIndex;
 
-        public int MaxConcurrentBatches = 512;
+        public int MaxConcurrentBatches { get; set; } = 512;
 
         internal static void CollectVectorsToPreload(ReadOnlySpan<int> edgesIndexes, ReadOnlySpan<Node> nodes, List<long> batch)
         {

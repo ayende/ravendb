@@ -116,14 +116,14 @@ public unsafe partial class Hnsw
         };
     }
 
-    private static ContainerId ReadGlobalVectorsContainerId(LowLevelTransaction llt)
+    internal static ContainerId ReadGlobalVectorsContainerId(LowLevelTransaction llt)
     {
         var config = llt.Transaction.ReadTree(HnswGlobalConfigSlice);
         var read = config.DirectRead(VectorsContainerIdSlice);
         return new ContainerId(Unsafe.Read<long>(read));
     }
 
-    private static ContainerId CreateHnswGlobalState(LowLevelTransaction llt)
+    internal static ContainerId CreateHnswGlobalState(LowLevelTransaction llt)
     {
         llt.Transaction.CompactTreeFor(VectorsIdByHashSlice);
         var config = llt.Transaction.CreateTree(HnswGlobalConfigSlice);
@@ -952,7 +952,7 @@ public unsafe partial class Hnsw
 
     }
 
-    public partial class Registration : IDisposable
+    public partial class Registration : IVectorIndexer
     {
         public bool IsCommited { get; private set; }
         private readonly Dictionary<ByteString, (ByteString Key, int NodeIndex, NativeList<long> PostingList)> _vectorHashCache = new(ByteStringContentComparer.Instance);
@@ -970,7 +970,6 @@ public unsafe partial class Hnsw
         private readonly CompactTree _vectorsByHash;
         private readonly int _vectorBatchSizeInPages;
         private readonly ContainerId _globalVectorsContainerId;
-        private PostingList _largePostingListSet;
 
         // Lazy scratch used by Register to normalize raw-sized inputs in-place; one allocation per Registration.
         private ByteStringContext<ByteStringMemoryCache>.InternalScope _normalizationScope;
@@ -1233,52 +1232,9 @@ public unsafe partial class Hnsw
         
         private ContainerEntryId RegisterVector(ReadOnlySpan<byte> vector)
         {
-            if (_searchState.Options.LastUsedContainerId.IsEmpty)
-            {
-                if (_vectorBatchSizeInPages is 1)
-                {
-                    // here we allocate a small value, directly from the container
-                    var vectorId = Container.Allocate(_searchState.Llt, _globalVectorsContainerId,
-                        vector.Length, out var singleVectorStorage);
-
-                    vector.CopyTo(singleVectorStorage);
-                    return vectorId;
-                }
-
-                var sizeInBytes = _vectorBatchSizeInPages * Constants.Storage.PageSize - PageHeader.SizeOf;
-                var batchId = Container.Allocate(_searchState.Llt, _globalVectorsContainerId,
-                    sizeInBytes, out var vectorStorage);
-
-                Debug.Assert(vectorStorage.Length / _searchState.Options.VectorSizeBytes <= byte.MaxValue, "vectorStorage.Length / _searchState.Options.VectorSizeBytes <= byte.MaxValue");
-                Debug.Assert(((long)batchId & 0xFFF) == 0, "We allocate > 1 page, so we get the full page container id");
-                _searchState.Options.LastUsedContainerId = new ContainerId((long)batchId);
-                _searchState.Options.VectorBatchIndex = 1;
-                vector.CopyTo(vectorStorage);
-                //container id | index    | marker
-                return GetVectorId(new ContainerId((long)batchId), 0);
-            }
-            var span = Container.GetMutable(_searchState.Llt, new ContainerEntryId((long)_searchState.Options.LastUsedContainerId));
-            var count = _searchState.Options.VectorBatchIndex++;
-            Debug.Assert(((count) * vector.Length) < span.Length, "((count) * vector.Length) < span.Length");
-            var offset = count * vector.Length;
-            vector.CopyTo(span[offset..]);
-            offset += vector.Length;
-            var id = GetVectorId(_searchState.Options.LastUsedContainerId, count);
-            if (offset + vector.Length > span.Length)
-            {
-                // no more room for the _next_ vector
-                _searchState.Options.LastUsedContainerId = new ContainerId(0);
-                _searchState.Options.VectorBatchIndex = 0;
-            }
-
-            return id;
-
-            ContainerEntryId GetVectorId(ContainerId containerId, int index)
-            {
-                Debug.Assert(((long)containerId & Constants.Graphs.VectorId.EnsureIsSingleMask) == 0, $"Container id {containerId}");
-                //container id | index    | marker
-                return new ContainerEntryId((long)containerId | (uint)(index << 1) | Constants.Graphs.VectorStorage.VectorContainerInternalIndexer);
-            }
+            ref var options = ref _searchState.Options;
+            return Hnsw.RegisterVector(_searchState.Llt, _globalVectorsContainerId, _vectorBatchSizeInPages, options.VectorSizeBytes,
+                ref options.LastUsedContainerId, ref options.VectorBatchIndex, vector);
         }
 
         private ReadOnlySpan<byte> NormalizeIntoScratch(ReadOnlySpan<byte> vector)
@@ -1308,9 +1264,7 @@ public unsafe partial class Hnsw
         {
             PortableExceptions.ThrowIfOnDebug<InvalidOperationException>(_searchState.Llt.Committed);
 
-            var pforEncoder = new FastPForEncoder(_searchState.Llt.Allocator);
-            var pforDecoder = new FastPForDecoder(_searchState.Llt.Allocator);
-            var listBuffer = new ContextBoundNativeList<long>(_searchState.Llt.Allocator);
+            var postingListWriter = new VectorPostingListWriter(_searchState.Llt, _searchState.Options.Container);
             var byteBuffer = new ContextBoundNativeList<byte>(_searchState.Llt.Allocator);
             byteBuffer.EnsureCapacityFor(128);
 
@@ -1318,7 +1272,7 @@ public unsafe partial class Hnsw
             foreach (var (_, (_, nodeIndex, modifications)) in _vectorHashCache)
             {
                 ref var node = ref nodes[nodeIndex];
-                node.PostingListId = MergePostingList(node.PostingListId, modifications);
+                node.PostingListId = postingListWriter.Merge(node.PostingListId, modifications);
             }
 
             // Intentionally zeroing the nodes var, we may realloc the underlying array in the insert vector phase
@@ -1339,108 +1293,10 @@ public unsafe partial class Hnsw
             // flush the local modifications
             _searchState.FlushOptions();
 
-            listBuffer.Dispose();
+            postingListWriter.Dispose();
             byteBuffer.Dispose();
-            pforEncoder.Dispose();
-            pforDecoder.Dispose();
 
             IsCommited = true;
-
-            long MergePostingList(long postingList, NativeList<long> modifications)
-            {
-                // We may have duplicates in the list.
-                // Scenarios:
-                // 1) additions: when the source document contains a list of the same vectors
-                // 2) removals: when the deleted document contained a list of the same vectors
-                // However, the HNSW does not use frequency. So we want to have information in buffer about:
-                // - There was an addition
-                // - There was a removal
-                // In such case, we can just sort and remove duplicates to have unique list.
-                modifications.Shrink(Sorting.SortAndRemoveDuplicates(modifications.ToSpan()));
-
-                listBuffer.Clear();
-                listBuffer.AddRange(modifications.ToSpan());
-
-                int currentSize = 0;
-                bool hasSmallPostingList = false;
-                ContainerEntryId rawPostingListId = new ContainerEntryId(postingList & Constants.Graphs.VectorId.ContainerType);
-
-                switch (postingList & Constants.Graphs.VectorId.EnsureIsSingleMask)
-                {
-                    case Constants.Graphs.VectorId.Tombstone: // nothing there
-                        break;
-                    case Constants.Graphs.VectorId.Single: // single value, just add it
-                        listBuffer.Add((long)rawPostingListId);
-                        break;
-                    case Constants.Graphs.VectorId.SmallPostingList:
-                        hasSmallPostingList = true;
-                        _searchState.ReadPostingList(rawPostingListId, ref listBuffer, ref pforDecoder, out currentSize);
-                        break;
-                    case Constants.Graphs.VectorId.PostingList:
-                        return UpdatePostingList(rawPostingListId, in modifications, pforEncoder, ref pforDecoder, ref listBuffer);
-                }
-
-                // Due to deduplication performed before reading the posting list from disk, we can now have the following scenarios:
-                // 1) 2x Additions + 1x Removal
-                // There was an update of the document. So, we have 1x addition and 1x removal from indexing, plus the loaded entry id from disk -> the ID will remain in the buffer
-                // 2) 1x Addition + 1x Removal:
-                // There was a delete operation during indexing, plus the loaded entry id from disk: id will be removed from buffer
-                // 3) 1x Addition: New document 
-                // INFO: All other scenarios are invalid.
-                PostingList.SortModificationsAndRemoveDuplicates(ref listBuffer);
-
-                if (listBuffer.Count is 0 or 1)
-                {
-                    if (hasSmallPostingList)
-                    {
-                        Container.Delete(_searchState.Llt, _searchState.Options.Container, rawPostingListId);
-                    }
-
-                    if (listBuffer.Count is 0)
-                        return 0;
-
-                    Debug.Assert((listBuffer[0] & Constants.Graphs.VectorId.PostingList) == 0, "(listBuffer[0] & 0b11) == 0");
-                    return listBuffer[0] | Constants.Graphs.VectorId.Single;
-                }
-
-                int size = pforEncoder.Encode(listBuffer.RawItems, listBuffer.Count);
-                if (size > Container.MaxSizeInsideContainerPage)
-                {
-                    DeleteOldSmallPostingListIfNeeded();
-                    return CreateNewPostingList(pforEncoder);
-                }
-
-                byteBuffer.EnsureCapacityFor(size + 5);
-                var offset = VariableSizeEncoding.Write(byteBuffer.RawItems, listBuffer.Count);
-                (int itemsCount, int sizeUsed) = pforEncoder.Write(byteBuffer.RawItems + offset, byteBuffer.Capacity - offset);
-                byteBuffer.Count = sizeUsed + offset;
-                Debug.Assert(itemsCount == listBuffer.Count && sizeUsed == size, "itemsCount == listBuffer.Count && sizeUsed == size");
-                Span<byte> mutable;
-                if (currentSize == byteBuffer.Count)
-                {
-                    mutable = Container.GetMutable(_searchState.Llt, rawPostingListId);
-                }
-                else
-                {
-                    DeleteOldSmallPostingListIfNeeded();
-                    rawPostingListId = Container.Allocate(_searchState.Llt, _searchState.Options.Container, byteBuffer.Count, out mutable);
-                }
-
-                Span<byte> span = byteBuffer.ToSpan();
-                span.CopyTo(mutable);
-
-                Debug.Assert(((long)rawPostingListId & Constants.Graphs.VectorId.PostingList) == 0, "(rawPostingListId & 0b11) == 0");
-                return (long)rawPostingListId | Constants.Graphs.VectorId.SmallPostingList;
-
-
-                void DeleteOldSmallPostingListIfNeeded()
-                {
-                    if (hasSmallPostingList)
-                    {
-                        Container.Delete(_searchState.Llt, _searchState.Options.Container, rawPostingListId);
-                    }
-                }
-            }
         }
 
         public void Dispose()
@@ -1448,54 +1304,6 @@ public unsafe partial class Hnsw
             if (_normalizationBuffer.HasValue)
                 _normalizationScope.Dispose();
         }
-
-        private long UpdatePostingList(ContainerEntryId postingListId, in NativeList<long> modifications, FastPForEncoder pForEncoder, ref FastPForDecoder pForDecoder, ref ContextBoundNativeList<long> tempListBuffer)
-        {
-            var setSpace = Container.GetMutable(_searchState.Llt, postingListId);
-            ref var postingListState = ref MemoryMarshal.AsRef<PostingListState>(setSpace);
-
-            var lists = stackalloc long*[2];
-            var indexes = stackalloc int[2];
-
-            using var _1 = _searchState.Llt.Allocator.Allocate(modifications.Count * sizeof(long), out var bs1);
-            using var _2 = _searchState.Llt.Allocator.Allocate(modifications.Count * sizeof(long), out var bs2);
-            lists[0] = (long*)bs1.Ptr;
-            lists[1] = (long*)bs2.Ptr;
-
-            for (int i = 0; i < modifications.Count; i++)
-            {
-                var cur = modifications[i];
-                var listIdx = cur & 1;
-                var curIndex = indexes[listIdx]++;
-                lists[listIdx][curIndex] = cur;
-            }
-
-            var numberOfEntries = PostingList.Update(_searchState.Llt, ref postingListState, lists[0], indexes[0],
-                lists[1], indexes[1], pForEncoder, ref tempListBuffer, ref pForDecoder);
-
-            if (numberOfEntries is 0)
-            {
-                _largePostingListSet ??= _searchState.Llt.Transaction.OpenPostingList(Constants.PostingList.PostingListRegister);
-                _largePostingListSet.Remove((long)postingListId);
-                Container.Delete(_searchState.Llt, _searchState.Options.Container, postingListId);
-                return 0;
-            }
-
-            return (long)postingListId | Constants.Graphs.VectorId.PostingList;
-        }
-
-        private long CreateNewPostingList(FastPForEncoder pforEncoder)
-        {
-            var setId = Container.Allocate(_searchState.Llt, _searchState.Options.Container, sizeof(PostingListState), out var setSpace);
-
-            _largePostingListSet ??= _searchState.Llt.Transaction.OpenPostingList(Constants.PostingList.PostingListRegister);
-            _largePostingListSet.Add((long)setId);
-            
-            ref var postingListState = ref MemoryMarshal.AsRef<PostingListState>(setSpace);
-            PostingList.Create(_searchState.Llt, ref postingListState, pforEncoder);
-            return (long)setId | Constants.Graphs.VectorId.PostingList;
-        }
-
 
         bool PersistNode(ref Node node, ref ContextBoundNativeList<byte> byteBuffer)
         {

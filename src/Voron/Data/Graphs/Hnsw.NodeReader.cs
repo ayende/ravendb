@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using Sparrow;
 using Sparrow.Compression;
@@ -58,22 +58,6 @@ public partial class Hnsw
 
         public UnmanagedSpan ReadVector(in SearchState state) => ReadVector(VectorId, in state);
 
-        public static UnmanagedSpan ReadVector(long vectorId, in SearchState state)
-        {
-            if ((vectorId & Constants.Graphs.VectorStorage.VectorContainerInternalIndexer) == 0)
-            {
-                Container.Get(state.Llt, new ContainerEntryId(vectorId), out var item);
-                var vectorSpan = new UnmanagedSpan(item.Address, item.Length);
-                Debug.Assert(state.Options.VectorSizeBytes == vectorSpan.Length, "state.Options.VectorSizeBytes == vectorSpan.Length");
-                return vectorSpan;
-            }
-
-            var count = (byte)(vectorId >> 1);
-            var containerId = vectorId & Node.VectorIdMask;
-            Container.Get(state.Llt, new ContainerEntryId(containerId), out var container);
-            var offset = count * state.Options.VectorSizeBytes;
-            Debug.Assert(offset >= 0 && offset + state.Options.VectorSizeBytes <= container.Length, "offset >= 0 && offset + state.Options.VectorSizeBytes <= container.Length");
-            return new UnmanagedSpan(container.Address + offset, state.Options.VectorSizeBytes);
-        }
+        public static UnmanagedSpan ReadVector(long vectorId, in SearchState state) => Hnsw.ReadVector(state.Llt, vectorId, state.Options.VectorSizeBytes);
     }
 }
