@@ -1210,6 +1210,21 @@
                         </div>
                     </div>
                     <div class="properties-item">
+                        <span class="properties-label" title="Indexing strategy">Indexing strategy</span>
+                        <div class="btn-group properties-value">
+                            <button type="button" class="btn set-size dropdown-toggle" data-toggle="dropdown"
+                                    aria-expanded="false">
+                                <span data-bind="text: indexingStrategy() || 'Default'"></span> <i
+                                class="caret"></i>
+                            </button>
+                            <ul class="dropdown-menu" data-bind="foreach: indexingStrategies">
+                                <li><a href="#"
+                                       data-bind="text: $data, click: $parent.indexingStrategy.bind($parent, $data)"></a>
+                                </li>
+                            </ul>
+                        </div>
+                    </div>
+                    <div class="properties-item">
                         <span class="properties-label" title="Destination embedding type">Destination embedding type</span>
                         <div class="btn-group properties-value" data-bind="validationElement: destinationEmbeddingType">
                             <button type="button" class="btn set-size dropdown-toggle" data-toggle="dropdown"

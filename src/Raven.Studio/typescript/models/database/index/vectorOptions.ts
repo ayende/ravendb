@@ -1,4 +1,4 @@
-﻿/// <reference path="../../../../typings/tsd.d.ts"/>
+/// <reference path="../../../../typings/tsd.d.ts"/>
 import jsonUtil = require("common/jsonUtil");
 import common = require("components/utils/common");
 
@@ -10,6 +10,11 @@ class vectorOptions {
     destinationEmbeddingType = ko.observable<VectorEmbeddingTypeWithoutText>();
     numberOfCandidatesForIndexing = ko.observable<number>();
     numberOfEdges = ko.observable<number>();
+    indexingStrategy = ko.observable<Raven.Client.Documents.Indexes.Vector.VectorIndexingStrategy>();
+
+    indexingStrategies = common.exhaustiveStringTuple<Raven.Client.Documents.Indexes.Vector.VectorIndexingStrategy>()(
+        "Hnsw", "Centroids"
+    )
 
     sourceEmbeddingTypes = common.exhaustiveStringTuple<Raven.Client.Documents.Indexes.Vector.VectorEmbeddingType>()(
         "Single", "Int8", "Text", "Binary"
@@ -27,6 +32,7 @@ class vectorOptions {
         this.destinationEmbeddingType(dto.DestinationEmbeddingType as VectorEmbeddingTypeWithoutText);
         this.numberOfCandidatesForIndexing(dto.NumberOfCandidatesForIndexing);
         this.numberOfEdges(dto.NumberOfEdges);
+        this.indexingStrategy(dto.IndexingStrategy);
 
         this.initValidation()
         this.initObservables()
@@ -37,6 +43,7 @@ class vectorOptions {
             this.destinationEmbeddingType,
             this.numberOfCandidatesForIndexing,
             this.numberOfEdges,
+            this.indexingStrategy,
         ], false, jsonUtil.newLineNormalizingHashFunction);
     }
     
@@ -47,6 +54,7 @@ class vectorOptions {
             DestinationEmbeddingType: this.destinationEmbeddingType(),
             NumberOfCandidatesForIndexing: this.numberOfCandidatesForIndexing(),
             NumberOfEdges: this.numberOfEdges(),
+            IndexingStrategy: this.indexingStrategy() ?? null,
         };
     }
 
@@ -57,6 +65,7 @@ class vectorOptions {
             DestinationEmbeddingType: "Single",
             NumberOfCandidatesForIndexing: null,
             NumberOfEdges: null,
+            IndexingStrategy: null,
         }
     }
     
