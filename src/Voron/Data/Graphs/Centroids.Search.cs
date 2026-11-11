@@ -532,9 +532,6 @@ public unsafe partial class Centroids
             Rerank(array, array.Length, keepAll: true);
         }
 
-        /// <summary>
-        /// Computes the exact distances of the candidates and keeps them sorted by distance.
-        /// </summary>
         private void Rerank(long[] candidates, int count, bool keepAll)
         {
             const int batchSize = 4096;

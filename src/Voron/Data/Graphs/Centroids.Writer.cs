@@ -612,9 +612,6 @@ public unsafe partial class Centroids
             }
         }
 
-        /// <summary>
-        /// Appends the given vectors to the partition, encoded against its centroid.
-        /// </summary>
         private void AppendVectors(long partitionId, ReadOnlySpan<int> indexes, float[] vectors, ReadOnlySpan<long> vectorIds, ReadOnlySpan<long> postingLists, ReadOnlySpan<long> hints)
         {
             var centroid = GetCentroid(partitionId).AsSpan(0, _dims);
@@ -800,9 +797,6 @@ public unsafe partial class Centroids
             }
         }
 
-        /// <summary>
-        /// Moves the members of an undersized partition to their nearest other partition and removes it.
-        /// </summary>
         private void Merge(long partitionId)
         {
             var members = new List<Member>();
