@@ -1330,8 +1330,10 @@ public unsafe partial class Hnsw
             nodes = _searchState.Nodes;
             for (int i = 0; i < nodes.Length; i++)
             {
-                PersistNode(ref nodes[i], ref byteBuffer);
-                DirtyNodeIds.Add(nodes[i].NodeId);
+                // Nodes that were only read during placement encode to the bytes already stored; writing
+                // them back would copy their pages into the transaction for nothing.
+                if (PersistNode(ref nodes[i], ref byteBuffer))
+                    DirtyNodeIds.Add(nodes[i].NodeId);
             }
 
             // flush the local modifications
@@ -1495,16 +1497,19 @@ public unsafe partial class Hnsw
         }
 
 
-        void PersistNode(ref Node node, ref ContextBoundNativeList<byte> byteBuffer)
+        bool PersistNode(ref Node node, ref ContextBoundNativeList<byte> byteBuffer)
         {
             var encoded = node.Encode(ref byteBuffer);
             if (_searchState.TryGetLocationForNode(node.NodeId, out var locationId))
             {
-                var existing = Container.GetMutable(_searchState.Llt, new ContainerEntryId(locationId));
-                if (existing.Length == encoded.Length)
+                var current = Container.GetReadOnly(_searchState.Llt, new ContainerEntryId(locationId));
+                if (current.SequenceEqual(encoded))
+                    return false;
+
+                if (current.Length == encoded.Length)
                 {
-                    encoded.CopyTo(existing);
-                    return;
+                    encoded.CopyTo(Container.GetMutable(_searchState.Llt, new ContainerEntryId(locationId)));
+                    return true;
                 }
 
                 Container.Delete(_searchState.Llt, _searchState.Options.Container, new ContainerEntryId(locationId));
@@ -1514,6 +1519,7 @@ public unsafe partial class Hnsw
             locationId = (long)allocatedId;
             _searchState.RegisterNodeLocation(node.NodeId, locationId);
             encoded.CopyTo(storage);
+            return true;
         }
     }
 
