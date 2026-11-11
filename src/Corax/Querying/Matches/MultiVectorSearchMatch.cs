@@ -111,7 +111,7 @@ public struct MultiVectorSearchMatch : IQueryMatch
         var isCentroids = _indexSearcher.IsCentroidsVectorField(_metadata.FieldName);
         var sharedSearchState = isCentroids ? null : _indexSearcher.GetOrCreateVectorSearchState(_metadata.FieldName);
 
-        _isEmpty = sharedSearchState.IsEmpty || (_filterQuery != null && _filterResults!.Value.Count == 0);
+        _isEmpty = (sharedSearchState?.IsEmpty ?? false) || (_filterQuery != null && _filterResults!.Value.Count == 0);
     }
 
     public int Fill(Span<long> matches)
