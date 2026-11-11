@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -36,7 +36,7 @@ public struct MultiVectorSearchMatch : IQueryMatch
 
     // Reference to the first sub-query's retriever, kept so Score can call its distance-to-score
     // conversion methods after all retrievers have been disposed.
-    private Hnsw.VectorSearchRetriever _firstRetriever;
+    private VectorRetriever _firstRetriever;
     private ContextBoundNativeList<long> _nodesIdsToScan;
     private bool _vectorRetrieverInitialized;
 
@@ -108,7 +108,8 @@ public struct MultiVectorSearchMatch : IQueryMatch
 
         // Obtain the IndexSearcher-scoped SearchState for this field; sub-queries below reuse it
         // so loaded node data (edges, vectors) is shared across them.
-        var sharedSearchState = _indexSearcher.GetOrCreateVectorSearchState(_metadata.FieldName);
+        var isCentroids = _indexSearcher.IsCentroidsVectorField(_metadata.FieldName);
+        var sharedSearchState = isCentroids ? null : _indexSearcher.GetOrCreateVectorSearchState(_metadata.FieldName);
 
         _isEmpty = sharedSearchState.IsEmpty || (_filterQuery != null && _filterResults!.Value.Count == 0);
     }
@@ -145,7 +146,8 @@ public struct MultiVectorSearchMatch : IQueryMatch
         // Construct and fully consume each retriever before moving to the next; the shared
         // SearchState has a single pair of priority queues (_candidatesQ, _nearestEdgesQ) that
         // cannot be interleaved across retrievers.
-        var sharedSearchState = _indexSearcher.GetOrCreateVectorSearchState(_metadata.FieldName);
+        var isCentroids = _indexSearcher.IsCentroidsVectorField(_metadata.FieldName);
+        var sharedSearchState = isCentroids ? null : _indexSearcher.GetOrCreateVectorSearchState(_metadata.FieldName);
 
         _matches.Init(_indexSearcher.Allocator, 128);
         _distances.Init(_indexSearcher.Allocator, 128);
@@ -154,16 +156,26 @@ public struct MultiVectorSearchMatch : IQueryMatch
             // Invariant: when a new retriever starts, the shared priority queues on SearchState
             // must be empty. Violating this causes the new traversal to read leftover entries
             // from the previous sub-query.
-            sharedSearchState.AssertSharedQueuesClean();
+            sharedSearchState?.AssertSharedQueuesClean();
 
             var vector = _vectorsToSearch[i].GetEmbeddingMemory();
-            var vectorSearcher = (_isExact) switch
+            VectorRetriever vectorSearcher;
+            if (isCentroids)
             {
-                _ when _scanningQuery => Hnsw.ExactNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, false, _nodesIdsToScan),
-                true => Hnsw.ExactNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null, null),
-                false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults!.Value, _random)),
-                false => Hnsw.ApproximateNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
-            };
+                var mode = _scanningQuery ? Centroids.SearchMode.Scan : _isExact ? Centroids.SearchMode.Exact : Centroids.SearchMode.Approximate;
+                vectorSearcher = new VectorRetriever(Centroids.Search(_indexSearcher.Transaction.LowLevelTransaction, _metadata.FieldName, vector, _numberOfCandidates, _minimumMatch, mode,
+                    _filterResults, _scanningQuery ? _nodesIdsToScan : null, _indexSearcher.VectorSearchCentroidsScanFactor));
+            }
+            else
+            {
+                vectorSearcher = new VectorRetriever(_isExact switch
+                {
+                    _ when _scanningQuery => Hnsw.ExactNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, false, _nodesIdsToScan),
+                    true => Hnsw.ExactNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null, null),
+                    false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults!.Value, _random)),
+                    false => Hnsw.ApproximateNearest(sharedSearchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
+                });
+            }
 
             if (i == 0)
                 _firstRetriever = vectorSearcher;

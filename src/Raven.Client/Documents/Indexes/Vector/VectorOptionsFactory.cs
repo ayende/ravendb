@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Sparrow;
 
 namespace Raven.Client.Documents.Indexes.Vector;
@@ -54,6 +54,12 @@ public sealed class VectorOptionsFactory
     public VectorOptionsFactory NumberOfEdges(int numberOfEdges)
     {
         _vectorOptions.NumberOfEdges = numberOfEdges;
+        return this;
+    }
+
+    public VectorOptionsFactory IndexingStrategy(VectorIndexingStrategy indexingStrategy)
+    {
+        _vectorOptions.IndexingStrategy = indexingStrategy;
         return this;
     }
 }

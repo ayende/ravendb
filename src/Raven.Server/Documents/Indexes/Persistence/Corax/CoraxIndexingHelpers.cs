@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
 using Corax.Pipeline;
@@ -25,6 +25,19 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax;
 
 public static class CoraxIndexingHelpers
 {
+    internal static VectorOptions CreateVectorOptions(Raven.Client.Documents.Indexes.Vector.VectorOptions options, Raven.Server.Config.Categories.IndexingConfiguration configuration,
+        Voron.Data.Graphs.VectorEmbeddingType embeddingType) => new()
+    {
+        NumberOfCandidates = options.NumberOfCandidatesForIndexing ?? configuration.CoraxVectorDefaultNumberOfCandidatesForIndexing,
+        NumberOfEdges = options.NumberOfEdges ?? configuration.CoraxVectorDefaultNumberOfEdges,
+        VectorEmbeddingType = embeddingType,
+        IndexingStrategy = (options.IndexingStrategy ?? configuration.CoraxVectorDefaultIndexingStrategy) == VectorIndexingStrategy.Centroids
+            ? Voron.Data.Graphs.VectorIndexingStrategy.Centroids
+            : Voron.Data.Graphs.VectorIndexingStrategy.Hnsw,
+        CentroidsMaxPartitionSize = configuration.CoraxVectorCentroidsMaxPartitionSize,
+        CentroidsQuantizationBits = configuration.CoraxVectorCentroidsQuantizationBits
+    };
+
     private static readonly ConcurrentDictionary<Type, bool> NotForQuerying = new ConcurrentDictionary<Type, bool>();
 
     private static CoraxAnalyzer GetCoraxAnalyzer(string fieldName, string analyzer, Dictionary<Type, CoraxAnalyzer> analyzers, bool forQuerying, string databaseName)
@@ -135,12 +148,7 @@ public static class CoraxIndexingHelpers
                     _ => throw new ArgumentOutOfRangeException()
                 };
 
-                coraxVectorOptions = new VectorOptions()
-                {
-                    NumberOfCandidates = field.Vector.NumberOfCandidatesForIndexing ?? index.Configuration.CoraxVectorDefaultNumberOfCandidatesForIndexing,
-                    NumberOfEdges = field.Vector.NumberOfEdges ?? index.Configuration.CoraxVectorDefaultNumberOfEdges,
-                    VectorEmbeddingType = vectorEmbeddingType
-                };
+                coraxVectorOptions = CreateVectorOptions(field.Vector, index.Configuration, vectorEmbeddingType);
             }
 
             switch (field.Indexing)

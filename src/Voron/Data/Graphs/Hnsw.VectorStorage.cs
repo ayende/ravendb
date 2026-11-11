@@ -57,7 +57,7 @@ public unsafe partial class Hnsw
         }
     }
 
-    internal static UnmanagedSpan ReadVector(LowLevelTransaction llt, long vectorId, int vectorSizeBytes)
+    public static UnmanagedSpan ReadVector(LowLevelTransaction llt, long vectorId, int vectorSizeBytes)
     {
         if ((vectorId & Constants.Graphs.VectorStorage.VectorContainerInternalIndexer) == 0)
         {

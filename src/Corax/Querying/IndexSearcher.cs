@@ -44,6 +44,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
 
     private readonly IndexFieldsMapping _fieldMapping;
     private Dictionary<Slice, Hnsw.SearchState> _vectorSearchStateCache;
+    private Dictionary<Slice, bool> _centroidsVectorFields;
     private IReadOnlyDictionary<Slice, HnswIndexCache> _vectorNodeCaches;
     private HashSet<long> _nullTermsMarkers;
     private HashSet<long> _nonExistingTermsMarkers;
@@ -120,6 +121,8 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     private bool _nonExistingPostingListsTreeLoaded;
 
     public long MaxMemoizationSizeInBytes = 128 * 1024 * 1024;
+
+    public int VectorSearchCentroidsScanFactor = Centroids.DefaultScanFactor;
 
     public bool DocumentsAreBoosted => GetDocumentBoostTree().NumberOfEntries > 0;
 
@@ -655,6 +658,15 @@ public sealed unsafe partial class IndexSearcher : IDisposable
     /// see independent caches, while same-vector re-entry (e.g. eF re-expansion in filtered
     /// search) keeps its cached distances.
     /// </summary>
+    internal bool IsCentroidsVectorField(Slice fieldName)
+    {
+        _centroidsVectorFields ??= new(SliceComparer.Instance);
+        ref var isCentroids = ref CollectionsMarshal.GetValueRefOrAddDefault(_centroidsVectorFields, fieldName, out bool exists);
+        if (exists == false)
+            isCentroids = Centroids.IsCentroidsIndex(_transaction.LowLevelTransaction, fieldName);
+        return isCentroids;
+    }
+
     internal Hnsw.SearchState GetOrCreateVectorSearchState(Slice fieldName)
     {
         _vectorSearchStateCache ??= new(SliceComparer.Instance);
@@ -842,7 +854,7 @@ public sealed unsafe partial class IndexSearcher : IDisposable
         return true;
     }
     
-    public bool TryGetVectorsOfField(string fieldName, out Hnsw.IndexedVectorsRetriever retriever)
+    public bool TryGetVectorsOfField(string fieldName, out IIndexedTermsRetriever retriever)
     {
         if (IsVectorField(fieldName) == false)
         {
@@ -850,7 +862,13 @@ public sealed unsafe partial class IndexSearcher : IDisposable
             return false;
         }
         
-        retriever = new Hnsw.IndexedVectorsRetriever(_transaction.LowLevelTransaction, fieldName);
+        using (Slice.From(Allocator, fieldName, out var slice))
+        {
+            retriever = IsCentroidsVectorField(slice)
+                ? new Centroids.IndexedVectorsRetriever(_transaction.LowLevelTransaction, fieldName)
+                : new Hnsw.IndexedVectorsRetriever(_transaction.LowLevelTransaction, fieldName);
+        }
+
         return true;
     }
     

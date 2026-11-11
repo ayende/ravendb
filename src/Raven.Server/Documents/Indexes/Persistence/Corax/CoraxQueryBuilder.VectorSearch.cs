@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -144,7 +144,8 @@ public static partial class CoraxQueryBuilder
                     Dimensions = vectorOptions.Dimensions,
                     SourceEmbeddingType = VectorEmbeddingType.Text,
                     NumberOfCandidatesForIndexing = vectorOptions.NumberOfCandidatesForIndexing,
-                    NumberOfEdges = vectorOptions.NumberOfEdges
+                    NumberOfEdges = vectorOptions.NumberOfEdges,
+                    IndexingStrategy = vectorOptions.IndexingStrategy
                 };
             }
             

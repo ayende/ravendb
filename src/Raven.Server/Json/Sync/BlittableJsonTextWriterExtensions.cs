@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Raven.Client;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Extensions;
@@ -274,6 +274,14 @@ namespace Raven.Server.Json.Sync
                 writer.WritePropertyName(nameof(options.Vector.NumberOfCandidatesForIndexing));
                 if (options.Vector.NumberOfCandidatesForIndexing.HasValue)
                     writer.WriteString(options.Vector.NumberOfCandidatesForIndexing.ToString());
+                else
+                    writer.WriteNull();
+
+                writer.WriteComma();
+
+                writer.WritePropertyName(nameof(options.Vector.IndexingStrategy));
+                if (options.Vector.IndexingStrategy.HasValue)
+                    writer.WriteString(options.Vector.IndexingStrategy.ToString());
                 else
                     writer.WriteNull();
                 

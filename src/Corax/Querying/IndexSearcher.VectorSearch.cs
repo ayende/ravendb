@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
@@ -181,9 +181,10 @@ public partial class IndexSearcher
 
         public static bool TryConvertDocumentsIdsToNodesIds(IndexSearcher indexSearcher, in FieldMetadata metadata, GrowableBitArray filterResults, out ContextBoundNativeList<long> nodesIdsToScan)
         {
-            var searchState = new Hnsw.SearchState(indexSearcher.Transaction.LowLevelTransaction, metadata.FieldName);
+            var isCentroids = indexSearcher.IsCentroidsVectorField(metadata.FieldName);
+            using var searchState = isCentroids ? null : new Hnsw.SearchState(indexSearcher.Transaction.LowLevelTransaction, metadata.FieldName);
             var vectorsByHash = indexSearcher._transaction.CompactTreeFor(Hnsw.VectorsIdByHashSlice);
-            var nodesByVectorId = searchState.NodeIdsByVectorId;
+            var nodesByVectorId = searchState?.NodeIdsByVectorId;
             if (indexSearcher.TryGetRootPageByFieldName(metadata.FieldName, out var vectorRootPage) is false)
             {
                 nodesIdsToScan = default;
@@ -210,7 +211,9 @@ public partial class IndexSearcher
                     var vectorHash = entryTermsReader.StoredField.Value;
                     if (vectorsByHash.TryGetValue(vectorHash, out var vectorId))
                     {
-                        if (nodesByVectorId.TryGetValue(vectorId, out var nodeId))
+                        if (isCentroids)
+                            nodesIdsToScan.Add(vectorId);
+                        else if (nodesByVectorId.TryGetValue(vectorId, out var nodeId))
                             nodesIdsToScan.Add(nodeId);
                     }
                 }
@@ -251,32 +254,37 @@ public partial class IndexSearcher
         var singleEntryId = EntryIdEncodings.GetContainerId(rawId);
         using var _ = GetEntryTermsReader((long)singleEntryId, ref page, out var reader);
 
-        var searchState = new Hnsw.SearchState(_transaction.LowLevelTransaction, metadata.FieldName);
-
-        if (reader.FindNextStored(vectorRootPage) is false)
-            return EmptyMatch();
-
-        PortableExceptions.ThrowIf<InvalidOperationException>(reader.IsVectorHash is false, "Expected vector field, but got " + metadata.FieldName + ", which isn't a vector");
-
-        Span<byte> hash = reader.StoredField.Value.ToSpan();
-        if (vectorsByHash.TryGetValue(hash, out var vectorId) is false)
-            return EmptyMatch();
-
-        var vectorSpan = Hnsw.NodeReader.ReadVector(vectorId, searchState);
-
-        var vectorValue = new VectorValue(null, vectorSpan.AsMemory());
-        if (reader.FindNextStored(vectorRootPage) is false) // just a single vector
-            return new VectorSearchMatch(this, metadata, vectorValue, minimumMatch, numberOfCandidates, isExact, isSingleVectorSearch, filterQuery, scanningThreshold);
-
-        List<VectorValue> vectors = [vectorValue];
-        do
+        var llt = _transaction.LowLevelTransaction;
+        int vectorSizeBytes;
+        if (IsCentroidsVectorField(metadata.FieldName))
         {
-            vectorSpan = Hnsw.NodeReader.ReadVector(vectorId, searchState);
-            vectorValue = new VectorValue(null, vectorSpan.AsMemory());
-            vectors.Add(vectorValue);
-        } while (reader.FindNextStored(vectorRootPage));
+            Centroids.TryReadOptions(llt, metadata.FieldName, out var options, out var __);
+            vectorSizeBytes = options.VectorSizeBytes;
+        }
+        else
+        {
+            using var searchState = new Hnsw.SearchState(llt, metadata.FieldName);
+            vectorSizeBytes = searchState.Options.VectorSizeBytes;
+        }
 
-        return new MultiVectorSearchMatch(this, metadata, vectors.ToArray(), minimumMatch, numberOfCandidates, isExact, isSingleVectorSearch, filterQuery, scanningThreshold);
+        List<VectorValue> vectors = [];
+        while (reader.FindNextStored(vectorRootPage))
+        {
+            PortableExceptions.ThrowIf<InvalidOperationException>(reader.IsVectorHash is false, "Expected vector field, but got " + metadata.FieldName + ", which isn't a vector");
+
+            if (vectorsByHash.TryGetValue(reader.StoredField.Value.ToSpan(), out var vectorId) is false)
+                continue;
+
+            var vectorSpan = Hnsw.ReadVector(llt, vectorId, vectorSizeBytes);
+            vectors.Add(new VectorValue(null, vectorSpan.AsMemory()));
+        }
+
+        return vectors.Count switch
+        {
+            0 => EmptyMatch(),
+            1 => new VectorSearchMatch(this, metadata, vectors[0], minimumMatch, numberOfCandidates, isExact, isSingleVectorSearch, filterQuery, scanningThreshold),
+            _ => new MultiVectorSearchMatch(this, metadata, vectors.ToArray(), minimumMatch, numberOfCandidates, isExact, isSingleVectorSearch, filterQuery, scanningThreshold)
+        };
     }
 
     public MultiVectorSearchMatch MultiVectorSearch(in FieldMetadata metadata, in VectorValue[] vectorValues, float minimumMatch, in int numberOfCandidates, bool isExact, bool isSingleVectorSearch, IQueryMatch filterQuery = null, int scanningThreshold = 1024, Random random = null)

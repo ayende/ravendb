@@ -129,6 +129,7 @@ namespace Raven.Server.Documents.Indexes.Persistence.Corax
             IndexSearcher = new IndexSearcher(readTransaction, _fieldMappings)
             {
                 MaxMemoizationSizeInBytes = index.Configuration.MaxMemoizationSize.GetValue(SizeUnit.Bytes),
+                VectorSearchCentroidsScanFactor = index.Configuration.CoraxVectorCentroidsScanFactor,
             };
 
             // Attach the per-field HNSW node caches from this transaction's client state to the searcher,

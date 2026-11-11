@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Sparrow;
 
 namespace Raven.Client.Documents.Indexes.Vector;
@@ -24,6 +24,7 @@ public sealed class AutoVectorOptions : VectorOptions
         SourceFieldName = options.SourceFieldName;
         NumberOfCandidatesForIndexing = options.NumberOfCandidatesForIndexing;
         NumberOfEdges = options.NumberOfEdges;
+        IndexingStrategy = options.IndexingStrategy;
         EmbeddingsGenerationTaskIdentifier = options.EmbeddingsGenerationTaskIdentifier;
     }
 

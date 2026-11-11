@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Linq;
@@ -637,6 +637,32 @@ namespace Raven.Server.Config.Categories
         [IndexUpdateType(IndexUpdateType.Reset)]
         [ConfigurationEntry("Indexing.Corax.VectorSearch.DefaultNumberOfCandidatesForIndexing", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
         public int CoraxVectorDefaultNumberOfCandidatesForIndexing { get; protected set; }
+
+        [Description("The default structure used to index vectors: Hnsw (graph) or Centroids (vectors clustered into partitions).")]
+        [DefaultValue(Raven.Client.Documents.Indexes.Vector.VectorIndexingStrategy.Hnsw)]
+        [IndexUpdateType(IndexUpdateType.Reset)]
+        [ConfigurationEntry("Indexing.Corax.VectorSearch.DefaultIndexingStrategy", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public Raven.Client.Documents.Indexes.Vector.VectorIndexingStrategy CoraxVectorDefaultIndexingStrategy { get; protected set; }
+
+        [Description("Centroids vector index: the number of vectors in a partition above which it is split in two.")]
+        [DefaultValue(Voron.Data.Graphs.Centroids.DefaultMaxPartitionSize)]
+        [MinValue(16)]
+        [IndexUpdateType(IndexUpdateType.Reset)]
+        [ConfigurationEntry("Indexing.Corax.VectorSearch.Centroids.MaxPartitionSize", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public int CoraxVectorCentroidsMaxPartitionSize { get; protected set; }
+
+        [Description("Centroids vector index: the number of bits (4 or 8) used to quantize each dimension of a vector within its partition.")]
+        [DefaultValue(Voron.Data.Graphs.Centroids.DefaultQuantizationBits)]
+        [IndexUpdateType(IndexUpdateType.Reset)]
+        [ConfigurationEntry("Indexing.Corax.VectorSearch.Centroids.QuantizationBits", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public int CoraxVectorCentroidsQuantizationBits { get; protected set; }
+
+        [Description("Centroids vector index: the number of vectors a query scans for each requested candidate. Higher values give better recall and slower queries.")]
+        [DefaultValue(Voron.Data.Graphs.Centroids.DefaultScanFactor)]
+        [MinValue(1)]
+        [IndexUpdateType(IndexUpdateType.Refresh)]
+        [ConfigurationEntry("Indexing.Corax.VectorSearch.Centroids.ScanFactor", ConfigurationEntryScope.ServerWideOrPerDatabaseOrPerIndex)]
+        public int CoraxVectorCentroidsScanFactor { get; protected set; }
         
         [Description("The default maximum number of vectors that we will return from a graph search.")]
         [DefaultValue(16)]

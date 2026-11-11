@@ -29,7 +29,7 @@ internal sealed class IndexedField
     public Dictionary<long, SpatialEntry> Spatial;
     public readonly FastList<EntriesModifications> Storage;
     public readonly Dictionary<Slice, int> Textual;
-    public Hnsw.Registration VectorIndexer;
+    public IVectorIndexer VectorIndexer;
 
     /// <summary>
     /// Position matches position from _entryToTerms from IndexWriter which creates relation between entry and field
@@ -227,14 +227,16 @@ internal sealed class IndexedField
     }
     
     [MethodImpl(MethodImplOptions.AggressiveInlining)]
-    public Hnsw.Registration GetVectorIndexer(LowLevelTransaction llt, int vectorSize = Constants.IndexWriter.Hnsw.TreeExists, Random random = null)
+    public IVectorIndexer GetVectorIndexer(LowLevelTransaction llt, int vectorSize = Constants.IndexWriter.Hnsw.TreeExists, Random random = null)
     {
         if (_hnswIsCreated == false && vectorSize != Constants.IndexWriter.Hnsw.TreeExists)
-            CreateHnswTree(llt, vectorSize);
+            CreateVectorIndex(llt, vectorSize);
 
         if (VectorIndexer == null)
         {
-            VectorIndexer = Hnsw.RegistrationFor(llt, Name, random);
+            VectorIndexer = Centroids.IsCentroidsIndex(llt, Name)
+                ? Centroids.RegistrationFor(llt, Name)
+                : Hnsw.RegistrationFor(llt, Name, random);
             if (IsVirtual)
             {
                 _parent._hnswIsCreated = true;
@@ -246,10 +248,13 @@ internal sealed class IndexedField
         return VectorIndexer;
     }
 
-    private void CreateHnswTree(LowLevelTransaction llt, int vectorSize)
+    private void CreateVectorIndex(LowLevelTransaction llt, int vectorSize)
     {
         PortableExceptions.ThrowIfNull<InvalidOperationException>(_vectorOptions, $"{nameof(_vectorOptions)} is null)");
-        Hnsw.Create(llt, Name, vectorSize, _vectorOptions.NumberOfEdges, _vectorOptions.NumberOfCandidates, _vectorOptions.VectorEmbeddingType);
+        if (_vectorOptions.IndexingStrategy == VectorIndexingStrategy.Centroids)
+            Centroids.Create(llt, Name, vectorSize, _vectorOptions.VectorEmbeddingType, _vectorOptions.CentroidsMaxPartitionSize, _vectorOptions.CentroidsQuantizationBits);
+        else
+            Hnsw.Create(llt, Name, vectorSize, _vectorOptions.NumberOfEdges, _vectorOptions.NumberOfCandidates, _vectorOptions.VectorEmbeddingType);
         _hnswIsCreated = true;
     }
 

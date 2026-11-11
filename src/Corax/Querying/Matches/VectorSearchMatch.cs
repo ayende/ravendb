@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Globalization;
@@ -38,7 +38,7 @@ public struct VectorSearchMatch : IQueryMatch
     private GrowableBuffer<float, Constant<float>> _distances;
     
     // Voron VectorSearch Retriever
-    private Hnsw.VectorSearchRetriever _vectorSearchRetriever;
+    private VectorRetriever _vectorSearchRetriever;
     private ContextBoundNativeList<long> _nodesIdsToScan;
     private bool _vectorRetrieverInitialized;
     
@@ -132,15 +132,24 @@ public struct VectorSearchMatch : IQueryMatch
         }
         
         
-        var searchState = _indexSearcher.GetOrCreateVectorSearchState(fieldName);
-
-        _vectorSearchRetriever = _isExact switch
+        if (_indexSearcher.IsCentroidsVectorField(fieldName))
         {
-            _ when _scanningQuery => Hnsw.ExactNearest(searchState, _numberOfCandidates, vector, _minimumMatch, hasFilterMatch: false, nodesIdsToScan),
-            true => Hnsw.ExactNearest(searchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
-            false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(searchState, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults!.Value, _random)),
+            var mode = _scanningQuery ? Centroids.SearchMode.Scan : _isExact ? Centroids.SearchMode.Exact : Centroids.SearchMode.Approximate;
+            _vectorSearchRetriever = new VectorRetriever(Centroids.Search(llt, fieldName, vector, _numberOfCandidates, _minimumMatch, mode, _filterResults,
+                _scanningQuery ? nodesIdsToScan : null, _indexSearcher.VectorSearchCentroidsScanFactor));
+        }
+        else
+        {
+            var searchState = _indexSearcher.GetOrCreateVectorSearchState(fieldName);
+
+            _vectorSearchRetriever = new VectorRetriever(_isExact switch
+            {
+                _ when _scanningQuery => Hnsw.ExactNearest(searchState, _numberOfCandidates, vector, _minimumMatch, hasFilterMatch: false, nodesIdsToScan),
+                true => Hnsw.ExactNearest(searchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
+                false when _filterQuery != null => Hnsw.ApproximateFilteredNearest(searchState, _numberOfCandidates, vector, _minimumMatch, new IndexSearcher.VectorSearchUtils.RandomNodesFromFilterEnumerator(_indexSearcher, _metadata, _filterResults!.Value, _random)),
                 _ => Hnsw.ApproximateNearest(searchState, _numberOfCandidates, vector, _minimumMatch, _filterQuery != null),
-        };
+            });
+        }
         
 
         _isEmpty = _scanningQuery 

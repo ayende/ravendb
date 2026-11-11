@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Indexes.Spatial;
 using Raven.Client.Documents.Indexes.Vector;
@@ -82,6 +82,7 @@ namespace Raven.Server.Extensions
                     vector[nameof(VectorOptions.DestinationEmbeddingType)] = kvp.Value.Vector.DestinationEmbeddingType.ToString();
                     vector[nameof(VectorOptions.NumberOfEdges)] = kvp.Value.Vector.NumberOfEdges?.ToString();
                     vector[nameof(VectorOptions.NumberOfCandidatesForIndexing)] = kvp.Value.Vector.NumberOfCandidatesForIndexing?.ToString();
+                    vector[nameof(VectorOptions.IndexingStrategy)] = kvp.Value.Vector.IndexingStrategy?.ToString();
                 }
 
                 var field = new DynamicJsonValue();

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Diagnostics;
 using Sparrow;
 
@@ -27,6 +27,7 @@ public class VectorOptions
         DestinationEmbeddingType = options.DestinationEmbeddingType;
         NumberOfCandidatesForIndexing = options.NumberOfCandidatesForIndexing;
         NumberOfEdges = options.NumberOfEdges;
+        IndexingStrategy = options.IndexingStrategy;
     }
     
     internal static readonly VectorOptions Default = new()
@@ -67,6 +68,11 @@ public class VectorOptions
     /// Gets or sets the number of edges (connections) each node in the vector graph should have.
     /// </summary>
     public int? NumberOfEdges { get; set; }
+
+    /// <summary>
+    /// Gets or sets the structure used to index the vectors. When null, the server configuration default is used.
+    /// </summary>
+    public VectorIndexingStrategy? IndexingStrategy { get; set; }
     
     [Conditional("DEBUG")]
     internal void ValidateDebug() => Validate();
@@ -117,7 +123,8 @@ public class VectorOptions
                && options.SourceEmbeddingType == SourceEmbeddingType
                && options.DestinationEmbeddingType == DestinationEmbeddingType
                && options.NumberOfEdges == NumberOfEdges
-               && options.NumberOfCandidatesForIndexing == NumberOfCandidatesForIndexing;
+               && options.NumberOfCandidatesForIndexing == NumberOfCandidatesForIndexing
+               && options.IndexingStrategy == IndexingStrategy;
     }
 
     /// <summary>
@@ -133,6 +140,7 @@ public class VectorOptions
             hashCode = (hashCode * 397) ^ (Dimensions ?? 0).GetHashCode();
             hashCode = (hashCode * 397) ^ (NumberOfEdges ?? 0).GetHashCode();
             hashCode = (hashCode * 397) ^ (NumberOfCandidatesForIndexing ?? 0).GetHashCode();
+            hashCode = (hashCode * 397) ^ (IndexingStrategy ?? VectorIndexingStrategy.Hnsw).GetHashCode();
             
             return hashCode;
         }
