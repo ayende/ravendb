@@ -1,4 +1,4 @@
-﻿using System.Collections.Generic;
+using System.Collections.Generic;
 using System.Linq;
 using Raven.Server.Config;
 using Raven.Server.Config.Attributes;
@@ -93,6 +93,10 @@ namespace FastTests.Issues
                 "Indexing.Corax.VectorSearch.DefaultMinimumSimilarity",
                 "Indexing.Corax.VectorSearch.DefaultNumberOfEdges",
                 "Indexing.Corax.VectorSearch.DefaultNumberOfCandidatesForIndexing",
+                "Indexing.Corax.VectorSearch.DefaultIndexingStrategy",
+                "Indexing.Corax.VectorSearch.Centroids.MaxPartitionSize",
+                "Indexing.Corax.VectorSearch.Centroids.QuantizationBits",
+                "Indexing.Corax.VectorSearch.Centroids.ScanFactor",
                 "Indexing.Corax.VectorSearch.DefaultNumberOfCandidatesForQuerying",
                 "Indexing.Corax.VectorSearch.OrderByScoreAutomatically",
                 "Indexing.Corax.VectorSearch.MaximumConcurrentBatchesForHnswAcceleration",

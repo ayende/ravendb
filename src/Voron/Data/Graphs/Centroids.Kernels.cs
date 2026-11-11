@@ -165,9 +165,12 @@ public unsafe partial class Centroids
                 return 0;
             }
 
-            var inv = range / maxAbs;
-            for (int i = 0; i < src.Length; i++)
-                dst[i] = (sbyte)MathF.Round(src[i] * inv);
+            var scaled = System.Buffers.ArrayPool<float>.Shared.Rent(src.Length);
+            var span = scaled.AsSpan(0, src.Length);
+            TensorPrimitives.Multiply(src, range / maxAbs, span);
+            TensorPrimitives.Round(span, span);
+            TensorPrimitives.ConvertTruncating<float, sbyte>(span, new Span<sbyte>(dst, src.Length));
+            System.Buffers.ArrayPool<float>.Shared.Return(scaled);
             return maxAbs / range;
         }
 
@@ -184,42 +187,23 @@ public unsafe partial class Centroids
             step = (hi - lo) / levels;
             var inv = step > 0 ? 1f / step : 0f;
 
+            TensorPrimitives.Subtract(residual, lo, residual);
+            TensorPrimitives.Multiply(residual, inv, residual);
+            TensorPrimitives.Round(residual, residual);
+
             int dims = residual.Length;
             if (bits == 8)
             {
-                for (int i = 0; i < dims; i++)
-                    code[i] = (byte)Math.Clamp((int)MathF.Round((residual[i] - lo) * inv), 0, levels);
+                TensorPrimitives.ConvertTruncating<float, byte>(residual, new Span<byte>(code, dims));
                 return;
             }
 
             int half = (dims + 1) / 2;
             for (int i = 0; i < half; i++)
             {
-                var low = Math.Clamp((int)MathF.Round((residual[i] - lo) * inv), 0, levels);
                 var j = i + half;
-                var high = j < dims ? Math.Clamp((int)MathF.Round((residual[j] - lo) * inv), 0, levels) : 0;
-                code[i] = (byte)(low | (high << 4));
-            }
-        }
-
-        public static void Decode(byte* code, float lo, float step, ReadOnlySpan<float> c, int bits, Span<float> dst)
-        {
-            int dims = c.Length;
-            if (bits == 8)
-            {
-                for (int i = 0; i < dims; i++)
-                    dst[i] = c[i] + lo + step * code[i];
-                return;
-            }
-
-            int half = (dims + 1) / 2;
-            for (int i = 0; i < half; i++)
-            {
-                var b = code[i];
-                dst[i] = c[i] + lo + step * (b & 0x0F);
-                var j = i + half;
-                if (j < dims)
-                    dst[j] = c[j] + lo + step * (b >> 4);
+                var high = j < dims ? (int)residual[j] : 0;
+                code[i] = (byte)((int)residual[i] | (high << 4));
             }
         }
     }

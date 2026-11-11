@@ -35,7 +35,6 @@ public unsafe partial class Centroids
         private readonly HashSet<long> _touched = new();
         private readonly HashSet<long> _shrunk = new();
         private readonly float[] _residual;
-        private readonly float[] _scratch;
         private readonly byte[] _code;
         private readonly sbyte[] _quantized;
         public int MaxDegreeOfParallelism = Environment.ProcessorCount;
@@ -53,7 +52,6 @@ public unsafe partial class Centroids
             _router = new RouterLayout(Options);
             _dims = Options.Dimensions;
             _residual = new float[_dims];
-            _scratch = new float[_dims];
             _code = new byte[Options.CodeSizeBytes];
             _quantized = new sbyte[_dims];
         }
@@ -688,6 +686,34 @@ public unsafe partial class Centroids
             }
         }
 
+        /// <summary>
+        /// Evaluates, directly on a code, how much nearer the encoded vector is to <c>target</c> than to the centroid <c>own</c>
+        /// the code is encoded against: <c>x·(target - own) - (|target|^2 - |own|^2) / 2</c>, with
+        /// <c>x = own + lo + step * code</c> and <c>target - own</c> quantized to int8.
+        /// </summary>
+        private readonly struct CodeProjection
+        {
+            public readonly sbyte[] Query;
+            private readonly float _scale;
+            private readonly float _sum;
+            private readonly float _offset;
+
+            public CodeProjection(float[] target, float[] own, int dims, int bits)
+            {
+                var half = (dims + 1) / 2;
+                var difference = new float[bits == 8 ? dims : half * 2];
+                TensorPrimitives.Subtract(target.AsSpan(0, dims), own.AsSpan(0, dims), difference.AsSpan(0, dims));
+                Query = new sbyte[difference.Length];
+                fixed (sbyte* q = Query)
+                    _scale = Kernels.QuantizeI8(difference, q, bits == 8 ? Kernels.Code8QueryRange : Kernels.Code4QueryRange);
+                _sum = TensorPrimitives.Sum(difference.AsSpan(0, dims));
+                _offset = TensorPrimitives.Dot(own.AsSpan(0, dims), difference.AsSpan(0, dims)) - 0.5f * (target[dims] - own[dims]);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            public float Gain(float lo, float step, int dot) => _offset + lo * _sum + step * _scale * dot;
+        }
+
         private struct Member
         {
             public long VectorId;
@@ -894,25 +920,34 @@ public unsafe partial class Centroids
             }
 
             var moveIn = new List<(long VectorId, long Hint, long From)>();
-            var decoded = _scratch.AsSpan();
+            var half = (_dims + 1) / 2;
+            var bits = Options.QuantizationBits;
             for (int n = 0; n < neighbors.Count; n++)
             {
                 var neighborCentroid = neighborCentroids[n];
+                var towardsA = new CodeProjection(centroidA, neighborCentroid, _dims, bits);
+                var towardsB = new CodeProjection(centroidB, neighborCentroid, _dims, bits);
                 var header = GetHeader(neighbors[n], out _);
                 var blocks = PartitionBlocks(header);
-                for (int b = 0; b < header->BlockCount; b++)
+                fixed (sbyte* qa = towardsA.Query, qb = towardsB.Query)
                 {
-                    Container.Get(Llt, new ContainerEntryId(blocks[b]), out var item);
-                    var block = item.Address;
-                    var blockHeader = (BlockHeader*)block;
-                    for (int s = 0; s < blockHeader->Count; s++)
+                    for (int b = 0; b < header->BlockCount; b++)
                     {
-                        if ((blockHeader->DeadMask & (1UL << s)) != 0)
-                            continue;
-                        Kernels.Decode(_block.Code(block, s), _block.Lo(block)[s], _block.Step(block)[s], neighborCentroid.AsSpan(0, _dims), Options.QuantizationBits, decoded);
-                        var own = Score(decoded, neighborCentroid, _dims);
-                        if (Score(decoded, centroidA, _dims) > own || Score(decoded, centroidB, _dims) > own)
-                            moveIn.Add((_block.VectorIds(block)[s], _block.EntryHints(block)[s], neighbors[n]));
+                        Container.Get(Llt, new ContainerEntryId(blocks[b]), out var item);
+                        var block = item.Address;
+                        var blockHeader = (BlockHeader*)block;
+                        var lo = _block.Lo(block);
+                        var step = _block.Step(block);
+                        for (int s = 0; s < blockHeader->Count; s++)
+                        {
+                            if ((blockHeader->DeadMask & (1UL << s)) != 0)
+                                continue;
+                            var code = _block.Code(block, s);
+                            var dotA = bits == 8 ? Kernels.DotU8I8(code, qa, _dims) : Kernels.DotU4I8(code, qa, qa + half, half);
+                            var dotB = bits == 8 ? Kernels.DotU8I8(code, qb, _dims) : Kernels.DotU4I8(code, qb, qb + half, half);
+                            if (towardsA.Gain(lo[s], step[s], dotA) > 0 || towardsB.Gain(lo[s], step[s], dotB) > 0)
+                                moveIn.Add((_block.VectorIds(block)[s], _block.EntryHints(block)[s], neighbors[n]));
+                        }
                     }
                 }
             }
