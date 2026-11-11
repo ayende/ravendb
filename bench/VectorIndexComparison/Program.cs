@@ -15,7 +15,8 @@ if (args.Length > 3)
     count = Math.Min(count, int.Parse(args[3]));
 var queries = Npy.LoadFloats(Path.Combine(dir, "Q.npy"), out var queryCount, out _);
 var truth = Npy.LoadLongs(Path.Combine(dir, "truth.npy"), out _, out var truthWidth);
-var candidatesToTest = new[] { 16, 32, 64, 128, 256 };
+var candidatesToTest = (Environment.GetEnvironmentVariable("VIC_CANDIDATES") ?? "16,32,64,128,256").Split(',').Select(int.Parse).ToArray();
+var rounds = int.Parse(Environment.GetEnvironmentVariable("VIC_ROUNDS") ?? "1");
 
 if (count < Npy.Rows(Path.Combine(dir, "X.npy")))
     truth = ExactTruth(vectors, count, dims, queries, queryCount, out truthWidth);
@@ -36,19 +37,24 @@ void Run<TRetriever>(string strategy, Action<Voron.Impl.LowLevelTransaction, str
     Func<Voron.Impl.LowLevelTransaction, Slice, Memory<byte>, int, TRetriever> search) where TRetriever : struct, IDisposable
 {
     var path = Path.Combine(Path.GetTempPath(), "vector-index-comparison-" + strategy);
-    if (Directory.Exists(path))
+    var reuse = Environment.GetEnvironmentVariable("VIC_REUSE") == "1" && Directory.Exists(path);
+    if (reuse == false && Directory.Exists(path))
         Directory.Delete(path, true);
-    using var env = new StorageEnvironment(StorageEnvironmentOptions.ForPathForTests(path));
-    using (var tx = env.WriteTransaction())
+    var envOptions = StorageEnvironmentOptions.ForPathForTests(path);
+    using var env = new StorageEnvironment(envOptions);
+    if (reuse == false)
     {
-        create(tx.LowLevelTransaction, "f");
-        tx.Commit();
+        using (var tx = env.WriteTransaction())
+        {
+            create(tx.LowLevelTransaction, "f");
+            tx.Commit();
+        }
     }
 
     long usedBefore = UsedBytes(env);
     long dirtyPages = 0;
     var sw = Stopwatch.StartNew();
-    for (int start = 0; start < count; start += batchSize)
+    for (int start = 0; reuse == false && start < count; start += batchSize)
     {
         var n = Math.Min(batchSize, count - start);
         using var tx = env.WriteTransaction();
@@ -82,7 +88,22 @@ void Run<TRetriever>(string strategy, Action<Voron.Impl.LowLevelTransaction, str
 
     var matches = new long[1024];
     var distances = new float[1024];
-    foreach (var k in candidatesToTest)
+    using (var warmup = env.ReadTransaction())
+    {
+        Slice.From(warmup.Allocator, "f", out var name);
+        for (int qi = 0; qi < queryCount; qi++)
+        {
+            var bytes = MemoryMarshal.AsBytes(new ReadOnlySpan<float>(queries, qi * dims, dims)).ToArray();
+            var retriever = search(warmup.LowLevelTransaction, name, bytes, candidatesToTest[0]);
+            while (Fill(ref retriever, matches, distances) > 0)
+            {
+            }
+
+            retriever.Dispose();
+        }
+    }
+
+    foreach (var k in candidatesToTest.SelectMany(k => Enumerable.Repeat(k, rounds)))
     {
         using var tx = env.ReadTransaction();
         Slice.From(tx.Allocator, "f", out var name);

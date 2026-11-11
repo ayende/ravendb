@@ -384,11 +384,11 @@ public unsafe partial class Centroids
         private void RoutePartitions()
         {
             var partitions = _options.NumberOfPartitions;
-            _partitionOrder = new long[partitions];
-            _partitionScores = new float[partitions];
+            _partitionOrder = ArrayPool<long>.Shared.Rent(partitions);
+            _partitionScores = ArrayPool<float>.Shared.Rent(partitions);
             var query = stackalloc sbyte[_options.Dimensions];
             var scale = Kernels.QuantizeI8(_queryVector, query, Kernels.RouterQueryRange);
-            ScoreRouter(_llt, _routerChunks, _options, query, scale, _partitionScores, _partitionOrder);
+            ScoreRouter(_llt, _routerChunks, _options, query, scale, _partitionScores.AsSpan(0, partitions), _partitionOrder.AsSpan(0, partitions));
             for (int i = 0; i < partitions; i++)
                 _partitionScores[i] = -_partitionScores[i];
 
@@ -417,9 +417,10 @@ public unsafe partial class Centroids
 
         private void SortAllPartitions()
         {
-            Array.Sort(_partitionScores, _partitionOrder);
+            var partitions = _options.NumberOfPartitions;
+            Array.Sort(_partitionScores, _partitionOrder, 0, partitions);
             _orderedPartitions = _partitionOrder;
-            _partitionCount = _partitionOrder.Length;
+            _partitionCount = partitions;
             _partitionsSorted = true;
         }
 
@@ -585,6 +586,15 @@ public unsafe partial class Centroids
 
         public void Dispose()
         {
+            if (_partitionOrder != null)
+            {
+                ArrayPool<long>.Shared.Return(_partitionOrder);
+                ArrayPool<float>.Shared.Return(_partitionScores);
+                _partitionOrder = null;
+                _partitionScores = null;
+                _orderedPartitions = null;
+            }
+
             _postingListResults.Dispose();
             _pforDecoder.Dispose();
             if (_hasQueryScope)

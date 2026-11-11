@@ -5,6 +5,7 @@ using Raven.Client.Documents;
 using Raven.Client.Documents.Indexes;
 using Raven.Client.Documents.Indexes.Vector;
 using Raven.Client.Documents.Operations.Indexes;
+using Raven.Client.ServerWide.Operations;
 using Tests.Infrastructure;
 using Xunit;
 
@@ -225,5 +226,33 @@ public class CentroidsVectorIndexTests(ITestOutputHelper output) : RavenTestBase
 
         var hnsw = new ItemsByVector(VectorEmbeddingType.Single, VectorIndexingStrategy.Hnsw).CreateIndexDefinition();
         Assert.True(definition.Compare(hnsw).HasFlag(IndexDefinitionCompareDifferences.Fields));
+    }
+
+    [RavenTheory(RavenTestCategory.Vector | RavenTestCategory.Corax)]
+    [RavenData(VectorIndexingStrategy.Centroids, SearchEngineMode = RavenSearchEngineMode.Corax)]
+    [RavenData(VectorIndexingStrategy.Hnsw, SearchEngineMode = RavenSearchEngineMode.Corax)]
+    public void IndexCanBeReopenedAndKeepsServingQueries(Options options, VectorIndexingStrategy strategy)
+    {
+        options.RunInMemory = false;
+        using var store = GetDocumentStore(options);
+        var items = CreateItems(1_500, 21);
+        Store(store, items);
+        new ItemsByVector(VectorEmbeddingType.Single, strategy).Execute(store);
+        Indexes.WaitForIndexing(store);
+
+        store.Maintenance.Server.Send(new ToggleDatabasesStateOperation(store.Database, disable: true));
+        store.Maintenance.Server.Send(new ToggleDatabasesStateOperation(store.Database, disable: false));
+
+        Indexes.WaitForIndexing(store);
+        Assert.Equal(items[42].Id, Nearest(store, items[42].Embedding)[0].Id);
+
+        using (var session = store.OpenSession())
+        {
+            session.Store(new Item { Id = "items/new", Tag = "rare", Embedding = items[42].Embedding.Select(x => -x).ToArray() });
+            session.SaveChanges();
+        }
+
+        Indexes.WaitForIndexing(store);
+        Assert.Equal("items/new", Nearest(store, items[42].Embedding.Select(x => -x).ToArray())[0].Id);
     }
 }

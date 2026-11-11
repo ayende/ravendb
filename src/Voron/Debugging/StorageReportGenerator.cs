@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -128,6 +128,16 @@ namespace Voron.Debugging
                         {
                             if (SliceComparer.CompareInline(it.CurrentKey, Hnsw.OptionsSlice) == 0 && it.Current->DataSize == Unsafe.SizeOf<Hnsw.Options>())
                                 continue; // Hnsw options, 64 bytes 
+
+                            if (SliceComparer.CompareInline(it.CurrentKey, Centroids.OptionsSlice) == 0 && it.Current->DataSize == Unsafe.SizeOf<Centroids.Options>())
+                            {
+                                var centroidsOptions = Unsafe.Read<Centroids.Options>(tree.DirectRead(Centroids.OptionsSlice));
+                                Slice.From(_tx.Allocator, treeReport.Name + "/Centroids", out var partitionsName);
+                                Slice.From(_tx.Allocator, treeReport.Name + "/Centroids blocks", out var blocksName);
+                                input.Containers.Add(partitionsName, centroidsOptions.Container);
+                                input.Containers.Add(blocksName, centroidsOptions.BlocksContainer);
+                                continue;
+                            }
                             
                             ReadResult readResult = tree.Read(it.CurrentKey);
                             RootObjectType rootObjectType = (RootObjectType)readResult.Reader.Read<byte>();

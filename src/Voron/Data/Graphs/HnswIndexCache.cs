@@ -369,10 +369,11 @@ public sealed unsafe class HnswIndexCache : IDisposable
     public static HnswIndexCache WarmFromScratch(LowLevelTransaction llt, Slice fieldName, int maxNodes)
     {
         var tree = llt.Transaction.ReadTree(fieldName);
-        if (tree is null || tree.TryGetLookupFor(Hnsw.NodeIdToLocationSlice, out Lookup<Int64LookupKey> locations) == false)
+        var optionsPtr = tree?.DirectRead(Hnsw.OptionsSlice);
+        if (optionsPtr is null || tree.TryGetLookupFor(Hnsw.NodeIdToLocationSlice, out Lookup<Int64LookupKey> locations) == false)
             return null;
 
-        var options = Unsafe.Read<Hnsw.Options>(tree.DirectRead(Hnsw.OptionsSlice));
+        var options = Unsafe.Read<Hnsw.Options>(optionsPtr);
         var simCalc = ResolveSimilarityKernel(options);
 
         long bytesPerNode = EstimateBytesPerNode(options.NumberOfEdges);
