@@ -58,6 +58,7 @@ namespace Voron.Impl
         internal TestingStuff _forTestingPurposes;
         private bool _updateLastWorkTime = true;
         public Pager.State DataPagerState;
+        private SequentialReadAhead _sequentialReadAhead;
 
         private enum GetPageMethod
         {
@@ -720,6 +721,7 @@ namespace Voron.Impl
                 if (_env.Options.Encryption.IsEnabled == false)
                     Pager.HintOverflowPages(DataPagerState, pageNumber, numberOfPages);
             }
+            _sequentialReadAhead.OnRead(DataPagerState, pageNumber, numberOfPages);
             _env.ValidatePageChecksum(pageNumber, (PageHeader*)page.Pointer);
             return page;
         }
