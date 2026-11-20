@@ -47,14 +47,15 @@ elif [ $# -gt 1 ]; then
                         IS_CROSS=1
                         IS_ARM=1
                         IS_32BIT=1
-			NATIVE_BIN_SUFFIX=".linux.arm.32.so"
+			# the names DynamicNativeLibraryResolver loads and Raven.Server.csproj ships, see libs/librvnpal
+			NATIVE_BIN_SUFFIX=".arm.32.so"
                         C_COMPILER=arm-linux-gnueabihf-gcc
 			C_ADDITIONAL_FLAGS="-Wno-int-to-pointer-cast -Wno-pointer-to-int-cast"
 		elif [[ "$2" == "linux-arm64" ]]; then
                         IS_CROSS=1
                         IS_ARM=1
                         IS_32BIT=0
-			NATIVE_BIN_SUFFIX=".linux.arm.64.so"
+			NATIVE_BIN_SUFFIX=".arm.64.so"
                         C_COMPILER=aarch64-linux-gnu-gcc
 		elif [[ "$2" == "linux-x64" ]]; then
 			IS_CROSS=1
@@ -147,7 +148,8 @@ log "FILTER:   ${FILTERS[@]}"
 FILES=()
 FILTERS+=(src)
 for SRCPATH in "${FILTERS[@]}"; do
-	for SRCFILE in $(find ${SRCPATH} -maxdepth 1 | grep "^${SRCPATH}" | grep "\.c$"); do
+	# sorted, so the link order and the binary do not depend on the order the file system lists the files in
+	for SRCFILE in $(find ${SRCPATH} -maxdepth 1 | grep "^${SRCPATH}" | grep "\.c$" | LC_ALL=C sort); do
 		SRCFILE_O=$(echo ${SRCFILE} | sed -e "s|\.c$|\.o|g")
 		if [ ${CLEAN} -eq 0 ]; then
 			CMD="${C_COMPILER} ${C_ADDITIONAL_FLAGS} -fPIC -Iinc -O2 -Wall -c -o ${SRCFILE_O} ${SRCFILE}"
