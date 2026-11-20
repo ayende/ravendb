@@ -988,7 +988,10 @@ namespace SlowTests.Server.Documents.PeriodicBackup
             Assert.Equal(serverWideConfiguration.FullBackupFrequency, backupConfiguration.FullBackupFrequency);
             Assert.Equal(serverWideConfiguration.IncrementalBackupFrequency, backupConfiguration.IncrementalBackupFrequency);
 
-            Assert.Equal($"{serverWideConfiguration.LocalSettings.FolderPath}{Path.DirectorySeparatorChar}{databaseName}", backupConfiguration.LocalSettings.FolderPath);
+            // the separator comes from the folder path, so every node builds the same path whatever its operating system
+            var folderPath = serverWideConfiguration.LocalSettings.FolderPath;
+            var separator = folderPath.Contains('\\') && folderPath.Contains('/') == false ? '\\' : '/';
+            Assert.Equal($"{folderPath}{separator}{databaseName}", backupConfiguration.LocalSettings.FolderPath);
             Assert.Equal(serverWideConfiguration.S3Settings.BucketName, backupConfiguration.S3Settings.BucketName);
             Assert.Equal($"{serverWideConfiguration.S3Settings.RemoteFolderName}/{databaseName}", backupConfiguration.S3Settings.RemoteFolderName);
             Assert.Equal(serverWideConfiguration.AzureSettings.AccountKey, backupConfiguration.AzureSettings.AccountKey);
