@@ -76,6 +76,8 @@ namespace SlowTests.Client.TimeSeries.Query
                 var database = await Databases.GetDocumentDatabaseInstanceFor(store);
 
                 var now = DateTime.UtcNow;
+                // the server must see the same day as "now", else the retention at midnight drops the oldest daily rollup
+                database.Time.UtcDateTime = () => now;
 
                 var baseline = now.AddDays(-12);
                 var total = TimeSpan.FromDays(12).TotalMinutes;
