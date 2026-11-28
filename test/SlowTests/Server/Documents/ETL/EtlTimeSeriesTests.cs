@@ -1692,7 +1692,7 @@ function loadTimeSeriesOfUsersBehavior(doc, ts)
             }
 
             TimeSeriesEntry[] actual = null;
-            await AssertWaitForValueAsync(async () =>
+            var count = await WaitForValueAsync(async () =>
             {
                 using var session = dest.OpenAsyncSession();
                 var result = await session.TimeSeriesFor(documentId, timeSeriesName).GetAsync(DateTime.MinValue, DateTime.MaxValue);
@@ -1702,11 +1702,52 @@ function loadTimeSeriesOfUsersBehavior(doc, ts)
                 return actual.Count();
             }, timeSeriesEntries.Length, 30000, interval: 1000);
 
+            if (count != timeSeriesEntries.Length)
+                await WriteMissingTimeSeriesDiagnosticsAsync(src, documentId, timeSeriesEntries, actual);
+
+            Assert.Equal(timeSeriesEntries.Length, count);
+
             for (int i = 0; i < timeSeriesEntries.Length; i++)
             {
                 Assert.Equal(timeSeriesEntries[i].Timestamp, actual[i].Timestamp);
                 Assert.Equal(timeSeriesEntries[i].Tag, actual[i].Tag);
                 Assert.Equal(timeSeriesEntries[i].Value, actual[i].Value);
+            }
+        }
+
+        // RavenDB-28170: the test failed once on CI with 2 missing entries
+        private async Task WriteMissingTimeSeriesDiagnosticsAsync(DocumentStore src, string documentId, TimeSeriesEntry[] expected, TimeSeriesEntry[] actual)
+        {
+            var have = actual?.Select(x => x.Timestamp).ToHashSet() ?? new HashSet<DateTime>();
+            foreach (var entry in expected.Where(e => have.Contains(e.Timestamp) == false).Take(20))
+                Output.WriteLine($"missing on destination: {entry.Timestamp:O}");
+
+            var db = await Databases.GetDocumentDatabaseInstanceFor(src);
+            using (db.DocumentsStorage.ContextPool.AllocateOperationContext(out DocumentsOperationContext context))
+            using (context.OpenReadTransaction())
+            {
+                var doc = db.DocumentsStorage.Get(context, documentId);
+                Output.WriteLine($"source document etag: {doc?.Etag}");
+
+                var segments = db.DocumentsStorage.TimeSeriesStorage.GetTimeSeriesFrom(context, 0, long.MaxValue).ToList();
+                Output.WriteLine($"source segments: {segments.Count}");
+                foreach (var segment in segments.OrderBy(x => x.Etag))
+                {
+                    var live = segment.Segment.YieldAllValues(context, segment.Start, includeDead: false).Count();
+                    if (live < 240)
+                        Output.WriteLine($"segment etag {segment.Etag} start {segment.Start:O} live {live} size {segment.SegmentSize}");
+                }
+            }
+
+            foreach (var process in db.EtlLoader.Processes)
+            {
+                foreach (var stats in process.GetPerformanceStats().Take(20))
+                {
+                    Output.WriteLine($"batch {stats.Id}: loaded {stats.NumberOfLoadedItems}, last loaded etag {stats.LastLoadedEtag}, " +
+                                     $"extracted [{string.Join(",", stats.NumberOfExtractedItems.Select(x => x.Key + "=" + x.Value))}], " +
+                                     $"transformed [{string.Join(",", stats.NumberOfTransformedItems.Select(x => x.Key + "=" + x.Value))}], " +
+                                     $"complete reason '{stats.BatchTransformationCompleteReason}', stop reason '{stats.BatchStopReason}', size {stats.BatchSize}");
+                }
             }
         }
 
